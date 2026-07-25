@@ -8,26 +8,41 @@
 //!
 //! # Token format
 //!
-//! `s1.<b64url(payload)>.<b64url(sig)>`
+//! `s2.<b64url(payload)>.<b64url(sig)>`
 //!
-//! - `payload` = compact JSON `{"id":"<jti>","exp":<unix_seconds>}` (no spaces).
-//! - `sig` = HMAC-SHA256(signing_key, ASCII of `"s1." + b64url(payload)`).
+//! - `payload` = compact JSON `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>"}`
+//!   (no spaces).
+//! - `sig` = HMAC-SHA256(signing_key, ASCII of `"s2." + b64url(payload)`).
 //! - `b64url` is base64 URL-safe with NO padding.
+//!
+//! # Audience binding
+//!
+//! `aud` names the surface the token was minted for. A REST API token is
+//! rejected by HTTP MCP and vice versa, so configuring the *same* signing key
+//! on both surfaces — an easy mistake, since they are separate flags reading
+//! separate env vars — can no longer silently grant cross-surface access.
+//! The version prefix is part of the signed input, so an `s2` token cannot be
+//! downgraded to `s1` to shed its binding.
 //!
 //! # Verification (stateless)
 //!
-//! Verification splits on `.`, requires the `s1` version, b64url-decodes the
-//! payload and signature, recomputes the HMAC over `"s1." + payload_b64`, and
-//! compares it to the presented signature in **constant time**. It then parses
-//! the payload, requiring `exp > now` and that `id` is not in the revocation
-//! denylist. Any parse/format error rejects (fail closed); attacker input never
-//! panics.
+//! Verification splits on `.`, requires a known version, b64url-decodes the
+//! payload and signature, recomputes the HMAC over `"<version>." + payload_b64`,
+//! and compares it to the presented signature in **constant time**. It then
+//! parses the payload, requiring the audience to match (`s2` only), `exp > now`,
+//! and that `id` is not in the revocation denylist. Any parse/format error
+//! rejects (fail closed); attacker input never panics.
 //!
 //! # Backward compatibility
 //!
-//! If the presented value is not a parseable `s1.` token, the verifier falls
-//! back to a constant-time comparison against the configured static secret(s).
-//! Static secrets have no expiry.
+//! Legacy `s1` tokens carry no `aud` and are accepted by either surface. They
+//! are still verified so tokens minted before this change keep working until
+//! they expire, but they are never minted, and accepting one logs a one-time
+//! deprecation warning. `s1` acceptance is intended to be removed.
+//!
+//! If the presented value is not a parseable `s1.`/`s2.` token, the verifier
+//! falls back to a constant-time comparison against the configured static
+//! secret(s). Static secrets have no expiry and no audience.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -43,8 +58,21 @@ use sha2::Sha256;
 /// HMAC-SHA256 keyed hash used to sign and verify token payloads.
 type HmacSha256 = Hmac<Sha256>;
 
-/// The token version prefix. Only `s1` tokens are accepted.
-const VERSION: &str = "s1";
+/// The token version prefix minted today. `s2` tokens carry an `aud` claim
+/// binding them to one surface.
+const VERSION: &str = "s2";
+
+/// The pre-`aud` token version. Still accepted so tokens minted before the
+/// upgrade keep working until they expire, but never minted. An `s1` token
+/// carries no audience, so it is accepted by *either* surface — which is the
+/// weakness `s2` exists to remove. See `docs/auth.md`.
+const VERSION_LEGACY: &str = "s1";
+
+/// Audience value for REST API tokens.
+pub const AUDIENCE_API: &str = "api";
+
+/// Audience value for HTTP MCP tokens.
+pub const AUDIENCE_MCP: &str = "mcp";
 
 /// Constant-time byte comparison for API keys and token signatures.
 ///
@@ -53,24 +81,33 @@ const VERSION: &str = "s1";
 /// single hardened implementation.
 pub use crate::crypto::constant_time_eq;
 
-/// Decoded token payload: a unique id (`jti`) and an absolute expiry.
+/// Decoded token payload: a unique id (`jti`), an absolute expiry, and — for
+/// `s2` tokens — the audience the token is bound to.
 #[derive(Debug, Serialize, Deserialize)]
 struct Payload {
     /// Token id used for revocation (denylist).
     id: String,
     /// Expiry as Unix epoch seconds.
     exp: i64,
+    /// Surface this token is valid for (`api` or `mcp`). Absent in legacy `s1`
+    /// tokens, which is why they are accepted by either surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    aud: Option<String>,
 }
 
-/// Mint a signed token from `signing_key`, with id `id` and absolute expiry
-/// `exp_unix` (Unix epoch seconds).
+/// Mint a signed token from `signing_key`, with id `id`, absolute expiry
+/// `exp_unix` (Unix epoch seconds), and audience `audience` — one of
+/// [`AUDIENCE_API`] or [`AUDIENCE_MCP`].
 ///
-/// Produces `s1.<b64url(payload)>.<b64url(sig)>`. The payload is compact JSON
-/// `{"id":...,"exp":...}` with no spaces.
-pub fn mint(signing_key: &[u8], id: &str, exp_unix: i64) -> String {
+/// Produces `s2.<b64url(payload)>.<b64url(sig)>`. The payload is compact JSON
+/// `{"id":...,"exp":...,"aud":...}` with no spaces. The version prefix is part
+/// of the signed input, so it cannot be rewritten to `s1` to shed the audience
+/// binding without invalidating the signature.
+pub fn mint(signing_key: &[u8], id: &str, exp_unix: i64, audience: &str) -> String {
     let payload = Payload {
         id: id.to_string(),
         exp: exp_unix,
+        aud: Some(audience.to_string()),
     };
     // serde_json::to_string produces compact JSON (no spaces) by default, and
     // serializing this concrete `{id: String, exp: i64}` into an in-memory
@@ -185,6 +222,10 @@ pub struct VerifierConfig {
     pub static_keys: Vec<String>,
     /// Optional path to the revocation denylist file.
     pub revoked_file: Option<PathBuf>,
+    /// The surface this verifier guards ([`AUDIENCE_API`] / [`AUDIENCE_MCP`]).
+    /// An `s2` token is accepted only when its `aud` matches. Left empty, no
+    /// `s2` token can ever match — fail closed rather than accept anything.
+    pub audience: String,
 }
 
 impl VerifierConfig {
@@ -205,6 +246,11 @@ pub struct TokenVerifier {
     static_keys: Vec<String>,
     /// Revocation denylist consulted for a token's `id` after signature check.
     revocation: RevocationList,
+    /// The surface this verifier guards; an `s2` token's `aud` must equal it.
+    audience: String,
+    /// Set once a legacy `s1` token has been accepted, so the deprecation
+    /// warning is logged one time per process rather than per request.
+    legacy_warned: std::sync::atomic::AtomicBool,
 }
 
 impl TokenVerifier {
@@ -214,6 +260,8 @@ impl TokenVerifier {
             signing_keys: config.signing_keys,
             static_keys: config.static_keys,
             revocation: RevocationList::new(config.revoked_file),
+            audience: config.audience,
+            legacy_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -256,20 +304,24 @@ impl TokenVerifier {
             // More than 3 parts — not our format.
             return None;
         }
-        if version != VERSION {
-            // Not an s1 token — let static fallback handle it.
+        if version != VERSION && version != VERSION_LEGACY {
+            // Not one of our tokens — let static fallback handle it.
             return None;
         }
-        // From here on this is unambiguously an s1 token; any failure rejects.
+        // From here on this is unambiguously one of our tokens; any failure
+        // rejects rather than falling through to the static-secret path.
 
         // Decode the presented signature.
         let Ok(presented_sig) = URL_SAFE_NO_PAD.decode(sig_b64) else {
             return Some(false);
         };
 
-        // Recompute HMAC over "s1." + payload_b64 and compare in constant time
-        // against ALL signing keys (rotation with overlap).
-        let signing_input = format!("{VERSION}.{payload_b64}");
+        // Recompute HMAC over "<version>." + payload_b64 and compare in
+        // constant time against ALL signing keys (rotation with overlap).
+        // The version is part of the signed input, so an `s2` token cannot be
+        // downgraded to `s1` (shedding its audience binding) by editing the
+        // prefix — the signature would no longer match.
+        let signing_input = format!("{version}.{payload_b64}");
         let mut sig_ok = false;
         for key in &self.signing_keys {
             let expected = hmac_sha256(key, signing_input.as_bytes());
@@ -288,6 +340,36 @@ impl TokenVerifier {
         let Ok(payload) = serde_json::from_slice::<Payload>(&payload_bytes) else {
             return Some(false);
         };
+
+        // Audience. An `s2` token names the surface it was minted for, and is
+        // rejected by any other — so reusing one signing key across the REST
+        // API and HTTP MCP cannot silently grant cross-surface access. An empty
+        // configured audience matches nothing, which fails closed.
+        match version {
+            VERSION => {
+                if payload.aud.as_deref() != Some(self.audience.as_str())
+                    || self.audience.is_empty()
+                {
+                    return Some(false);
+                }
+            }
+            _ => {
+                // Legacy `s1`: no audience to check. Accepted until it expires,
+                // never minted. Warn once per process so the deprecation is
+                // visible without logging on every request.
+                if !self
+                    .legacy_warned
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "accepted a legacy s1 bearer token (no audience binding). \
+                         s1 tokens are valid on BOTH the REST API and HTTP MCP; \
+                         re-mint with --mint-token to get an audience-bound s2 \
+                         token. s1 acceptance will be removed in a future release."
+                    );
+                }
+            }
+        }
 
         // Expiry: require exp strictly greater than now.
         if payload.exp <= now_unix {
@@ -325,7 +407,13 @@ mod tests {
     const KEY_B: &[u8] = b"signing-key-beta-9876543210";
 
     /// Build a `TokenVerifier` from a config (test-readability wrapper).
-    fn verifier(cfg: VerifierConfig) -> TokenVerifier {
+    /// Defaults the audience to the API surface so existing cases, which mint
+    /// with `AUDIENCE_API`, read unchanged; the audience-specific cases set it
+    /// explicitly.
+    fn verifier(mut cfg: VerifierConfig) -> TokenVerifier {
+        if cfg.audience.is_empty() {
+            cfg.audience = AUDIENCE_API.to_string();
+        }
         TokenVerifier::new(cfg)
     }
 
@@ -356,7 +444,7 @@ mod tests {
     fn mint_escapes_hostile_id_in_payload() {
         let hostile = "id\"with\\meta\tand\u{0001}control";
         let exp = 4_000_000_000i64;
-        let token = mint(KEY_A, hostile, exp);
+        let token = mint(KEY_A, hostile, exp, AUDIENCE_API);
 
         // The payload segment must be valid, escaped JSON decoding back to id.
         let payload_b64 = token.split('.').nth(1).expect("payload segment");
@@ -426,14 +514,14 @@ mod tests {
     /// expected compact `{"id":...,"exp":...}` JSON.
     #[test]
     fn minted_token_has_expected_shape() {
-        let token = mint(KEY_A, "abc", 9999999999);
+        let token = mint(KEY_A, "abc", 9999999999, AUDIENCE_API);
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3, "token should have 3 dot-parts: {token}");
-        assert_eq!(parts[0], "s1");
-        // Payload decodes to compact JSON with id+exp.
+        assert_eq!(parts[0], "s2");
+        // Payload decodes to compact JSON with id+exp+aud.
         let payload = URL_SAFE_NO_PAD.decode(parts[1]).expect("payload b64");
         let s = String::from_utf8(payload).expect("utf8");
-        assert_eq!(s, "{\"id\":\"abc\",\"exp\":9999999999}");
+        assert_eq!(s, "{\"id\":\"abc\",\"exp\":9999999999,\"aud\":\"api\"}");
     }
 
     // ── valid / accept ─────────────────────────────────────────────────
@@ -445,7 +533,7 @@ mod tests {
             signing_keys: vec![KEY_A.to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000);
+        let token = mint(KEY_A, "id1", 1_000, AUDIENCE_API);
         assert!(v.verify(&token, 999), "unexpired token should verify");
     }
 
@@ -458,7 +546,7 @@ mod tests {
             signing_keys: vec![KEY_A.to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000);
+        let token = mint(KEY_A, "id1", 1_000, AUDIENCE_API);
         // now == exp → reject (exp must be strictly greater than now).
         assert!(!v.verify(&token, 1_000), "exp == now should reject");
         // now > exp → reject.
@@ -474,7 +562,7 @@ mod tests {
             signing_keys: vec![KEY_A.to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000_000);
+        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API);
         let mut parts: Vec<String> = token.split('.').map(String::from).collect();
         // Flip a byte in the payload b64. Pick a char and replace with another.
         let payload = parts[1].clone();
@@ -499,7 +587,7 @@ mod tests {
             ..Default::default()
         });
         // Token signed with a DIFFERENT key.
-        let forged = mint(KEY_B, "id1", 1_000_000);
+        let forged = mint(KEY_B, "id1", 1_000_000, AUDIENCE_API);
         assert!(
             !v.verify(&forged, 1),
             "token signed with a non-configured key must reject"
@@ -540,8 +628,8 @@ mod tests {
             signing_keys: vec![KEY_A.to_vec(), KEY_B.to_vec()],
             ..Default::default()
         });
-        let token_a = mint(KEY_A, "ida", 1_000_000);
-        let token_b = mint(KEY_B, "idb", 1_000_000);
+        let token_a = mint(KEY_A, "ida", 1_000_000, AUDIENCE_API);
+        let token_b = mint(KEY_B, "idb", 1_000_000, AUDIENCE_API);
         assert!(v.verify(&token_a, 1), "token signed by first key accepted");
         assert!(v.verify(&token_b, 1), "token signed by second key accepted");
     }
@@ -552,7 +640,7 @@ mod tests {
         // A verifier that only knows KEY_B should reject a token minted by the
         // "first key" of a {A,B} config (which is A).
         let mint_cfg_first = KEY_A;
-        let token = mint(mint_cfg_first, "x", 1_000_000);
+        let token = mint(mint_cfg_first, "x", 1_000_000, AUDIENCE_API);
         let v_b_only = verifier(VerifierConfig {
             signing_keys: vec![KEY_B.to_vec()],
             ..Default::default()
@@ -578,11 +666,11 @@ mod tests {
 
         // A token with a revoked id is rejected even though the signature is
         // valid and it is unexpired.
-        let revoked = mint(KEY_A, "revoked-id-1", 1_000_000);
+        let revoked = mint(KEY_A, "revoked-id-1", 1_000_000, AUDIENCE_API);
         assert!(!v.verify(&revoked, 1), "revoked id must reject");
 
         // A fresh token with a different id is accepted.
-        let fresh = mint(KEY_A, "fresh-id", 1_000_000);
+        let fresh = mint(KEY_A, "fresh-id", 1_000_000, AUDIENCE_API);
         assert!(v.verify(&fresh, 1), "non-revoked id must accept");
 
         // Remove the revocation from the file; the previously-revoked id is now
@@ -591,7 +679,7 @@ mod tests {
         // two writes.
         std::thread::sleep(std::time::Duration::from_millis(10));
         std::fs::write(&path, "# nothing revoked now\n").expect("rewrite");
-        let after = mint(KEY_A, "revoked-id-1", 1_000_000);
+        let after = mint(KEY_A, "revoked-id-1", 1_000_000, AUDIENCE_API);
         assert!(
             v.verify(&after, 1),
             "after removing from denylist, id should be accepted (reload)"
@@ -647,7 +735,7 @@ mod tests {
             static_keys: vec!["legacy".to_string()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id", 1_000_000);
+        let token = mint(KEY_A, "id", 1_000_000, AUDIENCE_API);
         assert!(v.verify(&token, 1), "signed token accepts");
         assert!(v.verify("legacy", 1), "static secret accepts");
         assert!(!v.verify("nope", 1), "unknown rejects");
@@ -661,5 +749,115 @@ mod tests {
         // With nothing configured, even a well-formed-looking token rejects
         // (no key to verify against, no static secret to match).
         assert!(!v.verify("anything", 1));
+    }
+
+    /// A token minted for the REST API must be rejected by the HTTP MCP
+    /// surface even when BOTH share one signing key — the exact
+    /// misconfiguration audience binding exists to defuse.
+    #[test]
+    fn api_token_is_rejected_by_the_mcp_surface() {
+        let shared = KEY_A;
+        let api_token = mint(shared, "id1", 1_000_000, AUDIENCE_API);
+
+        let api_v = verifier(VerifierConfig {
+            signing_keys: vec![shared.to_vec()],
+            audience: AUDIENCE_API.to_string(),
+            ..Default::default()
+        });
+        let mcp_v = verifier(VerifierConfig {
+            signing_keys: vec![shared.to_vec()],
+            audience: AUDIENCE_MCP.to_string(),
+            ..Default::default()
+        });
+
+        assert!(
+            api_v.verify(&api_token, 1_000),
+            "an api token must work on the api surface"
+        );
+        assert!(
+            !mcp_v.verify(&api_token, 1_000),
+            "an api token must NOT work on the mcp surface, even with a shared key"
+        );
+    }
+
+    /// And symmetrically, so neither direction is special-cased.
+    #[test]
+    fn mcp_token_is_rejected_by_the_api_surface() {
+        let shared = KEY_A;
+        let mcp_token = mint(shared, "id1", 1_000_000, AUDIENCE_MCP);
+
+        let api_v = verifier(VerifierConfig {
+            signing_keys: vec![shared.to_vec()],
+            audience: AUDIENCE_API.to_string(),
+            ..Default::default()
+        });
+        let mcp_v = verifier(VerifierConfig {
+            signing_keys: vec![shared.to_vec()],
+            audience: AUDIENCE_MCP.to_string(),
+            ..Default::default()
+        });
+
+        assert!(mcp_v.verify(&mcp_token, 1_000));
+        assert!(!api_v.verify(&mcp_token, 1_000));
+    }
+
+    /// Rewriting an `s2` token's version prefix to `s1` must not strip the
+    /// audience check: the version is part of the signed input, so the
+    /// downgrade invalidates the signature.
+    #[test]
+    fn s2_token_cannot_be_downgraded_to_s1() {
+        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API);
+        assert!(
+            token.starts_with("s2."),
+            "mint must produce s2, got {token}"
+        );
+
+        let downgraded = format!("s1.{}", token.trim_start_matches("s2."));
+        let mcp_v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            audience: AUDIENCE_MCP.to_string(),
+            ..Default::default()
+        });
+        assert!(
+            !mcp_v.verify(&downgraded, 1_000),
+            "a version-downgraded token must fail the signature check"
+        );
+    }
+
+    /// A legacy `s1` token (no `aud`) still verifies, so tokens minted before
+    /// the upgrade keep working until they expire. This documents the
+    /// transition cost: such a token IS accepted by either surface.
+    #[test]
+    fn legacy_s1_token_without_audience_is_still_accepted() {
+        // Hand-build an s1 token: payload without `aud`, signed over "s1.".
+        let payload = r#"{"id":"legacy-1","exp":1000000}"#;
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let signing_input = format!("s1.{payload_b64}");
+        let sig = hmac_sha256(KEY_A, signing_input.as_bytes());
+        let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig));
+
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            audience: AUDIENCE_MCP.to_string(),
+            ..Default::default()
+        });
+        assert!(
+            v.verify(&token, 1_000),
+            "legacy s1 tokens must keep verifying during the transition"
+        );
+    }
+
+    /// An empty configured audience must reject every `s2` token rather than
+    /// accepting any of them — fail closed on a misconfigured verifier.
+    #[test]
+    fn empty_audience_rejects_every_s2_token() {
+        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API);
+        // Bypass the test `verifier()` helper, which fills in a default.
+        let v = TokenVerifier::new(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            audience: String::new(),
+            ..Default::default()
+        });
+        assert!(!v.verify(&token, 1_000));
     }
 }

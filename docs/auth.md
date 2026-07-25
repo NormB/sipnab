@@ -20,16 +20,38 @@ token kinds, checked with a constant-time comparison:
 ## Token format
 
 ```
-s1.<base64url(payload)>.<base64url(HMAC-SHA256)>
+s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 ```
 
-- `payload` is compact JSON `{"id":"<jti>","exp":<unix_seconds>}`.
-- The signature is `HMAC-SHA256(signing_key, "s1." + base64url(payload))`.
+- `payload` is compact JSON
+  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>"}`.
+- The signature is `HMAC-SHA256(signing_key, "s2." + base64url(payload))`.
 - base64url is URL-safe, no padding.
 
 Verification is **stateless**: the server recomputes the HMAC, compares it in
-constant time against every configured signing key, then checks `exp > now` and
-that `id` is not revoked. Any malformed token is rejected (fail-closed).
+constant time against every configured signing key, then checks the audience,
+`exp > now`, and that `id` is not revoked. Any malformed token is rejected
+(fail-closed).
+
+## Audience binding
+
+`aud` names the surface a token was minted for. A token minted from
+`--api-signing-key` is rejected by the HTTP MCP endpoint, and one minted from
+`--mcp-signing-key` is rejected by the REST API — **even when both surfaces are
+configured with the same signing key**. Since the two surfaces read separate
+flags and separate environment variables, reusing one secret across them is an
+easy mistake; before audience binding it silently granted cross-surface access.
+
+The version prefix is part of the signed input, so an `s2` token cannot be
+rewritten as `s1` to shed its binding — the signature no longer matches.
+
+### Legacy `s1` tokens
+
+Tokens minted before this change use the `s1` prefix and carry no `aud`, so
+they are accepted by **either** surface. They still verify, so existing tokens
+keep working until they expire, but `s1` is never minted any more and accepting
+one logs a one-time deprecation warning. Re-mint with `--mint-token` to get an
+audience-bound `s2` token; `s1` acceptance will be removed in a future release.
 
 ## 1. Configure a signing key
 
@@ -114,8 +136,11 @@ stateless model.)
 - Signing keys and tokens are secrets — prefer `*-signing-key-file` or env over
   argv (argv is visible in `ps`).
 - Signatures and static secrets are compared in **constant time**.
-- Do not choose a static `--api-key`/`--mcp-token` shaped like `s1.x.y` — it
-  would be parsed as a (failing) signed token rather than matched as a static
-  secret.
+- Do not choose a static `--api-key`/`--mcp-token` shaped like `s1.x.y` or
+  `s2.x.y` — it would be parsed as a (failing) signed token rather than matched
+  as a static secret.
+- Static secrets carry no audience. If you set the same static
+  `--api-key` and `--mcp-token`, that one secret opens both surfaces; audience
+  binding applies to signed tokens only.
 - TLS for the REST API is **not yet built in**; terminate TLS at a reverse proxy
   for non-loopback deployments.

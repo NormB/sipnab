@@ -90,14 +90,25 @@ for CI, automation, and anything multi-client.
 The token format is:
 
 ```
-s1.<base64url(payload)>.<base64url(HMAC-SHA256)>
+s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 ```
 
-where `payload` is compact JSON `{"id":"<jti>","exp":<unix_seconds>}` and the
-signature is `HMAC-SHA256(signing_key, "s1." + base64url(payload))`.
-Verification is stateless: the server recomputes the HMAC, compares it in
-constant time against every configured signing key, then requires `exp > now`
+where `payload` is compact JSON
+`{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>"}` and the signature is
+`HMAC-SHA256(signing_key, "s2." + base64url(payload))`. Verification is
+stateless: the server recomputes the HMAC, compares it in constant time against
+every configured signing key, then requires the audience to match, `exp > now`,
 and that `id` is not revoked. Any malformed token is rejected (fail-closed).
+
+**Audience binding.** `aud` names the surface the token was minted for, so a
+token minted from `--api-signing-key` is rejected by the HTTP MCP endpoint and
+vice versa — **even when both are configured with the same signing key**. The
+version prefix is part of the signed input, so an `s2` token cannot be rewritten
+as `s1` to shed its binding. Tokens minted before this change use the `s1`
+prefix, carry no audience, and are therefore accepted by either surface; they
+keep verifying until they expire but are no longer minted. Re-mint to get an
+audience-bound token. Note that **static** `--api-key` secrets carry no
+audience — the binding applies to signed tokens only.
 
 | Setting | Purpose |
 |---|---|
