@@ -56,17 +56,127 @@ curl -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs
 
 ## Authentication
 
-The REST API requires a bearer token passed via the `--api-key` flag or the `$SIPNAB_API_KEY` environment variable.
+Credentials are always presented the same way — an `Authorization: Bearer`
+header. Nothing else is accepted: not an `X-API-Key` header, not a query
+parameter, not HTTP Basic (Basic applies only to the standalone metrics server,
+below).
 
 ```bash
-curl -H "Authorization: Bearer your-secret-key" http://127.0.0.1:8080/v1/dialogs
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
 ```
 
-The REST API's `/metrics` endpoint is guarded by the same Bearer token as
-every other endpoint. The *standalone* metrics server (`--metrics <ADDR>`)
-is separate: it uses HTTP Basic auth via `--metrics-auth <user:pass>`.
+There are **two kinds of credential**, and the server accepts either.
 
-All endpoints except `/health` require authentication when an API key is configured. Missing or invalid keys return `401 Unauthorized`. Key comparison uses constant-time comparison to prevent timing side-channel attacks.
+### Method 1 — static API key
+
+A shared secret with **no expiry**. Simplest to set up; you revoke it by
+restarting with a different key.
+
+```bash
+export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+sipnab --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY"
+```
+
+| Setting | Purpose |
+|---|---|
+| `--api-key <KEY>` / `$SIPNAB_API_KEY` | The static secret. Prefer the environment variable — argv is visible in `ps`. |
+
+### Method 2 — signed bearer tokens
+
+Self-describing HMAC tokens that carry their own expiry and id, so you get
+expiry, rotation, and revocation **without restarting the server**. Prefer this
+for CI, automation, and anything multi-client.
+
+The token format is:
+
+```
+s1.<base64url(payload)>.<base64url(HMAC-SHA256)>
+```
+
+where `payload` is compact JSON `{"id":"<jti>","exp":<unix_seconds>}` and the
+signature is `HMAC-SHA256(signing_key, "s1." + base64url(payload))`.
+Verification is stateless: the server recomputes the HMAC, compares it in
+constant time against every configured signing key, then requires `exp > now`
+and that `id` is not revoked. Any malformed token is rejected (fail-closed).
+
+| Setting | Purpose |
+|---|---|
+| `--api-signing-key <KEY>` / `$SIPNAB_API_SIGNING_KEY` | HMAC signing key. **Repeatable** — the *first* key mints, *all* keys verify. |
+| `--api-signing-key-file <FILE>` | Read one key from a file (contents trimmed). Prepended to any `--api-signing-key`, so it becomes the minting key. |
+| `--api-token-ttl <SECS>` | Lifetime of a minted token. Default `3600`. |
+| `--mint-token` | Sign a token with the first configured key, print it, and exit. Starts no capture and no server. |
+| `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
+| `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
+
+**Mint a token:**
+
+```bash
+KEY="$(openssl rand -hex 32)"
+
+# 1-hour token (default TTL)
+sipnab --mint-token --api-signing-key "$KEY"
+
+# 24-hour token with an explicit id, so it can be revoked later
+sipnab --mint-token --api-signing-key "$KEY" --api-token-ttl 86400 --token-id ci-runner-1
+```
+
+**Serve with that key, and honor a denylist:**
+
+```bash
+sipnab --api 127.0.0.1:8080 --api-signing-key "$KEY" \
+  --api-revoked-file /etc/sipnab/revoked.txt
+```
+
+**Expiry** needs no server action — a token is rejected once `exp <= now`.
+
+**Rotation** comes in two independent forms. Rotate *tokens* by minting a new
+one before the old lapses and migrating clients; several tokens are valid at
+once. Rotate *signing keys* by passing `--api-signing-key` more than once: add
+the new key alongside the old, mint with the new one, migrate clients, then
+drop the old key on the next restart.
+
+**Revocation** kills a still-valid token before its `exp`:
+
+```bash
+echo "ci-runner-1" >> /etc/sipnab/revoked.txt
+```
+
+The file is re-read when its mtime changes, so the token stops working within
+the next request — no restart.
+
+### When authentication is required
+
+**If you configure neither an API key nor a signing key, authentication is
+disabled** and every endpoint is served without credentials. That is allowed
+only on a loopback bind. On a non-loopback bind with no credentials configured,
+**the server refuses to start** rather than exposing an open API:
+
+```
+REST API refuses to start: --api 0.0.0.0:8080 is non-loopback but no
+--api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was
+supplied. Bind 127.0.0.1, or configure authentication.
+```
+
+Once credentials are configured, every endpoint **except `/health`** requires
+them. `/health` is always unauthenticated. Missing, malformed, non-Bearer,
+expired, or revoked credentials return `401 Unauthorized`. All comparisons are
+constant-time, to prevent timing side channels.
+
+Note that rate limiting is checked *before* authentication, so a client over
+its per-IP budget receives `503 Service Unavailable` even when its credentials
+are invalid.
+
+### Metrics endpoints use two different schemes
+
+This catches people out, so it is worth stating plainly:
+
+| Endpoint | Scheme |
+|---|---|
+| `/metrics` **on the REST API** (`--api`) | The same Bearer credential as every other REST endpoint. |
+| The **standalone** metrics server (`--metrics <ADDR>`) | HTTP Basic, via `--metrics-auth <user:pass>` or `--metrics-auth-file <FILE>`. |
+
+The standalone server applies the same fail-closed rule: a non-loopback bind
+with no `--metrics-auth` / `--metrics-auth-file` refuses to start.
 
 ## API TLS
 
