@@ -49,6 +49,18 @@ behavior changes.
   expected", so it was answering that question wrongly. Found while
   fact-checking the `/docs/` overview page; the sample outputs in the install
   and MCP-walkthrough pages are updated to match.
+- **musl and `-noaudio` release builds shipped without the Prometheus
+  endpoint.** `release.yml` built them from a feature set described in its own
+  comment as "full minus audio" that also dropped `metrics`, while the install
+  pages told readers the `-noaudio` variant differs *only* in live playback.
+  `metrics` is restored to that set, which takes effect on the next tagged
+  release.
+- **`all_schemas_compile` could not see a schema it was not told about.** It
+  iterated four hardcoded filenames, so a malformed schema added to
+  `tests/schemas/` left the suite green. It now enumerates the directory, with
+  an anti-vacuity floor so a broken path fails rather than passes.
+- `TransportProto::Sctp` was documented as a "stub for future use" although
+  SCTP has been parsed since the capture path learned IP protocol 132.
 - Three walkthrough checklists named gates that do not fire for the change they
   were attached to. Verified by executing each: a malformed schema added to
   `tests/schemas/` leaves `json_schema_test` green (it iterates four hardcoded
