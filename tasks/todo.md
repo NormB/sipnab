@@ -312,6 +312,15 @@ Tiers:
   snapshot regeneration), and an onboarding "how to add a new TUI view / a new
   detector" walkthrough. Goal: a new contributor can find where things live and
   the project's conventions without reverse-engineering the tree.
+- [ ] **glibc floor: installer runtime value** — `release.yml` enforces a 2.36
+  floor (bookworm container + `readelf -V` gate) but
+  `website/static/install.sh` still selects musl below
+  `SIPNAB_GLIBC_FLOOR="2.39"`. Lowering it to 2.36 would serve the gnu build
+  to glibc 2.36–2.38 users (Debian 12). Behavior change — confirm before
+  editing. `website/config.toml` carries the same 2.39 value with a comment
+  saying it drops to 2.36 "with the first bookworm-built release", which has
+  now shipped; both move together or neither does. `docs/install.md` states
+  the enforced 2.36 floor and notes the installer's stricter choice.
 
 ## Shipped (audit-period features, kept for context)
 

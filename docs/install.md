@@ -39,9 +39,12 @@ sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/loca
 ```
 
 The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback but
-require glibc >= 2.39 (Debian 13+, Ubuntu 24.04+) and libpcap. On an older
-distro they fail with `` version `GLIBC_2.39' not found `` -- use the static
-musl build (or the installer, which checks this automatically).
+require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. That floor is
+enforced, not estimated: the gnu targets build inside a Debian bookworm
+container and a release-workflow gate rejects any binary linking a newer
+`GLIBC_` symbol. On an older distro they fail with `` version `GLIBC_2.36' not
+found `` -- use the static musl build. The install script is deliberately more
+conservative and still serves musl below glibc 2.39.
 
 ## Cargo (from source)
 
@@ -53,7 +56,7 @@ cargo install sipnab --features full
 
 ### Debian/Ubuntu (.deb)
 
-Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.39, i.e. Debian 13+ / Ubuntu 24.04+ -- on older releases use the static musl tarball above:
+Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above:
 
 ```bash
 # amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.37
