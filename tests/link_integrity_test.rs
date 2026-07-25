@@ -502,7 +502,12 @@ fn no_references_to_merged_away_mcp_pages() {
     //     page while describing the merge.
     let mut files = wiki_source_files();
     files.extend(md_files_recursive("website/content/docs"));
-    for name in ["README.md", "CONTRIBUTING.md", "ARCHITECTURE.md", "SECURITY.md"] {
+    for name in [
+        "README.md",
+        "CONTRIBUTING.md",
+        "ARCHITECTURE.md",
+        "SECURITY.md",
+    ] {
         files.push(PathBuf::from(name));
     }
     for file in files {

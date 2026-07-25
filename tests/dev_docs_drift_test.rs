@@ -57,8 +57,19 @@ fn links(text: &str) -> Vec<(String, String)> {
 /// an external URL are both excluded.
 fn code_links(text: &str) -> Vec<(String, String)> {
     const TREES: &[&str] = &[
-        "src", "tests", "crates", "benches", "fuzz", "scripts", "contrib", "harness", "ops",
-        "man", "demos", ".github", ".githooks",
+        "src",
+        "tests",
+        "crates",
+        "benches",
+        "fuzz",
+        "scripts",
+        "contrib",
+        "harness",
+        "ops",
+        "man",
+        "demos",
+        ".github",
+        ".githooks",
     ];
     links(text)
         .into_iter()
@@ -141,7 +152,7 @@ fn linked_code_targets_exist() {
             }
         }
     }
-    assert!(seen >= 1, "code-link extraction found only {seen} links"); // RAISED IN TASK 13
+    assert!(seen >= 40, "code-link extraction found only {seen} links");
     assert!(
         missing.is_empty(),
         "developer docs link to code that has moved or been deleted:\n  {}",
@@ -168,7 +179,7 @@ fn linked_symbols_resolve_to_a_definition() {
             }
         }
     }
-    assert!(seen >= 1, "symbol extraction found only {seen} claims"); // RAISED IN TASK 13
+    assert!(seen >= 30, "symbol extraction found only {seen} claims");
     assert!(
         missing.is_empty(),
         "developer docs name functions that no longer exist:\n  {}",
@@ -337,5 +348,19 @@ fn build_wiki_rewrites_code_links() {
     assert!(
         script.contains("CODE_LINK_RE.sub"),
         "CODE_LINK_RE is defined but never applied in transform()"
+    );
+}
+
+/// The developer docs carry a designed diagram set; losing them silently
+/// would strip the pages of half their meaning.
+#[test]
+fn developer_docs_carry_their_diagram_set() {
+    let total: usize = internals_pages()
+        .iter()
+        .map(|p| mermaid_fences(&read(p)).len())
+        .sum();
+    assert!(
+        total >= 17,
+        "expected at least 17 sequence diagrams across docs/internals, found {total}"
     );
 }
