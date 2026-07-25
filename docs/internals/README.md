@@ -122,7 +122,8 @@ four in [`.githooks/pre-push`](../../.githooks/pre-push) (`fmt`,
 **The drift tests** — the subset of the gate suite that compares documentation
 and configuration against the code and fails on divergence:
 [`docs_drift_test`](../../tests/docs_drift_test.rs) (flags, version markers,
-feature table), [`link_integrity_test`](../../tests/link_integrity_test.rs)
+feature table, `[theme]` slots),
+[`link_integrity_test`](../../tests/link_integrity_test.rs)
 (every relative link and anchor resolves),
 [`flag_coverage_test`](../../tests/flag_coverage_test.rs),
 [`keybinding_drift_test`](../../tests/keybinding_drift_test.rs), and
