@@ -493,8 +493,18 @@ fn template_docs_links_and_anchors_resolve() {
 fn no_references_to_merged_away_mcp_pages() {
     const GONE: &[&str] = &["mcp-overview.md", "mcp-setup.md", "mcp-tools.md"];
     let mut offenders = Vec::new();
-    let mut files = md_files_recursive("docs");
+    // The published surface, not every markdown file on disk. Two changes
+    // from the old `md_files_recursive("docs")`:
+    //   - gains root markdown: README.md links into docs/ and shipped two
+    //     dead mcp-*.md links precisely because the scan stopped at docs/;
+    //   - drops docs/superpowers/ and docs/design/: planning material that
+    //     is never published, and that must be free to name a merged-away
+    //     page while describing the merge.
+    let mut files = wiki_source_files();
     files.extend(md_files_recursive("website/content/docs"));
+    for name in ["README.md", "CONTRIBUTING.md", "ARCHITECTURE.md", "SECURITY.md"] {
+        files.push(PathBuf::from(name));
+    }
     for file in files {
         let text = read(&file);
         for (i, line) in text.lines().enumerate() {
