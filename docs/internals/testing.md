@@ -74,7 +74,7 @@ the thing it guards silently rotted at least once.
 
 | Gate | Trips when |
 |---|---|
-| [`docs_drift_test`](../../tests/docs_drift_test.rs) | A `--flag` named in `README.md`, `ARCHITECTURE.md` or the website does not exist in the CLI; a version marker in the docs or man page disagrees with `Cargo.toml`; the README feature table misses a Cargo feature. |
+| [`docs_drift_test`](../../tests/docs_drift_test.rs) | A `--flag` named in `README.md`, `ARCHITECTURE.md` or the website does not exist in the CLI; a version marker in the docs or man page disagrees with `Cargo.toml`; the README feature table misses a Cargo feature; a `[theme]` slot in `ThemeConfig` is undocumented, or the slot count quoted in either config reference is wrong. |
 | [`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs) | A page under `docs/internals/` links to a path that no longer exists, names a `fn` that no longer exists, uses an absolute GitHub URL instead of a relative one, is not registered in `build-wiki.py`, or breaks a mermaid convention. |
 | [`link_integrity_test`](../../tests/link_integrity_test.rs) | Any relative link or heading anchor in either doc tree does not resolve; Zola content uses a plain relative `.md` link that would render as a dead URL. |
 | [`doc_example_coverage_test`](../../tests/doc_example_coverage_test.rs) | A user-facing CLI flag appears in fewer than two documented examples. A ratchet — the exemption list may only shrink. |
