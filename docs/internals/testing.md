@@ -1,0 +1,134 @@
+# Test architecture
+
+Fifty integration-test binaries under [`tests/`](../../tests), plus unit tests
+inside `src/`, plus doctests. The exact total is not repeated here on purpose —
+it is carried by the homepage stat card and enforced by a pre-commit gate, so
+any number written on this page would be wrong within a week.
+
+What follows is the map: what each tier asserts, how to regenerate its
+artifacts, and — most importantly — the roster of *gate tests* that fail you
+for reasons that have nothing to do with the code you were writing.
+
+## Tiers
+
+| Tier | Files | Asserts |
+|---|---|---|
+| **CLI surface** | [`cli_test`](../../tests/cli_test.rs), [`cli_options_test`](../../tests/cli_options_test.rs), [`cli_help_test`](../../tests/cli_help_test.rs), [`cli_defaults_test`](../../tests/cli_defaults_test.rs), [`cli_flag_behavior_test`](../../tests/cli_flag_behavior_test.rs) | Parsing, the default value of every parameter, `--help` grouping across ~110 flags, and behavior for flags that were once untested. |
+| **CLI golden** | [`cli_goldens`](../../tests/cli_goldens.rs) | `trycmd` goldens under [`tests/cli/`](../../tests/cli) — exact stdout/stderr for a command line. |
+| **Integration** | [`integration_test`](../../tests/integration_test.rs), [`capture_test`](../../tests/capture_test.rs), [`rtp_integration_test`](../../tests/rtp_integration_test.rs), [`pipeline_test`](../../tests/pipeline_test.rs), [`parse_path_test`](../../tests/parse_path_test.rs), [`bootstrap_test`](../../tests/bootstrap_test.rs), [`app_servers_test`](../../tests/app_servers_test.rs) | Capture-to-output pipeline, and the library facades WS2 extracted from `main.rs` — bootstrap planning is a pure `Cli + Config → RunPlan` function precisely so it can be tested here. |
+| **TUI** | [`tui_snapshot_test`](../../tests/tui_snapshot_test.rs), [`tui_state_test`](../../tests/tui_state_test.rs), [`tui_e2e_test`](../../tests/tui_e2e_test.rs) | Rendered buffers via ratatui's `TestBackend` + `insta`; state-machine transitions; and end-to-end drives of the real binary inside `tmux`. See [TUI testing](tui-testing.md). |
+| **Servers** | [`api_test`](../../tests/api_test.rs), [`api_token_test`](../../tests/api_token_test.rs), [`mcp_stdio_test`](../../tests/mcp_stdio_test.rs), [`mcp_http_test`](../../tests/mcp_http_test.rs), [`mcp_token_test`](../../tests/mcp_token_test.rs), [`mcp_token_rotation_test`](../../tests/mcp_token_rotation_test.rs), [`metrics_test`](../../tests/metrics_test.rs), [`hep_test`](../../tests/hep_test.rs) | REST, MCP (stdio and HTTP), signed-token auth and rotation, Prometheus scrapes, HEP ingestion — all end to end against a spawned process. |
+| **Security** | [`security_test`](../../tests/security_test.rs), [`privilege_drop_test`](../../tests/privilege_drop_test.rs), [`resource_bounds_test`](../../tests/resource_bounds_test.rs), [`crash_test`](../../tests/crash_test.rs) | Audit regressions, the never-continue-as-root guarantee, attacker-keyed map caps, and crash-report handling with the real binary. |
+| **Property & fuzz** | [`property_test`](../../tests/property_test.rs), [`smoke_fuzz_test`](../../tests/smoke_fuzz_test.rs), [`fuzz_corpus_replay`](../../tests/fuzz_corpus_replay.rs) | `proptest` invariants; the always-on stable-toolchain fuzz floor; deterministic replay of the stored corpus. |
+| **Contract** | [`json_schema_test`](../../tests/json_schema_test.rs), [`summary_consistency_test`](../../tests/summary_consistency_test.rs), [`output_behavior_test`](../../tests/output_behavior_test.rs), [`error_types_test`](../../tests/error_types_test.rs), [`api_guidelines_test`](../../tests/api_guidelines_test.rs), [`wasm_exports_test`](../../tests/wasm_exports_test.rs) | The shapes other people's code depends on: JSON schemas, cross-surface summary agreement, machine-readable output flags, typed errors, `#[non_exhaustive]` on growth-prone enums, WASM export list. |
+| **Docs enforcement** | [`docs_drift_test`](../../tests/docs_drift_test.rs), [`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs), [`link_integrity_test`](../../tests/link_integrity_test.rs), [`doc_example_coverage_test`](../../tests/doc_example_coverage_test.rs), [`config_examples_test`](../../tests/config_examples_test.rs), [`site_journey_test`](../../tests/site_journey_test.rs), [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | See the gate roster below. |
+| **Governance** | [`flag_coverage_test`](../../tests/flag_coverage_test.rs), [`keybinding_drift_test`](../../tests/keybinding_drift_test.rs), [`feature_gate_test`](../../tests/feature_gate_test.rs), [`config_wiring_test`](../../tests/config_wiring_test.rs) | Rules about *how the project grows*, not about a specific behavior. |
+| **Meta** | [`support_selftest`](../../tests/support_selftest.rs) | The shared test helpers have their own tests. |
+
+## `tests/support/`
+
+Files in a subdirectory of `tests/` are **not** compiled as their own test
+binaries, so shared helpers are pulled in with an explicit path attribute:
+
+```rust
+#[path = "support/run.rs"]
+mod run;
+```
+
+That idiom is why you will see the same module included by several test files
+with no `mod.rs` chain — each test binary compiles its own copy.
+
+| Helper | Provides |
+|---|---|
+| [`mod.rs`](../../tests/support/mod.rs) | Shared normalization (`normalize()`) used to compare output across platforms; self-tested by `support_selftest`. |
+| [`run.rs`](../../tests/support/run.rs) | The canonical binary-spawn helper for CLI/output/config integration tests — one place that knows how to find and invoke the built binary. |
+| [`server.rs`](../../tests/support/server.rs) | REST API spawn harness: start the server on an ephemeral port, wait for readiness, tear down. |
+| [`mcp.rs`](../../tests/support/mcp.rs) | The same for HTTP MCP, including the JSON-RPC framing. |
+| [`schema.rs`](../../tests/support/schema.rs) | JSON-Schema validation against [`tests/schemas/`](../../tests/schemas). |
+| [`tui_fixtures.rs`](../../tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
+| [`fuzz.rs`](../../tests/support/fuzz.rs) | A deterministic xorshift PRNG shared by the stable-toolchain fuzzers, so a failure reproduces from its seed. |
+
+## Fixtures and corpora
+
+Every command below was run against the current tree and left it unchanged —
+that is the point of documenting them: if one produces a diff, something has
+drifted.
+
+| Artifact | Regenerate with |
+|---|---|
+| [`tests/fixtures/`](../../tests/fixtures) — synthetic pcaps | `cargo run --features native --bin gen_fixture` |
+| [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
+| [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
+| [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
+| [`tests/pcap-samples/`](../../tests/pcap-samples) — real captures | Checked in; never regenerated. |
+| [`tests/install-sh/`](../../tests/install-sh) — installer cases | Hand-maintained; exercised by the `install-sh` CI job. |
+| [`fuzz/corpus/`](../../fuzz/corpus) — fuzz seeds | Grown by `cargo fuzz run` (nightly) and replayed on stable by `fuzz_corpus_replay`. |
+
+Accepting a snapshot or overwriting a golden is a **decision**, not a fix. Read
+the diff first: these files are the record of what the tool promised its users.
+
+## The gate-test roster
+
+These fail on changes you did not think were related. Each one exists because
+the thing it guards silently rotted at least once.
+
+| Gate | Trips when |
+|---|---|
+| [`docs_drift_test`](../../tests/docs_drift_test.rs) | A `--flag` named in `README.md`, `ARCHITECTURE.md` or the website does not exist in the CLI; a version marker in the docs or man page disagrees with `Cargo.toml`; the README feature table misses a Cargo feature. |
+| [`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs) | A page under `docs/internals/` links to a path that no longer exists, names a `fn` that no longer exists, uses an absolute GitHub URL instead of a relative one, is not registered in `build-wiki.py`, or breaks a mermaid convention. |
+| [`link_integrity_test`](../../tests/link_integrity_test.rs) | Any relative link or heading anchor in either doc tree does not resolve; Zola content uses a plain relative `.md` link that would render as a dead URL. |
+| [`doc_example_coverage_test`](../../tests/doc_example_coverage_test.rs) | A user-facing CLI flag appears in fewer than two documented examples. A ratchet — the exemption list may only shrink. |
+| [`flag_coverage_test`](../../tests/flag_coverage_test.rs) | A new long flag ships with no test referencing it. Also a ratchet: adding a test for a grandfathered flag fails until you remove it from the baseline list. |
+| [`keybinding_drift_test`](../../tests/keybinding_drift_test.rs) | A key is handled in a controller but not documented in the F1 help. |
+| [`config_wiring_test`](../../tests/config_wiring_test.rs) | A config key exists but is never read, or a CLI flag has no config fallback where its peers do. |
+| [`feature_gate_test`](../../tests/feature_gate_test.rs) | A flag whose subsystem is not compiled in fails late or silently instead of fast and clearly. |
+| [`api_guidelines_test`](../../tests/api_guidelines_test.rs) | A growth-prone public enum loses `#[non_exhaustive]`, or a shared store stops being `Debug`. |
+| [`summary_consistency_test`](../../tests/summary_consistency_test.rs) | Two serializing surfaces disagree about a dialog or stream field. |
+| [`wasm_exports_test`](../../tests/wasm_exports_test.rs) | The WASM binding loses an export the browser analyzer calls. |
+| [`site_journey_test`](../../tests/site_journey_test.rs) / [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | A website journey breaks, or a terminal mockup on the site drifts from real output. |
+| [`config_examples_test`](../../tests/config_examples_test.rs) | A config sample in the docs no longer parses. |
+| [`support_selftest`](../../tests/support_selftest.rs) | The shared normalization helper changes behavior under the tests that depend on it. |
+
+The rule for all of them: **the gate is not the problem**. If
+`flag_coverage_test` fails, the flag needs a test; if `dev_docs_drift_test`
+fails, a page now lies. Adding an exemption is the last resort, and every
+exemption list in this repo is written as a ratchet so it cannot quietly grow.
+
+## The development loop
+
+**Logging.** `SIPNAB_LOG` is a `tracing` `EnvFilter`, so it takes levels and
+per-module directives (`SIPNAB_LOG=debug`, `SIPNAB_LOG=sipnab::rtp=trace`).
+In TUI mode logging is suppressed unless `SIPNAB_LOG` is set explicitly — the
+alternative is log lines painting over the interface. `-q` lowers the default
+in CLI mode. Configured by [`init_logging()`](../../src/app/bootstrap.rs).
+
+**Benches.** `cargo bench --profile profiling`. Plain `cargo bench` *cannot
+build*: the `cdylib` crate type needed for the WASM build forces
+`panic = "abort"` into the lib unit while bench units are compiled with
+unwind, so shared dependencies get built twice with incompatible panic
+strategies and fail to unify. The `profiling` profile is release codegen with
+`panic = "unwind"` and debug symbols kept, which is also what callgrind wants.
+Baselines live in [`benches/BASELINES.md`](../../benches/BASELINES.md).
+
+**nextest.** `.config/nextest.toml` defines three profiles: `default` (no retries, 30s slow timeout), `ci` (no retries, no
+fail-fast, immediate-final output) and `e2e` (2 retries, 60s timeout) for the
+timing-sensitive tmux tests. Worth knowing: **no workflow currently invokes
+nextest** — CI runs plain `cargo test`. The config is there for local use and
+for the day the e2e shim is removed.
+
+**The docker lab.** [`harness/`](../../harness) is a docker-compose stack —
+OpenSIPS, rtpengine, SIPp — for generating real traffic. `make up` in that
+directory builds and starts it; `make down` tears it down.
+
+**WASM.** Two pre-commit gates cover the browser analyzer: one checks that
+`website/static/wasm/sipnab.js` still exports
+every function the site calls, and one refuses a commit that stages
+`src/wasm.rs` without staging a rebuilt bundle alongside it. The rebuild is
+`wasm-pack build --target web --out-dir website/static/wasm --no-typescript --
+--no-default-features --features wasm`.
+
+**Feature matrices.** A green `cargo test --features full` is not proof: CI
+also builds reduced feature sets, and code behind `#[cfg(not(feature = ...))]`
+is invisible to the full build. Before pushing, `cargo clippy --all-features
+--all-targets -- -D warnings` and the `fuzz` workspace check are what the
+pre-push hook runs for exactly this reason.

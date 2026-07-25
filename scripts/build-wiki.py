@@ -46,6 +46,7 @@ PAGES: dict[str, str] = {
     "internals/README.md": "Internals-Index",
     "internals/subsystem-guide.md": "Internals-Subsystem-Guide",
     "internals/invariants.md": "Internals-Invariants",
+    "internals/testing.md": "Internals-Testing",
     "internals/threading.md": "Internals-Threading",
     "internals/tui-testing.md": "Internals-TUI-Testing",
     "internals/zero-copy-payloads.md": "Internals-Zero-Copy-Payloads",
@@ -62,7 +63,8 @@ GROUPS: list[tuple[str, list[str]]] = [
                                   "mcp-walkthrough.md"]),
     ("Development & internals", ["internals/README.md",
                                  "internals/subsystem-guide.md",
-                                 "internals/invariants.md", "library.md",
+                                 "internals/invariants.md",
+                                 "internals/testing.md", "library.md",
                                  "benchmarks.md", "fault-model.md",
                                  "internals/threading.md", "internals/tui-testing.md",
                                  "internals/zero-copy-payloads.md"]),
@@ -77,10 +79,13 @@ LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 # Links into the code tree. LINK_RE only matches .md, so without this a
 # relative `../../src/pipeline.rs` link survives verbatim into the flat wiki
 # and resolves to nothing. Anchored on the top-level trees so a bare
-# `foo.txt` in prose is not mistaken for a repo path.
+# `foo.txt` in prose is not mistaken for a repo path. The path after the tree
+# name is optional: a subsystem is often cited as a bare directory
+# (`../../harness`), and dev_docs_drift_test counts that as a code link too,
+# so both forms must rewrite or the bare one reaches the wiki dead.
 CODE_LINK_RE = re.compile(
     r"\]\(\s*((?:\.{1,2}/)*(?:src|tests|crates|benches|fuzz|scripts|contrib"
-    r"|harness|ops|man|demos|\.github|\.githooks)/[^)\s]*)\s*\)"
+    r"|harness|ops|man|demos|\.github|\.githooks)(?:/[^)\s]*)?)\s*\)"
 )
 
 
