@@ -106,10 +106,12 @@ flow's packets share a host pair and therefore a worker.
 
 - **Parse outside the lock.** SIP/RTP/SDP parsing happens before any store
   lock is taken; each store is write-locked once per packet, briefly
-  (`pipeline.rs`).
+  ([`classify_packet()`](../../src/pipeline.rs) touches no store at all).
 - **Lock ordering:** when both stores are needed, dialog store first, then
-  stream store; never hold both write locks at once (see the comment block
-  at the top of `sip/dialog_store.rs`).
+  stream store; never hold both write locks at once. The rule lives with the
+  only applier that takes locks — see the doc comment on
+  [`process_packet()`](../../src/pipeline.rs) — and is stated as an invariant
+  in [Invariants](invariants.md).
 - **The TUI never blocks:** all render-side store access is `try_read()`.
   On contention the frame renders with the previous data (counts may be one
   frame stale — this is deliberate; an adaptive 10 fps active / 2 fps idle
