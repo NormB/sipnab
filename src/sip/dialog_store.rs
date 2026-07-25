@@ -425,7 +425,7 @@ impl DialogStore {
         self.dialogs.values()
     }
 
-    /// Fold another worker's dialogs into this one (multi-core merge, `--jobs N`).
+    /// Fold another worker's dialogs into this one (multi-core merge, `--cores N`).
     /// A call's SIP is sharded by host pair, so a Call-ID is reconstructed on a
     /// single worker and merging is a union. In the rare case the same Call-ID
     /// appears on two workers (signaling split across host pairs), keep the more
@@ -807,7 +807,7 @@ mod tests {
 
     use crate::test_utils::build_sip_message as build_sip;
 
-    // Multi-core (--jobs): each worker reconstructs the calls sharded to it; the
+    // Multi-core (--cores): each worker reconstructs the calls sharded to it; the
     // merge unions distinct Call-IDs and, on the rare same-Call-ID collision,
     // keeps the more complete reconstruction.
     /// Merging two stores unions distinct Call-IDs; a same-Call-ID

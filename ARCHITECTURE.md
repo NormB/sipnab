@@ -35,7 +35,7 @@ Parsing always happens **outside** the store locks; each store is
 write-locked once per packet, briefly. Payloads are `bytes::Bytes` slices of
 the captured frame end to end (see `docs/internals/zero-copy-payloads.md`).
 
-> All four packet paths — live, batch, TUI file-open and the `--jobs`
+> All four packet paths — live, batch, TUI file-open and the `--cores`
 > sharded path (`parallel.rs`) — classify through the one
 > `pipeline::classify_packet` router; only the per-path appliers differ.
 
@@ -55,7 +55,7 @@ src/
 ├── cli.rs                # clap definitions (sngrep + sipgrep flag superset)
 ├── config.rs             # sipnabrc parsing/merging (toml_edit for surgical writes)
 ├── pipeline.rs           # THE shared per-packet protocol router (all four paths)
-├── parallel.rs           # --jobs N: shard-by-host-pair offline reconstruction
+├── parallel.rs           # --cores N: shard-by-host-pair offline reconstruction
 ├── auth.rs / crypto.rs   # HMAC bearer tokens for api/mcp
 ├── error.rs              # typed error enums: Error (config/CLI), ParseError (parse_sip/_bytes/_rtp_header/_sdp), CaptureError (parse_packet/PcapReader) — all re-exported at the crate root
 ├── names.rs              # name resolution + [names.manual] persistence
@@ -122,7 +122,7 @@ harness/                  # docker-compose e2e (opensips + rtpengine + sipp)
 
 See `docs/internals/threading.md` for the full topology and lock discipline.
 Short version: capture thread(s) → bounded channel → one processing thread
-that owns all store writes; TUI/API/MCP are readers. Batch `--jobs N` shards
+that owns all store writes; TUI/API/MCP are readers. Batch `--cores N` shards
 packets by host pair to worker threads with thread-local stores, merged at
 EOF.
 

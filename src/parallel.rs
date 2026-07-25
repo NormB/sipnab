@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Multi-core offline processing (`--jobs N`).
+//! Multi-core offline processing (`--cores N`).
 //!
 //! sipnab's hot path is per-packet and was effectively single-threaded, so on a
 //! many-core host it left most cores idle. RTP is ~93% of carrier traffic and is
@@ -113,7 +113,7 @@ fn shard_send<T>(tx: &crossbeam_channel::Sender<T>, item: T, weight: u64) -> u64
 
 /// Reconstruct ONE already-parsed packet into thread-local stores, using the
 /// same `crate::pipeline::classify_packet` core as every other router — so
-/// `--jobs N` classifies identically to `--jobs 1` (WebSocket-SIP unwrap and
+/// `--cores N` classifies identically to `--cores 1` (WebSocket-SIP unwrap and
 /// heuristic RTP discovery included). Only the flag-gated batch extras (SRTP
 /// decrypt, DTMF, quality events, security detectors, per-message output) stay
 /// on the single-threaded path; none of them change dialog/stream
@@ -527,13 +527,13 @@ mod tests {
         p
     }
 
-    /// The `--jobs` path must discover heuristic-only RTP exactly like the
+    /// The `--cores` path must discover heuristic-only RTP exactly like the
     /// single-threaded batch path: a PT-72 flow fails the strict
     /// `is_rtp_packet` pre-filter but is promoted by the consecutive-packet
     /// heuristic, so it must land in the merged stream store.
     #[cfg(feature = "native")]
     #[test]
-    fn jobs_path_discovers_heuristic_rtp() {
+    fn cores_path_discovers_heuristic_rtp() {
         use crate::capture::packet::Packet;
         let (tx, rx) = crate::capture::channel::packet_channel(1024);
         for seq in 1u16..=6 {
@@ -552,7 +552,7 @@ mod tests {
         assert_eq!(
             r.stream_store.len(),
             1,
-            "--jobs must heuristically discover the PT-72 RTP flow"
+            "--cores must heuristically discover the PT-72 RTP flow"
         );
         assert!(
             r.rtp_count >= 1,
