@@ -304,14 +304,36 @@ Tiers:
   the evidence (which messages), consistent with how RTP diagnosis is
   presented. Needs a brainstorm → spec first; scope the detection set and where
   it renders (call list badge, call-flow annotation, and/or a diagnosis pane).
-- [ ] **Developer documentation** — expand the developer-facing docs beyond the
-  current ARCHITECTURE.md/CONTRIBUTING.md: a module/subsystem guide (capture →
-  parse → sip/rtp analysis → output/tui data flow), the feature-flag map and
-  what each gates, the test layout and the tests/support helpers, the
-  release/CI/toolchain conventions (Rust 1.97.1 lockstep, the gate suite,
-  snapshot regeneration), and an onboarding "how to add a new TUI view / a new
-  detector" walkthrough. Goal: a new contributor can find where things live and
-  the project's conventions without reverse-engineering the tree.
+- [x] **Developer documentation** — **Done:** `docs/internals/` now carries a
+  developer index (reading order, the live-vs-archaeological map of the
+  root-level design corpus, and a glossary for D1–D21/D22, WS0–WS8, P0–P5,
+  SN-01/02/03), a `subsystem-guide.md` walking one packet from wire to screen
+  across all four packet paths, `invariants.md` (ten rules, each naming what
+  enforces it), `testing.md` (tiers, `tests/support/` helpers, the gate
+  roster), `walkthroughs.md` (ordered checklists for a new TUI view, detector,
+  CLI flag, MCP tool, output format and SIP header accessor),
+  `build-ci-release.md` (the eleven features and their real implications, the
+  eight workflows, what `ci-success` actually requires, hooks, the 1.97.1
+  toolchain pins, and the release matrix) and `domain-primer.md` (the SIP/RTP
+  model the code assumes). Seventeen `sequenceDiagram`s across the set. Held
+  true by `tests/dev_docs_drift_test.rs`: cited paths must exist, `()`-suffixed
+  symbols must resolve to a definition, links must be relative, every page must
+  be registered in `build-wiki.py`, and the diagram conventions are enforced.
+  `build-wiki.py` gained `CODE_LINK_RE` so code links rewrite to blob URLs
+  instead of reaching the flat wiki dead. ARCHITECTURE.md and CONTRIBUTING.md
+  delegate into the set rather than duplicating it. Note the **SIP problem
+  diagnosis** item above is a separate P5 and is untouched by this work.
+- [ ] **Confirm the wiki renders the developer-doc mermaid diagrams** — the
+  seventeen `sequenceDiagram` blocks are verified to *survive* `build-wiki.py`
+  (`grep -c '```mermaid' build/wiki/Internals-Subsystem-Guide.md` → 4, and the
+  fence bodies carry no rewritten links), but whether the GitHub wiki actually
+  renders them cannot be checked locally — `wiki-sync.yml` only publishes on a
+  push to `main`. After this branch merges, open
+  `Internals-Subsystem-Guide` on the wiki and confirm the diagrams render
+  rather than showing raw mermaid source. If they do not, the prose line above
+  each diagram already carries the same point, so the pages degrade to correct
+  rather than to broken; the fix would be to pre-render to SVG in the sync
+  workflow.
 - [ ] **glibc floor: installer runtime value** — `release.yml` enforces a 2.36
   floor (bookworm container + `readelf -V` gate) but
   `website/static/install.sh` still selects musl below

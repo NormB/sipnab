@@ -198,4 +198,24 @@ if git diff --cached --name-only | grep -q "src/wasm.rs"; then
 fi
 echo -e "${GREEN}OK${NC}"
 
+# ── 8. Developer docs cite code — flag edits to cited files ────────
+echo -n "  Developer-docs coupling... "
+staged=$(git diff --cached --name-only)
+if ! echo "$staged" | grep -q '^docs/internals/'; then
+    cited=$(grep -rhoE '\]\((\.\./)+[a-zA-Z0-9_./-]+\)' docs/internals/*.md 2>/dev/null \
+        | sed -E 's/^\]\(//; s/\)$//; s#(\.\./)+##' | sort -u)
+    hits=$(comm -12 <(echo "$staged" | sort -u) <(echo "$cited"))
+    if [ -n "$hits" ]; then
+        echo -e "${YELLOW}REVIEW${NC}"
+        echo "  These staged files are cited by the developer docs:"
+        echo "$hits" | sed 's/^/    /'
+        echo "  Confirm docs/internals/ still reads true, then re-commit."
+        echo "  (Advisory — the hard gate is dev_docs_drift_test in CI.)"
+    else
+        echo -e "${GREEN}OK${NC}"
+    fi
+else
+    echo -e "${GREEN}OK${NC}"
+fi
+
 echo -e "${GREEN}All pre-commit checks passed.${NC}"

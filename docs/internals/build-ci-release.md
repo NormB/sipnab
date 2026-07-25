@@ -68,12 +68,21 @@ logs yourself; nothing else will make you.
 
 Activate once per clone: `git config core.hooksPath .githooks`.
 
-[`pre-commit`](../../.githooks/pre-commit) runs seven numbered gates, in order:
+[`pre-commit`](../../.githooks/pre-commit) runs eight numbered gates, in order:
 clippy (`--features full`, `-D warnings`); the full test suite; no
 `unwrap()`/`expect()` in production code; WASM exports in sync with the site's
 JS; the homepage test count matching the run it just did — plus the site and
-man-page version strings matching `Cargo.toml`; no TODO stubs; and a refusal to
-commit a staged `src/wasm.rs` without a rebuilt bundle beside it.
+man-page version strings matching `Cargo.toml`; no TODO stubs; a refusal to
+commit a staged `src/wasm.rs` without a rebuilt bundle beside it; and an
+advisory notice when a commit touches a file `docs/internals/` cites without
+touching `docs/internals/` itself.
+
+Gate 8 is the only one that cannot fail the commit. It prints `REVIEW` and a
+list, and returns zero — a reminder to check the developer pages still read
+true, not a claim that they don't. The gate that *does* fail is
+[`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs) in gate 2's test
+run, and it only catches links that no longer resolve; prose that has quietly
+become false is still a human's job.
 
 That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding

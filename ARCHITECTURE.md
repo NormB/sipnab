@@ -39,6 +39,10 @@ the captured frame end to end (see `docs/internals/zero-copy-payloads.md`).
 > sharded path (`parallel.rs`) — classify through the one
 > `pipeline::classify_packet` router; only the per-path appliers differ.
 
+For the same journey narrated packet by packet — every decision point, both
+store writes, and where each of the four paths diverges — see
+[docs/internals/subsystem-guide.md](docs/internals/subsystem-guide.md).
+
 ## Module map
 
 Only load-bearing files are annotated; siblings follow the same pattern.
@@ -158,3 +162,8 @@ EOF.
 | Add a detection | `security/` + wiring in `app/batch.rs` |
 | Add an MCP tool | `mcp/server.rs` (`#[tool]`) + `mcp/shape.rs` |
 | Add a CLI flag | `cli.rs` + `flag_coverage_test.rs` will force a test |
+
+This table names the files; it does not name the order, the tests each change
+owes, or the gates that will reject it.
+[docs/internals/walkthroughs.md](docs/internals/walkthroughs.md) has an ordered
+checklist for each row.

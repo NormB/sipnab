@@ -14,20 +14,20 @@ enforces it.
 
 A reading order, not a table of contents:
 
-1. `domain-primer.md` — the SIP and RTP model the code assumes you already
-   have. Start here if you are a Rust engineer rather than a VoIP engineer;
-   nearly every subtle bug in this tree is a protocol-semantics bug wearing a
-   Rust costume.
-2. `subsystem-guide.md` — one packet's journey from the wire to the screen,
-   across all four packet paths.
-3. `invariants.md` — the rules that must not break. Read before your first
-   pull request; each entry names what enforces it.
-4. `testing.md` — the test tiers and the self-enforcing gate tests. Read when
-   one of them fails you.
-5. `walkthroughs.md` — ordered checklists for the common changes: a new TUI
-   view, a new detector, a new CLI flag, a new MCP tool.
-6. `build-ci-release.md` — features, workflows, hooks, and how a release is
-   cut.
+1. [Domain primer](domain-primer.md) — the SIP and RTP model the code assumes
+   you already have. Start here if you are a Rust engineer rather than a VoIP
+   engineer; nearly every subtle bug in this tree is a protocol-semantics bug
+   wearing a Rust costume.
+2. [Subsystem guide](subsystem-guide.md) — one packet's journey from the wire
+   to the screen, across all four packet paths.
+3. [Invariants](invariants.md) — the rules that must not break. Read before
+   your first pull request; each entry names what enforces it.
+4. [Testing](testing.md) — the test tiers and the self-enforcing gate tests.
+   Read when one of them fails you.
+5. [Walkthroughs](walkthroughs.md) — ordered checklists for the common
+   changes: a new TUI view, a new detector, a new CLI flag, a new MCP tool.
+6. [Build, CI and release](build-ci-release.md) — features, workflows, hooks,
+   and how a release is cut.
 
 Already written, and narrower:
 
@@ -81,7 +81,12 @@ toxic waste — [`crypto.rs`](../../src/crypto.rs) zeroizes), D13 (RTP is
 first-class: [`stream_store.rs`](../../src/rtp/stream_store.rs) discovers
 streams with no SIP at all), D15/D16 (privilege drop and process isolation),
 D17 (warn and continue on malformed input), D18 (localhost default for every
-listener). Beware the numbering collision noted above.
+listener). Beware the numbering collision noted above. A **D22** also exists,
+but only in
+[`implementation-plan-phases-8-10.md`](../../implementation-plan-phases-8-10.md):
+competitive-feature-borrowing discipline, whose prompt-injection rule is the
+one cited in [`src/mcp/server.rs`](../../src/mcp/server.rs) — v6's catalog
+stops at D21.
 
 **WS0–WS8 — workstreams.** The refactor program in
 [`MAINTAINABILITY-PERF-SPEC.md`](../../MAINTAINABILITY-PERF-SPEC.md). WS0 was a
@@ -106,10 +111,11 @@ unauthenticated non-loopback metrics bind, SN-03 crash-report creation that
 followed symlinks.
 
 **The gate suite** — the self-enforcing checks that run without anyone asking:
-seven numbered gates in [`.githooks/pre-commit`](../../.githooks/pre-commit)
+eight numbered gates in [`.githooks/pre-commit`](../../.githooks/pre-commit)
 (clippy, the full test suite, no `unwrap()`/`expect()` in production, WASM
 exports in sync, homepage/site/man version agreement, no TODO stubs, WASM
-rebuild), four in [`.githooks/pre-push`](../../.githooks/pre-push) (`fmt`,
+rebuild, and an advisory notice when a commit touches code these pages cite),
+four in [`.githooks/pre-push`](../../.githooks/pre-push) (`fmt`,
 `clippy --all-features --all-targets`, `cargo doc` with `-D warnings`, and a
 `fuzz` workspace check), and the CI jobs behind them.
 

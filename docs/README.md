@@ -47,8 +47,12 @@ New here? Follow the path below; each step links to the page with the detail.
 ## Going deeper
 
 - [Cookbook](examples.md) · [Benchmarks](benchmarks.md) ·
-  [Library API](library.md)
-- Internals: [Fault model](fault-model.md) ·
-  [Threading](internals/threading.md) ·
-  [Zero-copy payloads](internals/zero-copy-payloads.md) ·
-  [TUI testing](internals/tui-testing.md)
+  [Library API](library.md) · [Fault model](fault-model.md)
+
+Contributing to sipnab? Start with the
+**[Developer index](internals/README.md)** — a reading order through the
+domain model, the subsystem walk, the invariants, the test tiers, the
+change checklists, and the build/CI/release machinery, plus the narrower
+pages on [threading](internals/threading.md),
+[zero-copy payloads](internals/zero-copy-payloads.md) and
+[TUI testing](internals/tui-testing.md).
