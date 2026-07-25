@@ -16,7 +16,10 @@ pub enum TransportProto {
     Udp,
     /// Transmission Control Protocol.
     Tcp,
-    /// Stream Control Transmission Protocol (stub for future use).
+    /// Stream Control Transmission Protocol. Parsed: `capture::parse`
+    /// recognizes IP protocol 132, walks the chunk list, and extracts SIP from
+    /// the first complete (B+E) DATA chunk, recovering the real source and
+    /// destination ports from the SCTP common header.
     Sctp,
     /// TLS-encrypted TCP.
     Tls,

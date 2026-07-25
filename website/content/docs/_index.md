@@ -103,7 +103,7 @@ supports depends on how it was built:
 | Build | Included |
 |---|---|
 | Official Linux (glibc) and macOS releases | Everything: TUI, TLS/SRTP decryption, HEP, REST API, MCP (stdio + HTTP), Prometheus metrics, audio playback |
-| Static musl binaries and the `-noaudio` `.deb` | The same, **minus** audio playback and the Prometheus endpoint |
+| Static musl binaries and the `-noaudio` `.deb` / `.rpm` | The same, **minus** audio playback. Everything else, WAV export included, is unchanged |
 | `cargo build` from source with no flags | TUI, audio, and metrics only — **no** TLS decryption, HEP, REST API, or MCP. Use `--features full` for everything |
 
 `sipnab --version` prints the feature list compiled into your binary.

@@ -112,7 +112,7 @@ jobs:
           # musl + ALSA is impractical) but keeps its plain artifact name. The
           # gnu `variant: noaudio` matrix entries build the no-audio set with a
           # "-noaudio" artifact suffix.
-          noaudio_set="native,tui,tls,hep,api,mcp,mcp-http"
+          noaudio_set="native,tui,tls,hep,api,mcp,mcp-http,metrics"
 
           case "${{ matrix.target }}" in
             *-linux-musl)

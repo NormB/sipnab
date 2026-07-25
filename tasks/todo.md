@@ -47,13 +47,15 @@ Tiers:
   both MCP walkthroughs were updated to match. The version-string fixtures in
   `src/tui/help.rs` and `tests/tui_snapshot_test.rs` are synthetic inputs to the
   renderer and do not call `compiled_features()`, so they were unaffected.
-- [ ] **musl and `-noaudio` release builds silently ship without `/metrics`** —
-  `release.yml` computes `noaudio_set="native,tui,tls,hep,api,mcp,mcp-http"`
-  under a comment describing it as "full minus audio", but it drops `metrics`
-  as well. So every static musl binary and the `-noaudio` `.deb` lack the
-  Prometheus endpoint, with nothing in the docs or the artifact name saying so.
-  Decide whether that is intentional: if not, add `metrics` to `noaudio_set`;
-  if it is, say so in `docs/install.md` and fix the misleading comment.
+- [x] **musl and `-noaudio` release builds silently shipped without `/metrics`**
+  — `release.yml` computed `noaudio_set="native,tui,tls,hep,api,mcp,mcp-http"`
+  under a comment describing it as "full minus audio", but it dropped `metrics`
+  as well, so every static musl binary and the `-noaudio` package lacked the
+  Prometheus endpoint. Nothing said so: the install pages describe the
+  `-noaudio` variant as differing *only* in live playback, which was false.
+  **Done:** `metrics` added to `noaudio_set`, making the set genuinely "full
+  minus audio" and the existing install-page wording true. Takes effect on the
+  next tagged release.
 
 - [x] src/tui/save.rs:676 — [correctness] `save_to_wav_path` indexes raw store order, not displayed order — wrong dialog's audio exported under filter/sort. **Done:** the call-list path now resolves the selection via `get_selected_call_id` (filter+search+sort display order), so the highlighted row's audio is exported.
 - [x] src/tui/controllers/call_list.rs:324,342 — [missed-edge-case] clear_non_matching/matching pass `&[]` streams to matches_dialog; stream-criteria rows misclassified and deleted. **Done:** both clear ops gather each dialog's real streams (`streams_for`) under dialog-then-stream locks and pass them to `matches_dialog`, so stream-criteria filters classify correctly.
@@ -204,11 +206,12 @@ Tiers:
 
 ## P3 — code health
 
-- [ ] **`TransportProto::Sctp` doc comment says "stub for future use"** —
-  `src/net.rs:20`. SCTP is implemented: `src/capture/parse.rs` recognizes IP
+- [x] **`TransportProto::Sctp` doc comment said "stub for future use"** —
+  `src/net.rs`. SCTP is implemented: `src/capture/parse.rs` recognizes IP
   protocol 132, walks the chunk list, and extracts SIP from the first complete
   (B+E) DATA chunk, recovering the real src/dst ports from the common header.
-  The comment predates that work and now understates what the tree supports.
+  The comment predated that work and understated what the tree supports.
+  **Done:** the variant now documents the real behavior.
 
 - [x] src/capture/packet.rs:81 — [api-hygiene] `Packet::new` allows `caplen != data.len()`; debug assert or derive caplen. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/capture/hep.rs:~1408 — [style] mixed `Instant::now()` vs fully-qualified in same fn. **Done (P3 code-health wave, 2026-07-24).**
@@ -271,7 +274,7 @@ Tiers:
 
 ## P4 — test quality
 
-- [ ] **Gates that hardcode their subjects cannot see a new one** — surfaced by
+- [x] **Gates that hardcode their subjects cannot see a new one** — surfaced by
   executing the `docs/internals/walkthroughs.md` checklists rather than
   reasoning about them (2026-07-25). Three cases, each proven by making the
   change and watching the gate pass: a deliberately malformed
@@ -286,6 +289,13 @@ Tiers:
   added but not wired is parsed and fails. The other two need a discovery
   mechanism or an accepted "convention only" status — they are documented as
   **(unenforced)** in the walkthroughs page either way.
+  **Done (schema half):** `all_schemas_compile` now enumerates
+  `tests/schemas/*.json` instead of four hardcoded names, with a `seen >= 4`
+  anti-vacuity floor. Verified both ways: replanting the malformed
+  `zzz_gate_probe.schema.json` now fails with `parse schema …: expected ident
+  at line 1 column 15` (previously 6 passed / 0 failed), and removing it
+  returns the suite to 6 passed. The detector and fuzz-target cases remain
+  convention-only and stay marked **(unenforced)**.
 
 - [x] .githooks/pre-commit test-count check — [flaky] `cargo test --features full` intermittently reports a partial sum (2291/2308 vs true count) when run immediately after another cargo build, aborting the commit; self-heals on retry. Observed 4× on 2026-07-24 (never in 5 isolated back-to-back runs). Suspect a suite aborting under fingerprint invalidation from an interleaved build (wasm-pack/rustup activity correlated twice). Capture the failing suite's output from inside the hook before fixing. **Done:** root cause was step 5 running `cargo test --features full` a SECOND time purely to count — that run could race a concurrent cargo, abort a binary's compile, drop its `test result:` line, and undercount. Step 5 now derives the count from step 2's already-captured `$TEST_OUTPUT`, and step 2 gates on the test exit code so a partial/aborted run fails there ("retry") instead of feeding a truncated sum downstream. Halves per-commit test time. Regression pinned by `scripts/test-pre-commit.sh` (asserts exactly one full-suite invocation + the exit-code gate).
 

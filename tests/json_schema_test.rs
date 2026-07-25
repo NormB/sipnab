@@ -197,17 +197,34 @@ fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) {
     }
 }
 
-/// All four schemas in `tests/schemas/` compile into validators (well-formed),
-/// including the two whose live-output validation lives in the API tests.
+/// Every schema in `tests/schemas/` compiles into a validator (well-formed),
+/// including the ones whose live-output validation lives in the API tests.
+///
+/// This enumerates the directory rather than listing filenames. The list form
+/// could not see a schema that was added but never registered: a deliberately
+/// malformed `zzz_gate_probe.schema.json` dropped into `tests/schemas/` left
+/// this suite at 6 passed / 0 failed, because nothing ever opened it.
 #[test]
 fn all_schemas_compile() {
-    // dialog + stream get live-output validation in M3; prove well-formed now.
-    for name in [
-        "message.schema.json",
-        "dialog.schema.json",
-        "stream.schema.json",
-        "call_report.schema.json",
-    ] {
-        let _ = load_validator(name);
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/schemas");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+        // load_validator panics with the path on read/parse/compile failure.
+        let _ = load_validator(&name);
+        seen += 1;
     }
+    // Anti-vacuity: a broken path or an empty directory must fail, not pass.
+    assert!(
+        seen >= 4,
+        "expected at least the 4 known schemas in tests/schemas/, found {seen}"
+    );
 }
