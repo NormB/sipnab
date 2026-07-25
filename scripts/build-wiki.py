@@ -43,6 +43,7 @@ PAGES: dict[str, str] = {
     "library.md": "Library-API",
     "benchmarks.md": "Benchmarks",
     "fault-model.md": "Fault-Model",
+    "internals/README.md": "Internals-Index",
     "internals/threading.md": "Internals-Threading",
     "internals/tui-testing.md": "Internals-TUI-Testing",
     "internals/zero-copy-payloads.md": "Internals-Zero-Copy-Payloads",
@@ -57,7 +58,8 @@ GROUPS: list[tuple[str, list[str]]] = [
     ("Configuration", ["config-reference.md"]),
     ("Integrations (API & MCP)", ["rest-api.md", "auth.md", "mcp.md",
                                   "mcp-walkthrough.md"]),
-    ("Development & internals", ["library.md", "benchmarks.md", "fault-model.md",
+    ("Development & internals", ["internals/README.md", "library.md",
+                                 "benchmarks.md", "fault-model.md",
                                  "internals/threading.md", "internals/tui-testing.md",
                                  "internals/zero-copy-payloads.md"]),
 ]
@@ -67,6 +69,15 @@ GROUPS: list[tuple[str, list[str]]] = [
 SLUG_TO_PAGE = {Path(src).stem: page for src, page in PAGES.items()}
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
+
+# Links into the code tree. LINK_RE only matches .md, so without this a
+# relative `../../src/pipeline.rs` link survives verbatim into the flat wiki
+# and resolves to nothing. Anchored on the top-level trees so a bare
+# `foo.txt` in prose is not mistaken for a repo path.
+CODE_LINK_RE = re.compile(
+    r"\]\(\s*((?:\.{1,2}/)*(?:src|tests|crates|benches|fuzz|scripts|contrib"
+    r"|harness|ops|man|demos|\.github|\.githooks)/[^)\s]*)\s*\)"
+)
 
 
 def wiki_bullet(page: str) -> str:
@@ -93,6 +104,17 @@ def rewrite_link(m: re.Match) -> str:
     return f"]({BLOB}/{'/'.join(prefix + parts)}{anchor})"
 
 
+def rewrite_code_link(m: re.Match) -> str:
+    target = m.group(1)
+    parts = [p for p in target.split("/") if p not in ("", ".")]
+    prefix = ["docs"]
+    while parts and parts[0] == "..":
+        parts.pop(0)
+        if prefix:
+            prefix.pop()
+    return f"]({BLOB}/{'/'.join(prefix + parts)})"
+
+
 def strip_leading_h1(text: str) -> str:
     lines = text.splitlines()
     for i, line in enumerate(lines):
@@ -109,7 +131,8 @@ def strip_leading_h1(text: str) -> str:
 
 def transform(src_text: str) -> str:
     body = strip_leading_h1(src_text)
-    return LINK_RE.sub(rewrite_link, body)
+    body = LINK_RE.sub(rewrite_link, body)
+    return CODE_LINK_RE.sub(rewrite_code_link, body)
 
 
 def build_home() -> str:

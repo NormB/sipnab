@@ -1,0 +1,151 @@
+# Developer index
+
+Documentation for people changing sipnab, not people running it. Operator
+documentation lives one level up in `docs/`; the polished site is
+[sipnab.com](https://www.sipnab.com).
+
+Pages here link directly into the source tree. That is deliberate: docs and
+code share one repository, so a claim about the code should be one click from
+the code, and a moved file or renamed function should fail the build rather
+than rot quietly. [`tests/dev_docs_drift_test.rs`](../../tests/dev_docs_drift_test.rs)
+enforces it.
+
+## Start here
+
+A reading order, not a table of contents:
+
+1. `domain-primer.md` — the SIP and RTP model the code assumes you already
+   have. Start here if you are a Rust engineer rather than a VoIP engineer;
+   nearly every subtle bug in this tree is a protocol-semantics bug wearing a
+   Rust costume.
+2. `subsystem-guide.md` — one packet's journey from the wire to the screen,
+   across all four packet paths.
+3. `invariants.md` — the rules that must not break. Read before your first
+   pull request; each entry names what enforces it.
+4. `testing.md` — the test tiers and the self-enforcing gate tests. Read when
+   one of them fails you.
+5. `walkthroughs.md` — ordered checklists for the common changes: a new TUI
+   view, a new detector, a new CLI flag, a new MCP tool.
+6. `build-ci-release.md` — features, workflows, hooks, and how a release is
+   cut.
+
+Already written, and narrower:
+
+- [Threading](threading.md) — thread topology, the channels between them, and
+  the lock discipline.
+- [Zero-copy payloads](zero-copy-payloads.md) — the `bytes::Bytes` spine from
+  capture to output, including a performance claim the page itself refutes.
+- [TUI testing](tui-testing.md) — snapshot and state testing for the terminal
+  UI.
+
+The one-screen map of the tree is [`ARCHITECTURE.md`](../../ARCHITECTURE.md);
+contributor mechanics (setup, hooks, PR expectations) are in
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md). Failure behavior — what sipnab
+does when something goes wrong — is [the fault model](../fault-model.md).
+
+## The corpus: live vs archaeological
+
+The repository root carries several long design documents. They are not all
+current, and reading the wrong one as current is the main way to be misled
+here.
+
+**Live:**
+
+| Document | What it is |
+|---|---|
+| [`ARCHITECTURE.md`](../../ARCHITECTURE.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
+| [`MAINTAINABILITY-PERF-SPEC.md`](../../MAINTAINABILITY-PERF-SPEC.md) | The rationale behind the current shape of the code — why the pipeline was unified, why `main.rs` was decomposed into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section. Nothing in `docs/` links to it, so it is easy to miss. |
+| [`tasks/todo.md`](../../tasks/todo.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
+| [`codex_analysis.md`](../../codex_analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
+
+**Archaeological** — kept for the determination record, superseded in places:
+
+| Document | Read it for | Do not trust |
+|---|---|---|
+| [`implementation-plan-v6.md`](../../implementation-plan-v6.md) | The design-decision catalog D1–D21 and the original phase plan. | Its feature tables. The `tls-wolfssl`, `tls-openssl` and `grpc` features described there were never implemented and are not in `Cargo.toml`. D14's pluggable crypto backend was dropped: one backend ships (`ring` + `rustls`). |
+| [`implementation-plan-phases-8-10.md`](../../implementation-plan-phases-8-10.md) | The MCP, HEP and observability designs, and the "Resolved Decisions" section that formally retires parts of v6. | Its D-numbering. It defines its own D20 (infrastructure-optional integration) and D21 (capture vs enrichment sources), which collide with v6's D20 and D21. Always say which document a D-number comes from. |
+| [`COMPACT-HEADERS-SPEC.md`](../../COMPACT-HEADERS-SPEC.md) | Why all 19 RFC 3261 / IANA compact header forms are supported, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — it is implemented and pinned by tests. |
+| [`KILL-TARGET-SPOOFING-SPEC.md`](../../KILL-TARGET-SPOOFING-SPEC.md) | The scope and ethics of sending a scanner-kill response from the victim's `ip:port` rather than an ephemeral one. | Nothing — but read `--kill-scanner`'s guard rails in [`cli.rs`](../../src/cli.rs) alongside it. |
+
+## Glossary
+
+Identifiers that appear in commit messages, code comments and the backlog
+without expansion.
+
+**D1–D21 — design decisions.** The catalog in
+[`implementation-plan-v6.md`](../../implementation-plan-v6.md). The ones cited
+most often in code: D2 (synchronous core, async only at the edges — the packet
+path in [`pipeline.rs`](../../src/pipeline.rs) never awaits), D3 (zero-copy
+payload spine), D10 (feature gates keep the binary small), D11 (key material is
+toxic waste — [`crypto.rs`](../../src/crypto.rs) zeroizes), D13 (RTP is
+first-class: [`stream_store.rs`](../../src/rtp/stream_store.rs) discovers
+streams with no SIP at all), D15/D16 (privilege drop and process isolation),
+D17 (warn and continue on malformed input), D18 (localhost default for every
+listener). Beware the numbering collision noted above.
+
+**WS0–WS8 — workstreams.** The refactor program in
+[`MAINTAINABILITY-PERF-SPEC.md`](../../MAINTAINABILITY-PERF-SPEC.md). WS0 was a
+batch of independent quick wins; WS1 unified the per-packet pipeline into the
+single [`classify_packet()`](../../src/pipeline.rs) router; WS2 decomposed
+`main.rs` into [`src/app/`](../../src/app); WS3–WS5 were structural and
+performance work; WS6–WS7 hardened the API surface. WS0–WS7 shipped in v0.5.0;
+WS8 (performance) is the only live section.
+
+**P0–P5 — backlog priority tiers** in [`tasks/todo.md`](../../tasks/todo.md):
+P0 panics and security, P1 wrong results in real use, P2 robustness and
+efficiency, P3 code health, P4 test quality, P5 features and exploratory work.
+A "P1" in a commit message means the commit fixed something that produced a
+wrong answer, not that it was merely important.
+
+**SN-01/02/03 — security findings** from
+[`codex_analysis.md`](../../codex_analysis.md), all fixed: SN-01 unauthenticated
+HEP metadata driving active network responses (the reason
+[`parse_packet()`](../../src/capture/parse.rs) tracks HEP origin per packet and
+scanner-kill refuses HEP-origin packets without `--hep-allow-kill`), SN-02 an
+unauthenticated non-loopback metrics bind, SN-03 crash-report creation that
+followed symlinks.
+
+**The gate suite** — the self-enforcing checks that run without anyone asking:
+seven numbered gates in [`.githooks/pre-commit`](../../.githooks/pre-commit)
+(clippy, the full test suite, no `unwrap()`/`expect()` in production, WASM
+exports in sync, homepage/site/man version agreement, no TODO stubs, WASM
+rebuild), four in [`.githooks/pre-push`](../../.githooks/pre-push) (`fmt`,
+`clippy --all-features --all-targets`, `cargo doc` with `-D warnings`, and a
+`fuzz` workspace check), and the CI jobs behind them.
+
+**The drift tests** — the subset of the gate suite that compares documentation
+and configuration against the code and fails on divergence:
+[`docs_drift_test`](../../tests/docs_drift_test.rs) (flags, version markers,
+feature table), [`link_integrity_test`](../../tests/link_integrity_test.rs)
+(every relative link and anchor resolves),
+[`flag_coverage_test`](../../tests/flag_coverage_test.rs),
+[`keybinding_drift_test`](../../tests/keybinding_drift_test.rs), and
+[`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs) for these pages.
+They exist because every one of them was, at some point, a doc that lied.
+
+**The smoke fuzz floor** —
+[`tests/smoke_fuzz_test.rs`](../../tests/smoke_fuzz_test.rs), which feeds tens
+of thousands of random and mutated inputs to every parser reachable from
+attacker-controlled bytes under `catch_unwind`, on the stable toolchain, in
+every `cargo test` run. It is the always-on regression floor beneath the
+coverage-guided targets in [`fuzz/fuzz_targets/`](../../fuzz/fuzz_targets),
+which need nightly and run weekly. A panic there is a remote DoS on a capture
+process, so the floor is not optional.
+
+## Conventions for these pages
+
+- **Cite code as a link, never as `file:line`.** Line numbers rot within a
+  commit; a path plus a `()`-suffixed symbol in the link text survives, and
+  [`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs) checks both.
+- **Relative links only.** An absolute `github.com/NormB/sipnab/blob/main/…`
+  URL pins a branch and goes stale silently;
+  [`build-wiki.py`](../../scripts/build-wiki.py) rewrites the relative form
+  into a blob URL when publishing to the wiki.
+- **Diagrams are mermaid `sequenceDiagram`, and every one is preceded by a
+  prose line** that carries the same point, so a page still reads where mermaid
+  does not render.
+- **A change to linked code updates the page that links it, in the same pull
+  request.** The hard gate is `dev_docs_drift_test` in CI.
+- **These pages are wiki-only.** They are published to the GitHub wiki by
+  [`build-wiki.py`](../../scripts/build-wiki.py) and are deliberately not
+  mirrored into the marketing site under `website/content/`.
