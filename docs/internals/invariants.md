@@ -123,7 +123,41 @@ keys to freed heap, and redaction on the output paths.
 **Fails as.** Keys recoverable from a crash report or a core file — an
 exposure with no error message attached to it.
 
-## 6. MCP tools are read-only and bounded
+## 6. A bearer token is valid on exactly one surface
+
+**Rule.** A signed token names the surface it was minted for (`aud`), and each
+verifier accepts only its own audience. A token minted from
+`--api-signing-key` must never authenticate against HTTP MCP, and vice versa —
+including when both surfaces are configured with the same signing key.
+
+**Why.** The REST API and HTTP MCP read separate flags and separate
+environment variables, so an operator putting one secret in both
+`SIPNAB_API_SIGNING_KEY` and `SIPNAB_MCP_SIGNING_KEY` looks like tidy
+configuration. Before audience binding that silently made every API token a
+valid MCP token, with no warning and nothing in the logs.
+
+**Enforced by.** The `aud` check in
+[`verify_signed()`](../../src/auth.rs), which requires an `s2` token's audience
+to equal the verifier's own; the audience is set once per surface in
+[`resolve_api_verifier_config()`](../../src/app/servers.rs) and
+[`resolve_mcp_verifier_config()`](../../src/app/servers.rs), and at mint time in
+[`mint_token()`](../../src/app/bootstrap.rs). The version prefix is part of the
+signed input, so an `s2` token cannot be rewritten as `s1` to shed the binding.
+An empty configured audience matches nothing, so a verifier built without one
+fails closed. Cross-surface rejection is pinned in both directions by tests in
+[`auth.rs`](../../src/auth.rs) and
+[`cli_flag_behavior_test`](../../tests/cli_flag_behavior_test.rs).
+
+**Fails as.** A token scoped to a read-only metrics scrape quietly granting an
+AI agent full MCP tool access, or the reverse — a privilege boundary that
+exists in the documentation but not in the code.
+
+**Known gap.** Legacy `s1` tokens carry no audience and are still accepted by
+either surface so pre-existing tokens keep working until they expire. They are
+never minted, and accepting one logs a one-time deprecation warning. Static
+`--api-key` / `--mcp-token` secrets are also audience-less by design.
+
+## 7. MCP tools are read-only and bounded
 
 **Rule.** No MCP tool mutates a store, and every response is size-bounded
 before it is serialized.
@@ -142,7 +176,7 @@ sipnab.
 **Fails as.** An agent that quietly truncates or floods, and an operator who
 cannot tell which.
 
-## 7. No lock across `.await`
+## 8. No lock across `.await`
 
 **Rule.** A `parking_lot` guard must not be held across an await point.
 
@@ -177,7 +211,7 @@ sequenceDiagram
     Resp-->>Req: bounded JSON
 ```
 
-## 8. One wire shape per concept
+## 9. One wire shape per concept
 
 **Rule.** Every surface that serializes a dialog or a stream projects through
 [`output/model.rs`](../../src/output/model.rs). No surface builds its own JSON
@@ -195,7 +229,7 @@ per-surface parsers to compensate.
 **Fails as.** A field name that means one thing in `--json` and another over
 MCP, discovered by a user's broken script rather than by CI.
 
-## 9. The render pass is read-only and never blocks
+## 10. The render pass is read-only and never blocks
 
 **Rule.** Every store access on the render path is `try_read()`. The render
 pass computes, it does not mutate.
@@ -211,7 +245,7 @@ number of skips so the display cannot freeze permanently.
 **Fails as.** A UI that stutters exactly when the operator most needs it — under
 a flood.
 
-## 10. Warn and continue on malformed input
+## 11. Warn and continue on malformed input
 
 **Rule.** No parser reachable from packet bytes may panic, `unwrap()`, or exit.
 Malformed input is logged (at most, and rate-limited) and skipped.
