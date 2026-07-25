@@ -57,6 +57,16 @@ behavior changes.
   wrong — it described the pre-push clippy gate as a "soft warning" when it is
   a hard gate, omitted the rustdoc and fuzz gates, implied `SKIP_FMT_HOOK`
   skipped only formatting, and never mentioned the pre-commit hook at all.
+- **The website's API page now documents every authentication method.** It had
+  described only the static `--api-key`, never mentioning signed bearer tokens,
+  minting, TTLs, signing-key rotation, or revocation — while the in-repo
+  `docs/rest-api.md` documented both and linked to `docs/auth.md`, which has no
+  website counterpart. A website reader was therefore shown the weakest option
+  as the only option. The section now also covers the Bearer-only rule, what
+  happens when no credential is configured, the non-loopback startup refusal,
+  the 503-before-401 rate-limit ordering, and the two different metrics auth
+  schemes. `website/content/docs/mcp.md` gained the same treatment for
+  `--mcp-signing-key`, which appeared nowhere on the site.
 
 ### Fixed
 - **`--version` never reported the `metrics` feature.** `compiled_features()`
@@ -67,6 +77,17 @@ behavior changes.
   expected", so it was answering that question wrongly. Found while
   fact-checking the `/docs/` overview page; the sample outputs in the install
   and MCP-walkthrough pages are updated to match.
+- **A startup error named a flag that does not exist.** The REST API's
+  non-loopback refusal told operators to change `--api-bind`; the flag is
+  `--api <ADDR>`. That message fires exactly when someone is correcting a
+  security misconfiguration, so it pointed them at nothing.
+- **Both theme guides said `status_bg` was "not configurable"** although
+  `tui::theme::apply_color` applies it from config and a dedicated test asserts
+  it round-trips — anyone wanting to restyle the status bar was told it was
+  impossible. It is now a documented slot in both doc trees. The two config
+  references also disagreed on the slot count (11 vs 10); `ThemeConfig` has 12
+  fields, 11 semantic plus the `highlight` alias. A new drift test derives both
+  the slot list and the count from the struct so neither can drift again.
 - **musl and `-noaudio` release builds shipped without the Prometheus
   endpoint.** `release.yml` built them from a feature set described in its own
   comment as "full minus audio" that also dropped `metrics`, while the install
