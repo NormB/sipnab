@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.39] - 2026-07-25
 
 ### Security
 - **Bearer tokens are now bound to the surface they were minted for.** Signed
