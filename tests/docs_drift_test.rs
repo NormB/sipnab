@@ -605,3 +605,87 @@ fn readme_feature_table_covers_every_cargo_feature() {
         missing.join(", ")
     );
 }
+
+/// Every `[theme]` color slot must be documented in both theme guides, and the
+/// slot count quoted in both config references must match `ThemeConfig`.
+///
+/// This closes a drift that shipped: `status_bg` is applied by
+/// `tui::theme::apply_color` and has a dedicated round-trip test, yet both
+/// theme guides told readers it was "not configurable", and the two config
+/// references disagreed on the slot count (11 vs 10).
+#[test]
+fn theme_slots_are_documented_and_counted_correctly() {
+    let config_rs = include_str!("../src/config.rs");
+
+    // Fields of `pub struct ThemeConfig` — the authoritative slot list.
+    let block = config_rs
+        .split("pub struct ThemeConfig {")
+        .nth(1)
+        .expect("ThemeConfig struct not found")
+        .split("\n}")
+        .next()
+        .expect("unterminated ThemeConfig struct");
+    let slots: Vec<&str> = block
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("pub "))
+        .filter_map(|l| l.split(':').next())
+        .collect();
+
+    assert!(
+        slots.len() >= 10,
+        "ThemeConfig field extraction found only {} slots — parser broken?",
+        slots.len()
+    );
+
+    // `highlight` is a legacy alias for `selected`, counted separately in prose.
+    let semantic = slots.len() - 1;
+
+    let guides: &[(&str, &str)] = &[
+        (
+            "docs/theme-guide.md",
+            include_str!("../docs/theme-guide.md"),
+        ),
+        (
+            "website/content/docs/theme.md",
+            include_str!("../website/content/docs/theme.md"),
+        ),
+    ];
+    let mut missing = Vec::new();
+    for (name, text) in guides {
+        for slot in &slots {
+            if !text.contains(&format!("`{slot}`")) {
+                missing.push(format!("{name}: `{slot}`"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "theme guides do not document every [theme] slot:\n  {}",
+        missing.join("\n  ")
+    );
+
+    let refs: &[(&str, &str)] = &[
+        (
+            "docs/config-reference.md",
+            include_str!("../docs/config-reference.md"),
+        ),
+        (
+            "website/content/docs/config.md",
+            include_str!("../website/content/docs/config.md"),
+        ),
+    ];
+    let expected = format!("{semantic} semantic color slots");
+    let mut wrong = Vec::new();
+    for (name, text) in refs {
+        if !text.contains(&expected) {
+            wrong.push(name.to_string());
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "these config references do not say \"{expected}\" (ThemeConfig has \
+         {} fields, one of which is the `highlight` alias): {}",
+        slots.len(),
+        wrong.join(", ")
+    );
+}

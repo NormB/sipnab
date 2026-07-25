@@ -432,7 +432,7 @@ fn enforce_bind_auth_policy(
 ) -> Result<(), crate::Error> {
     if !bind_addr.ip().is_loopback() && verifier.is_unconfigured() {
         return Err(crate::Error::Server(format!(
-            "REST API refuses to start: --api-bind {bind_addr} is non-loopback but no \
+            "REST API refuses to start: --api {bind_addr} is non-loopback but no \
              --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY \
              was supplied. Bind 127.0.0.1, or configure authentication."
         )));

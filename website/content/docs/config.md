@@ -232,7 +232,7 @@ persist_to_config = true
 
 ### \[theme\]
 
-TUI color theme with 10 semantic color slots (plus `highlight`, a legacy alias for `selected`). A few representative keys:
+TUI color theme with 11 semantic color slots (plus `highlight`, a legacy alias for `selected`). A few representative keys:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

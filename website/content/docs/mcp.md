@@ -57,9 +57,32 @@ sipnab -N --mcp --mcp-transport http \
        -I capture.pcap
 ```
 
-- The default bind is loopback. Non-loopback binds **must** supply
-  `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`; otherwise
-  sipnab refuses to start.
+- The default bind is loopback. Non-loopback binds **must** supply a
+  credential; otherwise sipnab refuses to start.
+- Two credential types are accepted, exactly as on the REST API. A **static
+  token** via `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`, which
+  never expires; or **signed bearer tokens** via `--mcp-signing-key` /
+  `--mcp-signing-key-file` / `SIPNAB_MCP_SIGNING_KEY`, which carry their own
+  expiry and id and support rotation and revocation without a restart:
+
+  ```bash
+  KEY="$(openssl rand -hex 32)"
+
+  # Mint a 24-hour token with an id you can revoke later
+  sipnab --mint-token --mcp-signing-key "$KEY" \
+         --mcp-token-ttl 86400 --token-id agent-1
+
+  # Serve with that key, honoring a denylist
+  sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
+         --mcp-signing-key "$KEY" \
+         --mcp-revoked-file /etc/sipnab/mcp-revoked.txt \
+         -I capture.pcap
+  ```
+
+  `--mcp-signing-key` is repeatable: the first key mints, all keys verify, so
+  you can roll a key with overlap. The token format, expiry, rotation, and
+  revocation semantics are shared with the REST API — see
+  [REST API authentication](@/docs/api.md#authentication).
 - For TLS, terminate it in nginx in front of sipnab. Bind sipnab to
   `127.0.0.1:8731` and let nginx handle the public 443 endpoint.
 

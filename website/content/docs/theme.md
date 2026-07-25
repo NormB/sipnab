@@ -22,9 +22,11 @@ sipnab's TUI uses 10 semantic color slots (plus `highlight`, a legacy alias for 
 | `bad` | `red` | Poor quality, failures, errors, high loss/jitter |
 | `muted` | `dark_gray` | Separators, pipe characters, disabled text, timestamps |
 | `border` | `white` | Widget borders, panel frames |
+| `status_bg` | `#303040` | Status bar background band, kept distinct from the terminal background so the status line stays visible |
 | `highlight` | -- | Legacy alias for `selected` (backward compatibility only) |
 
-The internal `status_bg` color (dark blue-gray `#303040`) is not configurable and is used for the status bar background.
+`status_bg` is configurable like every other color above; its dark blue-gray
+default is chosen to stay readable on both dark and light terminals.
 
 ## Supported Color Syntax
 
