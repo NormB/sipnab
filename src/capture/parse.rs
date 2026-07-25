@@ -94,7 +94,7 @@ const DLT_LINUX_SLL: i32 = 113;
 /// Pcap link type for Linux cooked capture v2 (DLT_LINUX_SLL2).
 const DLT_LINUX_SLL2: i32 = 276;
 
-/// Cheap outer host-pair extraction for multi-core sharding (`--jobs N`).
+/// Cheap outer host-pair extraction for multi-core sharding (`--cores N`).
 ///
 /// Reads ONLY the link + IP headers at fixed offsets to get the outer src/dst
 /// IPs — no transport/payload parse, no allocation, no `etherparse` slicing — so

@@ -31,7 +31,7 @@ pub fn port_in_range(src_port: u16, dst_port: u16, range: (u16, u16)) -> bool {
 /// propagated to dynamic-payload-type RTP streams (e.g. Opus, H264).
 ///
 /// The single source of truth for SDP→stream association across the live,
-/// batch, and `--jobs` paths. Handles multiple media streams (audio + video)
+/// batch, and `--cores` paths. Handles multiple media streams (audio + video)
 /// by returning a tuple per stream.
 pub fn extract_sdp_links(
     sdp: &sip::sdp::SdpSession,
@@ -161,7 +161,7 @@ pub struct MediaDecrypt<'a> {
 /// The store-mutation intent produced by `classify_packet` — the outcome of
 /// classifying one packet *without touching any store or lock*. Each router
 /// applies it with its own store access: the live path takes brief per-store
-/// write locks (`process_packet`); the offline `--jobs` and batch paths call
+/// write locks (`process_packet`); the offline `--cores` and batch paths call
 /// plain `&mut` stores directly. Separating the (duplicated) classification
 /// from the (legitimately different) application is the core of the pipeline
 /// unification (WS1).

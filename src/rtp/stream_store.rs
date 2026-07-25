@@ -582,7 +582,7 @@ impl StreamStore {
         self.streams.values().filter(|s| s.orphaned).count()
     }
 
-    /// Fold another worker's store into this one (multi-core merge, `--jobs N`).
+    /// Fold another worker's store into this one (multi-core merge, `--cores N`).
     /// Streams sharded by host pair never collide across workers, so this is a
     /// union; the ssrc/endpoint indexes are rebuilt for the moved streams and the
     /// SDP endpoints are combined. Probe counters accumulate. Call
@@ -1089,7 +1089,7 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
-    // Multi-core (--jobs): a call's SDP (SIP) and its RTP can be sharded to
+    // Multi-core (--cores): a call's SDP (SIP) and its RTP can be sharded to
     // DIFFERENT workers — in the carrier corpus the SDP advertises a separate
     // media IP. Worker A sees the SDP (remembers the endpoint, no stream); worker
     // B sees the RTP (creates the stream, no SDP → unassociated). merge() unions

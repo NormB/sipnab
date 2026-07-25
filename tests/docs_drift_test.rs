@@ -240,6 +240,7 @@ fn readme_long_flags_exist_in_cli() {
             "website/analyze.md",
             include_str!("../website/content/analyze/_index.md"),
         ),
+        ("ARCHITECTURE.md", include_str!("../ARCHITECTURE.md")),
     ];
 
     let known = cli_long_flags();
