@@ -223,6 +223,107 @@ fn every_internals_page_is_registered_for_the_wiki() {
     );
 }
 
+/// Fenced mermaid blocks as `(line_index_of_opening_fence, body)`.
+fn mermaid_fences(text: &str) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("```mermaid") {
+            let start = i;
+            let mut body = String::new();
+            i += 1;
+            while i < lines.len() && !lines[i].trim_start().starts_with("```") {
+                body.push_str(lines[i]);
+                body.push('\n');
+                i += 1;
+            }
+            out.push((start, body));
+        }
+        i += 1;
+    }
+    out
+}
+
+#[test]
+fn every_mermaid_block_is_a_sequence_diagram() {
+    let mut offenders = Vec::new();
+    for page in internals_pages() {
+        for (line, body) in mermaid_fences(&read(&page)) {
+            let first = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            if first.trim() != "sequenceDiagram" && !first.trim().starts_with("sequenceDiagram") {
+                offenders.push(format!(
+                    "{}:{}: mermaid block opens with {first:?}, not sequenceDiagram",
+                    page.display(),
+                    line + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "developer docs use sequenceDiagram only:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+#[test]
+fn no_markdown_links_inside_mermaid_blocks() {
+    // scripts/build-wiki.py applies LINK_RE.sub() to the whole page body with
+    // no fence awareness, so a link inside a diagram label gets rewritten into
+    // a wiki link and corrupts the diagram source.
+    let link = regex::Regex::new(r"\]\([^)\s]+\.md").expect("link regex");
+    let mut offenders = Vec::new();
+    for page in internals_pages() {
+        for (line, body) in mermaid_fences(&read(&page)) {
+            if link.is_match(&body) {
+                offenders.push(format!(
+                    "{}:{}: markdown link inside a mermaid block",
+                    page.display(),
+                    line + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "build-wiki.py rewrites links without fence awareness:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+#[test]
+fn every_mermaid_block_is_introduced_by_prose() {
+    // A diagram must never carry meaning the prose does not, so the page still
+    // reads in a plain-text viewer, a diff, or a renderer without mermaid.
+    let mut offenders = Vec::new();
+    for page in internals_pages() {
+        let text = read(&page);
+        let lines: Vec<&str> = text.lines().collect();
+        for (line, _) in mermaid_fences(&text) {
+            let prev = lines[..line]
+                .iter()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .copied()
+                .unwrap_or("");
+            let t = prev.trim();
+            if t.is_empty() || t.starts_with('#') || t.starts_with("```") || t.starts_with('|') {
+                offenders.push(format!(
+                    "{}:{}: mermaid block is preceded by {t:?}, not a prose sentence",
+                    page.display(),
+                    line + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "every diagram needs a one-sentence prose summary above it:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
 /// build-wiki.py must rewrite code links to blob URLs. A relative code link
 /// that reaches the flat wiki resolves to nothing — the wiki has no repo tree.
 #[test]
