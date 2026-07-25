@@ -350,6 +350,7 @@ pub fn resolve_api_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
         signing_keys,
         static_keys,
         revoked_file: cli.api_revoked_file.as_ref().map(std::path::PathBuf::from),
+        audience: crate::auth::AUDIENCE_API.to_string(),
     }
 }
 
@@ -400,5 +401,6 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
         signing_keys,
         static_keys,
         revoked_file: cli.mcp_revoked_file.as_ref().map(std::path::PathBuf::from),
+        audience: crate::auth::AUDIENCE_MCP.to_string(),
     }
 }

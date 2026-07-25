@@ -37,7 +37,12 @@ fn now() -> i64 {
 fn valid_signed_token_initialize_succeeds() {
     let (child, addr) =
         spawn_http(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
-    let token = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "id", now() + 3600);
+    let token = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "id",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_MCP,
+    );
     assert_eq!(
         initialize_status(&addr, Some(&token)),
         200,
@@ -53,7 +58,12 @@ fn valid_signed_token_initialize_succeeds() {
 fn expired_signed_token_is_rejected() {
     let (child, addr) =
         spawn_http(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
-    let token = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "id", now() - 1);
+    let token = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "id",
+        now() - 1,
+        sipnab::auth::AUDIENCE_MCP,
+    );
     assert_eq!(
         initialize_status(&addr, Some(&token)),
         401,
@@ -67,7 +77,12 @@ fn expired_signed_token_is_rejected() {
 fn forged_wrong_key_token_is_rejected() {
     let (child, addr) =
         spawn_http(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
-    let token = sipnab::auth::mint(b"a-different-key", "id", now() + 3600);
+    let token = sipnab::auth::mint(
+        b"a-different-key",
+        "id",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_MCP,
+    );
     assert_eq!(
         initialize_status(&addr, Some(&token)),
         401,
@@ -91,14 +106,24 @@ fn revoked_id_is_rejected_via_denylist_file() {
     ])
     .expect("server should start");
 
-    let revoked = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "revoked-mcp-jti", now() + 3600);
+    let revoked = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "revoked-mcp-jti",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_MCP,
+    );
     assert_eq!(
         initialize_status(&addr, Some(&revoked)),
         401,
         "revoked id should be 401"
     );
 
-    let fresh = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "fresh-mcp-jti", now() + 3600);
+    let fresh = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "fresh-mcp-jti",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_MCP,
+    );
     assert_eq!(
         initialize_status(&addr, Some(&fresh)),
         200,
@@ -113,8 +138,18 @@ fn rotation_accepts_tokens_from_either_key() {
     let key2 = "second-mcp-rotation-key-abcdef0123";
     let (child, addr) = spawn_http(&["--mcp-signing-key", SIGNING_KEY, "--mcp-signing-key", key2])
         .expect("server should start");
-    let t1 = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "id1", now() + 3600);
-    let t2 = sipnab::auth::mint(key2.as_bytes(), "id2", now() + 3600);
+    let t1 = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "id1",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_MCP,
+    );
+    let t2 = sipnab::auth::mint(
+        key2.as_bytes(),
+        "id2",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_MCP,
+    );
     assert_eq!(initialize_status(&addr, Some(&t1)), 200, "key1 token");
     assert_eq!(initialize_status(&addr, Some(&t2)), 200, "key2 token");
     shutdown(child);
@@ -161,10 +196,12 @@ fn mint_token_cli_mode_produces_verifiable_token() {
         .expect("utf8")
         .trim()
         .to_string();
-    assert!(token.starts_with("s1."), "minted token: {token}");
+    assert!(token.starts_with("s2."), "minted token: {token}");
 
+    // Minted from --mcp-signing-key, so it is bound to the mcp audience.
     let verifier = sipnab::auth::TokenVerifier::new(sipnab::auth::VerifierConfig {
         signing_keys: vec![SIGNING_KEY.as_bytes().to_vec()],
+        audience: sipnab::auth::AUDIENCE_MCP.to_string(),
         ..Default::default()
     });
     assert!(
@@ -249,7 +286,12 @@ fn mcp_allowed_host_controls_host_header() {
         "custom.example",
     ])
     .expect("server should start");
-    let token = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "host-test", now() + 3600);
+    let token = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "host-test",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_MCP,
+    );
 
     // The configured Host is accepted (and auth passes) → 200.
     assert_eq!(

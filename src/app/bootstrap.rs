@@ -1054,6 +1054,11 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
     let mut first_key: Option<Vec<u8>> = None;
     #[allow(unused_mut)]
     let mut ttl: i64 = 3600;
+    // The minted token is bound to whichever surface supplied the signing key,
+    // so a token minted from --api-signing-key is rejected by HTTP MCP (and
+    // vice versa) even when both surfaces share one secret.
+    #[allow(unused_mut)]
+    let mut audience: &str = crate::auth::AUDIENCE_API;
 
     #[cfg(feature = "api")]
     {
@@ -1061,6 +1066,7 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
             let cfg = crate::app::servers::resolve_api_verifier_config(cli);
             first_key = cfg.signing_keys.into_iter().next();
             ttl = cli.api_token_ttl;
+            audience = crate::auth::AUDIENCE_API;
         }
     }
     #[cfg(feature = "mcp")]
@@ -1070,6 +1076,7 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
         let cfg = crate::app::servers::resolve_mcp_verifier_config(cli);
         first_key = cfg.signing_keys.into_iter().next();
         ttl = cli.mcp_token_ttl;
+        audience = crate::auth::AUDIENCE_MCP;
     }
 
     let key = first_key.ok_or_else(|| {
@@ -1089,7 +1096,7 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
         .clone()
         .unwrap_or_else(|| format!("tok-{}", chrono::Utc::now().timestamp_micros()));
 
-    Ok(crate::auth::mint(&key, &id, exp))
+    Ok(crate::auth::mint(&key, &id, exp, audience))
 }
 
 // ── Unit tests for the binary's pure helpers ────────────────────────────

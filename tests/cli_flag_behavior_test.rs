@@ -129,12 +129,13 @@ fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
     ])
     .trim()
     .to_string();
-    assert!(token.starts_with("s1."), "minted token shape: {token}");
+    assert!(token.starts_with("s2."), "minted token shape: {token}");
 
     let verifier = TokenVerifier::new(VerifierConfig {
         signing_keys: vec![key.to_vec()],
         static_keys: vec![],
         revoked_file: None,
+        audience: sipnab::auth::AUDIENCE_API.to_string(),
     });
     let now = chrono::Utc::now().timestamp();
     assert!(verifier.verify(&token, now), "token must verify now");
@@ -142,12 +143,25 @@ fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
         !verifier.verify(&token, now + 61),
         "token minted with --api-token-ttl 60 must be expired at now+61"
     );
+
+    // Minted from --api-signing-key-file, so the MCP surface must refuse it
+    // even though it is configured with the very same signing key.
+    let mcp_verifier = TokenVerifier::new(VerifierConfig {
+        signing_keys: vec![key.to_vec()],
+        static_keys: vec![],
+        revoked_file: None,
+        audience: sipnab::auth::AUDIENCE_MCP.to_string(),
+    });
+    assert!(
+        !mcp_verifier.verify(&token, now),
+        "an --api-signing-key token must not authenticate against HTTP MCP"
+    );
 }
 
 // Minting from an MCP signing key needs the `mcp` feature (the MCP verifier
 // config is mcp-gated); only run this where mcp is compiled in.
-/// `--mint-token --mcp-signing-key-file` produces a well-formed `s1.` token
-/// with exactly two dot separators.
+/// `--mint-token --mcp-signing-key-file` produces a well-formed `s2.` token
+/// with exactly two dot separators, bound to the `mcp` audience.
 #[cfg(feature = "mcp")]
 #[test]
 fn mint_with_mcp_signing_key_file_produces_token() {
@@ -169,8 +183,23 @@ fn mint_with_mcp_signing_key_file_produces_token() {
     .trim()
     .to_string();
     assert!(
-        token.starts_with("s1.") && token.matches('.').count() == 2,
+        token.starts_with("s2.") && token.matches('.').count() == 2,
         "minted MCP token shape: {token}"
+    );
+
+    // Minted from --mcp-signing-key-file, so the REST API must refuse it even
+    // when configured with the identical signing key.
+    let key = b"mcp-file-signing-key-987654321";
+    let now = chrono::Utc::now().timestamp();
+    let api_verifier = TokenVerifier::new(VerifierConfig {
+        signing_keys: vec![key.to_vec()],
+        static_keys: vec![],
+        revoked_file: None,
+        audience: sipnab::auth::AUDIENCE_API.to_string(),
+    });
+    assert!(
+        !api_verifier.verify(&token, now),
+        "an --mcp-signing-key token must not authenticate against the REST API"
     );
 }
 

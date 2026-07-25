@@ -2,6 +2,24 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Security
+- **Bearer tokens are now bound to the surface they were minted for.** Signed
+  tokens gain an `aud` claim (`api` or `mcp`) and a new `s2` version prefix. A
+  token minted from `--api-signing-key` is rejected by the HTTP MCP endpoint,
+  and vice versa, **even when both surfaces are configured with the same
+  signing key** — an easy misconfiguration, since the two read separate flags
+  and separate environment variables, that previously granted cross-surface
+  access silently. The version prefix is part of the signed input, so an `s2`
+  token cannot be rewritten as `s1` to shed its binding.
+
+  Legacy `s1` tokens carry no audience and are still accepted by either
+  surface, so tokens minted before this change keep working until they expire;
+  they are never minted any more, and accepting one logs a one-time deprecation
+  warning. `s1` acceptance will be removed in a future release. Static
+  `--api-key` / `--mcp-token` secrets are unaffected and remain audience-less.
+
 ## [0.5.38] - 2026-07-25
 
 Documentation, plus one `--version` reporting fix. No packet-path or API

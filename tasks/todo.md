@@ -375,17 +375,19 @@ Tiers:
   instead of reaching the flat wiki dead. ARCHITECTURE.md and CONTRIBUTING.md
   delegate into the set rather than duplicating it. Note the **SIP problem
   diagnosis** item above is a separate P5 and is untouched by this work.
-- [ ] **Confirm the wiki renders the developer-doc mermaid diagrams** — the
-  seventeen `sequenceDiagram` blocks are verified to *survive* `build-wiki.py`
-  (`grep -c '```mermaid' build/wiki/Internals-Subsystem-Guide.md` → 4, and the
-  fence bodies carry no rewritten links), but whether the GitHub wiki actually
-  renders them cannot be checked locally — `wiki-sync.yml` only publishes on a
-  push to `main`. After this branch merges, open
-  `Internals-Subsystem-Guide` on the wiki and confirm the diagrams render
-  rather than showing raw mermaid source. If they do not, the prose line above
-  each diagram already carries the same point, so the pages degrade to correct
-  rather than to broken; the fix would be to pre-render to SVG in the sync
-  workflow.
+- [ ] **Confirm visually that the wiki renders the developer-doc mermaid
+  diagrams** — mostly answered after the 2026-07-25 merge. `wiki-sync.yml` ran
+  green; cloning `sipnab.wiki.git` shows all 10 `Internals-*` pages published,
+  4 ```` ```mermaid ```` fences intact in `Internals-Subsystem-Guide.md`, and no
+  unrewritten `](../` links anywhere. Fetching the published page shows GitHub
+  emitting its **"Loading" placeholder** for each fence, which is the state
+  GitHub uses for blocks it has *recognized as mermaid* and queued for
+  client-side rendering — an unrecognized fence would render as a static code
+  block with no placeholder. What is still unconfirmed is only the final
+  painted output, which needs a JavaScript-capable browser (none available on
+  this host). Open one page in a real browser to close this out. Low risk
+  either way: every diagram has a prose line above it carrying the same point,
+  so the pages degrade to correct rather than to broken.
 - [ ] **glibc floor: installer runtime value** — `release.yml` enforces a 2.36
   floor (bookworm container + `readelf -V` gate) but
   `website/static/install.sh` still selects musl below

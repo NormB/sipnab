@@ -1307,6 +1307,7 @@ mod tests {
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig {
                     signing_keys: vec![key.to_vec()],
+                    audience: crate::auth::AUDIENCE_API.to_string(),
                     ..Default::default()
                 },
             )),
@@ -1322,7 +1323,12 @@ mod tests {
         populate_dialogs(&state);
         let app = build_router(state);
         // exp far in the future.
-        let token = crate::auth::mint(key, "id1", chrono::Utc::now().timestamp() + 3600);
+        let token = crate::auth::mint(
+            key,
+            "id1",
+            chrono::Utc::now().timestamp() + 3600,
+            crate::auth::AUDIENCE_API,
+        );
         let req =
             test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
         let resp = app.oneshot(req).await.expect("oneshot");
@@ -1336,7 +1342,12 @@ mod tests {
         let state = make_state_with_signing_key(key);
         let app = build_router(state);
         // exp already in the past — deterministic, no sleeping.
-        let token = crate::auth::mint(key, "id1", chrono::Utc::now().timestamp() - 1);
+        let token = crate::auth::mint(
+            key,
+            "id1",
+            chrono::Utc::now().timestamp() - 1,
+            crate::auth::AUDIENCE_API,
+        );
         let req =
             test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
         let resp = app.oneshot(req).await.expect("oneshot");
@@ -1350,7 +1361,12 @@ mod tests {
         let state = make_state_with_signing_key(key);
         let app = build_router(state);
         // Signed by a different key.
-        let token = crate::auth::mint(b"other-key", "id1", chrono::Utc::now().timestamp() + 3600);
+        let token = crate::auth::mint(
+            b"other-key",
+            "id1",
+            chrono::Utc::now().timestamp() + 3600,
+            crate::auth::AUDIENCE_API,
+        );
         let req =
             test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
         let resp = app.oneshot(req).await.expect("oneshot");

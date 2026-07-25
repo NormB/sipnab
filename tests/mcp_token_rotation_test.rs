@@ -94,7 +94,7 @@ fn rotation_dir() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)
     (dir, key, token)
 }
 
-/// A token freshly minted by `rotate-token.sh` (s1. shape) gets 200 against a
+/// A token freshly minted by `rotate-token.sh` (s2. shape) gets 200 against a
 /// `--mcp-signing-key-file` server; wrong and missing tokens get 401.
 #[test]
 fn rotated_token_authenticates_against_signing_key_server() {
@@ -108,8 +108,8 @@ fn rotated_token_authenticates_against_signing_key_server() {
         .trim()
         .to_string();
     assert!(
-        token.starts_with("s1."),
-        "rotated token should be a signed s1. token, got: {token}"
+        token.starts_with("s2."),
+        "rotated token should be a signed s2. token, got: {token}"
     );
 
     let (child, addr) = spawn_http(&["--mcp-signing-key-file", key.to_str().unwrap()])
@@ -195,7 +195,7 @@ fn rotation_fails_loudly_without_clobbering_the_published_token() {
         .expect("seed token")
         .trim()
         .to_string();
-    assert!(good.starts_with("s1."), "seed token: {good}");
+    assert!(good.starts_with("s2."), "seed token: {good}");
 
     // Empty signing key → fail closed, leave the good token and no temp files.
     let empty_key = dir.path().join("empty.key");

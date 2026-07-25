@@ -31,7 +31,12 @@ fn now() -> i64 {
 #[test]
 fn valid_signed_token_is_accepted() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
-    let token = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "valid-id", now() + 3600);
+    let token = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "valid-id",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+    );
     let resp = srv.get_bearer("/v1/dialogs", &token);
     assert_eq!(resp.status, 200, "valid signed token should be 200");
 }
@@ -50,7 +55,12 @@ fn missing_token_is_rejected() {
 fn expired_signed_token_is_rejected() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
     // exp already in the past — deterministic, no sleeping.
-    let token = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "expired-id", now() - 1);
+    let token = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "expired-id",
+        now() - 1,
+        sipnab::auth::AUDIENCE_API,
+    );
     let resp = srv.get_bearer("/v1/dialogs", &token);
     assert_eq!(resp.status, 401, "expired token should be 401");
 }
@@ -59,7 +69,12 @@ fn expired_signed_token_is_rejected() {
 #[test]
 fn forged_wrong_key_token_is_rejected() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
-    let token = sipnab::auth::mint(b"a-totally-different-key", "id", now() + 3600);
+    let token = sipnab::auth::mint(
+        b"a-totally-different-key",
+        "id",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+    );
     let resp = srv.get_bearer("/v1/dialogs", &token);
     assert_eq!(resp.status, 401, "forged token should be 401");
 }
@@ -68,7 +83,12 @@ fn forged_wrong_key_token_is_rejected() {
 #[test]
 fn tampered_payload_token_is_rejected() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
-    let token = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "id", now() + 3600);
+    let token = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "id",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+    );
     // Flip a byte in the payload (middle dot-part).
     let mut parts: Vec<String> = token.split('.').map(String::from).collect();
     let mut bytes = parts[1].clone().into_bytes();
@@ -96,12 +116,22 @@ fn revoked_id_is_rejected_via_denylist_file() {
     ]);
 
     // A valid, unexpired token whose id is on the denylist → 401.
-    let revoked = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "revoked-jti", now() + 3600);
+    let revoked = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "revoked-jti",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+    );
     let resp = srv.get_bearer("/v1/dialogs", &revoked);
     assert_eq!(resp.status, 401, "revoked id should be 401");
 
     // A fresh token with a different id is accepted.
-    let fresh = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "not-revoked-jti", now() + 3600);
+    let fresh = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "not-revoked-jti",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+    );
     let resp = srv.get_bearer("/v1/dialogs", &fresh);
     assert_eq!(resp.status, 200, "non-revoked id should be 200");
 }
@@ -112,8 +142,18 @@ fn revoked_id_is_rejected_via_denylist_file() {
 fn rotation_accepts_tokens_from_either_key() {
     let key2 = "second-rotation-key-abcdef0123456789";
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY, "--api-signing-key", key2]);
-    let t1 = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "id1", now() + 3600);
-    let t2 = sipnab::auth::mint(key2.as_bytes(), "id2", now() + 3600);
+    let t1 = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "id1",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+    );
+    let t2 = sipnab::auth::mint(
+        key2.as_bytes(),
+        "id2",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+    );
     assert_eq!(srv.get_bearer("/v1/dialogs", &t1).status, 200, "key1 token");
     assert_eq!(srv.get_bearer("/v1/dialogs", &t2).status, 200, "key2 token");
 }

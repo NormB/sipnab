@@ -117,7 +117,12 @@ impl ApiServer {
             && let Some(w) = extra_args.windows(2).find(|w| w[0] == "--api-signing-key")
         {
             let exp = chrono::Utc::now().timestamp() + 3600;
-            bearer = Some(sipnab::auth::mint(w[1].as_bytes(), "readiness-poll", exp));
+            bearer = Some(sipnab::auth::mint(
+                w[1].as_bytes(),
+                "readiness-poll",
+                exp,
+                sipnab::auth::AUDIENCE_API,
+            ));
         }
         let srv = ApiServer { child, addr };
         srv.await_stable(bearer.as_deref());
