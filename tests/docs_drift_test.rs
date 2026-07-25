@@ -58,6 +58,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/install.md",
             "website/api.md",
             "website/build.md",
+            "website/docs-index.md",
         ],
     ),
     (
@@ -235,6 +236,12 @@ fn readme_long_flags_exist_in_cli() {
         (
             "website/landing.md",
             include_str!("../website/content/_index.md"),
+        ),
+        // The /docs/ overview page: highest-traffic docs page, and every flag
+        // it names (in prose and in the task-card frontmatter) must exist.
+        (
+            "website/docs-index.md",
+            include_str!("../website/content/docs/_index.md"),
         ),
         (
             "website/analyze.md",
@@ -479,6 +486,25 @@ fn docs_current_version_markers_match_cargo() {
             "website/content/docs/benchmarks.md",
             include_str!("../website/content/docs/benchmarks.md"),
             r"current release (\d+\.\d+\.\d+)",
+        ),
+        // docs/benchmarks.md was outside this corpus and its "current release"
+        // claim rotted from 0.5.19 to 0.5.37 unnoticed. Same marker, same rule.
+        (
+            "docs/benchmarks.md",
+            include_str!("../docs/benchmarks.md"),
+            r"current release (\d+\.\d+\.\d+)",
+        ),
+        // The `sipnab X.Y.Z (…) features:` sample output was only gated in the
+        // install pages; the MCP walkthroughs print it too.
+        (
+            "docs/mcp-walkthrough.md",
+            include_str!("../docs/mcp-walkthrough.md"),
+            r"sipnab (\d+\.\d+\.\d+) \(",
+        ),
+        (
+            "website/content/docs/mcp-walkthrough.md",
+            include_str!("../website/content/docs/mcp-walkthrough.md"),
+            r"sipnab (\d+\.\d+\.\d+) \(",
         ),
         (
             "website/content/docs/api.md",

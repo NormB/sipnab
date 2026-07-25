@@ -6,10 +6,17 @@ the test that fails if you skip it. Where no test enforces a step it is marked
 are the steps to be deliberate about.
 
 The enforcement claims here were checked by making the change and watching the
-gate fail. Where the plan for this page and reality disagreed, reality won:
-adding a CLI flag does *not* trip `docs_drift_test`, and an MCP tool that holds
-a lock across an await is rejected by the compiler before clippy gets a word
-in.
+gate fail — or, more often than expected, watching it pass. Where the first
+draft of this page and reality disagreed, reality won: adding a CLI flag does
+*not* trip `docs_drift_test`; an MCP tool that holds a lock across an await is
+rejected by the compiler before clippy gets a word in; and **three of the six
+checklists turned out to name gates that do not fire at all** for the change
+they were attached to. Those steps are now marked **(unenforced)**.
+
+The pattern behind all three: a gate that hardcodes its subjects — a list of
+schema names, three flood scenarios, two output-flag behaviors — cannot see a
+*new* subject. It protects what exists from regressing; it does not notice an
+addition. Assume nothing enforces a new thing until you have watched it fail.
 
 ## Add a CLI flag
 
@@ -148,14 +155,22 @@ sequenceDiagram
    [`security/mod.rs`](../../src/security/mod.rs).
 2. Keep detector state bounded and attacker-keyed maps capped — a detector is
    by definition fed hostile input.
-   → [`resource_bounds_test`](../../tests/resource_bounds_test.rs).
+   **(unenforced — [`resource_bounds_test`](../../tests/resource_bounds_test.rs)
+   is three hand-written scenarios over `DialogStore` and `RtpStream`. It has no
+   way to discover your module.)**
 3. Emit through the alert engine in
    [`alerting.rs`](../../src/security/alerting.rs) rather than printing, so
    every sink (CLI, TUI, `fail2ban`, MCP `security_findings`) gets it.
 4. Add regression coverage to
    [`security_test`](../../tests/security_test.rs), including the
    false-positive case — a detector that fires on normal traffic is worse than
-   no detector.
+   no detector. **(unenforced — nothing requires a new detector to have a
+   test.)**
+
+Verified: a new `src/security/` module holding an uncapped `HashMap<IpAddr, u64>`,
+exported from `mod.rs`, left `resource_bounds_test` at 3/3 and `security_test`
+at 38/38. Both steps above are real obligations with no gate behind them —
+which is exactly why they are written down.
 5. If it can *transmit* anything, it must be opt-in and must respect the
    HEP-origin restriction (SN-01): HEP-sourced packets are ineligible for
    active response without `--hep-allow-kill`.
@@ -164,15 +179,26 @@ sequenceDiagram
 
 1. Project through [`output/model.rs`](../../src/output/model.rs). Do not build
    a bespoke JSON object for a dialog or a stream.
-   → [`summary_consistency_test`](../../tests/summary_consistency_test.rs).
+   **(unenforced for a new surface —
+   [`summary_consistency_test`](../../tests/summary_consistency_test.rs) pins
+   the three surfaces that already exist, CLI/API/MCP, against
+   `DialogSummary`/`StreamSummary`. A fourth writer is invisible to it.)**
 2. Add the writer beside [`json.rs`](../../src/output/json.rs) /
    [`cli_print.rs`](../../src/output/cli_print.rs) and emit through
    [`sink.rs`](../../src/output/sink.rs).
 3. If it is machine-readable, add or extend a schema in
-   [`tests/schemas/`](../../tests/schemas).
-   → [`json_schema_test`](../../tests/json_schema_test.rs).
+   [`tests/schemas/`](../../tests/schemas), **and add its filename to
+   `all_schemas_compile`** in
+   [`json_schema_test`](../../tests/json_schema_test.rs).
+   **(unenforced — that test iterates a hardcoded list of four names, so a
+   schema file you forget to add is never even parsed.)**
 4. Add behavior coverage to
-   [`output_behavior_test`](../../tests/output_behavior_test.rs).
+   [`output_behavior_test`](../../tests/output_behavior_test.rs). **(unenforced
+   — it is two tests about `--json-pretty` and `--call-report` exit codes.)**
+
+Verified: a deliberately malformed `zzz_gate_probe.schema.json` dropped into
+`tests/schemas/` left `json_schema_test` at 6 passed, 0 failed. Every arrow this
+checklist originally carried was aspirational; the whole list is convention.
 5. Document it in [`docs/output-formats.md`](../output-formats.md), and mirror
    into the website page. The flag that selects it then owes the CLI-flag
    checklist above.
@@ -181,15 +207,27 @@ sequenceDiagram
 
 1. Add `fuzz/fuzz_targets/<name>.rs` calling one parser entry point on
    `&[u8]`.
-2. Register the `[[bin]]` in `fuzz/Cargo.toml` — the target does not build
-   without it.
-   → the `fuzz-check` CI job, and the pre-push `cd fuzz && cargo check` gate.
+2. Register the `[[bin]]` in `fuzz/Cargo.toml`. **(unenforced, and this is the
+   trap: an unregistered file under `fuzz_targets/` is not a broken build, it
+   is an invisible one. Cargo never compiles it, so `fuzz-check` and the
+   pre-push `cd fuzz && cargo check` both pass and your target silently never
+   runs.)**
 3. Seed [`fuzz/corpus/`](../../fuzz/corpus) with at least one real input.
-   → [`fuzz_corpus_replay`](../../tests/fuzz_corpus_replay.rs) replays the
-   stored corpus deterministically on the stable toolchain.
+   **(unenforced — despite the name,
+   [`fuzz_corpus_replay`](../../tests/fuzz_corpus_replay.rs) never opens
+   `fuzz/corpus/`. It has no filesystem access at all: it drives the parsers
+   with an adversarial seed set and a mutation sweep defined in the file
+   itself.)**
 4. Add the same entry point to
    [`smoke_fuzz_test`](../../tests/smoke_fuzz_test.rs). Coverage-guided fuzzing
    needs nightly and runs weekly; the smoke floor runs in every `cargo test`,
    and it is what actually catches the regression.
 5. When a target finds a crash, commit the reproducer into the corpus in the
-   same change as the fix, so it is replayed forever.
+   same change as the fix — and, because step 3's replay does not read the
+   corpus, add the input to `smoke_fuzz_test` too if you want it replayed on
+   every `cargo test`.
+
+Verified: an unregistered `fuzz/fuzz_targets/zzz_gate_probe.rs` containing a
+hard compile error left `cd fuzz && cargo check` at exit 0. Registering the
+same file made the same error fail the build with exit 101. The gate only ever
+sees registered targets.

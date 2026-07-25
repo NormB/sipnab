@@ -73,5 +73,67 @@ gate() { # args: rc, output
 	&& ok "compile-aborted run (rc=101) is rejected before counting" \
 	|| bad "non-zero exit must be rejected at step 2"
 
+# ── Scenario 4: gate 8 (developer-docs coupling) is advisory ───────────────
+# The gate flags staged files that docs/internals/ cites, so a contributor is
+# reminded to check the prose. It must NEVER block a commit: hard-failing on
+# every edit to a cited file would fire on routine typo fixes and train people
+# to bypass the hook. The blocking check is dev_docs_drift_test.
+if grep -q 'Developer-docs coupling' "$HOOK"; then
+	ok "hook carries the developer-docs coupling gate"
+else
+	bad "hook is missing the developer-docs coupling gate"
+fi
+
+# Extract the gate-8 block and prove it contains no exit — advisory by
+# construction, not merely by intent.
+GATE8=$(awk '/8\. Developer docs cite code/,/All pre-commit checks passed/' "$HOOK" \
+	| grep -v 'All pre-commit checks passed' || true)
+if printf '%s' "$GATE8" | grep -q 'exit'; then
+	bad "gate 8 must never exit — it is advisory (found an exit in the block)"
+else
+	ok "gate 8 contains no exit (cannot block a commit)"
+fi
+
+# The cited-file set the gate matches against, built from the real pages so a
+# broken regex or sed pipeline shows up here.
+CITED=$(grep -rhoE '\]\((\.\./)+[a-zA-Z0-9_./-]+\)' "$REPO_ROOT"/docs/internals/*.md 2>/dev/null \
+	| sed -E 's/^\]\(//; s/\)$//; s#(\.\./)+##' | sort -u)
+if printf '%s\n' "$CITED" | grep -qx 'src/pipeline.rs'; then
+	ok "cited-file extraction resolves ../../src/pipeline.rs to src/pipeline.rs"
+else
+	bad "cited-file extraction failed — gate 8 would match nothing"
+fi
+
+# Mirrors the hook's decision: skip entirely when docs/internals/ is staged,
+# else REVIEW when a staged path is cited.
+CITED_FILE=$(mktemp)
+trap 'rm -f "$CITED_FILE" "$STAGED_FILE"' EXIT
+printf '%s\n' "$CITED" > "$CITED_FILE"
+STAGED_FILE=$(mktemp)
+
+coupling() { # arg: newline-separated staged paths
+	if printf '%s\n' "$1" | grep -q '^docs/internals/'; then
+		echo "OK"
+		return
+	fi
+	printf '%s\n' "$1" | sort -u > "$STAGED_FILE"
+	if [ -n "$(comm -12 "$STAGED_FILE" "$CITED_FILE")" ]; then
+		echo "REVIEW"
+	else
+		echo "OK"
+	fi
+}
+
+[ "$(coupling 'src/pipeline.rs')" = "REVIEW" ] \
+	&& ok "a staged cited file yields REVIEW" \
+	|| bad "staged src/pipeline.rs should yield REVIEW"
+[ "$(coupling 'docs/internals/README.md
+src/pipeline.rs')" = "OK" ] \
+	&& ok "staging docs/internals/ alongside a cited file is quiet" \
+	|| bad "a staged docs/internals/ change must skip the notice"
+[ "$(coupling 'Cargo.lock')" = "OK" ] \
+	&& ok "an uncited staged file is quiet" \
+	|| bad "Cargo.lock is not cited and should be quiet"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

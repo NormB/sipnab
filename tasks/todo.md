@@ -35,6 +35,26 @@ Tiers:
 
 ## P1 — wrong results in real use
 
+- [x] **`--version` never reports the `metrics` feature** — `compiled_features()`
+  in `src/cli.rs` walked `native, tui, audio, tls, hep, api, mcp, mcp-http, wasm`
+  and omitted `metrics`, so a `--features full` binary printed
+  `features: native,tui,audio,tls,hep,api,mcp,mcp-http` even though the
+  Prometheus listener was compiled in. **Done:** `metrics` is now emitted after
+  `mcp-http`. Verified: a `full` build prints
+  `native,tui,audio,tls,hep,api,mcp,mcp-http,metrics` and a default build prints
+  `native,tui,audio,metrics`, matching `default` in `Cargo.toml` exactly. The
+  sample outputs in `docs/install.md`, `website/content/docs/install.md` and
+  both MCP walkthroughs were updated to match. The version-string fixtures in
+  `src/tui/help.rs` and `tests/tui_snapshot_test.rs` are synthetic inputs to the
+  renderer and do not call `compiled_features()`, so they were unaffected.
+- [ ] **musl and `-noaudio` release builds silently ship without `/metrics`** —
+  `release.yml` computes `noaudio_set="native,tui,tls,hep,api,mcp,mcp-http"`
+  under a comment describing it as "full minus audio", but it drops `metrics`
+  as well. So every static musl binary and the `-noaudio` `.deb` lack the
+  Prometheus endpoint, with nothing in the docs or the artifact name saying so.
+  Decide whether that is intentional: if not, add `metrics` to `noaudio_set`;
+  if it is, say so in `docs/install.md` and fix the misleading comment.
+
 - [x] src/tui/save.rs:676 — [correctness] `save_to_wav_path` indexes raw store order, not displayed order — wrong dialog's audio exported under filter/sort. **Done:** the call-list path now resolves the selection via `get_selected_call_id` (filter+search+sort display order), so the highlighted row's audio is exported.
 - [x] src/tui/controllers/call_list.rs:324,342 — [missed-edge-case] clear_non_matching/matching pass `&[]` streams to matches_dialog; stream-criteria rows misclassified and deleted. **Done:** both clear ops gather each dialog's real streams (`streams_for`) under dialog-then-stream locks and pass them to `matches_dialog`, so stream-criteria filters classify correctly.
 - [x] src/rtp/stream_store.rs:259 — [correctness] RTCP jitter (RTP timestamp units) overwrites millisecond jitter; feeds MOS 8x off at 8kHz. **Done:** `process_rtcp` now converts the report jitter to ms via `jitter * 1000 / clock_rate` (guarded for clock_rate 0) before storing it.
@@ -184,6 +204,12 @@ Tiers:
 
 ## P3 — code health
 
+- [ ] **`TransportProto::Sctp` doc comment says "stub for future use"** —
+  `src/net.rs:20`. SCTP is implemented: `src/capture/parse.rs` recognizes IP
+  protocol 132, walks the chunk list, and extracts SIP from the first complete
+  (B+E) DATA chunk, recovering the real src/dst ports from the common header.
+  The comment predates that work and now understates what the tree supports.
+
 - [x] src/capture/packet.rs:81 — [api-hygiene] `Packet::new` allows `caplen != data.len()`; debug assert or derive caplen. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/capture/hep.rs:~1408 — [style] mixed `Instant::now()` vs fully-qualified in same fn. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/capture/decrypt.rs:263 — [dead-code] `hmac_sha256` takes unused `_crypto: &dyn CryptoBackend` param. **Done (P3 code-health wave, 2026-07-24).**
@@ -244,6 +270,22 @@ Tiers:
 - [x] src/crypto.rs:13 — [doc-staleness] CryptoBackend doc mentions wolfSSL/OpenSSL backends that don't exist (removed by decision). **Done (P3 code-health wave, 2026-07-24).**
 
 ## P4 — test quality
+
+- [ ] **Gates that hardcode their subjects cannot see a new one** — surfaced by
+  executing the `docs/internals/walkthroughs.md` checklists rather than
+  reasoning about them (2026-07-25). Three cases, each proven by making the
+  change and watching the gate pass: a deliberately malformed
+  `zzz_gate_probe.schema.json` in `tests/schemas/` left `json_schema_test` at
+  6 passed / 0 failed, because `all_schemas_compile` iterates four hardcoded
+  filenames instead of reading the directory; a new `src/security/` module with
+  an uncapped `HashMap<IpAddr, u64>` left `resource_bounds_test` at 3/3 and
+  `security_test` at 38/38; and an unregistered `fuzz/fuzz_targets/*.rs` holding
+  a hard compile error left `cd fuzz && cargo check` at exit 0 (registering it
+  made the same error exit 101). Cheapest real fix is the first: have
+  `all_schemas_compile` enumerate `tests/schemas/*.json`, so a schema that is
+  added but not wired is parsed and fails. The other two need a discovery
+  mechanism or an accepted "convention only" status — they are documented as
+  **(unenforced)** in the walkthroughs page either way.
 
 - [x] .githooks/pre-commit test-count check — [flaky] `cargo test --features full` intermittently reports a partial sum (2291/2308 vs true count) when run immediately after another cargo build, aborting the commit; self-heals on retry. Observed 4× on 2026-07-24 (never in 5 isolated back-to-back runs). Suspect a suite aborting under fingerprint invalidation from an interleaved build (wasm-pack/rustup activity correlated twice). Capture the failing suite's output from inside the hook before fixing. **Done:** root cause was step 5 running `cargo test --features full` a SECOND time purely to count — that run could race a concurrent cargo, abort a binary's compile, drop its `test result:` line, and undercount. Step 5 now derives the count from step 2's already-captured `$TEST_OUTPUT`, and step 2 gates on the test exit code so a partial/aborted run fails there ("retry") instead of feeding a truncated sum downstream. Halves per-commit test time. Regression pinned by `scripts/test-pre-commit.sh` (asserts exactly one full-suite invocation + the exit-code gate).
 
