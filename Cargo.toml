@@ -101,7 +101,7 @@ crossterm = { version = "0.29", optional = true }
 unicode-width = { version = "0.2", optional = true }
 
 # Phase 5: STIR/SHAKEN & analysis
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 
 # Auth: HMAC self-describing bearer tokens (pure-Rust RustCrypto). Available
 # whenever `api` OR `mcp` is enabled; deliberately NOT tied to the `tls`
@@ -153,7 +153,7 @@ console_error_panic_hook = { version = "0.1", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.11"
 bytes = "1"
 unicode-width = "0.2"
