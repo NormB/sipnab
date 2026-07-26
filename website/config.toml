@@ -30,12 +30,22 @@ version = "0.5.44"
 # Release date of the current `version` above. Shown on /download next to the
 # version. Update alongside Cargo.toml/version when cutting a release.
 release_date = "2026-07-26"
-# Minimum glibc of the released -gnu binaries and .debs (see the "Enforce
-# glibc floor" step in release.yml). Drives the guidance on /download and
-# must match SIPNAB_GLIBC_FLOOR in static/install.sh. 2.39 = Debian 13 /
-# Ubuntu 24.04; drops to 2.36 (Debian 12) with the first bookworm-built release.
-glibc_floor = "2.39"
-glibc_floor_distros = "Debian 13+, Ubuntu 24.04+"
+# Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
+# choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
+# and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
+# whether a host gets the gnu build or the musl fallback. To change it, change
+# the release build environment first. 2.36 = Debian 12 / Ubuntu 23.04.
+#
+# This was 2.39 for eleven releases after release.yml moved the gnu builds into
+# rust:1-bookworm and dropped the real floor to 2.36, because nothing compared
+# the two. `published_glibc_floor_matches_release_gate` does now.
+glibc_floor = "2.36"
+glibc_floor_distros = "Debian 12+, Ubuntu 23.04+"
+# Ceiling for the released stripped musl binary, in MB. Quoted on the homepage
+# and in the build docs, and enforced against the real artifact by the "Enforce
+# published binary size" step in release.yml. A ceiling rather than the exact
+# size so it does not need editing every time the binary moves by a hundred KB.
+binary_size_ceiling_mb = "10"
 github_url = "https://github.com/NormB/sipnab"
 author = "Norm Brandinger"
 linkedin_url = "https://www.linkedin.com/in/nbrandinger"

@@ -190,6 +190,29 @@ jobs:
             check "target/${{ matrix.target }}/release/libsipnab_audio.so"
           fi
 
+      # The homepage stat tile and the build docs both quote a size ceiling for
+      # the stripped static binary. Nothing measured it: the tile said 5 MB
+      # while the shipped musl binary was 9.34 MB, and the only gate compared
+      # the tile's number to its own fallback text. This compares the claim to
+      # the artifact, which is the only place the truth exists.
+      - name: Enforce published binary size (musl targets)
+        if: contains(matrix.target, '-linux-musl')
+        shell: bash
+        run: |
+          ceiling=$(grep -m1 '^binary_size_ceiling_mb = ' website/config.toml | sed -E 's/.*"([0-9]+)".*/\1/')
+          [ -n "$ceiling" ] || { echo "::error::binary_size_ceiling_mb missing from website/config.toml"; exit 1; }
+          bin="target/${{ matrix.target }}/release/sipnab"
+          bytes=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin")
+          limit=$((ceiling * 1024 * 1024))
+          # Integer arithmetic only: `bc` is not guaranteed on a runner, and a
+          # gate that runs solely at release time must not fail on its own tools.
+          printf '%s is %s bytes (%s.%02d MB), ceiling %s MB\n' \
+            "$bin" "$bytes" "$((bytes / 1048576))" "$((bytes % 1048576 * 100 / 1048576))" "$ceiling"
+          if [ "$bytes" -gt "$limit" ]; then
+            echo "::error::$bin is $bytes bytes, over the ${ceiling} MB published on the homepage and in the build docs — shrink it or raise binary_size_ceiling_mb in website/config.toml (and the claims it feeds)"
+            exit 1
+          fi
+
       # noaudio variants are deb-only: static musl tarballs already cover the
       # no-audio tarball case, so skip the redundant gnu-noaudio tar.gz.
       - name: Package (tar.gz + checksum)
