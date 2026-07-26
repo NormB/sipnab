@@ -288,7 +288,7 @@ fn site_version_matches_crate_version() {
 /// The download page's release date matches the CHANGELOG entry it describes.
 ///
 /// `release_date` had no gate at all and had drifted two days behind the
-/// 0.5.43 CHANGELOG heading — the version beside it was gated, the date next
+/// 0.5.44 CHANGELOG heading — the version beside it was gated, the date next
 /// to it was not, so /download advertised the right version on the wrong day.
 #[test]
 fn site_release_date_matches_changelog() {
@@ -1016,7 +1016,7 @@ fn inline_script_edits_require_csp_hash_refresh() {
             "sha256-UOwnn7uXvW/gl+mP2NGmMuxif0eKdH7ocCwmMTGCjcY=",
         ),
         (
-            // Re-pinned in 0.5.43: the copy-button script now skips
+            // Re-pinned in 0.5.44: the copy-button script now skips
             // `pre.mermaid`, which it was appending the word "copy" into.
             "page.html",
             "sha256-VEhaYG0u0qZoYQzwk4PgncTbqmZXsFNRY5GJxNQt7UI=",
