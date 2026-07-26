@@ -172,7 +172,7 @@ libc = "0.2"
 # Serializes security tests that touch process-global state (the SIPNAB_API_KEY
 # env var and the test crate's allocation counter) so they are not raced by
 # concurrent tests.
-serial_test = "3"
+serial_test = "4"
 
 [[bench]]
 name = "parser_bench"
