@@ -1059,12 +1059,14 @@ fn extract_parsed_packet(
             from_hep: false,
         }),
         TransportSlice::Icmpv4(_) | TransportSlice::Icmpv6(_) => Err(CaptureError::Icmp),
-        // Anything else etherparse recognizes as a transport — IGMP, added in
-        // etherparse 0.21, plus whatever it grows next. None of it carries SIP
-        // or RTP, so report it as "not UDP/TCP" rather than breaking the build
-        // on every upstream addition. sipnab's own SCTP handling runs earlier
-        // (IP protocol 132, before this match), so it is unaffected.
-        _ => Err(CaptureError::NoTransport),
+        // IGMP (etherparse 0.21) is multicast group management, not ICMP, so it
+        // reports as "not UDP/TCP" rather than borrowing the ICMP error.
+        TransportSlice::Igmp(_) => Err(CaptureError::NoTransport),
+        // NOTE: this match is deliberately exhaustive — no `_` arm. When
+        // etherparse adds a transport, the build must fail here so someone
+        // decides whether it can carry SIP or RTP. A wildcard would silently
+        // drop a future SIP-bearing transport instead of surfacing it.
+        // (sipnab's SCTP handling runs earlier, at IP protocol 132.)
     }
 }
 
