@@ -164,6 +164,47 @@ shared-directory invariant for privileged services remains a follow-up.
 - Root live-capture mode drops supplementary groups, GID, and UID before packet processing and sets `no_new_privs` on Linux.
 - Parser-facing components have broad cargo-fuzz targets (SIP, SDP, RTP/RTCP, TLS/DTLS, HEP, WebSocket, pcap, reassembly, filter DSL, and STIR/SHAKEN).
 
+## Rejected scanner findings
+
+Findings from automated scanners that were investigated and **rejected**, kept
+so the same alert is not re-litigated on the next scan.
+
+### Aikido — path traversal in `parse_srtp_key_file` (rejected 2026-07-25)
+
+**Claim.** "The application constructs file paths using untrusted data,
+potentially leading to a path traversal vulnerability." Suggested AutoFix:
+reject any `--srtp-keys` path containing a `..` component.
+
+**Why rejected.** The premise does not hold. The path reaches
+`parse_srtp_key_file` from the `--srtp-keys <FILE>` CLI flag
+(`cli.srtp_keys` → `Path::new(..)` → `SrtpContext::from_key_file`, at
+`app/batch.rs` and `app/tui_mode.rs`). It is not settable from the config file
+and no network-derived value reaches it — the SDES `a=crypto` material learned
+from SDP is key bytes, never a path. So the "untrusted data" is an argument
+typed by the person running the binary, who already has that uid's filesystem
+access; `--srtp-keys ../../etc/shadow` reads exactly what `cat` would. Path
+traversal requires a privilege or trust boundary, and there is none here.
+sipnab's elevated deployment does not create one either: `privilege.rs` grants
+`cap_net_raw,cap_net_admin+ep`, neither of which overrides file permissions
+(that would be `CAP_DAC_OVERRIDE`, which sipnab never requests).
+
+**The patch would also not work.** It rejects only literal `..` components,
+so an absolute `/etc/shadow` passes, as does any symlink inside a permitted
+directory. Real confinement needs canonicalization plus an allowed-root check,
+and even that is TOCTOU-prone. Meanwhile it breaks ordinary invocations such as
+`--srtp-keys ../keys/srtp.txt`, and replaces a contextual "Failed to read SRTP
+key file: <path>" with an opaque "Invalid input".
+
+**Contrast with SN-03**, which was real: there the *process* derived and
+created a path, so an attacker could pre-plant a symlink. The distinguishing
+question is always who supplies the path and whether the process acts with
+authority that party lacks.
+
+**Real hardening for this file, if wanted.** The genuine risk is
+confidentiality, not traversal — it holds SRTP master keys and nothing warns
+when it is world-readable. A mode check, as `crash.rs` already does for crash
+reports, would be worth more than the proposed patch.
+
 ## Method and limitations
 
 This was a source-assisted adversarial review. It traced untrusted data from packet files and network listeners into parsers, stores, APIs, shell/process boundaries, filesystem writes, dynamic loading, and active network sends. It also searched for unsafe Rust, panic sites, hard-coded secrets, unbounded input, authentication decisions, and path-handling patterns. `cargo test --all-features --no-run` completed successfully, confirming that the reviewed all-features configuration and its test targets compile.

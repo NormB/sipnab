@@ -45,13 +45,15 @@ easy mistake; before audience binding it silently granted cross-surface access.
 The version prefix is part of the signed input, so an `s2` token cannot be
 rewritten as `s1` to shed its binding — the signature no longer matches.
 
-### Legacy `s1` tokens
+### Legacy `s1` tokens are rejected
 
-Tokens minted before this change use the `s1` prefix and carry no `aud`, so
-they are accepted by **either** surface. They still verify, so existing tokens
-keep working until they expire, but `s1` is never minted any more and accepting
-one logs a one-time deprecation warning. Re-mint with `--mint-token` to get an
-audience-bound `s2` token; `s1` acceptance will be removed in a future release.
+The pre-`aud` `s1` format is **no longer accepted**. It carried no audience, so
+an `s1` token authenticated against both surfaces — honoring it would have left
+the binding above best-effort rather than absolute.
+
+If you are still holding an `s1` token, it now returns `401`. Re-mint with
+`--mint-token`. Since the default TTL is one hour, most callers will have
+rotated naturally; long-TTL tokens are the ones to check.
 
 ## 1. Configure a signing key
 
@@ -136,9 +138,10 @@ stateless model.)
 - Signing keys and tokens are secrets — prefer `*-signing-key-file` or env over
   argv (argv is visible in `ps`).
 - Signatures and static secrets are compared in **constant time**.
-- Do not choose a static `--api-key`/`--mcp-token` shaped like `s1.x.y` or
-  `s2.x.y` — it would be parsed as a (failing) signed token rather than matched
-  as a static secret.
+- Do not choose a static `--api-key`/`--mcp-token` shaped like `s2.x.y` — it
+  would be parsed as a (failing) signed token rather than matched as a static
+  secret. (An `s1.x.y` shape is no longer a recognized version, so it is
+  treated as an ordinary opaque secret.)
 - Static secrets carry no audience. If you set the same static
   `--api-key` and `--mcp-token`, that one secret opens both surfaces; audience
   binding applies to signed tokens only.

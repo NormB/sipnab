@@ -26,23 +26,28 @@
 //!
 //! # Verification (stateless)
 //!
-//! Verification splits on `.`, requires a known version, b64url-decodes the
-//! payload and signature, recomputes the HMAC over `"<version>." + payload_b64`,
-//! and compares it to the presented signature in **constant time**. It then
-//! parses the payload, requiring the audience to match (`s2` only), `exp > now`,
-//! and that `id` is not in the revocation denylist. Any parse/format error
-//! rejects (fail closed); attacker input never panics.
+//! Verification splits on `.`, requires the `s2` version, b64url-decodes the
+//! payload and signature, recomputes the HMAC over `"s2." + payload_b64`, and
+//! compares it to the presented signature in **constant time**. It then parses
+//! the payload, requiring the audience to match, `exp > now`, and that `id` is
+//! not in the revocation denylist. Any parse/format error rejects (fail
+//! closed); attacker input never panics.
+//!
+//! The audience check is unconditional — there is no accepted token version
+//! that skips it.
 //!
 //! # Backward compatibility
 //!
-//! Legacy `s1` tokens carry no `aud` and are accepted by either surface. They
-//! are still verified so tokens minted before this change keep working until
-//! they expire, but they are never minted, and accepting one logs a one-time
-//! deprecation warning. `s1` acceptance is intended to be removed.
+//! The pre-`aud` `s1` format is **no longer accepted**. It carried no audience,
+//! so an `s1` token authenticated against both surfaces; honoring it would have
+//! left the binding above best-effort rather than absolute. An `s1.` value now
+//! falls through to the static-secret path and is compared as an opaque string,
+//! which a real minted token will never match — so it is simply rejected.
+//! Re-mint with `--mint-token`.
 //!
-//! If the presented value is not a parseable `s1.`/`s2.` token, the verifier
-//! falls back to a constant-time comparison against the configured static
-//! secret(s). Static secrets have no expiry and no audience.
+//! If the presented value is not a parseable `s2.` token, the verifier falls
+//! back to a constant-time comparison against the configured static secret(s).
+//! Static secrets have no expiry and no audience.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -58,15 +63,11 @@ use sha2::Sha256;
 /// HMAC-SHA256 keyed hash used to sign and verify token payloads.
 type HmacSha256 = Hmac<Sha256>;
 
-/// The token version prefix minted today. `s2` tokens carry an `aud` claim
-/// binding them to one surface.
+/// The only accepted token version. `s2` tokens carry an `aud` claim binding
+/// them to one surface. The pre-`aud` `s1` format is no longer minted *or*
+/// accepted: it carried no audience, so an `s1` token authenticated against
+/// either surface, which is exactly the weakness `s2` exists to remove.
 const VERSION: &str = "s2";
-
-/// The pre-`aud` token version. Still accepted so tokens minted before the
-/// upgrade keep working until they expire, but never minted. An `s1` token
-/// carries no audience, so it is accepted by *either* surface — which is the
-/// weakness `s2` exists to remove. See `docs/auth.md`.
-const VERSION_LEGACY: &str = "s1";
 
 /// Audience value for REST API tokens.
 pub const AUDIENCE_API: &str = "api";
@@ -89,8 +90,8 @@ struct Payload {
     id: String,
     /// Expiry as Unix epoch seconds.
     exp: i64,
-    /// Surface this token is valid for (`api` or `mcp`). Absent in legacy `s1`
-    /// tokens, which is why they are accepted by either surface.
+    /// Surface this token is valid for (`api` or `mcp`). Required: a payload
+    /// without it cannot match any configured audience, so it never verifies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     aud: Option<String>,
 }
@@ -246,11 +247,8 @@ pub struct TokenVerifier {
     static_keys: Vec<String>,
     /// Revocation denylist consulted for a token's `id` after signature check.
     revocation: RevocationList,
-    /// The surface this verifier guards; an `s2` token's `aud` must equal it.
+    /// The surface this verifier guards; a token's `aud` must equal it.
     audience: String,
-    /// Set once a legacy `s1` token has been accepted, so the deprecation
-    /// warning is logged one time per process rather than per request.
-    legacy_warned: std::sync::atomic::AtomicBool,
 }
 
 impl TokenVerifier {
@@ -261,7 +259,6 @@ impl TokenVerifier {
             static_keys: config.static_keys,
             revocation: RevocationList::new(config.revoked_file),
             audience: config.audience,
-            legacy_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -304,8 +301,11 @@ impl TokenVerifier {
             // More than 3 parts — not our format.
             return None;
         }
-        if version != VERSION && version != VERSION_LEGACY {
-            // Not one of our tokens — let static fallback handle it.
+        if version != VERSION {
+            // Not one of our tokens — let static fallback handle it. A legacy
+            // `s1.` value lands here and is treated as an opaque string: it can
+            // only succeed if it happens to equal a configured static secret,
+            // which a real minted token never will.
             return None;
         }
         // From here on this is unambiguously one of our tokens; any failure
@@ -341,34 +341,13 @@ impl TokenVerifier {
             return Some(false);
         };
 
-        // Audience. An `s2` token names the surface it was minted for, and is
-        // rejected by any other — so reusing one signing key across the REST
-        // API and HTTP MCP cannot silently grant cross-surface access. An empty
-        // configured audience matches nothing, which fails closed.
-        match version {
-            VERSION => {
-                if payload.aud.as_deref() != Some(self.audience.as_str())
-                    || self.audience.is_empty()
-                {
-                    return Some(false);
-                }
-            }
-            _ => {
-                // Legacy `s1`: no audience to check. Accepted until it expires,
-                // never minted. Warn once per process so the deprecation is
-                // visible without logging on every request.
-                if !self
-                    .legacy_warned
-                    .swap(true, std::sync::atomic::Ordering::Relaxed)
-                {
-                    log::warn!(
-                        "accepted a legacy s1 bearer token (no audience binding). \
-                         s1 tokens are valid on BOTH the REST API and HTTP MCP; \
-                         re-mint with --mint-token to get an audience-bound s2 \
-                         token. s1 acceptance will be removed in a future release."
-                    );
-                }
-            }
+        // Audience. A token names the surface it was minted for and is rejected
+        // by any other — so reusing one signing key across the REST API and
+        // HTTP MCP cannot grant cross-surface access. An empty configured
+        // audience matches nothing, which fails closed. This is unconditional:
+        // there is no version of the format that skips it.
+        if payload.aud.as_deref() != Some(self.audience.as_str()) || self.audience.is_empty() {
+            return Some(false);
         }
 
         // Expiry: require exp strictly greater than now.
@@ -708,22 +687,33 @@ mod tests {
     }
 
     /// A static secret shaped like an `s1.` token fails the signed path and so
-    /// is not reached by the static fallback (documented caveat).
+    /// Only the `s2.` prefix is intercepted by the signed-token path. A static
+    /// secret shaped like `s2.x.y` is parsed as a (failing) token and never
+    /// reaches the static comparison; one shaped like `s1.x.y` is no longer a
+    /// recognized version, so it falls through and matches itself.
     #[test]
-    fn static_secret_does_not_collide_with_signed_format() {
-        // A static secret that happens to look like "s1.foo.bar" is NOT a valid
-        // signed token (bad b64 / signature), so it falls through to the static
-        // comparison and matches itself.
-        let secret = "s1.notreal.notreal";
+    fn only_the_s2_prefix_shadows_a_static_secret() {
+        let s2_shaped = "s2.notreal.notreal";
         let v = verifier(VerifierConfig {
-            static_keys: vec![secret.to_string()],
+            static_keys: vec![s2_shaped.to_string()],
             ..Default::default()
         });
-        // "s1.notreal.notreal" — b64 "notreal" decodes fine, but signature
-        // mismatch → verify_signed returns Some(false), so the static fallback
-        // is NOT reached. This is acceptable: do not pick static secrets that
-        // look like s1 tokens. Document via assertion.
-        assert!(!v.verify(secret, 1));
+        assert!(
+            !v.verify(s2_shaped, 1),
+            "an s2.-shaped static secret is claimed by the signed path and fails"
+        );
+
+        // s1 is no longer a version we recognize, so this is just an opaque
+        // string and the static comparison accepts it.
+        let s1_shaped = "s1.notreal.notreal";
+        let v = verifier(VerifierConfig {
+            static_keys: vec![s1_shaped.to_string()],
+            ..Default::default()
+        });
+        assert!(
+            v.verify(s1_shaped, 1),
+            "an s1.-shaped static secret now falls through to the static path"
+        );
     }
 
     /// With both signing keys and static secrets configured, each accepts and
@@ -824,11 +814,11 @@ mod tests {
         );
     }
 
-    /// A legacy `s1` token (no `aud`) still verifies, so tokens minted before
-    /// the upgrade keep working until they expire. This documents the
-    /// transition cost: such a token IS accepted by either surface.
+    /// A legacy `s1` token (no `aud`) must now be REJECTED. It was accepted
+    /// during the transition; honoring it left the audience binding
+    /// best-effort, since an `s1` token authenticates against both surfaces.
     #[test]
-    fn legacy_s1_token_without_audience_is_still_accepted() {
+    fn legacy_s1_token_is_rejected() {
         // Hand-build an s1 token: payload without `aud`, signed over "s1.".
         let payload = r#"{"id":"legacy-1","exp":1000000}"#;
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
@@ -836,15 +826,37 @@ mod tests {
         let sig = hmac_sha256(KEY_A, signing_input.as_bytes());
         let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig));
 
+        for aud in [AUDIENCE_API, AUDIENCE_MCP] {
+            let v = verifier(VerifierConfig {
+                signing_keys: vec![KEY_A.to_vec()],
+                audience: aud.to_string(),
+                ..Default::default()
+            });
+            assert!(
+                !v.verify(&token, 1_000),
+                "a correctly-signed, unexpired s1 token must be rejected on {aud}"
+            );
+        }
+    }
+
+    /// The s1 rejection must not be an accident of the static-secret fallback:
+    /// even if an operator configured the whole token string as a static
+    /// secret it would match, so prove rejection holds with signing keys only.
+    #[test]
+    fn s1_rejection_is_not_a_static_secret_artifact() {
+        let payload = r#"{"id":"legacy-2","exp":1000000}"#;
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let signing_input = format!("s1.{payload_b64}");
+        let sig = hmac_sha256(KEY_A, signing_input.as_bytes());
+        let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig));
+
         let v = verifier(VerifierConfig {
             signing_keys: vec![KEY_A.to_vec()],
-            audience: AUDIENCE_MCP.to_string(),
+            static_keys: vec![],
+            audience: AUDIENCE_API.to_string(),
             ..Default::default()
         });
-        assert!(
-            v.verify(&token, 1_000),
-            "legacy s1 tokens must keep verifying during the transition"
-        );
+        assert!(!v.verify(&token, 1_000));
     }
 
     /// An empty configured audience must reject every `s2` token rather than
