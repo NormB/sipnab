@@ -412,11 +412,11 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-The metrics endpoint is lightweight and suitable for 5–15 second scrape intervals. A sample Grafana dashboard JSON ships in the repo at `contrib/grafana-dashboard.json`.
+The metrics endpoint is lightweight and suitable for 5–15 second scrape intervals. A sample Grafana dashboard JSON ships in the repo at `contrib/grafana/sipnab-dashboard.json`.
 
 ## Client examples
 
-Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error handling) in Python (sync + async), Node/TypeScript, Rust, and Go are on the website: <https://sipnab.com/docs/api/>.
+Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error handling) in curl, Python (sync + async), Node/TypeScript, Rust, and Go are on the website's API Client Examples page: <https://www.sipnab.com/docs/api-clients/>.
 
 ## Security model
 

@@ -2,6 +2,57 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.43] - 2026-07-26
+
+### Added
+- **`--group-by <FIELD>` is implemented.** It was documented, parsed into
+  `Cli::group_by`, and **never read** — any value, including a typo, was
+  accepted and produced ungrouped output. It now groups batch output so messages
+  sharing a field value are emitted contiguously, on one of `call-id`, `from`,
+  `to`, `method`, `src`, `dst`.
+
+  Messages are reordered, not reformatted, so `--json` stays one valid object per
+  line with no schema change — the grouping *is* the contiguity. Human-readable
+  output gains a `-- field value --` header per group. An unknown field is now
+  rejected at startup with the accepted list, and the flag requires `-N`/`--no-tui`
+  like every other output flag.
+
+  Grouping cannot stream (the last packet may belong to the first group), so it
+  buffers until the capture ends. That buffer is keyed on attacker-supplied data
+  (`Call-ID`, `From`), so it is bounded like every other such map in the tree
+  (invariant 4): 10,000 groups and 200,000 messages, warning that output is
+  incomplete rather than silently truncating.
+
+### Fixed
+- **Pre-commit gate 6 never ran.** `grep -rn "TODO\|FIXME" src/ -g '*.rs'` uses
+  `-g`, a ripgrep/ugrep flag. Under GNU grep that is an invalid option; the error
+  went to `2>/dev/null` and the count came back `0` unconditionally, so the
+  no-TODO-stubs gate silently passed on any machine whose `grep` was GNU grep.
+  Now uses `--include`, which both accept. Verified under GNU grep 3.11 and
+  ugrep 7.5.0, and with a planted `TODO` to confirm it has teeth.
+- **The Filter DSL has 31 fields, not 30** — wrong in both troubleshooting pages
+  while `filter-dsl.md` said 31.
+- **`--on-quality-exec` passes `SIPNAB_STREAM_JSON`, not `SIPNAB_JSON`** — both
+  output-format pages named the wrong variable, so a hook written from the docs
+  would have read an unset one.
+- **A four-agent audit fixed 48 factual disagreements between the two doc trees
+  and 15 wrong claims in the developer docs.** User-facing highlights: the site
+  said the `-gnu` build needs glibc 2.39 (enforced floor is 2.36); its tarball
+  install command could not work, since releases tar a staging directory;
+  `--keylog` was said to decrypt SRTP (that needs `--dtls-keylog` or
+  `--srtp-keys`); `--alert-exec` examples used `%type%`/`%source_ip%`
+  placeholders that do not exist; `--kill-scanner` was said to answer 403 (it
+  defaults to 200); the Call Flow pane-resize keys were documented with both the
+  key and the pane inverted; `/metrics` on the REST server was called optionally
+  authenticated though it shares the guarded router; and two REST client samples
+  read fields (`messages`, `diagnosis.summary`) the API does not emit. In the
+  developer docs, two pages claimed `process_packet()` was the only lock-taking
+  applier while a third correctly documented `run_pcap_load()` as a second writer.
+- The stale "verified against a real build (`sipnab 0.5.20 ...`)" claim in both
+  MCP walkthroughs. The version-marker gate's regex requires a `(` after the
+  version, so a bare `sipnab 0.5.20 features:` line slipped through and sat stale
+  for 23 releases; the remaining mention is now explicitly historical.
+
 ## [0.5.42] - 2026-07-26
 
 ### Fixed

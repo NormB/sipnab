@@ -556,7 +556,11 @@ pub struct Cli {
     #[arg(help_heading = "Output", long)]
     pub fail2ban: bool,
 
-    /// Group output by field (e.g., "call-id", "from", "method").
+    /// Group batch output so messages sharing a field value are emitted
+    /// together: one of `call-id`, `from`, `to`, `method`, `src`, `dst`.
+    /// Messages are reordered, not reformatted, so `--json` output stays one
+    /// valid object per line. Requires `-N`/`--no-tui`, and buffers until the
+    /// capture ends (bounded — see `output::group`).
     #[arg(help_heading = "Output", long, value_name = "FIELD")]
     pub group_by: Option<String>,
 
@@ -1225,6 +1229,7 @@ impl Cli {
             (self.report, "--report"),
             (self.hexdump, "--hexdump"),
             (self.fail2ban, "--fail2ban"),
+            (self.group_by.is_some(), "--group-by"),
         ]
         .iter()
         .filter(|(active, _)| *active)
@@ -1236,6 +1241,13 @@ impl Cli {
                 "Output flags ({}) require -N/--no-tui mode (or --call-report)",
                 output_flags_used.join(", ")
             )));
+        }
+
+        // Reject an unknown --group-by field at startup. This flag previously
+        // parsed into the struct and was never read, so any value — including a
+        // typo — was accepted and silently produced ungrouped output.
+        if let Some(ref field) = self.group_by {
+            crate::output::group::GroupField::parse(field).map_err(crate::Error::CliValidation)?;
         }
 
         // MCP mode owns stdout (JSON-RPC wire); reject any flag

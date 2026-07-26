@@ -166,6 +166,7 @@ message of the selection rendered as one scrollable document.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | h | Cycle header-name display (as captured / expanded / compact) |
+| F1 / ? | Help **(configurable: `help`)** |
 | Esc | Back to call flow |
 
 ## RTP Streams
@@ -199,7 +200,7 @@ message of the selection rendered as one scrollable document.
 | L | Open the packet loss map (RTP loss pattern) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
-| Esc | Back to RTP Streams |
+| Esc | Back to the view it was opened from (RTP Streams, Call Flow, or Quality Dashboard) |
 
 ## Quality Dashboard
 

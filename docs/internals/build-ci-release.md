@@ -5,8 +5,9 @@ can safely ignore.
 
 ## Features
 
-`Cargo.toml` defines eleven features. `default` is
-`native, tui, audio, metrics`; `full` is everything except `wasm`.
+`Cargo.toml`'s `[features]` table has twelve entries: the eleven named
+features below, plus `default` — which is `native, tui, audio, metrics`.
+`full` is everything except `wasm`.
 
 | Feature | Implies | Gates |
 |---|---|---|
@@ -77,12 +78,18 @@ commit a staged `src/wasm.rs` without a rebuilt bundle beside it; and an
 advisory notice when a commit touches a file `docs/internals/` cites without
 touching `docs/internals/` itself.
 
-Gate 8 is the only one that cannot fail the commit. It prints `REVIEW` and a
-list, and returns zero — a reminder to check the developer pages still read
-true, not a claim that they don't. The gate that *does* fail is
-[`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs) in gate 2's test
-run, and it only catches links that no longer resolve; prose that has quietly
-become false is still a human's job.
+Two of the eight cannot fail the commit. Gate 6 prints
+`WARN: N TODO/FIXME comments` and falls through — a count, not a veto. Gate 8
+prints `REVIEW` and a list and returns zero, a reminder to check the developer
+pages still read true, not a claim that they don't. The gate that *does* fail
+is [`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs) in gate 2's test
+run, and it is broader than dead links: nine tests covering cited paths that no
+longer exist, a `()`-suffixed symbol in link text with no matching `fn` left in
+the workspace, an absolute GitHub URL where a relative path belongs, a page
+missing from `build-wiki.py` (which would silently never publish), and three
+mermaid conventions — `sequenceDiagram` only, no markdown links inside a fence,
+and a prose line above every one. What it cannot catch is prose that has
+quietly become false; that is still a human's job.
 
 That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
@@ -102,7 +109,8 @@ Both hooks have their own test scripts —
 
 ## The toolchain
 
-**Rust 1.97.1**, pinned in six places and enforced in none of them locally:
+**Rust 1.97.1**, pinned across seven files and enforced in none of them
+locally:
 
 | Location | Form |
 |---|---|

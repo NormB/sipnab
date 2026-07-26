@@ -179,7 +179,11 @@ echo -e "${GREEN}OK ($CRATE_V)${NC}"
 
 # ── 6. No TODO stubs in production code ────────────────────────────
 echo -n "  No TODO stubs... "
-TODO_COUNT=$(grep -rn "TODO\|FIXME" src/ -g '*.rs' 2>/dev/null | grep -v test | grep -v '_test.rs' | wc -l | tr -d ' ')
+# `--include` not `-g`: `-g` is a ripgrep/ugrep flag. Under GNU grep it is an
+# invalid option, the error was swallowed by 2>/dev/null, and the count came
+# back 0 unconditionally — so this gate silently passed on any machine where
+# `grep` was GNU grep rather than ugrep. `--include` works in both.
+TODO_COUNT=$(grep -rn "TODO\|FIXME" --include='*.rs' src/ 2>/dev/null | grep -v test | grep -v '_test.rs' | wc -l | tr -d ' ')
 if [ "$TODO_COUNT" != "0" ]; then
     echo -e "${YELLOW}WARN: $TODO_COUNT TODO/FIXME comments${NC}"
 else

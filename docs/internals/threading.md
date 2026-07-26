@@ -108,10 +108,12 @@ flow's packets share a host pair and therefore a worker.
   lock is taken; each store is write-locked once per packet, briefly
   ([`classify_packet()`](../../src/pipeline.rs) touches no store at all).
 - **Lock ordering:** when both stores are needed, dialog store first, then
-  stream store; never hold both write locks at once. The rule lives with the
-  only applier that takes locks — see the doc comment on
-  [`process_packet()`](../../src/pipeline.rs) — and is stated as an invariant
-  in [Invariants](invariants.md).
+  stream store; never hold both write locks at once. Two appliers take locks
+  and both follow it — see the doc comment on
+  [`process_packet()`](../../src/pipeline.rs) for the live path and
+  [`run_pcap_load()`](../../src/tui/controllers/file_open.rs) for the
+  file-open worker above — and it is stated as an invariant in
+  [Invariants](invariants.md).
 - **The TUI never blocks:** all render-side store access is `try_read()`.
   On contention the frame renders with the previous data (counts may be one
   frame stale — this is deliberate; an adaptive 10 fps active / 2 fps idle
