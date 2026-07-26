@@ -1059,6 +1059,12 @@ fn extract_parsed_packet(
             from_hep: false,
         }),
         TransportSlice::Icmpv4(_) | TransportSlice::Icmpv6(_) => Err(CaptureError::Icmp),
+        // Anything else etherparse recognizes as a transport — IGMP, added in
+        // etherparse 0.21, plus whatever it grows next. None of it carries SIP
+        // or RTP, so report it as "not UDP/TCP" rather than breaking the build
+        // on every upstream addition. sipnab's own SCTP handling runs earlier
+        // (IP protocol 132, before this match), so it is unaffected.
+        _ => Err(CaptureError::NoTransport),
     }
 }
 
@@ -1190,6 +1196,36 @@ mod tests {
 
         // Payload
         pkt.extend_from_slice(payload);
+        pkt
+    }
+
+    /// Build a minimal Ethernet + IPv4 + IGMP packet (IP protocol 2).
+    ///
+    /// etherparse 0.21 added `TransportSlice::Igmp`, so IGMP now reaches the
+    /// transport match instead of failing earlier. It carries neither SIP nor
+    /// RTP, so the parser must report it as "not UDP/TCP" rather than panicking
+    /// or being mistaken for ICMP.
+    fn build_eth_ipv4_igmp(src_ip: [u8; 4], dst_ip: [u8; 4]) -> Vec<u8> {
+        // IGMPv2 membership query: type, max-resp-time, checksum, group addr.
+        let igmp: [u8; 8] = [0x11, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let ip_total_len: u16 = 20 + igmp.len() as u16;
+        let mut pkt = Vec::with_capacity(14 + ip_total_len as usize);
+
+        pkt.extend_from_slice(&[0xAA; 6]);
+        pkt.extend_from_slice(&[0xBB; 6]);
+        pkt.extend_from_slice(&[0x08, 0x00]);
+
+        pkt.push(0x45);
+        pkt.push(0x00);
+        pkt.extend_from_slice(&ip_total_len.to_be_bytes());
+        pkt.extend_from_slice(&[0x00, 0x01]);
+        pkt.extend_from_slice(&[0x40, 0x00]);
+        pkt.push(1); // TTL 1, as IGMP uses
+        pkt.push(2); // protocol: IGMP
+        pkt.extend_from_slice(&[0x00, 0x00]);
+        pkt.extend_from_slice(&src_ip);
+        pkt.extend_from_slice(&dst_ip);
+        pkt.extend_from_slice(&igmp);
         pkt
     }
 
@@ -2097,6 +2133,24 @@ mod tests {
         assert!(
             matches!(result, Err(CaptureError::UnsupportedIpProtocol(50))),
             "ESP must be rejected, not mislabeled as UDP; got {result:?}"
+        );
+    }
+
+    /// IGMP reaches the transport match under etherparse 0.21 (which added
+    /// `TransportSlice::Igmp`). It must be reported as "not UDP/TCP" — not
+    /// mislabeled as ICMP, and not a panic or a compile-time surprise the next
+    /// time etherparse grows a variant.
+    #[test]
+    fn igmp_is_rejected_as_not_udp_or_tcp() {
+        let pkt = make_packet(
+            build_eth_ipv4_igmp([192, 0, 2, 10], [224, 0, 0, 1]),
+            DLT_EN10MB,
+        );
+        let result = parse_packet(&pkt);
+        assert!(
+            matches!(result, Err(CaptureError::NoTransport)),
+            "IGMP must be rejected as not-UDP/TCP, and must not be reported as \
+             ICMP; got {result:?}"
         );
     }
 

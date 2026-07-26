@@ -62,7 +62,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.40 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+   # sipnab 0.5.41 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
    ```
 
    If `mcp` is missing you have a source build without features — rebuild

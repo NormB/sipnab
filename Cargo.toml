@@ -27,7 +27,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.40"
+version = "0.5.41"
 edition = "2024"
 rust-version = "1.97"
 authors = ["Norm Brandinger"]
@@ -63,7 +63,7 @@ pcap = { version = "2", optional = true }
 # `rust_backend` compiles fine on wasm32.
 flate2 = "1"
 tempfile = { version = "3", optional = true }
-etherparse = "0.20"
+etherparse = "0.21"
 clap = { version = "4", features = ["derive", "env", "string"], optional = true }
 clap_complete = { version = "4", optional = true }
 regex = "1"
@@ -101,7 +101,7 @@ crossterm = { version = "0.29", optional = true }
 unicode-width = { version = "0.2", optional = true }
 
 # Phase 5: STIR/SHAKEN & analysis
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 
 # Auth: HMAC self-describing bearer tokens (pure-Rust RustCrypto). Available
 # whenever `api` OR `mcp` is enabled; deliberately NOT tied to the `tls`
@@ -139,7 +139,7 @@ rmcp = { version = "2", default-features = false, features = ["server", "transpo
 # ahash's runtime RNG pulls getrandom, whose 0.3 line has no default wasm32
 # backend: it needs BOTH this `wasm_js` feature AND the
 # `--cfg getrandom_backend="wasm_js"` rustflag (set in .cargo/config.toml).
-getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
@@ -153,14 +153,14 @@ console_error_panic_hook = { version = "0.1", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.11"
 bytes = "1"
 unicode-width = "0.2"
 parking_lot = "0.12"
 proptest = "1"
 trycmd = "1"
-jsonschema = "0.48"
+jsonschema = "0.49"
 clap = { version = "4", features = ["derive", "env", "string"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
@@ -172,7 +172,7 @@ libc = "0.2"
 # Serializes security tests that touch process-global state (the SIPNAB_API_KEY
 # env var and the test crate's allocation counter) so they are not raced by
 # concurrent tests.
-serial_test = "3"
+serial_test = "4"
 
 [[bench]]
 name = "parser_bench"

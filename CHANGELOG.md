@@ -2,6 +2,28 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.41] - 2026-07-26
+
+### Changed
+- Dependency updates, covering every open Dependabot recommendation. Five are
+  semver-breaking `0.x` bumps and were applied and compiled rather than merged
+  on trust: **base64** 0.22→0.23, **getrandom** 0.3→0.4, **jsonschema**
+  0.48→0.49, **etherparse** 0.20→0.21, and **serial_test** 3→4. Patch/minor:
+  clap 4.6.2→4.6.3, libc 0.2.186→0.2.189, serde_json 1.0.150→1.0.151, tokio
+  1.53.0→1.53.1, trycmd 1.2.0→1.2.1. Only etherparse required a code change
+  (below); the rest were API-compatible with sipnab's usage.
+- `actions/download-artifact` in `pages.yml` bumped v4→v8, aligning it with
+  `release.yml`, which was already on v8.
+
+### Fixed
+- **etherparse 0.21 added `TransportSlice::Igmp`**, which made the transport
+  match non-exhaustive. IGMP now reaches that match and is reported as "not
+  UDP/TCP" (`CaptureError::NoTransport`) rather than being folded into the ICMP
+  arm, which would have mislabeled it. The arm is now a catch-all so a future
+  etherparse variant does not break the build — sipnab's own SCTP handling runs
+  earlier (IP protocol 132), so it is unaffected. Pinned by a new test that
+  fails if IGMP is reported as ICMP.
+
 ## [0.5.40] - 2026-07-25
 
 ### Removed
