@@ -252,7 +252,9 @@ fn website_docs_files() -> Vec<PathBuf> {
 fn website_intra_docs_links_resolve() {
     // Matches the bare form, the [text](@/docs/x.md#a) form, and the
     // get_url(path='@/docs/x.md') form (the path capture is identical).
-    let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_.-]+?\.md)(#[A-Za-z0-9_.-]+)?").unwrap();
+    // `/` is in the class so subsection links (`@/docs/internals/x.md`) are
+    // resolved too; the pattern previously skipped them entirely.
+    let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_./-]+?\.md)(#[A-Za-z0-9_.-]+)?").unwrap();
     // A plain relative .md link inside Zola content silently renders as a
     // dead URL — internal links must use @/docs/. Catch those too.
     let rel_md = regex::Regex::new(r"\]\((\./)?([A-Za-z0-9_-]+\.md)(#[A-Za-z0-9_.-]+)?\)").unwrap();

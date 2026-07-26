@@ -29,7 +29,7 @@ theme = "ayu-dark"
 version = "0.5.43"
 # Release date of the current `version` above. Shown on /download next to the
 # version. Update alongside Cargo.toml/version when cutting a release.
-release_date = "2026-07-24"
+release_date = "2026-07-26"
 # Minimum glibc of the released -gnu binaries and .debs (see the "Enforce
 # glibc floor" step in release.yml). Drives the guidance on /download and
 # must match SIPNAB_GLIBC_FLOOR in static/install.sh. 2.39 = Debian 13 /

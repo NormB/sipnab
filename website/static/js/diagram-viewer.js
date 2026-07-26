@@ -17,6 +17,8 @@
   var STORE_HIDDEN = "sipnab.diagramControls.hidden";
   var MIN_SCALE = 0.4;
   var MAX_SCALE = 6;
+  // Same stack as $font-mono in the stylesheet.
+  var MONO = "'JetBrains Mono', 'Fira Code', ui-monospace, monospace";
 
   /** Read a JSON value from localStorage, tolerating a disabled/full store. */
   function load(key, fallback) {
@@ -291,16 +293,74 @@
     var mermaid = window.mermaid;
     if (!mermaid) return;
 
-    var dark =
-      document.documentElement.dataset.theme === "dark" ||
-      window.matchMedia("(prefers-color-scheme: dark)").matches;
-
+    // The site has no light mode — no `prefers-color-scheme` rule and no
+    // theme toggle anywhere in the stylesheet. Sniffing the OS preference
+    // therefore renders a light diagram on the site's dark surface for every
+    // visitor whose OS is in light mode, which is most of them: dark text on
+    // #1f2430. Pin the dark theme and match the palette to the stylesheet.
     mermaid.initialize({
       startOnLoad: false,
-      theme: dark ? "dark" : "neutral",
+      theme: "dark",
       securityLevel: "strict",
-      sequence: { useMaxWidth: false },
+      // Mermaid sizes the actor boxes from its own text measurement, so the
+      // per-element fonts have to be the same family it is told to draw with
+      // or the labels overflow their boxes.
+      sequence: {
+        useMaxWidth: false,
+        actorFontFamily: MONO,
+        messageFontFamily: MONO,
+        noteFontFamily: MONO,
+        // Mermaid does not fit the actor box to its label — `width` is a
+        // fixed box width (default 150) and anything longer simply overflows
+        // the border. The longest actor in these diagrams is 25 characters
+        // (`pipeline::classify_packet`), which at 12px monospace needs ~180px.
+        width: 200,
+        actorFontSize: 12,
+        messageFontSize: 12,
+        noteFontSize: 12,
+        actorMargin: 40,
+      },
+      themeVariables: {
+        darkMode: true,
+        fontFamily: MONO,
+        fontSize: "14px",
+        background: "#1f2430",
+        primaryColor: "#242936",
+        primaryTextColor: "#cbccc6",
+        primaryBorderColor: "#3d4754",
+        secondaryColor: "#2d3640",
+        tertiaryColor: "#1f2430",
+        lineColor: "#8a93a3",
+        textColor: "#cbccc6",
+        actorBkg: "#242936",
+        actorBorder: "#3d4754",
+        actorTextColor: "#cbccc6",
+        actorLineColor: "#3d4754",
+        signalColor: "#cbccc6",
+        signalTextColor: "#cbccc6",
+        labelBoxBkgColor: "#242936",
+        labelBoxBorderColor: "#3d4754",
+        labelTextColor: "#cbccc6",
+        loopTextColor: "#cbccc6",
+        noteBkgColor: "#2d3640",
+        noteTextColor: "#cbccc6",
+        noteBorderColor: "#3d4754",
+        activationBkgColor: "#3d4754",
+        activationBorderColor: "#8a93a3",
+        sequenceNumberColor: "#0a0e14",
+      },
     });
+
+    // Measurement happens at render time. Rendering before the webfont has
+    // loaded measures the fallback font, and the actor labels then overflow
+    // boxes sized for a font that is no longer being used.
+    if (document.fonts && document.fonts.ready) {
+      try {
+        await document.fonts.ready;
+      } catch (e) {
+        /* fall through and render with whatever is loaded */
+      }
+    }
 
     for (var i = 0; i < blocks.length; i++) {
       var block = blocks[i];
@@ -322,7 +382,12 @@
         figure.innerHTML = rendered.svg;
       } catch (err) {
         // A diagram that fails to render must not blank the page: leave the
-        // source visible, which is still readable prose-adjacent text.
+        // source visible, which is still readable prose-adjacent text. Say so
+        // on the console though — a silent skip here hid a real bug once
+        // (another script was appending text into the diagram source), and an
+        // unrendered diagram otherwise looks like a slow page load.
+        // eslint-disable-next-line no-console
+        console.error("sipnab: mermaid failed to render diagram " + i, err);
         continue;
       }
 
