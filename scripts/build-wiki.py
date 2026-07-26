@@ -164,13 +164,17 @@ def build_home() -> str:
         "",
         "## Quick start",
         "",
+        # Was a `curl -LO .../releases/latest/download/
+        # sipnab-x86_64-unknown-linux-musl`. Every release asset is versioned,
+        # so that URL had always 404'd on the wiki's own front page. The
+        # installer one-liner is version-independent, so it cannot rot the same
+        # way; `published_download_urls_name_versioned_assets` keeps a bare
+        # artifact URL from coming back. Kept as a source comment rather than an
+        # emitted one: the Quick Start is the first thing a visitor reads and
+        # should not carry archaeology, least of all a URL that does not work.
         "```bash",
         "# Install: detects OS/CPU/glibc, verifies the sha256, installs to",
         "# /usr/local/bin (see Installation for .deb, .rpm and manual options)",
-        "#",
-        "# This used to curl a bare `sipnab-x86_64-unknown-linux-musl` from",
-        "# releases/latest/download. Every release asset is versioned, so that",
-        "# URL had always 404'd on the wiki's own front page.",
         "curl -fsSL https://www.sipnab.com/install.sh | sh",
         "",
         "sudo sipnab --setup-caps      # one-time: live capture without sudo (Linux)",
