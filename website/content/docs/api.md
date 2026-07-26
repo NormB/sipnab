@@ -104,11 +104,11 @@ and that `id` is not revoked. Any malformed token is rejected (fail-closed).
 token minted from `--api-signing-key` is rejected by the HTTP MCP endpoint and
 vice versa — **even when both are configured with the same signing key**. The
 version prefix is part of the signed input, so an `s2` token cannot be rewritten
-as `s1` to shed its binding. Tokens minted before this change use the `s1`
-prefix, carry no audience, and are therefore accepted by either surface; they
-keep verifying until they expire but are no longer minted. Re-mint to get an
-audience-bound token. Note that **static** `--api-key` secrets carry no
-audience — the binding applies to signed tokens only.
+as `s1` to shed its binding. The pre-`aud` `s1` format is **no longer
+accepted** — it carried no audience, so honoring it would have left this
+binding best-effort. An `s1` token now returns `401`; re-mint with
+`--mint-token`. Note that **static** `--api-key` secrets carry no audience —
+the binding applies to signed tokens only.
 
 | Setting | Purpose |
 |---|---|
@@ -875,7 +875,7 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane as of 0.5.39 — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
+The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane as of 0.5.40 — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
 
 ## Security Model
 

@@ -2,6 +2,29 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.40] - 2026-07-25
+
+### Removed
+- **BREAKING: the legacy `s1` bearer-token format is no longer accepted.**
+  0.5.39 introduced audience-bound `s2` tokens while continuing to verify `s1`
+  tokens so pre-existing ones kept working. `s1` carries no `aud`, so every
+  such token authenticated against *both* the REST API and HTTP MCP — which
+  left the audience binding best-effort rather than absolute for as long as any
+  `s1` token remained alive. It is now rejected outright.
+
+  **Impact:** any `s1` token still in circulation returns `401`. Re-mint with
+  `--mint-token`. The default TTL is one hour, so most callers will already
+  have rotated; long-TTL tokens minted before 0.5.39 are the ones to check.
+  Static `--api-key` / `--mcp-token` secrets are unaffected.
+
+  A side effect worth knowing: a static secret shaped like `s1.x.y` used to be
+  claimed by the signed-token path and always failed. It is now treated as an
+  ordinary opaque secret and works. The caveat still applies to `s2.x.y`.
+
+### Security
+- The audience check is now unconditional — there is no accepted token version
+  that reaches a surface without one.
+
 ## [0.5.39] - 2026-07-25
 
 ### Security

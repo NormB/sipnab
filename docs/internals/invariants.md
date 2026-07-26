@@ -152,10 +152,11 @@ fails closed. Cross-surface rejection is pinned in both directions by tests in
 AI agent full MCP tool access, or the reverse — a privilege boundary that
 exists in the documentation but not in the code.
 
-**Known gap.** Legacy `s1` tokens carry no audience and are still accepted by
-either surface so pre-existing tokens keep working until they expire. They are
-never minted, and accepting one logs a one-time deprecation warning. Static
-`--api-key` / `--mcp-token` secrets are also audience-less by design.
+**Scope.** The check is unconditional: the pre-`aud` `s1` format is no longer
+accepted, so there is no token version that reaches a surface without an
+audience. Static `--api-key` / `--mcp-token` secrets remain audience-less by
+design — they are shared secrets, not tokens, and an operator who sets the same
+static secret on both surfaces has deliberately shared one credential.
 
 ## 7. MCP tools are read-only and bounded
 
