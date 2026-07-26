@@ -63,7 +63,7 @@ pcap = { version = "2", optional = true }
 # `rust_backend` compiles fine on wasm32.
 flate2 = "1"
 tempfile = { version = "3", optional = true }
-etherparse = "0.20"
+etherparse = "0.21"
 clap = { version = "4", features = ["derive", "env", "string"], optional = true }
 clap_complete = { version = "4", optional = true }
 regex = "1"
