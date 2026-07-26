@@ -8,8 +8,13 @@
 # the binary to /usr/local/bin (override with SIPNAB_INSTALL_DIR).
 #
 # The glibc floor of the -gnu builds; hosts below this get the static musl
-# build instead. Keep in sync with the release build environment.
-SIPNAB_GLIBC_FLOOR="2.39"
+# build instead. Must equal the floor enforced by the "Enforce glibc floor"
+# step in release.yml and glibc_floor in website/config.toml — the Rust test
+# published_glibc_floor_matches_release_gate fails if the three disagree.
+# "Keep in sync" was the only thing holding this together before, and it did
+# not: this said 2.39 while release.yml built to 2.36, so every Debian 12 host
+# was pushed to the musl build it did not need.
+SIPNAB_GLIBC_FLOOR="2.36"
 SIPNAB_REPO="NormB/sipnab"
 
 set -u

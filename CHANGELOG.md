@@ -2,6 +2,34 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **The site and the installer published a glibc floor five minor versions
+  above the real one.** `release.yml` moved the gnu builds into
+  `rust:1-bookworm` and enforces a 2.36 floor; `website/config.toml` and
+  `website/static/install.sh` both went on saying 2.39. The installer compares
+  the host's glibc against that number, so every Debian 12 machine was handed
+  the static musl build — which the installer's own message notes has no TUI
+  audio — instead of the gnu build it can run. Verified against the released
+  v0.5.44 artifacts: both the x86_64 and aarch64 gnu binaries need only
+  GLIBC_2.34. The installer's own test suite had asserted the wrong behaviour
+  (`glibc 2.36 → musl`), so it passed for the same reason the bug existed.
+- **The homepage understated the binary by 87%.** The stat tile and the build
+  docs said 5 MB; the shipped stripped musl binary is 9.34 MB. The tile's gate
+  compared `data-count` to the tile's own fallback text, so it never looked at
+  a binary. The claim is now a 10 MB ceiling, single-sourced from
+  `website/config.toml` and enforced against the real artifact in `release.yml`.
+
+### Added
+- **Four gates for claims nothing was measuring.** The glibc floor across
+  `release.yml`, the site config and the installer; the binary-size ceiling
+  across the config, the homepage, both doc trees and the release workflow;
+  every Rust toolchain pin across six workflow steps, the Dockerfile and both
+  `rust-version` fields; and every target `install.sh` can request against the
+  release matrix, so a renamed target cannot 404 on a user's machine. Each was
+  verified by planting the original defect and watching it fail.
+
 ## [0.5.44] - 2026-07-26
 
 ### Added

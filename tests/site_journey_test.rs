@@ -319,6 +319,250 @@ fn site_release_date_matches_changelog() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Published-claim gates.
+//
+// The class of bug these exist for: a value that is *produced* in one place
+// (a CI step, a built artifact) and independently *re-stated* somewhere a
+// reader sees it. Every instance below shipped wrong, and every one of them
+// had a passing gate — because the gate compared the claim to itself rather
+// than to whatever produces it.
+// ---------------------------------------------------------------------------
+
+/// The glibc floor is published twice and enforced once. All three must agree.
+///
+/// `release.yml` moved the gnu builds into `rust:1-bookworm` (real floor 2.36)
+/// and neither published number followed. For eleven releases the site and the
+/// installer both said 2.39, so `install.sh` pushed every Debian 12 host to the
+/// musl build — which its own message notes has no TUI audio — for want of a
+/// comparison nothing was making.
+#[test]
+fn published_glibc_floor_matches_release_gate() {
+    let enforced = regex::Regex::new(r#"(?m)^\s*floor="([0-9]+\.[0-9]+)""#)
+        .unwrap()
+        .captures(&read(".github/workflows/release.yml"))
+        .expect("release.yml: no `floor=\"X.Y\"` in the glibc gate — did the step move?")[1]
+        .to_string();
+
+    let site = regex::Regex::new(r#"(?m)^glibc_floor = "([^"]+)""#)
+        .unwrap()
+        .captures(&read("website/config.toml"))
+        .expect("website/config.toml has no glibc_floor")[1]
+        .to_string();
+
+    let installer = regex::Regex::new(r#"(?m)^SIPNAB_GLIBC_FLOOR="([^"]+)""#)
+        .unwrap()
+        .captures(&read("website/static/install.sh"))
+        .expect("install.sh has no SIPNAB_GLIBC_FLOOR")[1]
+        .to_string();
+
+    assert_eq!(
+        site, enforced,
+        "website/config.toml glibc_floor is {site} but release.yml enforces \
+         {enforced} — /download would state the wrong minimum"
+    );
+    assert_eq!(
+        installer, enforced,
+        "install.sh SIPNAB_GLIBC_FLOOR is {installer} but release.yml enforces \
+         {enforced} — the installer would hand hosts the wrong artifact"
+    );
+}
+
+/// The published binary-size ceiling is single-sourced and actually enforced.
+///
+/// The homepage tile said 5 MB while the shipped stripped musl binary was
+/// 9.34 MB. The existing tile gate compared `data-count` to the tile's own
+/// fallback text, so 5 == 5 passed while the claim was 87% under reality.
+#[test]
+fn published_binary_size_matches_the_enforced_ceiling() {
+    let ceiling = regex::Regex::new(r#"(?m)^binary_size_ceiling_mb = "([0-9]+)""#)
+        .unwrap()
+        .captures(&read("website/config.toml"))
+        .expect("website/config.toml has no binary_size_ceiling_mb")[1]
+        .to_string();
+
+    let idx = read("website/templates/index.html");
+    assert!(
+        idx.contains(&format!(
+            r#"data-count="{ceiling}" data-suffix=" MB">{ceiling} MB<"#
+        )),
+        "the homepage binary-size tile does not quote the {ceiling} MB ceiling \
+         from website/config.toml"
+    );
+    assert!(
+        idx.contains(&format!("Under {ceiling} MB static binary")),
+        "the homepage feature table does not quote the {ceiling} MB ceiling"
+    );
+    for doc in ["docs/install.md", "website/content/docs/build.md"] {
+        assert!(
+            read(doc).contains(&format!("<= {ceiling} MB")),
+            "{doc} does not quote the {ceiling} MB ceiling from website/config.toml"
+        );
+    }
+
+    // A claim nobody measures is the bug this replaces. The workflow step is
+    // what compares it to a real artifact; without it this test only proves
+    // four files agree on a number none of them checked.
+    assert!(
+        read(".github/workflows/release.yml").contains("binary_size_ceiling_mb"),
+        "release.yml no longer reads binary_size_ceiling_mb — the published size \
+         ceiling is back to being unmeasured"
+    );
+}
+
+/// Every Rust toolchain pin in the repo names the same version.
+///
+/// The pin appears in six workflow steps, the Dockerfile base image and two
+/// `rust-version` fields. "Keep in sync" by comment is what let the glibc floor
+/// drift; this is the same shape of duplication with no comparison.
+#[test]
+fn rust_toolchain_pins_agree() {
+    let pin_re = regex::Regex::new(r"dtolnay/rust-toolchain@([0-9]+\.[0-9]+\.[0-9]+)").unwrap();
+    let mut pins: BTreeSet<String> = BTreeSet::new();
+    for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("yml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).expect("read workflow");
+        for c in pin_re.captures_iter(&text) {
+            pins.insert(c[1].to_string());
+        }
+    }
+    assert_eq!(
+        pins.len(),
+        1,
+        "workflows pin more than one Rust toolchain: {pins:?}"
+    );
+    let pin = pins.iter().next().expect("one pin").clone();
+    let minor = pin.rsplit_once('.').expect("x.y.z").0.to_string();
+
+    let image = regex::Regex::new(r"FROM rust:([0-9]+\.[0-9]+)")
+        .unwrap()
+        .captures(&read("Dockerfile"))
+        .expect("Dockerfile has no `FROM rust:X.Y`")[1]
+        .to_string();
+    assert_eq!(
+        image, minor,
+        "Dockerfile builds on rust:{image} but CI pins {pin} — the image and CI \
+         would compile with different compilers"
+    );
+
+    let msrv_re = regex::Regex::new(r#"(?m)^rust-version = "([^"]+)""#).unwrap();
+    for manifest in ["Cargo.toml", "crates/sipnab-audio/Cargo.toml"] {
+        let msrv = msrv_re
+            .captures(&read(manifest))
+            .unwrap_or_else(|| panic!("{manifest} has no rust-version"))[1]
+            .to_string();
+        assert_eq!(
+            msrv, minor,
+            "{manifest} declares MSRV {msrv} but the toolchain pin is {pin}; this \
+             project deliberately keeps MSRV equal to the pinned toolchain, so \
+             move both or neither"
+        );
+    }
+}
+
+/// Every artifact `install.sh` can ask for is one the release actually builds.
+///
+/// `choose_artifact` composes target triples by hand. If the release matrix
+/// renames or drops a target, the installer 404s on a live user's machine —
+/// and the installer's own test suite would not notice, because it compares
+/// `choose_artifact` against hard-coded strings, not against the matrix.
+#[test]
+fn installer_targets_match_release_matrix() {
+    let matrix: BTreeSet<String> = regex::Regex::new(r"(?m)^\s*- target: (\S+)")
+        .unwrap()
+        .captures_iter(&read(".github/workflows/release.yml"))
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        matrix.len() >= 6,
+        "release matrix extraction found only {} targets — regex broken?",
+        matrix.len()
+    );
+
+    let suffixes: BTreeSet<String> =
+        regex::Regex::new(r#"sipnab-\$\{_ver\}-\$\{_arch\}-([a-z0-9.-]+)\.tar\.gz"#)
+            .unwrap()
+            .captures_iter(&read("website/static/install.sh"))
+            .map(|c| c[1].to_string())
+            .collect();
+    assert!(
+        !suffixes.is_empty(),
+        "no artifact names found in install.sh — choose_artifact changed shape"
+    );
+
+    // install.sh only ever detects these two arches (detect_arch).
+    let constructible: BTreeSet<String> = suffixes
+        .iter()
+        .flat_map(|s| {
+            ["x86_64", "aarch64"]
+                .iter()
+                .map(move |a| format!("{a}-{s}"))
+        })
+        .collect();
+
+    let missing: Vec<&String> = constructible.difference(&matrix).collect();
+    assert!(
+        missing.is_empty(),
+        "install.sh would download artifacts the release never builds (404 on a \
+         user's machine): {missing:?}"
+    );
+    let unreachable: Vec<&String> = matrix.difference(&constructible).collect();
+    assert!(
+        unreachable.is_empty(),
+        "the release builds tarball targets install.sh can never ask for: \
+         {unreachable:?}"
+    );
+}
+
+/// Every `releases/latest/download/…` URL we publish names a versioned asset.
+///
+/// The release only ever uploads versioned filenames
+/// (`sipnab-0.5.44-x86_64-unknown-linux-musl.tar.gz`,
+/// `sipnab_0.5.44_amd64.deb`). A URL naming a bare, unversioned artifact can
+/// therefore never resolve. `build-wiki.py` put exactly such a `curl` in the
+/// wiki's front-page Quick Start, so the first command a wiki visitor could
+/// run had always returned 404 — nothing compared the generator's download
+/// URL to what the release publishes. Doc pages that keep a literal
+/// `<version>` placeholder are fine: they tell the reader to substitute.
+#[test]
+fn published_download_urls_name_versioned_assets() {
+    let re = regex::Regex::new(r"releases/latest/download/(\S+)").unwrap();
+    let literal_version = regex::Regex::new(r"\d+\.\d+\.\d+").unwrap();
+    let mut bare = Vec::new();
+    for rel in [
+        "scripts/build-wiki.py",
+        "scripts/build-site-internals.py",
+        "docs/install.md",
+        "website/content/docs/install.md",
+        "README.md",
+        "website/static/install.sh",
+    ] {
+        let path = repo().join(rel);
+        if !path.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read file");
+        for cap in re.captures_iter(&text) {
+            let asset = cap[1].trim_end_matches(['"', ',', '`', ')', '\'']);
+            // Versioned either by placeholder (docs tell you to substitute) or
+            // by a literal x.y.z already in the name.
+            let versioned = asset.contains("<version>") || literal_version.is_match(asset);
+            if !versioned {
+                bare.push(format!("{rel}: {asset}"));
+            }
+        }
+    }
+    assert!(
+        bare.is_empty(),
+        "download URLs naming an unversioned asset — the release publishes only \
+         versioned filenames, so these 404:\n  {}",
+        bare.join("\n  ")
+    );
+}
+
 /// Docs frontmatter hygiene: every page has a description and weights never collide.
 #[test]
 fn docs_page_weights_are_unique_and_descriptions_present() {
