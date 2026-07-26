@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [0.5.43] - 2026-07-26
+## [0.5.44] - 2026-07-26
 
 ### Added
 - **The developer documentation is now published on the website**, not only to
