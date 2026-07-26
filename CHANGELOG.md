@@ -2,6 +2,27 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.42] - 2026-07-26
+
+### Fixed
+- **Hovering the GitHub icon highlighted the entire footer row.**
+  `.footer-icon:hover` applied `transform: scale(1.1)`, and a transform
+  contributes to the scrollable overflow area of its ancestors. `.footer-row` is
+  a scroll container by design (`overflow-x: auto`, deliberately one line), so
+  scaling the right-most icon pushed the content past the container width — a
+  scrollbar spanning the whole footer flicked in on hover and out on mouse-out.
+  Hover now changes color only. The single-row layout is unchanged, so the
+  `flex-wrap: nowrap` contract pinned by `site_journey_test` still holds.
+- The footer GitHub link was missing the `target="_blank" rel="noopener"` its
+  Patreon and GitHub Sponsors siblings carry.
+- **The transport match in `parse_packet()` is exhaustive again.** 0.5.41
+  handled etherparse 0.21's new `TransportSlice::Igmp` with a `_` catch-all,
+  which silenced the compile error but gave up the guarantee that a future
+  etherparse transport gets reviewed. `TransportSlice` is not
+  `#[non_exhaustive]`, so IGMP is now matched explicitly and the wildcard is
+  gone: when etherparse adds a transport, the build fails and someone decides
+  whether it can carry SIP or RTP, instead of it being silently dropped.
+
 ## [0.5.41] - 2026-07-26
 
 ### Changed

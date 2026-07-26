@@ -1814,12 +1814,19 @@ input:focus-visible,
 }
 
 // Patreon / GitHub Sponsors / GitHub as icons, brand color on hover.
+//
+// Hover changes color only — deliberately no `transform: scale()`. A transform
+// contributes to the scrollable overflow area of its ancestors, and
+// `.footer-row` is a scroll container (`overflow-x: auto`, single line by
+// design). Scaling the right-most icon on hover pushed the content past the
+// container width, so a scrollbar spanning the whole footer flicked in on
+// hover and out on mouse-out — reading as "the entire bottom row highlights".
 .footer-icon {
   color: $text-dim;
   display: flex;
   align-items: center;
-  transition: color 0.15s, transform 0.15s;
-  &:hover { color: $text; transform: scale(1.1); }
+  transition: color 0.15s;
+  &:hover { color: $text; }
 }
 
 .footer-icon-patreon:hover { color: #f96854; }
