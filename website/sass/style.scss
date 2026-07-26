@@ -240,6 +240,23 @@ input:focus-visible,
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     padding: 0.4rem;
     z-index: 110;
+    // 29 entries overflow a laptop viewport; scroll inside the menu rather
+    // than pushing items off-screen where they are unreachable.
+    max-height: calc(100vh - #{$nav-height} - 24px);
+    overflow-y: auto;
+  }
+
+  // Group heading inside the menu — a label, not a menuitem, so it stays out
+  // of the roving-focus order.
+  .nav-drop-label {
+    margin: 0.5rem 0 0.15rem;
+    padding: 0 0.55rem;
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: $text-dim;
+    border-top: 1px solid $border;
+    padding-top: 0.5rem;
   }
 
   // Keyboard: tabbing into the menu keeps it open without any JS.
@@ -1589,6 +1606,100 @@ input:focus-visible,
 // copy button is visible so they swap in place instead of overlapping.
 .doc-body pre[data-lang]::before { transition: opacity 0.15s ease; }
 .doc-body pre:hover[data-lang]::before { opacity: 0; }
+
+// -- Mermaid diagrams (developer docs) --
+// Rendered by static/js/diagram-viewer.js, which replaces each
+// <pre class="mermaid"> with a .diagram-figure holding the SVG. The control
+// box lives inside the figure and is draggable, so it is positioned against
+// the figure rather than the viewport.
+.diagram-figure {
+  position: relative;
+  overflow: hidden;
+  margin: 1.75rem 0;
+  padding: 1rem;
+  min-height: 180px;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 8px;
+  cursor: grab;
+
+  &.panning { cursor: grabbing; }
+
+  svg { max-width: none; }
+}
+
+.diagram-controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.2rem 0.3rem;
+  background: rgba($bg, 0.92);
+  border: 1px solid $border-light;
+  border-radius: 7px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  // Above the SVG, and never a pan target itself.
+  z-index: 2;
+
+  &.dragging { opacity: 0.8; }
+
+  button {
+    background: none;
+    border: none;
+    color: $text-dim;
+    font-family: $font-mono;
+    font-size: 0.95rem;
+    line-height: 1;
+    padding: 0.25rem 0.4rem;
+    border-radius: 4px;
+    cursor: pointer;
+    &:hover { color: $accent; background: rgba($accent, 0.1); }
+    &:focus-visible { outline: 2px solid $accent; outline-offset: 1px; }
+  }
+}
+
+.diagram-grip {
+  cursor: grab;
+  &:active { cursor: grabbing; }
+}
+
+.diagram-zoom-label {
+  font-family: $font-mono;
+  font-size: 0.7rem;
+  color: $text-dim;
+  min-width: 3.1em;
+  text-align: center;
+  // Fixed width: the label runs 40%–600%, and a shrinking box would walk out
+  // from under the cursor mid-zoom.
+  font-variant-numeric: tabular-nums;
+}
+
+// The reopen affordance. Hidden until the control box is collapsed, so only
+// one of the two is ever on screen.
+.diagram-reopen {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: none;
+  background: rgba($bg, 0.92);
+  border: 1px solid $border-light;
+  border-radius: 6px;
+  color: $text-dim;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0.3rem 0.4rem;
+  cursor: pointer;
+  z-index: 2;
+  &:hover { color: $accent; }
+  &:focus-visible { outline: 2px solid $accent; outline-offset: 1px; }
+}
+
+.diagram-figure.controls-hidden {
+  .diagram-controls { display: none; }
+  .diagram-reopen { display: block; }
+}
 
 // -- Doc index (section listing) --
 .doc-index {

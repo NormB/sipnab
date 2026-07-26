@@ -230,7 +230,10 @@ fn every_tape_output_is_a_referenced_site_asset() {
 /// Every `@/docs` link in the base/index chrome resolves to an existing content page.
 #[test]
 fn every_nav_docs_link_resolves_to_a_content_page() {
-    let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_-]+\.md)").unwrap();
+    // `/` is in the class so subsection links (`@/docs/internals/x.md`) are
+    // checked too. Without it the pattern simply did not match them, and a
+    // broken developer-docs link in the nav would have passed silently.
+    let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_/-]+\.md)").unwrap();
     let mut missing = Vec::new();
     let mut seen = 0;
     for tpl in [
@@ -282,25 +285,76 @@ fn site_version_matches_crate_version() {
     );
 }
 
+/// The download page's release date matches the CHANGELOG entry it describes.
+///
+/// `release_date` had no gate at all and had drifted two days behind the
+/// 0.5.43 CHANGELOG heading — the version beside it was gated, the date next
+/// to it was not, so /download advertised the right version on the wrong day.
+#[test]
+fn site_release_date_matches_changelog() {
+    let cfg = read("website/config.toml");
+    let site_v = regex::Regex::new(r#"(?m)^version = "([^"]+)""#)
+        .unwrap()
+        .captures(&cfg)
+        .expect("config.toml version")[1]
+        .to_string();
+    let site_date = regex::Regex::new(r#"(?m)^release_date = "([^"]+)""#)
+        .unwrap()
+        .captures(&cfg)
+        .expect("config.toml release_date")[1]
+        .to_string();
+
+    let changelog = read("CHANGELOG.md");
+    let heading = regex::Regex::new(r"(?m)^## \[([^\]]+)\] - (\d{4}-\d{2}-\d{2})").unwrap();
+    let entry = heading
+        .captures_iter(&changelog)
+        .find(|c| c[1] == site_v)
+        .unwrap_or_else(|| panic!("CHANGELOG.md has no `## [{site_v}]` heading"));
+
+    assert_eq!(
+        &entry[2], site_date,
+        "website/config.toml release_date ({site_date}) != the CHANGELOG date \
+         for {site_v} ({}) — /download would show the wrong release date",
+        &entry[2]
+    );
+}
+
 /// Docs frontmatter hygiene: every page has a description and weights never collide.
 #[test]
 fn docs_page_weights_are_unique_and_descriptions_present() {
     let w_re = regex::Regex::new(r"(?m)^weight = (\d+)").unwrap();
     let d_re = regex::Regex::new(r"(?m)^description = ").unwrap();
-    let mut weights: Vec<(u32, String)> = Vec::new();
+    // Keyed by directory: Zola sorts each section independently, so a weight
+    // collision only matters between siblings. Subsections are walked too —
+    // the generated developer docs live in one, and a flat read_dir would
+    // have left their frontmatter ungated.
+    let mut weights: Vec<(String, u32, String)> = Vec::new();
     let mut missing_desc = Vec::new();
-    for entry in std::fs::read_dir(repo().join("website/content/docs")).expect("docs dir") {
-        let p = entry.expect("entry").path();
-        if p.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
+    let mut dirs = vec![repo().join("website/content/docs")];
+    let mut files = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("docs dir") {
+            let p = entry.expect("entry").path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                files.push(p);
+            }
         }
-        let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        if name == "_index.md" {
+    }
+    for p in files {
+        let name = p
+            .strip_prefix(repo().join("website/content/docs"))
+            .expect("under docs")
+            .to_string_lossy()
+            .into_owned();
+        let section = p.parent().expect("parent").to_string_lossy().into_owned();
+        if p.file_name().unwrap() == "_index.md" {
             continue;
         }
         let text = std::fs::read_to_string(&p).expect("read page");
         match w_re.captures(&text) {
-            Some(c) => weights.push((c[1].parse().unwrap(), name.clone())),
+            Some(c) => weights.push((section, c[1].parse().unwrap(), name.clone())),
             None => missing_desc.push(format!("{name}: no weight")),
         }
         if !d_re.is_match(&text) {
@@ -310,10 +364,10 @@ fn docs_page_weights_are_unique_and_descriptions_present() {
     let mut dupes = Vec::new();
     weights.sort();
     for pair in weights.windows(2) {
-        if pair[0].0 == pair[1].0 {
+        if pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 {
             dupes.push(format!(
                 "weight {} used by {} and {}",
-                pair[0].0, pair[0].1, pair[1].1
+                pair[0].1, pair[0].2, pair[1].2
             ));
         }
     }
@@ -959,11 +1013,13 @@ fn inline_script_edits_require_csp_hash_refresh() {
         ),
         (
             "page.html",
-            "sha256-M17DoO9piJx5EpFaDEJn5Q9DZKuTLZWWKx2H19xX9CU=",
+            "sha256-UOwnn7uXvW/gl+mP2NGmMuxif0eKdH7ocCwmMTGCjcY=",
         ),
         (
+            // Re-pinned in 0.5.43: the copy-button script now skips
+            // `pre.mermaid`, which it was appending the word "copy" into.
             "page.html",
-            "sha256-UOwnn7uXvW/gl+mP2NGmMuxif0eKdH7ocCwmMTGCjcY=",
+            "sha256-VEhaYG0u0qZoYQzwk4PgncTbqmZXsFNRY5GJxNQt7UI=",
         ),
     ];
 

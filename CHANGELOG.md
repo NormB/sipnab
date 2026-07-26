@@ -5,6 +5,21 @@ All notable changes to sipnab will be documented in this file.
 ## [0.5.43] - 2026-07-26
 
 ### Added
+- **The developer documentation is now published on the website**, not only to
+  the GitHub wiki. `docs/internals/` stays the single source of truth;
+  `scripts/build-site-internals.py` renders it into
+  `website/content/docs/internals/`, which is committed so the site still builds
+  with Zola alone. The Docs dropdown and the docs sidebar carry all ten pages —
+  their absence from the dropdown is what surfaced this.
+- **A mermaid viewer we control.** The wiki renders these diagrams with GitHub's
+  viewer, which pins its controls to the bottom-right corner *over the diagram
+  text*, with no way to move or hide them. The site now renders the same
+  diagrams with a vendored mermaid bundle and a control box that can be
+  collapsed and dragged anywhere in the figure; position and collapsed state
+  persist across pages and reloads. Pan with a drag, zoom with the buttons or
+  Ctrl/⌘+wheel — a bare wheel still scrolls the page, so a diagram never traps
+  the reader's scroll. The 3.4 MB bundle loads only on pages whose frontmatter
+  declares `has_diagrams`, a flag the generator sets from the content itself.
 - **`--group-by <FIELD>` is implemented.** It was documented, parsed into
   `Cli::group_by`, and **never read** — any value, including a typo, was
   accepted and produced ungrouped output. It now groups batch output so messages
@@ -52,6 +67,19 @@ All notable changes to sipnab will be documented in this file.
   MCP walkthroughs. The version-marker gate's regex requires a `(` after the
   version, so a bare `sipnab 0.5.20 features:` line slipped through and sat stale
   for 23 releases; the remaining mention is now explicitly historical.
+- **Two link gates silently skipped every subdirectory link.** The `@/docs/…`
+  patterns in `site_journey_test` and `link_integrity_test` had no `/` in their
+  character class, so a link into a docs subsection did not match and was never
+  checked — the gates reported clean because they never looked. The docs
+  frontmatter gate had the same shape of hole: it read the docs directory
+  flat, so a subsection's weights and descriptions were ungated. Both now
+  recurse, with weight collisions scoped per section the way Zola sorts them.
+- **The download page advertised the wrong release date.** `release_date` in
+  `website/config.toml` had no gate anywhere — the version beside it was
+  checked against `Cargo.toml` by both a test and the pre-commit hook, the date
+  next to it by nothing — and it had drifted two days behind the CHANGELOG. It
+  is now asserted equal to the CHANGELOG heading for the version the site
+  claims to be serving.
 
 ## [0.5.42] - 2026-07-26
 

@@ -1,5 +1,34 @@
 {# Left-sidebar navigation group: a titled section of doc-page links, with the
    active page's on-page section anchors nested beneath it. #}
+{# Left-sidebar group built from a Zola section rather than a hand-listed set
+   of paths. Used for the generated developer docs: the pages under
+   `docs/internals/` come and go with `scripts/build-site-internals.py`, so a
+   literal path list here would be one more thing to drift. #}
+{% macro nav_section(title, section_path, current_url) %}
+{% set sec = get_section(path=section_path) %}
+<div class="doc-nav-group">
+  <p class="doc-nav-group-title">{{ title }}</p>
+  <ul class="doc-nav-list">
+    <li>
+      <a href="{{ sec.permalink }}" class="doc-nav-link{% if sec.permalink == current_url %} active{% endif %}"{% if sec.permalink == current_url %} aria-current="page"{% endif %}>{{ sec.title }} index</a>
+    </li>
+    {% for p in sec.pages %}
+    {% set is_current = p.permalink == current_url %}
+    <li>
+      <a href="{{ p.permalink }}" class="doc-nav-link{% if is_current %} active{% endif %}"{% if is_current %} aria-current="page"{% endif %}>{{ p.title }}</a>
+      {% if is_current and p.toc | length > 0 %}
+      <ul class="doc-nav-toc">
+        {% for h2 in p.toc %}
+        <li><a href="#{{ h2.id }}" class="doc-toc-link">{{ h2.title }}</a></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endmacro %}
+
 {% macro nav_group(title, paths, current_url) %}
 <div class="doc-nav-group">
   <p class="doc-nav-group-title">{{ title }}</p>

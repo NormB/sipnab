@@ -160,6 +160,12 @@ process, so the floor is not optional.
   does not render.
 - **A change to linked code updates the page that links it, in the same pull
   request.** The hard gate is `dev_docs_drift_test` in CI.
-- **These pages are wiki-only.** They are published to the GitHub wiki by
-  [`build-wiki.py`](../../scripts/build-wiki.py) and are deliberately not
-  mirrored into the marketing site under `website/content/`.
+- **These pages publish twice, and this tree is the source of both.**
+  [`build-wiki.py`](../../scripts/build-wiki.py) renders them into the GitHub
+  wiki; [`build-site-internals.py`](../../scripts/build-site-internals.py)
+  renders them into `website/content/docs/internals/`, which is committed so
+  the site builds with Zola alone. Never edit either mirror — regenerate it.
+  `dev_docs_drift_test` re-runs the site generator and fails if the committed
+  output is stale. The site mirror exists because GitHub's wiki mermaid viewer
+  pins its controls over the diagram with no way to move them; the site
+  renders the same diagrams with a viewer we control.

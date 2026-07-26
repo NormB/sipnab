@@ -18,7 +18,12 @@
 //! 5. no markdown-link syntax inside a mermaid fence (`build-wiki.py`
 //!    rewrites links with no fence awareness),
 //! 6. every mermaid fence is preceded by prose, so the page reads where
-//!    mermaid does not render.
+//!    mermaid does not render,
+//! 7. every page is published to the website, and the committed site mirror
+//!    under `website/content/docs/internals/` is byte-identical to what
+//!    `scripts/build-site-internals.py` produces today,
+//! 8. every mirrored page carrying a diagram declares `has_diagrams`, and the
+//!    page template loads the mermaid bundle on exactly that flag.
 
 use std::path::{Path, PathBuf};
 
@@ -362,5 +367,278 @@ fn developer_docs_carry_their_diagram_set() {
     assert!(
         total >= 17,
         "expected at least 17 sequence diagrams across docs/internals, found {total}"
+    );
+}
+
+/// Mermaid syntax hazards that render as a *silently broken* diagram.
+///
+/// Both of these shipped, and both survived every existing gate: the fences
+/// were well-formed markdown, started with `sequenceDiagram`, and carried no
+/// markdown links, so nothing here looked wrong until the diagrams were put
+/// in front of a real mermaid parser.
+///
+/// 1. `;` is a statement separator in mermaid. A semicolon in note or message
+///    text ends the statement there, and the remainder is parsed as a new
+///    statement — which fails, taking the whole diagram with it.
+/// 2. An actor id that spells a mermaid keyword (`Loop`, `End`, `Alt`, …)
+///    tokenizes as that keyword when it appears as a message target, so
+///    `Term-->>Loop: ...` is a parse error even though `Loop->>Term: ...`
+///    parses.
+#[test]
+fn mermaid_fences_avoid_syntax_hazards() {
+    // Keywords the sequence-diagram lexer claims, lowercased.
+    const KEYWORDS: &[&str] = &[
+        "loop",
+        "alt",
+        "else",
+        "opt",
+        "par",
+        "and",
+        "end",
+        "rect",
+        "note",
+        "over",
+        "activate",
+        "deactivate",
+        "critical",
+        "option",
+        "break",
+        "box",
+        "autonumber",
+        "participant",
+        "actor",
+        "create",
+        "destroy",
+        "link",
+        "links",
+        "title",
+    ];
+
+    let mut problems = Vec::new();
+    for page in internals_pages() {
+        let text = read(&page);
+        for (line_idx, body) in mermaid_fences(&text) {
+            let at = format!("{}:{}", page.display(), line_idx + 1);
+            for (n, line) in body.lines().enumerate() {
+                if line.contains(';') {
+                    problems.push(format!(
+                        "{at} (+{n}): `;` is a mermaid statement separator and \
+                         truncates the text — use an em dash:\n      {}",
+                        line.trim()
+                    ));
+                }
+            }
+            for line in body.lines() {
+                let t = line.trim();
+                let Some(rest) = t
+                    .strip_prefix("participant ")
+                    .or_else(|| t.strip_prefix("actor "))
+                else {
+                    continue;
+                };
+                // `participant Loop as TUI event loop` — the id is the first
+                // word; everything after `as` is the display label and may
+                // say anything.
+                let id = rest.split_whitespace().next().unwrap_or("");
+                if KEYWORDS.contains(&id.to_ascii_lowercase().as_str()) {
+                    problems.push(format!(
+                        "{at}: actor id `{id}` collides with the mermaid \
+                         keyword `{}` — it parses as that keyword when used \
+                         as a message target",
+                        id.to_ascii_lowercase()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "mermaid fences with syntax hazards (these render as a broken diagram, \
+         on the site and on the wiki):\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Site mirror: website/content/docs/internals/ is generated, not written
+// ---------------------------------------------------------------------------
+
+/// `docs/internals/<name>.md` -> the site file it generates.
+fn site_mirror_name(page: &Path) -> String {
+    let name = page.file_name().expect("file name").to_string_lossy();
+    if name == "README.md" {
+        "_index.md".to_string()
+    } else {
+        name.into_owned()
+    }
+}
+
+/// Every developer page reaches the website, and no orphan mirror survives a
+/// renamed source. The wiki gate above is the same contract for the wiki;
+/// without this one a new page publishes to the wiki and silently never
+/// appears on sipnab.com.
+#[test]
+fn every_internals_page_is_published_to_the_site() {
+    let dir = repo().join("website/content/docs/internals");
+    let expected: Vec<String> = internals_pages()
+        .iter()
+        .map(|p| site_mirror_name(p))
+        .collect();
+
+    let mut missing = Vec::new();
+    for name in &expected {
+        if !dir.join(name).is_file() {
+            missing.push(name.clone());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "docs/internals pages with no site mirror (run \
+         `python3 scripts/build-site-internals.py`):\n  {}",
+        missing.join("\n  ")
+    );
+
+    let mut orphans: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|n| n.ends_with(".md") && !expected.contains(n))
+        .collect();
+    orphans.sort();
+    assert!(
+        orphans.is_empty(),
+        "site pages under website/content/docs/internals with no source in \
+         docs/internals (a renamed source left these behind):\n  {}",
+        orphans.join("\n  ")
+    );
+}
+
+/// The committed mirror equals what the generator produces today.
+///
+/// The mirror is committed so the Zola build needs nothing but Zola, which
+/// means it is exactly the kind of generated-but-checked-in artifact that
+/// goes stale the first time someone edits the source and forgets the
+/// script. Regenerate into a temp dir and compare byte-for-byte.
+#[test]
+fn site_internals_mirror_is_current() {
+    let tmp = std::env::temp_dir().join(format!(
+        "sipnab-site-internals-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let out = std::process::Command::new("python3")
+        .arg(repo().join("scripts/build-site-internals.py"))
+        .arg(&tmp)
+        .current_dir(repo())
+        .output()
+        .expect(
+            "run scripts/build-site-internals.py — python3 must be on PATH \
+             (CI installs it; wiki-sync.yml already depends on it)",
+        );
+    assert!(
+        out.status.success(),
+        "build-site-internals.py failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let committed = repo().join("website/content/docs/internals");
+    let mut stale = Vec::new();
+    for page in internals_pages() {
+        let name = site_mirror_name(&page);
+        let fresh = std::fs::read_to_string(tmp.join(&name)).expect("generated page");
+        let have = std::fs::read_to_string(committed.join(&name)).unwrap_or_default();
+        if fresh != have {
+            stale.push(name);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        stale.is_empty(),
+        "website/content/docs/internals is stale — regenerate with \
+         `python3 scripts/build-site-internals.py` and commit:\n  {}",
+        stale.join("\n  ")
+    );
+}
+
+/// A mirrored page with a diagram declares `has_diagrams`, and `page.html`
+/// loads the mermaid bundle on exactly that flag.
+///
+/// Two ways this breaks silently: a page gains a diagram and never loads
+/// mermaid (the reader sees raw `sequenceDiagram` source), or the template
+/// stops gating on the flag and every doc page pays 3.4 MB.
+#[test]
+fn pages_with_diagrams_load_the_mermaid_bundle() {
+    let committed = repo().join("website/content/docs/internals");
+    let mut wrong = Vec::new();
+    let mut with_diagrams = 0;
+    for page in internals_pages() {
+        let name = site_mirror_name(&page);
+        let mirrored = std::fs::read_to_string(committed.join(&name)).unwrap_or_default();
+        let source_has = !mermaid_fences(&read(&page)).is_empty();
+        let declares = mirrored.contains("has_diagrams = true");
+        let rendered = mirrored.contains("<pre class=\"mermaid\">");
+        if source_has {
+            with_diagrams += 1;
+        }
+        if source_has != declares || source_has != rendered {
+            wrong.push(format!(
+                "{name}: source diagrams={source_has}, has_diagrams={declares}, \
+                 rendered <pre class=\"mermaid\">={rendered}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "site mirror diagram flags disagree with the source pages:\n  {}",
+        wrong.join("\n  ")
+    );
+    assert!(
+        with_diagrams >= 6,
+        "expected at least 6 developer pages to carry diagrams, found {with_diagrams}"
+    );
+
+    let tpl = read("website/templates/page.html");
+    assert!(
+        tpl.contains("page.extra.has_diagrams"),
+        "page.html must gate the mermaid bundle on page.extra.has_diagrams"
+    );
+    for asset in ["js/mermaid.min.js", "js/diagram-viewer.js"] {
+        assert!(
+            tpl.contains(asset),
+            "page.html does not load {asset} — the diagrams would render as \
+             raw mermaid source"
+        );
+        assert!(
+            repo().join("website/static").join(asset).is_file(),
+            "website/static/{asset} is missing but page.html references it"
+        );
+    }
+}
+
+/// Every mirrored page is reachable from the Docs dropdown.
+///
+/// The gap that started this: the developer docs shipped and the dropdown
+/// never learned about them, so the only way to the pages was a direct URL.
+#[test]
+fn every_site_internals_page_is_in_the_docs_dropdown() {
+    let base = read("website/templates/base.html");
+    let mut missing = Vec::new();
+    for page in internals_pages() {
+        let link = format!("@/docs/internals/{}", site_mirror_name(&page));
+        if !base.contains(&link) {
+            missing.push(link);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "developer pages absent from the Docs dropdown in base.html:\n  {}",
+        missing.join("\n  ")
     );
 }
