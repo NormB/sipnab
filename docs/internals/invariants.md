@@ -40,14 +40,20 @@ then lock the stream store. Never hold both write locks simultaneously.
 **Why.** Two locks acquired in opposite orders on two threads is the textbook
 deadlock; keeping them disjoint makes the ordering question moot.
 
-**Enforced by.** [`process_packet()`](../../src/pipeline.rs), which is the only
-applier that takes locks at all — it locks each store once, briefly, and
-releases before touching the other.
+**Enforced by.** Convention in the two appliers that take locks at all:
+[`process_packet()`](../../src/pipeline.rs) on the live path and
+[`run_pcap_load()`](../../src/tui/controllers/file_open.rs) on the TUI
+file-open path (rule 1's documented exception). Each locks a store once,
+briefly, and releases it before touching the other. The batch and `--cores`
+appliers hold their stores by `&mut` and so have no ordering to get wrong.
+Nothing rejects a third lock-taking applier that gets it backwards, which is
+exactly why the rule is written down here.
 
 **Fails as.** A hang, not a crash: the TUI stops repainting with no error
 anywhere.
 
-The sequence is short enough to state exactly.
+The sequence is short enough to state exactly, and `pcap-load` repeats it
+packet for packet.
 
 ```mermaid
 sequenceDiagram

@@ -54,7 +54,7 @@ here.
 | Document | What it is |
 |---|---|
 | [`ARCHITECTURE.md`](../../ARCHITECTURE.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
-| [`MAINTAINABILITY-PERF-SPEC.md`](../../MAINTAINABILITY-PERF-SPEC.md) | The rationale behind the current shape of the code — why the pipeline was unified, why `main.rs` was decomposed into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section. Nothing in `docs/` links to it, so it is easy to miss. |
+| [`MAINTAINABILITY-PERF-SPEC.md`](../../MAINTAINABILITY-PERF-SPEC.md) | The rationale behind the current shape of the code — why the pipeline was unified, why `main.rs` was decomposed into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
 | [`tasks/todo.md`](../../tasks/todo.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
 | [`codex_analysis.md`](../../codex_analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
 
@@ -81,12 +81,16 @@ toxic waste — [`crypto.rs`](../../src/crypto.rs) zeroizes), D13 (RTP is
 first-class: [`stream_store.rs`](../../src/rtp/stream_store.rs) discovers
 streams with no SIP at all), D15/D16 (privilege drop and process isolation),
 D17 (warn and continue on malformed input), D18 (localhost default for every
-listener). Beware the numbering collision noted above. A **D22** also exists,
-but only in
-[`implementation-plan-phases-8-10.md`](../../implementation-plan-phases-8-10.md):
-competitive-feature-borrowing discipline, whose prompt-injection rule is the
-one cited in [`src/mcp/server.rs`](../../src/mcp/server.rs) — v6's catalog
-stops at D21.
+listener). Beware the numbering collision noted above. **D22, D23 and D24**
+also exist, but only in
+[`implementation-plan-phases-8-10.md`](../../implementation-plan-phases-8-10.md)
+— v6's catalog stops at D21. D22 is competitive-feature-borrowing discipline,
+whose prompt-injection rule is the one cited in
+[`src/mcp/server.rs`](../../src/mcp/server.rs); D23 makes documentation a
+tier-1 deliverable that lands in the same pull request as the code it
+describes; D24 makes tests a phase-completion gate, which is why every
+code-bearing sub-phase in that plan carries a `Tests — X.Y deliverables` block
+beside its `Gate` and `Docs` blocks.
 
 **WS0–WS8 — workstreams.** The refactor program in
 [`MAINTAINABILITY-PERF-SPEC.md`](../../MAINTAINABILITY-PERF-SPEC.md). WS0 was a
@@ -113,9 +117,12 @@ followed symlinks.
 **The gate suite** — the self-enforcing checks that run without anyone asking:
 eight numbered gates in [`.githooks/pre-commit`](../../.githooks/pre-commit)
 (clippy, the full test suite, no `unwrap()`/`expect()` in production, WASM
-exports in sync, homepage/site/man version agreement, no TODO stubs, WASM
-rebuild, and an advisory notice when a commit touches code these pages cite),
-four in [`.githooks/pre-push`](../../.githooks/pre-push) (`fmt`,
+exports in sync, the homepage *test count* — with separate sub-gates 5b and 5c
+for the site and man/docs version strings, which are a different claim — no
+TODO stubs, WASM rebuild, and an advisory notice when a commit touches code
+these pages cite; the TODO scan and that notice are the two advisory gates,
+printing `WARN`/`REVIEW` and letting the commit through), four in
+[`.githooks/pre-push`](../../.githooks/pre-push) (`fmt`,
 `clippy --all-features --all-targets`, `cargo doc` with `-D warnings`, and a
 `fuzz` workspace check), and the CI jobs behind them.
 

@@ -16,10 +16,10 @@ description = "Complete TUI keyboard shortcut reference for all views."
 | `Tab` | Switch between Call List and RTP Streams | Call List, RTP Streams |
 | `/` | Search | Call List, Raw Message, RTP Streams |
 | `F7` | Open filter dialog | Call List, Call Flow, RTP Streams |
-| `F2` | Save capture | Call List, Call Flow |
+| `F2` | Save capture (or the selected stream's audio) | Call List, Call Flow, Raw Message, RTP Streams, Stream Detail |
 | `Space` | Multi-select dialogs (for save) | Call List |
 | `t` | Cycle timestamp mode | Call List, Call Flow |
-| `F1` | Help | Call List, Call Flow, Message Diff, RTP Streams |
+| `F1` | Help | Call List, Call Flow, Raw Message, Message Diff, Combined Detail, RTP Streams, Stream Detail |
 
 Complete keyboard shortcut reference for sipnab's interactive TUI.
 
@@ -33,8 +33,15 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 |-----|--------|
 | Ctrl+C | Force quit |
 | Ctrl+L | Clear all calls (same as F5) |
+| v | Show version (with git commit) in the status line |
+| n | Cycle name resolution (Off / Static / DNS) |
+| N | Name the selected address (map IP → host/FQDN) |
 | F12 | Toggle mouse capture — off enables the terminal's native drag-to-select (wheel scrolling pauses until re-enabled) |
 | Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
+
+`v`, `n`, and `F12` are built-in fallbacks: a key you explicitly rebind in
+`[keybindings]` always wins over them. In the Raw Message view with an active
+search, `n`/`N` are match navigation instead.
 
 ## Copying text
 
@@ -76,22 +83,26 @@ without toggling anything.
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
+| D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | O | Open pcap file (File Open dialog) |
+| F8 | Open Settings popup **(configurable: `settings`)** |
 | Tab | Switch to RTP Streams view |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save capture **(configurable: `save`)** |
 | F3 | Search (same as `/`). Searches SIP headers and message bodies (SDP, multipart payloads) |
+| F4 | Open extended multi-leg flow for the selected dialog **(configurable: `extended_flow`)** |
 | F5 | Clear all calls **(configurable: `clear_calls`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear active filter **and** persisted search |
 | F10 | Column selector **(configurable: `column_selector`)**. Opens a popup to show/hide columns in the Call List (e.g., PDD, Source IP, Destination). |
 
-> **Gotcha:** the `clear_calls` action binds `F5` in *both* views — in the Call List it clears all calls, in the Call Flow it starts compare mode. Rebinding `clear_calls` moves both.
+> **Gotcha:** the `clear_calls` action binds `F5` in *both* views — in the Call List it clears all calls, in the Call Flow it resets a pending message-compare selection. Rebinding `clear_calls` moves both.
 
 ## Call Flow
 
 | Key | Action |
 |-----|--------|
+| Tab | Switch focus between the ladder (left) and detail (right) panes |
 | Up / k | Navigate to previous message or RTP bar (detail panel updates) |
 | Down / j | Navigate to next message or RTP bar |
 | PgUp | Page up through messages |
@@ -104,24 +115,28 @@ without toggling anything.
 | d | Cycle SDP display mode (none / summary / full) |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
 | c | Cycle color scheme (method / call-id / cseq) |
+| h | Cycle header-name display (as captured / expanded / compact) — visual only, rewrites `From:` ↔ `f:` etc. in the message text views |
 | R | Toggle detail panel visibility |
-| 0 / + / = / Right | Increase ladder panel width (with the split off, shows a hint instead) |
-| 9 / - / Left | Decrease ladder panel width (with the split off, shows a hint instead) |
+| + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the split off, shows a hint instead) |
+| - / 9 / Right | Narrow the detail pane, widening the ladder (with the split off, shows a hint instead) |
 | w | Toggle line wrapping in the detail panel (off = long lines truncate; a horizontal scrollbar appears at the bottom edge) |
 | Left / Right | Scroll the detail panel horizontally when it is focused and wrap is off |
 | \[ | Scroll detail panel up |
 | \] | Scroll detail panel down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |
 | f | Filter the ladder to the selected message's transaction (toggle) |
+| a | Open combined detail for the selected message's transaction |
+| A | Open combined detail for the whole dialog |
 | m | Set mark at current message. Places a reference marker on the current message. Navigate to another message to see the **delta** time between the mark and your current position -- useful for measuring delays between specific SIP messages. |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)**. Shows related B2BUA/SBC call legs together in the flow view -- useful for tracing calls through proxies and back-to-back user agents. |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
-| F5 | Start compare mode **(configurable: `clear_calls`)** |
+| F5 | Reset message-compare selection **(configurable: `clear_calls`)** |
 | r | Jump to RTP Streams list for this dialog |
-| F6 | Toggle RTP display in flow |
+| N | Name endpoints (map IP → host/FQDN; Tab/Shift-Tab switch between the offered participants) |
+| F6 / Ctrl+R | Toggle RTP display in flow (`Ctrl+R` is an alias for front-ends that cannot send F-keys) |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear active filter **and** persisted search |
 
@@ -139,7 +154,10 @@ without toggling anything.
 | n / N | Jump to the next / previous search-match line (wraps) |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
+| h | Cycle header-name display (as captured / expanded / compact) |
 | y | Copy the displayed message's raw text to the clipboard (OSC 52, works over SSH — see [Copying text](#copying-text)) |
+| F1 / ? | Help **(configurable: `help`)** |
+| F2 | Save **(configurable: `save`)** |
 | Esc | Back to the view it was opened from (call flow or call list) |
 
 ## Message Diff
@@ -149,9 +167,24 @@ without toggling anything.
 | Up / k, Down / j | Scroll |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
+| h | Cycle header-name display (as captured / expanded / compact) |
 | q | Quit **(configurable: `quit`)** |
 | Esc | Back to call flow |
 | F1 / ? | Help **(configurable: `help`)** |
+
+## Combined Detail
+
+Opened from the call flow with `a` (transaction) or `A` (whole dialog): every
+message of the selection rendered as one scrollable document.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| h | Cycle header-name display (as captured / expanded / compact) |
+| F1 / ? | Help **(configurable: `help`)** |
+| Esc | Back to call flow |
 
 ## RTP Streams
 
@@ -164,9 +197,12 @@ without toggling anything.
 | End | Jump to last stream |
 | / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** |
 | Enter | Open Stream Detail view for the selected stream |
+| D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
+| N | Name the selected stream's source address (map IP → host/FQDN) |
 | F1 / ? | Help **(configurable: `help`)** |
+| F2 | Save the selected stream's audio as WAV **(configurable: `save`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 
 ## Stream Detail
@@ -179,9 +215,26 @@ without toggling anything.
 | PgDn | Page down |
 | Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
 | L | Open the packet loss map (RTP loss pattern) |
-| Esc | Back to RTP Streams list or Call Flow |
+| F1 / ? | Help **(configurable: `help`)** |
+| F2 | Save the stream's audio as WAV **(configurable: `save`)** |
+| Esc | Back to the view it was opened from (RTP Streams, Call Flow, or Quality Dashboard) |
 
 The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis (RFC 3611), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
+
+## Quality Dashboard
+
+Live call-quality overview: aggregate MOS/jitter/loss with the worst
+streams ranked first and per-stream trend sparklines. Open with `D` from
+the Call List or RTP Streams view.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Select stream (worst first) |
+| PgUp / PgDn | Page through streams |
+| Home / End | Jump to best/worst |
+| Enter | Open stream detail for the selection |
+| L | Open the packet loss map (RTP loss pattern) for the selection |
+| Esc / q / D | Close (returns to the opening view) |
 
 ## Statistics
 
@@ -259,6 +312,7 @@ Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display
 | Up / k | Move selection up |
 | Down / j | Move selection down |
 | Space | Toggle column visibility |
+| s | Save the current layout to `[display] visible_columns` in your sipnabrc (persists across runs) |
 | Enter / Esc | Close selector |
 
 ## Timestamp Modes
@@ -291,6 +345,49 @@ Press `t` in the Call List or Call Flow to cycle through the timestamp modes (th
 </div>
 
 > **Tip:** Delta-prev mode is ideal for spotting latency spikes in call setup. Delta-first mode is useful for measuring total elapsed time from the first message.
+
+## Name Resolution
+
+sipnab can display host names instead of raw IP addresses (Wireshark-style),
+in the call list **Source**/**Destination** columns, call-flow participant
+labels, and the RTP stream views. Press **`n`** to cycle the mode (shown
+briefly in the status line):
+
+1. **Off** (default) -- raw `ip:port`
+2. **Static** -- operator mappings + the system `/etc/hosts`; no network traffic
+3. **DNS** -- additionally resolves via reverse DNS (PTR), looked up on a
+   background worker and cached (so the UI never blocks)
+
+Names come from three sources, highest priority first: operator-entered
+mappings, then `/etc/hosts` (or a `--names` / `[names] hosts_file`), then
+reverse DNS. Only the IP is substituted; the `:port` is preserved
+(`sbc-edge:5060`).
+
+To name an address **in context**, select a call-list row, stream row, or
+call-flow message and press **`N`**. A popup opens pre-filled with that IP;
+type a host/FQDN and press Enter (an empty name clears the mapping). Naming an
+address turns resolution on automatically, and the mapping is saved to
+`$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
+across runs.
+
+Mappings can also be persisted into your **sipnabrc**: set
+`[names] persist_to_config = true` and `N`-dialog edits are written into the
+`[names.manual]` table of `~/.config/sipnab/sipnab.toml` (comments and other
+sections are preserved). You can also pre-declare mappings there by hand:
+
+```toml
+[names.manual]
+"192.0.2.1" = "sbc-edge"
+```
+
+When saving a capture as **PCAP-NG** with resolution active, the mappings are
+embedded as a Name Resolution Block (and read back when the file is reopened).
+
+Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
+PTR lookups; implies `--resolve`), `--names <FILE>` (preload an
+`/etc/hosts`-format mapping file, repeatable). See the
+[CLI Reference](@/docs/cli.md) and the `[names]` section of the
+[Config Reference](@/docs/config.md).
 
 ---
 

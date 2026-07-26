@@ -110,28 +110,40 @@ network-level source-IP allowlist as the substitute defense).
 
 ## Available tools
 
-| Tool | Returns |
-|---|---|
-| `list_dialogs` | Dialog summaries with optional alias / DSL filter |
-| `get_dialog_report` | Structured per-call report (JSON / Markdown / text) |
-| `find_problems` | Dialogs matching one or more diagnostic alias names |
-| `get_dialog` | Paginated dialog with full SIP messages |
-| `get_message` | Single SIP message at a given index |
-| `render_ladder` | Call-flow ladder (Markdown / text) |
-| `rtp_stats` | Per-stream RTP quality + media diagnosis |
-| `search_messages` | Substring search across method/From/To/UA/body |
-| `tail_dialogs` | Cursor-based incremental dialog fetch |
-| `security_findings` | Recent scanner / fraud / digest / reg-flood alerts |
-| `stats` | Aggregate counters (dialog_count, stream_count, etc.) |
+| Tool | Parameters | Returns |
+|---|---|---|
+| `list_dialogs` | `filter?`, `limit?` | Dialog summaries with optional alias / DSL filter |
+| `get_dialog_report` | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
+| `find_problems` | `kinds?`, `limit?` | Dialogs matching one or more diagnostic alias names |
+| `get_dialog` | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
+| `get_message` | `call_id`, `index` | Single SIP message at a given index |
+| `render_ladder` | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
+| `rtp_stats` | `call_id` | Per-stream RTP quality + media diagnosis |
+| `search_messages` | `query`, `limit?` | Substring search across method/From/To/UA/body |
+| `tail_dialogs` | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
+| `security_findings` | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
+| `stats` | -- | Aggregate counters (dialog_count, stream_count, etc.) |
 
-All tools are read-only. Responses are bounded by a hard limit of 1000
-records per call; tools that can return more support cursor- or offset-
-based pagination.
+`?` marks an optional parameter. All tools are read-only, and every
+response is bounded:
 
-`get_dialog_report` with `format: "json"` returns the same aggregated
-dialog document as the REST `GET /v1/dialogs/{call_id}` endpoint — the
-worked example in the [REST API reference](@/docs/api.md#get-v1-dialogs-1)
-shows every field.
+- `limit` defaults to 50 and is clamped to 1000 (`list_dialogs`,
+  `find_problems`, `search_messages`, `tail_dialogs`,
+  `security_findings`).
+- `get_dialog` pages messages with `max_messages` (default 100, max
+  1000) and `cursor` (index of the first message, default 0), and
+  returns a `next_cursor` until the last page.
+- `search_messages` snippets and `security_findings` details are
+  truncated at 4096 bytes.
+- `security_findings` reads the alert engine's in-memory ring buffer,
+  which retains the 1000 most recent findings.
+
+`get_dialog_report` is backed by the same report generator as the REST
+`GET /v1/dialogs/{call_id}/report` endpoint; with `format: "json"` it
+returns that endpoint's document verbatim — the worked example in the
+[REST API reference](@/docs/api.md#get-v1-dialogs-call-id-report) shows
+every field. `format: "markdown"` and `format: "text"` have no REST
+equivalent.
 
 ### Tool argument enums
 
@@ -276,7 +288,7 @@ Expected first line of response:
 ### Raw HTTP test
 
 ```bash
-TOKEN=$(cat /etc/sipnab/mcp-token)
+TOKEN=$(cat /etc/sipnab/mcp.token)
 URL="http://capture.example.com:8731/mcp"
 
 # Initialize

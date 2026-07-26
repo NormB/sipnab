@@ -1,12 +1,12 @@
 +++
 title = "Theme Guide"
 weight = 6
-description = "Customize sipnab's TUI colors with 10 semantic color slots and preset themes."
+description = "Customize sipnab's TUI colors with 11 semantic color slots and preset themes."
 +++
 
 > **Quick start:** Create `~/.config/sipnab/sipnab.toml` with a `[theme]` section to customize colors. Or copy one of the preset themes below.
 
-sipnab's TUI uses 10 semantic color slots (plus `highlight`, a legacy alias for `selected`) that control every visual element. Customize them via the `[theme]` section in your config file.
+sipnab's TUI uses 11 semantic color slots (plus `highlight`, a legacy alias for `selected`) that control every visual element. Customize them via the `[theme]` section in your config file.
 
 ## Color Slots
 
@@ -46,9 +46,9 @@ Add a `[theme]` section with the color values you want to override to your sipna
 
 Each theme below includes a TOML config block and a live preview showing how it renders in sipnab's TUI.
 
-### Default (Ayu Mirage)
+### Dark (built-in default)
 
-The built-in theme works on dark terminal backgrounds without any configuration.
+The built-in theme works on dark terminal backgrounds without any configuration. It is deliberately palette-neutral: `background` is `reset` (your terminal's own background shows through) and every other slot is an ANSI color name, so your terminal's palette picks the exact shades. The preview below stands in a representative xterm palette for those names.
 
 ```toml
 [theme]
@@ -69,12 +69,12 @@ border = "white"
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Default Theme</span>
 </div>
-<pre class="terminal-body" style="background:#0a0e14;color:#cbccc6"><span style="color:#8a93a3">  #  Method     From           To             State</span>
-<span style="color:#ffcc66">▸</span> <span style="color:#d4bfff">1  INVITE     alice          bob            </span><span style="color:#bae67e">InCall</span>
-  <span style="color:#d4bfff">2  REGISTER   admin          --             </span><span style="color:#bae67e">Registered</span>
-  <span style="color:#d4bfff">3  INVITE     charlie        dave           </span><span style="color:#ffcc66">Ringing</span>
-  <span style="color:#d4bfff">4  INVITE     +15551234      +15559876      </span><span style="color:#ff6666">Failed</span>
-  <span style="color:#d4bfff">5  INVITE     1005           1006           </span><span style="color:#bae67e">Completed</span></pre>
+<pre class="terminal-body" style="background:#1c1c1c;color:#ffffff"><span style="color:#7f7f7f">  #  Method     From           To             State</span>
+<span style="color:#cdcd00">▸</span> <span style="color:#cd00cd">1  INVITE     alice          bob            </span><span style="color:#00cd00">InCall</span>
+  <span style="color:#cd00cd">2  REGISTER   admin          --             </span><span style="color:#00cd00">Registered</span>
+  <span style="color:#cd00cd">3  INVITE     charlie        dave           </span><span style="color:#cdcd00">Ringing</span>
+  <span style="color:#cd00cd">4  INVITE     +15551234      +15559876      </span><span style="color:#cd0000">Failed</span>
+  <span style="color:#cd00cd">5  INVITE     1005           1006           </span><span style="color:#00cd00">Completed</span></pre>
 </div>
 
 ### Catppuccin Mocha

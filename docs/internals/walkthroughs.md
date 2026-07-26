@@ -13,17 +13,18 @@ rejected by the compiler before clippy gets a word in; and **three of the six
 checklists turned out to name gates that do not fire at all** for the change
 they were attached to. Those steps are now marked **(unenforced)**.
 
-The pattern behind all three: a gate that hardcodes its subjects — a list of
-schema names, three flood scenarios, two output-flag behaviors — cannot see a
-*new* subject. It protects what exists from regressing; it does not notice an
-addition. Assume nothing enforces a new thing until you have watched it fail.
+The pattern behind all three: a gate that hardcodes its subjects — three flood
+scenarios, two output-flag behaviors, and until it was rewritten to enumerate
+the directory, a list of schema filenames — cannot see a *new* subject. It
+protects what exists from regressing; it does not notice an addition. Assume
+nothing enforces a new thing until you have watched it fail.
 
 ## Add a CLI flag
 
 1. Add the `#[arg]` field to `Cli` in [`cli.rs`](../../src/cli.rs), with a
    `help_heading` matching its group.
    → [`cli_help_test`](../../tests/cli_help_test.rs) checks the grouping of the
-   ~110-flag help output.
+   ~140-flag help output.
 2. Wire it wherever it takes effect — usually
    [`plan()`](../../src/app/bootstrap.rs), so the flag becomes part of
    `RunPlan` rather than being read at the point of use.
@@ -187,18 +188,22 @@ which is exactly why they are written down.
    [`cli_print.rs`](../../src/output/cli_print.rs) and emit through
    [`sink.rs`](../../src/output/sink.rs).
 3. If it is machine-readable, add or extend a schema in
-   [`tests/schemas/`](../../tests/schemas), **and add its filename to
-   `all_schemas_compile`** in
-   [`json_schema_test`](../../tests/json_schema_test.rs).
-   **(unenforced — that test iterates a hardcoded list of four names, so a
-   schema file you forget to add is never even parsed.)**
+   [`tests/schemas/`](../../tests/schemas). No registration step: the
+   `all_schemas_compile` case in
+   [`json_schema_test`](../../tests/json_schema_test.rs) enumerates the
+   directory, so a new file is compiled into a validator the moment it lands
+   and a malformed one fails there. What is still on you is *live-output*
+   validation — proving the surface actually emits what the schema describes.
 4. Add behavior coverage to
    [`output_behavior_test`](../../tests/output_behavior_test.rs). **(unenforced
    — it is two tests about `--json-pretty` and `--call-report` exit codes.)**
 
-Verified: a deliberately malformed `zzz_gate_probe.schema.json` dropped into
-`tests/schemas/` left `json_schema_test` at 6 passed, 0 failed. Every arrow this
-checklist originally carried was aspirational; the whole list is convention.
+History, and the reason step 3 now reads that way: a deliberately malformed
+`zzz_gate_probe.schema.json` dropped into `tests/schemas/` once left
+`json_schema_test` at 6 passed, 0 failed — the test walked a hardcoded list of
+four filenames and never opened the file. That experiment is what motivated
+the switch to directory enumeration, and the test's own doc comment records
+it. Steps 1, 2 and 4 are still convention with no gate behind them.
 5. Document it in [`docs/output-formats.md`](../output-formats.md), and mirror
    into the website page. The flag that selects it then owes the CLI-flag
    checklist above.

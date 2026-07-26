@@ -224,6 +224,7 @@ TUI color theme with 11 semantic color slots. Each field accepts a color name or
 | `bad` | string | `"red"` | Poor quality, failures, errors |
 | `muted` | string | `"dark_gray"` | Separators, pipes, disabled text, timestamps |
 | `border` | string | `"white"` | Widget borders, panel frames |
+| `status_bg` | string | `"#303040"` | Status bar background band, kept distinct from the terminal background so the status line stays visible |
 
 Supported color values:
 - Named: `black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, `dark_gray`, `reset`

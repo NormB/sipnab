@@ -68,9 +68,11 @@ sipnab --mcp -N --mcp-transport http \
 The agent then connects to `https://your-host/mcp` with a `Bearer
 <token>` header.
 
-- The default bind is loopback. Non-loopback binds **must** supply
-  `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`; otherwise
-  sipnab refuses to start (D18).
+- The default bind is loopback. Non-loopback binds **must** supply a
+  credential — either a static token (`--mcp-token` / `--mcp-token-file` /
+  `SIPNAB_MCP_TOKEN`) or a signing key for self-describing signed bearer
+  tokens (`--mcp-signing-key` / `--mcp-signing-key-file` /
+  `SIPNAB_MCP_SIGNING_KEY`); otherwise sipnab refuses to start (D18).
 - `--mcp-token-file` is preferred over `--mcp-token`/`SIPNAB_MCP_TOKEN`
   (no token in `ps` output or unit files).
 - For TLS, terminate it in nginx in front of sipnab. Bind sipnab to

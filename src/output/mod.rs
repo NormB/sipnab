@@ -31,6 +31,7 @@ pub mod cli_print;
 pub mod dialog_report;
 pub mod event_exec;
 pub mod fail2ban;
+pub mod group;
 pub mod hexdump;
 pub mod json;
 pub mod model;

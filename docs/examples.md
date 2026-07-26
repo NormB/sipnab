@@ -13,9 +13,12 @@ needs no privileges. Every flag used here is detailed in
 # 1. Watch SIP interactively on an interface (TUI, sngrep-style)
 sudo sipnab -d eth0
 
-# 2. Show only problem calls from a pcap (failures, one-way audio,
-#    slow setup, high loss/jitter/MOS issues)
+# 2. Show only problem calls from a pcap. The --problems flag is a narrow
+#    sweep: retransmits, or a Failed dialog. For the broad diagnostic set
+#    (one-way audio, loss/jitter, NAT, asymmetry, late media) use the
+#    same-named DSL alias via --filter problems.
 sipnab -N -I capture.pcap --problems
+sipnab -N -I capture.pcap --filter problems
 
 # 3. Deep-dive one call: ladder, timing, SDP, RTP quality, diagnosis
 sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1'
@@ -64,9 +67,15 @@ More in [output-formats.md](./output-formats.md).
 # 12. Capture SIP+RTP to rotating pcapng files (50 MiB chunks)
 sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50
 
-# 13. Decrypt SIPS/SRTP with a TLS key log and export decryptable pcapng
+# 13. Decrypt SIPS signaling with a TLS key log and export decryptable
+#     pcapng. --keylog is the SIP/TLS NSS keylog -- signaling only; it
+#     does not decrypt media. SRTP needs media keys instead:
+#     --dtls-keylog (DTLS-SRTP handshakes) or --srtp-keys (AES-CM
+#     master keys; SDES a=crypto keys are also learned from SDP).
 sudo sipnab -N -d eth0 --keylog /tmp/sslkeys.log --keylog-watch \
      -O decrypted.pcapng --pcapng
+sipnab -N -I capture.pcap --dtls-keylog /tmp/dtls.keylog
+sipnab -N -I capture.pcap --srtp-keys /tmp/srtp-keys.txt
 ```
 
 ## Security
@@ -93,8 +102,10 @@ sudo sipnab -N -d eth0 --on-quality-exec '/usr/local/bin/page-noc'
 ## HEP
 
 ```bash
-# 18. Receive HEP from Kamailio/OpenSIPS/Asterisk and analyze live
-sipnab -N -L 0.0.0.0:9060 --hep-parse
+# 18. Receive HEP from Kamailio/OpenSIPS/Asterisk and analyze live.
+#     -L/--hep-listen decodes HEP on its own; --hep-parse is only for
+#     unwrapping HEP that arrives inside ordinary UDP capture.
+sipnab -N -L 0.0.0.0:9060
 
 # 19. Mirror captured traffic to Homer
 sudo sipnab -N -d eth0 -H homer.example.net:9060

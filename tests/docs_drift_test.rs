@@ -496,6 +496,14 @@ fn docs_current_version_markers_match_cargo() {
         ),
         // The `sipnab X.Y.Z (…) features:` sample output was only gated in the
         // install pages; the MCP walkthroughs print it too.
+        //
+        // Scope note: this pattern only matches the form with a commit hash in
+        // parentheses. A bare `sipnab 0.5.20 features:` line once slipped
+        // through and sat stale for 23 releases. It is gone now, and the
+        // remaining version mention in those pages is a deliberately historical
+        // "verified at 0.5.20" — which does not rot — so there is nothing left
+        // for a no-paren pattern to guard. Do not reintroduce a bare
+        // `sipnab <version> features:` sample without gating it.
         (
             "docs/mcp-walkthrough.md",
             include_str!("../docs/mcp-walkthrough.md"),

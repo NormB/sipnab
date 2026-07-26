@@ -363,7 +363,8 @@ resp = requests.get(
     headers={"Authorization": "Bearer my-secret-token"},
 )
 dialog = resp.json()
-print(f"State: {dialog['state']}, Messages: {len(dialog.get('messages', []))}")
+# REST returns an aggregated dialog — `msg_count`, not the messages themselves.
+print(f"State: {dialog['state']}, Messages: {dialog['msg_count']}")
 ```
 
 **Go:**
@@ -496,7 +497,9 @@ resp = requests.get(
     headers={"Authorization": "Bearer my-secret-token"},
 )
 report = resp.json()
-print(f"Diagnosis: {report.get('diagnosis', {}).get('summary', 'N/A')}")
+# `diagnosis` carries three booleans plus `hints` — there is no `summary` field.
+hints = report["diagnosis"]["hints"]
+print(f"Diagnosis: {'; '.join(hints) if hints else 'no issues detected'}")
 ```
 
 **Go:**
@@ -875,14 +878,14 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane as of 0.5.42 — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
+The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane as of 0.5.43 — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
 
 ## Security Model
 
 - The API thread only reads dialog/stream metadata: no capture fd access, no key material exposure
 - All network listeners bind to localhost by default
 - Rate limiting on all listener endpoints (100 RPS per source IP)
-- Bearer token authentication (required for API, optional for metrics)
+- Bearer token authentication required on every REST endpoint except `/health` — `/metrics` on the `--api` server sits on the same guarded router and takes the same credential (the *standalone* `--metrics` server is the one that uses HTTP Basic instead)
 - Constant-time key comparison prevents timing attacks
 - TLS not terminated in-process; run behind a reverse proxy (see [API TLS](#api-tls))
 - Connection limits prevent resource exhaustion

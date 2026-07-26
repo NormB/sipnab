@@ -119,12 +119,16 @@ sipnab -d any --multi-device --delta-time
 | `-d`, `--device` | `<IFACE>` | auto-detect | Network interface to capture on. Auto-detects the default interface if no `-I` file or `-L` HEP listener is specified |
 | `-I`, `--input` | `<FILE>` | -- | Read packets from a pcap file instead of live capture |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
-| `-B`, `--buffer` | `<MIB>` | OS default | Kernel capture buffer size in MiB |
+| `-B`, `--buffer` | `<MIB>` | `2` | Kernel capture buffer size in MiB |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue (grows under load up to this, capped; shrinks when idle). Overrides `[capture] buffer_budget_mb` |
-| `--snaplen` | `<BYTES>` | OS default | Snapshot length for packet capture (bytes) |
+| `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |
+| `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet (sipgrep `-S`). Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
+| `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; every packet is parsed standalone (inverse of sipgrep `-a`) |
+| `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic when a SIP-looking packet fails to parse (sipgrep `-x`). The packet is dropped either way |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP port range to capture |
 | `--multi-device` | -- | off | Capture on all available interfaces |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
+| `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode (sipgrep `-p`). Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
 | `--bpf-file` | `<FILE>` | -- | Read BPF filter from a file |
 | `-n`, `--count` | `<N>` | -- | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth) |
 | `--duration` | `<DURATION>` | -- | Stop after duration (e.g., `30s`, `5m`, `1h`) |
@@ -186,6 +190,7 @@ sudo sipnab --no-tui -d eth0 --telephone-event --quiet
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
+| `-e`, `--match` | `<PATTERN>` | -- | SIP payload match-expression (the sngrep/sipgrep positional match expression). Regex tested against the whole raw message; once any message in a dialog matches, the rest of that dialog is shown too (dialog-following). Honors `-i`/`-v`/`-w`/`--single-line`. Independent of the trailing `<BPF_FILTER>` positional |
 | `-i`, `--ignore-case` | -- | off | Case-insensitive matching for header filters and patterns |
 | `-v`, `--invert` | -- | off | Invert the match: show messages that do NOT match |
 | `-w`, `--word` | -- | off | Match whole words only |
@@ -252,6 +257,7 @@ sipnab -N -I capture.pcap --short-calls --report
 | `--delta-time` | -- | off | Show delta time between consecutive messages |
 | `-A`, `--after` | `<N>` | -- | Show N messages after each match (like `grep -A`) |
 | `--show-empty` (`--full`) | -- | off | Show the full header block of bodyless messages (responses, OPTIONS, REGISTER, ACK, BYE); by default they show only the summary line |
+| `--proto-number` | -- | off | Annotate the transport tag with the IANA IP protocol number, e.g. `UDP(17)` / `TCP(6)` (sipgrep `-N`). Long-only because `-N` is `--no-tui` here; TLS/WS report their TCP carrier's number (6) |
 | `--line-buffer` | -- | off | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | Color output mode: `auto`, `always`, `never` |
 | `--from-to-mode` | `<MODE>` | `default` | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u` |
@@ -359,9 +365,11 @@ sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--kill-scanner` | -- | off | Detect and report SIP scanning activity |
-| `--kill-ua` | `<PATTERN>` | -- | Detect scanners by User-Agent pattern (regex) |
-| `--kill-response` | `<CODE>` | `200` | SIP response code for scanner kill reports (100-699) |
+| `--kill-scanner` | -- | off | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner |
+| `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection |
+| `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699) |
+| `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill (sipgrep `-K`): send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
+| `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available, falling back to an ephemeral source; `raw` requires the spoof and errors if the raw socket can't be opened; `ephemeral` never spoofs |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics |
 | `--reg-flood` | -- | off | Detect registration flood attacks |
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |
@@ -406,12 +414,13 @@ sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json
 | `--api-tls-cert` | `<FILE>` | -- | **Not yet implemented** — built-in API TLS is not wired up, and sipnab exits if this is set. Terminate TLS at a reverse proxy instead. Feature: `api` |
 | `--api-tls-key` | `<FILE>` | -- | **Not yet implemented** — see `--api-tls-cert`; terminate TLS at a reverse proxy. Feature: `api` |
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections Feature: `api` |
-| `--api-signing-key` | `<HEX>` | -- | HMAC signing key (hex) for revocable API tokens |
-| `--api-signing-key-file` | `<FILE>` | -- | Read the API HMAC signing key from a file |
-| `--api-revoked-file` | `<FILE>` | -- | File listing revoked API token IDs (one per line) |
-| `--api-token-ttl` | `<SECS>` | -- | Lifetime for minted API tokens |
+| `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first key mints, all are accepted on verify, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY` Feature: `api` |
+| `--api-signing-key-file` | `<FILE>` | -- | Read an API signing key from a file (contents trimmed); it becomes the minting key. Feature: `api` |
+| `--api-revoked-file` | `<FILE>` | -- | File listing revoked API token IDs (one per line); reloaded on mtime change. Feature: `api` |
+| `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. Feature: `hep` |
+| `--hep-id` | `<ID>` | `1` | Capture-agent id (HEP `0x000c` chunk) stamped on packets sent via `--hep-send`. Feature: `hep` |
 | `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` it stamps outgoing packets; on `--hep-listen` it **enables receiver-side authentication** (unmatched packets dropped, constant-time compare). Also read from `SIPNAB_HEP_AUTH`. Feature: `hep` |
 | `--hep-auth-file` | `<FILE>` | -- | Read the HEP shared secret from a file (contents trimmed); precedence over `--hep-auth`. Feature: `hep` |
 | `--hep-auth-mode` | `<plain\|hmac>` | `plain` | HEP auth mode: `plain` sends/expects the secret verbatim (Homer-compatible, replayable); `hmac` sends/expects a per-message HMAC token (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay — sipnab-to-sipnab only. Feature: `hep` |
@@ -465,16 +474,16 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--mcp` | -- | off | Run sipnab as an MCP server (implies `--no-tui`). Feature: `mcp` |
+| `--mcp` | -- | off | Run sipnab as an MCP server. Requires `-N`/`--no-tui` (stdout carries the JSON-RPC wire) — sipnab exits with an error without it. Feature: `mcp` |
 | `--mcp-transport` | `<TRANSPORT>` | `stdio` | Transport: `stdio` (default) or `http` (requires `mcp-http` feature) Feature: `mcp` |
 | `--mcp-bind` | `<ADDR>` | -- (`127.0.0.1:8731` applied at runtime when `--mcp-transport http` is set without an explicit bind) | Bind address for the HTTP MCP transport Feature: `mcp-http` |
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token for HTTP MCP. Required for non-loopback binds. Also reads `$SIPNAB_MCP_TOKEN` Feature: `mcp-http` |
 | `--mcp-token-file` | `<FILE>` | -- | Read MCP bearer token from a file (preferred over env in systemd units) Feature: `mcp-http` |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional Host header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to allowing only `localhost`, `127.0.0.1`, and `::1`; add the public hostname or bind IP clients actually use. `*` disables host checking entirely (not recommended; pair the resulting open binding with a network-level allowlist) Feature: `mcp-http` |
-| `--mcp-signing-key` | `<HEX>` | -- | HMAC signing key (hex) for revocable MCP tokens Feature: `mcp-http` |
-| `--mcp-signing-key-file` | `<FILE>` | -- | Read the MCP HMAC signing key from a file Feature: `mcp-http` |
-| `--mcp-revoked-file` | `<FILE>` | -- | File listing revoked MCP token IDs (one per line) Feature: `mcp-http` |
-| `--mcp-token-ttl` | `<SECS>` | -- | Lifetime for minted MCP tokens Feature: `mcp-http` |
+| `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first key mints, all are accepted on verify. Also reads `$SIPNAB_MCP_SIGNING_KEY` Feature: `mcp-http` |
+| `--mcp-signing-key-file` | `<FILE>` | -- | Read an MCP signing key from a file (contents trimmed); it becomes the minting key. Feature: `mcp-http` |
+| `--mcp-revoked-file` | `<FILE>` | -- | File listing revoked MCP token IDs (one per line); reloaded on mtime change. Feature: `mcp-http` |
+| `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token` Feature: `mcp-http` |
 | `--mint-token` | -- | off | Mint a signed bearer token (using the API/MCP signing key) and exit |
 | `--token-id` | `<ID>` | -- | Token ID to embed when minting with `--mint-token` |
 
@@ -482,7 +491,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `-k`, `--tls-key` | `<FILE>` | -- | TLS private key file for SIP-TLS decryption. Feature: `tls` |
+| `-k`, `--tls-key` | `<FILE>` | -- | RSA private key (PEM) for TLS 1.2 RSA-key-exchange decryption. Non-PFS RSA only; ECDHE/DHE handshakes need `--keylog`. Feature: `tls` |
 | `--keylog` | `<FILE>` | -- | TLS key log file (NSS `SSLKEYLOGFILE` format). Feature: `tls` |
 | `--keylog-watch` | -- | off | Watch key log file for new entries (live decryption). Feature: `tls` |
 | `--dtls-keylog` | `<FILE>` | -- | DTLS key log file for SRTP key extraction. Feature: `tls` |
@@ -573,7 +582,7 @@ sipnab --completions zsh > _sipnab
 
 - Output flags (`--json`, `--json-pretty`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui` mode, unless `--call-report` is also specified.
 - `--kill-response` accepts values 100-699 only.
-- Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`, `audio`, `tui`) produce startup errors when the required feature is not compiled in.
+- Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`) produce startup errors when the required feature is not compiled in.
 - `--mcp` is incompatible with stdout-writing flags (`--json`, `--json-pretty`, `--report`, `--call-report`, `--hexdump`, `--wireshark`, `--tshark-filter`) when using stdio transport — sipnab refuses to start. Combine `--mcp` with `--quiet` to suppress text-mode capture output.
 - HTTP MCP transport (`--mcp --mcp-transport http`) on a non-loopback `--mcp-bind` requires `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`; loopback binds need no token.
 

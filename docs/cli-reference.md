@@ -165,7 +165,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--problems` | -- | off | Show calls with retransmits, timeouts, errors, quality issues, or NAT mismatch |
+| `--problems` | -- | off | Show calls matching any diagnostic signal: failed state, one-way audio, RTP loss > 2%, jitter > 50 ms, NAT mismatch, more than 3 retransmits, PDD > 32 s, orphaned RTP, codec/ptime/payload/duration asymmetry, or late media — see [Named Aliases](filter-dsl.md#named-aliases) for the exact expansion |
 | `--slow-setup` | -- | off | Show calls with post-dial delay > 3 seconds |
 | `--short-calls` | -- | off | Show completed calls shorter than 5 seconds |
 | `--one-way` | -- | off | Show calls with potential one-way audio issues |

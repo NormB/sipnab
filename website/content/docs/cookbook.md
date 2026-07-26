@@ -21,11 +21,15 @@ sipnab -I capture.pcap
 # 2. Headless overview: dialog count, methods, average PDD
 sipnab -N -I capture.pcap
 
-# 3. One-flag diagnostic sweep — surfaces every likely-bad call
+# 3. One-flag diagnostic sweep — retransmits and failed dialogs
 sipnab -N -I capture.pcap --problems
 
 # 4. Same in JSON for piping
 sipnab -N -I capture.pcap --problems --json
+
+# 5. The wider net: the 'problems' DSL alias also covers one-way audio,
+#    loss/jitter, NAT mismatch, asymmetry and late media
+sipnab -N -I capture.pcap --filter problems
 ```
 
 The `--problems` sweep prints one line per SIP message of each flagged call, then the end-of-capture summary. You should see something like (abridged):
@@ -38,7 +42,7 @@ INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060  Failed  408 Req
 
 **What to look for:**
 
-- `--problems` matches `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`. If it's empty, the capture is probably clean.
+- The `--problems` **flag** matches `retransmits > 0 OR state == 'Failed'` — a deliberately narrow sweep. The same-named **DSL alias**, reached with `--filter problems`, is much broader: `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`. Don't conflate the two. If both come back empty, the capture is probably clean.
 - The end-of-capture summary distinguishes RTP packets from RTP streams: `852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams`. A capture with media but no SIP usually means the SIP signaling happened off-pcap (different VLAN, different host, different port).
 
 **Pitfalls:**
@@ -93,7 +97,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
   | sort | uniq -c | sort -rn
 
 # Detailed report for one failure (Markdown, paste into a ticket)
-sipnab -I capture.pcap --call-report 'abc123@host' --markdown > failure-report.md
+sipnab -N -I capture.pcap --call-report 'abc123@host' --markdown > failure-report.md
 ```
 
 The histogram output looks like (`uniq -c` count, then status code):
@@ -526,7 +530,7 @@ sudo sipnab -N -d eth0 \
             --json
 ```
 
-`--kill-scanner` actively responds 403 to known scanner User-Agents (uses the isolated kill-child process). `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog`.
+`--kill-scanner` actively responds to known scanner User-Agents (uses the isolated kill-child process). The response code defaults to **200**; pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog`.
 
 ### 10b. Wire to fail2ban
 
@@ -594,8 +598,10 @@ For exec hooks instead of syslog/fail2ban:
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner \
-            --alert-exec '/usr/local/bin/notify-slack.sh "%type%" "%source_ip%" "%detail%"'
+            --alert-exec '/usr/local/bin/notify-slack.sh "$SIPNAB_RULE" "$SIPNAB_SRC" "$SIPNAB_DETAIL"'
 ```
+
+Alert data reaches the hook as the `SIPNAB_RULE`, `SIPNAB_SRC`, and `SIPNAB_DETAIL` environment variables — never interpolated into the command string. Only the three legacy placeholders `%rule`, `%src`, and `%detail` are rewritten to those `$SIPNAB_*` references for you; anything else (`%type%`, `%source_ip%`, …) is passed through to the shell verbatim.
 
 The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxed process.
 
@@ -613,8 +619,9 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 The asymmetry signals (Phase 8.7) live on sipnab's internal `MediaDiagnosis` struct and are exposed through the filter DSL — not the dialog JSON output's `diagnosis` block. `--filter` accepts the alias name directly (`codec-asym`) and falls back to the raw DSL expression if it isn't an alias. Both forms are equivalent.
 
 ```bash
-# All five asymmetry checks at once via the 'problems' alias (CLI flag)
-sipnab -N -I capture.pcap --problems --json
+# All five asymmetry checks at once via the 'problems' DSL alias.
+# Not the --problems flag: that one only covers retransmits + Failed.
+sipnab -N -I capture.pcap --filter problems --json
 
 # Targeted, one signal at a time — alias name or raw DSL, both work
 sipnab -N -I capture.pcap --filter codec-asym    --json

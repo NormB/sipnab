@@ -319,4 +319,4 @@ Open the WAV in any audio player or Audacity.
 
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 30 fields, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 31 fields, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.

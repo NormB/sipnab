@@ -125,6 +125,10 @@ struct ProcessingState<'a> {
     /// DTLS handshakes and feeds them into `srtp`.
     #[cfg(feature = "tls")]
     dtls: Option<&'a mut crate::capture::dtls::DtlsSrtpExtractor>,
+    /// `--group-by` buffer. `Some` reroutes per-message output into it so the
+    /// capture can be replayed grouped at the end; `None` keeps the ordinary
+    /// streaming path, including the allocation-free `--json` fast path.
+    group: Option<&'a mut output::group::GroupBuffer>,
 }
 
 /// Resolve the pcap file a `--tshark-filter` / `--wireshark` command should
@@ -815,6 +819,15 @@ impl BatchRunner {
             portrange,
         };
 
+        // --group-by buffers per-message output and replays it grouped once the
+        // capture ends (see output::group for why it cannot stream, and for the
+        // caps that keep an attacker-keyed map bounded). None = stream as usual.
+        let mut group_buf = cli
+            .group_by
+            .as_deref()
+            .and_then(|f| output::group::GroupField::parse(f).ok())
+            .map(output::group::GroupBuffer::new);
+
         let mut last_sweep = std::time::Instant::now();
         let sweep_interval = std::time::Duration::from_secs(5);
 
@@ -1003,6 +1016,7 @@ impl BatchRunner {
                         srtp: srtp_context.as_mut(),
                         #[cfg(feature = "tls")]
                         dtls: dtls_extractor.as_mut(),
+                        group: group_buf.as_mut(),
                     };
                     process_parsed_packet(
                         effective_pp,
@@ -1065,6 +1079,27 @@ impl BatchRunner {
                     autostop_filesize_mb.unwrap_or(0)
                 );
                 break;
+            }
+        }
+
+        // Replay any --group-by buffer before draining, so grouped output lands
+        // ahead of reports exactly where the streamed output would have.
+        if let Some(ref mut buf) = group_buf {
+            if buf.truncated() {
+                tracing::warn!("{}", buf.truncation_note());
+            }
+            let machine_readable = cli.json || cli.json_pretty || cli.fail2ban;
+            for (header, chunks) in buf.drain() {
+                // Headers are for humans; machine formats stay parseable, where
+                // the grouping is the contiguity of the records themselves.
+                if let Some(h) = header
+                    && !machine_readable
+                {
+                    sink.write_str(&format!("\n── {h} ──\n"));
+                }
+                for chunk in chunks {
+                    sink.write_str(&chunk);
+                }
             }
         }
 
@@ -1331,6 +1366,7 @@ fn process_parsed_packet<W: std::io::Write>(
     let dialog_store = &mut *state.dialog_store;
     let stream_store = &mut *state.stream_store;
     let event_exec = &mut *state.event_exec;
+    let group = &mut state.group;
     let scanner_detector = &mut engines.scanner;
     let fraud_detector = &mut engines.fraud;
     let digest_detector = &mut engines.digest;
@@ -1613,7 +1649,14 @@ fn process_parsed_packet<W: std::io::Write>(
             );
 
             if emit && cli.no_tui {
-                dispatch_sip_output(&sip_msg, output_opts, cli, *prev_timestamp, sink);
+                dispatch_sip_output(
+                    &sip_msg,
+                    output_opts,
+                    cli,
+                    *prev_timestamp,
+                    sink,
+                    group.as_deref_mut(),
+                );
             }
 
             *prev_timestamp = Some(sip_msg.timestamp);
@@ -1785,6 +1828,7 @@ fn dispatch_sip_output<W: std::io::Write>(
     cli: &Cli,
     prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     sink: &mut output::BatchSink<W>,
+    group: Option<&mut output::group::GroupBuffer>,
 ) {
     // MCP mode owns stdout (JSON-RPC wire); no per-packet text/JSON output.
     #[cfg(feature = "mcp")]
@@ -1794,6 +1838,17 @@ fn dispatch_sip_output<W: std::io::Write>(
     // --no-cli-print suppresses every per-message dump (text/JSON/fail2ban/raw)
     // so post-capture reports (--call-report, --report) aren't drowned out.
     if cli.no_cli_print {
+        return;
+    }
+    // --group-by cannot stream: the last packet may belong to the first group,
+    // so nothing can be written until the capture ends. Render to a String and
+    // buffer it. This is the one path that pays for a per-message allocation,
+    // which is why the streaming branches below are left untouched.
+    if let Some(buf) = group {
+        if let Some(rendered) = render_sip_output(msg, opts, cli, prev_timestamp) {
+            buf.push(msg, rendered);
+        }
+        sink.end_message();
         return;
     }
     if cli.json_pretty {
@@ -1824,6 +1879,46 @@ fn dispatch_sip_output<W: std::io::Write>(
 
     // Flush if --line-buffer is set
     sink.end_message();
+}
+
+/// Render one message exactly as `dispatch_sip_output` would have written it,
+/// returning the bytes instead of emitting them. Used only by `--group-by`,
+/// which must hold output back until the capture ends.
+///
+/// # Returns
+/// `None` for a mode that emits nothing for this message (`--fail2ban` skips
+/// responses).
+fn render_sip_output(
+    msg: &sip::SipMessage,
+    opts: &OutputOptions,
+    cli: &Cli,
+    prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<String> {
+    if cli.json_pretty {
+        Some(output::json::message_to_json_pretty(msg))
+    } else if cli.json {
+        let mut bytes: Vec<u8> = Vec::new();
+        output::json::write_message_json(msg, &mut bytes).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    } else if cli.fail2ban {
+        if !msg.is_request {
+            return None;
+        }
+        let ua = msg.user_agent().unwrap_or("unknown");
+        let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
+        Some(format!(
+            "{}\n",
+            output::format_scanner_event(&msg.src_addr.to_string(), ua, method)
+        ))
+    } else if cli.text_dump {
+        Some(format!("{}\n", String::from_utf8_lossy(&msg.raw)))
+    } else {
+        Some(output::cli_print::format_sip_message(
+            msg,
+            opts,
+            prev_timestamp,
+        ))
+    }
 }
 
 // ── Report generation ────────────────────────────────────────────────
@@ -2097,6 +2192,7 @@ mod tests {
                 srtp: None,
                 #[cfg(feature = "tls")]
                 dtls: None,
+                group: None,
             };
             process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters, &mut sink);
         }
@@ -2206,7 +2302,7 @@ mod tests {
         };
         let sink_bytes = |cli: &Cli, prev: Option<chrono::DateTime<chrono::Utc>>| {
             let mut sink = output::BatchSink::new(Vec::new(), cli.line_buffer);
-            dispatch_sip_output(&msg, &opts, cli, prev, &mut sink);
+            dispatch_sip_output(&msg, &opts, cli, prev, &mut sink, None);
             sink.into_inner()
         };
 
@@ -2355,6 +2451,7 @@ mod tests {
             srtp: None,
             #[cfg(feature = "tls")]
             dtls: None,
+            group: None,
         };
 
         process_parsed_packet(
@@ -2422,6 +2519,7 @@ mod tests {
             srtp: None,
             #[cfg(feature = "tls")]
             dtls: None,
+            group: None,
         };
         process_parsed_packet(
             pp,
@@ -2534,6 +2632,7 @@ mod tests {
             event_exec: &mut event_exec,
             srtp: Some(srtp),
             dtls: None,
+            group: None,
         };
         process_parsed_packet(
             pp,

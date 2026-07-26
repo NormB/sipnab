@@ -103,7 +103,12 @@ milliseconds, retransmit counts, SDP timeline, RTP streams with
 jitter/loss/MOS, and media diagnosis flags like `one_way_audio`) is the
 payload of:
 
-- `SIPNAB_JSON` in `--on-dialog-exec` / `--on-quality-exec` hooks
+- `SIPNAB_JSON` in `--on-dialog-exec` hooks. Note the dialog hook fills
+  `streams: []` and a default `diagnosis` — it fires on a dialog event, when
+  media analysis for that call may not be complete, so the stream and
+  diagnosis fields are placeholders there rather than populated data.
+- `SIPNAB_STREAM_JSON` in `--on-quality-exec` hooks. That hook passes the
+  stream object, under its own variable name — **not** `SIPNAB_JSON`.
 - MCP tool responses ([mcp.md](./mcp.md))
 
 ## pcap / pcapng

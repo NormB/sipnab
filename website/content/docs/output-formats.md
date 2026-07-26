@@ -135,9 +135,10 @@ The same document is what you get from:
 - MCP tool responses (`get_dialog_report` with `format: "json"` — see
   the [MCP server](@/docs/mcp.md) reference), and
 - the `SIPNAB_JSON` environment variable passed to
-  [`--on-dialog-exec`](@/docs/cli.md#event-execution) /
-  `--on-quality-exec` hooks (dialog-event hooks fill `streams: []` and
-  a default `diagnosis`).
+  [`--on-dialog-exec`](@/docs/cli.md#event-execution) hooks (which fill
+  `streams: []` and a default `diagnosis`). The `--on-quality-exec` hook is
+  separate: it passes the stream object as `SIPNAB_STREAM_JSON`, not
+  `SIPNAB_JSON`.
 
 ## pcap / pcapng
 

@@ -55,8 +55,8 @@ Packet capture defaults.
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface |
 | `portrange` | string | `"5060-5061"` | SIP port range |
-| `snaplen` | integer | OS default | Snapshot length in bytes |
-| `buffer` | integer | OS default | Kernel capture buffer size in MiB |
+| `snaplen` | integer | `65535` | Snapshot length in bytes |
+| `buffer` | integer | `2` | Kernel capture buffer size in MiB |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue (grows under load up to this, capped; shrinks when idle). `--buffer-budget` overrides |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default |
@@ -94,7 +94,7 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides |
-| `visible_columns` | array of strings | all columns | Columns to display in the Call List (persisted across sessions). Values (case-insensitive): `"#"`, `"method"`, `"from"`, `"to"`, `"source"`, `"destination"`, `"state"`, `"msgs"`, `"date"`, `"pdd"` |
+| `visible_columns` | array of strings | all columns | Columns to display in the Call List (persisted across sessions). Values (case-insensitive): `"#"`, `"method"`, `"from"`, `"to"`, `"source"`, `"destination"`, `"state"`, `"msgs"`, `"date"`, `"pdd"`, `"duration"` |
 
 ```toml
 [display]
@@ -175,7 +175,7 @@ Privilege separation settings (Linux only).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `user` | string | -- | User to drop privileges to after opening capture devices |
+| `user` | string | `"nobody"` | User to drop privileges to after opening capture devices |
 | `no_priv_drop` | boolean | `false` | Disable privilege dropping |
 | `chroot` | string | -- | Chroot directory after initialization |
 
@@ -363,4 +363,4 @@ clear_calls = "F5"
 column_selector = "F10"
 ```
 
-> **Tip:** Use `sipnab --dump-config` to see the effective configuration after merging CLI flags, environment variables, and config file values. This is useful for debugging precedence issues.
+> **Tip:** Use `sipnab --dump-config` to see the effective configuration — the loaded file merged over the built-in defaults, with the path it came from. It is a config-file view only: CLI flags are applied later in startup and are *not* reflected, and there is no environment-variable override layer (`SIPNAB_CONFIG` only selects which file is read). To check what a flag does, compare against the [CLI reference](@/docs/cli.md).

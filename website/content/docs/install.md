@@ -28,27 +28,27 @@ curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=<version> sh
 curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
-On Linux the installer chooses between two build variants: the dynamically linked **`-gnu`** build (requires glibc >= 2.39 and libpcap installed via your package manager) and the static **musl** build (no glibc/libpcap requirement; TUI audio playback unavailable, everything else identical). Hosts with glibc below the 2.39 floor — or with no glibc at all — **automatically fall back to the static musl build**.
+On Linux the installer chooses between two build variants: the dynamically linked **`-gnu`** build (requires glibc >= 2.36 — Debian 12+, Ubuntu 23.04+ — and libpcap installed via your package manager) and the static **musl** build (no glibc/libpcap requirement; TUI audio playback unavailable, everything else identical). The 2.36 figure is the floor the release workflow actually enforces on every gnu binary. The installer's own cutover is deliberately more conservative: it serves musl to any host below **glibc 2.39** — or with no glibc at all — so hosts between 2.36 and 2.39 get the static build even though the gnu build would run there. Download the gnu tarball manually if you want it on such a host.
 
 ## Pre-built Binaries
 
 Every [GitHub release](https://github.com/NormB/sipnab/releases) ships versioned tarballs per target triple, each with a matching `.sha256` checksum file:
 
-- `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` — dynamic, needs glibc >= 2.39 + libpcap
+- `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` — dynamic, needs glibc >= 2.36 + libpcap
 - `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` — same, for arm64
 - `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` — static, runs on any glibc (no TUI audio)
 - `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` — same, for arm64
 - `sipnab-<version>-x86_64-apple-darwin.tar.gz` / `sipnab-<version>-aarch64-apple-darwin.tar.gz` — macOS
 
-Manual download with checksum verification (replace `<version>` with the latest, e.g. 0.5.42):
+Manual download with checksum verification (replace `<version>` with the latest, e.g. 0.5.43):
 
 ```bash
 V=<version> T=x86_64-unknown-linux-gnu
 curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz"
 curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz.sha256"
 sha256sum -c "sipnab-$V-$T.tar.gz.sha256"
-tar -xzf "sipnab-$V-$T.tar.gz"
-sudo install -m 755 sipnab /usr/local/bin/sipnab
+tar -xzf "sipnab-$V-$T.tar.gz"   # unpacks into ./sipnab-$V-$T/
+sudo install -m 755 "sipnab-$V-$T/sipnab" /usr/local/bin/sipnab
 ```
 
 ## Docker
@@ -89,7 +89,7 @@ For build prerequisites, the full feature-flag matrix, release profile, and cros
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install it with `apt`, which resolves the `libpcap0.8` runtime dependency automatically:
 
 ```bash
-# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.42
+# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.43
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
 sudo apt install ./sipnab_<version>_amd64.deb
 
@@ -121,7 +121,7 @@ standard and a `-noaudio` variant (no audio plugin, no `alsa-lib` weak
 dependency — for headless servers, mirroring the `.deb` variants):
 
 ```bash
-sudo rpm -i sipnab-<version>-1.x86_64.rpm  # replace <version> with the latest, e.g. 0.5.42
+sudo rpm -i sipnab-<version>-1.x86_64.rpm  # replace <version> with the latest, e.g. 0.5.43
 # headless / no-ALSA variant:
 sudo rpm -i sipnab-<version>-1.x86_64-noaudio.rpm
 # arm64 hosts:
@@ -179,7 +179,7 @@ sipnab -D
 <span class="terminal-title">Verify Installation</span>
 </div>
 <pre class="terminal-body"><span class="t-muted">$</span> sipnab --version
-sipnab 0.5.42 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+sipnab 0.5.43 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
 
 <span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
 <span class="t-accent">INVITE</span> alice -> bob  192.0.2.1:5060 -> 192.0.2.2:5060 <span class="t-good">InCall</span> PDD=847ms
@@ -189,5 +189,5 @@ sipnab 0.5.42 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metri
 
 > **Tip:** sipnab requires libpcap for live capture. For pcap file analysis, no special permissions are needed. For live capture, run with `sudo` or set capabilities:
 > ```bash
-> sudo setcap cap_net_raw,cap_net_admin=eip $(which sipnab)
+> sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)
 > ```

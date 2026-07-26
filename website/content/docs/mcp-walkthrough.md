@@ -11,8 +11,10 @@ host they run on: **[server]** (where sipnab runs), **[laptop]** (where
 your MCP client / Claude Code runs), or **[proxy]** (your SIP proxy, in
 the HEP scenario).
 
-Every command was verified against a real build (`sipnab 0.5.20 features:
-native,tui,audio,tls,hep,api,mcp,mcp-http`).
+Every command here was verified end to end against a real build at 0.5.20. The
+flag names are held to the current CLI by `docs_drift_test`, but the walkthrough
+itself has not been re-run since, so treat the transcript as illustrative rather
+than freshly measured.
 
 The client steps use Claude Code; the server side is identical for every
 MCP-capable agent. If you drive Codex CLI, Cursor, VS Code, Gemini CLI, or
@@ -66,7 +68,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.42 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+   # sipnab 0.5.43 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
