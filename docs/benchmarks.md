@@ -5,7 +5,7 @@ host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
 sipnab numbers are measured on the released 0.5.18 artifact,
 checksum-verified, run 2026-07-20, and **have not been re-measured since**: the
-current release 0.5.46 is twenty-eight later. They have been carried forward on the
+current release 0.5.47 is twenty-nine later. They have been carried forward on the
 judgement that the packet path is unchanged. That judgement has never been
 verified, and the version number in this paragraph was advanced release after
 release without anyone re-checking it, so read these as "measured then, on that
