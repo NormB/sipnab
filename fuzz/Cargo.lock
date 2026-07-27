@@ -551,9 +551,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1291,7 +1293,7 @@ checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "sipnab"
-version = "0.5.44"
+version = "0.5.45"
 dependencies = [
  "aes",
  "ahash",
@@ -1306,6 +1308,7 @@ dependencies = [
  "env_logger",
  "etherparse",
  "flate2",
+ "getrandom 0.3.4",
  "getrandom 0.4.3",
  "hmac",
  "indexmap",
