@@ -26,10 +26,10 @@ theme = "ayu-dark"
 # overwrites this from Cargo.toml at build time (single source of truth), and a
 # pre-commit hook fails if the two drift — so the homepage version badge and the
 # download links always match the released crate. Update Cargo.toml, not this.
-version = "0.5.44"
+version = "0.5.45"
 # Release date of the current `version` above. Shown on /download next to the
 # version. Update alongside Cargo.toml/version when cutting a release.
-release_date = "2026-07-26"
+release_date = "2026-07-27"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides

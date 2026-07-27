@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.45] - 2026-07-27
 
 ### Fixed
 - **The wasm32 build was broken, and the CI job meant to catch it compiled for
@@ -25,12 +25,6 @@ All notable changes to sipnab will be documented in this file.
   deliberate; it now matches the enforced 2.36. The floor gate reads doc prose
   as well — a floor stated in a sentence is what a reader acts on.
 
-### Changed
-- **`getrandom` 0.4.2 → 0.4.3** (Dependabot, cargo-minor-patch group). Drops 15
-  build dependencies (`wit-bindgen`, `wasmparser`, `wasip3` and friends), −172
-  lines of lockfile.
-
-### Fixed (published claims)
 - **The site and the installer published a glibc floor five minor versions
   above the real one.** `release.yml` moved the gnu builds into
   `rust:1-bookworm` and enforces a 2.36 floor; `website/config.toml` and
@@ -46,6 +40,11 @@ All notable changes to sipnab will be documented in this file.
   compared `data-count` to the tile's own fallback text, so it never looked at
   a binary. The claim is now a 10 MB ceiling, single-sourced from
   `website/config.toml` and enforced against the real artifact in `release.yml`.
+
+### Changed
+- **`getrandom` 0.4.2 → 0.4.3** (Dependabot, cargo-minor-patch group). Drops 15
+  build dependencies (`wit-bindgen`, `wasmparser`, `wasip3` and friends), −172
+  lines of lockfile.
 
 ### Added
 - **Four gates for claims nothing was measuring.** The glibc floor across
