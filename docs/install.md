@@ -53,6 +53,16 @@ Debian 12 host its TUI audio for a floor the release gate had already lowered.
 cargo install sipnab --features full
 ```
 
+> **On Alpine or any musl target, `--features full` will not give you audio.**
+> The playback plugin is loaded with `dlopen`, and static musl has no dynamic
+> loader — it returns "Dynamic loading not supported". The build succeeds and
+> the binary reports `audio` in `--version`, but playback can never work. Build
+> without the `audio` feature, or build dynamically linked
+> (`RUSTFLAGS="-C target-feature=-crt-static"` plus `apk add alsa-lib
+> alsa-lib-dev`), which is Alpine-only. See the site's
+> [Build from Source](https://www.sipnab.com/docs/build/#audio-on-musl-and-alpine)
+> page for both recipes.
+
 ## Package Managers
 
 ### Debian/Ubuntu (.deb)

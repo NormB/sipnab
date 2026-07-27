@@ -108,10 +108,16 @@ jobs:
         id: features
         shell: bash
         run: |
-          # No-audio set = "full minus audio". musl is ALWAYS no-audio (static
-          # musl + ALSA is impractical) but keeps its plain artifact name. The
-          # gnu `variant: noaudio` matrix entries build the no-audio set with a
-          # "-noaudio" artifact suffix.
+          # No-audio set = "full minus audio". musl is ALWAYS no-audio, and not
+          # as a preference: the playback plugin is loaded with dlopen, and
+          # static musl has no dynamic loader — dlopen returns NULL with
+          # "Dynamic loading not supported". Compiling `audio` in would produce
+          # a binary advertising a feature it cannot ever perform. (Measured;
+          # the comment here previously said "impractical", which invited
+          # someone to try.) A dynamically linked musl build *can* load the
+          # plugin, but only runs on musl hosts, so it is not what these
+          # portable tarballs are for. The gnu `variant: noaudio` matrix entries
+          # build the no-audio set with a "-noaudio" artifact suffix.
           noaudio_set="native,tui,tls,hep,api,mcp,mcp-http,metrics"
 
           case "${{ matrix.target }}" in
@@ -169,6 +175,79 @@ jobs:
           esac
           "$strip_bin" "target/${{ matrix.target }}/release/sipnab" || true
 
+      # Execute what we are about to ship.
+      #
+      # Until now this workflow built eight targets, gated their glibc floor and
+      # their size, attested their provenance and published them — without ever
+      # running one. Six of the nine artifacts had no test of any kind against
+      # them, because ci.yml only tests the runner's own arch and libc. Those
+      # gates check things *about* a binary; none of them check that it works.
+      #
+      # aarch64 Linux runs under qemu-user. macOS x86_64 on an arm64 runner is
+      # the one case that cannot run here, and it says so loudly rather than
+      # passing quietly — a skip nobody sees is how this hole stayed open.
+      - name: Smoke test the built binary
+        shell: bash
+        run: |
+          set -uo pipefail
+          bin="target/${{ matrix.target }}/release/sipnab"
+          runner_arch="$(uname -m)"
+          run=""
+
+          case "${{ matrix.target }}" in
+            x86_64-*-linux-*)
+              [ "$runner_arch" = "x86_64" ] && run="" || run="SKIP:arch"
+              ;;
+            aarch64-*-linux-*)
+              if [ "$runner_arch" = "aarch64" ]; then
+                run=""
+              elif command -v qemu-aarch64-static >/dev/null 2>&1; then
+                run="qemu-aarch64-static"
+              elif command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq && apt-get install -y -qq qemu-user-static \
+                  && run="qemu-aarch64-static" || run="SKIP:no-qemu"
+              else
+                run="SKIP:no-qemu"
+              fi
+              ;;
+            aarch64-apple-darwin)
+              [ "$runner_arch" = "arm64" ] && run="" || run="SKIP:arch"
+              ;;
+            x86_64-apple-darwin)
+              # macos-latest is arm64; Rosetta is not guaranteed on runners.
+              if [ "$runner_arch" = "x86_64" ]; then run=""; else run="SKIP:rosetta"; fi
+              ;;
+          esac
+
+          if [ "${run#SKIP:}" != "$run" ]; then
+            echo "::warning::NOT smoke-tested on this runner (${run#SKIP:}): ${{ matrix.target }} ships without having been executed"
+            exit 0
+          fi
+
+          # gnu aarch64 under qemu needs the arm64 loader and libs, which the
+          # multiarch build deps already installed.
+          if [ "$run" = "qemu-aarch64-static" ] && [ -d /usr/aarch64-linux-gnu ]; then
+            export QEMU_LD_PREFIX=/usr/aarch64-linux-gnu
+          fi
+
+          echo "::group::--version"
+          $run "$bin" --version || { echo "::error::$bin failed to run"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::--help"
+          $run "$bin" --help > /dev/null || { echo "::error::$bin --help failed"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::parse a fixture capture"
+          out=$($run "$bin" -N -I tests/pcap-samples/codec-negotiation.pcap 2>&1)
+          echo "$out"
+          echo "::endgroup::"
+          if ! printf '%s' "$out" | grep -q "packets captured"; then
+            echo "::error::$bin ran but did not parse the fixture capture"
+            exit 1
+          fi
+          echo "smoke test passed for ${{ matrix.target }}"
+
       # Regression gate for the glibc floor: a binary that links symbols newer
       # than 2.36 would fail on Debian 12 with "GLIBC_x.yz not found".
       - name: Enforce glibc floor (gnu Linux targets)
@@ -224,7 +303,7 @@ jobs:
           stage="sipnab-${version}-${{ matrix.target }}${{ steps.features.outputs.suffix }}"
           mkdir -p "dist/${stage}"
           cp "target/${{ matrix.target }}/release/sipnab" "dist/${stage}/"
-          cp README.md LICENSE-MIT LICENSE-APACHE "dist/${stage}/"
+          cp README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.md "dist/${stage}/"
           [ -f man/sipnab.1 ] && cp man/sipnab.1 "dist/${stage}/"
           # Stage the audio plugin alongside the binary when it was built.
           if [ "${{ steps.features.outputs.audio_plugin }}" = "yes" ]; then

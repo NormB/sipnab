@@ -64,6 +64,7 @@ mkdir -p "$PKG_DIR/usr/bin"
 mkdir -p "$PKG_DIR/usr/share/man/man1"
 mkdir -p "$PKG_DIR/etc/sipnab"
 mkdir -p "$PKG_DIR/lib/systemd/system"
+mkdir -p "$PKG_DIR/usr/share/doc/sipnab"
 
 # Copy files
 cp "$BIN_SRC" "$PKG_DIR/usr/bin/sipnab"
@@ -72,6 +73,11 @@ if [ -z "${SIPNAB_BIN:-}" ]; then
 fi
 cp man/sipnab.1 "$PKG_DIR/usr/share/man/man1/"
 gzip -9 "$PKG_DIR/usr/share/man/man1/sipnab.1"
+# Licence and attribution. MIT and Apache-2.0 both require the notice to travel
+# with the binary, and libasound (reached via the audio plugin) is
+# LGPL-2.1-or-later, so the third-party notices are an obligation rather than a
+# nicety. The package shipped none of this before.
+cp LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.md "$PKG_DIR/usr/share/doc/sipnab/"
 cp contrib/sipnab.service "$PKG_DIR/lib/systemd/system/"
 
 # Audio plugin (optional): install the cdylib and add libasound Recommends.
