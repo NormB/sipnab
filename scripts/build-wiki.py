@@ -16,6 +16,7 @@ Default OUTPUT_DIR is `build/wiki`.
 
 from __future__ import annotations
 
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -76,10 +77,6 @@ GROUPS: list[tuple[str, list[str]]] = [
                                  "internals/zero-copy-payloads.md"]),
 ]
 
-# basename (without .md) -> wiki page, for link rewriting. Source links use the
-# bare filename regardless of subdir, so key on the basename.
-SLUG_TO_PAGE = {Path(src).stem: page for src, page in PAGES.items()}
-
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 
 # Links into the code tree. LINK_RE only matches .md, so without this a
@@ -90,8 +87,8 @@ LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 # (`../../harness`), and dev_docs_drift_test counts that as a code link too,
 # so both forms must rewrite or the bare one reaches the wiki dead.
 CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:src|tests|crates|benches|fuzz|scripts|contrib"
-    r"|harness|ops|man|demos|\.github|\.githooks)(?:/[^)\s]*)?)\s*\)"
+    r"\]\(\s*((?:\.{1,2}/)*(?:src|tests|crates|bench|benches|fuzz|scripts"
+    r"|contrib|harness|ops|man|demos|\.github|\.githooks)(?:/[^)\s]*)?)\s*\)"
 )
 
 
@@ -101,33 +98,46 @@ def wiki_bullet(page: str) -> str:
     return f"- [[{page}]]" if label == page else f"- [[{label}|{page}]]"
 
 
-def rewrite_link(m: re.Match) -> str:
-    target, anchor = m.group(1), (m.group(2) or "")
-    if target.startswith(("http://", "https://")):
-        return m.group(0)
-    stem = Path(target).stem
-    if stem in SLUG_TO_PAGE:
-        return f"]({SLUG_TO_PAGE[stem]}{anchor})"
-    # Unknown doc: point at the repo blob. Source links are relative to
-    # docs/; each leading "../" climbs one level toward the repo root.
-    parts = [p for p in target.split("/") if p not in ("", ".")]
-    prefix = ["docs"]
-    while parts and parts[0] == "..":
-        parts.pop(0)
-        if prefix:
-            prefix.pop()
-    return f"]({BLOB}/{'/'.join(prefix + parts)}{anchor})"
+def resolve_target(src_rel: str, target: str) -> tuple[str | None, str]:
+    """Resolve a link written in `src_rel` to a repo path.
+
+    Returns `(docs_relative, repo_path)`. `docs_relative` is set only when the
+    target lands inside `docs/`, which is what PAGES is keyed on; anything that
+    climbs out of the tree gets `None` and belongs on a blob URL.
+
+    Resolution is relative to the SOURCE FILE's directory. It used to key on
+    `Path(target).stem` alone, which discards the directory entirely — so every
+    `README.md` in the repo collapsed onto whichever page `internals/README.md`
+    maps to. A `../bench/README.md` link silently published as a link to the
+    internals index: not a broken link that anyone would notice, a working link
+    to the wrong page.
+    """
+    src_dir = posixpath.dirname(src_rel)
+    repo_path = posixpath.normpath(posixpath.join("docs", src_dir, target))
+    if repo_path.startswith("docs/"):
+        return repo_path[len("docs/"):], repo_path
+    return None, repo_path
 
 
-def rewrite_code_link(m: re.Match) -> str:
-    target = m.group(1)
-    parts = [p for p in target.split("/") if p not in ("", ".")]
-    prefix = ["docs"]
-    while parts and parts[0] == "..":
-        parts.pop(0)
-        if prefix:
-            prefix.pop()
-    return f"]({BLOB}/{'/'.join(prefix + parts)})"
+def rewrite_link(src_rel: str):
+    """Build the LINK_RE substitution for one source document."""
+    def sub(m: re.Match) -> str:
+        target, anchor = m.group(1), (m.group(2) or "")
+        if target.startswith(("http://", "https://")):
+            return m.group(0)
+        docs_rel, repo_path = resolve_target(src_rel, target)
+        if docs_rel is not None and docs_rel in PAGES:
+            return f"]({PAGES[docs_rel]}{anchor})"
+        return f"]({BLOB}/{repo_path}{anchor})"
+    return sub
+
+
+def rewrite_code_link(src_rel: str):
+    """Build the CODE_LINK_RE substitution for one source document."""
+    def sub(m: re.Match) -> str:
+        _, repo_path = resolve_target(src_rel, m.group(1))
+        return f"]({BLOB}/{repo_path})"
+    return sub
 
 
 def strip_leading_h1(text: str) -> str:
@@ -144,10 +154,10 @@ def strip_leading_h1(text: str) -> str:
     return text
 
 
-def transform(src_text: str) -> str:
+def transform(src_text: str, src_rel: str) -> str:
     body = strip_leading_h1(src_text)
-    body = LINK_RE.sub(rewrite_link, body)
-    return CODE_LINK_RE.sub(rewrite_code_link, body)
+    body = LINK_RE.sub(rewrite_link(src_rel), body)
+    return CODE_LINK_RE.sub(rewrite_code_link(src_rel), body)
 
 
 def build_home() -> str:
@@ -245,7 +255,7 @@ def main() -> int:
 
     for src, page in PAGES.items():
         text = (docs / src).read_text(encoding="utf-8")
-        (out_dir / f"{page}.md").write_text(transform(text), encoding="utf-8")
+        (out_dir / f"{page}.md").write_text(transform(text, src), encoding="utf-8")
         print(f"  {src:40s} -> {page}.md")
 
     (out_dir / "Home.md").write_text(build_home(), encoding="utf-8")
