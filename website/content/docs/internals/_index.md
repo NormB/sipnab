@@ -123,13 +123,15 @@ unauthenticated non-loopback metrics bind, SN-03 crash-report creation that
 followed symlinks.
 
 **The gate suite** — the self-enforcing checks that run without anyone asking:
-eight numbered gates in [`.githooks/pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit)
+the numbered gates in [`.githooks/pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit)
 (clippy, the full test suite, no `unwrap()`/`expect()` in production, WASM
-exports in sync, the homepage *test count* — with separate sub-gates 5b and 5c
-for the site and man/docs version strings, which are a different claim — no
-TODO stubs, WASM rebuild, and an advisory notice when a commit touches code
-these pages cite; the TODO scan and that notice are the two advisory gates,
-printing `WARN`/`REVIEW` and letting the commit through), four in
+exports in sync, the homepage *test count*, sub-gate 5b for the site version —
+a different claim from the crate version — no TODO stubs, WASM rebuild, and an
+advisory notice when a commit touches code these pages cite; the TODO scan and
+that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
+commit through). Sub-gate 5c is gone: it re-implemented a Rust test in shell,
+the copies diverged, and the surviving Rust version runs here *and* in CI. Also
+four in
 [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) (`fmt`,
 `clippy --all-features --all-targets`, `cargo doc` with `-D warnings`, and a
 `fuzz` workspace check), and the CI jobs behind them.
