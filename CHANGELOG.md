@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.47] - 2026-07-27
 
 ### Added
 - **Third-party notices, generated and shipped.** `THIRD-PARTY-NOTICES.md`

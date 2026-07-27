@@ -14,7 +14,7 @@ the `-N --json` export sink: buffered batch writes plus direct JSON
 serialization cut wall-clock time ~29% and `write()` syscalls 98.5% on that
 path (same-toolchain A/B on this branch, byte-identical output; not yet
 re-measured on a released artifact). **Nothing below has been re-measured since
-0.5.18** — the current release 0.5.46 is twenty-eight later; the numbers are carried forward
+0.5.18** — the current release 0.5.47 is twenty-nine later; the numbers are carried forward
 on the judgement that the packet path is unchanged, and that judgement has
 never been verified. The version in this paragraph was advanced release after
 release without anyone re-checking the claim underneath it. Read these as
