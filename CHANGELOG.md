@@ -12,17 +12,21 @@ All notable changes to sipnab will be documented in this file.
   repository, no visitor input reaches it, and mermaid runs under
   `securityLevel: "strict"`. Each of those is true today and none is enforced;
   the argument stops holding the moment a diagram is rendered from anything a
-  visitor typed. The SVG is now parsed with `DOMParser` as `image/svg+xml`
-  (strict XML, no HTML error-recovery, inert document) and, before the nodes are
-  adopted, scrubbed of `<script>` elements, every `on*` handler attribute, and
-  `javascript:`/`data:text/html` URLs. The inert parse alone was not enough:
-  `importNode` moves the nodes into the live document, where a handler
-  attribute would become live. A malformed document yields a `<parsererror>`
-  that is caught, leaving the diagram source visible instead of coercing it.
-  Verified with a hostile SVG — one `<script>`, two handler attributes and two
-  `javascript:` URLs all removed, legitimate markup preserved, and nothing
-  executed once imported — plus all 17 real diagrams still rendering with drag,
-  zoom and collapse intact.
+  visitor typed. The viewer now calls `mermaid.run()` to render in place and
+  moves the resulting `<svg>` node with `appendChild`, so no string crosses back
+  through a markup parser in this file at all and sanitizing stays mermaid's
+  own DOMPurify under `securityLevel: "strict"`.
+
+  Two earlier attempts are worth recording, because both looked like fixes and
+  neither was. Replacing `innerHTML` with `DOMParser` moved the sink instead of
+  removing it — `parseFromString` interprets markup whatever MIME type it is
+  handed, and an inert parse only defers the problem, since `importNode` makes
+  any surviving handler attribute live. Hand-rolling a scrubber on top then
+  introduced a *new* high-severity finding of its own
+  (`js/incomplete-url-scheme-check`): a scheme denylist that missed `vbscript:`.
+  The recurring error was marshalling markup by hand; the fix was to stop.
+  All 17 diagrams verified rendering afterwards with drag, zoom and collapse
+  intact.
 
 ## [0.5.45] - 2026-07-27
 

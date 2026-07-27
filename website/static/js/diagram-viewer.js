@@ -44,48 +44,6 @@
     return n < lo ? lo : n > hi ? hi : n;
   }
 
-  /**
-   * Strip anything script-bearing from a parsed SVG subtree, in place.
-   *
-   * Removes `<script>` elements, every `on*` handler attribute, and any
-   * `href`/`xlink:href` whose value is a `javascript:` URL. Runs before the
-   * nodes are imported into the live document, because an inert parse only
-   * defers execution — it does not prevent it once the nodes are adopted.
-   *
-   * mermaid under `securityLevel: "strict"` should never emit any of these.
-   * That is the point: this makes the guarantee structural instead of a claim
-   * about mermaid's configuration staying the way it is today.
-   */
-  function scrubSvg(root) {
-    var scripts = root.getElementsByTagName("script");
-    while (scripts.length > 0) {
-      scripts[0].parentNode.removeChild(scripts[0]);
-    }
-    // The walker must come from the document that owns `root` — this subtree
-    // is still in the inert DOMParser document, not the live one.
-    var walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
-    var el = root;
-    while (el) {
-      var attrs = el.attributes;
-      for (var a = attrs.length - 1; a >= 0; a--) {
-        var name = attrs[a].name;
-        var lower = name.toLowerCase();
-        if (lower.indexOf("on") === 0) {
-          el.removeAttribute(name);
-          continue;
-        }
-        if (lower === "href" || lower === "xlink:href") {
-          // Leading control characters and whitespace are stripped by URL
-          // parsers before the scheme is read, so strip them here too.
-          var v = (attrs[a].value || "").replace(/[\u0000-\u0020]/g, "").toLowerCase();
-          if (v.indexOf("javascript:") === 0 || v.indexOf("data:text/html") === 0) {
-            el.removeAttribute(name);
-          }
-        }
-      }
-      el = walker.nextNode();
-    }
-  }
 
   /**
    * Wire pan/zoom plus a collapsible, draggable control box onto one rendered
@@ -405,44 +363,44 @@
       }
     }
 
+    // Let mermaid render in place rather than handing us markup to insert.
+    //
+    // Three attempts got here. `figure.innerHTML = rendered.svg` was an XSS
+    // sink under a comment arguing it was safe. Swapping in DOMParser moved the
+    // sink rather than removing it — parseFromString interprets markup whatever
+    // MIME type it is given, and an inert parse only defers the problem, since
+    // importNode makes any surviving handler attribute live. Hand-rolling a
+    // scrubber on top of that then introduced its own hole: a scheme denylist
+    // that missed vbscript:.
+    //
+    // The mistake each time was marshalling markup by hand. mermaid.run()
+    // renders straight into the elements, so no string ever crosses back
+    // through a markup parser in this file, and sanitizing stays the job of
+    // mermaid's own DOMPurify under `securityLevel: "strict"` — a maintained
+    // allowlist rather than a denylist of mine.
+    try {
+      await mermaid.run({ nodes: blocks, suppressErrors: false });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("sipnab: mermaid failed to render one or more diagrams", err);
+    }
+
     for (var i = 0; i < blocks.length; i++) {
       var block = blocks[i];
       // Normalize: Zola may emit <pre><code class="language-mermaid">.
       var host = block.tagName === "PRE" ? block : block.parentElement;
-      var source = block.textContent;
 
       var figure = document.createElement("figure");
       figure.className = "diagram-figure";
 
       try {
-        var rendered = await mermaid.render("sipnab-diagram-" + i, source);
-        // Parse as XML and adopt the node rather than assigning innerHTML.
-        //
-        // This used to be `figure.innerHTML = rendered.svg` under a comment
-        // arguing it was safe: the source is authored in this repo, no visitor
-        // input reaches it, and mermaid runs `securityLevel: "strict"`. All of
-        // that is true today and none of it is enforced — it is an argument,
-        // not a guarantee, and it stops holding the moment anyone renders a
-        // diagram from something a visitor typed. CodeQL flagged the flow
-        // (js/xss-through-dom, high): DOM text read from the page reaching an
-        // HTML sink. Removing the sink is the fix; keeping the comment was not.
-        //
-        // `image/svg+xml` is strict XML: it never runs the HTML parser's
-        // error-recovery, and DOMParser documents are inert — scripts in them
-        // do not execute. A malformed document yields a <parsererror> element
-        // instead of silently coercing, so it is caught below and the diagram
-        // source stays visible.
-        var parsed = new DOMParser().parseFromString(rendered.svg, "image/svg+xml");
-        if (parsed.getElementsByTagName("parsererror").length > 0) {
-          throw new Error("mermaid emitted SVG that is not well-formed XML");
+        // Move the rendered node, never re-serialize it: appendChild relocates
+        // a live element and interprets nothing.
+        var svg = block.querySelector("svg");
+        if (!svg) {
+          throw new Error("mermaid produced no <svg> for this block");
         }
-        // Parsing into an inert document is not on its own enough: importNode
-        // moves these nodes into the live document, at which point any `on*`
-        // handler attribute on them becomes live. Scrub before importing, so
-        // the safety is a property of the code rather than of an argument
-        // about where the input came from.
-        scrubSvg(parsed.documentElement);
-        figure.replaceChildren(document.importNode(parsed.documentElement, true));
+        figure.appendChild(svg);
       } catch (err) {
         // A diagram that fails to render must not blank the page: leave the
         // source visible, which is still readable prose-adjacent text. Say so
