@@ -2,6 +2,52 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.50] - 2026-07-27
+
+No shipped-code changes. This release exists to exercise two new release-time
+gates that, by their nature, cannot be tested except by cutting a release.
+
+### Added
+- **The release now refuses to build if the tag disagrees with `Cargo.toml`.**
+  Artifact filenames, the `.deb` `Version:`, the `.rpm` version and the Homebrew
+  formula all derive from `${GITHUB_REF_NAME#v}`, while the version the binary
+  reports comes from `Cargo.toml`. Nothing compared them, so tagging `v0.6.0`
+  without bumping the crate would ship packages labelled 0.6.0 containing a
+  binary reporting 0.5.49 — into package managers, checksummed and attested,
+  with every badge green, because each half is internally consistent. A
+  `preflight` job now blocks the build on a mismatch.
+- **The release verifies its own attestation before publishing.** Attestation
+  was previously "gated" by a test asserting that the string
+  `actions/attest-build-provenance@` appears in `release.yml` — true whether or
+  not the result is usable. `release.yml` now runs the exact command the
+  install docs give downloaders (`gh attestation verify`) against a real
+  artifact, so a changed subject path, digest mismatch or permissions change
+  fails the release instead of reaching a user.
+
+### Fixed
+- **The TUI end-to-end suite had never run on macOS, and was enforced nowhere.**
+  Its 11 tests drive the real TUI through a tmux PTY and are the only coverage
+  that exercises a terminal. They are `#[ignore]` by default, so every plain
+  `cargo test` skips them — locally, in the pre-commit hook, in CI's `Test`
+  step, under coverage. The one step that ran them carried
+  `continue-on-error: true`, discarding the result.
+
+  Removing that revealed what it had hidden: `Install system deps` is
+  Linux-only, macOS runners have no tmux, and all 11 tests were failing on
+  **every** macOS run with `failed to run tmux (is it installed?)`. sipnab ships
+  two macOS targets and had no terminal-level coverage of either. tmux is now
+  installed on macOS and the suite gates on both platforms.
+
+  Worth recording how well this hid: `continue-on-error` rewrites a step's
+  `conclusion` to `success` and leaves the true result in `outcome`, which the
+  REST API does not expose on step objects. Querying step conclusions — the
+  obvious way to check — returns `success` for a step that failed. Only the job
+  logs show the truth.
+- The fuzz-target count and the enumerated target list in `docs/fault-model.md`
+  and `ARCHITECTURE.md` are gated against `fuzz/fuzz_targets/`. A new target
+  previously left the security-facing page describing a smaller fuzz surface
+  than the tree actually has.
+
 ## [0.5.49] - 2026-07-27
 
 ### Fixed

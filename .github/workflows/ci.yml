@@ -129,18 +129,30 @@ jobs:
       # coverage. This step is the ONLY place they run.
       #
       # It carried `continue-on-error: true  # PTY tests can be flaky in CI`,
-      # which meant the one place they ran also threw away the answer: the whole
-      # TUI E2E suite could fail indefinitely with every badge green. The
-      # flakiness was not real -- 24 consecutive executions across both
-      # platforms passed, and the logs show all 11 tests running and passing,
-      # not silently skipping.
+      # which meant the one place they ran also threw away the answer.
       #
-      # If this does turn out to be flaky, stabilise the test. Do not re-mute
-      # the suite: a gate that reports a safety it is not providing is worse
-      # than no gate, because it stops anyone looking.
+      # Removing it revealed what that had been hiding: `Install system deps` is
+      # Linux-only, macOS runners have no tmux, and all 11 tests had been
+      # failing there on EVERY run with `failed to run tmux (is it installed?)`.
+      # The suite had never once executed on macOS. It looked green because
+      # continue-on-error rewrites a step's `conclusion` to success and leaves
+      # the true result in `outcome` — so even querying the API for step
+      # conclusions reports success for a step that failed. The masking was
+      # thorough enough to survive being checked.
+      #
+      # tmux is now installed on macOS, so the tests run on both platforms.
+      # If this ever does turn flaky, stabilise the test. Do not re-mute the
+      # suite: a gate that reports a safety it is not providing is worse than
+      # no gate, because it stops anyone looking.
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux
+
       - name: E2E TUI tests (PTY)
         if: runner.os != 'Windows'
-        run: cargo test --features tui --test tui_e2e_test -- --ignored
+        run: |
+          tmux -V
+          cargo test --features tui --test tui_e2e_test -- --ignored
 
   # Installer: unit tests for the platform/glibc detection and artifact
   # selection in website/static/install.sh (served at sipnab.com/install.sh).
