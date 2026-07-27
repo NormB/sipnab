@@ -21,6 +21,10 @@ jobs:
   build:
     name: Build (${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }})
     runs-on: ${{ matrix.os }}
+    # GitHub's default is six hours. A smoke test that hung once already held a
+    # release for 37 minutes before it was cancelled by hand; this is the
+    # backstop that does not depend on any shell utility being present.
+    timeout-minutes: 45
     # gnu Linux targets build inside rust:1-bookworm so the binaries (and the
     # .debs made from them) need only glibc >= 2.36 — Debian 12+, Ubuntu 23.04+.
     # ubuntu-latest is 24.04 (glibc 2.39), and the cross-rs :main images are
@@ -230,17 +234,35 @@ jobs:
             export QEMU_LD_PREFIX=/usr/aarch64-linux-gnu
           fi
 
-          # Every invocation is bounded. The first version of this step had no
-          # timeout anywhere, and the capture parse hung for 37 minutes on the
-          # aarch64-gnu targets until the run was cancelled by hand — GitHub's
-          # default job timeout is six hours, so an unbounded hang here blocks a
-          # release rather than failing it.
+          # Bound each invocation where the platform can. `timeout` is GNU
+          # coreutils and macOS does not ship it — the first attempt at bounding
+          # these calls used it unconditionally and failed every macOS target
+          # with "timeout: command not found". Homebrew installs it as
+          # `gtimeout`. Where neither exists the commands run unbounded and the
+          # job-level timeout-minutes above is the backstop.
+          tmo=()
+          if command -v timeout >/dev/null 2>&1; then tmo=(timeout)
+          elif command -v gtimeout >/dev/null 2>&1; then tmo=(gtimeout)
+          else echo "no timeout utility on this runner; relying on job timeout-minutes"
+          fi
+          runner=()
+          [ -n "$run" ] && runner=("$run")
+
+          bounded() { # bounded <seconds> <args...>
+            local secs="$1"; shift
+            if [ ${#tmo[@]} -gt 0 ]; then
+              "${tmo[@]}" "$secs" "${runner[@]}" "$@"
+            else
+              "${runner[@]}" "$@"
+            fi
+          }
+
           echo "::group::--version"
-          timeout 60 $run "$bin" --version || { echo "::error::$bin failed to run (or timed out)"; exit 1; }
+          bounded 60 "$bin" --version || { echo "::error::$bin failed to run (or timed out)"; exit 1; }
           echo "::endgroup::"
 
           echo "::group::--help"
-          timeout 60 $run "$bin" --help > /dev/null || { echo "::error::$bin --help failed (or timed out)"; exit 1; }
+          bounded 60 "$bin" --help > /dev/null || { echo "::error::$bin --help failed (or timed out)"; exit 1; }
           echo "::endgroup::"
 
           # The capture parse is skipped for gnu binaries under emulation, and
@@ -259,7 +281,7 @@ jobs:
           fi
 
           echo "::group::parse a fixture capture"
-          out=$(timeout 120 $run "$bin" -N -I tests/pcap-samples/codec-negotiation.pcap 2>&1) || {
+          out=$(bounded 120 "$bin" -N -I tests/pcap-samples/codec-negotiation.pcap 2>&1) || {
             echo "$out"
             echo "::error::$bin failed or timed out parsing the fixture capture"
             exit 1
