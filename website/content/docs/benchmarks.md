@@ -1,7 +1,7 @@
 +++
 title = "Benchmarks"
 weight = 17
-description = "Reproducible throughput and memory benchmarks: sipnab multi-core scaling, a controlled version A/B, and honest comparisons against sngrep and sipgrep."
+description = "Reproducible throughput and memory benchmarks: sipnab multi-core scaling, a controlled version A/B, and honest comparisons against sngrep, sipgrep and voipmonitor."
 +++
 
 How fast sipnab is, measured honestly. Every number here is reproducible, and
@@ -98,36 +98,48 @@ a throughput number only means something next to the work behind it.
 | tool | pkts/s | × sngrep | what it reconstructs |
 |---|---:|---:|---|
 | sngrep 1.8.0 | 0.19M | 1.0× | SIP dialogs; no RTP-stream reconstruction headless |
-| sipgrep 2.2.1 | 2.32M | 12.5× | grep-style SIP line match + Call-ID grouping; **no RTP** |
-| **sipnab 0.5.47 `--cores 1`** | 1.09M | **5.9×** | SIP dialogs + **200 RTP streams** |
-| **sipnab 0.5.47 `--cores 4`** | 2.05M | **11.0×** | identical full SIP + RTP reconstruction |
+| sipgrep 2.2.1 | 2.19M | 11.8× | grep-style SIP line match + Call-ID grouping; **no RTP** |
+| voipmonitor 2026.07.1 | 0.40M | 2.2× | full call/CDR + RTP-stream association |
+| **sipnab 0.5.47 `--cores 1`** | 1.04M | **5.6×** | SIP dialogs + **200 RTP streams** |
+| **sipnab 0.5.47 `--cores 4`** | 2.06M | **11.1×** | identical full SIP + RTP reconstruction |
 
-Read it in two buckets:
+Read it in three buckets:
 
 - **Grep-class (sipgrep)** posts the fastest single number but does the least —
   line-oriented SIP matching with **no RTP work at all** (it never associates
   the 500k RTP packets into streams). Its lead is mostly "it does less."
-- **Full reconstruction (sngrep, sipnab)** parse SIP into dialogs; sipnab
-  additionally associates RTP into 200 media streams. Within that class sipnab
-  is **5.9× sngrep single-core and 11.0× at four cores**, and four-core lands
-  within 13% of grep-only sipgrep's wall-clock (0.261 s vs 0.231 s) *while also
-  reconstructing every RTP stream*.
+- **Full reconstruction (sngrep, voipmonitor, sipnab)** parse SIP into dialogs;
+  voipmonitor and sipnab additionally associate RTP into media streams.
+- Within that class **sipnab leads**: single-core is **5.6× sngrep and 2.6×
+  voipmonitor**, four-core is **11.1× sngrep and 5.1× voipmonitor** — and
+  four-core lands within 6% of grep-only sipgrep's wall-clock (0.259 s vs
+  0.245 s) *while also reconstructing all 200 RTP streams*. There is no
+  configuration where sipnab is the slowest at comparable work.
 
-> **voipmonitor was not re-measured.** It is not installed on the reference
-> host and is not packaged for it, so a source build pulling in a database
-> service would be required. Its previously published figures (0.73M pkts/s
-> here, and the memory sweep below) were measured on 2026-06-24 against the old
-> corpus and are **not** carried into the tables above — a comparison whose
-> competitor is absent is not a comparison. `bench/compare.sh` reports it as
-> `MISSING` rather than skipping it quietly, and will measure it if you have it.
+> **How voipmonitor was run.** It is not packaged for the reference host, so it
+> is built from source in a container
+> ([`bench/voipmonitor.Dockerfile`](https://github.com/NormB/sipnab/blob/main/bench/voipmonitor.Dockerfile))
+> rather than installed onto the machine. Two things make that fair. Its timing
+> loop runs *inside* a single container, because timing `docker run` would
+> charge it ~0.8 s of container startup per invocation — on this corpus that is
+> longer than sipnab's entire run, and would have manufactured a multiple-fold
+> win out of nothing. And the config disables spooling, not analysis: re-running
+> with `savesip`/`savertp` on confirms voipmonitor emits one SIP and one RTP
+> capture per call, each containing both directions of the stream, so it really
+> is doing the RTP association it is credited with here.
+>
+> The remaining asymmetry is that voipmonitor runs containerised while the other
+> three run natively. On Linux that is namespaces rather than virtualisation, so
+> CPU-bound parsing is essentially native speed — but it is not nothing, and it
+> is voipmonitor's number that would carry any cost.
 
 > **Fairness notes.** The corpus is synthetic and reuses SDP media endpoints, so
 > voipmonitor's default `sdp_multiplication=3` DoS-guard would suppress the
-> duplicate-SDP streams; set it to `0` so voipmonitor does full RTP association
-> on equal footing. All tools parsed the same file to EOF. sngrep and sipgrep
-> report dialogs grouped by the 100 unique Call-IDs while sipnab reports the
-> finer 35k messages / 200 streams — a reporting-depth difference, not a
-> correctness one.
+> duplicate-SDP streams; `bench/vm.conf` sets it to `0` so voipmonitor does full
+> RTP association on equal footing. All tools parsed the same file to EOF.
+> sngrep and sipgrep report dialogs grouped by the 100 unique Call-IDs while
+> sipnab reports the finer 35k messages / 200 streams — a reporting-depth
+> difference, not a correctness one.
 
 ## Throughput and memory at carrier scale
 
@@ -149,6 +161,30 @@ Memory grows close to linearly with tracked state, about 22 KiB per call
 (dialog + two RTP streams + jitter/loss accounting), reaching 448 MiB at 20k
 calls. That linearity is the useful property: it is predictable, so capacity
 planning is arithmetic rather than guesswork.
+
+Against voipmonitor on the same corpora, same method:
+
+| calls | pkts | voipmonitor | sipnab | speed-up | RSS edge |
+|------:|-----:|---|---|---:|---:|
+| 500 | 53.5k | 0.12M p/s · 60.6 MiB | 1.56M p/s · 18.6 MiB | 12.6× | 3.3× |
+| 2,000 | 214k | 0.29M p/s · 170.8 MiB | 1.84M p/s · 53.4 MiB | 6.4× | 3.2× |
+| 8,000 | 856k | 0.45M p/s · 596.2 MiB | 1.93M p/s · 192.9 MiB | 4.3× | 3.1× |
+| 20,000 | 2.14M | 0.50M p/s · 1455 MiB | 1.94M p/s · 448.2 MiB | 3.9× | 3.2× |
+
+sipnab leads on throughput at every scale, but the lead *narrows* with volume —
+12.6× at 500 calls down to 3.9× at 20,000 — because voipmonitor's multithreaded
+per-packet throughput climbs with scale (0.12M → 0.50M) while sipnab's is
+already flat. Extrapolating that trend past the measured range would be
+guesswork, so it is not done here.
+
+**This corrects a claim in sipnab's favour that no longer holds.** The page
+previously advertised a ~9.2× memory advantage at 20k calls. Measured against
+voipmonitor 2026.07.1 it is **~3.2×**, and remarkably steady across the whole
+sweep. voipmonitor's own footprint is far below what this page used to report
+for it (1.46 GiB at 20k calls against a published 4.7 GiB). The old figure came
+from an older voipmonitor on a corpus nobody can rebuild, so the two are not
+strictly comparable — but a 9.2× advantage was being published, it is 3.2× when
+measured, and the smaller number is the one with a recipe attached.
 
 Getting this measurement right requires the unbounded pools. Run the sweep with
 the default bounded pools and RSS tops out around 123 MiB at 20k calls, because
@@ -182,7 +218,7 @@ Each tool driven offline/headless to parse the whole file and exit:
 ```sh
 sngrep       sngrep  -I corpus.pcap -r -N -q
 sipgrep      sipgrep -I corpus.pcap -C -G
-voipmonitor  voipmonitor -r corpus.pcap -c -k --config-file=vm.conf   # sdp_multiplication=0, save_*=no
+voipmonitor  voipmonitor -r corpus.pcap -c -k --config-file=bench/vm.conf
 sipnab       sipnab -N -I corpus.pcap --cores 4 --report --no-cli-print
 ```
 
