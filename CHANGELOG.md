@@ -12,12 +12,17 @@ All notable changes to sipnab will be documented in this file.
   repository, no visitor input reaches it, and mermaid runs under
   `securityLevel: "strict"`. Each of those is true today and none is enforced;
   the argument stops holding the moment a diagram is rendered from anything a
-  visitor typed. The SVG is now parsed with `DOMParser` as `image/svg+xml` —
-  strict XML, no HTML error-recovery, inert document, scripts never execute —
-  and adopted with `importNode`, so the sink is gone rather than justified. A
-  malformed document yields a `<parsererror>` that is caught, leaving the
-  diagram source visible instead of coercing it. All 17 diagrams verified
-  rendering in Chromium afterwards, with drag, zoom and collapse intact.
+  visitor typed. The SVG is now parsed with `DOMParser` as `image/svg+xml`
+  (strict XML, no HTML error-recovery, inert document) and, before the nodes are
+  adopted, scrubbed of `<script>` elements, every `on*` handler attribute, and
+  `javascript:`/`data:text/html` URLs. The inert parse alone was not enough:
+  `importNode` moves the nodes into the live document, where a handler
+  attribute would become live. A malformed document yields a `<parsererror>`
+  that is caught, leaving the diagram source visible instead of coercing it.
+  Verified with a hostile SVG — one `<script>`, two handler attributes and two
+  `javascript:` URLs all removed, legitimate markup preserved, and nothing
+  executed once imported — plus all 17 real diagrams still rendering with drag,
+  zoom and collapse intact.
 
 ## [0.5.45] - 2026-07-27
 
