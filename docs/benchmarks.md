@@ -1,36 +1,23 @@
 # Benchmarks
 
-How fast sipnab is, measured honestly. Every number here is reproducible — the
-host, corpus, tool versions, and exact commands are listed so you can re-run it.
+How fast sipnab is, measured honestly. Every number here is reproducible, and
+as of 0.5.47 that is a checked claim rather than an asserted one: the corpus
+generator and the timing harness are in [`bench/`](../bench/), so you can
+regenerate the corpus and re-run every table below.
 
-sipnab numbers are measured on the released 0.5.18 artifact,
-checksum-verified, run 2026-07-20, and **have not been re-measured since**: the
-current release 0.5.47 is twenty-nine later. They have been carried forward on the
-judgement that the packet path is unchanged. That judgement has never been
-verified, and the version number in this paragraph was advanced release after
-release without anyone re-checking it, so read these as "measured then, on that
-build", not as a current figure.
+They were not, before. From 0.5.18 to 0.5.46 this page said the listed commands
+were "the full recipe" while the generator lived in an unpublished repository —
+nobody could re-run these numbers, including on the reference host named below.
+The generator was rewritten from the documented corpus parameters and now
+reproduces every one of them exactly (535,000 packets, 35,000 SIP messages,
+500,000 RTP, 93.5% RTP, 100 Call-IDs, 200 streams).
 
-Re-measuring is a deliberate act, not a side effect of a release: the
-methodology below requires a checksum-verified *release* artifact on an
-otherwise idle host, so it belongs after a release has been cut and its
-binaries published, never against a local dev build. The comparison tools'
-numbers come from the 2026-06-24 session — same host, corpus, and method, and
-their versions are unchanged. Versus the 0.4.16 session, 0.5.18 measures faster
-at every multi-core operating point (+9–16%) and across the carrier sweep
-(+30–107%).
-
-0.5.18's rebuilt `-O` re-emit writer (WS8.3) deserves an honest word: a
-same-toolchain A/B shows the per-packet write cost down 43%, and write
-errors (full disk, dead mount) now surface instead of being silently
-discarded — but end-to-end `-O` throughput on *this* host is unchanged,
-because here the re-emit is bound by pushing the corpus's bytes through the
-page cache, not by per-packet overhead. On an x86 dev box the same change
-measures +8–16% end-to-end. (Two apparent regressions in an earlier re-run —
-single-core `-O` throughput and small-scale RSS — were checked with a
-controlled same-day A/B of the 0.4.16 and 0.5.17 binaries: both measured
-identically, so those deltas were session variance in the June figures, not
-version regressions.)
+**Measured on the released 0.5.47 artifact, checksum-verified, 2026-07-27, on
+an idle host.** Numbers on this page are not comparable to the pre-0.5.47
+figures: those were measured on the old unpublished corpus, and while the new
+one matches its documented composition exactly it is not byte-identical. Where
+the two differ, the corpus differs — see the A/B below, which separates the two
+causes rather than guessing between them.
 
 > **Read this first.** These tools do *different amounts of work*, so a raw
 > throughput number only means something next to *what was reconstructed*.
@@ -43,99 +30,136 @@ version regressions.)
 ## Test host & method
 
 - **Host:** NVIDIA Jetson Thor devboard (aarch64), 14 cores, PREEMPT_RT
-  kernel. (A 4-vCPU VM is not used for throughput numbers.)
-- **Corpus:** a synthetic carrier capture — N concurrent calls, each
-  `INVITE → … → 200 → ACK → [bidirectional RTP] → BYE`, ~93% RTP by packet count.
+  kernel, idle. (A 4-vCPU VM is not used for throughput numbers.)
+- **Corpus:** `bench/carrier.py` — N concurrent calls, each
+  `INVITE → 100 → 180 → 200 → ACK → [bidirectional RTP] → BYE → 200`,
+  G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
-  discarded warmup. `pkts/s = packets ÷ wall-clock seconds`.
-- **Version:** sipnab 0.5.18 (release artifact). **Date:** 2026-07-20.
+  discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
+- **Version:** sipnab 0.5.47 (release artifact). **Date:** 2026-07-27.
 
-## Multi-core offline reconstruction (sipnab)
+## Multi-core offline reconstruction
 
-`--cores N` shards by host-pair across worker threads. On a 535k-packet corpus
-throughput holds a flat plateau from 2 cores up:
+`--cores N` shards by host-pair across worker threads. On the 535k-packet
+fixed-state corpus (100 Call-IDs, 200 streams):
 
 | cores | pkts/s |
 |------:|-------:|
-| 1 | 1.20M |
-| 2 | **2.90M** |
-| 4 | 2.52M |
-| 8 | 2.35M |
+| 1 | 1.06M |
+| 2 | **2.32M** |
+| 4 | 2.03M |
+| 8 | 1.89M |
 
-The plateau past cores 2 is the single sequential pcap reader (read + buffer copy
-+ host-pair peek), not the core count. Before v0.4.16 a per-packet cross-core
-hand-off collapsed this to 0.84M @ 4 cores and 0.50M @ 8; batching the hand-off
-removed the regression. CPU pinning was measured and made no meaningful
-difference (+3–5% within noise, ~0% at 8 cores) — the limit is data-movement, not
-scheduling.
+The plateau past 2 cores is the single sequential pcap reader (read + buffer
+copy + host-pair peek), not the core count. Before v0.4.16 a per-packet
+cross-core hand-off collapsed this to 0.84M @ 4 cores and 0.50M @ 8; batching
+the hand-off removed the regression.
 
-## Four-tool comparison
+## Is the packet path still what it was at 0.5.18?
+
+This page used to assert that the numbers carried forward because "the current
+release changes no packet-path code versus 0.5.18". Nobody ever checked it, and
+the version number in the sentence was advanced release after release.
+
+It has now been checked. Both release artifacts, both checksum-verified, run
+against the identical corpus on the same idle host in the same session:
+
+| cores | 0.5.18 | 0.5.47 | delta |
+|------:|-------:|-------:|------:|
+| 1 | 1.06M | 1.06M | 0.0% |
+| 2 | 2.37M | 2.32M | −2.1% |
+| 4 | 2.08M | 2.03M | −2.4% |
+| 8 | 1.96M | 1.89M | −3.6% |
+
+Three interleaved replicates at 2 and 8 cores put that delta inside the noise
+floor: 0.5.47 measured 2.32 / 2.33 / 2.36M at 2 cores against 0.5.18's 2.37 /
+2.42 / 2.34M, so the between-version gap (~2%) is smaller than the
+within-version spread (~3.4%), and one replicate has 0.5.47 ahead. **Twenty-nine
+releases on, throughput is unchanged within measurement noise.** The judgement
+this page carried for a year happens to have been correct — but it is now a
+measurement, and re-checking it is three commands.
+
+The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measures 1.06M
+single-core here against the 1.20M this page published for it — same binary,
+same host, different corpus. The gap between old and new tables is the corpus,
+not a regression.
+
+## Tool comparison
 
 Same 535k-packet corpus, every tool driven offline/headless to parse the whole
-file and exit (median-of-5). The **what it reconstructs** column is the point — a
-throughput number only means something next to the work behind it.
+file and exit (median-of-5). The **what it reconstructs** column is the point —
+a throughput number only means something next to the work behind it.
 
 | tool | pkts/s | × sngrep | what it reconstructs |
 |---|---:|---:|---|
-| sngrep 1.8.0 | 0.20M | 1.0× | SIP dialogs (100); no RTP-stream reconstruction headless |
-| sipgrep 2.2.0 | 2.46M | 12.2× | grep-style SIP line match + Call-ID grouping; **no RTP** |
-| voipmonitor 2026.05.0 | 0.73M | 3.7× | full call/CDR + RTP-stream association |
-| **sipnab 0.5.18 `--cores 1`** | 0.83M | **4.2×** | SIP dialogs + **200 RTP streams** |
-| **sipnab 0.5.18 `--cores 4`** | 2.50M | **12.5×** | identical full SIP + RTP reconstruction |
+| sngrep 1.8.0 | 0.19M | 1.0× | SIP dialogs; no RTP-stream reconstruction headless |
+| sipgrep 2.2.1 | 2.32M | 12.5× | grep-style SIP line match + Call-ID grouping; **no RTP** |
+| **sipnab 0.5.47 `--cores 1`** | 1.09M | **5.9×** | SIP dialogs + **200 RTP streams** |
+| **sipnab 0.5.47 `--cores 4`** | 2.05M | **11.0×** | identical full SIP + RTP reconstruction |
 
-Read it in three buckets:
+Read it in two buckets:
 
 - **Grep-class (sipgrep)** posts the fastest single number but does the least —
-  line-oriented SIP matching with **no RTP work at all** (it never associates the
-  500k RTP packets into streams). Its lead is mostly "it does less."
-- **Full reconstruction (sngrep, voipmonitor, sipnab)** parse SIP into dialogs;
-  voipmonitor and sipnab additionally associate RTP into media streams.
-- Within that class **sipnab wins**: single-core is **4.2× sngrep and 1.1×
-  voipmonitor**, four-core is **12.5× sngrep and 3.4× voipmonitor** — and four-core
-  matches grep-only sipgrep's wall-clock (0.21 s vs 0.22 s) *while also
-  reconstructing all 200 RTP streams*. There is no configuration where sipnab is
-  the slowest at comparable work. (Single-core with `-O` re-emit measures the
-  same on 0.4.16 and 0.5.17 in a controlled A/B — the June 1.05M row was
-  session variance. The `-O` write itself costs ~35% single-core on either
-  version; without `-O` single-core is flat at 1.20M.)
+  line-oriented SIP matching with **no RTP work at all** (it never associates
+  the 500k RTP packets into streams). Its lead is mostly "it does less."
+- **Full reconstruction (sngrep, sipnab)** parse SIP into dialogs; sipnab
+  additionally associates RTP into 200 media streams. Within that class sipnab
+  is **5.9× sngrep single-core and 11.0× at four cores**, and four-core lands
+  within 13% of grep-only sipgrep's wall-clock (0.261 s vs 0.231 s) *while also
+  reconstructing every RTP stream*.
+
+> **voipmonitor was not re-measured.** It is not installed on the reference
+> host and is not packaged for it, so a source build pulling in a database
+> service would be required. Its previously published figures (0.73M pkts/s
+> here, and the memory sweep below) were measured on 2026-06-24 against the old
+> corpus and are **not** carried into the tables above — a comparison whose
+> competitor is absent is not a comparison. `bench/compare.sh` reports it as
+> `MISSING` rather than skipping it quietly, and will measure it if you have it.
 
 > **Fairness notes.** The corpus is synthetic and reuses SDP media endpoints, so
 > voipmonitor's default `sdp_multiplication=3` DoS-guard would suppress the
-> duplicate-SDP streams; it was set to `0` so voipmonitor does full RTP
-> association on equal footing. All four tools parsed the same file to EOF.
-> sngrep and sipgrep report dialogs grouped by the 100 unique Call-IDs while
-> sipnab reports the finer 35k messages / 200 streams — a reporting-depth
-> difference, not a correctness one. sipnab's figures here come from an
-> independent timed session, so they differ by a few percent from the scaling
-> table above (normal run-to-run variance).
+> duplicate-SDP streams; set it to `0` so voipmonitor does full RTP association
+> on equal footing. All tools parsed the same file to EOF. sngrep and sipgrep
+> report dialogs grouped by the 100 unique Call-IDs while sipnab reports the
+> finer 35k messages / 200 streams — a reporting-depth difference, not a
+> correctness one.
 
-## Throughput and memory at carrier scale (vs voipmonitor)
+## Throughput and memory at carrier scale
 
-The single-corpus table above is one operating point; this sweep shows how the
-closest peer behaves as call volume grows. **Both tools reconstruct every call
-correctly at every scale** — the difference is throughput and memory:
+The table above is one operating point at fixed dialog state. This sweep grows
+the state: unique Call-IDs and unique RTP endpoints per call
+(`--call-ids 0 --stream-pairs 0`), so dialog and stream tables scale with call
+volume. Measured at `--cores 4`:
 
-| calls | pkts | voipmonitor | sipnab | sipnab speed-up | sipnab RSS edge |
-|------:|-----:|---|---|---:|---:|
-| 500 | 53.5k | 72k p/s · 150 MiB | 699k p/s · 42 MiB | 9.7× | 3.6× |
-| 2000 | 214k | 155k p/s · 506 MiB | 697k p/s · 96 MiB | 4.5× | 5.3× |
-| 8000 | 856k | 233k p/s · 1931 MiB | 726k p/s · 230 MiB | 3.1× | 8.4× |
-| 20000 | 2.14M | 264k p/s · 4782 MiB | 703k p/s · 519 MiB | 2.7× | 9.2× |
+| calls | pkts | dialogs | streams | pkts/s | peak RSS |
+|------:|-----:|--------:|--------:|-------:|---------:|
+| 500 | 53.5k | 500 | 1,000 | 1.56M | 18.6 MiB |
+| 2,000 | 214k | 2,000 | 4,000 | 1.84M | 53.4 MiB |
+| 8,000 | 856k | 8,000 | 16,000 | 1.93M | 192.9 MiB |
+| 20,000 | 2.14M | 20,000 | 40,000 | 1.94M | 448.2 MiB |
 
-**Honest read:** sipnab leads on throughput at every measured scale, holding a
-flat ~700k p/s while voipmonitor's multithreaded per-packet throughput *climbs*
-with scale (72k → 264k p/s) — on 0.4.16 that climb crossed over at roughly
-~40k calls; on 0.5.18 the sweep no longer flags a crossover inside any
-plausible operating range. sipnab's standing advantage is still **memory** —
-about 9.2× less RSS at 20k calls (0.5 GiB vs 4.7 GiB), because voipmonitor
-buffers and spools heavily. (An apparent small-scale RSS growth vs the June
-figures — 39 vs 33 MiB at 500 calls — was A/B-checked: 0.4.16 measures
-40/99 MiB on the same day 0.5.17 measures 39/103, so the delta was session
-variance, not a version regression.) (voipmonitor's *live*
-capture reconstructed 0 calls on this box's virtual NIC — an mmap-ring quirk — so
-this comparison is offline-only.)
+**Honest read:** throughput is flat from 2k calls up — reconstruction cost is
+per-packet, not per-dialog, and 40k concurrent streams do not degrade it.
+Memory grows close to linearly with tracked state, about 22 KiB per call
+(dialog + two RTP streams + jitter/loss accounting), reaching 448 MiB at 20k
+calls. That linearity is the useful property: it is predictable, so capacity
+planning is arithmetic rather than guesswork.
+
+Getting this measurement right requires the unbounded pools. Run the sweep with
+the default bounded pools and RSS tops out around 123 MiB at 20k calls, because
+state is capped at 100 dialogs regardless of call count — that measures buffer
+memory and mislabels it as state growth.
 
 ## Reproduce
+
+Full instructions, including artifact download and checksum verification, are in
+[`bench/README.md`](../bench/README.md). In short:
+
+```sh
+python3 bench/carrier.py --calls 5000 --out corpus.pcap
+bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
+bench/compare.sh "$BIN" corpus.pcap 535000 --runs 5
+```
 
 Each tool driven offline/headless to parse the whole file and exit:
 
@@ -145,8 +169,3 @@ sipgrep      sipgrep -I corpus.pcap -C -G
 voipmonitor  voipmonitor -r corpus.pcap -c -k --config-file=vm.conf   # sdp_multiplication=0, save_*=no
 sipnab       sipnab -N -I corpus.pcap --cores 4 --report --no-cli-print
 ```
-
-The carrier corpus generator and the comparison harness
-(`bench/carrier.py`, `bench/fourtool.sh`) live in the internal `siptest`
-harness, which is not publicly published — the corpus parameters and the
-exact commands above are the full recipe.

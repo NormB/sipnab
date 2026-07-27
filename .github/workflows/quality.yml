@@ -144,6 +144,27 @@ jobs:
           cargo llvm-cov report --fail-under-lines 92 \
             --ignore-filename-regex 'tools_gen_fixture\.rs'
 
+      # The homepage advertises an automated-test count in two places.
+      # .githooks/pre-commit already compares both to a real test run, but a
+      # hook only fires for a clone that opted into core.hooksPath -- a web
+      # edit, a fresh contributor or --no-verify all bypass it silently. This
+      # is that same check on the CI side, where it cannot be skipped.
+      - name: Enforce the published test count
+        run: |
+          published=$(grep -oE '([0-9]{4,}) automated tests' website/templates/index.html \
+            | grep -oE '^[0-9]+')
+          [ -n "$published" ] || { echo "no published_test_count found on the homepage"; exit 1; }
+
+          actual=$(cargo test --all-features 2>&1 \
+            | awk -F'[ ;]+' '/^test result/ { p += $4 } END { print p }')
+          [ -n "$actual" ] && [ "$actual" -gt 0 ] || { echo "could not count tests"; exit 1; }
+
+          echo "published_test_count=$published actual=$actual"
+          if [ "$published" != "$actual" ]; then
+            echo "::error::homepage advertises $published automated tests; the suite has $actual"
+            exit 1
+          fi
+
       - name: Generate lcov + HTML report
         run: |
           cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'tools_gen_fixture\.rs'
