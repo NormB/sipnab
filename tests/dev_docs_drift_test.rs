@@ -342,17 +342,63 @@ fn every_mermaid_block_is_introduced_by_prose() {
 
 /// build-wiki.py must rewrite code links to blob URLs. A relative code link
 /// that reaches the flat wiki resolves to nothing — the wiki has no repo tree.
+///
+/// This used to assert only that the string `CODE_LINK_RE` appeared in the
+/// script, which is true whether or not the rewriting works — and it did pass
+/// while `](../bench/)` published to the wiki dead, because `bench` was not in
+/// the regex's list of top-level trees. Inspecting a generator's source is not
+/// a test of its output.
 #[test]
-fn build_wiki_rewrites_code_links() {
-    let script = read("scripts/build-wiki.py");
+fn build_wiki_leaves_no_relative_links_in_the_output() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = std::env::temp_dir().join(format!("sipnab-wiki-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+
+    let run = std::process::Command::new("python3")
+        .arg(repo.join("scripts/build-wiki.py"))
+        .arg(&out)
+        .current_dir(repo)
+        .output()
+        .expect("run scripts/build-wiki.py — python3 must be on PATH");
     assert!(
-        script.contains("CODE_LINK_RE"),
-        "build-wiki.py must rewrite relative code links to {{BLOB}} URLs; \
-         LINK_RE only matches .md, so code links would reach the wiki dead"
+        run.status.success(),
+        "build-wiki.py failed:\n{}",
+        String::from_utf8_lossy(&run.stderr)
     );
+
+    let link = regex::Regex::new(r"\]\(([^)]+)\)").unwrap();
+    let mut leaked: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(&out).expect("wiki output dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let page = path.file_name().unwrap().to_string_lossy().to_string();
+        let body = std::fs::read_to_string(&path).expect("wiki page");
+        for cap in link.captures_iter(&body) {
+            let target = cap[1].trim();
+            // Valid on a flat wiki: an absolute URL, a pure anchor, or a wiki
+            // page name. Anything else carrying a path separator is a repo-
+            // relative link that resolves to nothing once published.
+            let ok = target.starts_with("http://")
+                || target.starts_with("https://")
+                || target.starts_with("mailto:")
+                || target.starts_with('#')
+                || !target.contains('/');
+            if !ok {
+                leaked.push(format!("{page}: ]({target})"));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&out);
+
     assert!(
-        script.contains("CODE_LINK_RE.sub"),
-        "CODE_LINK_RE is defined but never applied in transform()"
+        leaked.is_empty(),
+        "relative links reached the generated wiki, where they resolve to \
+         nothing — add the tree to CODE_LINK_RE in build-wiki.py, or write the \
+         link as an absolute URL:\n  {}",
+        leaked.join("\n  ")
     );
 }
 
