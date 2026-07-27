@@ -18,9 +18,17 @@ All notable changes to sipnab will be documented in this file.
   provenance and shipped them without ever running one — those gates check facts
   *about* a binary, not that it works. Each target now runs `--version`,
   `--help` and a real capture parse before packaging, with aarch64 Linux under
-  `qemu-user`. The one case that genuinely cannot run on its builder — x86_64
-  macOS on an arm64 runner — emits a warning saying so, because a silent skip is
-  how this stayed open.
+  `qemu-user`, every invocation bounded by a timeout.
+
+  Two targets are exercised less than the rest, and both say so in the run
+  rather than passing quietly. x86_64 macOS cannot run on an arm64 builder at
+  all. And gnu binaries under emulation get `--version` and `--help` but not the
+  capture parse: reading a capture drops privileges, `getpwnam()` sends glibc
+  through NSS, NSS `dlopen`s `libnss_files.so`, and `dlopen` under `qemu-user`
+  deadlocks — the first version of this step hung for 37 minutes on exactly that
+  before being cancelled by hand. The static musl aarch64 binary completes the
+  same parse under the same emulator, because it resolves users without NSS. So
+  it is a limit of emulating glibc, not a property of the shipped binary.
 - **The Docker image is run before it is pushed.** `docker.yml` went from build
   straight to push to sigstore attestation without ever invoking the image, so a
   broken runtime layer would ship attested. It is now built locally, exercised,
