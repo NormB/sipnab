@@ -174,6 +174,14 @@ Contributions are welcome -- see [CONTRIBUTING.md](CONTRIBUTING.md) for the
 build/test workflow and pull request checklist. This project follows the
 [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Security
+
+Found a vulnerability? **Do not open a public issue.** See
+[SECURITY.md](SECURITY.md) for the private disclosure address, the response
+timeline, and what is in scope -- parser crashes, key-material leakage,
+privilege-drop and chroot escapes, API/MCP authentication bypass, and command
+injection through the `--alert-exec` family.
+
 ## License
 
 Licensed under either of
