@@ -240,20 +240,23 @@ jobs:
           # with "timeout: command not found". Homebrew installs it as
           # `gtimeout`. Where neither exists the commands run unbounded and the
           # job-level timeout-minutes above is the backstop.
-          tmo=()
-          if command -v timeout >/dev/null 2>&1; then tmo=(timeout)
-          elif command -v gtimeout >/dev/null 2>&1; then tmo=(gtimeout)
+          tmo_bin=""
+          if command -v timeout >/dev/null 2>&1; then tmo_bin=timeout
+          elif command -v gtimeout >/dev/null 2>&1; then tmo_bin=gtimeout
           else echo "no timeout utility on this runner; relying on job timeout-minutes"
           fi
-          runner=()
-          [ -n "$run" ] && runner=("$run")
 
+          # No arrays. macOS ships bash 3.2, where expanding an EMPTY array as
+          # "${arr[@]}" under `set -u` is an unbound-variable error — the array
+          # version of this helper failed aarch64-apple-darwin instantly at
+          # --version while every Linux target (bash 5) ran it happily. Four
+          # explicit cases are duller and work on both.
           bounded() { # bounded <seconds> <args...>
-            local secs="$1"; shift
-            if [ ${#tmo[@]} -gt 0 ]; then
-              "${tmo[@]}" "$secs" "${runner[@]}" "$@"
-            else
-              "${runner[@]}" "$@"
+            secs="$1"; shift
+            if [ -n "$tmo_bin" ] && [ -n "$run" ]; then "$tmo_bin" "$secs" "$run" "$@"
+            elif [ -n "$tmo_bin" ]; then "$tmo_bin" "$secs" "$@"
+            elif [ -n "$run" ]; then "$run" "$@"
+            else "$@"
             fi
           }
 
