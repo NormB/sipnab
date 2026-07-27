@@ -175,7 +175,37 @@ sequenceDiagram
 Version strings live in `Cargo.toml`, `website/config.toml` and `man/sipnab.1`,
 and the pre-commit hook fails if they disagree — so bumping a version is one
 edit plus two it will remind you about. The test count in
-`website/templates/index.html` is gated the same way.
+`website/templates/index.html` is gated the same way (on Linux: the suite is
+3015 tests there and 3008 on macOS, so the advertised figure describes the
+Linux run and the check is skipped on the macOS matrix leg).
+
+### Re-measuring the benchmarks
+
+The published throughput numbers are **not** gated by CI, deliberately. Shared
+runners are too noisy for a throughput threshold: such a gate fails randomly,
+gets muted, and a muted gate is worse than no gate — it reports safety it is
+not providing. `quality.yml` therefore executes the criterion suites without
+timing them, which is "the benchmarks still run", not "performance has not
+regressed".
+
+Detecting a real regression is a release-time step on the reference host,
+because that is the only place the numbers mean anything:
+
+```sh
+gh release download vX.Y.Z -p 'sipnab-*-aarch64-unknown-linux-gnu.tar.gz*'
+sha256sum -c sipnab-*-aarch64-unknown-linux-gnu.tar.gz.sha256   # never a dev build
+tar xzf sipnab-*.tar.gz
+
+python3 bench/carrier.py --calls 5000 --out corpus.pcap
+bench/scaling.sh ./sipnab-*/sipnab corpus.pcap 535000 --cores 1,2,4,8 --runs 5
+```
+
+Run it on an otherwise idle machine. If the numbers moved, A/B the previous
+release artifact against the same corpus in the same session before concluding
+anything — a corpus or session difference looks exactly like a regression, and
+[the benchmarks page](@/docs/benchmarks.md) records one occasion where it was
+mistaken for one. Update both benchmark doc trees and the homepage tiles
+together; gates enforce that they agree.
 
 Everything a change passes through, in the order you meet it:
 

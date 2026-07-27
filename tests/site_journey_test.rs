@@ -481,7 +481,14 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
         .to_string();
 
     // Each tile: (data-count value, the string that must appear in a table row).
-    for (count, suffix) in [("2.32", "M pkts/s"), ("11.0", "&times; sngrep")] {
+    // Both tiles describe the SAME operating point (--cores 4). The throughput
+    // tile used to headline the 2-core peak, 2.32M, which is the least
+    // reproducible point on the curve: a clean-clone rerun measured 2.23M and
+    // replicates spanned 2.32-2.36M, while the 4-core figure reproduced within
+    // 0.5%. A smaller number a reader can reproduce beats a larger one they
+    // cannot — and quoting a 2-core throughput beside a 4-core ratio invited
+    // the two tiles to be read as one result.
+    for (count, suffix) in [("2.03", "M pkts/s"), ("11.0", "&times; sngrep")] {
         let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
         assert!(
             idx.contains(&tile),
