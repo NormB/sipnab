@@ -513,8 +513,13 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
 /// gate's coverage moved somewhere it cannot be bypassed. A hook only runs for
 /// a clone with `core.hooksPath` set; a web edit, a contributor who never ran
 /// the setup, or `--no-verify` all skip it, and nothing downstream would
-/// notice. This test plus the `quality.yml` step put the same check on the CI
-/// side, where the tile is pinned to the prose and both to the measured total.
+/// notice. This test plus the `ci.yml` step put the same check on the CI side,
+/// where the tile is pinned to the prose and both to the measured total.
+///
+/// The step lives in `ci.yml` because that is where the full suite already
+/// runs, so it parses that run instead of invoking `cargo test` a second time.
+/// The coverage job cannot host it: it runs `--skip cli_goldens`, so its total
+/// is short of the real one by design.
 #[test]
 fn homepage_test_counts_agree_with_each_other() {
     let idx = read("website/templates/index.html");
@@ -538,9 +543,9 @@ fn homepage_test_counts_agree_with_each_other() {
     );
 
     assert!(
-        read(".github/workflows/quality.yml").contains("published_test_count"),
-        "quality.yml no longer checks the published test count against the real \
-         suite total — the number is back to being unmeasured"
+        read(".github/workflows/ci.yml").contains("published_test_count"),
+        "ci.yml no longer checks the published test count against the real suite \
+         total — the number is back to being unmeasured"
     );
 }
 

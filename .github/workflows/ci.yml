@@ -69,7 +69,34 @@ jobs:
         run: cargo build --all-features
 
       - name: Test
-        run: cargo test --all-features
+        run: |
+          set -o pipefail
+          cargo test --all-features 2>&1 | tee test-output.txt
+
+      # The homepage advertises an automated-test count in two places.
+      # .githooks/pre-commit already compares both to a real test run, but a
+      # hook only fires for a clone that opted into core.hooksPath -- a web
+      # edit, a fresh contributor or --no-verify all bypass it silently.
+      #
+      # This parses the run above rather than invoking cargo test again. The
+      # coverage job cannot host this check: it runs with `--skip cli_goldens`,
+      # so its total is short of the real one by design.
+      - name: Enforce the published test count
+        run: |
+          published=$(grep -oE '[0-9]{4,} automated tests' website/templates/index.html \
+            | grep -oE '^[0-9]+' | sort -u)
+          case "$published" in
+            ''|*[!0-9]*) echo "no single published_test_count on the homepage: '$published'"; exit 1 ;;
+          esac
+
+          actual=$(awk -F'[ ;]+' '/^test result/ { p += $4 } END { print p }' test-output.txt)
+          [ -n "$actual" ] && [ "$actual" -gt 0 ] || { echo "could not count tests"; exit 1; }
+
+          echo "published_test_count=$published actual=$actual"
+          if [ "$published" != "$actual" ]; then
+            echo "::error::homepage advertises $published automated tests; the suite has $actual"
+            exit 1
+          fi
 
       - name: Clippy
         # --all-targets so bench and test-target code is lint-gated too
