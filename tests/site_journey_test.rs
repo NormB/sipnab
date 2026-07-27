@@ -329,13 +329,20 @@ fn site_release_date_matches_changelog() {
 // than to whatever produces it.
 // ---------------------------------------------------------------------------
 
-/// The glibc floor is published twice and enforced once. All three must agree.
+/// Every published glibc floor — two constants and the doc prose — matches the
+/// one `release.yml` enforces.
 ///
 /// `release.yml` moved the gnu builds into `rust:1-bookworm` (real floor 2.36)
-/// and neither published number followed. For eleven releases the site and the
+/// and neither published constant followed. For eleven releases the site and the
 /// installer both said 2.39, so `install.sh` pushed every Debian 12 host to the
-/// musl build — which its own message notes has no TUI audio — for want of a
-/// comparison nothing was making.
+/// musl build — which its own message notes has no TUI audio.
+///
+/// The prose sweep is here because the first version of this test checked only
+/// the two constants and `release.yml`, and `build.md` went on telling readers
+/// "requires glibc >= 2.39" underneath a green gate. A floor stated in a
+/// sentence is as load-bearing as one in a variable: it is what a reader acts
+/// on. Historical mentions ("it previously cut over at 2.39") are deliberately
+/// not matched — only phrasings that state the *current* floor.
 #[test]
 fn published_glibc_floor_matches_release_gate() {
     let enforced = regex::Regex::new(r#"(?m)^\s*floor="([0-9]+\.[0-9]+)""#)
@@ -365,6 +372,51 @@ fn published_glibc_floor_matches_release_gate() {
         installer, enforced,
         "install.sh SIPNAB_GLIBC_FLOOR is {installer} but release.yml enforces \
          {enforced} — the installer would hand hosts the wrong artifact"
+    );
+
+    // Prose that states the current floor, in either doc tree. Each pattern's
+    // capture 1 must be the enforced floor.
+    let claim_res = [
+        r"glibc >= (\d+\.\d+)",
+        r"GLIBC_(\d+\.\d+)' not found",
+        r"the (\d+\.\d+) floor",
+    ]
+    .map(|p| regex::Regex::new(p).expect("claim regex"));
+
+    let mut wrong = Vec::new();
+    let mut checked = 0;
+    for doc in [
+        "docs/install.md",
+        "docs/benchmarks.md",
+        "website/content/docs/install.md",
+        "website/content/docs/build.md",
+        "website/content/docs/troubleshooting.md",
+        "README.md",
+    ] {
+        let path = repo().join(doc);
+        if !path.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read doc");
+        for re in &claim_res {
+            for cap in re.captures_iter(&text) {
+                checked += 1;
+                if cap[1] != enforced {
+                    wrong.push(format!("{doc}: \"{}\" (enforced is {enforced})", &cap[0]));
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 4,
+        "glibc prose extraction found only {checked} claims — the docs changed \
+         shape and this sweep has gone blind, which is exactly how build.md kept \
+         saying 2.39 under a green gate"
+    );
+    assert!(
+        wrong.is_empty(),
+        "documentation states a glibc floor that release.yml does not enforce:\n  {}",
+        wrong.join("\n  ")
     );
 }
 

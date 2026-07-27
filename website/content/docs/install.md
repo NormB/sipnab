@@ -28,7 +28,7 @@ curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=<version> sh
 curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
-On Linux the installer chooses between two build variants: the dynamically linked **`-gnu`** build (requires glibc >= 2.36 — Debian 12+, Ubuntu 23.04+ — and libpcap installed via your package manager) and the static **musl** build (no glibc/libpcap requirement; TUI audio playback unavailable, everything else identical). The 2.36 figure is the floor the release workflow actually enforces on every gnu binary. The installer's own cutover is deliberately more conservative: it serves musl to any host below **glibc 2.39** — or with no glibc at all — so hosts between 2.36 and 2.39 get the static build even though the gnu build would run there. Download the gnu tarball manually if you want it on such a host.
+On Linux the installer chooses between two build variants: the dynamically linked **`-gnu`** build (requires glibc >= 2.36 — Debian 12+, Ubuntu 23.04+ — and libpcap installed via your package manager) and the static **musl** build (no glibc/libpcap requirement; TUI audio playback unavailable, everything else identical). The 2.36 figure is the floor the release workflow actually enforces on every gnu binary, and the installer now uses that same cutover — it serves musl only to hosts below **glibc 2.36**, or with no glibc at all. It previously cut over at 2.39, so hosts between 2.36 and 2.39 (Debian 12 among them) received the static build and lost TUI audio even though the gnu build ran there fine.
 
 ## Pre-built Binaries
 

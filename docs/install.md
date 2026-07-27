@@ -43,8 +43,9 @@ require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. That floor is
 enforced, not estimated: the gnu targets build inside a Debian bookworm
 container and a release-workflow gate rejects any binary linking a newer
 `GLIBC_` symbol. On an older distro they fail with `` version `GLIBC_2.36' not
-found `` -- use the static musl build. The install script is deliberately more
-conservative and still serves musl below glibc 2.39.
+found `` -- use the static musl build. The install script uses that same 2.36
+cutover: it served musl below 2.39 for eleven releases, which cost every
+Debian 12 host its TUI audio for a floor the release gate had already lowered.
 
 ## Cargo (from source)
 
