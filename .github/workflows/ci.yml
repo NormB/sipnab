@@ -296,6 +296,18 @@ jobs:
         # the advisory does not apply. No fixed `rsa` release is available.
         run: cargo audit --ignore RUSTSEC-2023-0071
 
+      # The fuzz workspace has its own Cargo.lock, outside the root workspace,
+      # so the scan above never saw it — `cargo audit` reads ./Cargo.lock in the
+      # working directory. 194 packages went unscanned, and had drifted behind
+      # the root on 39 shared crates. These are the targets that validate the
+      # parsers against hostile input; leaving their own tree unaudited is the
+      # security tooling going unmaintained.
+      #
+      # Same rsa exception as above, and for the same reason: the fuzz tree
+      # includes sipnab itself, so it inherits that dependency.
+      - name: Cargo audit (fuzz workspace)
+        run: cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
+
       - name: Cargo deny
         run: cargo deny check
 
