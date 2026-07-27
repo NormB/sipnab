@@ -373,13 +373,27 @@
 
       try {
         var rendered = await mermaid.render("sipnab-diagram-" + i, source);
-        // innerHTML is correct here and is not an injection surface. The diagram
-        // source is authored in this repository (docs/internals/*.md) and baked
-        // into the page at build time — no visitor input reaches it; this viewer
-        // only runs on pages that declare `has_diagrams`. mermaid.render()
-        // returns an SVG string precisely for this assignment, and it runs under
-        // `securityLevel: "strict"` above, which sanitizes diagram labels.
-        figure.innerHTML = rendered.svg;
+        // Parse as XML and adopt the node rather than assigning innerHTML.
+        //
+        // This used to be `figure.innerHTML = rendered.svg` under a comment
+        // arguing it was safe: the source is authored in this repo, no visitor
+        // input reaches it, and mermaid runs `securityLevel: "strict"`. All of
+        // that is true today and none of it is enforced — it is an argument,
+        // not a guarantee, and it stops holding the moment anyone renders a
+        // diagram from something a visitor typed. CodeQL flagged the flow
+        // (js/xss-through-dom, high): DOM text read from the page reaching an
+        // HTML sink. Removing the sink is the fix; keeping the comment was not.
+        //
+        // `image/svg+xml` is strict XML: it never runs the HTML parser's
+        // error-recovery, and DOMParser documents are inert — scripts in them
+        // do not execute. A malformed document yields a <parsererror> element
+        // instead of silently coercing, so it is caught below and the diagram
+        // source stays visible.
+        var parsed = new DOMParser().parseFromString(rendered.svg, "image/svg+xml");
+        if (parsed.getElementsByTagName("parsererror").length > 0) {
+          throw new Error("mermaid emitted SVG that is not well-formed XML");
+        }
+        figure.replaceChildren(document.importNode(parsed.documentElement, true));
       } catch (err) {
         // A diagram that fails to render must not blank the page: leave the
         // source visible, which is still readable prose-adjacent text. Say so
