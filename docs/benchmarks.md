@@ -4,7 +4,7 @@ How fast sipnab is, measured honestly. Every number here is reproducible — the
 host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
 sipnab numbers are measured on the released 0.5.18 artifact,
-checksum-verified, run 2026-07-20. The current release 0.5.45 changes no
+checksum-verified, run 2026-07-20. The current release 0.5.46 changes no
 packet-path code versus 0.5.18, so the numbers carry over unchanged. The comparison
 tools' numbers come from the 2026-06-24 session — same host, corpus, and
 method, and their versions are unchanged. Versus the 0.4.16 session, 0.5.18

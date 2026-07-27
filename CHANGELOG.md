@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.46] - 2026-07-27
 
 ### Fixed
 - **The diagram viewer assigned mermaid's output to `innerHTML`** (CodeQL
