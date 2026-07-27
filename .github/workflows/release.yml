@@ -230,16 +230,40 @@ jobs:
             export QEMU_LD_PREFIX=/usr/aarch64-linux-gnu
           fi
 
+          # Every invocation is bounded. The first version of this step had no
+          # timeout anywhere, and the capture parse hung for 37 minutes on the
+          # aarch64-gnu targets until the run was cancelled by hand — GitHub's
+          # default job timeout is six hours, so an unbounded hang here blocks a
+          # release rather than failing it.
           echo "::group::--version"
-          $run "$bin" --version || { echo "::error::$bin failed to run"; exit 1; }
+          timeout 60 $run "$bin" --version || { echo "::error::$bin failed to run (or timed out)"; exit 1; }
           echo "::endgroup::"
 
           echo "::group::--help"
-          $run "$bin" --help > /dev/null || { echo "::error::$bin --help failed"; exit 1; }
+          timeout 60 $run "$bin" --help > /dev/null || { echo "::error::$bin --help failed (or timed out)"; exit 1; }
           echo "::endgroup::"
 
+          # The capture parse is skipped for gnu binaries under emulation, and
+          # the reason is specific rather than defensive. Reading a capture
+          # drops privileges, which calls getpwnam(); glibc answers that through
+          # NSS, which dlopen()s libnss_files.so; and dlopen under qemu-user
+          # deadlocks. --version and --help above run fine under the same
+          # emulator, and the static musl aarch64 binary completes this parse
+          # under qemu without trouble precisely because it resolves users
+          # without NSS. So this is a limitation of emulating glibc, not a
+          # property of the binary being shipped.
+          if [ -n "$run" ] && case "${{ matrix.target }}" in *-linux-gnu) true ;; *) false ;; esac; then
+            echo "::warning::${{ matrix.target }}: capture parse not exercised — glibc NSS dlopen deadlocks under qemu-user. Loading and CLI verified; the packet path was not."
+            echo "smoke test passed (load + CLI only) for ${{ matrix.target }}"
+            exit 0
+          fi
+
           echo "::group::parse a fixture capture"
-          out=$($run "$bin" -N -I tests/pcap-samples/codec-negotiation.pcap 2>&1)
+          out=$(timeout 120 $run "$bin" -N -I tests/pcap-samples/codec-negotiation.pcap 2>&1) || {
+            echo "$out"
+            echo "::error::$bin failed or timed out parsing the fixture capture"
+            exit 1
+          }
           echo "$out"
           echo "::endgroup::"
           if ! printf '%s' "$out" | grep -q "packets captured"; then
