@@ -4,10 +4,10 @@
 //!
 //! Several CLI flags can only be exercised against traffic the three checked-in
 //! fixtures do not contain: `--limit`/`--rotate` needs more dialogs than
-//! `sip_call.pcap` has, `--dialog-track branch` needs two transactions sharing
-//! a Call-ID, and `--hep-parse` needs HEP-encapsulated SIP. Without a way to
-//! build those, the flags stayed in the untested baseline — and one of them was
-//! counted as covered purely because its name appeared in a comment.
+//! `sip_call.pcap` has, `--strip-secrets` needs a Decryption Secrets Block that
+//! no sample carries, and `--hep-parse` needs HEP-encapsulated SIP. Without a
+//! way to build those, the flags stayed in the untested baseline — and some
+//! were counted as covered purely because their names appeared in a comment.
 //!
 //! `pcap` is an optional *main* dependency, so integration tests cannot use it.
 //! The classic pcap format is small enough to emit directly, and doing so keeps
@@ -72,8 +72,8 @@ pub fn write_pcap(path: &Path, frames: &[Vec<u8>]) {
 /// The seven messages of one complete call, as SIP payloads.
 ///
 /// `branch` is threaded through so callers can build two transactions that
-/// share a Call-ID but differ by branch — the case `--dialog-track branch`
-/// separates and `--dialog-track call-id` merges.
+/// share a Call-ID but differ by transaction branch, which is what a re-INVITE
+/// or a forked request looks like on the wire.
 pub fn sip_call(call_id: &str, branch: &str, from_user: &str, to_user: &str) -> Vec<String> {
     let src = "10.1.0.1";
     let dst = "10.2.0.1";

@@ -43,24 +43,12 @@ const KNOWN_UNTESTED: &[&str] = &[
     // ── Root / system services (cannot run in the sandbox) ──────────────────
     "chroot", // requires root to chroot()
     "syslog", // requires a syslog daemon to observe alerts
-    // ── Need crafted fixtures / hard-to-trigger events ──────────────────────       // needs a HEP-encapsulated pcap to unwrap
+    // ── Need crafted fixtures / hard-to-trigger events ──────────────────────
     "telephone-event", // DTMF RTP display — needs a DTMF pcap + RTP-output check
     "on-quality-exec", // fires on an RTP quality drop — needs a degraded fixture
     "alert-exec",      // fires on a security alert — needs a scanner/fraud trigger
     "replay",          // replays at original timing — no offline output to assert
     "split",           // splits output by size — needs a large enough capture
-    // dialog-track is NOT merely untested: it is unimplemented. `dialog_track`
-    // is declared in src/cli.rs and read nowhere else in src/, so `call-id`,
-    // `branch` and an invented value all produce byte-identical output and all
-    // exit 0. --help advertises a capability the binary does not have.
-    //
-    // It appears here because the honest baseline must show it. It was
-    // previously counted as COVERED, on the strength of its name appearing in a
-    // comment plus a test asserting its default is None — a test that passes
-    // precisely because the flag does nothing. Removing it from this list
-    // requires implementing the flag or deleting it, not writing a test that
-    // documents the no-op.
-    "dialog-track",
 ];
 
 /// All long flags (and long aliases) the CLI accepts, via clap.

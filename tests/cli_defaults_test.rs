@@ -447,17 +447,6 @@ fn dialog_rotation_is_enabled_by_default() {
     assert!(!cli.no_rotate, "--no-rotate is off by default");
 }
 
-/// `dialog_track` defaults to `None`.
-#[test]
-fn default_dialog_track_is_none() {
-    let cli = defaults();
-    assert!(
-        cli.dialog_track.is_none(),
-        "dialog_track should be None by default"
-    );
-}
-
-/// `no_dialog` defaults to off, so dialog tracking is enabled.
 #[test]
 fn default_no_dialog_is_false() {
     let cli = defaults();

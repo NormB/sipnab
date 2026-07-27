@@ -435,7 +435,7 @@ fn single_line_stops_dot_matching_newline() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CALLS-ONLY & DIALOG FLAGS (-c, --no-dialog, -R, -l, --dialog-track)
+//  CALLS-ONLY & DIALOG FLAGS (-c, --no-dialog, -R, -l)
 // ═══════════════════════════════════════════════════════════════════════
 
 /// `-c` (calls-only) emits exactly one message and it is the INVITE.

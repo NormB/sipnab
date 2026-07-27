@@ -2,6 +2,44 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Removed
+- **`--dialog-track` is gone. It never did anything.** `dialog_track` was
+  declared in `src/cli.rs` and read nowhere else in the codebase, so
+  `--dialog-track call-id`, `--dialog-track branch` and `--dialog-track
+  telepathy` all produced byte-identical output on an 8989-packet capture and
+  all exited 0, while `--help` advertised "Track dialogs using this method".
+
+  Anyone passing it was getting nothing; they will now get a clap error, which
+  is strictly better than a silent lie. Removed with its docs table rows, both
+  worked examples in the CLI reference, and the test asserting its default was
+  `None` — a test that passed *precisely because* the flag did nothing.
+
+  Dialog tracking itself is unaffected: it is on by default, `--no-dialog`
+  still disables it, and `--limit`/`--rotate`/`--no-rotate` still govern
+  capacity.
+
+### Fixed
+- **The flag-coverage gate could be satisfied by a comment.** It counted a flag
+  as tested if `--name` appeared anywhere under `tests/`, so prose counted as
+  coverage. A comment written while wiring an unrelated gate silently "covered"
+  three flags at once. Rust comments are now stripped before the text counts;
+  string literals are not, since a `--flag` in a string is nearly always an
+  argument being passed to the binary.
+
+  The ratchet had read 106 of 143 flags covered; the honest figure was 101.
+  Four of the five gaps now have real behaviour tests — `--rotate`,
+  `--duration`, `--strip-secrets` and `--hep-parse` — and the fifth was
+  `--dialog-track`, removed above.
+
+### Added
+- A dependency-free pcap/pcapng builder for tests (`tests/support/pcap_build.rs`).
+  The `pcap` crate is an optional *main* dependency and unreachable from
+  integration tests, which is why flags needing crafted traffic stayed untested.
+  It can emit a Decryption Secrets Block, so `--strip-secrets` — whose entire
+  job is removing them — finally has something to be tested against.
+
 ## [0.5.51] - 2026-07-27
 
 No shipped-code changes. Cut to prove that the release's attestation check now

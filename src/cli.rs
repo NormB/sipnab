@@ -591,10 +591,6 @@ pub struct Cli {
     #[arg(help_heading = "Dialog", long = "no-rotate", overrides_with = "rotate")]
     pub no_rotate: bool,
 
-    /// Track dialogs using this method (e.g., "call-id", "branch").
-    #[arg(help_heading = "Dialog", long, value_name = "METHOD")]
-    pub dialog_track: Option<String>,
-
     /// Disable dialog tracking entirely (message-only mode).
     #[arg(help_heading = "Dialog", long)]
     pub no_dialog: bool,

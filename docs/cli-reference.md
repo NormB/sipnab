@@ -239,7 +239,6 @@ sipnab -N -I capture.pcap --tshark-filter "method=INVITE"
 | `-l`, `--limit` | `<N>` | `100000` | Maximum number of dialogs to track simultaneously (the dialog-state memory bound; lower it for untrusted/high-volume capture) |
 | `-R`, `--rotate` | -- | **on** | Evict the oldest dialog at `--limit` capacity (LRU). On by default; kept for back-compat/explicitness |
 | `--no-rotate` | -- | off | Disable rotation: drop *new* dialogs at capacity instead of evicting the oldest (inverts the safe default) |
-| `--dialog-track` | `<METHOD>` | -- | Dialog tracking method: `call-id` or `branch` |
 | `--no-dialog` | -- | off | Disable dialog tracking entirely (message-only mode) |
 | `--tag` | `<TAG>` | -- | Filter dialogs by tag value |
 
@@ -247,9 +246,9 @@ sipnab -N -I capture.pcap --tshark-filter "method=INVITE"
 
 ```bash
 # Monitor a busy proxy with a tight 5000-dialog memory bound, explicitly evicting the oldest dialog at capacity
-sudo sipnab -d eth0 --limit 5000 --rotate --dialog-track call-id
+sudo sipnab -d eth0 --limit 5000 --rotate
 # Analyze a capture keyed by Via branch, dropping new dialogs (instead of evicting old ones) past 20000 tracked
-sipnab -N -I capture.pcap --limit 20000 --no-rotate --dialog-track branch
+sipnab -N -I capture.pcap --limit 20000 --no-rotate
 # Show only dialogs carrying a specific From/To tag, with explicit LRU rotation
 sipnab -N -I capture.pcap --tag 1928301774 --rotate
 # Live-follow dialogs matching a tag while refusing new dialogs once the tracker is full
