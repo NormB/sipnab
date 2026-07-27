@@ -615,3 +615,71 @@ fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
          gates nothing:\n{without}"
     );
 }
+
+/// A capture truncated by a full disk must not report success.
+///
+/// `src/capture/writer.rs` has unit tests proving the writer surfaces ENOSPC,
+/// and `run_loop` logged it — but the process still exited 0, so
+/// `sipnab -O out.pcap && next-step` ran the next step on partial data. The
+/// coverage stopped at the writer boundary; this asserts the property a script
+/// actually depends on.
+///
+/// /dev/full fails every write, which is how the writer's own ENOSPC tests
+/// simulate a full disk. The capture must be large enough to spill the
+/// BufWriter, or nothing reaches the device and there is no error to find.
+#[cfg(unix)]
+#[test]
+fn output_write_failure_exits_nonzero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let big = dir.path().join("big.pcap");
+    let frames: Vec<Vec<u8>> = (0..600)
+        .flat_map(|i| {
+            pcap_build::sip_call_frames(&format!("wf-{i}@t"), &format!("{i:06x}"), "a", "b")
+        })
+        .collect();
+    pcap_build::write_pcap(&big, &frames);
+
+    let (_out, err, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            big.to_str().unwrap(),
+            "-O",
+            "/dev/full",
+            "--pcapng",
+            "--no-cli-print",
+        ],
+        Some("error"),
+    );
+    assert_ne!(
+        code,
+        Some(0),
+        "a capture whose output could not be written must not exit 0 — \
+         stderr was:\n{err}"
+    );
+    assert!(
+        err.to_lowercase().contains("write"),
+        "the failure must say what went wrong:\n{err}"
+    );
+
+    // And the same run against a writable path must still succeed, so the
+    // gate cannot be satisfied by failing everything.
+    let good = dir.path().join("good.pcapng");
+    let (_o2, e2, code2) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            big.to_str().unwrap(),
+            "-O",
+            good.to_str().unwrap(),
+            "--pcapng",
+            "--no-cli-print",
+        ],
+        Some("error"),
+    );
+    assert_eq!(code2, Some(0), "a writable output must still exit 0:\n{e2}");
+    assert!(
+        std::fs::metadata(&good).expect("output written").len() > 0,
+        "the control run must actually produce a file"
+    );
+}
