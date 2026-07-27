@@ -15,6 +15,46 @@ updates:
     commit-message:
       prefix: "deps"
 
+  # The fuzz workspace is SEPARATE: its own Cargo.toml and its own Cargo.lock,
+  # outside the root workspace. `directory: "/"` above does not reach it, and
+  # neither does the root `cargo audit` / `cargo deny`, which read ./Cargo.lock
+  # in the working directory. 194 packages were therefore updated by nobody and
+  # scanned by nobody, and had drifted: 39 crates shared with the root were
+  # pinned at older versions there, `env_filter` a whole major behind.
+  #
+  # These are the fuzz targets that validate the parsers against hostile input.
+  # Running them on a stale, unaudited tree is not a shipping vulnerability, but
+  # it is the security tooling itself going unmaintained.
+  - package-ecosystem: "cargo"
+    directory: "/fuzz"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      fuzz-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps(fuzz)"
+
+  # Base images. The runtime image ships to users via GHCR; a CVE in it was
+  # previously surfaced by nothing at all.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(docker)"
+    ignore:
+      # The builder image carries the pinned Rust toolchain, and
+      # rust_toolchain_pins_agree asserts `FROM rust:X.Y` matches the version
+      # every workflow pins. Letting Dependabot bump it would fight that gate
+      # rather than update anything — same reasoning as the
+      # dtolnay/rust-toolchain ignore below. Bump it with the toolchain.
+      - dependency-name: "rust"
+
   # GitHub Actions used by the workflows in .github/workflows
   - package-ecosystem: "github-actions"
     directory: "/"
