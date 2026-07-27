@@ -18,7 +18,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The tag names the artifacts; Cargo.toml names the binary. Nothing checked
+  # they agree.
+  #
+  # Every artifact filename, the .deb Version:, the .rpm version and the
+  # Homebrew formula are all derived from ${GITHUB_REF_NAME#v}. The version the
+  # binary reports comes from Cargo.toml. Tag v0.6.0 without bumping the crate
+  # and the release ships packages labelled 0.6.0 containing a binary that says
+  # 0.5.49 — into users' package managers, attested and checksummed, with every
+  # badge green. The failure is silent precisely because both halves are
+  # internally consistent.
+  #
+  # This is a real near-miss, not a hypothetical: a v0.5.48 tag was once
+  # created while the release commit was still being rejected by a hook, and
+  # pushing it would have produced exactly that mismatch.
+  preflight:
+    name: Tag matches crate version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare the tag against Cargo.toml
+        run: |
+          set -euo pipefail
+          crate=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          case "${GITHUB_REF_NAME}" in
+            v*) tag="${GITHUB_REF_NAME#v}" ;;
+            *)  echo "not a version tag (${GITHUB_REF_NAME}); nothing to compare"; exit 0 ;;
+          esac
+          echo "tag=$tag crate=$crate"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} would ship artifacts named $tag containing a binary that reports $crate"
+            exit 1
+          fi
+
   build:
+    needs: preflight
     name: Build (${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }})
     runs-on: ${{ matrix.os }}
     # GitHub's default is six hours. A smoke test that hung once already held a
@@ -495,6 +529,27 @@ jobs:
             artifacts/*.deb
             artifacts/*.rpm
             artifacts/SHA256SUMS.txt
+
+      # Run the exact command the docs tell downloaders to run.
+      #
+      # Attestation was "gated" only by a test asserting the string
+      # `actions/attest-build-provenance@` appears in this file, which stays
+      # true whether or not the attestation is usable -- the same shape as the
+      # wiki gate that grepped its generator instead of running it. A subject
+      # path that stops matching, a digest mismatch, or a permissions change
+      # would all leave that grep passing and every download unverifiable.
+      #
+      # This verifies a real artifact against the real attestation before the
+      # release is created, so a broken chain fails the release instead of
+      # being discovered by a user.
+      - name: Verify the attestation we just created
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          subject=$(ls artifacts/*-x86_64-unknown-linux-musl.tar.gz | head -1)
+          echo "verifying $subject"
+          gh attestation verify "$subject" --repo "${{ github.repository }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3

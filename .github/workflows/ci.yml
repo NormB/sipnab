@@ -122,10 +122,25 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+      # These 11 tests drive the real TUI through a tmux PTY and are the only
+      # coverage of it that exercises a terminal. They are #[ignore] by default
+      # because they need tmux, so a plain `cargo test` skips them everywhere --
+      # locally, in the pre-commit hook, in the Test step above, and under
+      # coverage. This step is the ONLY place they run.
+      #
+      # It carried `continue-on-error: true  # PTY tests can be flaky in CI`,
+      # which meant the one place they ran also threw away the answer: the whole
+      # TUI E2E suite could fail indefinitely with every badge green. The
+      # flakiness was not real -- 24 consecutive executions across both
+      # platforms passed, and the logs show all 11 tests running and passing,
+      # not silently skipping.
+      #
+      # If this does turn out to be flaky, stabilise the test. Do not re-mute
+      # the suite: a gate that reports a safety it is not providing is worse
+      # than no gate, because it stops anyone looking.
       - name: E2E TUI tests (PTY)
         if: runner.os != 'Windows'
         run: cargo test --features tui --test tui_e2e_test -- --ignored
-        continue-on-error: true  # PTY tests can be flaky in CI
 
   # Installer: unit tests for the platform/glibc detection and artifact
   # selection in website/static/install.sh (served at sipnab.com/install.sh).

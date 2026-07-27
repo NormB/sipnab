@@ -579,6 +579,63 @@ fn benchmark_tables_match_between_docs_and_website() {
     );
 }
 
+/// Docs that state the fuzz-target count as current must match the tree.
+///
+/// `docs/fault-model.md` also names every target, so a new one added without
+/// touching that list leaves the page describing a fuzz surface smaller than
+/// the real one — a security-facing page understating security coverage.
+/// Nothing checked either the number or the names.
+#[test]
+fn fuzz_target_count_and_names_match_the_tree() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let mut actual: Vec<String> = std::fs::read_dir(repo.join("fuzz/fuzz_targets"))
+        .expect("fuzz/fuzz_targets must exist")
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            if p.extension()? != "rs" {
+                return None;
+            }
+            Some(p.file_stem()?.to_str()?.to_string())
+        })
+        .collect();
+    actual.sort();
+
+    let n = actual.len();
+    for (path, text) in [
+        (
+            "docs/fault-model.md",
+            include_str!("../docs/fault-model.md"),
+        ),
+        ("ARCHITECTURE.md", include_str!("../ARCHITECTURE.md")),
+    ] {
+        assert!(
+            text.contains(&format!("{n} targets")) || text.contains(&format!("targets ({n})")),
+            "{path} does not state the real fuzz-target count ({n}); a target was \
+             added or removed without updating the docs that advertise it"
+        );
+    }
+
+    // fault-model.md also enumerates them. The prose uses deliberate shorthand
+    // (`sdp` for sdp_parser, `websocket` for websocket_frame), so matching
+    // names one-to-one would be brittle and would rot the first time a target
+    // is called something like `foo_decoder`. The durable invariant is that the
+    // list is as long as the directory: that catches a target added with the
+    // count bumped but the list left short, which is the realistic mistake.
+    let fault = include_str!("../docs/fault-model.md");
+    let listed = fault
+        .split_once("targets:")
+        .and_then(|(_, rest)| rest.split_once('.'))
+        .map(|(list, _)| list.split(',').filter(|s| !s.trim().is_empty()).count())
+        .expect("docs/fault-model.md no longer enumerates the fuzz targets after 'targets:'");
+    assert_eq!(
+        listed, n,
+        "docs/fault-model.md names {listed} fuzz targets but {n} exist in \
+         fuzz/fuzz_targets/ — the security-facing page is describing a smaller \
+         fuzz surface than the tree actually has"
+    );
+}
+
 /// `fuzz/Cargo.lock` pins sipnab's own version and must match the crate.
 ///
 /// The fuzz workspace is separate, so a hand-edited version bump updates
