@@ -189,6 +189,18 @@ fn readme_long_flags_exist_in_cli() {
             "docs/fault-model.md",
             include_str!("../docs/fault-model.md"),
         ),
+        // SECURITY.md's "Scope" section enumerates the flags a reporter is
+        // invited to attack (the exec hooks, the scanner kill switch, the
+        // privilege-drop and chroot options, the MCP token guards). Renaming one
+        // without touching that file leaves the security policy describing a
+        // surface that no longer exists, misdirecting exactly the people this
+        // project most wants to hear from.
+        //
+        // Deliberately no `--flag` tokens in this comment: flag_coverage_test
+        // treats any such token anywhere under tests/ as proof the flag is
+        // tested, so naming them here would silently mark three genuinely
+        // untested flags as covered.
+        ("SECURITY.md", include_str!("../SECURITY.md")),
         // Website documentation (Zola content) — same zero-drift contract.
         (
             "website/cli.md",
@@ -399,6 +411,49 @@ fn mcp_examples_always_pass_no_tui() {
         offenders.is_empty(),
         "--mcp examples missing -N/--no-tui (copy-paste would fail):\n{}",
         offenders.join("\n---\n")
+    );
+}
+
+/// The security policy must keep a reachable disclosure address.
+///
+/// The Code of Conduct has been guarded this way since its enforcement contact
+/// was once deleted outright. SECURITY.md carries the more consequential
+/// address of the two — it is where an unreported vulnerability goes — and had
+/// no such guard, so the same edit that broke the CoC would have gone unnoticed
+/// here. It also promises response times, which are worthless if the address
+/// they attach to has quietly vanished.
+#[test]
+fn security_policy_has_a_reporting_contact() {
+    let sec = std::fs::read_to_string("SECURITY.md").expect("SECURITY.md");
+
+    let email = regex::Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap();
+    let found = email.find(&sec).map(|m| m.as_str().to_string());
+    assert!(
+        found.is_some(),
+        "SECURITY.md names no email address — a vulnerability reporter has \
+         nowhere to send a report, and the response-time table below promises \
+         a reply to an address that does not exist"
+    );
+
+    assert!(
+        !sec.to_ascii_uppercase().contains("[INSERT") && !sec.contains("TODO"),
+        "SECURITY.md still carries a placeholder instead of a real contact"
+    );
+
+    // The instruction not to file publicly is the whole point of the private
+    // channel; losing it sends reports to the issue tracker.
+    assert!(
+        sec.to_ascii_lowercase()
+            .contains("do not open a public issue"),
+        "SECURITY.md no longer tells reporters to avoid public issues"
+    );
+
+    // And the project must actually point people at the policy.
+    let readme = std::fs::read_to_string("README.md").expect("README.md");
+    assert!(
+        readme.contains("SECURITY.md"),
+        "README does not link SECURITY.md, so the policy is unreachable from \
+         the front door"
     );
 }
 
