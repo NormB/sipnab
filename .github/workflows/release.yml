@@ -549,7 +549,22 @@ jobs:
           set -euo pipefail
           subject=$(ls artifacts/*-x86_64-unknown-linux-musl.tar.gz | head -1)
           echo "verifying $subject"
-          gh attestation verify "$subject" --repo "${{ github.repository }}"
+
+          # Capture and print the result. `gh attestation verify` prints its
+          # human summary only on a TTY, so on a runner a passing run left NO
+          # output at all -- the log showed the command and then the next step.
+          # An exit code alone is the same "trust the tick" evidence this
+          # workflow exists to stop accepting: it cannot distinguish a real
+          # verification from a command that silently did nothing.
+          out=$(gh attestation verify "$subject" --repo "${{ github.repository }}" \
+                  --format json 2>&1) || { echo "$out"; exit 1; }
+
+          # Prove a signed statement was actually checked, not just exit 0.
+          count=$(printf '%s' "$out" | jq 'length')
+          echo "attestations verified: $count"
+          printf '%s' "$out" | jq -r '.[0].verificationResult.signature.certificate
+                                      | "issuer: \(.issuer)\nrepo:   \(.sourceRepositoryURI)\nsha:    \(.sourceRepositoryDigest)"'
+          [ "$count" -ge 1 ] || { echo "::error::verify returned no attestations"; exit 1; }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
