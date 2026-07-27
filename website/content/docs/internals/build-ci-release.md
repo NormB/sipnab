@@ -172,12 +172,28 @@ sequenceDiagram
     Note over GHCR: image + sigstore provenance
 </pre>
 
-Version strings live in `Cargo.toml`, `website/config.toml` and `man/sipnab.1`,
-and the pre-commit hook fails if they disagree — so bumping a version is one
-edit plus two it will remind you about. The test count in
-`website/templates/index.html` is gated the same way (on Linux: the suite is
-3015 tests there and 3008 on macOS, so the advertised figure describes the
-Linux run and the check is skipped on the macOS matrix leg).
+Version strings live in `Cargo.toml`, `website/config.toml`, `man/sipnab.1`,
+`fuzz/Cargo.lock` and several docs, and committing with any of them out of step
+fails — so bumping a version is one edit plus the ones you will be reminded
+about.
+
+That enforcement lives in **one** place: `docs_current_version_markers_match_cargo`
+and `man_page_version_and_license_match_cargo` in
+[`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs), which the hook
+runs via `cargo test` and CI runs again. The hook used to carry its own shell
+re-implementation with a separate file list; the two diverged and it rejected a
+correct release commit over a deliberately historical version reference. If you
+need to change which docs carry a marker, change the Rust list.
+
+Note which files are deliberately *excluded*: pages that record the release
+something was **measured** on — the benchmarks pages — must not track the crate
+version. A marker forcing them to is what kept a stale benchmark claim looking
+freshly checked for twenty-nine releases.
+
+The test count in `website/templates/index.html` is gated the same way, by
+`ci.yml` against the real suite total. That check is Linux-only: platform-gated
+tests mean the macOS leg runs a handful fewer, so one advertised number cannot
+be true of both, and the figure describes the Linux run.
 
 ### Re-measuring the benchmarks
 
