@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.52] - 2026-07-27
 
 ### Removed
 - **`--dialog-track` is gone. It never did anything.** `dialog_track` was
