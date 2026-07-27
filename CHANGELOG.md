@@ -2,6 +2,23 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **The diagram viewer assigned mermaid's output to `innerHTML`** (CodeQL
+  `js/xss-through-dom`, high). Diagram source is read from the page with
+  `textContent` and the rendered SVG went back in through an HTML sink. The
+  code carried a comment arguing this was safe — the source is authored in this
+  repository, no visitor input reaches it, and mermaid runs under
+  `securityLevel: "strict"`. Each of those is true today and none is enforced;
+  the argument stops holding the moment a diagram is rendered from anything a
+  visitor typed. The SVG is now parsed with `DOMParser` as `image/svg+xml` —
+  strict XML, no HTML error-recovery, inert document, scripts never execute —
+  and adopted with `importNode`, so the sink is gone rather than justified. A
+  malformed document yields a `<parsererror>` that is caught, leaving the
+  diagram source visible instead of coercing it. All 17 diagrams verified
+  rendering in Chromium afterwards, with drag, zoom and collapse intact.
+
 ## [0.5.45] - 2026-07-27
 
 ### Fixed
