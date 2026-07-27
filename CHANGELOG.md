@@ -36,10 +36,34 @@ All notable changes to sipnab will be documented in this file.
   linked with `alsa-lib` for audio. `release.yml`'s own comment called this
   "impractical"; it is impossible, and saying so invited someone to try.
 
+- **The benchmarks had never run in CI.** Four criterion suites live in
+  `benches/` — parser, pipeline, store, tui_derived — and the only reference to
+  them in any workflow was clippy's `--all-targets` lint pass. A benchmark that
+  panicked, or stopped compiling against a changed API, would have sat broken
+  indefinitely. A `Benchmarks (execute)` job now runs all four. It is named for
+  what it does: it proves the suites still execute, not that performance has
+  held, because criterion's baselines live in `target/criterion` and do not
+  survive a cache miss.
+- **Coverage was measured and never enforced.** `quality.yml` collected it,
+  summarised it, uploaded HTML and pushed to Codecov with
+  `fail_ci_if_error: false`, while nothing asserted a minimum — it could decline
+  release after release with every run green. Now gated at
+  `--fail-under-lines 92`, chosen from the real figure in CI's own coverage
+  artifact (lines 92.85%, functions 94.29%, regions 93.15%) so it ratchets
+  rather than blocks.
+- **`benches/BASELINES.md` read as current and was not.** Its newest entry
+  predates the 1.97.1 toolchain pin, nothing re-verifies it and no job compares
+  against it. It now says so, and says that entries must never be edited — a
+  baseline's value is recording what was actually measured.
+
 ### Verified
 - The full suite passes on Alpine/musl — 3010 tests, 0 failures, 55 binaries
   including doctests — matching the glibc host exactly. This is the first time
   musl has been tested at all.
+- The `.deb` now provably carries its licence files: `test-build-deb.sh`
+  asserts `LICENSE-MIT`, `LICENSE-APACHE` and `THIRD-PARTY-NOTICES.md` are
+  inside the built package, not merely that the build succeeded. Those are
+  different claims, and only the second one was ever checked.
 
 ## [0.5.46] - 2026-07-27
 

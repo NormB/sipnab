@@ -13,11 +13,16 @@ capture/packet path below unchanged (its numbers carry over), but rewrote
 the `-N --json` export sink: buffered batch writes plus direct JSON
 serialization cut wall-clock time ~29% and `write()` syscalls 98.5% on that
 path (same-toolchain A/B on this branch, byte-identical output; not yet
-re-measured on a released artifact). The current release 0.5.46 changes only
-the website's diagram viewer and leaves both paths untouched. A standing
-caveat on the `-N` batch numbers: `--group-by` (added in 0.5.44) buffers
-messages to the end of capture when it is passed, and the figures below were
-measured without it. The comparison
+re-measured on a released artifact). **Nothing below has been re-measured since
+0.5.18** — the current release 0.5.46 is twenty-eight later; the numbers are carried forward
+on the judgement that the packet path is unchanged, and that judgement has
+never been verified. The version in this paragraph was advanced release after
+release without anyone re-checking the claim underneath it. Read these as
+"measured then, on that build". Re-measuring requires a checksum-verified
+release artifact on an idle host, so it follows a release rather than
+accompanying one. A standing caveat on the `-N` batch numbers: `--group-by`
+(added in 0.5.44) buffers messages to the end of capture when it is passed, and
+the figures below were measured without it. The comparison
 tools' numbers come from the 2026-06-24 session — same host, corpus, and
 method, and their versions are unchanged. Versus the 0.4.16 session, 0.5.18
 measures faster at every multi-core operating point (+9–16%) and across the

@@ -4,12 +4,21 @@ How fast sipnab is, measured honestly. Every number here is reproducible — the
 host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
 sipnab numbers are measured on the released 0.5.18 artifact,
-checksum-verified, run 2026-07-20. The current release 0.5.46 changes no
-packet-path code versus 0.5.18, so the numbers carry over unchanged. The comparison
-tools' numbers come from the 2026-06-24 session — same host, corpus, and
-method, and their versions are unchanged. Versus the 0.4.16 session, 0.5.18
-measures faster at every multi-core operating point (+9–16%) and across the
-carrier sweep (+30–107%).
+checksum-verified, run 2026-07-20, and **have not been re-measured since**: the
+current release 0.5.46 is twenty-eight later. They have been carried forward on the
+judgement that the packet path is unchanged. That judgement has never been
+verified, and the version number in this paragraph was advanced release after
+release without anyone re-checking it, so read these as "measured then, on that
+build", not as a current figure.
+
+Re-measuring is a deliberate act, not a side effect of a release: the
+methodology below requires a checksum-verified *release* artifact on an
+otherwise idle host, so it belongs after a release has been cut and its
+binaries published, never against a local dev build. The comparison tools'
+numbers come from the 2026-06-24 session — same host, corpus, and method, and
+their versions are unchanged. Versus the 0.4.16 session, 0.5.18 measures faster
+at every multi-core operating point (+9–16%) and across the carrier sweep
+(+30–107%).
 
 0.5.18's rebuilt `-O` re-emit writer (WS8.3) deserves an honest word: a
 same-toolchain A/B shows the per-packet write cost down 43%, and write

@@ -12,6 +12,51 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Benchmarks: four criterion suites live in benches/ (parser, store, pipeline,
+  # tui_derived) and until now NOTHING ran them. The only reference to them in
+  # any workflow was clippy's --all-targets lint pass, so a benchmark that
+  # panicked, or stopped compiling against a changed API, would sit broken
+  # indefinitely — and the project would have no way to notice a performance
+  # change at all.
+  #
+  # This runs each benchmark once in criterion's --test mode: no timing, no
+  # statistics, just execution. It is deliberately the weaker of the two things
+  # worth having, because it is the one that works without persisted state.
+  # Detecting an actual regression needs baselines carried between runs, which
+  # criterion keeps in target/criterion and does not survive a cache miss; the
+  # durable record is benches/BASELINES.md and it is hand-maintained. Treat this
+  # as "the benchmarks still run", not "performance has not regressed".
+  # ---------------------------------------------------------------------------
+  bench:
+    name: Benchmarks (execute)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system deps
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bench-
+            ${{ runner.os }}-cargo-
+
+      # --profile profiling is what CONTRIBUTING mandates for benchmarks:
+      # release codegen with full symbols and no stripping.
+      - name: Run every benchmark once
+        run: cargo bench --profile profiling --all-features -- --test
+
+  # ---------------------------------------------------------------------------
   # Test coverage via cargo-llvm-cov.
   # Self-contained: prints a summary to the job summary and uploads an HTML
   # report artifact (no account needed). Also uploads to Codecov *if* a
@@ -83,6 +128,21 @@ jobs:
             cargo llvm-cov report --summary-only --ignore-filename-regex 'tools_gen_fixture\.rs'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Coverage was measured, summarised, uploaded to Codecov with
+      # fail_ci_if_error: false — and gated by nothing. It could decline release
+      # after release with every run staying green: measured, reported,
+      # unenforced, the same shape as the glibc floor and the binary-size claim.
+      #
+      # 92 is not a round number picked for comfort: line coverage measured
+      # 92.85% (53407/57518) on the aaeb06e report, with functions at 94.29% and
+      # regions at 93.15%. The floor sits just under the real figure so it
+      # ratchets against decline without failing on ordinary noise. Raise it
+      # when the real number rises; never lower it to make a build pass.
+      - name: Enforce coverage floor
+        run: |
+          cargo llvm-cov report --fail-under-lines 92 \
+            --ignore-filename-regex 'tools_gen_fixture\.rs'
 
       - name: Generate lcov + HTML report
         run: |

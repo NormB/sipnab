@@ -40,12 +40,21 @@ mkdir -p "$SANDBOX/man" "$SANDBOX/contrib/deb" "$SANDBOX/bin"
 cp "$REPO_ROOT/contrib/deb/build-deb.sh" "$SANDBOX/contrib/deb/"
 cp "$REPO_ROOT/contrib/sipnab.service"   "$SANDBOX/contrib/"
 cp "$REPO_ROOT/man/sipnab.1"             "$SANDBOX/man/"
+# Licence and attribution files the package installs into
+# /usr/share/doc/sipnab. The sandbox is a declared minimal file set, so a new
+# input to build-deb.sh has to be added here too — which is how this test
+# caught them being introduced without it.
+cp "$REPO_ROOT/LICENSE-MIT" "$REPO_ROOT/LICENSE-APACHE" \
+   "$REPO_ROOT/THIRD-PARTY-NOTICES.md" "$SANDBOX/"
 
 printf '#!/bin/sh\nexit 0\n' > "$SANDBOX/bin/sipnab"
 chmod 755 "$SANDBOX/bin/sipnab"
 printf 'not a real shared object\n' > "$SANDBOX/bin/libsipnab_audio.so"
 
-cd "$SANDBOX"
+# Guarded because this script runs with `set -u` and not `set -e`: an
+# unguarded failure here would leave the rest running in the repo root, where
+# build-deb.sh does `rm -rf "$PKG_DIR"` and creates directories.
+cd "$SANDBOX" || { echo "FAIL: cannot enter sandbox $SANDBOX"; exit 1; }
 
 build() { # version, arch, [variant] -- with plugin unless NOPLUGIN=1
     local plugin="bin/libsipnab_audio.so"
@@ -66,6 +75,13 @@ if build 1.2.3 amd64 >/dev/null 2>&1 && [ -f sipnab_1.2.3_amd64.deb ]; then
     assert_contains     "full control" "$control" "Recommends: libasound2 | libasound2t64"
     assert_contains     "full contents" "$contents" "usr/lib/sipnab/libsipnab_audio.so"
     assert_contains     "full contents" "$contents" "usr/bin/sipnab"
+    # Attribution is a licence obligation: MIT and Apache-2.0 both require the
+    # notice to travel with the binary, and the audio plugin reaches libasound
+    # (LGPL-2.1-or-later). The .deb shipped none of these until 0.5.47 — a
+    # build that succeeds proves nothing about whether they are inside it.
+    assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/LICENSE-MIT"
+    assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/LICENSE-APACHE"
+    assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/THIRD-PARTY-NOTICES.md"
 else
     fail "full build failed or did not produce sipnab_1.2.3_amd64.deb"
 fi

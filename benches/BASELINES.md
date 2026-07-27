@@ -6,6 +6,19 @@ work (see `MAINTAINABILITY-PERF-SPEC.md`). Criterion's own history lives in
 this file. Run with `cargo bench --profile profiling` (mandatory — see
 CONTRIBUTING.md "Running Benchmarks").
 
+> **What this file is, and is not.** Every entry below is a *historical*
+> measurement, stamped with the date, host and toolchain it was taken on. None
+> of them is re-verified against current `main`, and nothing in CI compares
+> against them — the `Benchmarks (execute)` job in `quality.yml` runs each
+> suite once to prove it still executes, which is a much weaker claim than "no
+> regression". Read an entry as "this was true then, on that toolchain", not as
+> a statement about the code today. The most recent entry predates the
+> project's move to the 1.97.1 toolchain pin, so even the compiler differs.
+>
+> To make a number here current, re-run the suite and add a new dated entry.
+> Do not edit an old one: the value of a baseline is that it records what was
+> actually measured, and rewriting it destroys exactly that.
+
 ## 2026-07-06 — opensips-1, rustc 1.96, WS5f + WS4.3c result
 
 The layout/style split (WS5f) plus the cross-tick ladder cache (WS4.3c):
