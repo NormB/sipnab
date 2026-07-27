@@ -81,7 +81,15 @@ jobs:
       # This parses the run above rather than invoking cargo test again. The
       # coverage job cannot host this check: it runs with `--skip cli_goldens`,
       # so its total is short of the real one by design.
+      #
+      # Linux only, deliberately. The suite is not the same size on every
+      # platform -- measured 3015 on ubuntu-latest against 3008 on
+      # macos-latest -- so a single advertised number cannot be true of both.
+      # The homepage figure describes the Linux suite; pinning it here and
+      # skipping macOS is the honest version of that, rather than quietly
+      # widening the check until both pass.
       - name: Enforce the published test count
+        if: matrix.os == 'ubuntu-latest'
         run: |
           published=$(grep -oE '[0-9]{4,} automated tests' website/templates/index.html \
             | grep -oE '^[0-9]+' | sort -u)
