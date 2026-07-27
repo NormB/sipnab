@@ -2,6 +2,45 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Third-party notices, generated and shipped.** `THIRD-PARTY-NOTICES.md`
+  covers 373 distributed crates plus the two system libraries the binaries link
+  — libpcap (BSD-3-Clause) and libasound (LGPL-2.1-or-later). Attribution is a
+  licence obligation, not a courtesy: MIT and Apache-2.0 both require the notice
+  to travel with the binary. It is generated from `cargo metadata` and gated, so
+  it cannot go stale on the next `cargo update`, and it now ships in the
+  tarballs, the `.rpm` and the `.deb`. The `.deb` previously shipped **no**
+  licence files at all.
+- **Every released binary is now executed before it is published.** `release.yml`
+  built eight targets, gated their glibc floor and their size, attested their
+  provenance and shipped them without ever running one — those gates check facts
+  *about* a binary, not that it works. Each target now runs `--version`,
+  `--help` and a real capture parse before packaging, with aarch64 Linux under
+  `qemu-user`. The one case that genuinely cannot run on its builder — x86_64
+  macOS on an arm64 runner — emits a warning saying so, because a silent skip is
+  how this stayed open.
+- **The Docker image is run before it is pushed.** `docker.yml` went from build
+  straight to push to sigstore attestation without ever invoking the image, so a
+  broken runtime layer would ship attested. It is now built locally, exercised,
+  and only then published.
+
+### Fixed
+- **The build docs told Alpine users to build something that cannot work.**
+  "Most users: `cargo build --release` — default features give you … audio
+  playback" is false on musl: the plugin is loaded with `dlopen`, static musl
+  has no dynamic loader, and the binary happily reports `audio` in `--version`
+  while playback can never succeed. Both doc trees now state the constraint and
+  give the two verified Alpine recipes — static without audio, or dynamically
+  linked with `alsa-lib` for audio. `release.yml`'s own comment called this
+  "impractical"; it is impossible, and saying so invited someone to try.
+
+### Verified
+- The full suite passes on Alpine/musl — 3010 tests, 0 failures, 55 binaries
+  including doctests — matching the glibc host exactly. This is the first time
+  musl has been tested at all.
+
 ## [0.5.46] - 2026-07-27
 
 ### Fixed

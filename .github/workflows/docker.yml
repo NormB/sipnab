@@ -41,6 +41,42 @@ jobs:
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
 
+      # Build locally and RUN it before anything is published. This workflow
+      # went straight from build to push to sigstore attestation without ever
+      # executing the image, so a broken runtime layer — missing
+      # libpcap0.8t64, a wrong entrypoint, a non-root user that cannot read its
+      # own binary — would ship, and ship attested. The push below reuses this
+      # build from cache, so the smoke test costs seconds rather than a rebuild.
+      - name: Build image for smoke test
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sipnab:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image
+        run: |
+          set -euo pipefail
+          echo "::group::version"
+          docker run --rm sipnab:smoke --version
+          echo "::endgroup::"
+          echo "::group::help"
+          docker run --rm sipnab:smoke --help > /dev/null
+          echo "::endgroup::"
+          # Real work, not just a banner: parse a fixture capture end to end.
+          echo "::group::parse a fixture pcap"
+          out=$(docker run --rm -v "$PWD/tests/pcap-samples:/pcaps:ro" \
+            sipnab:smoke -N -I /pcaps/codec-negotiation.pcap 2>&1)
+          echo "$out"
+          echo "::endgroup::"
+          if ! printf '%s' "$out" | grep -q "packets captured"; then
+            echo "::error::the image ran but did not parse the fixture capture — runtime layer is broken"
+            exit 1
+          fi
+
       - name: Build and push
         id: push
         uses: docker/build-push-action@v7

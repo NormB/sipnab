@@ -47,6 +47,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "target",
         &["README.md", "docs/install.md", "website/build.md"],
     ),
+    // Alpine's package manager, in the musl/Alpine build recipes.
+    ("no-cache", &["website/build.md"]),
     (
         "features",
         &[
@@ -695,5 +697,87 @@ fn theme_slots_are_documented_and_counted_correctly() {
          {} fields, one of which is the `highlight` alias): {}",
         slots.len(),
         wrong.join(", ")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Third-party notices: attribution is an obligation, and a stale file is a
+// broken one.
+// ---------------------------------------------------------------------------
+
+/// `THIRD-PARTY-NOTICES.md` equals what the generator produces from the real
+/// dependency graph today.
+///
+/// MIT and Apache-2.0 both require the notice to travel with the binary, and
+/// libasound is LGPL-2.1-or-later, so this file is a licence obligation rather
+/// than a courtesy. Hand-maintained it would go stale on the first
+/// `cargo update` with nothing to notice — the same shape as every other gap
+/// this suite exists for, except the consequence is legal rather than cosmetic.
+#[test]
+fn third_party_notices_are_current() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tmp = std::env::temp_dir().join(format!("sipnab-notices-{}.md", std::process::id()));
+
+    let out = std::process::Command::new("python3")
+        .arg(repo.join("scripts/build-third-party-notices.py"))
+        .arg(&tmp)
+        .current_dir(repo)
+        .output()
+        .expect("run scripts/build-third-party-notices.py — python3 and cargo must be on PATH");
+    assert!(
+        out.status.success(),
+        "build-third-party-notices.py failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let fresh = std::fs::read_to_string(&tmp).expect("generated notices");
+    let committed =
+        std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md")).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp);
+
+    assert_eq!(
+        fresh.trim_end(),
+        committed.trim_end(),
+        "THIRD-PARTY-NOTICES.md is stale — the dependency graph changed. \
+         Regenerate with `python3 scripts/build-third-party-notices.py` and commit."
+    );
+}
+
+/// The notices name every system library the released binaries link, with the
+/// licence that actually applies.
+///
+/// These are resolved by the host's package manager, never by cargo, so they
+/// cannot be derived from the lockfile and cannot be caught by the currency
+/// check above. libasound is the only copyleft component sipnab touches; if its
+/// entry ever disappears, the notice obligation is silently unmet.
+#[test]
+fn third_party_notices_cover_system_libraries() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))
+        .expect("THIRD-PARTY-NOTICES.md must exist — it ships in every release artifact");
+
+    for (lib, licence) in [
+        ("libpcap", "BSD-3-Clause"),
+        ("libasound", "LGPL-2.1-or-later"),
+    ] {
+        assert!(
+            notices.contains(lib),
+            "THIRD-PARTY-NOTICES.md does not mention {lib}, which the released \
+             binaries link at runtime"
+        );
+        assert!(
+            notices.contains(licence),
+            "THIRD-PARTY-NOTICES.md does not state {licence} (for {lib})"
+        );
+    }
+
+    // The notices are worthless if they do not ship. Every release artifact
+    // that carries LICENSE-MIT must carry these too.
+    let release = std::fs::read_to_string(repo.join(".github/workflows/release.yml"))
+        .expect("read release.yml");
+    assert!(
+        release.contains("THIRD-PARTY-NOTICES.md"),
+        "release.yml does not package THIRD-PARTY-NOTICES.md — the notices would \
+         exist in the repository and reach nobody who downloads a binary"
     );
 }

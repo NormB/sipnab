@@ -32,7 +32,7 @@ getent passwd sipnab > /dev/null 2>&1 || useradd -r -s /sbin/nologin sipnab
 
 %files
 %license LICENSE
-%doc README.md CONTRIBUTING.md
+%doc README.md CONTRIBUTING.md THIRD-PARTY-NOTICES.md
 %{_bindir}/sipnab
 %{_mandir}/man1/sipnab.1*
 %{_unitdir}/sipnab.service

@@ -96,6 +96,36 @@ cargo build --release --no-default-features \
     --features native,tui,tls,hep,api,mcp,mcp-http
 ```
 
+### Audio on musl and Alpine
+
+**A statically linked musl build can never play audio, whatever features you compile in.** The plugin is loaded with `dlopen`, and static musl has no dynamic loader at all — `dlopen` returns `NULL` with *"Dynamic loading not supported"*. This is why the released `…-linux-musl` tarballs are built without `audio`.
+
+This matters because it fails quietly. `cargo build --release --features full` on Alpine succeeds, and the binary then reports:
+
+```
+sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+```
+
+It advertises `audio` it cannot deliver. Nothing errors until you try to play a stream.
+
+Two supported ways to build on Alpine, depending on what you want:
+
+```bash
+# 1. Portable, no audio — what the release ships. Static, zero runtime deps,
+#    runs on any Linux distro regardless of libc.
+apk add --no-cache musl-dev libpcap-dev pkgconf
+cargo build --release --no-default-features \
+    --features native,tui,tls,hep,api,mcp,mcp-http
+
+# 2. Alpine-only, with audio. Dynamically linked, so dlopen works and the
+#    plugin loads. Needs alsa-lib at runtime and will NOT run on glibc hosts.
+apk add --no-cache musl-dev libpcap-dev pkgconf alsa-lib alsa-lib-dev
+RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --features full
+RUSTFLAGS="-C target-feature=-crt-static" cargo build --release -p sipnab-audio
+```
+
+Both paths are verified on `rust:1.97-alpine`: the full test suite passes on Alpine (3010 tests, 0 failures), and in the dynamic build the plugin links `libasound.so.2` and `dlopen`s successfully while the `sipnab` binary itself still links only libpcap, libgcc and libc.
+
 ### Cross-glibc compatibility
 
 The release `-gnu` builds require **glibc >= 2.36** (the floor the release workflow enforces on every gnu binary); on older hosts they refuse to start with `version 'GLIBC_2.36' not found`. The [installer script](@/docs/install.md#installer-recommended) handles this automatically — below the 2.36 floor it falls back to the static musl build.
