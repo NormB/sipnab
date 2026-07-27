@@ -2,9 +2,24 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.48] - 2026-07-27
+
+No shipped-code changes: this release is the benchmark and documentation work
+below. The binaries are functionally identical to 0.5.47, which is also the
+artifact every number on the benchmarks page is measured against.
 
 ### Added
+- **voipmonitor is back in the comparison, built in a container.** It is not
+  packaged for the reference host and a host install pulls in a database
+  service, so `bench/voipmonitor.Dockerfile` builds it from source (2026.07.1)
+  and `bench/compare.sh` picks it up via `VM_IMAGE`. Container startup is ~0.8 s
+  — longer than sipnab's entire run on this corpus — so the timing loop runs
+  *inside* one container; timing `docker run` would have fabricated a
+  several-fold sipnab win out of the measurement apparatus. The config disables
+  spooling, not analysis, and that was verified rather than assumed by
+  re-running with `savesip`/`savertp` on and reading the output back with
+  sipnab: one SIP and one RTP capture per call, both directions, 50 packets
+  each way.
 - **The benchmark harness is published, so "reproducible" is finally true.**
   `bench/carrier.py`, `bench/scaling.sh` and `bench/compare.sh` are the corpus
   generator and timing harness the benchmarks page has cited since 0.5.18 while
@@ -38,10 +53,30 @@ All notable changes to sipnab will be documented in this file.
   release re-stamped the sentence as current while the measurement behind it
   aged. The marker is gone; the pages now state which artifact and date produced
   the numbers, and a gate requires both doc trees to agree on it.
-- voipmonitor is reported as `MISSING` by `bench/compare.sh` rather than being
-  silently skipped, and its stale figures are no longer carried in the
-  comparison table. It is not installed on the reference host and is not
-  packaged for it. A comparison whose competitor is absent is not a comparison.
+- **A published memory advantage that measurement does not support.** The page
+  advertised ~9.2× less RSS than voipmonitor at 20k calls. Measured against
+  voipmonitor 2026.07.1 it is **~3.2×**, steady across the whole sweep, because
+  voipmonitor's footprint is far below what this page reported for it (1.46 GiB
+  against a published 4.7 GiB). Different version and corpus, so not strictly
+  comparable — but 9.2× was being published, 3.2× is what measurement shows, and
+  only one of them has a recipe attached.
+- **The homepage headlined a number readers could not reproduce.** The tile
+  quoted 2.32M pkts/s, the 2-core peak, which is the least stable point on the
+  curve: a clean-clone rerun of the published recipe got 2.23M and replicates
+  spanned 2.32–2.36M. Both tiles now quote the four-core operating point
+  (2.06M pkts/s, 11.1× sngrep) from a single comparison run, and are gated
+  against the page they link to.
+- **The wiki published a working link to the wrong page.** `build-wiki.py`
+  resolved links by basename, so every `README.md` in the repo collapsed onto
+  whichever page `internals/README.md` maps to — the Benchmarks page rendered
+  ``[`bench/README.md`](Internals-Index)``. No link checker would flag it; the
+  target was a real page. Links now resolve against the source document's
+  directory. The gate that should have caught it asserted that the string
+  `CODE_LINK_RE` appeared in the script, which stayed true throughout; it now
+  builds the wiki and fails if any relative link survives into the output.
+- voipmonitor is reported as `MISSING` by `bench/compare.sh` when neither a
+  native binary nor `VM_IMAGE` is available, rather than being silently skipped.
+  A comparison whose competitor is absent is not a comparison.
 
 ## [0.5.47] - 2026-07-27
 

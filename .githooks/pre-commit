@@ -162,8 +162,14 @@ VERSION_DRIFT=""
 if [ -f "man/sipnab.1" ] && ! grep -q "\"sipnab $CRATE_V\"" man/sipnab.1; then
     VERSION_DRIFT="$VERSION_DRIFT man/sipnab.1(.TH)"
 fi
+# benchmarks.md is deliberately NOT in this list. It names the release the
+# numbers were MEASURED on, which is a historical fact and must not follow the
+# crate version — a marker that forced it to is exactly what kept a stale
+# benchmark claim looking freshly checked for twenty-nine releases. The Rust
+# mirror (docs_current_version_markers_match_cargo) dropped it for the same
+# reason; the two lists must be edited together.
 for f in docs/install.md website/content/docs/install.md \
-         website/content/docs/benchmarks.md website/content/docs/api.md; do
+         website/content/docs/api.md; do
     [ -f "$f" ] || continue
     STALE=$(grep -oE "SIPNAB_VERSION=[0-9]+\.[0-9]+\.[0-9]+|e\.g\. [0-9]+\.[0-9]+\.[0-9]+|current release [0-9]+\.[0-9]+\.[0-9]+|as of [0-9]+\.[0-9]+\.[0-9]+|sipnab-[0-9]+\.[0-9]+\.[0-9]+-1\.x86_64" "$f" \
         | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | grep -v "^$CRATE_V$" | sort -u | tr '\n' ' ')
