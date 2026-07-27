@@ -204,39 +204,34 @@ jobs:
         if: '!matrix.cross && steps.features.outputs.audio_plugin == ''yes'''
         run: cargo build --release --target ${{ matrix.target }} -p sipnab-audio
 
-      # `|| true` used to swallow every outcome here, so a strip that failed --
-      # or a strip tool that was not installed at all -- shipped an unstripped
-      # binary with no trace in the log. Only the musl targets would notice,
-      # and only indirectly, if the result happened to breach the size ceiling;
-      # the gnu and macOS artifacts had nothing watching them.
+      # There is no strip step, deliberately. `[profile.release] strip = true`
+      # in Cargo.toml strips at link time, for every target, as part of the
+      # build that just ran.
       #
-      # A missing tool is tolerated but announced. A tool that exists and then
-      # fails is a real error and fails the build. Either way the log records
-      # the before/after size, so "was this stripped?" is answerable after the
-      # fact instead of assumed.
-      - name: Strip binary
+      # A separate `strip` invocation used to run here under `|| true`. On the
+      # cross-compiled targets the host's GNU strip cannot even read the output
+      # ("Unable to recognise the format of the input file") and had been
+      # failing on every single release for the project's history; on native
+      # targets it was a no-op against an already-stripped binary. `|| true`
+      # meant neither outcome was visible, so it looked like the thing doing the
+      # stripping while doing nothing at all.
+      #
+      # Removing the guesswork and asserting the property is the useful half.
+      # readelf reads cross-architecture ELF happily, which is why it can check
+      # what strip could not even open. Linux only: macOS artifacts are Mach-O
+      # and readelf does not apply.
+      - name: Verify the binary is stripped
+        if: contains(matrix.target, 'linux')
         shell: bash
         run: |
-          set -uo pipefail
-          case "${{ matrix.target }}" in
-            aarch64-unknown-linux-gnu) strip_bin=aarch64-linux-gnu-strip ;;
-            *) strip_bin=strip ;;
-          esac
+          set -euo pipefail
           bin="target/${{ matrix.target }}/release/sipnab"
-          size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
-
-          if ! command -v "$strip_bin" >/dev/null 2>&1; then
-            echo "::warning title=Binary not stripped::$strip_bin is not installed on this runner; ${{ matrix.target }} ships unstripped ($(size "$bin") bytes)"
-            exit 0
-          fi
-
-          before=$(size "$bin")
-          if ! "$strip_bin" "$bin"; then
-            echo "::error::$strip_bin failed on $bin — refusing to ship an unstripped binary silently"
+          size=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin")
+          if readelf -S "$bin" | grep -qE '\.symtab'; then
+            echo "::error::$bin still has a .symtab — [profile.release] strip = true is no longer taking effect, and this artifact would ship with its symbol table"
             exit 1
           fi
-          after=$(size "$bin")
-          echo "stripped $bin: $before -> $after bytes"
+          echo "$bin: no .symtab, $size bytes"
 
       # Execute what we are about to ship.
       #
