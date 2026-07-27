@@ -2,6 +2,34 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.51] - 2026-07-27
+
+No shipped-code changes. Cut to prove that the release's attestation check now
+records what it verified, which can only be observed by cutting a release.
+
+### Fixed
+- **The attestation check passed without evidence.** 0.5.50 ran it successfully
+  and the job log contained the echoed command and nothing else:
+  `gh attestation verify` prints its summary only on a TTY, so on a runner a
+  passing verification is completely silent. That left the step resting on an
+  exit code, which cannot distinguish a real verification from a command that
+  silently did nothing — the same "trust the tick" evidence the step was added
+  to stop accepting, reintroduced one layer down.
+
+  The log now shows the signing issuer, source repository and commit sha that
+  were checked. The verification exit code remains the gate; the rendering is
+  deliberately incapable of failing the release, because a wrong `jq` path
+  turning a good release red is how a step earns distrust and gets removed.
+- **Coverage no longer fails intermittently on a corrupt profile.** A process
+  killed by a signal never flushes its coverage profile, leaving a truncated
+  `.profraw` that fails `llvm-profdata merge` for the whole job. Three suites
+  kill the binary they spawn — `crash_test` (SIGABRT via `core = true`),
+  `hep_test` (`Child::kill()`, uncatchable), and `parse_path_test` (SIGKILL on
+  timeout, so it corrupted only on slow runs). Their children's
+  `LLVM_PROFILE_FILE` now points outside the collection directory. Not fixed by
+  retrying the job or deleting corrupt files before the report: both keep the
+  signal and discard the meaning.
+
 ## [0.5.50] - 2026-07-27
 
 No shipped-code changes. This release exists to exercise two new release-time
