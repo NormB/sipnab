@@ -5,6 +5,32 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **The wasm32 build was broken, and the CI job meant to catch it compiled for
+  the wrong target.** `.cargo/config.toml` sets
+  `--cfg getrandom_backend="wasm_js"` for `wasm32-unknown-unknown`; rustflags
+  are per-target, so that cfg reaches every `getrandom` in the graph, and any
+  0.3+ line seeing it without the matching feature refuses to compile.
+  `Cargo.toml` enabled `wasm_js` on 0.4 only — beneath a comment correctly
+  naming ahash and the 0.3 line — so the fix never applied to the version ahash
+  actually resolves and `cargo check --target wasm32-unknown-unknown --lib`
+  failed. CI's wasm job ran `cargo check --features wasm --lib` with no
+  `--target`, compiling for the host where the `cfg(target_arch = "wasm32")`
+  dependency block is inert: it proved the feature builds for Linux and nothing
+  about wasm. The job now targets wasm32, and a static gate checks every
+  getrandom major line in the lockfile.
+- **The glibc floor was still wrong in doc prose after the constants were
+  fixed.** `build.md` went on telling readers "requires glibc >= 2.39" under a
+  green gate, because the gate compared only the two constants and
+  `release.yml`. Both install pages also described the 2.39 installer cutover as
+  deliberate; it now matches the enforced 2.36. The floor gate reads doc prose
+  as well — a floor stated in a sentence is what a reader acts on.
+
+### Changed
+- **`getrandom` 0.4.2 → 0.4.3** (Dependabot, cargo-minor-patch group). Drops 15
+  build dependencies (`wit-bindgen`, `wasmparser`, `wasip3` and friends), −172
+  lines of lockfile.
+
+### Fixed (published claims)
 - **The site and the installer published a glibc floor five minor versions
   above the real one.** `release.yml` moved the gnu builds into
   `rust:1-bookworm` and enforces a 2.36 floor; `website/config.toml` and

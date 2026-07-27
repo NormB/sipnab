@@ -175,10 +175,22 @@ jobs:
             ${{ runner.os }}-features-
             ${{ runner.os }}-cargo-
 
-      # wasm is lib-only: its test/bin targets are meaningless on the host.
-      - name: Check (lib only, wasm)
+      # wasm is lib-only: its test/bin targets are meaningless.
+      #
+      # `--target wasm32-unknown-unknown` is the whole point of this job and was
+      # missing. Without it the check compiled for the host, where the
+      # `cfg(target_arch = "wasm32")` dependency block is inert and the
+      # wasm32-only rustflags in .cargo/config.toml never apply — so it proved
+      # the `wasm` feature compiles for Linux and nothing about wasm. A real
+      # wasm32 build was broken on main (getrandom 0.3 missing `wasm_js`) while
+      # this job was green.
+      - name: Add wasm32 target
         if: matrix.features == 'wasm'
-        run: cargo check --no-default-features --features wasm --lib
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Check (lib only, wasm32)
+        if: matrix.features == 'wasm'
+        run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm --lib
 
       - name: Check (with tests)
         if: matrix.features != 'wasm'

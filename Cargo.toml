@@ -136,10 +136,20 @@ rmcp = { version = "2", default-features = false, features = ["server", "transpo
 
 # WASM browser integration (feature-gated)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# ahash's runtime RNG pulls getrandom, whose 0.3 line has no default wasm32
-# backend: it needs BOTH this `wasm_js` feature AND the
-# `--cfg getrandom_backend="wasm_js"` rustflag (set in .cargo/config.toml).
+# getrandom has no default wasm32 backend: it needs BOTH the `wasm_js` feature
+# AND the `--cfg getrandom_backend="wasm_js"` rustflag (set in
+# .cargo/config.toml). The rustflag is per-target, so it reaches *every*
+# getrandom in the graph, and the feature therefore has to be enabled on every
+# major line present — enabling it on one and not the other fails the build in
+# the one that was missed.
+#
+# Both lines are present: ahash (a direct dependency) resolves 0.3, while 0.4
+# arrives on its own. This declared 0.4 only, under a comment correctly naming
+# ahash and 0.3, so the fix never applied to the version it was written for and
+# `cargo build --target wasm32-unknown-unknown --lib` failed on getrandom 0.3.
+# `wasm_target_builds` in tests/wasm_exports_test.rs now builds it for real.
 getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
