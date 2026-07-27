@@ -16,6 +16,9 @@
 use std::io::{BufRead, BufReader};
 use std::net::UdpSocket;
 use std::process::{Child, Command, Stdio};
+
+#[path = "support/mod.rs"]
+mod support;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -81,6 +84,9 @@ impl HepListener {
     /// rate-limit drop is logged at `debug`, so that test needs `debug`).
     fn spawn_with_log(log: &str, extra_args: &[&str]) -> HepListener {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+        // This listener is torn down with Child::kill() (SIGKILL), which leaves
+        // a truncated .profraw under coverage.
+        support::discard_coverage_profile(&mut cmd);
         cmd.args(["-N", "--hep-listen", "127.0.0.1:0", "--json", "--quiet"]);
         cmd.args(extra_args);
         cmd.env("SIPNAB_LOG", log);
@@ -285,7 +291,9 @@ fn hep_send_forwards_captured_sip_as_hep3() {
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+    let mut sender = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+    support::discard_coverage_profile(&mut sender);
+    let mut child = sender
         .args(["-N", "-I", &pcap, "--hep-send", &target, "--quiet"])
         .env("SIPNAB_LOG", "warn")
         .env("NO_COLOR", "1")
