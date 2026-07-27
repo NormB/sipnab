@@ -149,39 +149,28 @@ else
     echo -e "${YELLOW}SKIP (no website)${NC}"
 fi
 
-# ── 5c. Man page + docs "current version" strings match the crate ──
-# The .TH line in man/sipnab.1 and the "e.g. X.Y.Z" / SIPNAB_VERSION= /
-# "current release X.Y.Z" / "as of X.Y.Z" markers in the install/benchmark
-# docs sit outside the 5b gate and rotted before (man page shipped 0.4.18 +
-# the wrong license). Mirrors tests/docs_drift_test.rs
-# docs_current_version_markers_match_cargo; historical references like the
-# benchmark provenance "0.4.16" are not matched.
-echo -n "  Man/docs version strings match crate... "
-CRATE_V=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
-VERSION_DRIFT=""
-if [ -f "man/sipnab.1" ] && ! grep -q "\"sipnab $CRATE_V\"" man/sipnab.1; then
-    VERSION_DRIFT="$VERSION_DRIFT man/sipnab.1(.TH)"
-fi
-# benchmarks.md is deliberately NOT in this list. It names the release the
-# numbers were MEASURED on, which is a historical fact and must not follow the
-# crate version — a marker that forced it to is exactly what kept a stale
-# benchmark claim looking freshly checked for twenty-nine releases. The Rust
-# mirror (docs_current_version_markers_match_cargo) dropped it for the same
-# reason; the two lists must be edited together.
-for f in docs/install.md website/content/docs/install.md \
-         website/content/docs/api.md; do
-    [ -f "$f" ] || continue
-    STALE=$(grep -oE "SIPNAB_VERSION=[0-9]+\.[0-9]+\.[0-9]+|e\.g\. [0-9]+\.[0-9]+\.[0-9]+|current release [0-9]+\.[0-9]+\.[0-9]+|as of [0-9]+\.[0-9]+\.[0-9]+|sipnab-[0-9]+\.[0-9]+\.[0-9]+-1\.x86_64" "$f" \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | grep -v "^$CRATE_V$" | sort -u | tr '\n' ' ')
-    [ -n "$STALE" ] && VERSION_DRIFT="$VERSION_DRIFT $f($STALE)"
-done
-if [ -n "$VERSION_DRIFT" ]; then
-    echo -e "${RED}FAIL${NC}"
-    echo "  Stale version strings (crate is $CRATE_V):$VERSION_DRIFT"
-    echo "  Update them to $CRATE_V (see tests/docs_drift_test.rs marker list)"
-    exit 1
-fi
-echo -e "${GREEN}OK ($CRATE_V)${NC}"
+# ── 5c. (removed) Man/docs version strings ────────────────────────────────
+# This step used to re-implement tests/docs_drift_test.rs's
+# docs_current_version_markers_match_cargo in shell: its own file list, its own
+# combined regex, its own idea of which markers matter.
+#
+# Two implementations of one rule, with nothing keeping them in sync, and they
+# did diverge. website/content/docs/benchmarks.md was deliberately dropped from
+# the Rust list -- that page names the release the numbers were MEASURED on,
+# which must NOT follow the crate version -- but this copy still listed it, and
+# rejected a correct release commit over an "as of 0.5.47" that was meant to be
+# historical.
+#
+# The shell copy was also strictly the weaker of the two: it never checked
+# either mcp-walkthrough page, nor the `sipnab X.Y.Z (` form in the install
+# docs. It could only ever fail on something the Rust test already catches, or
+# fail on something the Rust test had deliberately excused.
+#
+# Step 2 above runs `cargo test --features full`, which executes both
+# docs_current_version_markers_match_cargo and
+# man_page_version_and_license_match_cargo (verified: they appear in that run).
+# So this coverage is not lost -- it is now asserted in exactly one place, by
+# the implementation that also runs in CI.
 
 # ── 6. No TODO stubs in production code ────────────────────────────
 echo -n "  No TODO stubs... "
