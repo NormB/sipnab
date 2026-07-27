@@ -2,6 +2,17 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.49] - 2026-07-27
+
+### Fixed
+- **`fuzz/Cargo.lock` shipped stale in 0.5.48.** It pins sipnab's own version,
+  and the fuzz workspace is separate, so a hand-edited bump updates
+  `Cargo.toml`, `website/config.toml` and the man page — each of which is gated
+  — and leaves this one behind. 0.5.48 published with the lockfile still naming
+  0.5.47. No hook, workflow or test looked at the file; it was noticed only
+  because a stray `cargo` invocation regenerated it and left the change in the
+  working tree. Now gated, with the fix command in the failure message.
+
 ## [0.5.48] - 2026-07-27
 
 No shipped-code changes: this release is the benchmark and documentation work

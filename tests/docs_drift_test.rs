@@ -579,6 +579,41 @@ fn benchmark_tables_match_between_docs_and_website() {
     );
 }
 
+/// `fuzz/Cargo.lock` pins sipnab's own version and must match the crate.
+///
+/// The fuzz workspace is separate, so a hand-edited version bump updates
+/// `Cargo.toml`, `website/config.toml` and the man page — all of which are
+/// gated — and silently leaves this one behind. It happened at 0.5.48, which
+/// shipped with the lockfile still naming 0.5.47, and nothing anywhere noticed:
+/// no hook, no workflow, no test looked at this file.
+#[test]
+fn fuzz_lockfile_pins_the_current_crate_version() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lock = std::fs::read_to_string(repo.join("fuzz/Cargo.lock"))
+        .expect("fuzz/Cargo.lock must exist — the fuzz workspace is committed");
+
+    // The [[package]] block whose name is sipnab; its `version` is the pin.
+    let pinned = lock
+        .split("[[package]]")
+        .find(|block| block.contains("name = \"sipnab\""))
+        .and_then(|block| {
+            block
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("version = "))
+                .map(|v| v.trim().trim_matches('"').to_string())
+        })
+        .expect("no sipnab [[package]] entry in fuzz/Cargo.lock");
+
+    assert_eq!(
+        pinned,
+        env!("CARGO_PKG_VERSION"),
+        "fuzz/Cargo.lock pins sipnab {pinned} but the crate is {} — run \
+         `cargo update -p sipnab --manifest-path fuzz/Cargo.toml` (or any cargo \
+         command in fuzz/) and commit the result with the version bump",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 /// Both benchmark pages must name the same measured release and date, and that
 /// release must actually exist.
 ///
