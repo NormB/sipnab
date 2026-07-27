@@ -434,3 +434,184 @@ fn dialog_rotation_defaults_on_keep_newest() {
         "--no-rotate must keep the OLDEST call (1-1966), dropping 1-1968:\n{no_rotate}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Flags that the coverage ratchet counted as tested because their names
+// appeared in a COMMENT somewhere under tests/. Five flags were covered that
+// way; these are the real behaviour tests that replace the prose.
+// ---------------------------------------------------------------------------
+
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
+
+/// `--rotate` states the default explicitly; it must behave as the default
+/// does (keep the NEWEST dialog at capacity), not merely parse.
+#[test]
+fn rotate_explicitly_keeps_the_newest_dialog() {
+    let fx = "tests/pcap-samples/sip-rtp-g711.pcap";
+    let explicit = run(&[
+        "-N",
+        "-I",
+        fx,
+        "--limit",
+        "1",
+        "--rotate",
+        "--report",
+        "--no-cli-print",
+    ]);
+    let default = run(&["-N", "-I", fx, "--limit", "1", "--report", "--no-cli-print"]);
+    assert_eq!(
+        explicit.trim(),
+        default.trim(),
+        "--rotate must be identical to the default it documents"
+    );
+    assert!(
+        explicit.contains("1-1968@10.0.2.20"),
+        "--rotate must retain the NEWEST call:\n{explicit}"
+    );
+}
+
+/// `--duration` must reject an unparseable value instead of ignoring it — a
+/// capture that silently ran forever because "5 minutes" was not "5m" is a
+/// worse outcome than a startup error.
+#[test]
+fn duration_rejects_an_unparseable_value() {
+    let (_out, err, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            FIXTURE,
+            "--duration",
+            "five-minutes",
+            "--no-cli-print",
+        ],
+        // SIPNAB_LOG must stay on. The rejection is reported through the
+        // logger, so with `off` the user gets a bare exit code and no reason —
+        // worth knowing, and pinned here so the message cannot quietly vanish.
+        Some("error"),
+    );
+    assert_ne!(code, Some(0), "--duration must reject 'five-minutes'");
+    assert!(
+        err.to_lowercase().contains("duration"),
+        "rejecting --duration must say what was wrong:\n{err}"
+    );
+}
+
+/// `--strip-secrets` must remove the Decryption Secrets Block and leave the
+/// input untouched.
+///
+/// No checked-in sample carries a DSB, so the fixture is built here.
+#[test]
+fn strip_secrets_removes_the_dsb_and_preserves_the_input() {
+    const DSB: u32 = 0x0000_000a;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = dir.path().join("with-secrets.pcapng");
+    let output = dir.path().join("stripped.pcapng");
+
+    let frame = pcap_build::udp_frame(
+        [10, 1, 0, 1],
+        [10, 2, 0, 1],
+        5060,
+        5060,
+        b"OPTIONS sip:a@b SIP/2.0\r\nCall-ID: strip-test\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
+    );
+    pcap_build::write_pcapng_with_dsb(&input, "CLIENT_RANDOM 0011 22334455\n", &frame);
+    let before = std::fs::read(&input).expect("read input");
+    assert_eq!(
+        pcap_build::count_pcapng_blocks(&input, DSB),
+        1,
+        "fixture must start with exactly one DSB"
+    );
+
+    let (_out, err, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            input.to_str().unwrap(),
+            "--strip-secrets",
+            output.to_str().unwrap(),
+            "--no-cli-print",
+        ],
+        Some("off"),
+    );
+    assert_eq!(code, Some(0), "--strip-secrets must succeed:\n{err}");
+    assert_eq!(
+        pcap_build::count_pcapng_blocks(&output, DSB),
+        0,
+        "the stripped copy must contain no Decryption Secrets Block"
+    );
+    assert_eq!(
+        std::fs::read(&input).expect("re-read input"),
+        before,
+        "--strip-secrets must never modify its input"
+    );
+}
+
+/// `-E`/`--hep-parse` must decode HEP-encapsulated SIP out of a capture.
+///
+/// No checked-in sample carries HEP traffic, so the fixture is built with the
+/// production encoder (`build_hep_v3`) and wrapped in real UDP frames — the
+/// same wire format `--hep-listen` consumes, but read from a file so the test
+/// needs no socket.
+///
+/// Without the flag those datagrams are opaque UDP payloads, so the Call-ID
+/// must NOT surface; with it, it must. Asserting both directions is what makes
+/// this a test of the flag rather than of the parser.
+#[cfg(feature = "hep")]
+#[test]
+fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
+    use chrono::Utc;
+    use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+
+    const CALL_ID: &str = "hepflag1";
+    let sip = format!(
+        "INVITE sip:b@ex.invalid SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bKhep1\r\n\
+         Max-Forwards: 70\r\n\
+         From: <sip:a@example.invalid>;tag=hep1\r\n\
+         To: <sip:b@example.invalid>\r\n\
+         Call-ID: {CALL_ID}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+
+    let ep = HepEndpoint {
+        src_addr: "10.1.0.1".parse().unwrap(),
+        dst_addr: "10.2.0.1".parse().unwrap(),
+        src_port: 5060,
+        dst_port: 5060,
+    };
+    let hep = build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, sip.as_bytes());
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("hep.pcap");
+    // HEP rides UDP/9060 by convention.
+    let frame = pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 9060, 9060, &hep);
+    pcap_build::write_pcap(&path, &[frame]);
+
+    let with_flag = run(&[
+        "-N",
+        "-I",
+        path.to_str().unwrap(),
+        "--hep-parse",
+        "--report",
+        "--no-cli-print",
+    ]);
+    assert!(
+        with_flag.contains(CALL_ID),
+        "--hep-parse must decode the encapsulated INVITE:\n{with_flag}"
+    );
+
+    let without = run(&[
+        "-N",
+        "-I",
+        path.to_str().unwrap(),
+        "--report",
+        "--no-cli-print",
+    ]);
+    assert!(
+        !without.contains(CALL_ID),
+        "without --hep-parse the HEP payload must stay opaque, else the flag \
+         gates nothing:\n{without}"
+    );
+}

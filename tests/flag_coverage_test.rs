@@ -49,6 +49,18 @@ const KNOWN_UNTESTED: &[&str] = &[
     "alert-exec",      // fires on a security alert — needs a scanner/fraud trigger
     "replay",          // replays at original timing — no offline output to assert
     "split",           // splits output by size — needs a large enough capture
+    // dialog-track is NOT merely untested: it is unimplemented. `dialog_track`
+    // is declared in src/cli.rs and read nowhere else in src/, so `call-id`,
+    // `branch` and an invented value all produce byte-identical output and all
+    // exit 0. --help advertises a capability the binary does not have.
+    //
+    // It appears here because the honest baseline must show it. It was
+    // previously counted as COVERED, on the strength of its name appearing in a
+    // comment plus a test asserting its default is None — a test that passes
+    // precisely because the flag does nothing. Removing it from this list
+    // requires implementing the flag or deleting it, not writing a test that
+    // documents the no-op.
+    "dialog-track",
 ];
 
 /// All long flags (and long aliases) the CLI accepts, via clap.
@@ -112,10 +124,56 @@ fn read_tree(dir: &Path, exts: &[&str], out: &mut String) {
             .unwrap_or(false)
             && let Ok(s) = std::fs::read_to_string(&path)
         {
-            out.push_str(&s);
+            // Rust comments are stripped before the text counts as coverage.
+            //
+            // Without this, writing `--some-flag` in a comment anywhere under
+            // tests/ marks that flag tested. It is not hypothetical: a comment
+            // added while wiring an unrelated gate silently "covered" three
+            // flags at once, and a survey then found five flags whose only
+            // coverage was prose. The gate read 106 of 143 covered when the
+            // honest figure was 101.
+            //
+            // Only `.rs` files are stripped. `.trycmd` goldens are literal
+            // command transcripts where a `#` line is part of the fixture.
+            let text = if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                strip_rust_comments(&s)
+            } else {
+                s
+            };
+            out.push_str(&text);
             out.push('\n');
         }
     }
+}
+
+/// Remove `//`-style and `/* */` comments, preserving everything else.
+///
+/// String literals are left alone deliberately: a `--flag` inside a string is
+/// almost always an argument being passed to the binary, which is exactly the
+/// coverage this gate is looking for. `//` inside a string (a URL, say) is rare
+/// in this corpus and would only ever cause a flag to be under-counted, which
+/// fails safe — the gate would demand a test rather than excuse a missing one.
+fn strip_rust_comments(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+        } else if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(b.len());
+        } else {
+            out.push(b[i] as char);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Build the corpus: all of `tests/` + the `#[cfg(test)]` tail of `src/cli.rs`
