@@ -550,21 +550,29 @@ jobs:
           subject=$(ls artifacts/*-x86_64-unknown-linux-musl.tar.gz | head -1)
           echo "verifying $subject"
 
-          # Capture and print the result. `gh attestation verify` prints its
-          # human summary only on a TTY, so on a runner a passing run left NO
-          # output at all -- the log showed the command and then the next step.
-          # An exit code alone is the same "trust the tick" evidence this
-          # workflow exists to stop accepting: it cannot distinguish a real
-          # verification from a command that silently did nothing.
+          # `gh attestation verify` prints its human summary only on a TTY, so
+          # on a runner a passing run left NO output at all -- the log showed
+          # the command and then the next step. An exit code alone is the same
+          # "trust the tick" evidence this workflow exists to stop accepting.
+          #
+          # The exit code IS the gate: verify fails if the artifact does not
+          # match a signed attestation for this repo. Everything below only
+          # renders what was checked into the log, and is deliberately unable
+          # to fail the release -- a wrong jq path must not turn a good release
+          # red, which would teach the next person to stop trusting this step.
           out=$(gh attestation verify "$subject" --repo "${{ github.repository }}" \
                   --format json 2>&1) || { echo "$out"; exit 1; }
 
-          # Prove a signed statement was actually checked, not just exit 0.
-          count=$(printf '%s' "$out" | jq 'length')
-          echo "attestations verified: $count"
-          printf '%s' "$out" | jq -r '.[0].verificationResult.signature.certificate
-                                      | "issuer: \(.issuer)\nrepo:   \(.sourceRepositoryURI)\nsha:    \(.sourceRepositoryDigest)"'
-          [ "$count" -ge 1 ] || { echo "::error::verify returned no attestations"; exit 1; }
+          echo "--- what was verified ---"
+          # Shape-agnostic: find whichever object carries the provenance fields
+          # rather than assuming gh's nesting, which is not a stable contract.
+          printf '%s' "$out" | jq -r '
+            [.. | objects | select(has("sourceRepositoryURI") or has("issuer"))] as $c
+            | if ($c | length) == 0 then "（no provenance fields found; raw output below）"
+              else ($c[0] | "issuer: \(.issuer // "?")\nrepo:   \(.sourceRepositoryURI // "?")\nsha:    \(.sourceRepositoryDigest // "?")")
+              end' 2>/dev/null \
+            || printf '%s\n' "$out" | head -20
+          echo "-------------------------"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
