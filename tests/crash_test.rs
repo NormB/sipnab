@@ -8,6 +8,9 @@ use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 
+#[path = "support/mod.rs"]
+mod support;
+
 /// Spawns `sipnab --panic-selftest` under a `[crash]` config built from
 /// `crash_toml`, with `ulimit -c 0` so no real core file is ever written.
 ///
@@ -36,7 +39,13 @@ fn run_selftest(crash_toml: &str) -> (std::process::ExitStatus, String, tempfile
 
     // ulimit -c 0: never write an actual core file on this box even when
     // the abort path is exercised; the SIGABRT itself is the observable.
-    let output = Command::new("sh")
+    //
+    // discard_coverage_profile: `core = true` kills this child with SIGABRT,
+    // which leaves a truncated .profraw that breaks the whole Coverage job.
+    // See the helper for why that must not be retried past.
+    let mut cmd = Command::new("sh");
+    support::discard_coverage_profile(&mut cmd);
+    let output = cmd
         .arg("-c")
         .arg(format!(
             "ulimit -c 0; exec {} -f {} --panic-selftest",

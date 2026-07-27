@@ -36,6 +36,34 @@ pub fn deterministic_env(cmd: &mut Command) -> &mut Command {
         .env_remove("CLICOLOR_FORCE")
 }
 
+/// Send a spawned child's coverage profile somewhere it will not be merged.
+///
+/// Tests that kill the binary they spawned — `crash_test` (SIGABRT via the
+/// `core = true` policy), `hep_test` and `parse_path_test` (`Child::kill()`,
+/// i.e. SIGKILL) — leave behind a truncated `.profraw`, because a process
+/// killed by a signal never flushes its profile. Under `cargo llvm-cov` those
+/// land in `target/llvm-cov-target/` beside the good ones and
+/// `llvm-profdata merge` fails the entire Coverage job with
+/// "invalid instrumentation profile data (file header is corrupt)".
+///
+/// That produced an intermittent red with no relation to the change under
+/// test, which is precisely how a gate earns a reputation for flakiness and
+/// then gets muted. Redirecting the doomed child's profile out of the merge
+/// directory fixes the cause instead of retrying past it.
+///
+/// Nothing is lost: the coverage of a process that is about to be killed is not
+/// meaningful, and the parent test binary still records its own.
+///
+/// Apply this to every spawn whose child may be signalled, not only the ones
+/// that always are — `parse_path_test` only SIGKILLs on a timeout, so its
+/// corrupt profile appears just on the slow runs that are hardest to reproduce.
+pub fn discard_coverage_profile(cmd: &mut Command) -> &mut Command {
+    let dir = std::env::temp_dir().join("sipnab-discarded-cov");
+    let _ = std::fs::create_dir_all(&dir);
+    // %p so concurrent children cannot collide with each other either.
+    cmd.env("LLVM_PROFILE_FILE", dir.join("discarded-%p.profraw"))
+}
+
 /// Replace volatile substrings with stable placeholders. See module docs.
 ///
 /// Order matters: timestamps are scrubbed before durations so the seconds field

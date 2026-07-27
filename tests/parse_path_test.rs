@@ -17,6 +17,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "support/mod.rs"]
+mod support;
+
 /// Absolute path to the `tests/fixtures` directory.
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -150,7 +153,10 @@ fn run_sipnab_with_timeout(args: &[&str], timeout: std::time::Duration) -> (Stri
     use std::io::Read;
 
     let binary = env!("CARGO_BIN_EXE_sipnab");
-    let mut child = Command::new(binary)
+    let mut cmd = Command::new(binary);
+    // SIGKILLed when the timeout fires, which truncates its coverage profile.
+    support::discard_coverage_profile(&mut cmd);
+    let mut child = cmd
         .args(args)
         .env("SIPNAB_LOG", "warn")
         .stdout(std::process::Stdio::piped())
