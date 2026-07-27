@@ -68,11 +68,36 @@ bench/scaling.sh "$BIN" sweep-20000.pcap 2140000 --cores 4 --runs 5
 
 ## voipmonitor
 
-`compare.sh` reports voipmonitor as `MISSING` unless it is installed *and*
-`VM_CONF` points at a config file. It is never silently skipped — a comparison
-table with an absent competitor reads exactly like a comparison it won.
+voipmonitor is not packaged for most distributions and a host install pulls in
+a database service, so it is built from source in a container:
 
-voipmonitor needs `sdp_multiplication=0` on this corpus. The corpus reuses SDP
-media endpoints, so voipmonitor's default DoS guard (`=3`) suppresses the
-duplicate-SDP streams and it does less RTP association than sipnab, which would
-flatter sipnab's numbers.
+```sh
+docker build -f bench/voipmonitor.Dockerfile -t voipmonitor:bench bench/
+VM_IMAGE=voipmonitor:bench VM_CONF=bench/vm.conf \
+  bench/compare.sh "$BIN" corpus.pcap 535000 --runs 5
+```
+
+`compare.sh` uses a native `voipmonitor` if one is on `PATH`; otherwise it uses
+`VM_IMAGE`. With neither, it reports voipmonitor as `MISSING` rather than
+omitting the row — a comparison table with a silently absent competitor reads
+exactly like a comparison it won.
+
+Three things keep the container measurement fair, and all three matter:
+
+- **The timing loop runs inside one container.** Timing `docker run` per
+  invocation charges voipmonitor ~0.8 s of container startup, which on the 535k
+  corpus is longer than sipnab's entire run. That alone would fabricate a
+  several-fold sipnab win out of the measurement apparatus.
+- **`sdp_multiplication = 0`.** The corpus reuses SDP media endpoints, so
+  voipmonitor's default DoS guard (`=3`) suppresses the duplicate-SDP streams —
+  it would do *less* RTP association than sipnab and flatter sipnab's numbers.
+- **The config disables spooling, not analysis.** Verify this rather than trust
+  it: re-run with `savesip`/`savertp` set to `yes` and a writable `spooldir`,
+  and voipmonitor should emit one SIP and one RTP capture per call, each
+  carrying both directions. sipnab itself will read those files back
+  (`sipnab -N -I <spooled>.pcap --report`), which is a convenient cross-check.
+
+What remains asymmetric: voipmonitor runs containerised while sngrep, sipgrep
+and sipnab run natively. On Linux that is namespaces, not virtualisation, so
+CPU-bound parsing is near native — but the cost, whatever it is, lands on
+voipmonitor's number.

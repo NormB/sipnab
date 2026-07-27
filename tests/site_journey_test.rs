@@ -488,7 +488,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // 0.5%. A smaller number a reader can reproduce beats a larger one they
     // cannot — and quoting a 2-core throughput beside a 4-core ratio invited
     // the two tiles to be read as one result.
-    for (count, suffix) in [("2.03", "M pkts/s"), ("11.0", "&times; sngrep")] {
+    for (count, suffix) in [("2.06", "M pkts/s"), ("11.1", "&times; sngrep")] {
         let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
         assert!(
             idx.contains(&tile),

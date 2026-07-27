@@ -86,9 +86,13 @@ echo "host:    $(uname -sm), $(nproc) cores"
 echo
 
 missing=""
-for t in sngrep sipgrep voipmonitor; do
+for t in sngrep sipgrep; do
   command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
 done
+if ! command -v voipmonitor >/dev/null 2>&1 \
+   && ! { [ -n "${VM_IMAGE:-}" ] && [ -r "${VM_CONF:-}" ]; }; then
+  missing="$missing voipmonitor"
+fi
 
 printf '%-34s %9s %9s   %s\n' tool "pkts/s" "wall(s)" "what it reconstructs"
 printf '%-34s %9s %9s   %s\n' ---- --------- --------- --------------------
@@ -105,9 +109,52 @@ if command -v sipgrep >/dev/null 2>&1; then
             "grep-style SIP match + Call-ID grouping; no RTP" "$w"
 fi
 
-if command -v voipmonitor >/dev/null 2>&1 && [ -r "${VM_CONF:-}" ]; then
+# voipmonitor, either natively or from a container image (VM_IMAGE). It is not
+# packaged for most distributions, so the container is the realistic path --
+# see bench/voipmonitor.Dockerfile.
+#
+# The container run does its OWN timing loop, inside a single `docker run`.
+# Timing `docker run` itself would charge voipmonitor ~0.8s of container
+# startup per invocation, which on this corpus is larger than sipnab's entire
+# run -- it would hand sipnab a win worth several multiples, created entirely
+# by the measurement apparatus.
+VM_CONF="${VM_CONF:-}"
+VM_IMAGE="${VM_IMAGE:-}"
+
+if command -v voipmonitor >/dev/null 2>&1 && [ -r "$VM_CONF" ]; then
   w=$(time_tool voipmonitor -r "$CORPUS" -c -k --config-file="$VM_CONF") \
-    && emit "voipmonitor" "full call/CDR + RTP-stream association" "$w"
+    && emit "voipmonitor $(voipmonitor --version 2>&1 | awk '{print $3}')" \
+            "full call/CDR + RTP-stream association" "$w"
+elif [ -n "$VM_IMAGE" ] && [ -r "$VM_CONF" ] && command -v docker >/dev/null 2>&1; then
+  corpus_dir=$(cd "$(dirname "$CORPUS")" && pwd); corpus_base=$(basename "$CORPUS")
+  conf_dir=$(cd "$(dirname "$VM_CONF")" && pwd);  conf_base=$(basename "$VM_CONF")
+
+  vm_ver=$(docker run --rm --network none --entrypoint voipmonitor "$VM_IMAGE" \
+             --version 2>&1 | awk '{print $3}')
+  w=$(docker run --rm --network none \
+        -v "$corpus_dir:/corpus:ro" -v "$conf_dir:/conf:ro" \
+        --entrypoint sh "$VM_IMAGE" -c '
+          vm() { voipmonitor -r /corpus/'"$corpus_base"' -c -k \
+                   --config-file=/conf/'"$conf_base"' >/dev/null 2>&1; }
+          vm    # warmup, discarded
+          i=0
+          while [ $i -lt '"$RUNS"' ]; do
+            s=$(date +%s%N); vm; e=$(date +%s%N)
+            awk -v n=$((e - s)) "BEGIN { printf \"%.6f\n\", n/1000000000 }"
+            i=$((i + 1))
+          done' | awk '
+        { w[NR] = $1 }
+        END {
+          n = NR
+          for (i = 2; i <= n; i++) {
+            v = w[i]; j = i - 1
+            while (j > 0 && w[j] > v) { w[j+1] = w[j]; j-- }
+            w[j+1] = v
+          }
+          printf "%.4f", w[int((n+1)/2)]
+        }') \
+    && emit "voipmonitor $vm_ver (container)" \
+            "full call/CDR + RTP-stream association" "$w"
 fi
 
 ver=$("$BIN" --version 2>&1 | awk '{print $2}')
