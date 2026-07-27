@@ -49,6 +49,13 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     // Alpine's package manager, in the musl/Alpine build recipes.
     ("no-cache", &["website/build.md"]),
+    // bench/carrier.py and bench/scaling.sh flags, in the reproduce recipes.
+    // These belong to the benchmark harness, not to sipnab's CLI.
+    ("calls", &["docs/benchmarks.md"]),
+    ("out", &["docs/benchmarks.md"]),
+    ("call-ids", &["docs/benchmarks.md"]),
+    ("stream-pairs", &["docs/benchmarks.md"]),
+    ("runs", &["docs/benchmarks.md"]),
     (
         "features",
         &[
@@ -484,18 +491,18 @@ fn docs_current_version_markers_match_cargo() {
             include_str!("../website/content/docs/install.md"),
             r"sipnab (\d+\.\d+\.\d+) \(",
         ),
-        (
-            "website/content/docs/benchmarks.md",
-            include_str!("../website/content/docs/benchmarks.md"),
-            r"current release (\d+\.\d+\.\d+)",
-        ),
-        // docs/benchmarks.md was outside this corpus and its "current release"
-        // claim rotted from 0.5.19 to 0.5.37 unnoticed. Same marker, same rule.
-        (
-            "docs/benchmarks.md",
-            include_str!("../docs/benchmarks.md"),
-            r"current release (\d+\.\d+\.\d+)",
-        ),
+        // The benchmarks pages deliberately have NO current-version marker.
+        //
+        // They used to. Both carried "the current release X is N later", and
+        // this list required X to equal the crate version — so every release
+        // mechanically advanced it, and the sentence went on looking current
+        // while the measurement behind it aged twenty-nine releases. The gate
+        // was not merely failing to catch the staleness; it was manufacturing
+        // the appearance of freshness.
+        //
+        // The pages now state the release they were MEASURED on, which is a
+        // historical fact and must not track Cargo.toml. It is gated instead by
+        // benchmark_pages_agree_on_what_was_measured, below.
         // The `sipnab X.Y.Z (…) features:` sample output was only gated in the
         // install pages; the MCP walkthroughs print it too.
         //
@@ -570,6 +577,151 @@ fn benchmark_tables_match_between_docs_and_website() {
          website/content/docs/benchmarks.md — re-benchmarks must update BOTH \
          files in the same commit, or the wiki publishes stale numbers"
     );
+}
+
+/// Both benchmark pages must name the same measured release and date, and that
+/// release must actually exist.
+///
+/// This replaces the old `current release X.Y.Z` marker, which required the
+/// pages to name the crate version and so re-stamped them as current at every
+/// release without anything being re-measured. What matters is not that the
+/// page names today's version — it is that both trees agree on which artifact
+/// produced the numbers, and that it is a real published one.
+#[test]
+fn benchmark_pages_agree_on_what_was_measured() {
+    let re = regex::Regex::new(
+        r"released (\d+\.\d+\.\d+) artifact, checksum-verified, (\d{4}-\d{2}-\d{2})",
+    )
+    .unwrap();
+
+    let mut seen: Option<(String, String)> = None;
+    for (path, text) in [
+        ("docs/benchmarks.md", include_str!("../docs/benchmarks.md")),
+        (
+            "website/content/docs/benchmarks.md",
+            include_str!("../website/content/docs/benchmarks.md"),
+        ),
+    ] {
+        let cap = re.captures(text).unwrap_or_else(|| {
+            panic!(
+                "{path}: no 'released X.Y.Z artifact, checksum-verified, YYYY-MM-DD' \
+                 statement. Every number on this page comes from one artifact on one \
+                 day; if the page will not say which, the numbers are unattributable."
+            )
+        });
+        let found = (cap[1].to_string(), cap[2].to_string());
+        match &seen {
+            None => seen = Some(found),
+            Some(first) => assert_eq!(
+                first, &found,
+                "the two benchmark pages disagree about what was measured \
+                 ({first:?} vs {found:?}) — a re-benchmark must update both trees"
+            ),
+        }
+    }
+
+    // You cannot have measured a release that does not exist yet.
+    let (measured, _) = seen.expect("at least one benchmarks page");
+    let crate_version = env!("CARGO_PKG_VERSION");
+    let parse = |v: &str| -> Vec<u32> { v.split('.').map(|p| p.parse().unwrap()).collect() };
+    assert!(
+        parse(&measured) <= parse(crate_version),
+        "benchmarks claim to be measured on {measured}, which is newer than the \
+         crate version {crate_version}"
+    );
+}
+
+/// The benchmark harness the benchmarks page cites must exist in the repo.
+///
+/// From 0.5.18 to 0.5.46 the page claimed "every number here is reproducible"
+/// and called the listed commands "the full recipe", while the corpus generator
+/// sat in an unpublished repository. Nobody could re-run a single number,
+/// including on the reference host the methodology names. Nothing detected it
+/// because nothing looked.
+#[test]
+fn benchmark_harness_is_published() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for f in [
+        "bench/carrier.py",
+        "bench/scaling.sh",
+        "bench/compare.sh",
+        "bench/README.md",
+    ] {
+        assert!(
+            repo.join(f).is_file(),
+            "{f} is missing, but docs/benchmarks.md tells readers to run it. \
+             A reproducibility claim whose harness is absent is not a claim."
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for f in ["bench/scaling.sh", "bench/compare.sh"] {
+            let mode = std::fs::metadata(repo.join(f))
+                .expect("harness script metadata")
+                .permissions()
+                .mode();
+            assert!(
+                mode & 0o111 != 0,
+                "{f} is not executable, so the documented `bench/…` invocation fails"
+            );
+        }
+    }
+}
+
+/// The corpus figures quoted on the benchmarks page must be what the generator
+/// actually produces.
+///
+/// The page names an exact composition — 535,000 packets, 35,000 SIP, 500,000
+/// RTP, 93.5% — and readers use those to confirm they rebuilt the right corpus.
+/// Generating the full 128 MB in a unit test would be wasteful, so this runs a
+/// 1/100-scale corpus and requires it to scale exactly. Change the packet mix
+/// and this fails rather than letting the page describe a corpus that no longer
+/// exists.
+#[test]
+fn carrier_generator_produces_the_documented_corpus() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tmp = std::env::temp_dir().join(format!("sipnab-carrier-{}.pcap", std::process::id()));
+
+    let out = std::process::Command::new("python3")
+        .arg(repo.join("bench/carrier.py"))
+        .args(["--calls", "50", "--quiet", "--out"])
+        .arg(&tmp)
+        .current_dir(repo)
+        .output()
+        .expect("run bench/carrier.py — python3 must be on PATH");
+    let _ = std::fs::remove_file(&tmp);
+    assert!(
+        out.status.success(),
+        "bench/carrier.py failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 50 calls is exactly 1/100 of the documented corpus, so the sample's
+    // composition must be the published one divided by 100.
+    let summary = String::from_utf8_lossy(&out.stdout);
+    let expected = "5350 packets (350 SIP, 5000 RTP = 93.5%), 50 calls";
+    assert!(
+        summary.contains(expected),
+        "bench/carrier.py no longer produces the documented packet mix.\n  \
+         expected to contain: {expected}\n  got: {}",
+        summary.trim()
+    );
+
+    // …and the page must still quote the 100x figures that sample implies.
+    for doc in [
+        include_str!("../docs/benchmarks.md"),
+        include_str!("../website/content/docs/benchmarks.md"),
+    ] {
+        for claim in ["535,000 packets", "35,000 SIP", "500,000 RTP", "93.5%"] {
+            assert!(
+                doc.contains(claim),
+                "benchmarks page no longer states {claim:?}, but bench/carrier.py \
+                 still produces it at --calls 5000 (100x the generated sample)"
+            );
+        }
+    }
 }
 
 /// Every `[features]` key in Cargo.toml must appear in the README feature

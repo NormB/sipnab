@@ -2,6 +2,47 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **The benchmark harness is published, so "reproducible" is finally true.**
+  `bench/carrier.py`, `bench/scaling.sh` and `bench/compare.sh` are the corpus
+  generator and timing harness the benchmarks page has cited since 0.5.18 while
+  they lived in an unpublished repository. The page claimed "every number here
+  is reproducible … the exact commands above are the full recipe"; in fact
+  nobody could re-run a single number, including on the reference host the
+  methodology names. The generator was rewritten from the documented corpus
+  parameters and reproduces every one exactly — 535,000 packets, 35,000 SIP,
+  500,000 RTP, 93.5% RTP, 100 Call-IDs, 200 streams — and is gated at 1/100
+  scale so the page cannot describe a corpus the generator stopped producing.
+
+### Changed
+- **Benchmarks re-measured on the 0.5.47 release artifact**, checksum-verified,
+  on an idle host: 1.06M / 2.32M / 2.03M / 1.89M pkts/s at 1 / 2 / 4 / 8 cores.
+  Homepage tiles now quote 2.32M pkts/s and 11.0× sngrep, both traceable to a
+  row on the page they link to, and both gated against it.
+- **The "packet path is unchanged since 0.5.18" claim is now a measurement.**
+  Twenty-nine releases carried it on judgement while a gate mechanically
+  advanced the version number in the sentence. A controlled A/B — both release
+  artifacts, identical corpus, same host, same session, three interleaved
+  replicates — puts the version delta (~2%) inside the noise floor (~3.4%
+  within-version spread), with one replicate showing 0.5.47 ahead. The
+  judgement was correct; it is no longer a guess.
+- The same A/B explains the gap to the pre-0.5.47 tables: 0.5.18 measures 1.06M
+  single-core on the new corpus against the 1.20M it published. Same binary,
+  same host — the difference is the corpus, not a regression.
+
+### Fixed
+- **A gate that manufactured the appearance of freshness.** Both benchmark pages
+  were required to contain "current release X.Y.Z" matching Cargo.toml, so every
+  release re-stamped the sentence as current while the measurement behind it
+  aged. The marker is gone; the pages now state which artifact and date produced
+  the numbers, and a gate requires both doc trees to agree on it.
+- voipmonitor is reported as `MISSING` by `bench/compare.sh` rather than being
+  silently skipped, and its stale figures are no longer carried in the
+  comparison table. It is not installed on the reference host and is not
+  packaged for it. A comparison whose competitor is absent is not a comparison.
+
 ## [0.5.47] - 2026-07-27
 
 ### Added

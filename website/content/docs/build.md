@@ -124,7 +124,7 @@ RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --features full
 RUSTFLAGS="-C target-feature=-crt-static" cargo build --release -p sipnab-audio
 ```
 
-Both paths are verified on `rust:1.97-alpine`: the full test suite passes on Alpine (3010 tests, 0 failures), and in the dynamic build the plugin links `libasound.so.2` and `dlopen`s successfully while the `sipnab` binary itself still links only libpcap, libgcc and libc.
+Both paths are verified on `rust:1.97-alpine`: the full test suite passes on Alpine with zero failures and the same test count as the glibc host, and in the dynamic build the plugin links `libasound.so.2` and `dlopen`s successfully while the `sipnab` binary itself still links only libpcap, libgcc and libc.
 
 ### Cross-glibc compatibility
 

@@ -462,6 +462,88 @@ fn published_binary_size_matches_the_enforced_ceiling() {
     );
 }
 
+/// The homepage throughput tiles must quote figures that appear on the
+/// benchmarks page, and name the release those figures were measured on.
+///
+/// The tiles read "2.5M pkts/s" and "12.5x sngrep (measured v0.5.18)" for
+/// twenty-nine releases. Both came from a table on a corpus nobody could
+/// rebuild, and nothing tied the tile to the page it linked to — so the
+/// headline numbers on the front page were unfalsifiable by construction.
+#[test]
+fn homepage_throughput_tiles_match_the_benchmarks_page() {
+    let idx = read("website/templates/index.html");
+    let bench = read("website/content/docs/benchmarks.md");
+
+    let measured = regex::Regex::new(r"released (\d+\.\d+\.\d+) artifact, checksum-verified")
+        .unwrap()
+        .captures(&bench)
+        .expect("benchmarks page states no measured release")[1]
+        .to_string();
+
+    // Each tile: (data-count value, the string that must appear in a table row).
+    for (count, suffix) in [("2.32", "M pkts/s"), ("11.0", "&times; sngrep")] {
+        let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
+        assert!(
+            idx.contains(&tile),
+            "homepage tile {count}{suffix} is gone or changed; if it was re-measured, \
+             update this gate and the benchmarks page together"
+        );
+        // The figure itself must be findable on the page the tile links to.
+        let cell = format!("{count}M");
+        let ratio = format!("{count}×");
+        assert!(
+            bench.contains(&cell) || bench.contains(&ratio),
+            "homepage claims {count}{suffix} but no such figure appears in \
+             website/content/docs/benchmarks.md — the front page is quoting a \
+             number its own benchmarks page does not support"
+        );
+    }
+
+    assert!(
+        idx.contains(&format!("(measured v{measured})")),
+        "homepage tiles do not say they were measured on v{measured}, the release \
+         the benchmarks page names — an undated throughput claim silently ages"
+    );
+}
+
+/// The homepage states its automated-test count twice, and both must agree.
+///
+/// `.githooks/pre-commit` already checks both places against a real `cargo
+/// test` run and has for some time, so this is not a missing gate — it is that
+/// gate's coverage moved somewhere it cannot be bypassed. A hook only runs for
+/// a clone with `core.hooksPath` set; a web edit, a contributor who never ran
+/// the setup, or `--no-verify` all skip it, and nothing downstream would
+/// notice. This test plus the `quality.yml` step put the same check on the CI
+/// side, where the tile is pinned to the prose and both to the measured total.
+#[test]
+fn homepage_test_counts_agree_with_each_other() {
+    let idx = read("website/templates/index.html");
+
+    let tile = regex::Regex::new(r#"data-count="(\d{4,})" data-suffix="">"#)
+        .unwrap()
+        .captures(&idx)
+        .expect("homepage has no automated-test tile")[1]
+        .to_string();
+
+    let prose = regex::Regex::new(r"(\d{4,}) automated tests")
+        .unwrap()
+        .captures(&idx)
+        .expect("homepage feature table no longer states a test count")[1]
+        .to_string();
+
+    assert_eq!(
+        tile, prose,
+        "the homepage tile says {tile} automated tests and the feature table says \
+         {prose} — they describe the same suite"
+    );
+
+    assert!(
+        read(".github/workflows/quality.yml").contains("published_test_count"),
+        "quality.yml no longer checks the published test count against the real \
+         suite total — the number is back to being unmeasured"
+    );
+}
+
 /// Every Rust toolchain pin in the repo names the same version.
 ///
 /// The pin appears in six workflow steps, the Dockerfile base image and two
