@@ -33,6 +33,19 @@ All notable changes to sipnab will be documented in this file.
   `--duration`, `--strip-secrets` and `--hep-parse` — and the fifth was
   `--dialog-track`, removed above.
 
+- **The release ran a `strip` that had never worked on cross-compiled targets.**
+  It sat behind `|| true`, so nothing was visible either way. On the
+  cross-compiled targets the host's GNU strip cannot even read the output
+  (`Unable to recognise the format of the input file`) and had failed on every
+  release for the project's history; on native targets it was a no-op against a
+  binary `[profile.release] strip = true` had already stripped at link time. It
+  looked like the thing doing the stripping while doing nothing at all.
+
+  Removed, and replaced with a check that the property actually holds:
+  `readelf -S` must find no `.symtab`. readelf reads cross-architecture ELF, so
+  it can verify what strip could not even open. This would fail loudly if the
+  profile setting that does the real work were ever removed.
+
 ### Added
 - A dependency-free pcap/pcapng builder for tests (`tests/support/pcap_build.rs`).
   The `pcap` crate is an optional *main* dependency and unreachable from
