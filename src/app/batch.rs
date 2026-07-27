@@ -765,8 +765,10 @@ impl BatchRunner {
     /// thread, flips the MCP `source_exhausted` flag, prints reports and
     /// the summary, and — when a companion server is running — parks until
     /// shutdown is requested or the MCP stdio client disconnects. Exits
-    /// the process on a failed output-file open (code 1) or a failed
-    /// `--call-report` lookup (code 1).
+    /// the process on a failed output-file open (code 1), a failed
+    /// `--call-report` lookup (code 1), or a failed output-file *write* or
+    /// final flush (code 1) — the last of which previously logged and exited
+    /// 0, so a capture truncated by ENOSPC reported success.
     fn run_loop(
         self,
         capture_config: CaptureConfig,
@@ -800,6 +802,12 @@ impl BatchRunner {
             servers,
             policy,
         } = self;
+
+        // Set when writing the -O output fails. The open path a few hundred
+        // lines below exits 1; the write and final-flush paths only logged,
+        // so a capture truncated by ENOSPC reported success and any
+        // `sipnab -O out.pcap && next-step` pipeline ran on partial data.
+        let mut output_failed = false;
         let split_bytes = policy.split_bytes;
         let split_duration = policy.split_duration;
         let portrange = policy.portrange;
@@ -957,6 +965,10 @@ impl BatchRunner {
                 && let Err(e) = w.write(&packet)
             {
                 tracing::error!("Failed to write packet: {e}");
+                // Failing to OPEN the output exits 1 a few lines above; failing
+                // to WRITE it used to exit 0, so `sipnab -O out.pcap && process
+                // out.pcap` proceeded on a truncated capture.
+                output_failed = true;
                 break;
             }
 
@@ -1114,6 +1126,7 @@ impl BatchRunner {
             && let Err(e) = w.finish()
         {
             tracing::error!("Output file may be incomplete: {e}");
+            output_failed = true;
         }
 
         // 19. Shut down scanner-kill worker (D16)
@@ -1244,6 +1257,17 @@ impl BatchRunner {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
+        }
+
+        // Report a truncated output as a failure. This runs after the sink
+        // flush, the writer's finish(), the kill-worker shutdown and the
+        // capture-thread join, so nothing is skipped to get here — the exit
+        // code is the only thing that changes.
+        //
+        // Reports still print above: a partial capture is worth looking at,
+        // it just must not be mistaken for a whole one by a script reading $?.
+        if output_failed {
+            std::process::exit(1);
         }
     }
 }
