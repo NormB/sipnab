@@ -8,6 +8,81 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.56] - 2026-07-28
+
+### Fixed
+- **`--call-report` wrote terminal escape codes instead of a report.**
+  `sipnab -I capture.pcap --call-report <id> --markdown > report.md` — the form
+  published in six places — launched the TUI and put 122 bytes of alt-screen and
+  mouse-tracking sequences into `report.md`, then exited 0. Measured against the
+  release binary on a pty: 6911 bytes with `-N`, 122 without.
+
+  The flag was not overridden by the TUI, it was discarded: `call_report` is read
+  in exactly one place, the batch runner, which the TUI path never reaches. The
+  CLI already stated the contract — `Cli::validate` waives the `-N` requirement
+  for `--call-report` because the flag "implies non-interactive output" — and
+  nothing applied it. `Cli::normalize` now applies it once at the parse boundary,
+  so the run-mode selector, the three output gates in the batch runner and log
+  suppression all read one settled value. The documented form is now
+  byte-identical to the `-N` form, and `--report`/`--json` alongside
+  `--call-report` emit output where they previously produced none.
+
+- **Nine documentation statements were false against the shipped code.** Two broke
+  things silently: `GET /v1/dialogs` documented its rows as `from`/`to` when the
+  endpoint emits `from_user`/`to_user`, so a client written to the page got
+  `undefined` for the two most-used fields and the documented `jq` CSV export
+  produced two empty columns; and `tail_dialogs` told MCP clients
+  `source_exhausted` "is always false" when it is implemented and wired, which is
+  the field an agent polls to learn a replay finished. Also corrected: the
+  `sipnab_rtp_streams_active` definition (the `--api` and `--metrics` servers
+  count different things under one name, so an alert threshold does not transfer
+  between scrape targets), the un-wired counters' failure modes, and a feature
+  table that omitted `metrics` entirely.
+
+- **Site links with anchors did not resolve.** GitHub and Zola slugify the same
+  heading differently — GitHub drops an em dash and keeps its spaces, Zola
+  collapses the run — so anchors written for GitHub died on the site. The
+  generator now translates them, including same-page links.
+
+### Changed
+- **A fenced code block is one clipboard payload.** Every surface puts a single
+  copy button on a fence and copies the whole body, so a block holding two
+  recipes handed the reader both. Mostly untidy; not always — one block's second
+  command was `openssl rand -hex 32 > /etc/sipnab/mcp-token`, which destroys a
+  live MCP bearer token. 135 blocks across 26 files are now one command each, an
+  ordered procedure that declares itself, or a list with inline code (which
+  carries no copy button anywhere).
+
+- **`docs/` is the single source for the operator pages.** Ten page pairs were
+  hand-maintained on both sides and had drifted: the site's Filter DSL page
+  carried fourteen operational recipes `docs/` did not, so every wiki reader got
+  that page without them. `benchmarks.md` stays deliberately un-generated — its
+  two copies frame the numbers differently on purpose.
+
+- **Supply chain.** Every GitHub Action and container base image is pinned by
+  commit SHA or digest, including the `container:` images that build the released
+  gnu binaries and `.deb` packages. Workflow tokens are least-privilege, with
+  write restated only on the job that needs it. `dependabot.yml` covers all eight
+  Dockerfiles rather than the root one, so the pins are maintained rather than
+  frozen.
+
+- **`docs/install.md` now states that `gh attestation verify` needs `gh` 2.49.**
+  Below that it prints help text and exits 0, so the documented verification step
+  reads as success while checking nothing.
+
+### Internal
+- Fourteen CI gates were found asserting a proxy rather than the thing they
+  claimed to check, each green because of the substitution: a feature table gated
+  on `README.md` alone, a link check blind to anchors floored below the real card
+  count, a registry floored one under its size, a slug rule unioned across three
+  renderers on a page only one renders, `.yml` standing in for "is a workflow",
+  `no_tui` standing in for "batch mode", a step's name standing in for the step
+  still failing the build, and a directory walk counting gitignored output. All
+  are now derived from the artifact — the generator's own banner, the real card
+  array, `git ls-files`, the renderer's own slug rule — and each was observed
+  failing on the specific defect before being accepted. The rule and its
+  corollary are recorded in `docs/design/lessons.md`.
+
 ## [0.5.55] - 2026-07-28
 
 ### Added
