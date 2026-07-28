@@ -160,6 +160,16 @@ process, so the floor is not optional.
   URL pins a branch and goes stale silently;
   [`build-wiki.py`](../../scripts/build-wiki.py) rewrites the relative form
   into a blob URL when publishing to the wiki.
+- **Write heading anchors in GitHub's spelling.** That is what `docs/` is read
+  in, and the generators translate on the way out:
+  [`build-site-pages.py`](../../scripts/build-site-pages.py) rewrites an
+  anchor to Zola's slug when it emits a site link, because the two renderers
+  disagree — GitHub drops an em dash and keeps its surrounding spaces
+  (`step-0--install-…`) where Zola collapses the run (`step-0-install-…`), and
+  GitHub keeps an underscore where Zola makes it a dash. `generated_site_anchors_resolve_under_zola`
+  checks the generated tree under Zola's rule alone; the older
+  `anchor_candidates` unions all three slug rules, which is right for `docs/`
+  and too generous for a page only Zola will ever render.
 - **Diagrams are mermaid `sequenceDiagram`, and every one is preceded by a
   prose line** that carries the same point, so a page still reads where mermaid
   does not render.

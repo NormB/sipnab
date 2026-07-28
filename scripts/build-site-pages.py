@@ -195,6 +195,30 @@ BLOB: str = _INT.BLOB
 
 LINK_RE = re.compile(r"\]\(\s*(?:\./)?([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 
+# Same-page anchors: `](#some-heading)`, which LINK_RE does not match because
+# there is no `.md` to key on. These need the same GitHub -> Zola translation
+# as a cross-page anchor, and they were the larger half of the breakage.
+SELF_ANCHOR_RE = re.compile(r"\]\(\s*(#[^)\s]+)\s*\)")
+
+# `{docs-relative name: {github_slug: zola_slug}}`, built once from the real
+# heading text of every docs page, so a heading rename cannot leave this stale.
+ANCHORS: dict[str, dict[str, str]] = {}
+
+
+def _load_anchors(root: Path) -> None:
+    """Index every `docs/` page's headings under both slug algorithms."""
+    docs = root / "docs"
+    for path in docs.rglob("*.md"):
+        rel = path.relative_to(docs).as_posix()
+        ANCHORS[rel] = _INT.anchor_map(path.read_text(encoding="utf-8"))
+
+
+def _xlate(target: str, anchor: str) -> str:
+    """Translate `#github-slug` to `#zola-slug` for the page it points into."""
+    if not anchor:
+        return anchor
+    return "#" + ANCHORS.get(target, {}).get(anchor[1:], anchor[1:])
+
 # Links into the code tree; a relative `packaging/deb/build-deb.sh` would
 # otherwise survive verbatim onto a site page and resolve to nothing.
 CODE_LINK_RE = re.compile(
@@ -209,7 +233,9 @@ def rewrite_link(m: re.Match) -> str:
         return m.group(0)
     site = DOCS_TO_SITE.get(target)
     if site:
-        return f"](@/docs/{site}{anchor})"
+        # Only a site page needs the Zola spelling. A blob URL is read on
+        # GitHub, where the anchor is already correct.
+        return f"](@/docs/{site}{_xlate(target, anchor)})"
     return f"]({BLOB}/docs/{target}{anchor})"
 
 
@@ -226,6 +252,11 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
     if h1 != want_h1:
         raise SystemExit(f"{src} H1 is {h1!r}, expected {want_h1!r}")
     body = LINK_RE.sub(rewrite_link, body)
+    # Same-page anchors resolve against this page's own headings.
+    rel = src[len("docs/"):]
+    body = SELF_ANCHOR_RE.sub(
+        lambda m: f"]({_xlate(rel, m.group(1))})", body
+    )
     body = CODE_LINK_RE.sub(rewrite_code_link, body)
     head = "\n".join(
         [
@@ -248,6 +279,7 @@ def main() -> int:
         else root / "website" / "content" / "docs"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
+    _load_anchors(root)
     for src, site_name, want_h1, title, weight, description in PAGES:
         rendered = render(
             src, (root / src).read_text(encoding="utf-8"), want_h1, title,

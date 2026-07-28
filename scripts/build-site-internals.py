@@ -196,6 +196,73 @@ def rewrite_code_link(m: re.Match) -> str:
     return f"]({blob_url(m.group(1))})"
 
 
+# Anchors do not survive the docs -> site move unchanged, because GitHub and
+# Zola slugify the same heading differently. For
+# `## Step 0 — install sipnab (every server, once)`:
+#
+#   GitHub  step-0--install-sipnab-every-server-once   (drops the em dash,
+#                                                       leaving its two spaces)
+#   Zola    step-0-install-sipnab-every-server-once    (collapses the whole run)
+#
+# and for a heading in backticks, `find_problems`, GitHub keeps the underscore
+# while Zola's slugifier turns it into a dash. Anchors in `docs/` are written
+# for GitHub, because that is where the file is read directly. So a link that
+# resolves in the repo and the wiki silently pointed at nothing on the site.
+#
+# It surfaced as a hard Zola build failure ("14 broken internal anchor links")
+# only because `zola build` checks internal anchors. Nothing in the Rust link
+# tests catches it: they resolve anchors with their own slug rule, so they
+# agree with the source and disagree with the renderer.
+_MD_INLINE_RE = re.compile(r"`([^`]*)`|\[([^\]]*)\]\([^)]*\)|[*_]{1,2}")
+
+
+def _heading_text(line: str) -> str:
+    """The rendered text of an ATX heading line, with inline markup removed."""
+    text = line.lstrip("#").strip()
+    return _MD_INLINE_RE.sub(lambda m: m.group(1) or m.group(2) or "", text)
+
+
+def github_slug(text: str) -> str:
+    """GitHub's heading anchor: drop punctuation, spaces become hyphens."""
+    s = text.strip().lower()
+    s = re.sub(r"[^\w\s-]", "", s)
+    return s.replace(" ", "-")
+
+
+_ATTR_RE = re.compile(r"\s*\{[^{}]*\}\s*$")
+
+
+def zola_slug(text: str) -> str:
+    """Zola's heading anchor: every non-alphanumeric run becomes one hyphen.
+
+    A trailing `{...}` heading-attribute block is stripped first, matching
+    `slug_zola` in `tests/link_integrity_test.rs`. This is load-bearing rather
+    than cosmetic: `### GET /v1/dialogs/{call_id}` and `### GET /v1/dialogs`
+    both reduce to `get-v1-dialogs`, so Zola numbers the second `-1`, and a
+    link written to that numbered form is correct.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", _ATTR_RE.sub("", text).strip().lower()).strip("-")
+
+
+def anchor_map(text: str) -> dict[str, str]:
+    """`{github_slug: zola_slug}` for every ATX heading outside a code fence."""
+    out: dict[str, str] = {}
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence or not line.startswith("#"):
+            continue
+        rendered = _heading_text(line)
+        if not rendered:
+            continue
+        gh, zola = github_slug(rendered), zola_slug(rendered)
+        if gh and zola and gh != zola:
+            out[gh] = zola
+    return out
+
+
 def strip_leading_h1(text: str) -> tuple[str, str]:
     """Split off the leading `# ` heading. Returns `(title, body)`.
 
