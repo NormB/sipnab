@@ -32,6 +32,7 @@ PAGES: dict[str, str] = {
     "examples.md": "Cookbook",
     "troubleshooting.md": "Troubleshooting",
     "tui-walkthrough.md": "TUI-Walkthrough",
+    "backers.md": "Backers",
     "keybindings.md": "Keybindings",
     "theme-guide.md": "Theme-Guide",
     "cli-reference.md": "CLI-Reference",
@@ -61,7 +62,8 @@ PAGES: dict[str, str] = {
 # Sidebar grouping: (section title, [source paths]), ordered by user journey —
 # install first, internals last. Order within a group is the reading order.
 GROUPS: list[tuple[str, list[str]]] = [
-    ("Getting started", ["install.md", "examples.md", "troubleshooting.md"]),
+    ("Getting started", ["install.md", "examples.md", "troubleshooting.md",
+                         "backers.md"]),
     ("Using the TUI", ["tui-walkthrough.md", "keybindings.md", "theme-guide.md"]),
     ("CLI & automation", ["cli-reference.md", "filter-dsl.md", "output-formats.md"]),
     ("Configuration", ["config-reference.md"]),
@@ -254,6 +256,34 @@ def main() -> int:
     missing = [s for s in PAGES if not (docs / s).is_file()]
     if missing:
         print(f"ERROR: missing source docs: {missing}", file=sys.stderr)
+        return 1
+
+    # And the other direction. PAGES -> disk catches a registered page that was
+    # deleted; disk -> PAGES catches the far quieter case, a page that exists
+    # and is published nowhere. This script had only the first check, so a new
+    # docs/ page simply never appeared on the wiki and nothing said so —
+    # build-site-internals.py errored on the same page while this exited 0.
+    #
+    # Scoped to the trees the wiki serves: docs/ top level and docs/internals/.
+    # docs/design|research|superpowers are planning records, deliberately
+    # unpublished, and are excluded here rather than registered.
+    published = {p.relative_to(docs).as_posix() for p in docs.glob("*.md")} | {
+        p.relative_to(docs).as_posix() for p in (docs / "internals").rglob("*.md")
+    }
+    # docs/README.md is the one deliberate exemption: build_home() below
+    # generates the wiki's front page, so publishing the index as a second page
+    # would duplicate it. Named here with its reason rather than silently
+    # skipped, so the exemption is visible to whoever reads this next.
+    WIKI_EXEMPT = {"README.md"}
+    unregistered = sorted(published - set(PAGES) - WIKI_EXEMPT)
+    if unregistered:
+        for name in unregistered:
+            print(
+                f"ERROR: docs/{name} exists but is in no PAGES entry — it would "
+                f"publish nowhere. Register it, or move it under "
+                f"docs/design|research|superpowers if it is not for readers.",
+                file=sys.stderr,
+            )
         return 1
 
     for src, page in PAGES.items():
