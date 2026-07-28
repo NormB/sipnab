@@ -10,7 +10,23 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+- **`docs/README.md` is now grouped by what the reader is trying to do**, along
+  the four [Diátaxis](https://diataxis.fr/) modes — tutorials, how-to guides,
+  reference, explanation — with a compass table at the top saying which to pick.
+  Deliberately a regrouping of the existing index, not a folder restructure:
+  Diátaxis itself advises against big-bang reorganisation, and every page kept
+  its path, so no link anywhere in the repo, the site, or the wiki moved.
+
 ### Added
+- **Two `docs/` pages were linked from the index by nothing.**
+  `architecture.md` (169 lines, and published to the wiki) and `backers.md`
+  were both reachable only if you already knew they existed. Neither was
+  broken or stale, which is why nothing noticed: an unreferenced file looks
+  exactly like a file nobody needs. Both are linked now, and
+  `every_docs_page_is_linked_from_the_index` fails on any `docs/*.md` the index
+  does not reach.
+
 - **`docs/mcp.md`'s tool table listed 7 of the 11 tools the server registers.**
   `search_messages`, `tail_dialogs` and `security_findings` were documented in
   the prose below it but missing from the table, and `stats` was absent from
