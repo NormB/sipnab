@@ -1119,6 +1119,14 @@ impl BatchRunner {
         // stdout (reports, wireshark/tshark lines), preserving output order.
         sink.flush();
 
+        // A write that failed for any reason other than a closed pipe means the
+        // emitted output is incomplete — same class as a truncated -O file, and
+        // it must not exit 0 either.
+        if let Some(e) = sink.hard_error() {
+            tracing::error!("Failed to write output: {e}");
+            output_failed = true;
+        }
+
         // Flush the output writer explicitly: BufWriter's Drop discards
         // flush errors, so without this an ENOSPC at end of capture would
         // truncate the file silently with exit code 0.
@@ -1881,7 +1889,15 @@ fn dispatch_sip_output<W: std::io::Write>(
     } else if cli.json {
         // Hot path: serialize straight into the sink's buffer — no
         // per-message String, no per-message write(2).
-        let _ = output::json::write_message_json(msg, sink.writer());
+        // to_writer bypasses the sink's error tracking, so hand the result
+        // back: a full disk here is data loss, not a closed pipe.
+        //
+        // Pass the io::Error through UNWRAPPED. Boxing it (Error::other)
+        // resets the kind to Other, which makes a BrokenPipe from `| head`
+        // indistinguishable from ENOSPC — and then the pipeline that is
+        // supposed to exit 0 exits 1.
+        let r = output::json::write_message_json(msg, sink.writer());
+        sink.record(r);
     } else if cli.fail2ban {
         // Fail2ban output for scanner-like messages
         if msg.is_request {

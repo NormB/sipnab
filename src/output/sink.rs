@@ -22,15 +22,26 @@ use std::io::Write;
 
 /// Shared buffered writer for every per-message emitter in the batch loop.
 ///
-/// All writes are best-effort: errors (broken pipe) are swallowed so a
-/// downstream `| head` never panics the capture process. `line_buffer`
-/// preserves the `--line-buffer` contract of one flush per message.
+/// A downstream `| head` closing the pipe must never fail the capture, so
+/// `BrokenPipe` is swallowed. Every OTHER error is remembered.
+///
+/// That distinction is the whole point. This type used to swallow all errors
+/// alike, which matched its stated intent for `| head` but also meant
+/// `sipnab --json > out.ndjson` on a full disk wrote a truncated file and
+/// exited 0. The two cases look identical to `write_all` and are opposite in
+/// meaning: one is a reader that stopped caring, the other is data loss.
+///
+/// `line_buffer` preserves the `--line-buffer` contract of one flush per
+/// message.
 pub struct BatchSink<W: Write> {
     /// The wrapped writer all emitters share.
     w: W,
     /// When `true`, `end_message` flushes after every message
     /// (`--line-buffer`).
     line_buffer: bool,
+    /// First non-`BrokenPipe` write/flush error, if any. Kept rather than
+    /// returned so the hot per-message path stays infallible.
+    hard_error: Option<std::io::Error>,
 }
 
 impl BatchSink<std::io::BufWriter<std::io::Stdout>> {
@@ -48,21 +59,49 @@ impl BatchSink<std::io::BufWriter<std::io::Stdout>> {
 impl<W: Write> BatchSink<W> {
     /// Wrap `w`; `line_buffer` mirrors the CLI's `--line-buffer` flag.
     pub fn new(w: W, line_buffer: bool) -> Self {
-        Self { w, line_buffer }
+        Self {
+            w,
+            line_buffer,
+            hard_error: None,
+        }
+    }
+
+    /// Record `r` unless it succeeded or failed with `BrokenPipe`.
+    ///
+    /// Only the first is kept: later writes to a broken sink fail too, and the
+    /// first failure is the one that explains what happened.
+    pub fn record(&mut self, r: std::io::Result<()>) {
+        if let Err(e) = r
+            && e.kind() != std::io::ErrorKind::BrokenPipe
+            && self.hard_error.is_none()
+        {
+            self.hard_error = Some(e);
+        }
+    }
+
+    /// The first non-`BrokenPipe` error seen, if any.
+    ///
+    /// Callers use this to decide the process exit code: output that could not
+    /// be written must not be reported as success.
+    pub fn hard_error(&self) -> Option<&std::io::Error> {
+        self.hard_error.as_ref()
     }
 
     /// Write a string, best-effort.
     pub fn write_str(&mut self, s: &str) {
-        let _ = self.w.write_all(s.as_bytes());
+        let r = self.w.write_all(s.as_bytes());
+        self.record(r);
     }
 
     /// Write formatted output, best-effort (enables `write!(sink, ...)`).
     pub fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) {
-        let _ = self.w.write_fmt(args);
+        let r = self.w.write_fmt(args);
+        self.record(r);
     }
 
     /// Direct access to the underlying writer, for zero-copy serializers
-    /// (`serde_json::to_writer`). Callers must treat errors as best-effort.
+    /// (`serde_json::to_writer`). Errors here bypass this type's tracking, so
+    /// callers must feed the result back through [`BatchSink::record`].
     pub fn writer(&mut self) -> &mut W {
         &mut self.w
     }
@@ -77,7 +116,8 @@ impl<W: Write> BatchSink<W> {
     /// Flush the buffer, best-effort. The batch loop calls this when the
     /// packet channel goes idle and at end of capture.
     pub fn flush(&mut self) {
-        let _ = self.w.flush();
+        let r = self.w.flush();
+        self.record(r);
     }
 
     /// Consume the sink and return the underlying writer (test helper).

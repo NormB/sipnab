@@ -683,3 +683,77 @@ fn output_write_failure_exits_nonzero() {
         "the control run must actually produce a file"
     );
 }
+
+/// Emitted output that could not be written must fail — unless the reader
+/// simply went away.
+///
+/// `BatchSink` swallowed every write error alike. That was right for a
+/// downstream `| head`, which must never fail the capture, and wrong for a
+/// full disk: `sipnab --json > out.ndjson` wrote a truncated file and exited 0.
+/// The two are indistinguishable to `write_all` and opposite in meaning.
+///
+/// All three cases are asserted together on purpose. Surfacing ENOSPC is easy
+/// to do in a way that also breaks the pipe case — the first version of this
+/// fix boxed the error with `io::Error::other`, which resets the kind, and
+/// `| head` started exiting 1.
+#[cfg(unix)]
+#[test]
+fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() {
+    use std::process::{Command, Stdio};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cap = dir.path().join("cap.pcap");
+    let frames: Vec<Vec<u8>> = (0..400)
+        .flat_map(|i| {
+            pcap_build::sip_call_frames(&format!("js-{i}@t"), &format!("{i:06x}"), "a", "b")
+        })
+        .collect();
+    pcap_build::write_pcap(&cap, &frames);
+    let input = cap.to_str().expect("utf-8 path");
+
+    // 1. A writable destination succeeds and actually emits.
+    let good = dir.path().join("out.ndjson");
+    let status = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", input, "--json"])
+        .stdout(std::fs::File::create(&good).expect("create out"))
+        .stderr(Stdio::null())
+        .status()
+        .expect("spawn");
+    assert!(status.success(), "writable output must exit 0");
+    assert!(
+        std::fs::metadata(&good).expect("out written").len() > 0,
+        "the control must actually emit NDJSON, or the other two prove nothing"
+    );
+
+    // 2. A full disk is data loss and must fail.
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("open /dev/full");
+    let status = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", input, "--json"])
+        .stdout(full)
+        .stderr(Stdio::null())
+        .status()
+        .expect("spawn");
+    assert!(
+        !status.success(),
+        "--json to a full disk must not report success"
+    );
+
+    // 3. A closed pipe is the reader's choice and must NOT fail.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", input, "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    // Drop the read end immediately: the next write gets EPIPE.
+    drop(child.stdout.take());
+    let status = child.wait().expect("wait");
+    assert!(
+        status.success() || status.code().is_none(),
+        "a closed downstream pipe must not fail the capture (got {status:?}) — \
+         this is the case a naive ENOSPC fix breaks"
+    );
+}
