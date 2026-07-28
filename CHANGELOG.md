@@ -8,15 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
-
-### Changed
-- **`docs/README.md` is now grouped by what the reader is trying to do**, along
-  the four [Diátaxis](https://diataxis.fr/) modes — tutorials, how-to guides,
-  reference, explanation — with a compass table at the top saying which to pick.
-  Deliberately a regrouping of the existing index, not a folder restructure:
-  Diátaxis itself advises against big-bang reorganisation, and every page kept
-  its path, so no link anywhere in the repo, the site, or the wiki moved.
+## [0.5.55] - 2026-07-28
 
 ### Added
 - **Two `docs/` pages were linked from the index by nothing.**
@@ -131,6 +123,13 @@ entry that carries them.
   repaired: a second spec is what allowed the drift.
 
 ### Changed
+- **`docs/README.md` is now grouped by what the reader is trying to do**, along
+  the four [Diátaxis](https://diataxis.fr/) modes — tutorials, how-to guides,
+  reference, explanation — with a compass table at the top saying which to pick.
+  Deliberately a regrouping of the existing index, not a folder restructure:
+  Diátaxis itself advises against big-bang reorganisation, and every page kept
+  its path, so no link anywhere in the repo, the site, or the wiki moved.
+
 - **Packaging moved out of `contrib/` into `packaging/`.** `contrib/` says
   "community-contributed, unsupported"; what lived there was the `.deb`,
   `.rpm`, and Homebrew builders that `release.yml` runs on every tag, plus the
