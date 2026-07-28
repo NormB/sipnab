@@ -1,0 +1,74 @@
+name: OpenSSF Scorecard
+
+# Scorecard grades the repository's supply-chain posture against the OpenSSF
+# checks (branch protection, pinned dependencies, token permissions, signed
+# releases, dangerous workflow patterns, ...) and publishes the findings to the
+# Security tab as code scanning alerts.
+#
+# Report-only, deliberately. Scorecard measures practices rather than the code,
+# and several of its checks are opinions this project has already answered
+# differently on purpose (see docs/internals/build-ci-release.md). Failing the
+# build on a score would make a policy disagreement look like a broken commit.
+# What it is here for is the opposite of a gate: a standing, external, second
+# opinion that notices posture drift nobody in-repo thought to write a test for.
+#
+# The weekly schedule is not redundant with the push trigger. Several checks
+# read state that lives outside the tree — branch protection rules, repository
+# settings, whether the latest release is signed — and none of that changes the
+# tree, so nothing would ever re-run these checks without a clock.
+
+on:
+  branch_protection_rule:
+  schedule:
+    # Mondays 07:20 UTC. Off the hour: GitHub drops scheduled runs during the
+    # load spike at :00, and a skipped run here is silent.
+    - cron: '20 7 * * 1'
+  push:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the SARIF to code scanning.
+      security-events: write
+      # Needed by the publish step below to mint an OIDC token.
+      id-token: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishes the score to the public OpenSSF API, which is what backs
+          # the score badge and lets downstream consumers check this project
+          # without running Scorecard themselves. Requires a public repo and
+          # the id-token permission above.
+          publish_results: true
+
+      # Kept for the 90-day window: SARIF uploaded to code scanning is subject
+      # to alert retention, so the raw result is preserved independently of it.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+          category: scorecard

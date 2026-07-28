@@ -52,6 +52,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // every [[bin]] whose required-features are met, and gen_fixture's are.
     ("path", &["docs/install.md", "website/build.md"]),
     ("bin", &["docs/install.md", "website/build.md"]),
+    // `sha256sum --ignore-missing` and `gh attestation verify --repo`, in the
+    // download-verification recipes.
+    ("ignore-missing", &["docs/install.md", "website/install.md"]),
+    ("repo", &["docs/install.md", "website/install.md"]),
     // Alpine's package manager, in the musl/Alpine build recipes.
     ("no-cache", &["website/build.md"]),
     // bench/carrier.py and bench/scaling.sh flags, in the reproduce recipes.

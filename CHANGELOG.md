@@ -10,6 +10,34 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **CycloneDX SBOMs ship with every release**, covered by `SHA256SUMS.txt` and
+  by the sigstore attestation. Two of them, because sipnab ships as two
+  binaries: `sipnab-<version>.cdx.json` for the binary and
+  `sipnab-audio-<version>.cdx.json` for the playback plugin. The plugin is a
+  separate workspace crate loaded with `dlopen`, and it pulls in seven
+  dependencies the main crate's graph does not contain at all — `alsa`,
+  `alsa-sys`, `cpal`, `dasp_sample`, `num-bigint`, `num-rational`, `rodio`. An
+  SBOM of the main crate alone would have omitted exactly the C-adjacent
+  dependencies a vulnerability scan looks for, while appearing complete.
+
+  The binary SBOM is built with `--features full` deliberately: the `noaudio`
+  artifacts resolve a strict subset (measured: the two differ by exactly one
+  component, `libloading`), so one document over-covers rather than
+  under-covers every binary published.
+
+- **OpenSSF Scorecard** (`scorecard.yml`) analyses supply-chain posture on
+  every push to `main`, on branch-protection changes, and weekly. Report-only
+  and deliberately not a gate — Scorecard grades practices, and several of its
+  checks are questions this project has already answered differently on
+  purpose. Its value is being an outside opinion that notices posture drift no
+  in-repo test was written for.
+
+- **`docs/install.md` now explains how to verify a download** — checksum,
+  `gh attestation verify`, and feeding either SBOM to a scanner. The release
+  had been attesting every artifact since 0.5.49 without telling anyone how to
+  check one.
+
 ### Fixed
 - **The one required status check on `main` did not cover three of the seven CI
   jobs.** `ci-success` exists to be a single aggregate gate, and its comment

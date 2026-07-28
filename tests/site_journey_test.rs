@@ -2034,3 +2034,63 @@ fn packaging_scripts_reference_existing_paths() {
         missing.join("\n  ")
     );
 }
+
+/// The SBOMs must be generated, attested, and published — all three.
+///
+/// A release artifact passes through three independent lists in release.yml:
+/// the step that creates it, `attest-build-provenance`'s `subject-path`, and
+/// `action-gh-release`'s `files`. Nothing ties them together, and the failure
+/// is silent in both directions — an artifact missing from `subject-path`
+/// publishes unattested beside attested ones, and an artifact missing from
+/// `files` is built, checksummed, and attested but never uploaded. The SBOMs
+/// were written into all of one of these lists on the first attempt.
+///
+/// This checks the wiring only. Whether the SBOMs have any *content* is
+/// checked where it can actually be known — the component-count floor inside
+/// the generation step, which reads the emitted document. A CycloneDX file
+/// with zero components is valid JSON and uploads perfectly happily.
+#[test]
+fn release_publishes_and_attests_the_sboms() {
+    let yaml = read(".github/workflows/release.yml");
+    assert!(
+        yaml.contains("cargo cyclonedx"),
+        "release.yml no longer generates an SBOM"
+    );
+    for (marker, what) in [
+        (
+            "artifacts/sipnab-${version}.cdx.json",
+            "the main binary SBOM",
+        ),
+        (
+            "artifacts/sipnab-audio-${version}.cdx.json",
+            "the audio plugin SBOM (alsa/cpal/rodio appear in no other SBOM)",
+        ),
+    ] {
+        assert!(
+            yaml.contains(marker),
+            "release.yml stopped producing {what} at {marker}"
+        );
+    }
+
+    // Both consumers glob *.cdx.json rather than naming versions.
+    let subject = yaml
+        .split_once("subject-path: |")
+        .expect("no attest subject-path")
+        .1;
+    let subject = &subject[..subject.find("\n\n").unwrap_or(subject.len())];
+    assert!(
+        subject.contains("*.cdx.json"),
+        "SBOMs are not in the attestation subject-path — they would publish \
+         unattested beside attested artifacts:\n{subject}"
+    );
+
+    let files = yaml
+        .split_once("files: |")
+        .expect("no release files list")
+        .1;
+    let files = &files[..files.find("\n\n").unwrap_or(files.len())];
+    assert!(
+        files.contains("*.cdx.json"),
+        "SBOMs are generated and attested but never uploaded to the release:\n{files}"
+    );
+}

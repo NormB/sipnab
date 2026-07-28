@@ -165,6 +165,51 @@ cargo build --release --features full
 SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 ```
 
+## Verifying a Download
+
+Every release artifact is checksummed, signed with sigstore build provenance,
+and accompanied by a CycloneDX SBOM. The installer script verifies the sha256
+for you; these steps are for manual downloads, mirrors, and anything that
+reached you by a route you did not choose.
+
+**Checksum.** `SHA256SUMS.txt` covers every tarball, `.deb`, `.rpm`, and SBOM
+in the release:
+
+```bash
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+**Provenance.** A checksum only proves the file matches the list; it says
+nothing about who produced the list. The attestation is cryptographic proof the
+artifact was built by sipnab's own release workflow, from a specific commit:
+
+```bash
+gh attestation verify sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz \
+    --repo NormB/sipnab
+```
+
+This is what detects a rehosted or tampered copy, including one served with a
+matching checksum file.
+
+**Dependencies.** Two CycloneDX SBOMs ship with each release:
+
+| File | Covers |
+|------|--------|
+| `sipnab-<version>.cdx.json` | the `sipnab` binary |
+| `sipnab-audio-<version>.cdx.json` | `libsipnab_audio.so`, the playback plugin |
+
+There are two because the plugin is a separate crate loaded at runtime with
+`dlopen`, and it brings in dependencies — `alsa`, `cpal`, `rodio` among them —
+that appear nowhere in the binary's own graph. Scanning only the first would
+quietly miss them. Feed either to any CycloneDX-aware scanner:
+
+```bash
+grype sbom:sipnab-<version>.cdx.json      # or trivy sbom, osv-scanner, ...
+```
+
+The binary SBOM is generated with all features enabled, so it is a superset of
+what any single published binary contains — it will never under-report.
+
 ## Live Capture Permissions
 
 Live capture (`sipnab -d <iface>` or the default `any` device) needs raw-socket
