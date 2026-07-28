@@ -93,15 +93,42 @@ if [ -f "website/templates/index.html" ]; then
     ACTUAL=$(echo "$TEST_OUTPUT" | grep "test result:" | awk '{sum += $4} END {print sum}')
     STAT=$(grep -B1 'Automated tests' website/templates/index.html | grep -o 'data-count="[0-9]*"' | grep -o '[0-9]*' | head -1)
     PROSE=$(grep -oE '[0-9]+ automated tests' website/templates/index.html | grep -oE '[0-9]+' | sort -u)
-    if [ -n "$ACTUAL" ]; then
-        for FOUND in $STAT $PROSE; do
-            if [ "$FOUND" != "$ACTUAL" ]; then
-                echo -e "${RED}FAIL${NC}"
-                echo "  Homepage shows $FOUND tests but actual count is $ACTUAL"
-                echo "  Update website/templates/index.html (stat card + prose)"
-                exit 1
-            fi
-        done
+    # Every one of these can come back EMPTY, and an empty one is the failure
+    # this gate exists to prevent, not a reason to skip it. With both greps
+    # empty the `for` iterated zero times and the gate printed OK — a count
+    # compared against nothing. Demonstrated: setting both numbers to 9999 plus
+    # two benign wording edits ("Automated&nbsp;tests", "9999 automated Rust
+    # tests") printed OK and created the commit.
+    if [ -z "$ACTUAL" ]; then
+        echo -e "${RED}FAIL${NC}"
+        echo "  Could not derive a test count from the step-2 run — refusing to"
+        echo "  report agreement with a number that was never computed."
+        exit 1
+    fi
+    if [ -z "$STAT" ] || [ -z "$PROSE" ]; then
+        echo -e "${RED}FAIL${NC}"
+        echo "  Could not find the test count on the homepage"
+        echo "    stat card (data-count near 'Automated tests'): '${STAT:-<none>}'"
+        echo "    prose ('N automated tests'):                   '${PROSE:-<none>}'"
+        echo "  The label or wording changed. Both must be found, or this gate"
+        echo "  compares nothing and reports OK."
+        exit 1
+    fi
+    CHECKED=0
+    for FOUND in $STAT $PROSE; do
+        CHECKED=$((CHECKED + 1))
+        if [ "$FOUND" != "$ACTUAL" ]; then
+            echo -e "${RED}FAIL${NC}"
+            echo "  Homepage shows $FOUND tests but actual count is $ACTUAL"
+            echo "  Update website/templates/index.html (stat card + prose)"
+            exit 1
+        fi
+    done
+    if [ "$CHECKED" -lt 2 ]; then
+        echo -e "${RED}FAIL${NC}"
+        echo "  Only $CHECKED homepage figure(s) compared; both the stat card and"
+        echo "  the prose must be checked."
+        exit 1
     fi
     echo -e "${GREEN}OK ($ACTUAL)${NC}"
 else
