@@ -627,7 +627,11 @@ fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
 /// /dev/full fails every write, which is how the writer's own ENOSPC tests
 /// simulate a full disk. The capture must be large enough to spill the
 /// BufWriter, or nothing reaches the device and there is no error to find.
-#[cfg(unix)]
+///
+/// Linux-gated, not `cfg(unix)`: /dev/full is a Linux device and macOS is also
+/// unix, so the looser gate ran this on a runner with no such file. That is
+/// the same `target_os = "linux"` the writer's own ENOSPC module uses.
+#[cfg(target_os = "linux")]
 #[test]
 fn output_write_failure_exits_nonzero() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -696,7 +700,9 @@ fn output_write_failure_exits_nonzero() {
 /// to do in a way that also breaks the pipe case — the first version of this
 /// fix boxed the error with `io::Error::other`, which resets the kind, and
 /// `| head` started exiting 1.
-#[cfg(unix)]
+///
+/// Linux-gated for /dev/full, as above.
+#[cfg(target_os = "linux")]
 #[test]
 fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() {
     use std::process::{Command, Stdio};
