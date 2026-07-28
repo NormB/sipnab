@@ -36,6 +36,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "README.md",
             "docs/install.md",
+            "website/install.md",
             "docs/mcp.md",
             "docs/rest-api.md",
             "website/cookbook.md",
@@ -47,13 +48,24 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     (
         "target",
-        &["README.md", "docs/install.md", "website/build.md"],
+        &[
+            "README.md",
+            "docs/install.md",
+            "website/install.md",
+            "website/build.md",
+        ],
     ),
     // `cargo install --path <dir> --bin sipnab`, in the source-install recipe.
     // --bin is load-bearing there, not decoration: without it cargo installs
     // every [[bin]] whose required-features are met, and gen_fixture's are.
-    ("path", &["docs/install.md", "website/build.md"]),
-    ("bin", &["docs/install.md", "website/build.md"]),
+    (
+        "path",
+        &["docs/install.md", "website/install.md", "website/build.md"],
+    ),
+    (
+        "bin",
+        &["docs/install.md", "website/install.md", "website/build.md"],
+    ),
     // `sha256sum --ignore-missing` and `gh attestation verify --repo`, in the
     // download-verification recipes.
     ("ignore-missing", &["docs/install.md", "website/install.md"]),
@@ -88,6 +100,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "README.md",
             "docs/install.md",
+            "website/install.md",
             "docs/mcp.md",
             "website/cookbook.md",
             "website/build.md",

@@ -1,6 +1,6 @@
 # MCP walkthrough — every deployment scenario, step by step
 
-[mcp.md](mcp.md) is the reference: every flag, tool, and error code. This
+[MCP Server](mcp.md) is the reference: every flag, tool, and error code. This
 page walks a **first-time sipnab user** through each deployment scenario,
 command by command, on every machine involved. Steps are tagged with the
 host they run on: **[server]** (where sipnab runs), **[laptop]** (where
@@ -58,7 +58,7 @@ itself):
 
    Debian/Ubuntu and RHEL/Fedora users can use the `.deb` / `.rpm`
    packages instead (headless servers: the `-noaudio` variant skips the
-   ALSA dependency) — see [install.md](install.md) for all channels.
+   ALSA dependency) — see [the install guide](install.md) for all channels.
 
 2. **[server]** Verify the features:
 
@@ -751,7 +751,7 @@ rules as scenarios 2B and 4.
 Two distinct costs; both are small, and both are cappable.
 
 **The capture path** dwarfs the MCP path and is the one to size. Reference
-numbers ([benchmarks.md](benchmarks.md), modest 14-core aarch64 host):
+numbers ([benchmarks](benchmarks.md), modest 14-core aarch64 host):
 1.2M pkts/s single-core offline reconstruction on a ~93%-RTP corpus, 2.9M
 at two cores. For scale: a proxy doing 100 CPS with ~10 SIP messages per
 call generates ~1k signaling packets/s — three orders of magnitude below
@@ -823,4 +823,6 @@ Work outward from the server; each layer has a definitive test.
 HTTP status decoder: `401` wrong/missing bearer token · `403` `Host:` not
 in the allowlist (`--mcp-allowed-host`) · `404` path isn't exactly `/mcp` ·
 `406` missing `Accept: application/json, text/event-stream`. More in
-[mcp.md § Troubleshooting](mcp.md#troubleshooting).
+[mcp.md § Troubleshooting](mcp.md#troubleshooting); the
+[raw HTTP test](mcp.md#raw-http-test) there is a working curl carrying every
+required header.

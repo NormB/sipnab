@@ -121,13 +121,22 @@ INDEX_DESCRIPTION = (
 SRC_TO_SLUG = {src: slug for src, slug, _, _, _ in PAGES}
 
 # Operator docs that have a site page. `docs/<key>.md` -> `@/docs/<value>`.
-# Anything not listed (auth.md, library.md, fault-model.md, and every
-# root-level design document) has no site page and becomes a blob URL, which
-# is correct: the reader still gets the document, just on GitHub.
+# Anything not listed (auth.md, library.md, fault-model.md, and everything
+# under docs/design/) has no site page and becomes a blob URL, which is
+# correct: the reader still gets the document, just on GitHub.
+#
+# This claim was once false in the silent direction. `tui-walkthrough.md` had
+# a site page (website/content/docs/tui.md, a hand-made copy) while being
+# absent from this map, so a link to it from any generated page would have
+# been rewritten to a blob URL — sending a reader to GitHub past the site page
+# that existed. Every entry below is now also registered in
+# build-site-pages.py or build-site-internals.py's own PAGES, so a site page
+# that is not in this map is a page the generator does not write.
 DOCS_TO_SITE = {
     "install.md": "install.md",
     "examples.md": "cookbook.md",
     "troubleshooting.md": "troubleshooting.md",
+    "tui-walkthrough.md": "tui.md",
     "keybindings.md": "keybindings.md",
     "theme-guide.md": "theme.md",
     "cli-reference.md": "cli.md",

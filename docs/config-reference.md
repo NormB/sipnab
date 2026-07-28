@@ -2,6 +2,25 @@
 
 sipnab reads configuration from a TOML file. CLI flags ([cli-reference.md](cli-reference.md)) always override config file values.
 
+Configuration is optional: with no file present sipnab runs on its built-in defaults. A config file exists to set persistent defaults for your environment.
+
+## Minimal Config
+
+If you only need to override a few defaults, keep it short:
+
+```toml
+# ~/.config/sipnab/sipnab.toml
+[capture]
+device = "eth0"
+
+[display]
+delta_time = true
+
+[theme]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+```
+
 ## File Locations
 
 Configuration is loaded from the first file found in this order:
@@ -59,7 +78,7 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
-| `visible_columns` | array | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10 |
+| `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout back to your sipnabrc, so it persists across sessions |
 
 ```toml
 [display]
@@ -67,6 +86,7 @@ color = "always"
 payload_limit = 4096
 delta_time = true
 from_to = "user-host-port"
+visible_columns = ["method", "from", "to", "source", "destination", "state", "msgs", "pdd"]
 ```
 
 ### [filter]
@@ -141,6 +161,10 @@ dialog_limit = 50000
 max_streams = 25000
 max_reassembly = 5000
 hep_rate_limit = 25000
+max_header_line = 8192
+max_headers_per_message = 200
+max_messages_per_dialog = 500
+max_audio_frames = 1500
 ```
 
 ### [privilege]
@@ -209,7 +233,7 @@ core = false
 
 ### [theme]
 
-TUI color theme with 11 semantic color slots. Each field accepts a color name or a hex RGB value. Unset fields use built-in defaults. See [theme-guide.md](theme-guide.md) for a full customization guide.
+TUI color theme with 11 semantic color slots (plus `highlight`, a legacy alias for `selected`). Each field accepts a color name or a hex RGB value. Unset fields use built-in defaults. See [theme-guide.md](theme-guide.md) for the full customization guide and its preset themes.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -267,6 +291,8 @@ Accepted key formats:
 | `clear_calls` | string | `"F5"` | Clear all calls |
 | `column_selector` | string | `"F10"` | Open column selector |
 
+See [keybindings.md](keybindings.md) for the full shortcut reference, including the keys that are not remappable.
+
 ```toml
 [keybindings]
 quit = "q"
@@ -284,68 +310,84 @@ column_selector = "F10"
 
 ## Full Example
 
+A configuration for a SIP monitoring server:
+
 ```toml
+# /etc/sipnab/sipnab.toml
+# Production SIP monitoring configuration
+
+# -- Packet capture --
 [capture]
-device = "eth0"
-portrange = "5060-5080"
-snaplen = 65535
-buffer = 16
-buffer_budget_mb = 128
-no_rtp = false
+device = "eth0"                    # Primary SIP-facing interface
+portrange = "5060-5080"            # Cover SIP, SIP-TLS, and alternate ports
+snaplen = 65535                    # Full packet capture (no truncation)
+buffer = 32                        # 32 MiB kernel buffer for burst tolerance
+buffer_budget_mb = 128             # Cap on the in-flight capture->processing queue
+no_rtp = false                     # RTP analysis enabled
 
+# -- Display settings --
 [display]
-color = "always"
-payload_limit = 4096
-delta_time = true
-from_to = "host-port"
+color = "always"                   # Force color even when piped
+payload_limit = 8192               # Show up to 8K of SIP body (large SDP)
+delta_time = true                  # Show timing between messages by default
+from_to = "host-port"              # From/To columns show host:port
+# visible_columns = ["method", "from", "to", "state", "msgs", "pdd"]  # Persistent column prefs
 
+# -- Default filter (optional) --
 [filter]
 from = "^1001@"
 to = "^1002@"
-expression = "method == 'INVITE'"
+expression = "method == 'INVITE' OR method == 'REGISTER'"
 
+# -- Security detection --
 [security]
-kill_scanner = true
-kill_response = 403
-fraud_detect = true
-alert = ["syslog", "json"]
-alert_exec = "/usr/local/bin/sipnab-alert.sh"
+kill_scanner = true                # Detect SIP scanners (sipvicious, etc.)
+kill_response = 403                # Reply to scanners with 403
+fraud_detect = true                # Heuristic fraud detection
+alert = ["syslog", "json"]        # Send alerts to syslog and JSON log
+alert_exec = "/usr/local/bin/sipnab-alert.sh"  # Custom alert handler
 
+# -- Resource limits --
 [limits]
-dialog_limit = 50000
-max_streams = 25000
-max_reassembly = 5000
-hep_rate_limit = 25000
+dialog_limit = 50000               # Max tracked dialogs (tune for RAM)
+max_streams = 25000                # Max RTP streams
+max_reassembly = 5000              # Max TCP reassembly sessions
+hep_rate_limit = 25000             # Max HEP packets/sec
 
+# -- Privilege separation (Linux) --
 [privilege]
-user = "sipnab"
-no_priv_drop = false
-chroot = "/var/lib/sipnab"
+user = "sipnab"                    # Drop to unprivileged user after device open
+no_priv_drop = false               # Keep privilege dropping enabled
+chroot = "/var/lib/sipnab"         # Chroot after initialization
 
+# -- Address naming --
 [names]
-enabled = true
-hosts_file = "/etc/sipnab/hosts"
+enabled = true                     # Resolve addresses to names at startup
+hosts_file = "/etc/sipnab/hosts"   # Preloaded IP -> name mappings
 
 [names.manual]
 "192.0.2.1" = "sbc-edge"
 
+# -- Crash handling --
 [crash]
-reports = true
-backtrace = true
-core = false
+reports = true                     # Write a crash report on panic
+backtrace = true                   # Include a full backtrace
+core = false                       # Exit 101 rather than dumping core
 
+# -- Theme: Catppuccin Mocha --
 [theme]
-background = "#1a1a2e"
-foreground = "#e0e0e0"
-header = "cyan"
-selected = "#e94560"
-accent = "magenta"
-good = "green"
-warning = "yellow"
-bad = "red"
-muted = "dark_gray"
-border = "#444466"
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+header = "#89b4fa"
+selected = "#f9e2af"
+accent = "#cba6f7"
+good = "#a6e3a1"
+warning = "#fab387"
+bad = "#f38ba8"
+muted = "#585b70"
+border = "#6c7086"
 
+# -- Keybindings (defaults shown) --
 [keybindings]
 quit = "q"
 help = "F1"
@@ -359,3 +401,5 @@ extended_flow = "F4"
 clear_calls = "F5"
 column_selector = "F10"
 ```
+
+> **Tip:** Use `sipnab --dump-config` to see the effective configuration — the loaded file merged over the built-in defaults, with the path it came from. It is a config-file view only: CLI flags are applied later in startup and are *not* reflected, and there is no environment-variable override layer (`SIPNAB_CONFIG` only selects which file is read). To check what a flag does, compare against the [CLI reference](cli-reference.md).

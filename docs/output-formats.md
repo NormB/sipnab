@@ -1,9 +1,14 @@
 # Output formats
 
 sipnab has four output modes: interactive TUI (default), per-message CLI
-text (`-N`), structured NDJSON (`--json`), and the MCP server
-([mcp.md](./mcp.md)). This page documents the
-machine-readable formats.
+text (`-N`), structured NDJSON (`--json`), and the [MCP server](mcp.md).
+This page documents the machine-readable formats.
+
+> **Prerequisites:** `--json` requires non-interactive mode (`-N` /
+> `--no-tui`) — sipnab refuses to start otherwise (exception:
+> `--call-report` implies non-interactive output). No extra build feature
+> is needed: NDJSON output is part of the default build. Full flag
+> reference: [CLI reference](cli-reference.md#output).
 
 ## NDJSON (`--json`)
 
@@ -28,12 +33,42 @@ Message record (fields with no value are omitted, not null):
   "is_request": true,
   "method": "INVITE",
   "call_id": "abc123@192.0.2.1",
-  "cseq": { "number": 1, "method": "INVITE" },
-  "from": "1001",
-  "to": "1002",
-  "ua": "FreePBX-16"
+  "from": "\"Alice\" <sip:1001@192.0.2.1>;tag=1c145053",
+  "to": "<sip:1002@192.0.2.2>",
+  "contact": "<sip:1001@192.0.2.1:5060>",
+  "ua": "FreePBX-16",
+  "sdp": "v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0 96\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:96 telephone-event/8000\r\n",
+  "cseq": { "number": 1, "method": "INVITE" }
 }
 ```
+
+A response record carries `is_request: false` plus `status_code`,
+`reason`, and `response_context` instead of `method`:
+
+```json
+{
+  "schema_version": 1,
+  "timestamp": "2026-06-12T14:03:21.598204+00:00",
+  "src": "192.0.2.2",
+  "src_port": 5060,
+  "dst": "192.0.2.1",
+  "dst_port": 5060,
+  "transport": "UDP",
+  "is_request": false,
+  "status_code": 180,
+  "reason": "Ringing",
+  "call_id": "abc123@192.0.2.1",
+  "from": "\"Alice\" <sip:1001@192.0.2.1>;tag=1c145053",
+  "to": "<sip:1002@192.0.2.2>;tag=782609",
+  "cseq": { "number": 1, "method": "INVITE" },
+  "response_context": "1 INVITE"
+}
+```
+
+`from` and `to` are the **full** `From` / `To` header values — display
+name, URI and tags included — not the bare user part. (The aggregated
+dialog object below is the one that carries the user part.) Match them
+with a regex or a substring test, not with equality.
 
 `cseq` (the parsed `CSeq` header — `{ number, method }`) is emitted on **every**
 message, requests included, so re-requests within a dialog (e.g. two REGISTERs
@@ -46,9 +81,9 @@ otherwise). `sdp` is the raw SDP body, emitted **only** when `Content-Type` is
 negotiated media (connection / `m=` / `a=rtpmap`) that dynamic-PT decode depends
 on; omitted for non-SDP or non-UTF-8 bodies.
 
-Responses carry `status_code` and `reason` instead of `method`, plus
-`response_context` (`"<num> <method>"`, what the response answers) — now
-redundant with `cseq` and retained only for backward compatibility.
+`response_context` (`"<num> <method>"`, responses only — what the response
+answers) is a deprecated alias of `cseq`, retained for backward compatibility
+under `schema_version` 1. Prefer `cseq`.
 
 `malformed` is a list of structural-defect diagnostics, present **only** when a
 message is malformed (a well-formed message omits the field). It surfaces crafted
@@ -66,8 +101,8 @@ consumers to it.
 # Only INVITEs
 sipnab -N -I capture.pcap --json | jq 'select(.method == "INVITE")'
 
-# Calls from a specific user
-sipnab -N -I capture.pcap --json | jq 'select(.from == "1001")'
+# Calls from a specific user (`from` is the whole From header, so test it)
+sipnab -N -I capture.pcap --json | jq 'select(.from // "" | test("sip:1001@"))'
 
 # Count messages per method
 sipnab -N -I capture.pcap --json \
@@ -80,12 +115,18 @@ sipnab -N -I capture.pcap --json \
 
 # Distinct Call-IDs seen (feed into --call-report)
 sipnab -N -I capture.pcap --json | jq -r '.call_id' | sort -u
+
+# Response-code histogram (how many of each status code)
+sipnab -N -I capture.pcap --json \
+  | jq -r 'select(.is_request == false) | .status_code' \
+  | sort | uniq -c | sort -rn
 ```
 
 ## Summary-only output
 
 `--json` prints a line per message. For end-of-run summaries instead,
-combine the report flags with `--no-cli-print` (which suppresses the
+combine the report flags with
+[`--no-cli-print`](cli-reference.md#output) (which suppresses the
 per-message stream but not the report):
 
 ```bash
@@ -98,18 +139,27 @@ sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --no-cli-print
 
 ## Dialog / stream JSON
 
-The richer dialog object (state, timing with PDD/setup/ring/teardown
-milliseconds, retransmit counts, SDP timeline, RTP streams with
-jitter/loss/MOS, and media diagnosis flags like `one_way_audio`) is the
-payload of:
+The richer aggregated dialog object — `state`, `timing` (PDD / setup /
+ring / teardown milliseconds, retransmit counts), `sdp_timeline`,
+`streams` with jitter and loss, and the `diagnosis` flags (`one_way_audio`,
+`nat_mismatch`, `no_media`) plus `hints` — is one shape produced by a single
+serializer. It is documented once, with a full worked example, under
+[`GET /v1/dialogs/{call_id}` in the REST API reference](rest-api.md#get-v1-dialogs-1).
 
-- `SIPNAB_JSON` in `--on-dialog-exec` hooks. Note the dialog hook fills
-  `streams: []` and a default `diagnosis` — it fires on a dialog event, when
-  media analysis for that call may not be complete, so the stream and
-  diagnosis fields are placeholders there rather than populated data.
-- `SIPNAB_STREAM_JSON` in `--on-quality-exec` hooks. That hook passes the
-  stream object, under its own variable name — **not** `SIPNAB_JSON`.
-- MCP tool responses ([mcp.md](./mcp.md))
+The same document is what you get from:
+
+- the REST `GET /v1/dialogs/{call_id}` and
+  `GET /v1/dialogs/{call_id}/report` endpoints,
+- MCP tool responses (`get_dialog_report` with `format: "json"` — see the
+  [MCP server](mcp.md) reference), and
+- `SIPNAB_JSON` in [`--on-dialog-exec`](cli-reference.md#event-execution)
+  hooks. Note the dialog hook fills `streams: []` and a default `diagnosis`
+  — it fires on a dialog event, when media analysis for that call may not be
+  complete, so the stream and diagnosis fields are placeholders there rather
+  than populated data.
+
+`--on-quality-exec` is separate: it passes the stream object on its own,
+under its own variable name — `SIPNAB_STREAM_JSON`, **not** `SIPNAB_JSON`.
 
 ## pcap / pcapng
 
@@ -122,7 +172,7 @@ pcapng timestamps are nanosecond-resolution, declared via `if_tsresol=9`
 in the Interface Description Block. Files written by sipnab <= 0.5.0
 stored nanosecond ticks but omitted that declaration, so other readers
 inflated every time value ×1000 (`capinfos` reporting year 58484);
-[`scripts/repair_pcapng_tsresol.py`](https://github.com/NormB/sipnab/blob/main/scripts/repair_pcapng_tsresol.py)
+[`scripts/repair_pcapng_tsresol.py`](../scripts/repair_pcapng_tsresol.py)
 repairs such old captures in place without touching packet data.
 
 ## See also

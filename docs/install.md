@@ -8,19 +8,52 @@
 
 ## Installer (recommended)
 
-The install script detects your OS, CPU, and glibc version, picks the right
-build, verifies its sha256, and installs to `/usr/local/bin`:
+One command on Linux (x86_64/aarch64) or macOS:
 
 ```bash
 curl -fsSL https://www.sipnab.com/install.sh | sh
 ```
 
-Prefer to read it first: <https://www.sipnab.com/install.sh>. Pin a version
-with `SIPNAB_VERSION=0.5.55`, change the destination with `SIPNAB_INSTALL_DIR`.
+The install script detects your OS, CPU architecture, and glibc version,
+downloads the matching versioned release tarball
+(`sipnab-<version>-<target-triple>.tar.gz`) together with its `.sha256` file,
+**verifies the checksum**, and installs the binary to `/usr/local/bin` (using
+`sudo` only if that directory isn't writable). Prefer to read it first:
+<https://www.sipnab.com/install.sh>.
+
+Two environment variables tune it:
+
+```bash
+# Pin a specific version instead of the latest release
+curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=0.5.55 sh
+
+# Install somewhere else (e.g. no root)
+curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+On Linux the installer chooses between two build variants: the dynamically
+linked **`-gnu`** build (requires glibc >= 2.36 — Debian 12+, Ubuntu 23.04+ —
+and libpcap installed via your package manager) and the static **musl** build
+(no glibc/libpcap requirement; TUI audio playback unavailable, everything else
+identical). The 2.36 figure is the floor the release workflow actually
+enforces on every gnu binary, and the installer now uses that same cutover —
+it serves musl only to hosts below **glibc 2.36**, or with no glibc at all. It
+previously cut over at 2.39 for eleven releases, so hosts between 2.36 and
+2.39 (Debian 12 among them) received the static build and lost TUI audio even
+though the gnu build ran there fine.
 
 ## Pre-built Binaries
 
-Download from [GitHub Releases](https://github.com/NormB/sipnab/releases).
+Every [GitHub release](https://github.com/NormB/sipnab/releases) ships
+versioned tarballs per target triple, each with a matching `.sha256` checksum
+file:
+
+- `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` — dynamic, needs glibc >= 2.36 + libpcap
+- `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` — same, for arm64
+- `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` — static, runs on any glibc (no TUI audio)
+- `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` — same, for arm64
+- `sipnab-<version>-x86_64-apple-darwin.tar.gz` / `sipnab-<version>-aarch64-apple-darwin.tar.gz` — macOS
+
 Architecture naming: `x86_64` = `amd64` (Intel/AMD), `aarch64` = `arm64`
 (ARM); tarballs use the former, `.deb` packages the latter. `uname -m` tells
 you which one you are.
@@ -38,14 +71,24 @@ tar xzf sipnab-<version>-aarch64-unknown-linux-musl.tar.gz
 sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/local/bin/sipnab
 ```
 
+Manual download with checksum verification (replace `<version>` with the
+latest, e.g. 0.5.55):
+
+```bash
+V=<version> T=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz"
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz.sha256"
+sha256sum -c "sipnab-$V-$T.tar.gz.sha256"
+tar -xzf "sipnab-$V-$T.tar.gz"   # unpacks into ./sipnab-$V-$T/
+sudo install -m 755 "sipnab-$V-$T/sipnab" /usr/local/bin/sipnab
+```
+
 The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback but
 require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. That floor is
 enforced, not estimated: the gnu targets build inside a Debian bookworm
 container and a release-workflow gate rejects any binary linking a newer
 `GLIBC_` symbol. On an older distro they fail with `` version `GLIBC_2.36' not
-found `` -- use the static musl build. The install script uses that same 2.36
-cutover: it served musl below 2.39 for eleven releases, which cost every
-Debian 12 host its TUI audio for a floor the release gate had already lowered.
+found `` -- use the static musl build.
 
 ## Cargo (from source)
 
@@ -79,7 +122,9 @@ curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<versio
 sudo apt install ./sipnab_<version>_arm64.deb
 ```
 
-On Ubuntu 24.04+ the dependency is satisfied by `libpcap0.8t64`.
+The package installs `/usr/bin/sipnab`, the man page, and a systemd unit, and
+creates a `sipnab` system user for privilege dropping. On Ubuntu 24.04+ the
+dependency is satisfied by `libpcap0.8t64`.
 
 The standard package ships the audio playback plugin and therefore
 *Recommends* `libasound2`, which apt installs by default — pulling the ALSA
@@ -212,7 +257,8 @@ what any single published binary contains — it will never under-report.
 
 ## Live Capture Permissions
 
-Live capture (`sipnab -d <iface>` or the default `any` device) needs raw-socket
+Reading a pcap file needs no special permissions at all. Live capture
+(`sipnab -d <iface>` or the default `any` device) needs libpcap and raw-socket
 access. Rather than running the whole TUI as root, grant the binary the Linux
 capabilities once and then run it as your normal user:
 
@@ -282,7 +328,12 @@ package; install it for live playback. Only `libpcap0.8` is a hard dependency.
 For a fully audio-free build, drop the `audio` feature and the plugin is not
 built.
 
-See [mcp.md](mcp.md) (or the website install guide, [www.sipnab.com/docs/install](https://www.sipnab.com/docs/install/)) for the full MCP enablement walkthrough including token-file generation and the systemd unit pattern.
+## Enabling MCP
+
+To run sipnab as a Model Context Protocol server for an AI agent (Claude Code,
+Claude Desktop, …), see [mcp.md](mcp.md), which documents building with the
+`mcp`/`mcp-http` features and the runtime configuration, including token-file
+generation and the systemd unit pattern.
 
 ## Release Profile
 
@@ -353,9 +404,23 @@ Should build and run. Live capture support depends on platform pcap implementati
 
 ## Verify Installation
 
+After installing, confirm sipnab is working:
+
 ```bash
+# Check version
 sipnab --version
+
+# Display full help
 sipnab --help
+
+# Quick test with a pcap file
+sipnab -I /path/to/capture.pcap
+
+# CLI mode test (non-interactive, first 5 dialogs)
+sipnab -N -I /path/to/capture.pcap | head -5
+
+# Dump effective config to confirm feature flags
+sipnab -D
 ```
 
 `--version` lists the Cargo features compiled into the binary, e.g.
@@ -366,6 +431,15 @@ sipnab 0.5.55 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metri
 
 This is the fastest way to confirm a build was produced with the feature set
 you expected (e.g. that `mcp-http` is present on a server build).
+
+A first non-interactive run against a capture looks like this:
+
+```
+$ sipnab -N -I demo.pcap | head -3
+INVITE alice -> bob  192.0.2.1:5060 -> 192.0.2.2:5060 InCall PDD=847ms
+REGISTER admin -> --  192.0.2.5:5060 -> 192.0.2.1:5060 Registered
+INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060 Failed 408 Request Timeout
+```
 
 ## Next steps
 
