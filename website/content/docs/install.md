@@ -280,6 +280,13 @@ gh attestation verify sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz \
 This is what detects a rehosted or tampered copy, including one served with a
 matching checksum file.
 
+**This needs `gh` 2.49 or newer** — check with `gh --version`. The subcommand
+did not exist before then, and distributions lag: Ubuntu 24.04 ships 2.45, where
+the command prints `unknown command "attestation"` followed by the general help
+text **and still exits 0**. Piped or scripted, that reads as success while
+verifying nothing. Install a current `gh` from
+<https://github.com/cli/cli/releases> rather than trusting a silent pass.
+
 **Dependencies.** Two CycloneDX SBOMs ship with each release:
 
 | File | Covers |
