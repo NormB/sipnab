@@ -853,3 +853,180 @@ fn unknown_call_report_fails_on_the_multicore_path() {
         "an unknown --call-report id must fail on --cores too:\n{err}"
     );
 }
+
+// ── --dialog-track (docs/design/dialog-tracking-modes.md) ──────────────────
+
+/// The sipp corpus reuses one Call-ID across many transactions, so the two
+/// modes must disagree about how many units exist.
+///
+/// This disagreement is the only proof the flag is wired to anything. The
+/// version removed in 0.5.52 was declared and never read, so `call-id`,
+/// `branch` and an invented value all produced byte-identical output — and its
+/// only "coverage" was a test asserting its default was None, which passed
+/// precisely because it did nothing.
+#[test]
+fn dialog_track_branch_splits_what_call_id_merges() {
+    let fx = "tests/pcap-samples/sipp-branch-scenario.pcapng";
+    let count = |mode: &str| -> usize {
+        run(&[
+            "-N",
+            "-I",
+            fx,
+            "--dialog-track",
+            mode,
+            "--report",
+            "--no-cli-print",
+        ])
+        .lines()
+        .filter(|l| l.split_whitespace().next().is_some_and(|w| w.contains('@')))
+        .count()
+    };
+    let by_call_id = count("call-id");
+    let by_branch = count("branch");
+    assert!(
+        by_call_id > 0 && by_branch > 0,
+        "both modes must track something"
+    );
+    assert!(
+        by_branch > by_call_id,
+        "branch must split what call-id merges ({by_branch} vs {by_call_id})"
+    );
+}
+
+/// `call-id` is the default, so passing it explicitly must change nothing.
+#[test]
+fn dialog_track_call_id_is_the_default() {
+    let fx = "tests/pcap-samples/sipp-branch-scenario.pcapng";
+    let explicit = run(&[
+        "-N",
+        "-I",
+        fx,
+        "--dialog-track",
+        "call-id",
+        "--report",
+        "--no-cli-print",
+    ]);
+    let default = run(&["-N", "-I", fx, "--report", "--no-cli-print"]);
+    assert_eq!(
+        explicit, default,
+        "--dialog-track call-id must be the default"
+    );
+}
+
+/// One ordinary call is one dialog but SEVERAL transactions.
+///
+/// RFC 3261 gives the ACK to a 2xx a new branch (§17.1.1.3) and the BYE
+/// another, so `branch` reports more units for a single call. Asserted here
+/// rather than left to be discovered as an apparent miscount.
+#[test]
+fn dialog_track_branch_splits_a_single_call_into_transactions() {
+    let count = |args: &[&str]| -> usize {
+        run(args)
+            .lines()
+            .filter(|l| l.split_whitespace().next().is_some_and(|w| w.contains('@')))
+            .count()
+    };
+    let as_dialog = count(&["-N", "-I", FIXTURE, "--report", "--no-cli-print"]);
+    let as_txns = count(&[
+        "-N",
+        "-I",
+        FIXTURE,
+        "--dialog-track",
+        "branch",
+        "--report",
+        "--no-cli-print",
+    ]);
+    assert_eq!(as_dialog, 1, "the fixture is one dialog");
+    assert!(
+        as_txns > as_dialog,
+        "one call is several transactions ({as_txns} vs {as_dialog})"
+    );
+}
+
+/// An unknown method is rejected at startup.
+///
+/// The removed flag accepted `--dialog-track telepathy` and exited 0, so a
+/// typo silently selected the default.
+#[test]
+fn dialog_track_rejects_an_unknown_method() {
+    let (_out, err, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            FIXTURE,
+            "--dialog-track",
+            "telepathy",
+            "--no-cli-print",
+        ],
+        Some("error"),
+    );
+    assert_ne!(code, Some(0), "an unknown method must fail");
+    assert!(
+        err.contains("telepathy") || err.to_lowercase().contains("dialog-track"),
+        "the error must name the rejected value:\n{err}"
+    );
+}
+
+/// The `--cores` path builds its own per-worker stores, so the flag has to be
+/// carried through the parallel config — a separate code path that would
+/// otherwise ignore it silently.
+#[test]
+fn dialog_track_applies_on_the_multicore_path() {
+    let fx = "tests/pcap-samples/sipp-branch-scenario.pcapng";
+    let count = |args: &[&str]| -> usize {
+        run(args)
+            .lines()
+            .filter(|l| l.split_whitespace().next().is_some_and(|w| w.contains('@')))
+            .count()
+    };
+    let single = count(&[
+        "-N",
+        "-I",
+        fx,
+        "--dialog-track",
+        "branch",
+        "--report",
+        "--no-cli-print",
+    ]);
+    let parallel = count(&[
+        "-N",
+        "-I",
+        fx,
+        "--cores",
+        "4",
+        "--dialog-track",
+        "branch",
+        "--report",
+        "--no-cli-print",
+    ]);
+    assert_eq!(
+        single, parallel,
+        "--cores must group identically to single-core ({parallel} vs {single})"
+    );
+}
+
+/// A Call-ID still resolves in branch mode, where it names several units.
+///
+/// `--call-report`, the REST API, the MCP tools and the TUI all look a dialog
+/// up by Call-ID; branch mode must not break that.
+#[test]
+fn call_report_resolves_by_call_id_in_branch_mode() {
+    let (_out, err, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            FIXTURE,
+            "--dialog-track",
+            "branch",
+            "--call-report",
+            "test-call-1@10.0.0.1",
+            "--no-cli-print",
+        ],
+        Some("error"),
+    );
+    assert_eq!(
+        code,
+        Some(0),
+        "a Call-ID must still resolve under branch tracking:\n{err}"
+    );
+}

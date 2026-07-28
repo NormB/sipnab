@@ -321,8 +321,25 @@ sipnab -N -I capture.pcap --reverse-dns --names ~/.config/sipnab/lab-names
 | `-l`, `--limit` | `<N>` | `100000` | Maximum number of dialogs to track simultaneously |
 | `-R`, `--rotate` | -- | **on** | Evict the oldest dialog at `--limit` capacity (LRU). On by default; the flag is kept for back-compat |
 | `--no-rotate` | -- | off | Disable rotation: drop *new* dialogs at capacity instead of evicting the oldest |
+| `--dialog-track` | `<METHOD>` | `call-id` | Group messages by `call-id` (one unit per dialog) or `branch` (one per SIP transaction) |
 | `--no-dialog` | -- | off | Disable dialog tracking entirely (message-only mode) |
 | `--tag` | `<TAG>` | -- | Filter dialogs by tag value |
+
+> **`branch` counts transactions, not calls.** RFC 3261 gives the ACK to a 2xx a
+> new branch (§17.1.1.3) and the BYE another, so one ordinary call appears as
+> three or more units. That is the transaction view working as intended. Use it
+> when a capture reuses one Call-ID across many transactions — load generators,
+> proxies under test — and note that `--limit` then counts transactions too.
+
+**Examples**
+
+```bash
+# Per-transaction view of a load-generator capture that reuses one Call-ID
+sipnab -N -I loadtest.pcapng --dialog-track branch --report
+# Same capture as dialogs (the default), for a per-call view
+sipnab -N -I loadtest.pcapng --dialog-track call-id --report
+```
+
 
 **Examples**
 

@@ -59,6 +59,38 @@ pub struct CorrelationResult<'a> {
     /// Why this dialog was considered correlated.
     pub reason: CorrelationReason,
 }
+/// How messages are grouped into tracked units (`--dialog-track`).
+///
+/// See `docs/design/dialog-tracking-modes.md`. The short version: `CallId` is
+/// RFC 3261 dialog identity and is right for ordinary traffic; `Branch` groups
+/// by transaction instead, which is what load generators and proxies-under-test
+/// need when one Call-ID is reused across many transactions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DialogTracking {
+    /// Group by Call-ID — one tracked unit per dialog.
+    #[default]
+    CallId,
+    /// Group by Call-ID + top-Via branch — one tracked unit per transaction.
+    ///
+    /// A single call becomes several units: RFC 3261 gives the ACK to a 2xx a
+    /// new branch (§17.1.1.3) and the BYE another. That is the transaction view
+    /// working as intended, not a bug.
+    Branch,
+}
+
+impl std::str::FromStr for DialogTracking {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "call-id" | "callid" | "call_id" => Ok(Self::CallId),
+            "branch" => Ok(Self::Branch),
+            other => Err(format!(
+                "unknown dialog-tracking method '{other}' (expected 'call-id' or 'branch')"
+            )),
+        }
+    }
+}
 
 /// In-memory store of active and completed SIP dialogs.
 ///
@@ -102,6 +134,8 @@ pub struct CorrelationResult<'a> {
 pub struct DialogStore {
     /// All tracked dialogs, keyed by Call-ID in insertion order.
     dialogs: IndexMap<String, SipDialog, ahash::RandomState>,
+    /// How messages are grouped into tracked units.
+    tracking: DialogTracking,
     /// Maximum number of dialogs to retain.
     max_dialogs: usize,
     /// Whether to evict the oldest dialog when at capacity.
@@ -169,6 +203,7 @@ impl DialogStore {
             ),
             max_dialogs,
             rotate,
+            tracking: DialogTracking::default(),
             idle_messages_evicted: 0,
             capacity_dialogs_dropped: 0,
             generation: 0,
@@ -294,10 +329,21 @@ impl DialogStore {
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
         // IndexMap); the owned key is allocated only when a new dialog is
         // actually inserted — not once per message on the hot path.
-        let dialog_idx = match msg.call_id() {
-            Some(id) => self.dialogs.get_index_of(id),
-            None => return,
+        // CallId mode keeps the original no-allocation lookup: `str` is
+        // Equivalent<String> for IndexMap, so the owned key is built only when
+        // a dialog is actually inserted. Branch mode has to compose a key, so
+        // it allocates — but only when the mode is switched on, leaving the
+        // default hot path exactly as it was.
+        let composed = match self.tracking {
+            DialogTracking::CallId => None,
+            DialogTracking::Branch => self.tracking_key(&msg),
         };
+        let lookup: &str = match (composed.as_deref(), msg.call_id()) {
+            (Some(k), _) => k,
+            (None, Some(id)) => id,
+            (None, None) => return,
+        };
+        let dialog_idx = self.dialogs.get_index_of(lookup);
 
         if let Some(idx) = dialog_idx {
             let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
@@ -391,19 +437,71 @@ impl DialogStore {
                 // Track SDP for the initial message
                 track_sdp(&mut dialog.sdp_timeline, &msg);
 
-                let call_id = match msg.call_id() {
-                    Some(id) => id.to_string(),
-                    None => return, // unreachable: checked at function entry
+                // Insert under the SAME key the lookup used, or the next
+                // message for this unit would miss and create a duplicate.
+                let key = match composed {
+                    Some(k) => k,
+                    None => match msg.call_id() {
+                        Some(id) => id.to_string(),
+                        None => return, // unreachable: checked at function entry
+                    },
                 };
-                self.dialogs.insert(call_id, dialog);
+                self.dialogs.insert(key, dialog);
             }
         }
     }
 
+    /// Select how messages are grouped. Must be set before any message is
+    /// processed; changing it mid-capture would strand already-keyed entries.
+    pub fn set_tracking(&mut self, tracking: DialogTracking) {
+        self.tracking = tracking;
+    }
+
+    /// The key `msg` groups under, given the configured mode.
+    ///
+    /// `\n` separates Call-ID from branch because a parsed header value cannot
+    /// contain one, so no crafted Call-ID can forge a different unit's key.
+    /// `seen_cseq_key` uses the same separator for the same reason.
+    ///
+    /// A message with no branch (RFC 2543 peers) falls back to Call-ID alone,
+    /// so it groups exactly as it does today rather than collecting in one
+    /// empty-branch bucket.
+    fn tracking_key(&self, msg: &SipMessage) -> Option<String> {
+        let call_id = msg.call_id()?;
+        Ok::<String, ()>(match (self.tracking, msg.top_via_branch()) {
+            (DialogTracking::Branch, Some(branch)) if !branch.is_empty() => {
+                format!("{call_id}\n{branch}")
+            }
+            _ => call_id.to_string(),
+        })
+        .ok()
+    }
+
     /// Look up a dialog by Call-ID; returns `None` when no dialog with
     /// that Call-ID is tracked.
+    ///
+    /// In `Branch` mode a Call-ID can name several tracked units (one per
+    /// transaction), and this returns the FIRST in insertion order. That keeps
+    /// `--call-report`, the REST API, the MCP tools and the TUI working on a
+    /// Call-ID as they always have; `get_by_key` addresses one specific unit.
     pub fn get(&self, call_id: &str) -> Option<&SipDialog> {
-        self.dialogs.get(call_id)
+        if let Some(d) = self.dialogs.get(call_id) {
+            return Some(d);
+        }
+        if self.tracking == DialogTracking::Branch {
+            let prefix = format!("{call_id}\n");
+            return self
+                .dialogs
+                .iter()
+                .find(|(k, _)| k.starts_with(&prefix))
+                .map(|(_, d)| d);
+        }
+        None
+    }
+
+    /// Look up one specific tracked unit by its full tracking key.
+    pub fn get_by_key(&self, key: &str) -> Option<&SipDialog> {
+        self.dialogs.get(key)
     }
 
     /// Look up a dialog by Call-ID, returning a mutable reference, or
