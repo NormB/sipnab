@@ -36,15 +36,39 @@ fn read(rel: impl AsRef<Path>) -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
-/// Every `.md` directly under `docs/internals/`, as repo-relative paths.
+/// Every `.md` under `docs/internals/`, recursively, as repo-relative paths.
+///
+/// This walk feeds eight gates — code links resolve, named symbols exist, the
+/// page is registered for the wiki and for the site, and the mermaid
+/// conventions hold. It used to read only the top level, which made the
+/// directory depth a proxy for "is a developer page": the first
+/// `docs/internals/rtp/pipeline.md` would have been published nowhere, with
+/// unresolvable code links and arbitrary mermaid, while
+/// `every_internals_page_is_registered_for_the_wiki` reported that every page
+/// was registered. Demonstrated: such a page with three separate hard
+/// failures passed 59 tests.
 fn internals_pages() -> Vec<PathBuf> {
     let dir = repo().join("docs/internals");
-    let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
-        .map(|e| e.expect("dir entry").path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
-        .map(|p| p.strip_prefix(repo()).expect("under repo").to_path_buf())
-        .collect();
+    let mut out = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", d.display()))
+            .flatten()
+        {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                out.push(p.strip_prefix(repo()).expect("under repo").to_path_buf());
+            }
+        }
+    }
+    assert!(
+        !out.is_empty(),
+        "no markdown found under docs/internals/ — the walk is reading nothing \
+         and every gate built on it passes vacuously"
+    );
     out.sort();
     out
 }
