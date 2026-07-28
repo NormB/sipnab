@@ -38,7 +38,7 @@ homepage = "https://sipnab.com"
 default-run = "sipnab"
 keywords = ["sip", "rtp", "voip", "pcap", "network"]
 categories = ["network-programming", "command-line-utilities"]
-exclude = ["website/", "demos/", "tasks/", "fuzz/", ".githooks/", "tests/pcap-samples/"]
+exclude = ["website/", "demos/", "fuzz/", ".githooks/", "tests/pcap-samples/"]
 
 [dependencies]
 # Fast, DoS-resistant (random-seeded, AES-based) hasher for the per-packet

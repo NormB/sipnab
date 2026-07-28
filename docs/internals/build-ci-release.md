@@ -187,6 +187,22 @@ The test count in `website/templates/index.html` is gated the same way, by
 tests mean the macOS leg runs a handful fewer, so one advertised number cannot
 be true of both, and the figure describes the Linux run.
 
+### The changelog
+
+`CHANGELOG.md` is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and says so in its header. Entries are grouped under `Added` / `Changed` /
+`Fixed` / `Removed`, and the project uses a few extra headings where those four
+do not fit what a release actually did.
+
+sipnab is pre-1.0, so the header states the versioning policy rather than
+claiming strict Semantic Versioning: the public API and CLI surface are not
+stable and a breaking change may land in any release. Say so in the entry that
+carries one.
+
+Nothing gates the changelog's contents, which is deliberate — a gate on prose
+would be satisfied by prose. What *is* gated is the release date: it must match
+`website/config.toml`, asserted by `site_release_date_matches_changelog`.
+
 ### Re-measuring the benchmarks
 
 The published throughput numbers are **not** gated by CI, deliberately. Shared

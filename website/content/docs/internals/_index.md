@@ -63,7 +63,7 @@ here.
 |---|---|
 | [`../architecture.md`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
 | [`../design/maintainability-perf-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why the pipeline was unified, why `main.rs` was decomposed into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
-| [`tasks/todo.md`](https://github.com/NormB/sipnab/blob/main/tasks/todo.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
+| [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
 | [`../research/codex-analysis.md`](https://github.com/NormB/sipnab/blob/main/docs/research/codex-analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
 
 **Archaeological** — kept for the determination record, superseded in places:
@@ -108,7 +108,7 @@ single [`classify_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipel
 performance work; WS6–WS7 hardened the API surface. WS0–WS7 shipped in v0.5.0;
 WS8 (performance) is the only live section.
 
-**P0–P5 — backlog priority tiers** in [`tasks/todo.md`](https://github.com/NormB/sipnab/blob/main/tasks/todo.md):
+**P0–P5 — backlog priority tiers** in [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md):
 P0 panics and security, P1 wrong results in real use, P2 robustness and
 efficiency, P3 code health, P4 test quality, P5 features and exploratory work.
 A "P1" in a commit message means the commit fixed something that produced a
