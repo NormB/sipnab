@@ -69,6 +69,11 @@ jobs:
     # ubuntu-latest is 24.04 (glibc 2.39), and the cross-rs :main images are
     # also 24.04-based, so neither can produce a 2.36-floor binary. The
     # "Enforce glibc floor" step below fails the build if the floor regresses.
+    # The image is pinned by digest in the matrix below. `rust:1-bookworm` is a
+    # floating tag: it is republished, and it compiles the gnu binaries and the
+    # .debs this release ships — so an unpinned one means the artifacts users
+    # install came from an image nothing in the repo names. Dependabot's
+    # github-actions ecosystem updates `container:` digests, so this stays fresh.
     container: ${{ matrix.container }}
     strategy:
       fail-fast: false
@@ -76,7 +81,7 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm
+            container: rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa
             cross: false
           # noaudio variants: binary built without the `audio` feature. Both
           # the .deb and the .rpm ship no plugin and no ALSA weak dependency
@@ -86,7 +91,7 @@ jobs:
           # tarball case.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm
+            container: rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa
             cross: false
             variant: noaudio
           - target: x86_64-unknown-linux-musl
@@ -97,11 +102,11 @@ jobs:
           # for the same glibc-2.36 floor as x86_64.
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm
+            container: rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa
             cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm
+            container: rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa
             cross: false
             variant: noaudio
           - target: aarch64-unknown-linux-musl

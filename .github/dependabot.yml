@@ -41,7 +41,13 @@ updates:
   # Base images. The runtime image ships to users via GHCR; a CVE in it was
   # previously surfaced by nothing at all.
   - package-ecosystem: "docker"
-    directory: "/"
+    # `directory: "/"` is NOT recursive and covered only the root Dockerfile —
+    # one of eight. The other seven (bench/, docker/cross/ x2, harness/ x4) were
+    # pinned by digest with no update path at all, which is the CVE-rot outcome
+    # digest pinning is supposed to avoid. A glob keeps this from needing a
+    # hand-kept list that rots the next time a Dockerfile is added.
+    directories:
+      - "/**"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
