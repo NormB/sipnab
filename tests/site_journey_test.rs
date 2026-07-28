@@ -2415,11 +2415,20 @@ fn release_publishes_and_attests_the_sboms() {
 /// image published to users. OpenSSF Scorecard flagged 72 unpinned references
 /// here, which is what prompted this.
 ///
-/// Pinning is only safe because it has an update path: `.github/dependabot.yml`
-/// covers both `github-actions` and `docker` weekly, and Dependabot maintains
-/// the `# vN` comment beside each SHA. Without that this gate would be freezing
-/// dependencies rather than pinning them, which trades a supply-chain risk for
-/// an unpatched-CVE one.
+/// Pinning is only safe where it has an update path, so check that claim rather
+/// than assume it. `.github/dependabot.yml` covers `github-actions` weekly
+/// (which also maintains `container:` digests in workflows) and `docker` across
+/// `directories: ["/**"]`.
+///
+/// That glob is load-bearing and was wrong. The docker entry read
+/// `directory: "/"`, which is NOT recursive: it covered the root Dockerfile and
+/// none of the other seven, so those digests were frozen with no update path —
+/// the unpatched-CVE outcome this comment previously claimed was avoided. The
+/// sentence was written in the same commit that created the situation it denied.
+///
+/// One deliberate exception remains: `dependency-name: "rust"` is on the docker
+/// ignore list, because a tag bump there would contradict
+/// `rust_toolchain_pins_agree`. Its digest moves by hand, with the toolchain.
 #[test]
 fn ci_actions_and_base_images_are_pinned_by_digest() {
     let sha40 = regex::Regex::new(r"@[0-9a-f]{40}(\s|$)").unwrap();
@@ -2437,11 +2446,8 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
             continue;
         }
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        for (i, line) in std::fs::read_to_string(&p)
-            .expect("read workflow")
-            .lines()
-            .enumerate()
-        {
+        let text = std::fs::read_to_string(&p).expect("read workflow");
+        for (i, line) in text.lines().enumerate() {
             let t = line.trim_start();
             // A commented-out example is documentation, not a dependency.
             if t.starts_with('#') || !t.starts_with("uses:") && !t.starts_with("- uses:") {
@@ -2454,6 +2460,32 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
                      trailing comment, e.g. `uses: actions/checkout@<sha> # v7`",
                     i + 1,
                     t
+                ));
+            }
+        }
+
+        // `container:` and `services:` images run the job's steps, so they are
+        // base images by any definition — release.yml built this project's gnu
+        // binaries and .deb packages inside a floating `rust:1-bookworm` while
+        // this gate read only Dockerfiles and reported every base image pinned.
+        for (i, line) in text.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with('#') || !t.starts_with("container:") {
+                continue;
+            }
+            let val = t.trim_start_matches("container:").trim();
+            // `container: ${{ matrix.container }}` defers to the matrix entries,
+            // which are scanned as their own `container:` lines.
+            if val.is_empty() || val.starts_with("${{") {
+                continue;
+            }
+            images += 1;
+            if !digest.is_match(val) {
+                problems.push(format!(
+                    "{name}:{}: container {val} is not pinned by digest — the job's \
+                     steps run inside it, so it is a base image; pin it as \
+                     `image:tag@sha256:<64-hex>`",
+                    i + 1
                 ));
             }
         }
