@@ -2,6 +2,41 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.53] - 2026-07-27
+
+### Fixed
+- **Output that could not be written is no longer reported as success.** Three
+  paths disagreed about what a full disk means, and `src/app/batch.rs` already
+  carried a comment naming the problem — *"an ENOSPC at end of capture would
+  truncate the file silently with exit code 0"*. The detection half had been
+  fixed; the exit code in that very sentence had not.
+
+  | path | before | after |
+  |---|---|---|
+  | `-O` pcap | error logged, exit 0 | error logged, **exit 1** |
+  | `--json` | silent, exit 0 | error logged, **exit 1** |
+  | `--report` | **panic**, exit 101 | error logged, **exit 1** |
+
+  A closed pipe is unchanged and still succeeds: `sipnab --json \| head` is a
+  reader that stopped caring, not data loss. `BatchSink` now keeps the first
+  non-`BrokenPipe` error rather than swallowing every error alike — its doc
+  always said the intent was broken pipes, but the code did not distinguish.
+
+  The inconsistency was visible in one screen: failing to *open* the output
+  called `exit(1)`, failing to *write* it fell through to success.
+- **`--call-report` with an unknown Call-ID exited 0 on the `--cores` path.**
+  `generate_reports` returns `false` for exactly this, and its doc says the
+  caller exits non-zero so "scripts must be able to trust the exit code" — but
+  two of the three callers discarded the value. Both now honour it.
+- The fuzz workspace is scanned and updated. `fuzz/Cargo.lock` sits outside the
+  root workspace, so `cargo audit`, `cargo deny` and Dependabot all missed it —
+  194 packages, drifted 39 crates behind the root. Adding the scan immediately
+  found RUSTSEC-2026-0190 (`anyhow`, unsound) present only there. Dependabot now
+  covers `/fuzz` and the Docker base images.
+- The pre-commit hook no longer re-implements the docs version-marker rule in
+  shell. The two copies had diverged and the shell one rejected a correct
+  release commit; the Rust test it duplicated runs in the hook *and* in CI.
+
 ## [0.5.52] - 2026-07-27
 
 ### Removed

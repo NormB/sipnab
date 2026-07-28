@@ -227,7 +227,10 @@ pub fn run_cores_file(
         pcfg,
     ) {
         Ok(r) => {
-            generate_reports(cli, &r.dialog_store, &r.stream_store);
+            // The return value is the "report could not be produced" signal and
+            // was dropped here, so an unknown --call-report id or an unwritable
+            // stdout exited 0 on the --cores path while exiting 1 elsewhere.
+            let reports_ok = generate_reports(cli, &r.dialog_store, &r.stream_store);
             if !cli.quiet {
                 tracing::info!(
                     "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
@@ -237,6 +240,9 @@ pub fn run_cores_file(
                     r.stream_store.len(),
                     cli.cores,
                 );
+            }
+            if !reports_ok {
+                std::process::exit(1);
             }
         }
         Err(e) => {
@@ -292,7 +298,7 @@ pub fn run(
         let pcfg = parallel_config(&cli, config, portrange, no_rtp);
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
-        generate_reports(&cli, &result.dialog_store, &result.stream_store);
+        let reports_ok = generate_reports(&cli, &result.dialog_store, &result.stream_store);
         if !cli.quiet {
             tracing::info!(
                 "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
@@ -302,6 +308,9 @@ pub fn run(
                 result.stream_store.len(),
                 cli.cores,
             );
+        }
+        if !reports_ok {
+            std::process::exit(1);
         }
         return;
     }
@@ -1963,6 +1972,25 @@ fn render_sip_output(
 
 // ── Report generation ────────────────────────────────────────────────
 
+/// Write `text` to stdout, returning `false` if it could not be delivered.
+///
+/// A `BrokenPipe` is the reader's choice (`| head`) and counts as success;
+/// every other error means the output is incomplete. `print!` would panic on
+/// both, which is how `--report` to a full disk exited 101 with a backtrace
+/// while `-O` and `--json` reported the same condition as a clean failure.
+fn write_stdout(text: &str) -> bool {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => true,
+        Err(e) => {
+            tracing::error!("Failed to write report: {e}");
+            false
+        }
+    }
+}
+
 /// Generate post-capture reports (`--report`, `--call-report`) from the
 /// final store contents. Returns `false` when a requested report could not
 /// be produced (unknown `--call-report` Call-ID) so the caller can exit
@@ -1993,7 +2021,13 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
         let dialogs: Vec<&crate::sip::dialog::SipDialog> = dialog_store.iter().collect();
         let streams: Vec<&crate::rtp::stream::RtpStream> = stream_store.iter().collect();
         let report = output::print_dialog_report(&dialogs, &streams);
-        print!("{report}");
+        // `print!` PANICS if stdout cannot be written, so `--report > /full/disk`
+        // died with exit 101 and a Rust backtrace instead of an error. A closed
+        // pipe stays fine — `sipnab --report | head` must not fail — but a real
+        // write error makes the report incomplete, which is a failed report.
+        if !write_stdout(&report) {
+            return false;
+        }
     }
 
     // --call-report <call-id>: detailed single-call report

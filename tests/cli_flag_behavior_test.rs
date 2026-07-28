@@ -763,3 +763,93 @@ fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() {
          this is the case a naive ENOSPC fix breaks"
     );
 }
+
+/// `--report` must fail cleanly on an unwritable stdout, not panic — and a
+/// closed pipe must still be fine.
+///
+/// It used `print!`, which panics if stdout cannot be written, so
+/// `sipnab --report > /full/disk` died with exit 101 and a Rust backtrace
+/// while `-O` and `--json` reported the identical condition as a clean error.
+#[cfg(target_os = "linux")]
+#[test]
+fn report_output_fails_cleanly_and_tolerates_a_closed_pipe() {
+    use std::process::{Command, Stdio};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cap = dir.path().join("cap.pcap");
+    let frames: Vec<Vec<u8>> = (0..400)
+        .flat_map(|i| {
+            pcap_build::sip_call_frames(&format!("rp-{i}@t"), &format!("{i:06x}"), "a", "b")
+        })
+        .collect();
+    pcap_build::write_pcap(&cap, &frames);
+    let input = cap.to_str().expect("utf-8 path");
+
+    // Full disk: a clean non-zero, and specifically NOT a panic (101).
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("open /dev/full");
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", input, "--report"])
+        .stdout(full)
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn");
+    assert!(
+        !out.status.success(),
+        "--report to a full disk must not exit 0"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("panicked"),
+        "must fail cleanly rather than panic:\n{err}"
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(101),
+        "101 is the panic exit; the failure should be reported, not unwound"
+    );
+
+    // Closed pipe: still success.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", input, "--report"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    drop(child.stdout.take());
+    let status = child.wait().expect("wait");
+    assert!(
+        status.success() || status.code().is_none(),
+        "a closed pipe must not fail --report (got {status:?})"
+    );
+}
+
+/// A report that could not be produced must exit non-zero on the `--cores`
+/// path too.
+///
+/// `generate_reports` returns false for exactly this, and its doc says the
+/// caller exits non-zero so "scripts must be able to trust the exit code" —
+/// but the two multi-core callers discarded the value, so an unknown
+/// `--call-report` id exited 0 there and 1 everywhere else.
+#[test]
+fn unknown_call_report_fails_on_the_multicore_path() {
+    let (_out, err, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            FIXTURE,
+            "--cores",
+            "4",
+            "--call-report",
+            "definitely-not-a-call-id",
+        ],
+        Some("error"),
+    );
+    assert_ne!(
+        code,
+        Some(0),
+        "an unknown --call-report id must fail on --cores too:\n{err}"
+    );
+}
