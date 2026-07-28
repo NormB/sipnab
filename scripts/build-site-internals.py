@@ -381,7 +381,12 @@ def main() -> int:
         else root / "website" / "content" / "docs" / "internals"
     )
 
-    on_disk = {p.name for p in src_dir.glob("*.md")}
+    # rglob, not glob: the registry check is bidirectional, so a top-level-only
+    # scan means a nested page is neither published nor reported as missing —
+    # it simply is not seen, and this loop announces that every page on disk is
+    # registered. Nested pages have no slug scheme yet, so one surfacing here
+    # is a design decision to make, not a file to skip silently.
+    on_disk = {p.relative_to(src_dir).as_posix() for p in src_dir.rglob("*.md")}
     registered = set(SRC_TO_SLUG) | {INDEX_SRC}
     if on_disk != registered:
         for name in sorted(on_disk - registered):
