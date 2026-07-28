@@ -23,7 +23,11 @@ sipnab's REST API requires the `api` feature flag:
 
 ```bash
 cargo build --release --features api
-# or all features:
+```
+
+That is additive to the default features, so it gives you the REST API on top of the TUI, audio, and the standalone metrics server. Build `full` instead when you also want the MCP server, HEP forwarding, and the TLS-gated features (STIR/SHAKEN validation, SRTP decryption) in the same binary — the REST API itself is identical either way, so choose on what else you need:
+
+```bash
 cargo build --release --features full
 ```
 
@@ -82,7 +86,12 @@ signing-key rotation, and revocation denylists — see
 A shared secret with **no expiry**. Simplest to set up; you revoke it by
 restarting with a different key.
 
+Both lines below are one procedure — the server reads the variable the first
+line sets. Run the second on its own and `$SIPNAB_API_KEY` is empty, which on
+this loopback bind starts an API that accepts every request unauthenticated:
+
 ```bash
+# Run all of these, in order.
 export SIPNAB_API_KEY="$(openssl rand -hex 32)"
 sipnab --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY"
 ```
@@ -129,15 +138,24 @@ the binding applies to signed tokens only.
 | `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
 
-**Mint a token:**
+**Mint a token.** Generate the signing key first. Everything below reads it
+from `$KEY`, including the server — mint against one key and serve with
+another and every token you handed out returns `401`:
 
 ```bash
 KEY="$(openssl rand -hex 32)"
+```
 
-# 1-hour token (default TTL)
+Then mint one token, not both. A token on the default one-hour TTL:
+
+```bash
 sipnab --mint-token --api-signing-key "$KEY"
+```
 
-# 24-hour token with an explicit id, so it can be revoked later
+A 24-hour token with an explicit id — give one whenever the token may need
+revoking before it expires, since the denylist matches on that id:
+
+```bash
 sipnab --mint-token --api-signing-key "$KEY" --api-token-ttl 86400 --token-id ci-runner-1
 ```
 
@@ -605,14 +623,17 @@ List all tracked RTP streams with quality metrics.
 | `limit`    | int   | 50      | Maximum results (capped at 1000) |
 | `offset`   | int   | 0       | Pagination offset |
 
-**curl:**
+**curl** — every tracked stream:
 
 ```bash
-# All streams
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   http://127.0.0.1:8080/v1/streams | jq .
+```
 
-# Streams with poor quality (MOS below 3.0)
+Or narrow it to the streams that are actually degraded, by asking for those
+whose estimated MOS is below a threshold:
+
+```bash
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   "http://127.0.0.1:8080/v1/streams?mos_below=3.0" | jq .
 ```
@@ -910,33 +931,41 @@ The following metric *names* are declared in source but are not yet wired to the
 
 ## Recipes (curl + jq)
 
+Every recipe here reads `$API`, and every one but the health check also reads
+`$H`, so set them once first. The two lines are one unit — `$H` interpolates
+`$KEY`, so running the second on its own builds an `Authorization` header with
+no token in it and every authenticated recipe then returns `401`:
+
 ```bash
+# Run all of these, in order.
 API="http://127.0.0.1:8080"; KEY="my-secret-token"
 H="-H 'Authorization: Bearer $KEY'"
+```
 
-# Health check (no auth)
-curl -fsS $API/health
+Each recipe below is a complete command in its own right, and they are
+alternatives rather than a sequence — run the one that answers your question:
 
-# Failed dialogs / dialogs from a user (from= is a regex)
-curl -fsS "$API/v1/dialogs?state=Failed&limit=20" $H | jq
-curl -fsS "$API/v1/dialogs?from=alice&limit=20"   $H | jq
+- `curl -fsS $API/health` — health check; `/health` is the one endpoint that takes no credential
+- `curl -fsS "$API/v1/dialogs?state=Failed&limit=20" $H | jq` — the most recent failed dialogs
+- `curl -fsS "$API/v1/dialogs?from=alice&limit=20"   $H | jq` — dialogs from one user (`from=` is a regex)
+- `curl -fsS "$API/v1/dialogs/abc123@host"        $H | jq` — one aggregated dialog by Call-ID
+- `curl -fsS "$API/v1/dialogs/abc123@host/report" $H | jq` — the same dialog as a JSON call report
+- `curl -fsS "$API/v1/streams?orphaned=false" $H | jq` — only streams already linked to a dialog
+- `curl -fsS "$API/v1/streams?mos_below=3.5"  $H | jq` — only streams below a MOS threshold
+- `curl -fsS "$API/v1/stats" $H | jq` — the aggregate counters and PDD percentiles
 
-# One aggregated dialog, and its JSON call report
-curl -fsS "$API/v1/dialogs/abc123@host"        $H | jq
-curl -fsS "$API/v1/dialogs/abc123@host/report" $H | jq
+Two recipes are pipelines rather than one-liners. Export every dialog to CSV,
+for a spreadsheet or a diff against the switch's own CDR:
 
-# Streams: non-orphaned, or below a MOS threshold
-curl -fsS "$API/v1/streams?orphaned=false" $H | jq
-curl -fsS "$API/v1/streams?mos_below=3.5"  $H | jq
-
-# Aggregate counters
-curl -fsS "$API/v1/stats" $H | jq
-
-# Export all dialogs to CSV
+```bash
 curl -fsS "$API/v1/dialogs?limit=1000" $H \
   | jq -r '.dialogs[] | [.call_id, .method, .state, .from_user, .to_user, .duration_sec] | @csv'
+```
 
-# Alert on poor MOS
+Or print one line per poor-MOS stream, which is the shape to feed an alerting
+hook — it is silent when nothing is degraded:
+
+```bash
 curl -fsS "$API/v1/streams?mos_below=3.0" $H \
   | jq -r '.streams[] | "LOW MOS: SSRC=\(.ssrc) MOS=\(.mos) call=\(.associated_dialog)"'
 ```

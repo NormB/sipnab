@@ -77,11 +77,16 @@ The binary is at `target/release/sipnab`. Live capture requires root or
 Pre-built binaries for x86_64 and aarch64 Linux can be built from macOS using
 [cross](https://github.com/cross-rs/cross):
 
-```bash
-# x86_64 Linux (dynamically linked, requires libpcap on target)
-cross build --release --target x86_64-unknown-linux-gnu
+Build for x86_64 Linux. The result is dynamically linked, so the target host
+needs libpcap present:
 
-# aarch64 Linux
+```bash
+cross build --release --target x86_64-unknown-linux-gnu
+```
+
+Build for aarch64 Linux:
+
+```bash
 cross build --release --target aarch64-unknown-linux-gnu
 ```
 
@@ -90,23 +95,41 @@ Docker Desktop, or similar) and `cross` (`cargo install cross`).
 
 ## Quick Start
 
+The default mode is the TUI -- an interactive call list. It puts the terminal in
+raw mode, so anything pasted after it arrives as keystrokes rather than as a
+second command (`i` clears non-matching dialogs, `q` quits). Run it on its own:
+
 ```bash
-# TUI mode -- interactive call list
 sudo sipnab -d eth0
+```
 
-# CLI mode -- filter by From header
+CLI mode instead of the TUI, filtering on the From header:
+
+```bash
 sudo sipnab -N -d eth0 --from 1001
+```
 
-# Diagnose a specific call from a pcap
+Diagnose a specific call from a pcap:
+
+```bash
 sipnab -N -I capture.pcap --call-report <call-id>
+```
 
-# Show only problematic calls
+Show only the calls sipnab considers problematic:
+
+```bash
 sudo sipnab -N -d eth0 --problems
+```
 
-# JSON output piped to jq
+Emit JSON and pipe it to jq:
+
+```bash
 sudo sipnab -N -d eth0 --json | jq .
+```
 
-# Security -- detect SIP scanners
+Detect SIP scanners and report them to syslog:
+
+```bash
 sudo sipnab -N -d eth0 --kill-scanner --alert syslog
 ```
 
@@ -143,13 +166,22 @@ All sngrep keybindings are supported. Press `F1` for the full shortcut reference
 | `wasm`     | WebAssembly target for in-browser pcap analysis                      | no      |
 | `full`     | `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` | no      |
 
-Build with specific features:
+Build with specific features. Adding TLS decryption and HEP to the default set:
 
 ```bash
 cargo build --release --features tls,hep
-cargo build --release --features full
+```
 
-# Headless capture host with HEP listener + REST API + MCP HTTP
+Everything the crate can do:
+
+```bash
+cargo build --release --features full
+```
+
+A headless capture host -- HEP listener, REST API, and MCP over HTTP, with no
+TUI and no audio:
+
+```bash
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 

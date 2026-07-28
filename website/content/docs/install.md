@@ -26,13 +26,17 @@ downloads the matching versioned release tarball
 `sudo` only if that directory isn't writable). Prefer to read it first:
 <https://www.sipnab.com/install.sh>.
 
-Two environment variables tune it:
+Two environment variables tune it. To pin a specific version instead of taking
+whatever the latest release is:
 
 ```bash
-# Pin a specific version instead of the latest release
 curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=0.5.55 sh
+```
 
-# Install somewhere else (e.g. no root)
+To install somewhere other than `/usr/local/bin` — a directory you already own,
+so no root is involved:
+
+```bash
 curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
@@ -63,14 +67,20 @@ Architecture naming: `x86_64` = `amd64` (Intel/AMD), `aarch64` = `arm64`
 (ARM); tarballs use the former, `.deb` packages the latter. `uname -m` tells
 you which one you are.
 
+On Linux x86_64, the static musl tarball runs on any distro and any glibc,
+Alpine included. Replace `<version>` with the latest, e.g. 0.5.55:
+
 ```bash
-# Linux x86_64 (static musl -- runs on any distro, any glibc, Alpine included)
-# Replace <version> with the latest, e.g. 0.5.55
+# Run all of these, in order.
 curl -LO https://github.com/NormB/sipnab/releases/download/v<version>/sipnab-<version>-x86_64-unknown-linux-musl.tar.gz
 tar xzf sipnab-<version>-x86_64-unknown-linux-musl.tar.gz
 sudo install -m 755 sipnab-<version>-x86_64-unknown-linux-musl/sipnab /usr/local/bin/sipnab
+```
 
-# Linux aarch64 (static musl)
+The same three steps on Linux aarch64, against the aarch64 musl tarball:
+
+```bash
+# Run all of these, in order.
 curl -LO https://github.com/NormB/sipnab/releases/download/v<version>/sipnab-<version>-aarch64-unknown-linux-musl.tar.gz
 tar xzf sipnab-<version>-aarch64-unknown-linux-musl.tar.gz
 sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/local/bin/sipnab
@@ -80,6 +90,7 @@ Manual download with checksum verification (replace `<version>` with the
 latest, e.g. 0.5.55):
 
 ```bash
+# Run all of these, in order.
 V=<version> T=x86_64-unknown-linux-gnu
 curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz"
 curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz.sha256"
@@ -115,14 +126,23 @@ cargo install sipnab --features full
 
 ### Debian/Ubuntu (.deb)
 
-Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above:
+Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
+
+Download and install the amd64 (x86_64) package — replace `<version>` with the
+latest, e.g. 0.5.55:
 
 ```bash
-# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.55
+# Run all of these, in order.
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
 sudo apt install ./sipnab_<version>_amd64.deb
+```
 
-# arm64 (aarch64)
+On an arm64 (aarch64) host, take the arm64 package instead — installing the
+wrong-architecture `.deb` over the right one leaves you with a binary that will
+not run:
+
+```bash
+# Run all of these, in order.
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_arm64.deb
 sudo apt install ./sipnab_<version>_arm64.deb
 ```
@@ -136,14 +156,20 @@ The standard package ships the audio playback plugin and therefore
 stack (~500 kB) onto the system. For headless servers, each release also
 publishes a **`-noaudio`** package with no plugin and no ALSA dependency
 (everything else — WAV export included — works the same; only live playback
-in the TUI is unavailable):
+in the TUI is unavailable).
+
+The headless amd64 (x86_64) package:
 
 ```bash
-# amd64 (x86_64), headless / no ALSA
+# Run all of these, in order.
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64-noaudio.deb
 sudo apt install ./sipnab_<version>_amd64-noaudio.deb
+```
 
-# arm64 (aarch64), headless / no ALSA
+The headless arm64 (aarch64) package, for arm64 hosts:
+
+```bash
+# Run all of these, in order.
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_arm64-noaudio.deb
 sudo apt install ./sipnab_<version>_arm64-noaudio.deb
 ```
@@ -157,13 +183,24 @@ as soon as `libasound2` is installed).
 
 `.rpm` packages ship per release for `x86_64` and `aarch64`, each in a
 standard and a `-noaudio` variant (no audio plugin, no `alsa-lib` weak
-dependency — for headless servers, mirroring the `.deb` variants):
+dependency — for headless servers, mirroring the `.deb` variants).
+
+The standard package on an x86_64 host:
 
 ```bash
 sudo rpm -i sipnab-0.5.55-1.x86_64.rpm
-# headless / no-ALSA variant:
+```
+
+The headless / no-ALSA variant on the same architecture:
+
+```bash
 sudo rpm -i sipnab-0.5.55-1.x86_64-noaudio.rpm
-# arm64 hosts:
+```
+
+The standard package on an aarch64 (arm64) host — pick the variant matching
+`uname -m`:
+
+```bash
 sudo rpm -i sipnab-0.5.55-1.aarch64.rpm
 ```
 
@@ -181,6 +218,7 @@ brew install sipnab
 `--setup-caps` yourself. [`scripts/install-from-source.sh`](https://github.com/NormB/sipnab/blob/main/scripts/install-from-source.sh) does both:
 
 ```bash
+# Run all of these, in order.
 git clone https://github.com/NormB/sipnab.git
 cd sipnab
 ./scripts/install-from-source.sh --features full
@@ -197,6 +235,7 @@ and compiles nothing.
 ### Basic build (TUI only, default features)
 
 ```bash
+# Run all of these, in order.
 git clone https://github.com/NormB/sipnab.git
 cd sipnab
 cargo build --release
@@ -309,16 +348,22 @@ sipnab uses Cargo feature flags to control optional functionality. The default b
 | `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | wasm-bindgen toolchain |
 
-Build with specific features:
+Build with specific features. For the TUI plus TLS decryption and nothing else:
 
 ```bash
-# TUI + TLS only
 cargo build --release --features tui,tls
+```
 
-# Headless capture host with HEP listener + REST API + MCP HTTP
+For a headless capture host — HEP listener, REST API, and MCP over HTTP, with
+no TUI and no audio:
+
+```bash
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
+```
 
-# Everything
+For everything:
+
+```bash
 cargo build --release --features full
 ```
 
@@ -355,16 +400,23 @@ Target binary size (musl, stripped): <= 10 MB. Enforced against the real artifac
 
 ## Cross-Compilation
 
-sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. Supported targets are configured in `Cross.toml`:
+sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. Supported targets are configured in `Cross.toml`.
+
+`cross` is a separate binary, so install it first:
 
 ```bash
-# Install cross
 cargo install cross
+```
 
-# Build for aarch64 Linux
+With that in place, build for aarch64 Linux:
+
+```bash
 cross build --release --features full --target aarch64-unknown-linux-gnu
+```
 
-# Build for x86_64 Linux
+Or for x86_64 Linux:
+
+```bash
 cross build --release --features full --target x86_64-unknown-linux-gnu
 ```
 
@@ -409,22 +461,35 @@ Should build and run. Live capture support depends on platform pcap implementati
 
 ## Verify Installation
 
-After installing, confirm sipnab is working:
+After installing, confirm sipnab is working. Print the version, which also
+names the features the binary was compiled with:
 
 ```bash
-# Check version
 sipnab --version
+```
 
-# Display full help
+Print the full help, which lists every flag this build accepts:
+
+```bash
 sipnab --help
+```
 
-# Quick test with a pcap file
+Open a capture file in the TUI, which is the quickest end-to-end test:
+
+```bash
 sipnab -I /path/to/capture.pcap
+```
 
-# CLI mode test (non-interactive, first 5 dialogs)
+Or read the same file in CLI mode — non-interactive, first 5 dialogs:
+
+```bash
 sipnab -N -I /path/to/capture.pcap | head -5
+```
 
-# Dump effective config to confirm feature flags
+Dump the effective config, which confirms the feature flags in a form you can
+paste into a bug report:
+
+```bash
 sipnab -D
 ```
 

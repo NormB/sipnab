@@ -16,12 +16,18 @@ Point sipnab at a pcap and it drops you straight into the **Call List**:
 sipnab -I capture.pcap
 ```
 
-No file handy? Launch it live on an interface (needs `sudo`), or start with no
-argument and open a file from inside the TUI with `O` (the File Open dialog):
+No file handy? Capture live on an interface instead — this needs `sudo`,
+because opening a capture device is privileged:
 
 ```bash
-sudo sipnab -d eth0     # live capture
-sipnab                  # then press O to open a pcap
+sudo sipnab -d eth0
+```
+
+Or start with no argument at all and open a file from inside the TUI with `O`
+(the File Open dialog):
+
+```bash
+sipnab
 ```
 
 You can open a different capture at any time with `O` -- no restart needed.

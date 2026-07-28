@@ -31,6 +31,7 @@ By participating in this project you agree to abide by the
 ## Build from Source
 
 ```bash
+# Run all of these, in order.
 git clone https://github.com/NormB/sipnab.git
 cd sipnab
 cargo build
@@ -38,12 +39,21 @@ cargo build
 
 ## Running Tests
 
+The default feature set, which is the fast pass:
+
 ```bash
 cargo test
+```
+
+Every feature-gated path, which is what CI gates on -- `tls`, `hep`, `api`,
+`mcp`, and `wasm` are compiled out of the default build, so their tests do not
+run above:
+
+```bash
 cargo test --all-features
 ```
 
-This runs the unit tests, the integration tests, the **property tests**
+These run the unit tests, the integration tests, the **property tests**
 (`tests/property_test.rs`, proptest — SIP/SDP build→parse round-trips and
 the filter-DSL total-function invariant), and the always-on smoke-fuzz
 gate (`tests/smoke_fuzz_test.rs`, no nightly needed). The TUI has three

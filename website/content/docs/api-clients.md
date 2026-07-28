@@ -18,7 +18,14 @@ End-to-end examples in five languages. Each one covers: bearer-token auth, listi
 
 ### curl + jq one-liners
 
+`$API`, `$KEY` and `$H` are set at the top and used by every call below, so this
+block is one paste into one shell. Lifting a single line out of the middle gives
+you a curl with unset variables, which requests `/v1/dialogs` on no host with no
+bearer token. Every call here is a read; running the block start to finish
+changes nothing on the server.
+
 ```bash
+# Run all of these, in order.
 # Setup
 API="http://localhost:8080"
 KEY="my-secret-token"

@@ -97,26 +97,49 @@ consumers to it.
 
 ### jq recipes
 
+One recipe per question, each a complete pipeline — run the one you want, not
+the whole list.
+
+Keep only the INVITEs:
+
 ```bash
-# Only INVITEs
 sipnab -N -I capture.pcap --json | jq 'select(.method == "INVITE")'
+```
 
-# Calls from a specific user (`from` is the whole From header, so test it)
+Find the calls placed by one user. `from` carries the whole `From` header, so
+test it for a substring rather than comparing it for equality:
+
+```bash
 sipnab -N -I capture.pcap --json | jq 'select(.from // "" | test("sip:1001@"))'
+```
 
-# Count messages per method
+Count the messages per method, to see what a capture is made of before reading
+any of it:
+
+```bash
 sipnab -N -I capture.pcap --json \
   | jq -s 'group_by(.method) | map({method: .[0].method, n: length})'
+```
 
-# Failed responses (4xx/5xx/6xx) with their reason
+Pull the failed responses (4xx/5xx/6xx) with the reason each one carries:
+
+```bash
 sipnab -N -I capture.pcap --json \
   | jq 'select(.status_code != null and .status_code >= 400)
         | {ts: .timestamp, code: .status_code, reason, call_id}'
+```
 
-# Distinct Call-IDs seen (feed into --call-report)
+List the distinct Call-IDs seen — this is the list you feed into
+`--call-report`:
+
+```bash
 sipnab -N -I capture.pcap --json | jq -r '.call_id' | sort -u
+```
 
-# Response-code histogram (how many of each status code)
+Build a response-code histogram, counting how many of each status code the
+capture holds:
+
+```bash
 sipnab -N -I capture.pcap --json \
   | jq -r 'select(.is_request == false) | .status_code' \
   | sort | uniq -c | sort -rn
@@ -127,13 +150,17 @@ sipnab -N -I capture.pcap --json \
 `--json` prints a line per message. For end-of-run summaries instead,
 combine the report flags with
 [`--no-cli-print`](cli-reference.md#output) (which suppresses the
-per-message stream but not the report):
+per-message stream but not the report).
+
+For the aggregate report over the whole capture, and nothing else:
 
 ```bash
-# Aggregate report only
 sipnab -N -I capture.pcap --report --no-cli-print
+```
 
-# Single-call deep dive only
+For a deep dive into a single call, named by its Call-ID:
+
+```bash
 sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --no-cli-print
 ```
 

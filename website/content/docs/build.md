@@ -26,6 +26,7 @@ cargo install sipnab --features full
 `--setup-caps` yourself. [`scripts/install-from-source.sh`](https://github.com/NormB/sipnab/blob/main/scripts/install-from-source.sh) does both:
 
 ```bash
+# Run all of these, in order.
 git clone https://github.com/NormB/sipnab.git
 cd sipnab
 ./scripts/install-from-source.sh --features full
@@ -42,6 +43,7 @@ and compiles nothing.
 ### Basic build (TUI only, default features)
 
 ```bash
+# Run all of these, in order.
 git clone https://github.com/NormB/sipnab.git
 cd sipnab
 cargo build --release
@@ -77,16 +79,23 @@ sipnab uses Cargo feature flags to control optional functionality. The default b
 | `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | wasm-bindgen toolchain |
 
-Build with specific features:
+Build with specific features. The TUI and TLS decryption only — no audio plugin,
+HEP, REST API or MCP compiled in:
 
 ```bash
-# TUI + TLS only
 cargo build --release --features tui,tls
+```
 
-# Headless capture host with HEP listener + REST API + MCP HTTP
+A headless capture host — HEP listener, REST API and MCP over HTTP, with the TUI
+and audio left out because a server has no use for either:
+
+```bash
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
+```
 
-# Everything
+Everything — the feature set the official glibc and macOS releases ship:
+
+```bash
 cargo build --release --features full
 ```
 
@@ -104,8 +113,14 @@ cargo build --release --features full
 `libasound.so.2` is an **optional** runtime dependency. The `audio` feature builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/` by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary `dlopen`s this plugin only when you actually play a stream, so an audio-enabled binary starts fine on a host without libasound. If libasound (or the plugin) is missing, playback returns a clear error and you can still export the stream to a WAV file (F2). Only `libpcap0.8` is a hard dependency:
 
 ```bash
-apt-get install -y libpcap0.8            # required
-apt-get install -y libasound2           # optional, for live playback
+apt-get install -y libpcap0.8
+```
+
+libasound is optional and only affects live playback. Skip it on a server: the
+binary still starts, and WAV export (F2) still works without it.
+
+```bash
+apt-get install -y libasound2
 ```
 
 If you don't need TUI audio playback on the host (typical for a `--hep-listen` / `--api` / `--mcp` server), install the `-noaudio` `.deb`, or build without the `audio` feature so the plugin is not built at all:
@@ -127,17 +142,24 @@ sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
 
 It advertises `audio` it cannot deliver. Nothing errors until you try to play a stream.
 
-Two supported ways to build on Alpine, depending on what you want:
+Two supported ways to build on Alpine, depending on what you want. Pick one — the
+two produce incompatible binaries.
+
+Portable, no audio. This is what the release ships: static, zero runtime deps,
+runs on any Linux distro regardless of libc.
 
 ```bash
-# 1. Portable, no audio — what the release ships. Static, zero runtime deps,
-#    runs on any Linux distro regardless of libc.
+# Run all of these, in order.
 apk add --no-cache musl-dev libpcap-dev pkgconf
 cargo build --release --no-default-features \
     --features native,tui,tls,hep,api,mcp,mcp-http
+```
 
-# 2. Alpine-only, with audio. Dynamically linked, so dlopen works and the
-#    plugin loads. Needs alsa-lib at runtime and will NOT run on glibc hosts.
+Alpine-only, with audio. Dynamically linked, so `dlopen` works and the plugin
+loads. Needs alsa-lib at runtime and will NOT run on glibc hosts.
+
+```bash
+# Run all of these, in order.
 apk add --no-cache musl-dev libpcap-dev pkgconf alsa-lib alsa-lib-dev
 RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --features full
 RUSTFLAGS="-C target-feature=-crt-static" cargo build --release -p sipnab-audio
@@ -166,15 +188,22 @@ Target binary size (musl, stripped): <= 10 MB. Enforced against the real artifac
 
 ## Cross-Compilation
 
-sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation:
+sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. It
+runs each build in a container that already carries the target's toolchain, so
+the host needs no cross-linker of its own. Install it once:
 
 ```bash
-# Install cross
 cargo install cross
+```
 
-# Build for aarch64 Linux
+Build for aarch64 Linux:
+
+```bash
 cross build --release --features full --target aarch64-unknown-linux-gnu
+```
 
-# Build for x86_64 Linux
+Build for x86_64 Linux:
+
+```bash
 cross build --release --features full --target x86_64-unknown-linux-gnu
 ```

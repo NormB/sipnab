@@ -34,15 +34,22 @@ sipnab -d eth0 -H 192.0.2.50:9060
 
 sipnab can execute external commands on dialog state changes or quality drops. The command receives event data via `SIPNAB_*` environment variables (`SIPNAB_JSON` carries the full dialog JSON) — never on stdin and never interpolated into the command line. Event execution works in **all modes** (TUI, CLI, and API) -- it is not specific to the API feature.
 
-```bash
-# Run a script when any dialog changes state
-sipnab -d eth0 --on-dialog-exec "/usr/local/bin/sip-event.sh"
+Run a script when any dialog changes state:
 
-# Run a script when RTP quality drops below threshold
+```bash
+sipnab -d eth0 --on-dialog-exec "/usr/local/bin/sip-event.sh"
+```
+
+Run a script when RTP quality drops below a MOS threshold:
+
+```bash
 sipnab -d eth0 --on-quality-exec "/usr/local/bin/quality-alert.sh" \
   --quality-threshold 3.0
+```
 
-# Rate limit exec invocations (default: 10/sec)
+Rate-limit exec invocations; the default is 10 per second:
+
+```bash
 sipnab -d eth0 --on-dialog-exec "logger" --exec-rate-limit 5
 ```
 

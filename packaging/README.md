@@ -23,11 +23,24 @@ read by nothing — and the one that used to sit here had drifted into declaring
 
 Both builders resolve their inputs (`man/sipnab.1`, `packaging/sipnab.service`,
 the binary) **relative to the working directory**, so run them from the repo
-root, not from this directory:
+root, not from this directory.
+
+The full `.deb`, with the audio plugin:
 
 ```bash
-bash packaging/deb/build-deb.sh 1.2.3 amd64            # full
-bash packaging/deb/build-deb.sh 1.2.3 amd64 noaudio    # no audio plugin
+bash packaging/deb/build-deb.sh 1.2.3 amd64
+```
+
+The `-noaudio` `.deb`, for hosts that have no `libasound2` and never play audio:
+
+```bash
+bash packaging/deb/build-deb.sh 1.2.3 amd64 noaudio
+```
+
+The `.rpm`, which takes the rpm spelling of the architecture — `x86_64`, not the
+`amd64` the `.deb` builder expects:
+
+```bash
 bash packaging/rpm/build-rpm.sh 1.2.3 x86_64
 ```
 

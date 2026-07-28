@@ -22,13 +22,11 @@ sipnab -N -I capture.pcap --problems --json
 
 Calls rejected with `403 Forbidden`, `404 Not Found`, `486 Busy Here`, `488 Not Acceptable Here`, or timing out with `408 Request Timeout`? Find every call that never established, then triage by response code.
 
+List every failed call, one line per response message, carrying the Call-ID, the response code, and the reason text:
+
 ```bash
-# All failed calls: Call-ID + response code + reason per response message
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
   | jq -c 'select(.is_request == false) | {call_id, status_code, reason}'
-
-# Detailed report for one call (Markdown, ready for a ticket)
-sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
 ```
 
 You should see one line per response message of each failed call (minimal example):
@@ -37,6 +35,12 @@ You should see one line per response message of each failed call (minimal exampl
 {"call_id":"abc123@host","status_code":100,"reason":"Trying"}
 {"call_id":"abc123@host","status_code":486,"reason":"Busy Here"}
 {"call_id":"def456@host","status_code":408,"reason":"Request Timeout"}
+```
+
+Once one of those Call-IDs is worth escalating, write the detailed Markdown report for that single call and attach it to a ticket. Substitute the Call-ID you picked; the redirect overwrites `report.md` in the current directory:
+
+```bash
+sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
 ```
 
 **What to look for:** sipnab includes response code intelligence -- the status field tells you why:
@@ -59,12 +63,16 @@ You should see one line per response message of each failed call (minimal exampl
 
 The call sets up fine, both sides talk, then it dies partway through -- often after a suspiciously round number of minutes.
 
+Enumerate the calls that established and then ended early -- completed, but far shorter than a real conversation:
+
 ```bash
-# 1. Enumerate completed-but-short calls (established, then ended early)
 sipnab -N -I capture.pcap --filter "duration < 120.0 AND state == 'Completed'" --json \
   | jq -r '.call_id' | sort -u
+```
 
-# 2. Timeline for one dropped call: who sent the BYE, and exactly when
+Then print the timeline for one of those calls -- who sent the BYE, and exactly when. Substitute a Call-ID from the list above for `abc123@host`:
+
+```bash
 sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
 ```
 
@@ -86,19 +94,23 @@ The call report shows the full SIP message timeline plus per-stream RTP stats (i
 
 An INVITE is rejected with `488 Not Acceptable Here`: the callee (or an SBC in the path) found no common codec between the SDP offer and what it supports.
 
+Find every 488 rejection in the capture:
+
 ```bash
-# 1. Find every 488 rejection
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
   | jq -c 'select(.status_code == 488) | {call_id, status_code, reason}'
-
-# 2. Compare the SDP offer against the answer for one call
-sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
 ```
 
 You should see:
 
 ```json
 {"call_id":"abc123@host","status_code":488,"reason":"Not Acceptable Here"}
+```
+
+Then compare the SDP offer against the answer for one of those calls, substituting its Call-ID for `abc123@host`:
+
+```bash
+sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
 ```
 
 The call report's **SDP timeline** lists each offer/answer with its codec set. A 488 means there is no overlap: e.g. the offer carries only `G729` while the callee's profile allows only `PCMU, PCMA`. (If the reject comes from an SBC, the offer may never have reached the far end at all.)
@@ -111,21 +123,28 @@ The call report's **SDP timeline** lists each offer/answer with its codec set. A
 
 One direction of RTP has zero packets. The caller can hear the callee (or vice versa) but not both.
 
+The `--one-way` alias finds every call flagged for one-way audio and dumps the matching SIP messages as NDJSON:
+
 ```bash
-# Find calls flagged for one-way audio (--one-way is shorthand for the filter below)
 sipnab -N -I capture.pcap --one-way --json
-
-# Full diagnostic output
-sipnab -N -I capture.pcap --one-way --report
-
-# The equivalent explicit Filter-DSL form, if you want to combine it with others
-sipnab -N -I capture.pcap --filter "one_way == true" --json
 ```
 
 You should see one NDJSON record per SIP message of each flagged call (abridged -- real records carry the full field set):
 
 ```json
 {"is_request":true,"method":"INVITE","call_id":"7f3a9c@192.0.2.5","from":"...","to":"...", "...":"..."}
+```
+
+For the same set of calls rendered as the full diagnostic report rather than raw records:
+
+```bash
+sipnab -N -I capture.pcap --one-way --report
+```
+
+`--one-way` is shorthand for a Filter-DSL condition. Write that condition out when you want to combine it with others:
+
+```bash
+sipnab -N -I capture.pcap --filter "one_way == true" --json
 ```
 
 Get the diagnosis detail (`one_way_audio`, `nat_mismatch`, hints) per call with `--call-report <call-id>`.
@@ -148,12 +167,10 @@ Get the diagnosis detail (`one_way_audio`, `nat_mismatch`, hints) per call with 
 
 MOS below 3.0 means quality degradation users will notice. Below 2.5, calls are unusable.
 
-```bash
-# Find completed calls with poor MOS
-sipnab -N -I capture.pcap --filter "rtp.mos < 3.0" --json
+Find the calls in a capture whose MOS fell below the noticeable-degradation line:
 
-# Live monitoring -- alert on quality or jitter spikes
-sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
+```bash
+sipnab -N -I capture.pcap --filter "rtp.mos < 3.0" --json
 ```
 
 You should see the SIP messages of every matching call as NDJSON (abridged):
@@ -163,6 +180,12 @@ You should see the SIP messages of every matching call as NDJSON (abridged):
 ```
 
 The per-message records identify *which* calls are bad; pull the per-stream numbers (`jitter_ms`, `loss_pct`, quality intervals) with `--call-report <call-id>`.
+
+To watch a live interface instead, widen the same filter to jitter spikes and let it run -- each matching call prints as it happens. Live capture needs raw-socket access, hence `sudo`:
+
+```bash
+sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
+```
 
 **What to look for:**
 
@@ -191,11 +214,15 @@ This same data is available in the browser analyzer at [sipnab.com/analyze/](htt
 
 PDD over 3 seconds is perceptible to users. Over 5 seconds and they'll hang up.
 
-```bash
-# Find calls with excessive PDD
-sipnab -N -I capture.pcap --filter "pdd > 3.0" --json
+Find the calls whose post-dial delay crossed the 3-second perceptibility line:
 
-# Built-in alias with summary report
+```bash
+sipnab -N -I capture.pcap --filter "pdd > 3.0" --json
+```
+
+The `--slow-setup` alias carries that same threshold; pair it with `--report` for a summary instead of per-message records:
+
+```bash
 sipnab -N -I capture.pcap --slow-setup --report
 ```
 
@@ -213,11 +240,15 @@ sipnab -N -I capture.pcap --slow-setup --report
 
 The Contact or Via header advertises a private IP that doesn't match the actual packet source.
 
-```bash
-# Find NAT mismatches
-sipnab -N -I capture.pcap --filter "nat_mismatch == true" --json
+Find the calls where the address in the SIP headers disagrees with the address the packet came from:
 
-# Built-in alias
+```bash
+sipnab -N -I capture.pcap --filter "nat_mismatch == true" --json
+```
+
+The `--nat-issues` alias is the same selection without writing the filter out:
+
+```bash
 sipnab -N -I capture.pcap --nat-issues
 ```
 
@@ -235,11 +266,15 @@ sipnab -N -I capture.pcap --nat-issues
 
 Scanners probe for open registrations and try credential stuffing. Detect them early and feed the IPs to fail2ban.
 
-```bash
-# Live detection with fail2ban-compatible output
-sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
+Detect scanners on a live interface and append fail2ban-compatible lines to a log file fail2ban can watch. `--kill-scanner` also sends the kill response back to the scanner, so run it only where that is intended:
 
-# Find scanner User-Agents in a pcap
+```bash
+sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
+```
+
+After the fact, match the known scanner User-Agents in a capture -- this only reads the file, and sends nothing:
+
+```bash
 sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 ```
 
@@ -277,14 +312,21 @@ sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND state == 'Failed'" 
 
 Export call data for tickets, post-mortems, or automated pipelines.
 
+A Markdown report for one call, to attach to a ticket. The redirect overwrites `report.md` in the current directory:
+
 ```bash
-# Markdown report for a specific call (attach to a ticket)
 sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
+```
 
-# JSON export of all failed calls (feed to your monitoring system)
+A JSON export of every failed call, to feed a monitoring system. This one overwrites `failed_calls.json`:
+
+```bash
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json > failed_calls.json
+```
 
-# Count failures by response code
+A failure count per response code, written to the terminal rather than a file:
+
+```bash
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
   | jq -r '.status_code' | sort | uniq -c | sort -rn
 ```

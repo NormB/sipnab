@@ -65,11 +65,15 @@ static IPs on the bridge).
 ## Quick start
 
 ```bash
+# Run all of these, in order.
 cd harness
 make up        # generates the MCP token, builds all images, starts the stack
 make ps        # check everything is healthy
 make logs      # watch SIPp call flow + sipnab capture
 ```
+
+`make logs` follows the stream and does not return; interrupt it when you have
+seen enough.
 
 `make up` ends by printing the connection block for your laptop (also via
 `make laptop`). Verify the MCP endpoint locally first:
@@ -126,11 +130,19 @@ media pcap) into `sipp/scenarios/`.
 
 `sipnab` live-captures and serves MCP. To *also* write a pcap fixture, set
 `CAPTURE_PCAP` for the sipnab service (e.g. in `docker-compose.yml` or via
-`environment`) to a path under `/captures`, then re-analyze offline:
+`environment`) to a path under `/captures`, then re-analyze offline.
+
+Recreate the sipnab service with the capture path set:
 
 ```bash
 CAPTURE_PCAP=/captures/opensips-1.pcap docker compose up -d sipnab
-# later:
+```
+
+Later — once the SIPp loop has run long enough to put something in the file —
+analyze it. Run this too soon and you are reading an empty fixture, not a quiet
+network:
+
+```bash
 docker compose run --rm --entrypoint sipnab sipnab -N -I /captures/opensips-1.pcap --report
 ```
 
@@ -217,7 +229,17 @@ which the rotator keeps valid.
 
 ## Teardown
 
+Stop and remove the containers, keeping the built images and captured pcaps so
+the next `make up` starts quickly:
+
 ```bash
-make down      # stop + remove containers
-make clean     # also remove built images and captured pcaps
+make down
+```
+
+Or tear down and also remove the built images and captured pcaps. This runs
+`make down` first, so it replaces it rather than following it — and the next
+`make up` rebuilds OpenSIPS from source:
+
+```bash
+make clean
 ```

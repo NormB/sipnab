@@ -24,6 +24,7 @@ Benchmarks are measured against a **checksum-verified release artifact**, never
 a local dev build, on an otherwise idle host:
 
 ```sh
+# Run all of these, in order.
 gh release download v0.5.47 -R NormB/sipnab \
   -p 'sipnab-0.5.47-aarch64-unknown-linux-gnu.tar.gz*'
 sha256sum -c sipnab-0.5.47-aarch64-unknown-linux-gnu.tar.gz.sha256
@@ -36,6 +37,7 @@ a bounded pool of 100 Call-IDs and 200 RTP streams, so dialog state stays
 constant and the measurement isolates the packet path:
 
 ```sh
+# Run all of these, in order.
 python3 bench/carrier.py --calls 5000 --out corpus.pcap
 # 535000 packets (35000 SIP, 500000 RTP = 93.5%), 100 Call-IDs, 200 streams
 
@@ -49,6 +51,7 @@ volume. With the bounded pools it measures buffer memory and mislabels it as
 state growth:
 
 ```sh
+# Run all of these, in order.
 for c in 500 2000 8000 20000; do
   python3 bench/carrier.py --calls $c --call-ids 0 --stream-pairs 0 \
     --out sweep-$c.pcap
@@ -72,6 +75,7 @@ voipmonitor is not packaged for most distributions and a host install pulls in
 a database service, so it is built from source in a container:
 
 ```sh
+# Run all of these, in order.
 docker build -f bench/voipmonitor.Dockerfile -t voipmonitor:bench bench/
 VM_IMAGE=voipmonitor:bench VM_CONF=bench/vm.conf \
   bench/compare.sh "$BIN" corpus.pcap 535000 --runs 5
