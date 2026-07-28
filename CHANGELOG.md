@@ -11,6 +11,19 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **The wiki cookbook is no longer a third of the real one.** `docs/examples.md`
+  and the site's Cookbook were maintained by hand and had drifted almost
+  completely apart — 740 lines against 122, sharing 2 of their 36 commands.
+  The wiki renders from `docs/`, so wiki readers were served the short version
+  as though it were the whole cookbook. Nothing was broken and nothing was
+  stale, so nothing could have noticed.
+
+  `docs/examples.md` is now the single source (857 lines: the 14 long-form
+  recipes plus the dense one-liner quick-reference that only ever existed in
+  `docs/`), and `scripts/build-site-cookbook.py` generates the site page from
+  it. `cookbook_mirror_is_current` re-runs the generator and fails if the
+  committed mirror is stale, matching how `docs/internals/` already works.
+
 - **CycloneDX SBOMs ship with every release**, covered by `SHA256SUMS.txt` and
   by the sigstore attestation. Two of them, because sipnab ships as two
   binaries: `sipnab-<version>.cdx.json` for the binary and

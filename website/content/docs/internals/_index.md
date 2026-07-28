@@ -176,6 +176,11 @@ process, so the floor is not optional.
   renders them into `website/content/docs/internals/`, which is committed so
   the site builds with Zola alone. Never edit either mirror — regenerate it.
   `dev_docs_drift_test` re-runs the site generator and fails if the committed
-  output is stale. The site mirror exists because GitHub's wiki mermaid viewer
+  output is stale. The same arrangement covers the operator cookbook:
+  [`build-site-cookbook.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-cookbook.py) renders
+  `docs/examples.md` into `website/content/docs/cookbook.md`, gated by
+  `cookbook_mirror_is_current`. That page was maintained by hand on both sides
+  until the two shared 2 of their 36 commands, with the wiki showing the
+  shorter one as though it were the whole thing. The site mirror exists because GitHub's wiki mermaid viewer
   pins its controls over the diagram with no way to move them; the site
   renders the same diagrams with a viewer we control.

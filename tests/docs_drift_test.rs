@@ -41,6 +41,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/cookbook.md",
             "website/api.md",
             "website/build.md",
+            "docs/examples.md",
         ],
     ),
     (
@@ -77,6 +78,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/api.md",
             "website/build.md",
             "website/docs-index.md",
+            "docs/examples.md",
         ],
     ),
     (
@@ -87,6 +89,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/mcp.md",
             "website/cookbook.md",
             "website/build.md",
+            "docs/examples.md",
         ],
     ),
     ("install", &["README.md"]),

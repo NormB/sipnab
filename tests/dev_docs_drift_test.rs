@@ -734,3 +734,52 @@ fn workflow_inventory_heading_counts_the_workflows() {
         "workflows counted but never described in build-ci-release.md: {missing:?}"
     );
 }
+
+/// The site Cookbook is generated from `docs/examples.md`. Keep it that way.
+///
+/// These two pages were maintained by hand and drifted almost completely
+/// apart: 740 lines on the site against 122 in `docs/`, sharing 2 of their 36
+/// commands. The wiki renders from `docs/`, so wiki readers got roughly a
+/// third of the recipes — presented as a whole cookbook, not as an excerpt.
+/// Nothing was broken, nothing was stale, and nothing could have noticed.
+///
+/// Regenerate into a temp file and compare byte-for-byte.
+#[test]
+fn cookbook_mirror_is_current() {
+    let tmp = std::env::temp_dir().join(format!(
+        "sipnab-cookbook-{}-{}.md",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_file(&tmp);
+
+    let out = std::process::Command::new("python3")
+        .arg(repo().join("scripts/build-site-cookbook.py"))
+        .arg(&tmp)
+        .current_dir(repo())
+        .output()
+        .expect("run scripts/build-site-cookbook.py — python3 must be on PATH");
+    assert!(
+        out.status.success(),
+        "build-site-cookbook.py failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let fresh = std::fs::read_to_string(&tmp).expect("generated cookbook");
+    let have = read("website/content/docs/cookbook.md");
+    let _ = std::fs::remove_file(&tmp);
+
+    assert_eq!(
+        fresh.lines().count(),
+        have.lines().count(),
+        "website/content/docs/cookbook.md is stale ({} lines vs {} generated) \
+         — regenerate with `python3 scripts/build-site-cookbook.py` and commit",
+        have.lines().count(),
+        fresh.lines().count()
+    );
+    assert!(
+        fresh == have,
+        "website/content/docs/cookbook.md is stale — regenerate with \
+         `python3 scripts/build-site-cookbook.py` and commit"
+    );
+}
