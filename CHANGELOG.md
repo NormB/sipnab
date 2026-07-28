@@ -39,6 +39,13 @@ entry that carries them.
   check one.
 
 ### Fixed
+- **`packaging_scripts_reference_existing_paths` flagged a build output as a
+  missing input.** `pages.yml` names `website/public`, Zola's render target,
+  which is absent from a fresh checkout — so the test passed on a machine that
+  had built the site and failed in CI. Build outputs are now skipped via an
+  explicit list. Deliberately not "skip anything git does not track": a stale
+  reference to a moved file is untracked too, which is the exact bug the test
+  exists to catch.
 - **The one required status check on `main` did not cover three of the seven CI
   jobs.** `ci-success` exists to be a single aggregate gate, and its comment
   says it is "green only if every other job succeeded" — but its `needs:` list
