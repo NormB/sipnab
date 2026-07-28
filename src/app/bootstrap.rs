@@ -261,6 +261,12 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // Run mode. The multi-core offline file path outranks the TUI/batch
     // choice; MCP forces batch (it owns stdio, the TUI must not start).
+    //
+    // `--call-report` also lands in batch, but it does so because
+    // `Cli::normalize` has already set `no_tui` — the implication is applied
+    // once at the parse boundary rather than re-derived here. Deriving it
+    // here instead would fix only this decision and leave the three output
+    // gates in `app::batch` still reading `no_tui` as a proxy for "batch".
     let mode = if cli.cores > 1 && cli.input.is_some() && !cli.multi_device {
         RunMode::CoresFile
     } else {
