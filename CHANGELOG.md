@@ -11,6 +11,20 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **The one required status check on `main` did not cover three of the seven CI
+  jobs.** `ci-success` exists to be a single aggregate gate, and its comment
+  says it is "green only if every other job succeeded" — but its `needs:` list
+  named four jobs. `install-sh` (the test suite for the installer sipnab.com
+  serves), `deb-package`, and the new `homebrew-formula` job sat outside it.
+  Any of them could fail with the required check still green and the branch
+  still mergeable. `needs:` now lists every job, and
+  `ci_success_gates_every_job` compares it against the jobs actually defined in
+  the file, so a job added later either joins the gate or fails the test.
+- **`contrib/homebrew/test-update-formula.sh` had never run.** 21 assertions
+  covering the Homebrew formula generator — which runs on every release —
+  and the only reference to the file anywhere in the repo was its own header
+  comment saying how to run it. Its deb-builder sibling has had a CI job all
+  along. It now has one too; it passes 21/21.
 - **The source-install wrapper was putting a second, dev-only binary in your
   `~/.cargo/bin`.** It ran `cargo install --path .`, which installs *every*
   `[[bin]]` whose `required-features` are satisfied. `gen_fixture` — the test
