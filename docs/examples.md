@@ -7,7 +7,11 @@ and drop the `sudo` from every recipe below (see
 needs no privileges. Every flag used here is detailed in
 [cli-reference.md](cli-reference.md).
 
-## Triage
+> The documentation site carries a longer cookbook — fourteen worked
+> recipes including Prometheus/Grafana, fail2ban, WAV export and
+> browser-based analysis: <https://www.sipnab.com/docs/cookbook/>.
+
+## Triage a capture fast
 
 ```bash
 # 1. Watch SIP interactively on an interface (TUI, sngrep-style)
@@ -30,7 +34,7 @@ sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --markdown > call.md
 sipnab -N -I capture.pcap --report --no-cli-print
 ```
 
-## Filtering
+## Narrow a capture to the calls you care about
 
 ```bash
 # 6. Calls from/to specific users (regex)
@@ -47,7 +51,7 @@ sipnab -N -I capture.pcap --filter late-media
 sipnab -N -I capture.pcap --slow-setup
 ```
 
-## Data pipelines
+## Feed NDJSON into jq and other tools
 
 ```bash
 # 10. NDJSON to jq: count failures by status code
@@ -61,7 +65,7 @@ sipnab -N -I capture.pcap --json | jq -r '.call_id // empty' | sort -u
 
 More in [output-formats.md](./output-formats.md).
 
-## Recording
+## Record traffic to disk, encrypted or not
 
 ```bash
 # 12. Capture SIP+RTP to rotating pcapng files (50 MiB chunks)
@@ -78,7 +82,7 @@ sipnab -N -I capture.pcap --dtls-keylog /tmp/dtls.keylog
 sipnab -N -I capture.pcap --srtp-keys /tmp/srtp-keys.txt
 ```
 
-## Security
+## Detect scanners and block abuse
 
 ```bash
 # 14. Detect SIP scanners and answer them (rate-limited)
@@ -88,7 +92,7 @@ sudo sipnab -N -d eth0 --kill-scanner --alert syslog
 sudo sipnab -N -d eth0 --fail2ban
 ```
 
-## Event hooks
+## Run a command when a call or its quality changes
 
 ```bash
 # 16. Run a command on every dialog state change (details arrive as
@@ -99,7 +103,7 @@ sudo sipnab -N -d eth0 --on-dialog-exec '/usr/local/bin/call-logger'
 sudo sipnab -N -d eth0 --on-quality-exec '/usr/local/bin/page-noc'
 ```
 
-## HEP
+## Exchange HEP with Kamailio, OpenSIPS or Homer
 
 ```bash
 # 18. Receive HEP from Kamailio/OpenSIPS/Asterisk and analyze live.

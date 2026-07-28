@@ -128,4 +128,4 @@ repairs such old captures in place without touching packet data.
 ## See also
 
 - [cli-reference.md](cli-reference.md#output) — every output flag
-- [examples.md](examples.md#data-pipelines) — NDJSON-to-jq pipeline recipes
+- [examples.md](examples.md#feed-ndjson-into-jq-and-other-tools) — NDJSON-to-jq pipeline recipes
