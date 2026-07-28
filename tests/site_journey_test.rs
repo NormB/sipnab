@@ -33,6 +33,85 @@ fn read(rel: &str) -> String {
     std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
 }
 
+/// The YAML block of one named workflow step, from its `- name:` line to the
+/// start of the next step at the same indentation.
+///
+/// Panics if the step is not found, because every caller treats its absence as
+/// the defect — a renamed step must fail loudly, not silently check nothing.
+fn workflow_step(workflow: &str, step_name: &str) -> String {
+    let text = read(workflow);
+    let needle = format!("- name: {step_name}");
+    let start = text
+        .lines()
+        .position(|l| l.trim() == needle)
+        .unwrap_or_else(|| panic!("{workflow} has no step named {step_name:?} — it was renamed or removed, and every assertion about it is now checking nothing"));
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = lines[start].len() - lines[start].trim_start().len();
+    let mut out = vec![lines[start]];
+    for l in &lines[start + 1..] {
+        let t = l.trim_start();
+        if !t.is_empty() && l.len() - t.len() <= indent && t.starts_with("- ") {
+            break;
+        }
+        if !t.is_empty() && l.len() - t.len() < indent {
+            break;
+        }
+        out.push(l);
+    }
+    out.join("\n")
+}
+
+/// A named workflow step still fails the build when its check fails.
+///
+/// Asserting the file *contains* some identifying string is a proxy: it stays
+/// true through every way of neutering the step. `continue-on-error: true`
+/// rewrites the step's conclusion to `success` and leaves the truth in
+/// `outcome`, which nothing reads — this repository has already been burned by
+/// exactly that, on the PTY tests, where the one place they ran threw the
+/// answer away. Dropping the `exit 1` or widening the `if:` are the other two
+/// ways.
+///
+/// # Arguments
+/// * `guard` - the only `if:` condition allowed on the step, or `None` if it
+///   must be unconditional. A widened guard is how a step stops running
+///   without anyone editing its body.
+fn assert_step_enforces(workflow: &str, step_name: &str, guard: Option<&str>) {
+    let step = workflow_step(workflow, step_name);
+
+    assert!(
+        !step.contains("continue-on-error"),
+        "{workflow} step {step_name:?} carries continue-on-error, which rewrites \
+         its conclusion to success and leaves the real result in `outcome`, which \
+         nothing reads. The step runs and its verdict is discarded — the claim it \
+         guards is unmeasured again."
+    );
+    assert!(
+        step.contains("exit 1"),
+        "{workflow} step {step_name:?} no longer exits non-zero on failure, so it \
+         reports the mismatch and passes anyway"
+    );
+
+    let actual_guard = step
+        .lines()
+        .find(|l| l.trim_start().starts_with("if:"))
+        .map(|l| l.trim().trim_start_matches("if:").trim().to_string());
+    match guard {
+        Some(want) => assert_eq!(
+            actual_guard.as_deref(),
+            Some(want),
+            "{workflow} step {step_name:?} guard changed. It must run on exactly \
+             the platform/target it was written for; a widened or falsified \
+             condition skips it while the workflow stays green"
+        ),
+        None => assert!(
+            actual_guard.is_none(),
+            "{workflow} step {step_name:?} gained an `if:` guard ({actual_guard:?}) \
+             — it was unconditional, and a guard is how a step stops running \
+             without its body changing"
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Font journey: every FontFamily a tape names must be an installed monospace
 // family on the box that renders the demos.
@@ -455,10 +534,13 @@ fn published_binary_size_matches_the_enforced_ceiling() {
     // A claim nobody measures is the bug this replaces. The workflow step is
     // what compares it to a real artifact; without it this test only proves
     // four files agree on a number none of them checked.
-    assert!(
-        read(".github/workflows/release.yml").contains("binary_size_ceiling_mb"),
-        "release.yml no longer reads binary_size_ceiling_mb — the published size \
-         ceiling is back to being unmeasured"
+    // Same reasoning as the test-count gate: the identifying string sits in
+    // the step body, so its presence says nothing about whether the step still
+    // fails the build.
+    assert_step_enforces(
+        ".github/workflows/release.yml",
+        "Enforce published binary size (musl targets)",
+        Some("contains(matrix.target, '-linux-musl')"),
     );
 }
 
@@ -549,10 +631,13 @@ fn homepage_test_counts_agree_with_each_other() {
          {prose} — they describe the same suite"
     );
 
-    assert!(
-        read(".github/workflows/ci.yml").contains("published_test_count"),
-        "ci.yml no longer checks the published test count against the real suite \
-         total — the number is back to being unmeasured"
+    // Not `.contains("published_test_count")`: that string lives inside the
+    // step body and survives continue-on-error, a dropped `exit 1`, and a
+    // widened `if:`. Check the step still enforces.
+    assert_step_enforces(
+        ".github/workflows/ci.yml",
+        "Enforce the published test count",
+        Some("matrix.os == 'ubuntu-latest'"),
     );
 }
 
