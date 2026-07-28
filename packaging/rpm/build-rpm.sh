@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a binary .rpm for sipnab, mirroring contrib/deb/build-deb.sh:
+# Build a binary .rpm for sipnab, mirroring packaging/deb/build-deb.sh:
 # same inputs (VERSION ARCH VARIANT), same env contract (SIPNAB_BIN /
 # SIPNAB_AUDIO_PLUGIN for CI cross-build mode), same package payload
 # (binary, gzipped man page, systemd unit, optional audio plugin with a
@@ -115,7 +115,7 @@ rpmbuild -bb \
     --define "_topdir ${TOPDIR}" \
     --define "pkg_version ${VERSION}" \
     --define "bin_src $(readlink -f "${BIN_SRC}")" \
-    --define "service_src $(readlink -f contrib/sipnab.service)" \
+    --define "service_src $(readlink -f packaging/sipnab.service)" \
     ${WITH_PLUGIN:+--define "with_plugin ${WITH_PLUGIN}"} \
     ${PLUGIN_SRC:+--define "plugin_src $(readlink -f "${PLUGIN_SRC}")"} \
     --target "${ARCH}" \

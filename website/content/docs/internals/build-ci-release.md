@@ -70,7 +70,7 @@ compiles, which is exactly why CI has a feature matrix.
 **`install-sh` and `deb-package` are not in that list.** They run on every push
 — the installer test suite plus shellcheck, and the `.deb` build for both the
 full and `noaudio` variants — but a failure in either does **not** block a
-merge. If you touch `website/static/install.sh` or `contrib/deb/`, read their
+merge. If you touch `website/static/install.sh` or `packaging/deb/`, read their
 logs yourself; nothing else will make you.
 
 ## Hooks

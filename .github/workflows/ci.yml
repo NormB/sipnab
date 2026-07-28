@@ -176,7 +176,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Test build-deb.sh (full + noaudio variants)
-        run: bash contrib/deb/test-build-deb.sh
+        run: bash packaging/deb/test-build-deb.sh
 
   # Homebrew formula generation. update-formula.sh runs on every release to
   # produce sipnab.rb from SHA256SUMS.txt, and its 21-assertion test harness
@@ -190,7 +190,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Test update-formula.sh
-        run: bash contrib/homebrew/test-update-formula.sh
+        run: bash packaging/homebrew/test-update-formula.sh
 
   # Reduced feature combinations must keep compiling (lib AND test code).
   # --all-features alone let `#[cfg]`-gating rot: at one point 7 of 8

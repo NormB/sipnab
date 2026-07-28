@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test harness for contrib/deb/build-deb.sh.
+# Test harness for packaging/deb/build-deb.sh.
 #
 # Runs the deb builder in a throwaway sandbox with a dummy binary and plugin
 # (no cargo build, no root) and asserts the control metadata and payload for
@@ -9,7 +9,7 @@
 #   3. plugin missing  -> falls back to a no-plugin package (no Recommends)
 #   4. bad inputs      -> unknown variant and non-digit version are rejected
 #
-# Usage: bash contrib/deb/test-build-deb.sh   (from anywhere)
+# Usage: bash packaging/deb/test-build-deb.sh   (from anywhere)
 set -u
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -33,13 +33,13 @@ assert_not_contains() { # haystack-desc, haystack, needle
     esac
 }
 
-# --- Sandbox: the builder resolves man/ and contrib/ relative to cwd -------
+# --- Sandbox: the builder resolves man/ and packaging/ relative to cwd -----
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
-mkdir -p "$SANDBOX/man" "$SANDBOX/contrib/deb" "$SANDBOX/bin"
-cp "$REPO_ROOT/contrib/deb/build-deb.sh" "$SANDBOX/contrib/deb/"
-cp "$REPO_ROOT/contrib/sipnab.service"   "$SANDBOX/contrib/"
-cp "$REPO_ROOT/man/sipnab.1"             "$SANDBOX/man/"
+mkdir -p "$SANDBOX/man" "$SANDBOX/packaging/deb" "$SANDBOX/bin"
+cp "$REPO_ROOT/packaging/deb/build-deb.sh" "$SANDBOX/packaging/deb/"
+cp "$REPO_ROOT/packaging/sipnab.service"   "$SANDBOX/packaging/"
+cp "$REPO_ROOT/man/sipnab.1"               "$SANDBOX/man/"
 # Licence and attribution files the package installs into
 # /usr/share/doc/sipnab. The sandbox is a declared minimal file set, so a new
 # input to build-deb.sh has to be added here too — which is how this test
@@ -60,7 +60,7 @@ build() { # version, arch, [variant] -- with plugin unless NOPLUGIN=1
     local plugin="bin/libsipnab_audio.so"
     [ "${NOPLUGIN:-0}" = "1" ] && plugin=""
     SIPNAB_BIN="bin/sipnab" SIPNAB_AUDIO_PLUGIN="$plugin" \
-        bash contrib/deb/build-deb.sh "$@"
+        bash packaging/deb/build-deb.sh "$@"
 }
 
 # --- 1. Full package: plugin shipped, libasound Recommends ------------------
