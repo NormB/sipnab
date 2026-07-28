@@ -2315,3 +2315,101 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
         problems.join("\n  ")
     );
 }
+
+/// A workflow's `paths:` filter must cover every repo file the workflow reads.
+///
+/// The filter decides whether the workflow runs at all, so a build input
+/// outside it is a change that never reaches the thing it should rebuild —
+/// and nothing reports that, because the workflow simply does not appear.
+///
+/// `pages.yml` derives the published site version from `Cargo.toml` ("so the
+/// published site always matches the released binary") and runs
+/// `ops/cloudflare/refresh_csp_hashes.py` against the deployed artifact, while
+/// filtering on `website/**` alone. `wiki-sync.yml` already had this right —
+/// it lists `docs/**`, its generator, and itself — which is the pattern.
+#[test]
+fn workflow_path_filters_cover_their_inputs() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Repo-relative paths named inside a workflow. Only tokens that exist as
+    // real files count, so output paths (`build/wiki`, `site`) and bare
+    // arguments do not produce false positives.
+    let token = regex::Regex::new(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*\.[A-Za-z0-9]+").unwrap();
+    let mut problems = Vec::new();
+    let mut checked = 0;
+
+    for entry in std::fs::read_dir(root.join(".github/workflows")).expect("workflows dir") {
+        let p = entry.expect("entry").path();
+        if !p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
+            continue;
+        }
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&p).expect("read workflow");
+
+        // Only workflows that filter — an unfiltered workflow runs on every
+        // push and cannot miss an input.
+        let Some(pline) = text.lines().position(|l| l.trim() == "paths:") else {
+            continue;
+        };
+        let globs: Vec<String> = text
+            .lines()
+            .skip(pline + 1)
+            // Comment lines sit between entries in this repo's filters, so the
+            // scan must step over them rather than stop at the first one.
+            .take_while(|l| {
+                let t = l.trim_start();
+                t.starts_with("- ") || t.starts_with('#') || t.is_empty()
+            })
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter_map(|l| {
+                let t = l
+                    .trim()
+                    .trim_start_matches("- ")
+                    .trim_matches('\'')
+                    .trim_matches('"');
+                (!t.is_empty()).then(|| t.to_string())
+            })
+            .collect();
+        assert!(
+            !globs.is_empty(),
+            "{name} has a `paths:` key this test could not read — it is checking nothing"
+        );
+        checked += 1;
+
+        let covered = |rel: &str| {
+            globs.iter().any(|g| match g.strip_suffix("/**") {
+                Some(prefix) => rel.starts_with(&format!("{prefix}/")),
+                None => g == rel || g.strip_suffix("/*").is_some_and(|p| rel.starts_with(p)),
+            })
+        };
+
+        let mut seen = std::collections::BTreeSet::new();
+        for m in token.find_iter(&text) {
+            let rel = m.as_str().trim_end_matches(['"', '\'', ',', ')']);
+            // The workflow file names itself in its own filter; skip the
+            // .github/workflows/ self-reference and anything not a real file.
+            if rel.starts_with(".github/")
+                || !root.join(rel).is_file()
+                || !seen.insert(rel.to_string())
+            {
+                continue;
+            }
+            if !covered(rel) {
+                problems.push(format!(
+                    "{name}: reads {rel}, which no `paths:` glob covers — a change to it \
+                     will not trigger this workflow, and nothing will say so"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 2,
+        "only {checked} path-filtered workflows examined — the filter parser stopped \
+         matching and this gate is reporting a safety it is not providing"
+    );
+    assert!(
+        problems.is_empty(),
+        "workflow path filters that miss their own inputs:\n  {}",
+        problems.join("\n  ")
+    );
+}

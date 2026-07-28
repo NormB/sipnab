@@ -6,6 +6,18 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/pages.yml'
+      # Build inputs that live outside website/. The filter decides whether the
+      # site rebuilds, so anything this workflow READS belongs here or a change
+      # to it never reaches the published site.
+      #
+      # Cargo.toml: the "Sync site version" step below derives the homepage
+      # badge and the download links from the crate version, so Cargo.toml is
+      # the site's version source — not the committed website/config.toml,
+      # which that step overwrites.
+      - 'Cargo.toml'
+      # ops/cloudflare/refresh_csp_hashes.py: the csp job runs it against the
+      # deployed artifact, so a change to the checker must re-run the check.
+      - 'ops/cloudflare/**'
   workflow_dispatch:
 
 # Allow the GITHUB_TOKEN to deploy to Pages and verify the deployment origin;
