@@ -735,51 +735,61 @@ fn workflow_inventory_heading_counts_the_workflows() {
     );
 }
 
-/// The site Cookbook is generated from `docs/examples.md`. Keep it that way.
+/// Site pages generated from `docs/` must match what the generator produces.
 ///
-/// These two pages were maintained by hand and drifted almost completely
-/// apart: 740 lines on the site against 122 in `docs/`, sharing 2 of their 36
-/// commands. The wiki renders from `docs/`, so wiki readers got roughly a
-/// third of the recipes — presented as a whole cookbook, not as an excerpt.
-/// Nothing was broken, nothing was stale, and nothing could have noticed.
+/// Both pages under `scripts/build-site-pages.py` were maintained by hand on
+/// both sides and drifted badly. The cookbook: 740 lines on the site against
+/// 122 in `docs/`, sharing 2 of their 36 commands. The REST API page: 893
+/// against 430, each side holding sections the other did not have. The wiki
+/// renders from `docs/`, so wiki readers got whichever copy was thinner, shown
+/// as though it were the whole page. Nothing was broken, nothing was stale,
+/// and nothing could have noticed.
 ///
-/// Regenerate into a temp file and compare byte-for-byte.
+/// Regenerate into a temp dir and compare byte-for-byte.
 #[test]
-fn cookbook_mirror_is_current() {
+fn site_pages_mirror_is_current() {
     let tmp = std::env::temp_dir().join(format!(
-        "sipnab-cookbook-{}-{}.md",
+        "sipnab-site-pages-{}-{}",
         std::process::id(),
         line!()
     ));
-    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("temp dir");
 
     let out = std::process::Command::new("python3")
-        .arg(repo().join("scripts/build-site-cookbook.py"))
+        .arg(repo().join("scripts/build-site-pages.py"))
         .arg(&tmp)
         .current_dir(repo())
         .output()
-        .expect("run scripts/build-site-cookbook.py — python3 must be on PATH");
+        .expect("run scripts/build-site-pages.py — python3 must be on PATH");
     assert!(
         out.status.success(),
-        "build-site-cookbook.py failed:\n{}",
+        "build-site-pages.py failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let fresh = std::fs::read_to_string(&tmp).expect("generated cookbook");
-    let have = read("website/content/docs/cookbook.md");
-    let _ = std::fs::remove_file(&tmp);
+    let mut generated = 0usize;
+    let mut stale = Vec::new();
+    for entry in std::fs::read_dir(&tmp).expect("generated pages").flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        generated += 1;
+        let fresh = std::fs::read_to_string(entry.path()).expect("generated page");
+        let have = read(format!("website/content/docs/{name}"));
+        if fresh != have {
+            stale.push(name);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
 
-    assert_eq!(
-        fresh.lines().count(),
-        have.lines().count(),
-        "website/content/docs/cookbook.md is stale ({} lines vs {} generated) \
-         — regenerate with `python3 scripts/build-site-cookbook.py` and commit",
-        have.lines().count(),
-        fresh.lines().count()
+    assert!(
+        generated >= 2,
+        "only {generated} page(s) generated — PAGES in build-site-pages.py \
+         shrank, or the script stopped writing to the output directory"
     );
     assert!(
-        fresh == have,
-        "website/content/docs/cookbook.md is stale — regenerate with \
-         `python3 scripts/build-site-cookbook.py` and commit"
+        stale.is_empty(),
+        "these site pages are stale — regenerate with \
+         `python3 scripts/build-site-pages.py` and commit:\n  {}",
+        stale.join("\n  ")
     );
 }
