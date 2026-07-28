@@ -164,19 +164,19 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 The v0.5 sipnab MCP tool surface. All tools are read-only; all responses
 are bounded by default (HARD_LIMIT = 1000).
 
-| Tool | Returns |
-|---|---|
-| `list_dialogs` | Dialog summaries with optional alias / DSL filter |
-| `get_dialog_report` | Structured per-call report (JSON / Markdown / text) |
-| `find_problems` | Dialogs matching one or more diagnostic alias names |
-| `get_dialog` | Paginated dialog with full SIP messages |
-| `get_message` | Single SIP message at a given index |
-| `render_ladder` | Call-flow ladder (Markdown / text) |
-| `rtp_stats` | Per-stream RTP quality + media diagnosis |
-| `search_messages` | Substring search across method/From/To/UA/body |
-| `tail_dialogs` | Cursor-based incremental dialog fetch |
-| `security_findings` | Recent scanner / fraud / digest / reg-flood alerts |
-| `stats` | Aggregate counters (dialog_count, stream_count, etc.) |
+| Tool | Parameters | Returns |
+|---|---|---|
+| `list_dialogs` | `filter?`, `limit?` | Dialog summaries with optional alias / DSL filter |
+| `get_dialog_report` | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
+| `find_problems` | `kinds?`, `limit?` | Dialogs matching one or more diagnostic alias names |
+| `get_dialog` | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
+| `get_message` | `call_id`, `index` | Single SIP message at a given index |
+| `render_ladder` | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
+| `rtp_stats` | `call_id` | Per-stream RTP quality + media diagnosis |
+| `search_messages` | `query`, `limit?` | Substring search across method/From/To/UA/body |
+| `tail_dialogs` | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
+| `security_findings` | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
+| `stats` | -- | Aggregate counters (dialog_count, stream_count, etc.) |
 
 ### `list_dialogs`
 
@@ -470,7 +470,7 @@ For a live capture (requires `CAP_NET_RAW` or root — Claude Desktop won't gran
   "mcpServers": {
     "sipnab-live": {
       "command": "sudo",
-      "args": ["-n", "sipnab", "--mcp", "-N", "-d", "eth0", "--quiet"]
+      "args": ["-n", "sipnab", "-N", "--mcp", "-d", "eth0", "--quiet"]
     }
   }
 }
@@ -486,8 +486,8 @@ From your project directory:
 
 ```bash
 # Stdio against a fixed pcap (`--` ends `claude mcp add` flags so the
-# trailing `sipnab` invocation is treated as the launched command)
-claude mcp add sipnab -- sipnab --mcp -N -I "$PWD/capture.pcap" --quiet
+# trailing `sipnab -N --mcp ...` is treated as the launched command)
+claude mcp add sipnab -- sipnab -N --mcp -I "$PWD/capture.pcap" --quiet
 
 # HTTP against a remote sipnab — flags before the positional name + URL
 claude mcp add --transport http \
@@ -510,7 +510,7 @@ The simplest way to confirm the server is alive without an MCP client:
   sleep 0.1
   echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
   sleep 0.5
-} | sipnab --mcp -N -I capture.pcap --quiet | head -c 2000
+} | sipnab -N --mcp -I capture.pcap --quiet | head -c 2000
 ```
 
 Expected first line of response:
@@ -567,7 +567,8 @@ the actual array:
 Each array element is a dialog summary (`call_id`, `state`, `method`,
 `from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
 `updated_at`, `timing`) — the compact projection; the full aggregated
-dialog document is what `get_dialog_report` returns.
+dialog document is what `get_dialog_report` returns (the
+[REST API](rest-api.md) returns the same shape).
 
 ```bash
 # tools/call — get_dialog with pagination

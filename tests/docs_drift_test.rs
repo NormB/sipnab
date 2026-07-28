@@ -42,6 +42,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/api.md",
             "website/build.md",
             "docs/examples.md",
+            "website/mcp.md",
         ],
     ),
     (
@@ -79,6 +80,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/build.md",
             "website/docs-index.md",
             "docs/examples.md",
+            "website/mcp.md",
         ],
     ),
     (
@@ -90,6 +92,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/cookbook.md",
             "website/build.md",
             "docs/examples.md",
+            "website/mcp.md",
         ],
     ),
     ("install", &["README.md"]),
@@ -107,7 +110,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &["docs/cli-reference.md", "website/cli.md"],
     ),
     // systemctl (mcp service management)
-    ("now", &["docs/mcp.md"]),
+    ("now", &["docs/mcp.md", "website/mcp.md"]),
     // voipmonitor (benchmark comparison command lines)
     ("config-file", &["docs/benchmarks.md"]),
     // claude mcp add (http-transport client wiring)
@@ -1096,5 +1099,59 @@ fn third_party_notices_cover_system_libraries() {
         release.contains("THIRD-PARTY-NOTICES.md"),
         "release.yml does not package THIRD-PARTY-NOTICES.md — the notices would \
          exist in the repository and reach nobody who downloads a binary"
+    );
+}
+
+/// The MCP tool table must list every tool the server registers.
+///
+/// `docs/mcp.md`'s table listed seven; the server registers eleven. The three
+/// missing ones — `search_messages`, `tail_dialogs`, `security_findings` —
+/// were documented in the prose below it, so nothing was factually wrong and
+/// no link was dead. A reader scanning the table for what MCP can do simply
+/// would not have learned they exist. (`stats` was missing from both copies of
+/// the page until the merge.)
+///
+/// Ground truth is the `#[tool(name = "…")]` attributes, not a second list.
+#[test]
+fn mcp_tool_table_lists_every_registered_tool() {
+    let server = std::fs::read_to_string("src/mcp/server.rs").expect("src/mcp/server.rs");
+    let registered: BTreeSet<String> = regex::Regex::new(r#"name = "([a-z_]+)""#)
+        .expect("regex")
+        .captures_iter(&server)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        registered.len() >= 8,
+        "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
+         attribute shape changed and this test is no longer reading the \
+         registry: {registered:?}",
+        registered.len()
+    );
+
+    let doc = std::fs::read_to_string("docs/mcp.md").expect("docs/mcp.md");
+    let table = doc
+        .split_once("| Tool | Parameters | Returns |")
+        .expect("docs/mcp.md has no tool table")
+        .1;
+    let table = &table[..table.find("\n\n").unwrap_or(table.len())];
+    let documented: BTreeSet<String> = regex::RegexBuilder::new(r"^\| `([a-z_]+)`")
+        .multi_line(true)
+        .build()
+        .expect("regex")
+        .captures_iter(table)
+        .map(|c| c[1].to_string())
+        .collect();
+
+    let missing: Vec<_> = registered.difference(&documented).collect();
+    assert!(
+        missing.is_empty(),
+        "these MCP tools are registered but absent from the table in \
+         docs/mcp.md: {missing:?}"
+    );
+    let phantom: Vec<_> = documented.difference(&registered).collect();
+    assert!(
+        phantom.is_empty(),
+        "docs/mcp.md documents MCP tools the server does not register: \
+         {phantom:?}"
     );
 }

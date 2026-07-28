@@ -54,6 +54,19 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "its response shape, status codes, curl recipes, and the security "
         "model.",
     ),
+    (
+        "docs/mcp.md",
+        "mcp.md",
+        # Source H1 is "MCP server"; the site's title (and sidebar label and
+        # weight) are the originals — changing them here silently relabels and
+        # reorders the docs nav.
+        "MCP server",
+        "MCP Server",
+        14,
+        "Drive sipnab from an AI agent over the Model Context Protocol: "
+        "stdio and HTTP transports, every tool, the security model, and "
+        "client configuration.",
+    ),
 ]
 
 BANNER = (
