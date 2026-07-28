@@ -19,7 +19,7 @@ token kinds, checked with a constant-time comparison:
 
 ## Token format
 
-```
+```text
 s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 ```
 

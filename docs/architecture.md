@@ -16,7 +16,7 @@ optional API/MCP servers.
 
 ## Data flow
 
-```
+```text
 capture sources                 per-packet path                    consumers
 ───────────────                ─────────────────                  ──────────
 live device  ─┐
@@ -47,7 +47,7 @@ store writes, and where each of the four paths diverges — see
 
 Only load-bearing files are annotated; siblings follow the same pattern.
 
-```
+```text
 src/
 ├── lib.rs                # curated public API; #[doc(hidden)] on bin-internal modules
 ├── main.rs               # binary: thin dispatcher into app/

@@ -5,7 +5,7 @@ and exposes **sipnab as an MCP server** so an external system (e.g. your
 laptop) can diagnose the SIP/RTP traffic flowing through **`opensips-1`**
 using an AI agent.
 
-```
+```text
   ┌─────────┐   INVITE/REGISTER/...    ┌────────────────────────────────┐
   │ sipp-uac│ ───────────────────────▶ │  opensips-1  (owns netns)      │
   │ .0.21   │                          │   ├─ rtpengine  (media anchor)  │

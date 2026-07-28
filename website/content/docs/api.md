@@ -108,7 +108,7 @@ for CI, automation, and anything multi-client.
 
 The token format is:
 
-```
+```text
 s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 ```
 
@@ -190,7 +190,7 @@ disabled** and every endpoint is served without credentials. That is allowed
 only on a loopback bind. On a non-loopback bind with no credentials configured,
 **the server refuses to start** rather than exposing an open API:
 
-```
+```text
 REST API refuses to start: --api 0.0.0.0:8080 is non-loopback but no
 --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was
 supplied. Bind 127.0.0.1, or configure authentication.
@@ -888,7 +888,7 @@ console.log(await resp.text()); // Prometheus text format
 
 **Response** (text/plain):
 
-```
+```text
 # HELP sipnab_dialogs_total Total dialogs by state
 # TYPE sipnab_dialogs_total counter
 sipnab_dialogs_total{state="completed"} 1180

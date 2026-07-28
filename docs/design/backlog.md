@@ -274,19 +274,28 @@ Tiers:
 
 ## P4 — test quality
 
-- [ ] **Unlabeled code fences carry a copy button no gate reads** (2026-07-28).
+- [x] **Unlabeled code fences carry a copy button no gate reads** (2026-07-28).
   `shell_fence_is_one_clipboard_payload` reads fences whose info string names a
   shell, but `website/templates/page.html:90` attaches the copy button to every
-  `pre`. The scanned corpus holds **230 unlabeled fences, 132 of them
-  command-looking** — none checked. The one live multi-command instance
-  (`CONTRIBUTING.md`'s regenerate-the-mirrors pair) is fixed; the class is not.
+  `pre`, so an unlabeled fence gets a button no gate reads. **Done:** every
+  fence in the scanned corpus now declares its language — 492 fences, 0
+  unlabeled.
 
-  Scanning them by heuristic was rejected and should stay rejected: "starts with
-  a command-looking word" also matches terminal transcripts and output samples,
-  and a gate that cries wolf gets muted, which is worse than one with a stated
-  limit. The real fix is to give every fence a language label, after which the
-  existing gate covers them with no heuristic — a remediation of ~230 fences,
-  not a change to the gate. Do it as its own pass, not folded into a release.
+  **The figure that motivated this item was wrong.** It read "230 unlabeled, 132
+  command-looking"; the real number was **28**. The measuring script used
+  `^```$ … ^```$`, which matches a *labelled* fence's closing ``` as an
+  unlabelled opener — the same fence-parsing bug `tests/docs_drift_test.rs`
+  documents when it warns against reusing `fenced_blocks`, made in the script
+  written to find it. A proper open/close walk gives 28. Recorded because the
+  wrong number reached this file, two commits and a release-cycle decision
+  before anything checked it.
+
+  Labelling was not the whole job: a shell fence becomes visible to the gate the
+  moment it is labelled, so the pass had to remediate what it exposed in the
+  same commit or leave the tree red between two. Output samples, transcripts and
+  diagrams are labelled `text` deliberately — labelling them `bash` would put an
+  unrunnable block under a gate demanding it be one command, and the next author
+  would reach for the sentinel to silence it.
 
 - [x] **Gates that hardcode their subjects cannot see a new one** — surfaced by
   executing the `docs/internals/walkthroughs.md` checklists rather than

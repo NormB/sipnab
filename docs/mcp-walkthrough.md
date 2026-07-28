@@ -480,7 +480,7 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
 
    OpenSIPS (3.x) — `opensips.cfg`:
 
-   ```
+   ```text
    loadmodule "proto_hep.so"
    loadmodule "tracer.so"
    modparam("tracer", "trace_id",
@@ -489,7 +489,7 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
 
    and in the main route (traces the dialog's SIP both ways):
 
-   ```
+   ```text
    trace("sipnab", "t", "sip");
    ```
 
@@ -661,7 +661,7 @@ Nothing about MCP requires an interactive session.
 2. **[laptop or ops host]** Wrap it in cron/systemd-timer, writing to a
    file or a ticket system:
 
-   ```
+   ```text
    0 7 * * * claude -p "..." --allowedTools "mcp__sipnab-prod__*" \
              > /var/log/sipnab/daily-triage.md 2>&1
    ```
