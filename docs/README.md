@@ -11,8 +11,10 @@ New here? Follow the path below; each step links to the page with the detail.
 1. **[Install sipnab](install.md)** — one-line installer, prebuilt binaries,
    packages, or build from source. Live capture needs root or `CAP_NET_RAW`
    (`sudo sipnab --setup-caps` once); reading a pcap needs no privileges.
-2. **First capture** — read a pcap with `sipnab -I capture.pcap`, or watch an
-   interface live with `sudo sipnab -d eth0`. Both open the TUI.
+2. **[First capture](tui-walkthrough.md)** — read a pcap with
+   `sipnab -I capture.pcap`, or watch an interface live with
+   `sudo sipnab -d eth0`. Both open the TUI; the walkthrough takes you through
+   your first analysis step by step.
 3. **[Learn the TUI](keybindings.md)** — browse dialogs, drill into the
    call-flow ladder, mark messages for delta timing, and switch to the RTP
    Streams view; the page covers every view and its keybindings. Recolor it
