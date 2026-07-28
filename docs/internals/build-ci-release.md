@@ -107,6 +107,12 @@ Both hooks have their own test scripts —
 [`test-pre-commit.sh`](../../scripts/test-pre-commit.sh) and
 [`test-pre-push.sh`](../../scripts/test-pre-push.sh).
 
+[`install-from-source.sh`](../../scripts/install-from-source.sh) is unrelated to
+the hooks: it is the developer-facing source install (`cargo install --path .
+--bin sipnab`, then `--setup-caps` on Linux). It passes `--bin` deliberately —
+without it, `gen_fixture` also satisfies its `required-features` and lands in
+the caller's `~/.cargo/bin`.
+
 ## The toolchain
 
 **Rust 1.97.1**, pinned across seven files and enforced in none of them
