@@ -531,10 +531,65 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
+      # ---------------------------------------------------------------------
+      # CycloneDX SBOMs. Two, because sipnab ships as two binaries.
+      #
+      # The audio plugin is a separate workspace crate the binary dlopen()s at
+      # runtime, and it pulls in seven dependencies that appear nowhere in the
+      # main crate's graph: alsa, alsa-sys, cpal, dasp_sample, num-bigint,
+      # num-rational, rodio. An SBOM of the main crate alone would omit exactly
+      # the C-library-adjacent dependencies a vulnerability scan cares about,
+      # while looking complete. libsipnab_audio.so ships inside the full .deb,
+      # the full .rpm, and every audio-enabled tarball, so it needs its own.
+      #
+      # The main SBOM is generated with --features full deliberately. The
+      # noaudio artifacts build a strict SUBSET of that graph: measured on
+      # 0.5.54 the two differ by exactly one component (libloading, the dlopen
+      # wrapper), with nothing present in noaudio that full lacks. One
+      # full-feature SBOM therefore over-covers rather than under-covers every
+      # sipnab binary published here, which is the safe direction to err.
+      # ---------------------------------------------------------------------
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx
+
+      - name: Generate SBOMs
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          # ONE invocation. cargo-cyclonedx has no -p/--package flag; it walks
+          # the workspace and writes one SBOM per member into that member's
+          # own directory, both under the --override-filename name. So the two
+          # outputs collide by name and are separated on the way out.
+          cargo cyclonedx --format json --features full --override-filename sbom
+
+          mv sbom.json "artifacts/sipnab-${version}.cdx.json"
+          mv crates/sipnab-audio/sbom.json "artifacts/sipnab-audio-${version}.cdx.json"
+
+          # A CycloneDX document with no components is still valid JSON and
+          # still uploads cleanly, so check the content rather than the exit
+          # code. The plugin graph is small (21 on 0.5.54); the floors below
+          # are set well under the real figures to catch collapse, not drift.
+          for f in artifacts/sipnab-"${version}".cdx.json:100 \
+                   artifacts/sipnab-audio-"${version}".cdx.json:10; do
+            path="${f%:*}"; floor="${f##*:}"
+            n=$(jq '.components | length' "$path")
+            echo "$path: $n components (floor $floor)"
+            if [ "$n" -lt "$floor" ]; then
+              echo "::error::$path has $n components, expected at least $floor"
+              exit 1
+            fi
+          done
+
+      # After the SBOMs, so they are covered by the same checksum file.
+      # Bare globs, not ./*: sha256sum echoes each operand verbatim into the
+      # file, and packaging/homebrew/update-formula.sh parses those names.
       - name: Generate combined checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz *.deb *.rpm > SHA256SUMS.txt
+          sha256sum *.tar.gz *.deb *.rpm *.cdx.json > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       # Sigstore build provenance for every artifact: cryptographic proof it
@@ -548,6 +603,7 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.deb
             artifacts/*.rpm
+            artifacts/*.cdx.json
             artifacts/SHA256SUMS.txt
 
       # Run the exact command the docs tell downloaders to run.
@@ -603,6 +659,7 @@ jobs:
             artifacts/*.tar.gz.sha256
             artifacts/*.deb
             artifacts/*.rpm
+            artifacts/*.cdx.json
             artifacts/SHA256SUMS.txt
 
   tap:

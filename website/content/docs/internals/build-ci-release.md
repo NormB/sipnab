@@ -36,7 +36,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The eight workflows
+## The nine workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -46,6 +46,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
 | `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website. |
+| `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via `scripts/build-wiki.py`. |
 | `release.yml` | `v*` tags | The release. See below. |
 
@@ -152,7 +153,26 @@ Every gnu binary then passes a `readelf -V` gate that fails the build if it
 links a `GLIBC_` symbol newer than 2.36 — a regression guard on the build
 environment, not on the code. Artifacts are checksummed into `SHA256SUMS.txt`
 and attested with `actions/attest-build-provenance`, so a downloader can run
-`gh attestation verify <file> --repo NormB/sipnab`. Finally the `tap` job
+`gh attestation verify <file> --repo NormB/sipnab`.
+
+Two CycloneDX SBOMs ship with each release and are covered by both the
+checksum file and the attestation: `sipnab-<version>.cdx.json` for the binary
+and `sipnab-audio-<version>.cdx.json` for the playback plugin. Two, not one,
+because the plugin is a separate workspace crate loaded with `dlopen` and it
+pulls in seven dependencies the main crate's graph does not contain at all —
+`alsa`, `alsa-sys`, `cpal`, `dasp_sample`, `num-bigint`, `num-rational`,
+`rodio`. A single main-crate SBOM would omit precisely the C-library-adjacent
+dependencies a vulnerability scan is looking for, while looking complete.
+
+The binary SBOM is generated with `--features full` on purpose. The `noaudio`
+artifacts resolve a strict subset of that graph — measured on 0.5.54 the two
+differ by exactly one component, `libloading` — so one full-feature document
+over-covers rather than under-covers every binary published, which is the safe
+direction. `cargo-cyclonedx` has no `--package` flag: one workspace-level
+invocation emits a document per member into that member's own directory, and
+the release step renames them apart on the way into `artifacts/`.
+
+Finally the `tap` job
 renders the Homebrew formula and pushes it to `NormB/homebrew-tap`, skipping
 with a warning if the token is absent.
 

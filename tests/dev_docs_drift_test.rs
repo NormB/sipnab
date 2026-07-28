@@ -688,3 +688,49 @@ fn every_site_internals_page_is_in_the_docs_dropdown() {
         missing.join("\n  ")
     );
 }
+
+/// The workflow-inventory heading counts the workflows. Keep it honest.
+///
+/// `build-ci-release.md` opens its inventory with "The N workflows" and then
+/// tables them. The count is spelled out in the heading, so adding a workflow
+/// silently makes the heading wrong — and a table missing a row reads as
+/// "these are all of them" rather than as an omission. Nothing checked either
+/// half until `scorecard.yml` became the ninth.
+#[test]
+fn workflow_inventory_heading_counts_the_workflows() {
+    const WORDS: [&str; 16] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    ];
+    let dir = repo().join(".github/workflows");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("workflows dir")
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|x| x == "yml" || x == "yaml")
+        })
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    let n = names.len();
+    let word = WORDS
+        .get(n)
+        .unwrap_or_else(|| panic!("{n} workflows — extend WORDS"));
+
+    let doc = read("docs/internals/build-ci-release.md");
+    let heading = format!("## The {word} workflows");
+    assert!(
+        doc.contains(&heading),
+        "docs/internals/build-ci-release.md should say \"{heading}\" — \
+         there are {n} workflow files: {names:?}"
+    );
+    // Every workflow must appear in the table under that heading, not just be
+    // counted by it.
+    let missing: Vec<&String> = names.iter().filter(|f| !doc.contains(f.as_str())).collect();
+    assert!(
+        missing.is_empty(),
+        "workflows counted but never described in build-ci-release.md: {missing:?}"
+    );
+}
