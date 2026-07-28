@@ -11,6 +11,16 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **`docs/mcp.md`'s tool table listed 7 of the 11 tools the server registers.**
+  `search_messages`, `tail_dialogs` and `security_findings` were documented in
+  the prose below it but missing from the table, and `stats` was absent from
+  both copies of the page. Nothing was factually wrong; a reader scanning the
+  table for what MCP can do just would not have learned those tools exist. The
+  table now carries all 11 plus a Parameters column, and
+  `mcp_tool_table_lists_every_registered_tool` derives the truth from the
+  `#[tool(name = "…")]` attributes in `src/mcp/server.rs` rather than from a
+  second hand-written list.
+
 - **The REST API page was two divergent documents; now it is one.**
   `docs/rest-api.md` was 430 lines and the site's was 893, sharing 5 of their
   17 commands — and each side held whole sections the other did not. The site
