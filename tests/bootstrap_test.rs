@@ -161,6 +161,52 @@ fn mcp_forces_batch_mode() {
     assert!(matches!(p.mode, RunMode::Batch));
 }
 
+/// `--call-report` forces batch mode, because it is only ever read there.
+///
+/// `Cli::validate` waives the `-N` requirement for `--call-report` and its
+/// doc comment states the flag "implies non-interactive output" — but the
+/// run-mode selector never consulted `call_report`, so the documented
+/// invocation started the TUI instead. `cli.call_report` is read in exactly
+/// one place (`app::batch`), so in TUI mode the flag was silently ignored:
+/// `sipnab -I capture.pcap --call-report <id> --markdown > report.md`
+/// wrote 122 bytes of alt-screen and mouse-tracking escapes where the docs
+/// promised a Markdown report, and exited 0. Measured against the real
+/// binary: 6911 bytes with `-N`, 122 without.
+///
+/// Six published invocations used the no-`-N` form, so this was the
+/// documented spelling, not a corner case.
+#[test]
+fn call_report_forces_batch_mode() {
+    let p = bootstrap::plan(
+        &cli(&["-I", "x.pcap", "--call-report", "abc123@host"]),
+        &Config::default(),
+    )
+    .expect("plan");
+    assert!(
+        matches!(p.mode, RunMode::Batch),
+        "--call-report must select batch; it is read nowhere else, so the TUI \
+         silently discards it and emits terminal escapes to stdout"
+    );
+
+    // Still batch with the format flag the docs pair it with, and still batch
+    // when -N is given explicitly (the two must not disagree).
+    for args in [
+        &["-I", "x.pcap", "--call-report", "abc123@host", "--markdown"][..],
+        &["-I", "x.pcap", "--call-report", "abc123@host", "-N"][..],
+    ] {
+        let p = bootstrap::plan(&cli(args), &Config::default()).expect("plan");
+        assert!(matches!(p.mode, RunMode::Batch), "{args:?} must be batch");
+    }
+
+    // The TUI is still the default when --call-report is absent, so this does
+    // not turn every offline run into batch.
+    #[cfg(feature = "tui")]
+    {
+        let p = bootstrap::plan(&cli(&["-I", "x.pcap"]), &Config::default()).expect("plan");
+        assert!(matches!(p.mode, RunMode::Tui));
+    }
+}
+
 /// Autostop and split parsing feed the capture policy; errors are exit-2
 /// plan errors carrying the flag name.
 #[test]

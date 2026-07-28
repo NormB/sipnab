@@ -1190,7 +1190,38 @@ impl Cli {
     /// `--help`, or `--version`, clap prints to stdout/stderr and exits
     /// the process without returning.
     pub fn parse_args() -> Self {
-        Cli::parse()
+        let mut cli = Cli::parse();
+        cli.normalize();
+        cli
+    }
+
+    /// Apply the "implies" relationships between flags, once, at the parse
+    /// boundary, so every consumer downstream reads one already-settled truth.
+    ///
+    /// `--call-report` implies `-N`. That was always the stated contract —
+    /// [`Cli::validate`] waives the `-N` requirement for it on exactly those
+    /// grounds — but nothing applied it, and four separate places derived
+    /// interactivity for themselves from the raw `no_tui` flag:
+    /// [`crate::app::bootstrap::plan`] chose the run mode, `app::batch` gated
+    /// `--hexdump`, per-message output and `--report` on it, and
+    /// [`crate::app::bootstrap::init_logging`] silenced logs for a TUI that was
+    /// not going to start. So `sipnab -I capture.pcap --call-report <id>
+    /// --markdown > report.md` launched the TUI and wrote 122 bytes of
+    /// alt-screen and mouse-tracking escape codes, exit 0 — `call_report` is
+    /// read only in `app::batch`, so the TUI did not override the flag, it
+    /// discarded it. Six published invocations used that spelling.
+    ///
+    /// Normalizing here rather than at each reader is deliberate: the next
+    /// output gate added to `app::batch` will be written `&& cli.no_tui` like
+    /// the three before it, and that is only correct if `no_tui` already means
+    /// "non-interactive" rather than "the user typed `-N`".
+    ///
+    /// `validate` still carries its own `call_report.is_none()` guard, because
+    /// a `Cli` built directly in a test never passes through here.
+    fn normalize(&mut self) {
+        if self.call_report.is_some() {
+            self.no_tui = true;
+        }
     }
 
     /// Whether the dialog store evicts the oldest dialog at `--limit` capacity.
@@ -1214,7 +1245,9 @@ impl Cli {
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        Cli::parse_from(args)
+        let mut cli = Cli::parse_from(args);
+        cli.normalize();
+        cli
     }
 
     /// Validate argument combinations and return an error message if invalid.
@@ -1733,6 +1766,39 @@ mod tests {
         // store evicts the oldest dialog rather than dropping new legitimate
         // calls — a privileged sniffer must bound dialog state safely by default.
         assert!(cli.rotate_enabled(), "rotate must default ON");
+    }
+
+    /// `--call-report` sets `no_tui` at the parse boundary, and only then.
+    ///
+    /// Every interactivity decision in the process reads `no_tui`: the run
+    /// mode, the three output gates in `app::batch`, and log suppression. If
+    /// the implication is not applied here they disagree, which is how
+    /// `--call-report <id> --markdown` came to emit terminal escape codes
+    /// instead of a report.
+    #[test]
+    fn call_report_normalizes_to_non_interactive() {
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--call-report", "a@b"]);
+        assert!(
+            cli.no_tui,
+            "--call-report must imply -N, or the run-mode selector and the \
+             app::batch output gates disagree about whether a TUI is running"
+        );
+        assert!(cli.validate().is_ok());
+
+        // Output flags are legal alongside it precisely because it is now
+        // non-interactive -- this is the combination validate() waives.
+        let cli =
+            Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--call-report", "a@b", "--json"]);
+        assert!(cli.no_tui);
+        assert!(cli.validate().is_ok());
+
+        // Without it, nothing is implied and the TUI remains the default.
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        assert!(!cli.no_tui, "no --call-report must leave the TUI default");
+
+        // An explicit -N is unchanged, not doubly applied.
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "-N"]);
+        assert!(cli.no_tui);
     }
 
     /// Rotation defaults on; `--no-rotate` opts out; when both flags are
