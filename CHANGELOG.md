@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.54] - 2026-07-27
 
 ### Added
 - **`--dialog-track` is back, and this time it does something.** It groups
