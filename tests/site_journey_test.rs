@@ -33,27 +33,42 @@ fn read(rel: &str) -> String {
     std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
 }
 
-/// The YAML block of one named workflow step, from its `- name:` line to the
-/// start of the next step at the same indentation.
-///
-/// Panics if the step is not found, because every caller treats its absence as
-/// the defect — a renamed step must fail loudly, not silently check nothing.
-fn workflow_step(workflow: &str, step_name: &str) -> String {
+/// The YAML block of one named step: its `- name:` line through the last line
+/// belonging to it. Panics if the step is absent or duplicated.
+fn workflow_step_body(workflow: &str, step_name: &str) -> String {
     let text = read(workflow);
-    let needle = format!("- name: {step_name}");
-    let start = text
-        .lines()
-        .position(|l| l.trim() == needle)
-        .unwrap_or_else(|| panic!("{workflow} has no step named {step_name:?} — it was renamed or removed, and every assertion about it is now checking nothing"));
     let lines: Vec<&str> = text.lines().collect();
+    let needle = format!("- name: {step_name}");
+    let matches: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.trim() == needle)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        !matches.is_empty(),
+        "{workflow} has no step named {step_name:?} — it was renamed or removed, \
+         and every assertion about it is checking nothing"
+    );
+    assert_eq!(
+        matches.len(),
+        1,
+        "{workflow} has {} steps named {step_name:?}. Duplicate names are legal, so \
+         a scan taking the first match reads whichever an author put first — the \
+         real step can be neutered behind a decoy",
+        matches.len()
+    );
+    let start = matches[0];
     let indent = lines[start].len() - lines[start].trim_start().len();
     let mut out = vec![lines[start]];
     for l in &lines[start + 1..] {
         let t = l.trim_start();
-        if !t.is_empty() && l.len() - t.len() <= indent && t.starts_with("- ") {
-            break;
+        if t.is_empty() {
+            out.push(l);
+            continue;
         }
-        if !t.is_empty() && l.len() - t.len() < indent {
+        let ind = l.len() - t.len();
+        if ind < indent || (ind == indent && t.starts_with("- ")) {
             break;
         }
         out.push(l);
@@ -61,53 +76,176 @@ fn workflow_step(workflow: &str, step_name: &str) -> String {
     out.join("\n")
 }
 
+/// Run a workflow step's `run:` script against deliberately-wrong input and
+/// assert it exits non-zero.
+///
+/// This is the only assertion here that tests the behaviour rather than the
+/// text. Structural checks — no `continue-on-error`, an `exit 1` present, an
+/// `::error::` followed by an exit — each anchor on a pattern the author can
+/// simply not use: downgrading `::error::` to `::warning::` and dropping the
+/// exit defeated all of them, with the step still running and the build still
+/// green. Executing the script cannot be sidestepped that way, because a step
+/// that does not fail on bad input is precisely the defect.
+///
+/// # Arguments
+/// * `subs` - `(from, to)` replacements for GitHub expressions like
+///   `${{ matrix.target }}`, which bash cannot evaluate.
+/// * `setup` - prepares a temp CWD holding the inputs the script reads, seeded
+///   so the check must fail.
+fn assert_step_fails_on_bad_input(
+    workflow: &str,
+    step_name: &str,
+    subs: &[(&str, &str)],
+    setup: &dyn Fn(&std::path::Path),
+) {
+    let body = workflow_step_body(workflow, step_name);
+    let mut script = body
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("run:"))
+        .skip(1)
+        .map(|l| l.strip_prefix("          ").unwrap_or(l.trim_start()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !script.trim().is_empty(),
+        "{workflow} step {step_name:?}: could not extract a `run:` script — this \
+         check is executing nothing"
+    );
+    for (from, to) in subs {
+        script = script.replace(from, to);
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "sipnab-step-{}-{}",
+        step_name.replace([' ', '(', ')', '/'], "-"),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    setup(&dir);
+
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .current_dir(&dir)
+        .output()
+        .expect("run step script");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        !out.status.success(),
+        "{workflow} step {step_name:?} exited 0 on input its check should reject. \
+         It runs, it may even annotate the problem, and the build stays green — \
+         which is the state this gate exists to prevent.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// A named workflow step still fails the build when its check fails.
 ///
 /// Asserting the file *contains* some identifying string is a proxy: it stays
-/// true through every way of neutering the step. `continue-on-error: true`
-/// rewrites the step's conclusion to `success` and leaves the truth in
-/// `outcome`, which nothing reads — this repository has already been burned by
-/// exactly that, on the PTY tests, where the one place they ran threw the
-/// answer away. Dropping the `exit 1` or widening the `if:` are the other two
-/// ways.
+/// true through every way of neutering the step. This checks the four that
+/// reach the same end state — the step runs, annotates the problem, and the
+/// build stays green:
+///
+/// 1. `continue-on-error` on the step, which rewrites its conclusion to
+///    success and leaves the truth in `outcome`, which nothing reads.
+/// 2. `continue-on-error` on the enclosing JOB, which does the same thing one
+///    level up and is invisible to anything reading only the step.
+/// 3. Deleting the load-bearing `exit 1`. This step has three, and only the
+///    one after the `::error::` annotation is the verdict — so "contains an
+///    `exit 1`" passes with the verdict removed. Every `::error::` must be
+///    followed by an exit, which is the property rather than a count.
+/// 4. A decoy step with the same name earlier in the file. Duplicate step
+///    names are legal in GitHub Actions, and a scan taking the first match
+///    reads the decoy.
+///
+/// All four were demonstrated passing against the previous version of this
+/// helper before it was rewritten.
 ///
 /// # Arguments
-/// * `guard` - the only `if:` condition allowed on the step, or `None` if it
-///   must be unconditional. A widened guard is how a step stops running
-///   without anyone editing its body.
+/// * `guard` - the only `if:` allowed on the step, or `None` for unconditional.
 fn assert_step_enforces(workflow: &str, step_name: &str, guard: Option<&str>) {
-    let step = workflow_step(workflow, step_name);
+    let body = workflow_step_body(workflow, step_name);
+    let step: Vec<&str> = body.lines().collect();
+    let text = read(workflow);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim() == format!("- name: {step_name}"))
+        .expect("step located by workflow_step_body");
 
     assert!(
-        !step.contains("continue-on-error"),
+        !body.contains("continue-on-error"),
         "{workflow} step {step_name:?} carries continue-on-error, which rewrites \
          its conclusion to success and leaves the real result in `outcome`, which \
-         nothing reads. The step runs and its verdict is discarded — the claim it \
-         guards is unmeasured again."
+         nothing reads — the step runs and its verdict is discarded"
     );
+
+    // The enclosing job, found by walking back to the nearest 2-space key.
+    let job_line = lines[..start]
+        .iter()
+        .rposition(|l| {
+            let t = l.trim_start();
+            l.len() - t.len() == 2 && t.ends_with(':') && !t.starts_with('#')
+        })
+        .unwrap_or_else(|| panic!("{workflow}: no enclosing job found for {step_name:?}"));
+    let job_header: String = lines[job_line..]
+        .iter()
+        .take_while(|l| l.trim() != "steps:")
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        step.contains("exit 1"),
-        "{workflow} step {step_name:?} no longer exits non-zero on failure, so it \
-         reports the mismatch and passes anyway"
+        !job_header.contains("continue-on-error"),
+        "{workflow}: the job containing {step_name:?} carries continue-on-error, \
+         which discards the whole job's verdict — the step's own block being \
+         clean says nothing"
+    );
+
+    // Every error annotation must actually fail the build. A count of `exit 1`
+    // would be a proxy: this step has three, and only the one after the
+    // `::error::` is the verdict.
+    for (i, l) in step.iter().enumerate() {
+        if !l.contains("::error::") {
+            continue;
+        }
+        // Same line first: `{ echo "::error::..."; exit 1; }` is one line.
+        let follows = l.contains("exit 1")
+            || step[i + 1..]
+                .iter()
+                .take(3)
+                .any(|n| n.contains("exit 1") || n.contains("exit $"));
+        assert!(
+            follows,
+            "{workflow} step {step_name:?} emits an ::error:: annotation that is not \
+             followed by a non-zero exit:\n  {}\nThe mismatch is reported and the \
+             build stays green, which is the state this gate exists to prevent",
+            l.trim()
+        );
+    }
+    assert!(
+        body.contains("exit 1"),
+        "{workflow} step {step_name:?} no longer exits non-zero on failure"
     );
 
     let actual_guard = step
-        .lines()
+        .iter()
         .find(|l| l.trim_start().starts_with("if:"))
         .map(|l| l.trim().trim_start_matches("if:").trim().to_string());
     match guard {
         Some(want) => assert_eq!(
             actual_guard.as_deref(),
             Some(want),
-            "{workflow} step {step_name:?} guard changed. It must run on exactly \
-             the platform/target it was written for; a widened or falsified \
-             condition skips it while the workflow stays green"
+            "{workflow} step {step_name:?} guard changed. It must run on exactly the \
+             platform/target it was written for; a widened or falsified condition \
+             skips it while the workflow stays green"
         ),
         None => assert!(
             actual_guard.is_none(),
-            "{workflow} step {step_name:?} gained an `if:` guard ({actual_guard:?}) \
-             — it was unconditional, and a guard is how a step stops running \
-             without its body changing"
+            "{workflow} step {step_name:?} gained an `if:` guard ({actual_guard:?}) — \
+             a guard is how a step stops running without its body changing"
         ),
     }
 }
@@ -542,6 +680,29 @@ fn published_binary_size_matches_the_enforced_ceiling() {
         "Enforce published binary size (musl targets)",
         Some("contains(matrix.target, '-linux-musl')"),
     );
+    // And prove it: a 1 MB ceiling against a 2 MB binary must fail.
+    assert_step_fails_on_bad_input(
+        ".github/workflows/release.yml",
+        "Enforce published binary size (musl targets)",
+        &[("${{ matrix.target }}", "x86_64-unknown-linux-musl")],
+        &|dir| {
+            std::fs::write(dir.join("website/config.toml"), "")
+                .or_else(|_| {
+                    std::fs::create_dir_all(dir)
+                        .and_then(|()| std::fs::write(dir.join("website/config.toml"), ""))
+                })
+                .ok();
+            std::fs::create_dir_all(dir.join("website")).expect("mkdir website");
+            std::fs::write(
+                dir.join("website/config.toml"),
+                "binary_size_ceiling_mb = \"1\"\n",
+            )
+            .expect("write config");
+            let bin = dir.join("target/x86_64-unknown-linux-musl/release");
+            std::fs::create_dir_all(&bin).expect("mkdir target");
+            std::fs::write(bin.join("sipnab"), vec![0u8; 2 * 1024 * 1024]).expect("write binary");
+        },
+    );
 }
 
 /// The homepage throughput tiles must quote figures that appear on the
@@ -638,6 +799,27 @@ fn homepage_test_counts_agree_with_each_other() {
         ".github/workflows/ci.yml",
         "Enforce the published test count",
         Some("matrix.os == 'ubuntu-latest'"),
+    );
+    // And prove it: a homepage claiming 9999 tests against a run reporting 7
+    // must fail. Structural checks alone were defeated by downgrading
+    // ::error:: to ::warning:: and dropping the exit.
+    assert_step_fails_on_bad_input(
+        ".github/workflows/ci.yml",
+        "Enforce the published test count",
+        &[],
+        &|dir| {
+            std::fs::create_dir_all(dir.join("website/templates")).expect("mkdir");
+            std::fs::write(
+                dir.join("website/templates/index.html"),
+                "<td>9999 automated tests</td>",
+            )
+            .expect("write index");
+            std::fs::write(
+                dir.join("test-output.txt"),
+                "test result: ok. 7 passed; 0 failed;\n",
+            )
+            .expect("write output");
+        },
     );
 }
 
