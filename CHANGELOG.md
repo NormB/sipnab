@@ -11,6 +11,16 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **The REST API page was two divergent documents; now it is one.**
+  `docs/rest-api.md` was 430 lines and the site's was 893, sharing 5 of their
+  17 commands — and each side held whole sections the other did not. The site
+  had the richer endpoint reference and a four-step getting-started; `docs/`
+  uniquely had Status codes, the curl+jq recipes, the Prometheus scrape config,
+  and Client examples. Merged to 960 lines, keeping the better of each, with
+  the docs' bind-address section (which also explains the base URL, the
+  loopback default and the `/v1/` prefix) replacing the site's thinner
+  Connection Limits. The wiki page goes from 430 lines to 961.
+
 - **The wiki cookbook is no longer a third of the real one.** `docs/examples.md`
   and the site's Cookbook were maintained by hand and had drifted almost
   completely apart — 740 lines against 122, sharing 2 of their 36 commands.
