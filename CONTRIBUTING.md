@@ -55,10 +55,13 @@ the `cargo insta test --accept` flow for updating snapshots.
 ## Fuzzing
 
 The `fuzz/` crate holds 15 libFuzzer targets (nightly + `cargo-fuzz`).
-Run one against its seed corpus:
+Run one from the repository root against its seed corpus — `cargo-fuzz`
+passes the corpus argument to the fuzz binary verbatim and never changes
+its directory, so from `fuzz/` it resolves to `fuzz/fuzz/corpus/sip_parser`
+and libFuzzer exits with `ERROR: The required directory ... does not
+exist` before it fuzzes anything:
 
 ```bash
-cd fuzz
 cargo +nightly fuzz run fuzz_sip_parser fuzz/corpus/sip_parser
 ```
 
@@ -96,8 +99,10 @@ git config core.hooksPath .githooks
 `unwrap()`/`expect()` in production code, WASM exports in sync with the site's
 JS, the homepage test count plus the site and man-page version strings matching
 `Cargo.toml`, no TODO stubs, a refusal to commit a staged `src/wasm.rs` without
-a rebuilt bundle, and an advisory developer-docs coupling notice. Gates 1–7
-block the commit; gate 8 only prints `REVIEW` and a file list.
+a rebuilt bundle, and an advisory developer-docs coupling notice. Gates 1–5
+and 7 block the commit. Gate 6 prints `WARN: N TODO/FIXME comments` and falls
+through — a count, not a veto — and gate 8 only prints `REVIEW` and a file
+list.
 
 Because gate 2 runs the whole suite, **every commit takes minutes**, and gate 5
 means adding a test obliges you to update the count in

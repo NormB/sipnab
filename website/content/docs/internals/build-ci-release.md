@@ -92,9 +92,9 @@ Two of the eight cannot fail the commit. Gate 6 prints
 prints `REVIEW` and a list and returns zero, a reminder to check the developer
 pages still read true, not a claim that they don't. The gate that *does* fail
 is [`dev_docs_drift_test`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs) in gate 2's test
-run, and it is broader than dead links: nine tests covering cited paths that no
-longer exist, a `()`-suffixed symbol in link text with no matching `fn` left in
-the workspace, an absolute GitHub URL where a relative path belongs, a page
+run, and it is broader than dead links: sixteen tests covering cited paths that
+no longer exist, a `()`-suffixed symbol in link text with no matching `fn` left
+in the workspace, an absolute GitHub URL where a relative path belongs, a page
 missing from `build-wiki.py` (which would silently never publish), and three
 mermaid conventions — `sequenceDiagram` only, no markdown links inside a fence,
 and a prose line above every one. What it cannot catch is prose that has
@@ -129,7 +129,7 @@ locally:
 
 | Location | Form |
 |---|---|
-| `ci.yml` (3 jobs), `quality.yml` (2 jobs), `release.yml` | `dtolnay/rust-toolchain@1.97.1` |
+| `ci.yml` (3 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@1.97.1` |
 | `Cargo.toml`, `crates/sipnab-audio/Cargo.toml` | `rust-version = "1.97"` (MSRV) |
 | `Dockerfile`, `harness/sipnab/Dockerfile` | `FROM rust:1.97-slim-trixie` |
 

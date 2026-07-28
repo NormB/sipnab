@@ -53,9 +53,9 @@ does when something goes wrong — is [the fault model](https://github.com/NormB
 
 ## The corpus: live vs archaeological
 
-The repository root carries several long design documents. They are not all
-current, and reading the wrong one as current is the main way to be misled
-here.
+The long design documents live in `docs/design/` and `docs/research/`, with the
+codemap one level up in `docs/` itself. They are not all current, and reading
+the wrong one as current is the main way to be misled here.
 
 **Live:**
 
@@ -64,7 +64,9 @@ here.
 | [`../architecture.md`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
 | [`../design/maintainability-perf-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why the pipeline was unified, why `main.rs` was decomposed into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
 | [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
+| [`../design/lessons.md`](https://github.com/NormB/sipnab/blob/main/docs/design/lessons.md) | Four defects that reached a release, each with the rule derived from it: TUI state no renderer read, feature flags gating nothing, config parsed and never used, and the 2026-05-05 audit that found four blocking and ~17 major doc drifts accumulated since 0.3.1. Its cheap-regression greps have themselves rotted — the field-count one calls 30 current, and `dsl.rs` now has 31. |
 | [`../research/codex-analysis.md`](https://github.com/NormB/sipnab/blob/main/docs/research/codex-analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
+| [`../research/capture-performance.md`](https://github.com/NormB/sipnab/blob/main/docs/research/capture-performance.md) | The packet-capture throughput roadmap: four phases ordered cheapest-first, each after the first carrying an explicit trigger condition so the complexity is only paid once the previous phase proves insufficient. Research, not committed work — one item is marked done, the auto-grow capture channel. Its baseline section still cites `file:line` positions that have moved: `src/main.rs:428` names a file that is now 130 lines long. |
 
 **Archaeological** — kept for the determination record, superseded in places:
 
@@ -74,6 +76,7 @@ here.
 | [`../design/implementation-plan-phases-8-10.md`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-phases-8-10.md) | The MCP, HEP and observability designs, and the "Resolved Decisions" section that formally retires parts of v6. | Its D-numbering. It defines its own D20 (infrastructure-optional integration) and D21 (capture vs enrichment sources), which collide with v6's D20 and D21. Always say which document a D-number comes from. |
 | [`../design/compact-headers-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/compact-headers-spec.md) | Why all 19 RFC 3261 / IANA compact header forms are supported, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — it is implemented and pinned by tests. |
 | [`../design/kill-target-spoofing-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/kill-target-spoofing-spec.md) | The scope and ethics of sending a scanner-kill response from the victim's `ip:port` rather than an ephemeral one. | Nothing — but read `--kill-scanner`'s guard rails in [`cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) alongside it. |
+| [`../design/dialog-tracking-modes.md`](https://github.com/NormB/sipnab/blob/main/docs/design/dialog-tracking-modes.md) | Why `--dialog-track` keys on Call-ID or on Call-ID plus top-Via branch, what the branch view costs everything downstream of the store, and the rejected alternatives. | Its status line, which still reads "spec, not yet implemented". The flag shipped wired in 0.5.54 — [`dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs) cites this page for the design, and a test pins the two modes to disagreeing counts. |
 
 ## Glossary
 
@@ -179,10 +182,12 @@ process, so the floor is not optional.
   output is stale. The same arrangement covers the operator
   pages: [`build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) renders
   each entry in its `PAGES` registry from `docs/` into `website/content/docs/`,
-  gated by `site_pages_mirror_is_current`. Both registered pages got there the
-  same way — hand-maintained on both sides until they diverged. The cookbook
+  gated by `site_pages_mirror_is_current`. All three registered pages got there
+  the same way — hand-maintained on both sides until they diverged. The cookbook
   shared 2 of its 36 commands with the site copy; the REST API page was 430
-  lines against the site's 893, each side holding sections the other lacked.
+  lines against the site's 893, each side holding sections the other lacked; the
+  MCP page was 672 lines against the site's 440, and its tool table listed 7 of
+  the 11 registered tools where the site's listed all 11.
   The wiki renders from `docs/`, so it showed whichever copy was thinner as
   though it were the whole page. Register a page there; never copy the script. The site mirror exists because GitHub's wiki mermaid viewer
   pins its controls over the diagram with no way to move them; the site

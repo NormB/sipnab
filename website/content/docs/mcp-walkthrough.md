@@ -4,7 +4,7 @@ description = "Step-by-step MCP deployment scenarios: same-box stdio, remote pro
 weight = 15
 +++
 
-[the MCP reference](@/docs/mcp.md) is the reference: every flag, tool, and error code. This
+[MCP Server](@/docs/mcp.md) is the reference: every flag, tool, and error code. This
 page walks a **first-time sipnab user** through each deployment scenario,
 command by command, on every machine involved. Steps are tagged with the
 host they run on: **[server]** (where sipnab runs), **[laptop]** (where

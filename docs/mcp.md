@@ -300,16 +300,32 @@ capped at 4 KB.
 
 ### `tail_dialogs`
 
-Incremental fetch by RFC 3339 cursor (updated_at strictly after).
+Incremental fetch of the dialogs updated after a cursor position.
 
 | Name | Type | Description |
 |---|---|---|
-| `cursor` | string? | RFC 3339 timestamp. Omit on first call. |
+| `cursor` | string? | The previous response's `next_cursor`, passed back verbatim (`<RFC 3339>\|<Call-ID>`). Omit on first call. |
 | `limit` | u32? | Default 50, max 1000. |
 
-Returns `{ dialogs, next_cursor, source_exhausted }`. The
-`source_exhausted` flag is reserved for future capture-state
-integration; in v0.5 it is always `false`.
+Returns `{ dialogs, next_cursor, source_exhausted }`.
+
+`next_cursor` is compound — `<RFC 3339>|<Call-ID>` — not a bare
+timestamp. Dialogs can share an `updated_at`, so resuming from the
+`(updated_at, Call-ID)` pair is what keeps a tie group split across a
+page boundary from being dropped or returned twice. Pass it back
+unmodified. A client that rebuilds a bare timestamp from a dialog's
+`updated_at` instead falls back to the pre-compound strictly-after
+filter and loses or repeats the tied dialogs — that bare-timestamp
+form is still accepted, so the mistake is silent rather than an error.
+`|` occurs in neither an RFC 3339 timestamp nor a valid Call-ID
+(RFC 3261 `word`), so the split is unambiguous.
+
+`source_exhausted` is `false` while more dialog updates can still
+arrive and `true` once the capture source is fully drained — the end of
+an `-I` pcap replay, or a live capture that has hit its
+`--count`/`--duration`/`--autostop` stop condition. sipnab keeps
+serving MCP after that, so this is the flag to poll to learn a replay
+has finished: stop when it turns `true` instead of polling forever.
 
 ### `security_findings`
 
