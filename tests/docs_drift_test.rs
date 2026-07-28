@@ -1473,6 +1473,18 @@ fn mcp_tool_table_lists_every_registered_tool() {
 
 const SHELL_LANGS: &[&str] = &["bash", "sh", "shell", "console", "zsh"];
 
+// SCOPE, stated because the gap is real and a reader should not assume
+// otherwise: this gate reads fences whose info string names a shell. The site
+// attaches its copy button to every `pre` (website/templates/page.html:90), so
+// an UNLABELED fence gets a button too, and 230 of those exist in the scanned
+// corpus — 132 of them command-looking. They are not checked.
+//
+// Scanning them by heuristic was rejected: "starts with a command-looking
+// word" also matches terminal transcripts and output samples, and a gate that
+// cries wolf gets muted, which is worse than one with a stated limit. Closing
+// this properly means labelling those fences, which is a remediation of its
+// own, not a condition of this gate.
+
 /// First line of a block that declares itself one ordered procedure.
 const SEQUENCE_MARKER: &str = "# Run all of these, in order.";
 
