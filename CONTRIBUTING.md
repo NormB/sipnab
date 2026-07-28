@@ -235,7 +235,7 @@ longer resolves. Prose that has quietly become wrong is caught by nothing.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) format:
 
-```
+```text
 feat: add --nat-issues diagnostic alias
 fix: handle empty Contact header without panic
 docs: update CLI reference with new output flags

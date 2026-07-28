@@ -42,7 +42,7 @@ sipnab -N -I capture.pcap --filter problems
 
 The `--problems` sweep prints one line per SIP message of each flagged call, then the end-of-capture summary. You should see something like (abridged):
 
-```
+```text
 INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060  Failed  408 Request Timeout
 ...
 852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams
@@ -121,7 +121,7 @@ sipnab -N -I capture.pcap --call-report 'abc123@host' --markdown > failure-repor
 
 The histogram output looks like (`uniq -c` count, then status code):
 
-```
+```text
      23 100
      14 486
       6 503
@@ -641,7 +641,7 @@ sudo sipnab -N -d eth0 --kill-scanner --fail2ban \
 
 Sample log line shape (from `src/output/fail2ban.rs`):
 
-```
+```text
 2026-05-05 12:34:56 sipnab[12345]: scanner_detected src=203.0.113.42 ua=friendly-scanner method=OPTIONS
 2026-05-05 12:34:57 sipnab[12345]: reg_flood src=203.0.113.42 count=37
 ```
@@ -681,7 +681,7 @@ sudo sipnab -N -d eth0 --fraud-detect --alert syslog
 
 You should see alert lines like:
 
-```
+```text
 [ALERT] fraud src=203.0.113.42 Wangiri: 4 short calls to prefix '+44900' in 60s
 [ALERT] fraud src=203.0.113.42 SequentialScanning: sequential dialing detected: 3 consecutive numbers ending at 15550104
 [ALERT] fraud src=203.0.113.42 VolumeSpike: 40 calls in 60s (baseline: 1.5/min)

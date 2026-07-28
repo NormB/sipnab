@@ -136,7 +136,7 @@ cargo build --release --no-default-features \
 
 This matters because it fails quietly. `cargo build --release --features full` on Alpine succeeds, and the binary then reports:
 
-```
+```text
 sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
 ```
 

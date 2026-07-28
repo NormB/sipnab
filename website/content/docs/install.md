@@ -502,7 +502,7 @@ sipnab -D
 
 `--version` lists the Cargo features compiled into the binary, e.g.
 
-```
+```text
 sipnab 0.5.56 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
 ```
 
@@ -511,7 +511,7 @@ you expected (e.g. that `mcp-http` is present on a server build).
 
 A first non-interactive run against a capture looks like this:
 
-```
+```text
 $ sipnab -N -I demo.pcap | head -3
 INVITE alice -> bob  192.0.2.1:5060 -> 192.0.2.2:5060 InCall PDD=847ms
 REGISTER admin -> --  192.0.2.5:5060 -> 192.0.2.1:5060 Registered

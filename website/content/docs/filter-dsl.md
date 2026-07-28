@@ -11,7 +11,7 @@ sipnab includes a declarative, non-Turing-complete filter language for matching 
 
 ## Grammar
 
-```
+```text
 expr        = or_expr
 or_expr     = and_expr ("OR" and_expr)*
 and_expr    = not_expr ("AND" not_expr)*
@@ -157,73 +157,58 @@ pick whichever reads better in the command you are writing.
 
 ## Examples
 
+Each entry below is one complete expression, and `--filter` takes exactly one:
+these are catalogs to pick a line from, not blocks to copy whole.
+
 ### Basic field matching
 
-```
-method == 'INVITE'
-from.user == '1001'
-state == 'InCall'
-```
+- `method == 'INVITE'`
+- `from.user == '1001'`
+- `state == 'InCall'`
 
 ### Regex matching
 
-```
-ua =~ 'friendly-scanner'
-from.user =~ '^100[0-9]'
-call_id =~ 'abc.*@'
-```
+- `ua =~ 'friendly-scanner'`
+- `from.user =~ '^100[0-9]'`
+- `call_id =~ 'abc.*@'`
 
 ### Numeric comparisons
 
-```
-pdd > 3.0
-rtp.mos < 3.0
-rtp.loss > 2.0
-duration < 5.0
-retransmits > 3
-rtp.jitter > 50.0
-rtp.packets > 10000
-```
+- `pdd > 3.0`
+- `rtp.mos < 3.0`
+- `rtp.loss > 2.0`
+- `duration < 5.0`
+- `retransmits > 3`
+- `rtp.jitter > 50.0`
+- `rtp.packets > 10000`
 
 ### Boolean fields
 
-```
-one_way == true
-nat_mismatch == true
-rtp.orphaned == true
-no_media == true
-codec_asymmetry == true
-late_media == true
-```
+- `one_way == true`
+- `nat_mismatch == true`
+- `rtp.orphaned == true`
+- `no_media == true`
+- `codec_asymmetry == true`
+- `late_media == true`
 
 ### Compound expressions
 
-```
-method == 'INVITE' AND rtp.mos < 3.0
-from.user =~ '^1001' AND state == 'Failed'
-pdd > 3.0 OR retransmits > 5
-NOT ua =~ 'friendly-scanner'
-(state == 'Failed' OR state == 'Cancelled') AND duration < 1.0
-```
+- `method == 'INVITE' AND rtp.mos < 3.0`
+- `from.user =~ '^1001' AND state == 'Failed'`
+- `pdd > 3.0 OR retransmits > 5`
+- `NOT ua =~ 'friendly-scanner'`
+- `(state == 'Failed' OR state == 'Cancelled') AND duration < 1.0`
 
 ### Real-world diagnostic queries
 
-```
-# Find calls with poor quality from a specific extension
-from.user =~ '^1001' AND rtp.mos < 3.0
+The DSL has no comment syntax, so each query is labelled in prose here — a `#`
+line handed to `--filter` is a parse error, not a note.
 
-# Find failed registrations from a subnet
-method == 'REGISTER' AND state == 'Failed' AND src.ip =~ '^10\.0\.1\.'
-
-# Find short calls that completed (possible robocalls)
-duration < 5.0 AND state == 'Completed' AND method == 'INVITE'
-
-# Find calls with audio issues
-one_way == true OR no_media == true OR rtp.jitter > 100.0
-
-# Find scanner activity by User-Agent
-ua =~ 'sipvicious|friendly-scanner|sipcli'
-```
+- Find calls with poor quality from a specific extension: `from.user =~ '^1001' AND rtp.mos < 3.0`
+- Find failed registrations from a subnet: `method == 'REGISTER' AND state == 'Failed' AND src.ip =~ '^10\.0\.1\.'`
+- Find short calls that completed (possible robocalls): `duration < 5.0 AND state == 'Completed' AND method == 'INVITE'`
+- Find calls with audio issues: `one_way == true OR no_media == true OR rtp.jitter > 100.0`
+- Find scanner activity by User-Agent: `ua =~ 'sipvicious|friendly-scanner|sipcli'`
 
 > **Note:** The filter DSL evaluates against dialogs, not individual messages. A filter like `method == 'INVITE'` matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
 
