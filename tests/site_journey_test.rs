@@ -2015,6 +2015,21 @@ fn packaging_scripts_reference_existing_paths() {
             if cand.contains('$') {
                 continue;
             }
+            // Build OUTPUTS, not inputs: absent from a fresh checkout by
+            // definition. This test passed locally and failed in CI for
+            // exactly this reason — website/public is Zola's render target and
+            // happened to exist on the machine that wrote the test.
+            //
+            // Deliberately an explicit list rather than "skip anything git
+            // does not track". An untracked path is precisely what a stale
+            // reference looks like after a file moves, so that rule would have
+            // skipped `contrib/sipnab.service` and missed the bug this test
+            // exists to catch. Add an entry only for something a workflow
+            // creates, never for something it reads.
+            const GENERATED: [&str; 3] = ["website/public", "build/", "target/"];
+            if GENERATED.iter().any(|g| cand.starts_with(g)) {
+                continue;
+            }
             checked += 1;
             if !repo().join(&cand).exists() {
                 let rel = f.strip_prefix(repo()).unwrap_or(f).display();
