@@ -47,6 +47,11 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "target",
         &["README.md", "docs/install.md", "website/build.md"],
     ),
+    // `cargo install --path <dir> --bin sipnab`, in the source-install recipe.
+    // --bin is load-bearing there, not decoration: without it cargo installs
+    // every [[bin]] whose required-features are met, and gen_fixture's are.
+    ("path", &["docs/install.md", "website/build.md"]),
+    ("bin", &["docs/install.md", "website/build.md"]),
     // Alpine's package manager, in the musl/Alpine build recipes.
     ("no-cache", &["website/build.md"]),
     // bench/carrier.py and bench/scaling.sh flags, in the reproduce recipes.

@@ -8,6 +8,28 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+- **The source-install wrapper was putting a second, dev-only binary in your
+  `~/.cargo/bin`.** It ran `cargo install --path .`, which installs *every*
+  `[[bin]]` whose `required-features` are satisfied. `gen_fixture` — the test
+  fixture generator — declares `required-features = ["native"]`, and `native`
+  is a default feature, so it qualified. Anyone who used the script got
+  `gen_fixture` on their `PATH` alongside `sipnab`. Now `--bin sipnab`.
+
+  Verified by installing into a throwaway `--root` both ways: with the flag,
+  only `sipnab` appears; without it, `gen_fixture` and `sipnab` both do.
+
+### Changed
+- **`install.sh` moved to `scripts/install-from-source.sh`.** The repo had two
+  files named `install.sh` with unrelated jobs: this one builds the working
+  tree, while `website/static/install.sh` is the end-user one-liner served at
+  sipnab.com that downloads a prebuilt binary and compiles nothing. Only the
+  latter had tests, CI, and documentation, so the name was going to the wrong
+  file. The source wrapper is now named for what it does and documented under
+  *Building from Source* in `docs/install.md` and the site's build page.
+
 ## [0.5.54] - 2026-07-27
 
 ### Added

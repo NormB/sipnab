@@ -125,6 +125,25 @@ brew install sipnab
 
 ## Building from Source
 
+### Install from a checkout, with capabilities
+
+`cargo install` has no post-install hook, so a source install leaves you to run
+`--setup-caps` yourself. [`scripts/install-from-source.sh`](https://github.com/NormB/sipnab/blob/main/scripts/install-from-source.sh) does both:
+
+```bash
+git clone https://github.com/NormB/sipnab.git
+cd sipnab
+./scripts/install-from-source.sh --features full
+```
+
+It runs `cargo install --path . --bin sipnab` (forwarding any arguments), then
+on Linux invokes the binary's own `--setup-caps` so live capture works without
+`sudo`. Non-Linux platforms skip the capability step and are told to use `sudo`.
+
+This is a *source* install and is distinct from the one-line installer at
+<https://www.sipnab.com/install.sh>, which downloads a prebuilt release binary
+and compiles nothing.
+
 ### Basic build (TUI only, default features)
 
 ```bash

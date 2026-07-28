@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 #
-# Build, install, and grant live-capture capabilities to sipnab.
+# Build sipnab FROM A CHECKOUT, install it, and grant live-capture capabilities.
+#
+# Not to be confused with website/static/install.sh, which is the end-user
+# installer served at https://www.sipnab.com/install.sh and downloads a
+# prebuilt release binary. This one compiles the working tree.
 #
 # `cargo install` has no post-install hook, so this wrapper performs the two
 # steps a packaged install would: build+install the binary, then a one-time
 # `setcap` (Linux only) so live capture works without sudo. Extra arguments are
-# forwarded to `cargo install` (e.g. `./install.sh --features full`).
+# forwarded to `cargo install` (e.g. `./scripts/install-from-source.sh --features full`).
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo ">> cargo install --path ${here} $*"
-cargo install --path "${here}" "$@"
+echo ">> cargo install --path ${repo_root} --bin sipnab $*"
+cargo install --path "${repo_root}" --bin sipnab "$@"
 
 bin="$(command -v sipnab || true)"
 if [ -z "${bin}" ]; then
