@@ -45,38 +45,10 @@ echo -e "${GREEN}OK${NC}"
 
 # ── 3. No unwrap()/expect() in production code ────────────────────
 echo -n "  No unwrap/expect in production... "
-UNWRAP_COUNT=$(python3 -c "
-import os
-count = 0
-for root, dirs, files in os.walk('src'):
-    for f in files:
-        if not f.endswith('.rs') or f.endswith('_test.rs'):
-            continue
-        # Dev-only tools that live under src/ but ship to nobody. gen_fixture
-        # regenerates test fixtures and is already excluded from coverage on
-        # the same grounds (codecov.yml, quality.yml). It moved from the repo
-        # root into src/bin/ to satisfy Cargo's layout, which is what brought
-        # it under this scan; the scan's subject is shipped code, not location.
-        if os.path.join(root, f).replace(os.sep, '/') == 'src/bin/gen_fixture.rs':
-            continue
-        path = os.path.join(root, f)
-        in_test = False
-        with open(path) as fh:
-            for i, line in enumerate(fh, 1):
-                stripped = line.strip()
-                if stripped == '#[cfg(test)]' or stripped.startswith('mod tests'):
-                    in_test = True
-                if in_test:
-                    continue
-                if stripped.startswith('///') or stripped.startswith('//!'):
-                    continue
-                if '.unwrap()' in line or '.expect(' in line:
-                    count += 1
-                    print(f'  {path}:{i}: {stripped}', file=__import__('sys').stderr)
-print(count)
-" 2>&1)
-if [ "$UNWRAP_COUNT" != "0" ]; then
+# The script's EXIT STATUS is the signal; it prints offenders to stderr.
+if ! UNWRAP_OUT=$(python3 scripts/check-unwrap.py 2>&1); then
     echo -e "${RED}FAIL${NC}"
+    echo "$UNWRAP_OUT"
     echo "Found unwrap()/expect() in production code. Use ? or match instead."
     exit 1
 fi

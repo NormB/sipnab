@@ -135,5 +135,65 @@ src/pipeline.rs')" = "OK" ] \
 	&& ok "an uncited staged file is quiet" \
 	|| bad "Cargo.lock is not cited and should be quiet"
 
+# ── Scenario 5: the unwrap scanner scopes #[cfg(test)] to the item ─────────
+# Gate 3 banned unwrap()/expect() on production paths, and its scanner set
+# in_test=True on the FIRST #[cfg(test)] and never cleared it — so every line
+# below one was exempt. Eleven files under src/ put a per-item #[cfg(test)]
+# above production code; src/tui/controllers/mod.rs latched at line 23 of 1659,
+# leaving ~10,800 production lines unscanned. An unwrap injected at line 149
+# was reported as 0 violations.
+#
+# The scanner runs against ./src, so each case is a temp tree with cwd set to it.
+scan() { # scan <src-file-body> -> exit status of the scanner
+	_d=$(mktemp -d)
+	mkdir -p "$_d/src"
+	printf '%s\n' "$1" > "$_d/src/lib.rs"
+	( cd "$_d" && python3 "$REPO_ROOT/scripts/check-unwrap.py" >/dev/null 2>&1 )
+	_rc=$?
+	rm -rf "$_d"
+	return $_rc
+}
+
+# A real test module: its unwrap is exempt, and the exemption ENDS with it.
+scan 'fn prod() -> u8 { 1 }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() { let _ = "7".parse::<u8>().unwrap(); }
+}' \
+	&& ok "unwrap inside #[cfg(test)] mod tests is exempt" \
+	|| bad "unwrap inside a test module must not be reported"
+
+# A per-item #[cfg(test)] must NOT exempt the production code after it.
+scan '#[cfg(test)]
+use std::io::Write;
+
+fn prod() -> u8 { "7".parse::<u8>().unwrap() }' \
+	&& bad "a per-item #[cfg(test)] must not exempt the rest of the file (this is the latch bug)" \
+	|| ok "production unwrap after a per-item #[cfg(test)] is reported"
+
+# And after a test module closes, production code is scanned again.
+scan '#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() { let _ = 1; }
+}
+
+fn prod() -> u8 { "7".parse::<u8>().unwrap() }' \
+	&& bad "code after a closing test module must be scanned" \
+	|| ok "production unwrap after a test module closes is reported"
+
+# Clean production code is quiet.
+scan 'fn prod() -> Result<u8, std::num::ParseIntError> { "7".parse::<u8>() }' \
+	&& ok "clean production code reports nothing" \
+	|| bad "clean production code must not be reported"
+
+# The hook must read the scanner's EXIT STATUS, not parse merged output: stderr
+# is unbuffered and stdout is not, so a violation line can arrive after the
+# count in a 2>&1 stream.
+grep -q 'if ! UNWRAP_OUT=\$(python3 scripts/check-unwrap.py' "$HOOK" \
+	&& ok "hook reads the scanner's exit status" \
+	|| bad "hook must branch on the scanner's exit status, not parse its output"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
