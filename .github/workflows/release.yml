@@ -463,7 +463,7 @@ jobs:
           fi
           SIPNAB_BIN="target/${{ matrix.target }}/release/sipnab" \
           SIPNAB_AUDIO_PLUGIN="$plugin_arg" \
-            bash contrib/deb/build-deb.sh "$deb_version" "$deb_arch" "${{ matrix.variant }}"
+            bash packaging/deb/build-deb.sh "$deb_version" "$deb_arch" "${{ matrix.variant }}"
           mkdir -p dist
           suffix="${{ steps.features.outputs.suffix }}"
           mv "sipnab_${deb_version}_${deb_arch}${suffix}.deb" dist/
@@ -499,7 +499,7 @@ jobs:
           fi
           SIPNAB_BIN="target/${{ matrix.target }}/release/sipnab" \
           SIPNAB_AUDIO_PLUGIN="$plugin_arg" \
-            bash contrib/rpm/build-rpm.sh "$rpm_version" "$rpm_arch" "${{ matrix.variant }}"
+            bash packaging/rpm/build-rpm.sh "$rpm_version" "$rpm_arch" "${{ matrix.variant }}"
           mkdir -p dist
           suffix="${{ steps.features.outputs.suffix }}"
           mv "sipnab-${rpm_version}-1.${rpm_arch}${suffix}.rpm" dist/
@@ -623,7 +623,7 @@ jobs:
       - name: Render formula
         run: |
           version="${GITHUB_REF_NAME#v}"
-          bash contrib/homebrew/update-formula.sh "$version" SHA256SUMS.txt > sipnab.rb
+          bash packaging/homebrew/update-formula.sh "$version" SHA256SUMS.txt > sipnab.rb
           echo "----- generated Formula/sipnab.rb -----"
           cat sipnab.rb
 

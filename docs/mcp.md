@@ -119,7 +119,7 @@ network-level source-IP allowlist as the substitute defense.
 ### systemd unit
 
 `/etc/systemd/system/sipnab-mcp.service` (a packaged variant ships in
-[`contrib/sipnab.service`](https://github.com/NormB/sipnab/blob/main/contrib/sipnab.service)),
+[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service)),
 here fed by a HEP listener — common on a capture host:
 
 ```ini

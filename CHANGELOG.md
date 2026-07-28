@@ -20,7 +20,7 @@ entry that carries them.
   still mergeable. `needs:` now lists every job, and
   `ci_success_gates_every_job` compares it against the jobs actually defined in
   the file, so a job added later either joins the gate or fails the test.
-- **`contrib/homebrew/test-update-formula.sh` had never run.** 21 assertions
+- **`packaging/homebrew/test-update-formula.sh` had never run.** 21 assertions
   covering the Homebrew formula generator — which runs on every release —
   and the only reference to the file anywhere in the repo was its own header
   comment saying how to run it. Its deb-builder sibling has had a CI job all
@@ -35,7 +35,32 @@ entry that carries them.
   Verified by installing into a throwaway `--root` both ways: with the flag,
   only `sipnab` appears; without it, `gen_fixture` and `sipnab` both do.
 
+### Removed
+- **`contrib/rpm/sipnab.spec` is gone.** `build-rpm.sh` writes its own spec into
+  the rpmbuild tree at build time, so the checked-in copy was read by nothing —
+  and having drifted unwatched it had every fact wrong: `License: GPL-3.0-only`
+  (sipnab is `MIT OR Apache-2.0`), `BuildRequires: cargo >= 1.92` (MSRV is
+  1.97), `%license LICENSE` (no such file; there are LICENSE-MIT and
+  LICENSE-APACHE), and a build-from-source recipe the real builder does not
+  use. It looked authoritative enough for a distro packager to adopt verbatim,
+  which would have shipped sipnab under the wrong licence. Deleted rather than
+  repaired: a second spec is what allowed the drift.
+
 ### Changed
+- **Packaging moved out of `contrib/` into `packaging/`.** `contrib/` says
+  "community-contributed, unsupported"; what lived there was the `.deb`,
+  `.rpm`, and Homebrew builders that `release.yml` runs on every tag, plus the
+  systemd unit both packages install. `packaging/` now holds those four, and
+  `contrib/` keeps what the name actually describes — fail2ban, Grafana,
+  Prometheus, the observability stack, and `sipnabrc.example`. Both directories
+  gained a README stating which is which.
+
+  Guarded by `packaging_scripts_reference_existing_paths`: the builders name
+  repo paths as bare shell literals (`readlink -f packaging/sipnab.service`),
+  and `build-rpm.sh` and `update-formula.sh` only run on a release tag, so a
+  stale path would have surfaced mid-publish. The test asserts every such
+  literal resolves, on every push.
+
 - **`install.sh` moved to `scripts/install-from-source.sh`.** The repo had two
   files named `install.sh` with unrelated jobs: this one builds the working
   tree, while `website/static/install.sh` is the end-user one-liner served at

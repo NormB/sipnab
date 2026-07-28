@@ -1925,3 +1925,112 @@ fn ci_success_gates_every_job() {
         "ci-success needs jobs that no longer exist: {phantom:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Packaging scripts hardcode repo paths. A rename must not outlive them.
+// ---------------------------------------------------------------------------
+
+/// Every repo-relative path a packaging script or workflow names must exist.
+///
+/// The packaging builders resolve inputs relative to the repo root as bare
+/// literals — `cp packaging/sipnab.service ...`, `readlink -f
+/// packaging/sipnab.service`, `gzip -c man/sipnab.1`. Nothing type-checks a
+/// string in a shell script, so moving a file leaves the literal pointing at
+/// nothing and the failure surfaces wherever that script runs.
+///
+/// For `build-deb.sh` that is a CI job. For `build-rpm.sh` and
+/// `update-formula.sh` it is a release tag, which is the worst possible place
+/// to discover it: the tag is already cut and the workflow is already halfway
+/// through publishing. This test moves that discovery to every push.
+#[test]
+fn packaging_scripts_reference_existing_paths() {
+    // Leading boundary matters: "/usr/share/man/man1/sipnab.1.gz" inside an
+    // rpm spec heredoc contains the substring "man/man1/sipnab.1.gz", which
+    // is not a repo path. Only accept a match that starts a path token.
+    fn candidates(text: &str) -> Vec<String> {
+        const ROOTS: [&str; 6] = [
+            "packaging/",
+            "contrib/",
+            "man/",
+            "scripts/",
+            "tests/",
+            "website/",
+        ];
+        let bytes = text.as_bytes();
+        let mut out = Vec::new();
+        for (i, _) in text.char_indices() {
+            let Some(root) = ROOTS.iter().find(|r| text[i..].starts_with(**r)) else {
+                continue;
+            };
+            if i > 0 {
+                let prev = bytes[i - 1] as char;
+                if prev == '/' || prev.is_ascii_alphanumeric() || "._-".contains(prev) {
+                    continue;
+                }
+            }
+            let rest = &text[i..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || "./_-".contains(c)))
+                .unwrap_or(rest.len());
+            // Trailing '.' is sentence punctuation in comments ("...see
+            // packaging/deb/build-deb.sh."), never part of a real path.
+            let path = rest[..end].trim_end_matches(['/', '.']).to_string();
+            // Skip anything interpolated, globbed, or a bare root mention.
+            if path.len() > root.len() && !path.contains("..") {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for dir in [
+        "packaging/deb",
+        "packaging/rpm",
+        "packaging/homebrew",
+        ".github/workflows",
+    ] {
+        let Ok(entries) = std::fs::read_dir(repo().join(dir)) else {
+            panic!("missing directory {dir} — packaging layout changed");
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "sh" || x == "yml") {
+                files.push(p);
+            }
+        }
+    }
+    assert!(
+        files.len() >= 8,
+        "found only {} packaging/workflow files — the scan is not reaching them",
+        files.len()
+    );
+
+    let mut missing: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap_or_default();
+        for cand in candidates(&text) {
+            // `$`-interpolated segments are runtime values, not literals.
+            if cand.contains('$') {
+                continue;
+            }
+            checked += 1;
+            if !repo().join(&cand).exists() {
+                let rel = f.strip_prefix(repo()).unwrap_or(f).display();
+                missing.push(format!("{rel} -> {cand}"));
+            }
+        }
+    }
+    assert!(
+        checked >= 10,
+        "only {checked} path literals examined — the extractor stopped matching"
+    );
+    missing.sort();
+    missing.dedup();
+    assert!(
+        missing.is_empty(),
+        "packaging scripts name repo paths that do not exist:\n  {}",
+        missing.join("\n  ")
+    );
+}
