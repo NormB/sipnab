@@ -36,14 +36,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "README.md",
             "docs/install.md",
-            "website/install.md",
+            "website/content/docs/install.md",
             "docs/mcp.md",
             "docs/rest-api.md",
-            "website/cookbook.md",
-            "website/api.md",
-            "website/build.md",
+            "website/content/docs/cookbook.md",
+            "website/content/docs/api.md",
+            "website/content/docs/build.md",
             "docs/examples.md",
-            "website/mcp.md",
+            "website/content/docs/mcp.md",
         ],
     ),
     (
@@ -51,8 +51,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "README.md",
             "docs/install.md",
-            "website/install.md",
-            "website/build.md",
+            "website/content/docs/install.md",
+            "website/content/docs/build.md",
         ],
     ),
     // `cargo install --path <dir> --bin sipnab`, in the source-install recipe.
@@ -60,25 +60,54 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // every [[bin]] whose required-features are met, and gen_fixture's are.
     (
         "path",
-        &["docs/install.md", "website/install.md", "website/build.md"],
+        &[
+            "docs/install.md",
+            "website/content/docs/install.md",
+            "website/content/docs/build.md",
+        ],
     ),
     (
         "bin",
-        &["docs/install.md", "website/install.md", "website/build.md"],
+        &[
+            "docs/install.md",
+            "website/content/docs/install.md",
+            "website/content/docs/build.md",
+        ],
     ),
     // `sha256sum --ignore-missing` and `gh attestation verify --repo`, in the
     // download-verification recipes.
-    ("ignore-missing", &["docs/install.md", "website/install.md"]),
-    ("repo", &["docs/install.md", "website/install.md"]),
+    (
+        "ignore-missing",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
+    (
+        "repo",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
     // Alpine's package manager, in the musl/Alpine build recipes.
-    ("no-cache", &["website/build.md"]),
+    ("no-cache", &["website/content/docs/build.md"]),
     // bench/carrier.py and bench/scaling.sh flags, in the reproduce recipes.
     // These belong to the benchmark harness, not to sipnab's CLI.
-    ("calls", &["docs/benchmarks.md"]),
-    ("out", &["docs/benchmarks.md"]),
-    ("call-ids", &["docs/benchmarks.md"]),
-    ("stream-pairs", &["docs/benchmarks.md"]),
-    ("runs", &["docs/benchmarks.md"]),
+    (
+        "calls",
+        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
+    ),
+    (
+        "out",
+        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
+    ),
+    (
+        "call-ids",
+        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
+    ),
+    (
+        "stream-pairs",
+        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
+    ),
+    (
+        "runs",
+        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
+    ),
     (
         "features",
         &[
@@ -86,13 +115,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/install.md",
             "docs/mcp.md",
             "docs/rest-api.md",
-            "website/cookbook.md",
-            "website/install.md",
-            "website/api.md",
-            "website/build.md",
-            "website/docs-index.md",
+            "website/content/docs/cookbook.md",
+            "website/content/docs/install.md",
+            "website/content/docs/api.md",
+            "website/content/docs/build.md",
+            "website/content/docs/_index.md",
             "docs/examples.md",
-            "website/mcp.md",
+            "website/content/docs/mcp.md",
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
         ],
     ),
     (
@@ -100,35 +131,116 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "README.md",
             "docs/install.md",
-            "website/install.md",
+            "website/content/docs/install.md",
             "docs/mcp.md",
-            "website/cookbook.md",
-            "website/build.md",
+            "website/content/docs/cookbook.md",
+            "website/content/docs/build.md",
             "docs/examples.md",
-            "website/mcp.md",
+            "website/content/docs/mcp.md",
         ],
     ),
+    // useradd / systemctl / certbot / claude-cli, in the deployment scenarios
+    // of the MCP walkthrough. That page was outside the old hand list entirely,
+    // which is how it could have advertised a renamed --mcp-* flag on both the
+    // wiki and the site with this suite green.
+    (
+        "system",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    (
+        "home",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    (
+        "shell",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    (
+        "no-pager",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    (
+        "nginx",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    (
+        "allowedTools",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    // The benchmark harness flags were excused for docs/benchmarks.md but not
+    // for its hand-maintained site twin, which is deliberately not generated.
     ("install", &["README.md"]),
     // docker run flags (install docs)
-    ("net", &["docs/install.md", "website/install.md"]),
-    ("rm", &["docs/install.md", "website/install.md"]),
+    (
+        "net",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
+    (
+        "rm",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
     // apt (noaudio .deb guidance)
     (
         "no-install-recommends",
-        &["docs/install.md", "website/install.md"],
+        &["docs/install.md", "website/content/docs/install.md"],
     ),
     // editcap (`--strip-secrets` is sipnab's analog)
     (
         "discard-all-secrets",
-        &["docs/cli-reference.md", "website/cli.md"],
+        &["docs/cli-reference.md", "website/content/docs/cli.md"],
     ),
     // systemctl (mcp service management)
-    ("now", &["docs/mcp.md", "website/mcp.md"]),
+    (
+        "now",
+        &[
+            "docs/mcp.md",
+            "website/content/docs/mcp.md",
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
     // voipmonitor (benchmark comparison command lines)
-    ("config-file", &["docs/benchmarks.md"]),
+    (
+        "config-file",
+        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
+    ),
     // claude mcp add (http-transport client wiring)
-    ("transport", &["docs/mcp.md", "website/mcp.md"]),
-    ("header", &["docs/mcp.md", "website/mcp.md"]),
+    (
+        "transport",
+        &[
+            "docs/mcp.md",
+            "website/content/docs/mcp.md",
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    (
+        "header",
+        &[
+            "docs/mcp.md",
+            "website/content/docs/mcp.md",
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
 ];
 
 /// True when `flag` is a known foreign-tool flag excused in `doc` specifically.
@@ -169,138 +281,88 @@ fn cli_long_flags() -> BTreeSet<String> {
 /// # Returns
 /// The distinct flag names found, without the leading dashes.
 fn extract_long_flags(text: &str) -> BTreeSet<String> {
+    // Strip markdown link targets first. GitHub-style heading anchors embed a
+    // double hyphen wherever the heading had an em dash, so
+    // `](#scenario-5--a-fleet-of-capture-hosts)` otherwise reads as a flag
+    // named `--a-fleet-of-capture-hosts`. One page carries 19 of them.
+    static LINK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let link = LINK.get_or_init(|| regex::Regex::new(r"\]\([^)]*\)").unwrap());
+    let text = link.replace_all(text, "]");
+
     let re = regex::Regex::new(r"--([A-Za-z][A-Za-z0-9-]*)").unwrap();
-    re.captures_iter(text).map(|c| c[1].to_string()).collect()
+    re.captures_iter(&text).map(|c| c[1].to_string()).collect()
+}
+
+/// Every published markdown page, as `(repo-relative path, contents)`.
+///
+/// The published surface is what a user can read: the repository root pages,
+/// `docs/` including `docs/internals/`, and the Zola content tree. The
+/// planning trees are excluded for the same reason `link_integrity_test`
+/// excludes them — they are a historical record, not documentation anyone is
+/// pointed at, and editing them to satisfy a rendering gate corrupts them.
+fn published_markdown() -> Vec<(String, String)> {
+    // Root pages a user reads. CONTRIBUTING.md, CHANGELOG.md and
+    // THIRD-PARTY-NOTICES.md are deliberately out: the first two are developer
+    // and historical material thick with cargo/git flags, and the third is
+    // generated. A phantom sipnab flag there misleads a contributor, not a
+    // user, and pulling them in would mean excusing ~30 foreign flags — an
+    // allowlist that large stops being a gate and starts being a filter.
+    const ROOT_PAGES: &[&str] = &["README.md", "SECURITY.md"];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "*.md"])
+        .current_dir(root)
+        .output()
+        .expect("git ls-files");
+    assert!(out.status.success(), "git ls-files failed");
+    let mut pages: Vec<(String, String)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|rel| {
+            // docs/ top level only: docs/internals/ is the developer tree
+            // (its own drift gates live in dev_docs_drift_test) and
+            // docs/design|research|superpowers are planning records.
+            let top_level_docs = rel.starts_with("docs/") && rel.matches('/').count() == 1;
+            let site = rel.starts_with("website/content/")
+                && !rel.starts_with("website/content/docs/internals/");
+            top_level_docs || site || ROOT_PAGES.contains(rel)
+        })
+        .filter_map(|rel| {
+            std::fs::read_to_string(root.join(rel))
+                .ok()
+                .map(|t| (rel.to_string(), t))
+        })
+        .collect();
+    assert!(
+        pages.len() >= 30,
+        "only {} published markdown pages found — the derivation is reading \
+         almost nothing and every gate built on it passes vacuously",
+        pages.len()
+    );
+    pages.sort();
+    pages
 }
 
 /// Every `--flag` mentioned across the user-facing docs exists in the clap
 /// CLI (or is a whitelisted foreign-tool flag); extraction is self-checked.
 #[test]
 fn readme_long_flags_exist_in_cli() {
-    // Every user-facing markdown file that shows commands. include_str!
-    // means a deleted file fails the build, not silently skips.
-    let docs: &[(&str, &str)] = &[
-        ("README.md", include_str!("../README.md")),
-        (
-            "docs/cli-reference.md",
-            include_str!("../docs/cli-reference.md"),
-        ),
-        ("docs/filter-dsl.md", include_str!("../docs/filter-dsl.md")),
-        ("docs/install.md", include_str!("../docs/install.md")),
-        ("docs/mcp.md", include_str!("../docs/mcp.md")),
-        (
-            "docs/troubleshooting.md",
-            include_str!("../docs/troubleshooting.md"),
-        ),
-        ("docs/rest-api.md", include_str!("../docs/rest-api.md")),
-        (
-            "docs/output-formats.md",
-            include_str!("../docs/output-formats.md"),
-        ),
-        ("docs/examples.md", include_str!("../docs/examples.md")),
-        (
-            "docs/config-reference.md",
-            include_str!("../docs/config-reference.md"),
-        ),
-        (
-            "docs/keybindings.md",
-            include_str!("../docs/keybindings.md"),
-        ),
-        ("docs/auth.md", include_str!("../docs/auth.md")),
-        (
-            "docs/theme-guide.md",
-            include_str!("../docs/theme-guide.md"),
-        ),
-        ("docs/library.md", include_str!("../docs/library.md")),
-        ("docs/benchmarks.md", include_str!("../docs/benchmarks.md")),
-        (
-            "docs/fault-model.md",
-            include_str!("../docs/fault-model.md"),
-        ),
-        // SECURITY.md's "Scope" section enumerates the flags a reporter is
-        // invited to attack (the exec hooks, the scanner kill switch, the
-        // privilege-drop and chroot options, the MCP token guards). Renaming one
-        // without touching that file leaves the security policy describing a
-        // surface that no longer exists, misdirecting exactly the people this
-        // project most wants to hear from.
-        //
-        // Deliberately no `--flag` tokens in this comment: flag_coverage_test
-        // treats any such token anywhere under tests/ as proof the flag is
-        // tested, so naming them here would silently mark three genuinely
-        // untested flags as covered.
-        ("SECURITY.md", include_str!("../SECURITY.md")),
-        // Website documentation (Zola content) — same zero-drift contract.
-        (
-            "website/cli.md",
-            include_str!("../website/content/docs/cli.md"),
-        ),
-        (
-            "website/cookbook.md",
-            include_str!("../website/content/docs/cookbook.md"),
-        ),
-        (
-            "website/filter-dsl.md",
-            include_str!("../website/content/docs/filter-dsl.md"),
-        ),
-        (
-            "website/install.md",
-            include_str!("../website/content/docs/install.md"),
-        ),
-        (
-            "website/api.md",
-            include_str!("../website/content/docs/api.md"),
-        ),
-        (
-            "website/api-clients.md",
-            include_str!("../website/content/docs/api-clients.md"),
-        ),
-        (
-            "website/integrations.md",
-            include_str!("../website/content/docs/integrations.md"),
-        ),
-        (
-            "website/build.md",
-            include_str!("../website/content/docs/build.md"),
-        ),
-        (
-            "website/mcp.md",
-            include_str!("../website/content/docs/mcp.md"),
-        ),
-        (
-            "website/troubleshooting.md",
-            include_str!("../website/content/docs/troubleshooting.md"),
-        ),
-        (
-            "website/config.md",
-            include_str!("../website/content/docs/config.md"),
-        ),
-        (
-            "website/keybindings.md",
-            include_str!("../website/content/docs/keybindings.md"),
-        ),
-        (
-            "website/theme.md",
-            include_str!("../website/content/docs/theme.md"),
-        ),
-        (
-            "website/landing.md",
-            include_str!("../website/content/_index.md"),
-        ),
-        // The /docs/ overview page: highest-traffic docs page, and every flag
-        // it names (in prose and in the task-card frontmatter) must exist.
-        (
-            "website/docs-index.md",
-            include_str!("../website/content/docs/_index.md"),
-        ),
-        (
-            "website/analyze.md",
-            include_str!("../website/content/analyze/_index.md"),
-        ),
-        (
-            "docs/architecture.md",
-            include_str!("../docs/architecture.md"),
-        ),
-    ];
+    // Derived from the tree, not hand-listed. The old list held 34
+    // include_str! entries and missed three published pages:
+    // docs/mcp-walkthrough.md carried 21 long-flag tokens and is rendered on
+    // both the wiki and the site, so a renamed --mcp-* flag could ship live on
+    // two surfaces with this suite green. Demonstrated: a phantom flag added
+    // there passed 85 tests, while the same string in a listed page failed.
+    //
+    // include_str! bought a build error when a listed file was deleted. A
+    // derived list is strictly better for that purpose: a renamed file is
+    // still scanned under its new name, where before it silently left the
+    // corpus.
+    let corpus = published_markdown();
+    let docs: Vec<(&str, &str)> = corpus
+        .iter()
+        .map(|(label, text)| (label.as_str(), text.as_str()))
+        .collect();
+    let docs = &docs[..];
 
     let known = cli_long_flags();
     let mut all_mentioned = BTreeSet::new();
