@@ -860,3 +860,98 @@ fn site_pages_mirror_is_current() {
         stale.join("\n  ")
     );
 }
+
+/// `DOCS_TO_SITE` must map every docs page that has a site page, and nothing
+/// else.
+///
+/// The map decides link rewriting: a docs page absent from it has its links
+/// rewritten to a GitHub blob URL. So an omission sends readers past a site
+/// page that exists — silently, because a blob URL resolves fine. That already
+/// happened once with `tui-walkthrough.md`.
+///
+/// Both directions are checked, because only one of them was:
+///   - every VALUE names a file that exists under `website/content/docs/`,
+///     or the rewrite points at a page Zola will 404 on;
+///   - every page either generator writes appears as a value, or links to it
+///     become blob URLs while a site page sits there unused.
+///
+/// The map is read from the generator itself rather than restated here.
+#[test]
+fn docs_to_site_map_is_complete() {
+    let out = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import importlib.util as u, json, sys\n\
+             def load(p, n):\n\
+             \x20   s = u.spec_from_file_location(n, p); m = u.module_from_spec(s); s.loader.exec_module(m); return m\n\
+             i = load('scripts/build-site-internals.py', 'i')\n\
+             p = load('scripts/build-site-pages.py', 'p')\n\
+             print(json.dumps({\n\
+             \x20 'map': i.DOCS_TO_SITE,\n\
+             \x20 'pages': [t[1] for t in p.PAGES],\n\
+             \x20 'internals': [t[1] for t in i.PAGES],\n\
+             }))",
+        )
+        .current_dir(repo())
+        .output()
+        .expect("run generators");
+    assert!(
+        out.status.success(),
+        "could not read the generator registries: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = String::from_utf8_lossy(&out.stdout);
+
+    // Minimal extraction — the values are flat string lists and a flat map.
+    let grab = |key: &str| -> Vec<String> {
+        let at = json.find(&format!("\"{key}\":")).expect("key present");
+        let rest = &json[at..];
+        let open = rest.find(['[', '{']).expect("open");
+        let close = rest[open..].find([']', '}']).expect("close");
+        rest[open..open + close]
+            .split(',')
+            .filter_map(|t| t.rsplit(':').next())
+            .filter_map(|t| t.trim().trim_matches('"').to_string().into())
+            .filter(|t: &String| t.ends_with(".md"))
+            .collect()
+    };
+
+    let mapped = grab("map");
+    let generated: Vec<String> = grab("pages").into_iter().chain(grab("internals")).collect();
+    assert!(
+        mapped.len() >= 10 && !generated.is_empty(),
+        "read {} mapped and {} generated pages — the registry extraction stopped \
+         matching and this gate is checking nothing",
+        mapped.len(),
+        generated.len()
+    );
+
+    let mut problems = Vec::new();
+    for site in &mapped {
+        if !repo().join("website/content/docs").join(site).is_file() {
+            problems.push(format!(
+                "DOCS_TO_SITE points at website/content/docs/{site}, which does not exist — \
+                 links to it rewrite to a page Zola will 404 on"
+            ));
+        }
+    }
+    for site in &generated {
+        // Only pages the generator writes into website/content/docs/ itself;
+        // build-site-internals writes into a subdirectory with its own link
+        // form, so a name that resolves to no file there is not this map's job.
+        if !mapped.iter().any(|m| m == site)
+            && repo().join("website/content/docs").join(site).is_file()
+        {
+            problems.push(format!(
+                "a generator writes website/content/docs/{site} but DOCS_TO_SITE does not \
+                 list it — links to that docs page become blob URLs, sending readers to \
+                 GitHub past the site page that exists"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "DOCS_TO_SITE disagrees with what is on disk:\n  {}",
+        problems.join("\n  ")
+    );
+}
