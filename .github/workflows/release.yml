@@ -73,10 +73,12 @@ jobs:
             os: ubuntu-latest
             container: rust:1-bookworm
             cross: false
-          # noaudio variants: binary built without the `audio` feature, .deb
-          # ships no plugin and no libasound Recommends — for headless servers
-          # where apt would otherwise pull in the ALSA stack. Deb-only (no
-          # tarball); static musl tarballs already cover the no-audio case.
+          # noaudio variants: binary built without the `audio` feature. Both
+          # the .deb and the .rpm ship no plugin and no ALSA weak dependency
+          # (libasound Recommends / alsa-lib Recommends) — for headless servers
+          # where apt or dnf would otherwise pull in the ALSA stack. Packages
+          # only, no tarball; static musl tarballs already cover the no-audio
+          # tarball case.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             container: rust:1-bookworm
@@ -403,7 +405,8 @@ jobs:
             exit 1
           fi
 
-      # noaudio variants are deb-only: static musl tarballs already cover the
+      # noaudio variants ship as packages only — a .deb and an .rpm, built by
+      # the two steps after this one. Static musl tarballs already cover the
       # no-audio tarball case, so skip the redundant gnu-noaudio tar.gz.
       - name: Package (tar.gz + checksum)
         if: matrix.variant != 'noaudio'

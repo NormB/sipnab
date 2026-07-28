@@ -173,7 +173,7 @@ Step 1 should print a diagnosis object like:
 
 ## 5. Five Filter-DSL queries that pay rent
 
-The filter DSL has 30 fields and 7 operators. These five cover most operational triage:
+The filter DSL has 31 fields and 7 operators. These five cover most operational triage:
 
 ```bash
 # A. Slow setup — anything over 3 seconds INVITE→200 OK

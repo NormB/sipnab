@@ -391,35 +391,81 @@ fn wiki_intra_docs_links_resolve() {
     );
 }
 
-/// The `_index.md` task cards' hrefs (`/docs/NAME/`) must point at existing
-/// content pages (they bypass @/docs resolution, so Zola will not catch a
+/// The `_index.md` task cards' hrefs (`/docs/NAME/`, optionally with an
+/// `#anchor`) must point at existing content pages, and the anchor must
+/// resolve (the cards bypass @/docs resolution, so Zola will not catch a
 /// rename for us).
+///
+/// The extractor used to require a closing quote immediately after the
+/// trailing slash, so the one card carrying an anchor never matched, and the
+/// coverage floor of `seen >= 5` sat below the eight cards — a card pointing
+/// at `/docs/this-page-does-not-exist/#anchor` matched nothing, was counted
+/// as nothing, and shipped green. So the expected count is no longer a
+/// number to keep in sync: every entry in the `tasks = [...]` array must
+/// yield exactly one parsed href, and an href shape this gate cannot read
+/// fails here instead of disappearing. The anchors need checking for the
+/// same reason the pages do — `/docs/cookbook/` is generated from
+/// `docs/examples.md`, whose headings the docs pipeline is free to retitle.
 #[test]
 fn index_task_cards_point_at_existing_pages() {
     let text = read("website/content/docs/_index.md");
-    let re = regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/""#).unwrap();
-    let mut missing = Vec::new();
+    // The frontmatter's `tasks = [...]` array: one inline table per line.
+    let tasks = {
+        let start = text.find("tasks = [").expect(
+            "website/content/docs/_index.md has no `tasks = [` array — the task cards \
+             moved or were renamed, and this gate is reading nothing",
+        );
+        let rest = &text[start..];
+        let end = rest
+            .find("\n]")
+            .expect("unterminated `tasks = [` array in website/content/docs/_index.md");
+        &rest[..end]
+    };
+    let cards = tasks
+        .lines()
+        .filter(|l| l.trim_start().starts_with('{'))
+        .count();
+    let re = regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#).unwrap();
+    let mut problems = Vec::new();
     let mut seen = 0;
-    for cap in re.captures_iter(&text) {
+    for cap in re.captures_iter(tasks) {
         seen += 1;
-        let page = repo()
-            .join("website/content/docs")
-            .join(format!("{}.md", &cap[1]));
-        if !page.is_file() {
-            missing.push(format!(
+        let page_rel = PathBuf::from("website/content/docs").join(format!("{}.md", &cap[1]));
+        if !repo().join(&page_rel).is_file() {
+            problems.push(format!(
                 "task card href /docs/{}/ -> no website/content/docs/{}.md",
                 &cap[1], &cap[1]
             ));
+            continue;
+        }
+        if let Some(a) = cap.get(2) {
+            check_anchor(
+                &page_rel,
+                a.as_str().trim_start_matches('#'),
+                "_index.md task card",
+                &cap[0],
+                &mut problems,
+            );
         }
     }
     assert!(
-        seen >= 5,
-        "only {seen} task cards found — extractor broken?"
+        cards > 0,
+        "no task cards parsed out of the `tasks = [...]` array in \
+         website/content/docs/_index.md — the card format changed, so this gate is \
+         checking nothing; teach it the new shape"
+    );
+    assert_eq!(
+        seen, cards,
+        "{cards} task card(s) in website/content/docs/_index.md but {seen} href(s) \
+         parsed — a card's href is not in the `/docs/NAME/` or `/docs/NAME/#anchor` \
+         form this gate reads, so it would ship unchecked. Fix the href, or widen the \
+         regex here to cover the new form"
     );
     assert!(
-        missing.is_empty(),
-        "dead task-card hrefs:\n  {}",
-        missing.join("\n  ")
+        problems.is_empty(),
+        "{} broken task-card link(s):\n  {}",
+        problems.len(),
+        problems.join("\n  ")
     );
 }
 

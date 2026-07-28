@@ -327,8 +327,8 @@ dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
   "dialogs": [
     {
       "call_id": "12013223@203.0.113.195",
-      "from": "alice",
-      "to": "bob",
+      "from_user": "alice",
+      "to_user": "bob",
       "state": "Failed",
       "method": "INVITE",
       "duration_sec": 0.0,
@@ -344,6 +344,12 @@ dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
   ]
 }
 ```
+
+The list rows carry `from_user`/`to_user`, not the `from`/`to` used by the
+single-dialog and report endpoints below. The two shapes come from different
+serializers -- list rows are the compact `DialogSummary` projection shared with
+MCP and TUI save, the single-dialog document is the full-fidelity one -- so a
+client that walks the list and then fetches a dialog has to read both spellings.
 
 ---
 
@@ -875,8 +881,8 @@ Metric names emitted by `src/output/prometheus.rs`:
 |---|---|---|
 | `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
 | `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
-| `sipnab_rtp_streams_active` | gauge | RTP streams currently in the `Established` state. |
-| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status (`established`, `orphaned`). |
+| `sipnab_rtp_streams_active` | gauge | The two servers count different things under this one name. The `--api` server counts streams not flagged `orphaned` (linked to a dialog, or not yet old enough for the sweep to flag them — an unlinked stream is only flagged once it is 30 seconds old), however long ago the last packet arrived; the standalone `--metrics` server counts streams whose last packet arrived within the previous 30 seconds, whatever their dialog association. A call whose media died five minutes ago is still counted by `--api` and is not counted by `--metrics` — an alert threshold tuned on one scrape target does not carry over to the other. |
+| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` once the sweep has found a stream unlinked to a dialog for 30 seconds, `established` otherwise. `--api` only. The standalone `--metrics` server never populates the map, and an empty family is skipped rather than written as zero, so on `--metrics` the series does not exist at all — a panel built on it stays permanently blank. |
 | `sipnab_kill_responses_sent_total{mode}` | counter | Scanner-kill responses sent, by source mode: `raw` (source-spoofed via a raw socket) or `ephemeral` (sipnab's own port). Alert on unexpected `ephemeral` to catch a silent spoof fallback. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
@@ -885,7 +891,7 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane as of 0.5.55 — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
+The following metric *names* are declared in source but are not yet wired to the data plane as of 0.5.55 — nothing in the capture path ever increments them. They do not all fail the same way, which matters when you write the alert. The three labelled families — `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{type}` — are map-backed, and an empty family is skipped, so those series are absent from the scrape and a rule over them goes no-data. The two scalars — `sipnab_capture_packets_total` and `sipnab_reassembly_timeouts_total` — are written unconditionally and therefore report a hard `0`, which is indistinguishable from a capture that has genuinely stopped receiving packets. Don't depend on any of these in alerts yet, and in particular don't read `sipnab_capture_packets_total 0` as evidence that capture is alive or dead.
 
 ## Status codes
 
@@ -923,7 +929,7 @@ curl -fsS "$API/v1/stats" $H | jq
 
 # Export all dialogs to CSV
 curl -fsS "$API/v1/dialogs?limit=1000" $H \
-  | jq -r '.dialogs[] | [.call_id, .method, .state, .from, .to, .duration_sec] | @csv'
+  | jq -r '.dialogs[] | [.call_id, .method, .state, .from_user, .to_user, .duration_sec] | @csv'
 
 # Alert on poor MOS
 curl -fsS "$API/v1/streams?mos_below=3.0" $H \
