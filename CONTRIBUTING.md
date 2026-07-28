@@ -160,7 +160,8 @@ This project enforces consistent style through tooling and convention:
 
 Regenerate after any docs change, and commit the result:
 
-```
+```bash
+# Run all of these, in order.
 python3 scripts/build-site-pages.py
 python3 scripts/build-site-internals.py
 ```

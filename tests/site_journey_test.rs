@@ -99,11 +99,42 @@ fn assert_step_fails_on_bad_input(
     setup: &dyn Fn(&std::path::Path),
 ) {
     let body = workflow_step_body(workflow, step_name);
-    let mut script = body
-        .lines()
-        .skip_while(|l| !l.trim_start().starts_with("run:"))
-        .skip(1)
-        .map(|l| l.strip_prefix("          ").unwrap_or(l.trim_start()))
+    // Take the run: block only, stopping at the next YAML key at run:'s own
+    // indent. Reading to the end of the step handed bash whatever followed —
+    // an ordinary `env:` block became a command, exit 127, and 127 satisfied
+    // "exited non-zero", so a neutered step plus an env: block passed.
+    let all: Vec<&str> = body.lines().collect();
+    let run_at = all
+        .iter()
+        .position(|l| l.trim_start().starts_with("run:"))
+        .unwrap_or_else(|| panic!("{workflow} step {step_name:?} has no `run:` block"));
+    let run_indent = all[run_at].len() - all[run_at].trim_start().len();
+    let block: Vec<&str> = all[run_at + 1..]
+        .iter()
+        .take_while(|l| {
+            let t = l.trim_start();
+            t.is_empty() || l.len() - t.len() > run_indent
+        })
+        .cloned()
+        .collect();
+    // Dedent by the block's own minimum indent rather than a fixed width, so a
+    // differently-indented step does not yield garbage that then "fails" for
+    // the wrong reason.
+    let dedent = block
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let mut script = block
+        .iter()
+        .map(|l| {
+            if l.len() >= dedent {
+                &l[dedent..]
+            } else {
+                l.trim_start()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
@@ -191,14 +222,27 @@ fn assert_step_enforces(workflow: &str, step_name: &str, guard: Option<&str>) {
             l.len() - t.len() == 2 && t.ends_with(':') && !t.starts_with('#')
         })
         .unwrap_or_else(|| panic!("{workflow}: no enclosing job found for {step_name:?}"));
-    let job_header: String = lines[job_line..]
+    // Every key belonging to this job, to the start of the next job — NOT the
+    // text above `steps:`. YAML mappings are unordered, so `continue-on-error`
+    // appended after the steps list is still a job-level key; the old scan
+    // stopped at `steps:` and could not see it. Job keys sit one indent level
+    // in from the job name, which excludes anything inside a step.
+    let job_indent = lines[job_line].len() - lines[job_line].trim_start().len();
+    let job_keys: String = lines[job_line + 1..]
         .iter()
-        .take_while(|l| l.trim() != "steps:")
+        .take_while(|l| {
+            let t = l.trim_start();
+            t.is_empty() || l.len() - t.len() > job_indent
+        })
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.is_empty() && l.len() - t.len() == job_indent + 2 && !t.starts_with('#')
+        })
         .cloned()
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        !job_header.contains("continue-on-error"),
+        !job_keys.contains("continue-on-error"),
         "{workflow}: the job containing {step_name:?} carries continue-on-error, \
          which discards the whole job's verdict — the step's own block being \
          clean says nothing"
@@ -2429,9 +2473,18 @@ fn release_publishes_and_attests_the_sboms() {
 /// One deliberate exception remains: `dependency-name: "rust"` is on the docker
 /// ignore list, because a tag bump there would contradict
 /// `rust_toolchain_pins_agree`. Its digest moves by hand, with the toolchain.
+///
+/// SCOPE. This reads Dockerfiles and workflow `container:` keys — the images
+/// that build and ship this project. It does NOT read
+/// `contrib/observability/docker-compose.yml`, whose four images are pinned by
+/// version tag rather than digest. That is a judgement, not an oversight: the
+/// stack is a local example, is never built in CI and never shipped, a version
+/// tag is far more stable than the floating tags this gate exists to catch,
+/// and `directories: ["/**"]` now brings compose files under Dependabot.
+/// Digest-freezing a dev stack nobody regenerates would trade a small risk for
+/// the larger one of an unmaintained pin.
 #[test]
 fn ci_actions_and_base_images_are_pinned_by_digest() {
-    let sha40 = regex::Regex::new(r"@[0-9a-f]{40}(\s|$)").unwrap();
     let digest = regex::Regex::new(r"@sha256:[0-9a-f]{64}").unwrap();
     let mut problems = Vec::new();
     let mut actions = 0;
@@ -2454,10 +2507,32 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
                 continue;
             }
             actions += 1;
-            if !sha40.is_match(line) {
+            // Anchored on the ref, not `is_match` anywhere in the line: a
+            // digest demoted into a trailing comment left the line matching
+            // while the ref went back to a tag.
+            let refpart = t
+                .split_once('@')
+                .map(|(_, r)| r.split_whitespace().next().unwrap_or(""));
+            let pinned =
+                refpart.is_some_and(|r| r.len() == 40 && r.chars().all(|c| c.is_ascii_hexdigit()));
+            if !pinned {
                 problems.push(format!(
                     "{name}:{}: {} — pin to a 40-hex commit SHA with the version in a \
                      trailing comment, e.g. `uses: actions/checkout@<sha> # v7`",
+                    i + 1,
+                    t
+                ));
+            } else if !line.contains('#') {
+                // The version comment is what Dependabot reads to offer an
+                // update. A pin without it is frozen, not maintained — the
+                // outcome pinning is supposed to avoid.
+                problems.push(format!(
+                    "{name}:{}: {} — pinned but with no `# vN` version comment. \
+                     Dependabot keys its update on that comment, so this pin is \
+                     frozen rather than maintained.\n\
+                     Note: this gate checks the SHA is well-formed and commented. \
+                     It does NOT verify the SHA exists or belongs to the named \
+                     repository — that needs the network and is review's job.",
                     i + 1,
                     t
                 ));
