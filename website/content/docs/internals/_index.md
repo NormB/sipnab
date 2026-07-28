@@ -182,12 +182,20 @@ process, so the floor is not optional.
   output is stale. The same arrangement covers the operator
   pages: [`build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) renders
   each entry in its `PAGES` registry from `docs/` into `website/content/docs/`,
-  gated by `site_pages_mirror_is_current`. All three registered pages got there
-  the same way — hand-maintained on both sides until they diverged. The cookbook
-  shared 2 of its 36 commands with the site copy; the REST API page was 430
-  lines against the site's 893, each side holding sections the other lacked; the
-  MCP page was 672 lines against the site's 440, and its tool table listed 7 of
-  the 11 registered tools where the site's listed all 11.
+  gated by `site_pages_mirror_is_current`. All thirteen registered pages got
+  there the same way — hand-maintained on both sides until they diverged. The
+  cookbook shared 2 of its 36 commands with the site copy; the REST API page was
+  430 lines against the site's 893, each side holding sections the other lacked;
+  the MCP page was 672 lines against the site's 440, and its tool table listed 7
+  of the 11 registered tools where the site's listed all 11. The ten that
+  followed were the same story: the site's Filter DSL page carried fourteen
+  operational recipes `docs/` did not have, so every wiki reader got that page
+  without them.
+
+  `benchmarks.md` is the deliberate exception — both copies exist, neither is
+  generated, and only the measured tables are gated
+  (`benchmark_tables_match_between_docs_and_website`), because the framing
+  around them is meant to differ.
   The wiki renders from `docs/`, so it showed whichever copy was thinner as
   though it were the whole page. Register a page there; never copy the script. The site mirror exists because GitHub's wiki mermaid viewer
   pins its controls over the diagram with no way to move them; the site

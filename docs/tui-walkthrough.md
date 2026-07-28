@@ -72,7 +72,7 @@ line-by-line comparison. `Esc` returns to the ladder.
 
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
 - `F7` opens the **Filter dialog**, which accepts the full [Filter DSL](filter-dsl.md) plus quick From/To fields and checkboxes. Try `state == 'Failed'` to keep only calls that never established, or `rtp.mos < 3.0` for poor audio.
-- `F9` clears the active filter; `i` / `I` prune matching / non-matching dialogs from the list.
+- `F9` clears the active filter; `i` prunes the dialogs that do *not* match, keeping only the matches, and `I` prunes the ones that do.
 
 ## 7. Inspect RTP quality
 

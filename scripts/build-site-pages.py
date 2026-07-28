@@ -67,6 +67,103 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "stdio and HTTP transports, every tool, the security model, and "
         "client configuration.",
     ),
+    # The remaining ten operator pages, merged and registered together. Each
+    # was two hand-maintained copies holding content the other did not, which
+    # is worse than a stale page: the wiki renders from docs/, so a reader got
+    # the thinner side presented as the whole thing. filter-dsl was the sharpest
+    # case — fourteen operational recipes existed only on the site.
+    #
+    # Every title and weight below is the value the site page already carried.
+    # They set the sidebar label and its order, so changing one here silently
+    # relabels or reorders the docs nav.
+    (
+        "docs/install.md",
+        "install.md",
+        "Installing sipnab",
+        "Installation",
+        1,
+        "Install sipnab from pre-built binaries, cargo, or package managers.",
+    ),
+    (
+        "docs/troubleshooting.md",
+        "troubleshooting.md",
+        "Troubleshooting",
+        "Troubleshooting",
+        3,
+        "Real-world VoIP diagnostic workflows with exact commands.",
+    ),
+    (
+        "docs/tui-walkthrough.md",
+        "tui.md",
+        "TUI Walkthrough",
+        "TUI Walkthrough",
+        4,
+        "Your first analysis in the interactive TUI, step by step -- open a "
+        "capture, read the ladder, measure a delay, and inspect RTP.",
+    ),
+    (
+        "docs/keybindings.md",
+        "keybindings.md",
+        "Keybindings",
+        "Keybindings",
+        5,
+        "Complete TUI keyboard shortcut reference for all views.",
+    ),
+    (
+        "docs/theme-guide.md",
+        "theme.md",
+        "Theme Customization Guide",
+        "Theme Guide",
+        6,
+        "Customize sipnab's TUI colors with 11 semantic color slots and "
+        "preset themes.",
+    ),
+    (
+        "docs/cli-reference.md",
+        "cli.md",
+        "CLI Reference",
+        "CLI Reference",
+        7,
+        "Complete flag reference for sipnab, organized by functional group.",
+    ),
+    (
+        "docs/filter-dsl.md",
+        "filter-dsl.md",
+        # Source H1 is "Filter DSL Reference"; the sidebar label is the
+        # shorter site original.
+        "Filter DSL Reference",
+        "Filter DSL",
+        8,
+        "Declarative filter language for matching SIP dialogs and RTP "
+        "streams.",
+    ),
+    (
+        "docs/output-formats.md",
+        "output-formats.md",
+        "Output formats",
+        "Output Formats",
+        9,
+        "Machine-readable output: NDJSON, summary reports, dialog/stream "
+        "JSON, and pcap/pcapng.",
+    ),
+    (
+        "docs/config-reference.md",
+        "config.md",
+        "Config Reference",
+        "Config Reference",
+        10,
+        "TOML configuration file format and all configurable sections.",
+    ),
+    (
+        "docs/mcp-walkthrough.md",
+        "mcp-walkthrough.md",
+        "MCP walkthrough — every deployment scenario, step by step",
+        "MCP Walkthrough",
+        15,
+        "Step-by-step MCP deployment scenarios: same-box stdio, remote "
+        "production servers over SSH or HTTP, HEP capture hosts, TLS "
+        "endpoints, fleets, and headless automation.",
+    ),
 ]
 
 BANNER = (
