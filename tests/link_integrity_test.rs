@@ -648,3 +648,116 @@ fn every_docs_page_is_linked_from_the_index() {
          starting at the index cannot reach them: {unlinked:?}"
     );
 }
+
+/// Anchors on the generated site pages must resolve under **Zola's** slug
+/// rule alone — not under the union of every renderer we support.
+///
+/// `anchor_candidates` deliberately unions `slug_github`, `slug_spec` and
+/// `slug_zola`, because a page in `docs/` is read on GitHub, published to the
+/// wiki, and generated onto the site, and an anchor valid for any of those is
+/// a real anchor somewhere. For `website/content/docs/**` that union is too
+/// generous: Zola is the only thing that will ever render those files, so an
+/// anchor that is merely valid on GitHub is a dead link on the site.
+///
+/// That gap shipped a broken deploy. `docs/mcp-walkthrough.md` writes its
+/// same-page anchors in GitHub's spelling (`#step-0--install-...`, two hyphens
+/// because GitHub drops the em dash and keeps its spaces); Zola collapses the
+/// run to one hyphen. When the page joined the generated set, the whole test
+/// suite stayed green and `zola build` failed with 14 broken internal anchor
+/// links — the site's own check catching what ours had excused.
+/// `scripts/build-site-pages.py` now translates anchors on the way out; this
+/// asserts the translation actually happened.
+#[test]
+fn generated_site_anchors_resolve_under_zola() {
+    let re = regex::Regex::new(r"\]\(\s*(?:@/docs/([^)#\s]+\.md))?(#[^)\s]+)\s*\)").unwrap();
+    let dir = repo().join("website/content/docs");
+
+    /// Every anchor Zola emits for a file, including the `-N` it appends to a
+    /// duplicate slug.
+    fn zola_anchors(rel: &Path) -> BTreeSet<String> {
+        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        let mut out = BTreeSet::new();
+        for h in headings(rel) {
+            let slug = slug_zola(&h);
+            let n = seen.entry(slug.clone()).or_insert(0);
+            out.insert(if *n == 0 {
+                slug.clone()
+            } else {
+                format!("{slug}-{n}")
+            });
+            *n += 1;
+        }
+        out
+    }
+
+    let mut problems = Vec::new();
+    let mut seen = 0;
+    let mut files = Vec::new();
+    for entry in walk_md(&dir) {
+        files.push(entry);
+    }
+    assert!(
+        !files.is_empty(),
+        "no markdown found under website/content/docs — this gate is reading nothing"
+    );
+
+    for path in &files {
+        let rel = path.strip_prefix(repo()).expect("under repo").to_path_buf();
+        let text = read(&rel);
+        for cap in re.captures_iter(&text) {
+            let anchor = cap[2].trim_start_matches('#');
+            // Zola resolves a bare `#a` against the page it appears on.
+            let target = match cap.get(1) {
+                Some(m) => dir.join(m.as_str()),
+                None => path.clone(),
+            };
+            let target_rel = match target.strip_prefix(repo()) {
+                Ok(r) => r.to_path_buf(),
+                Err(_) => continue,
+            };
+            if !target.exists() {
+                continue; // page existence is covered by its own gate
+            }
+            seen += 1;
+            if !zola_anchors(&target_rel).contains(anchor) {
+                problems.push(format!(
+                    "{}: #{anchor} does not exist in {} under Zola's slug rule \
+                     (it may be the GitHub spelling — regenerate with \
+                     scripts/build-site-pages.py)",
+                    rel.display(),
+                    target_rel.display()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        seen >= 40,
+        "only {seen} anchored links examined on the generated site — the \
+         extractor stopped matching and this gate is reporting a safety it is \
+         not providing"
+    );
+    assert!(
+        problems.is_empty(),
+        "site anchors that Zola will not resolve ({} of {seen}):\n  {}",
+        problems.len(),
+        problems.join("\n  ")
+    );
+}
+
+/// Every `.md` under `dir`, recursively.
+fn walk_md(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).expect("read dir").flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                out.push(p);
+            }
+        }
+    }
+    out
+}

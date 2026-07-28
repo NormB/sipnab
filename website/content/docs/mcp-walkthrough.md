@@ -27,13 +27,13 @@ has the exact config for each.
 
 | You have | You want | Scenario |
 |---|---|---|
-| A pcap and an agent on the same machine | Interactive post-mortem | [1](#scenario-1--agent-and-sipnab-on-the-same-machine-stdio) |
-| sipnab on a production server, Claude Code on your laptop | Ad-hoc remote debugging, zero server setup | [2A](#scenario-2a--ssh-launched-stdio-ad-hoc-zero-server-configuration) |
-| Same, but a capture that's always on | Persistent queryable service | [2B](#scenario-2b--persistent-http-service-with-a-bearer-token) / [2C](#scenario-2c--ssh-tunnel--loopback-http-persistent-nothing-exposed) |
-| OpenSIPS / Kamailio proxies you can't run sipnab on (or a Homer box) | Central capture host aggregating HEP | [3](#scenario-3--central-capture-host-fed-by-hep) |
-| Agents outside your network | Hardened public endpoint | [4](#scenario-4--internet-exposed-endpoint-nginx-tls-in-front) |
-| Many capture hosts | One client config covering all of them | [5](#scenario-5--a-fleet-of-capture-hosts) |
-| No human in the loop | Scheduled / scripted diagnostics | [6](#scenario-6--headless--scheduled-diagnostics) |
+| A pcap and an agent on the same machine | Interactive post-mortem | [1](#scenario-1-agent-and-sipnab-on-the-same-machine-stdio) |
+| sipnab on a production server, Claude Code on your laptop | Ad-hoc remote debugging, zero server setup | [2A](#scenario-2a-ssh-launched-stdio-ad-hoc-zero-server-configuration) |
+| Same, but a capture that's always on | Persistent queryable service | [2B](#scenario-2b-persistent-http-service-with-a-bearer-token) / [2C](#scenario-2c-ssh-tunnel-loopback-http-persistent-nothing-exposed) |
+| OpenSIPS / Kamailio proxies you can't run sipnab on (or a Homer box) | Central capture host aggregating HEP | [3](#scenario-3-central-capture-host-fed-by-hep) |
+| Agents outside your network | Hardened public endpoint | [4](#scenario-4-internet-exposed-endpoint-nginx-tls-in-front) |
+| Many capture hosts | One client config covering all of them | [5](#scenario-5-a-fleet-of-capture-hosts) |
+| No human in the loop | Scheduled / scripted diagnostics | [6](#scenario-6-headless-scheduled-diagnostics) |
 
 Two invariants that apply everywhere:
 
@@ -103,7 +103,7 @@ the pipe. No port, no token, nothing to deploy.
 
 ### 1A. Post-mortem on a capture file
 
-1. **[laptop]** Do [Step 0](#step-0--install-sipnab-every-server-once) on
+1. **[laptop]** Do [Step 0](#step-0-install-sipnab-every-server-once) on
    this machine (here the "server" is your laptop).
 
 2. **[laptop]** Register the server with Claude Code. The `--` separates
@@ -182,7 +182,7 @@ bearer token. Three wirings, in increasing order of setup.
 The MCP "command" is simply `ssh`. Nothing listens on the server; your SSH
 key is the authentication; when the session ends, nothing is left running.
 
-1. **[server]** Do [Step 0](#step-0--install-sipnab-every-server-once).
+1. **[server]** Do [Step 0](#step-0-install-sipnab-every-server-once).
    That's *all* the server setup there is.
 
 2. **[laptop]** Confirm non-interactive SSH works — a password prompt
@@ -231,7 +231,7 @@ Keep this shape on a trusted network (LAN/VPN): the token authenticates,
 but the transport is plaintext HTTP. Across untrusted networks use 2C
 or 4.
 
-1. **[server]** Do [Step 0](#step-0--install-sipnab-every-server-once).
+1. **[server]** Do [Step 0](#step-0-install-sipnab-every-server-once).
 
 2. **[server]** Create an unprivileged user and grant the binary capture
    rights (skip `setcap` if you'll feed HEP instead — scenario 3):
@@ -391,7 +391,7 @@ host via HEP — OpenSIPS, Kamailio, and FreeSWITCH all speak it — and one
 sipnab MCP service sees calls from the whole estate. The HEP listener is a
 plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
 
-1. **[server]** Do [Step 0](#step-0--install-sipnab-every-server-once)
+1. **[server]** Do [Step 0](#step-0-install-sipnab-every-server-once)
    and create the user (2B step 2, *without* the `setcap`).
 
 2. **[server]** Install `/etc/systemd/system/sipnab-mcp.service` — this
@@ -466,7 +466,7 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
    `-L` port (firewall, wrong port, wrong host).
 
 6. **[laptop]** Wire up exactly as scenario
-   [2C](#scenario-2c--ssh-tunnel--loopback-http-persistent-nothing-exposed)
+   [2C](#scenario-2c-ssh-tunnel-loopback-http-persistent-nothing-exposed)
    steps 3–4 (or 2B steps 8–9 for the token shape). Then ask across the
    estate: *"search all proxies' traffic for Call-ID X and render the
    ladder."*
