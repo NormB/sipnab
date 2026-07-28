@@ -1,5 +1,51 @@
 # Lessons
 
+## Gates: a gate that reads a proxy passes exactly when you need it to fail
+
+**What happened (2026-07-28):** Eight gates were found reading a stand-in for the
+thing they claimed to check. Each was green, and each was green *because* of the
+substitution:
+
+- `docs_drift_test` gated the feature table on `README.md` alone. `docs/install.md`
+  omitted the `metrics` feature and mis-stated the default set for several releases
+  with CI green throughout — and README was correct, which is why nothing showed.
+- `index_task_cards_point_at_existing_pages` required a quote immediately after the
+  trailing slash, so any href carrying an `#anchor` was skipped, and its floor of
+  `seen >= 5` sat below the 8 real cards. A card pointing at
+  `/docs/this-page-does-not-exist/#anchor` passed the whole suite.
+- `site_pages_mirror_is_current` floored the generated-page count at `>= 2` when
+  there were 3. A count cannot see a registry shrink: drop a page and the count
+  drops with it, while the mirror stays on disk still stamped "do not edit".
+- `anchor_candidates` unions the GitHub, task-spec and Zola slug rules. That is
+  correct for `docs/`, which is read on GitHub, published to the wiki *and*
+  generated onto the site. Applied to `website/content/docs/**` — which only Zola
+  ever renders — it excused 14 anchors that Zola could not resolve, and the Pages
+  deploy failed on a commit the whole suite had passed.
+- `cli.no_tui` stood in for "am I in batch mode" in three `app::batch` output gates.
+  It was true only because `-N` was once the sole route to batch, so the conditions
+  were dead. Making batch reachable another way would have turned them live and
+  false, silently dropping `--json`, `--report` and `--hexdump`.
+- A multi-command code-block scan by directory walk counted 205 where `git ls-files`
+  counted 135, the difference being gitignored build output.
+
+**Rule:** For every gate, ask what it *reads* and whether that is the thing or a
+stand-in. Prefer deriving the expected value from the artifact itself — the
+generator's own banner, the real `tasks` array, the registry, the renderer's own
+slug rule — over a hand-kept number, a representative file, or a floor. Where a
+count is unavoidable, make it exact and say it must be bumped; a floor one below
+the truth is indistinguishable from no gate. And assert the scan saw something:
+a gate that examines zero items passes.
+
+**Corollary — prove the failure.** Every gate must be run against the specific
+defect it was written for and observed to fail. Two of these were only understood
+after reproducing the exact artifact: restoring the pre-fix generated pages made
+the anchor gate report 14 of 47, matching what `zola build` had said.
+
+**Applies to:** Every `tests/*_drift_test.rs` and `link_integrity_test` assertion,
+and any CI step whose success is inferred rather than observed. The same shape
+appears outside tests: a shell check written `cmd | tail && echo ok` reports the
+exit status of `tail`, not of `cmd`.
+
 ## TUI: test rendering behavior, not just state transitions
 
 **What happened:** Column visibility toggled correctly in `CallListState.visible_columns`, but `render_call_list` never consulted that field. Tests only asserted state changes (e.g., `assert!(column_selector_open)`), not that the renderer honored them.
