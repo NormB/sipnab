@@ -46,6 +46,34 @@ grep -q '858136ae7e3faca63d9521156e2f0897e389efbf81efc8bdcafe4511f215a5bb' <<<"$
 grep -q 'f94435e79a5aaae1cb24050cc9ac7f94041588c845b425f2ca73750a8b89e3c0' <<<"$out" && ok "linux x86_64 sha" || bad "linux x86_64 sha"
 grep -q 'releases/download/v0.4.3/sipnab-0.4.3-aarch64-apple-darwin.tar.gz' <<<"$out" && ok "macOS arm64 url" || bad "macOS arm64 url"
 
+# Each url must carry ITS OWN digest. Every check above greps the whole
+# document, so all four url/sha pairs could be swapped across architectures and
+# still pass — demonstrated: 21/21 green with each url bound to another arch's
+# digest, and every `brew install` then aborting on sha256 mismatch. Presence
+# of a digest somewhere is not a binding.
+#
+# The expected digest is looked up from the SHA256SUMS input by the filename in
+# the url, so this derives the pairing rather than restating it.
+pairs=$(awk '
+  /url "/     { if (match($0, /sipnab-[^"]*\.tar\.gz/)) u = substr($0, RSTART, RLENGTH) }
+  /sha256 "/  { if (match($0, /[0-9a-f]{64}/))            { print u, substr($0, RSTART, RLENGTH); u = "" } }
+' <<<"$out")
+pair_count=$(printf '%s\n' "$pairs" | grep -c . || true)
+[ "$pair_count" -eq 4 ] && ok "formula emits 4 url/sha pairs" \
+  || bad "formula emits 4 url/sha pairs (got $pair_count)"
+
+mismatched=0
+while read -r fname sha; do
+  [ -n "$fname" ] || continue
+  want=$(awk -v f="$fname" '$2 == f { print $1 }' "$sums")
+  if [ "$sha" != "$want" ]; then
+    mismatched=$((mismatched + 1))
+    printf '  %s carries %s, SHA256SUMS says %s\n' "$fname" "$sha" "$want"
+  fi
+done <<<"$pairs"
+[ "$mismatched" -eq 0 ] && ok "every url carries its own digest" \
+  || bad "every url carries its own digest ($mismatched mismatched)"
+
 # Adversarial: a 0.4.2 line lives in the file; it must never leak into output.
 grep -q '0.4.2' <<<"$out" && bad "must not pick up wrong-version (0.4.2) line" || ok "ignores wrong-version line"
 grep -q 'deadbeef' <<<"$out" && bad "must not emit 0.4.2 darwin sha" || ok "ignores 0.4.2 darwin sha"

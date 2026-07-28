@@ -87,6 +87,48 @@ printf '%s  artifact.tar.gz\n' "000000000000000000000000000000000000000000000000
 verify_checksum "$tmp/artifact.tar.gz" "$tmp/artifact.tar.gz.sha256" >/dev/null 2>&1; t_err "verify tampered rejected" $?
 verify_checksum "$tmp/missing.tar.gz" "$tmp/artifact.tar.gz.sha256" >/dev/null 2>&1; t_err "verify missing file rejected" $?
 
+# ── checksum verification, per tool branch ───────────────────────────
+# verify_checksum has three branches: sha256sum, shasum, and a refusal when
+# neither exists. Every case above ran under the ambient PATH, which on Linux
+# always has sha256sum — so the shasum branch (macOS, a first-class target with
+# its own published tarballs) and the refusal were never executed. Blanking both
+# left this suite at pass=34 fail=0, while a tampered download installed
+# silently on macOS.
+#
+# Each branch is exercised by constructing a PATH that exposes exactly one
+# checksum tool. dirname/basename are linked in because verify_checksum calls
+# them; the shims below are real symlinks, not fakes, so the branch under test
+# is the one that ships.
+mkbin() { # mkbin <dir> <tool>...
+  _d=$1; shift
+  mkdir -p "$_d"
+  for _t in dirname basename "$@"; do
+    _p=$(command -v "$_t" 2>/dev/null) && ln -sf "$_p" "$_d/$_t"
+  done
+}
+good=$(sha256sum "$tmp/artifact.tar.gz" | cut -d' ' -f1)
+
+for tool in sha256sum shasum; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    printf 'SKIP %s branch — tool not present on this host\n' "$tool"
+    continue
+  fi
+  mkbin "$tmp/bin-$tool" "$tool"
+  printf '%s  artifact.tar.gz\n' "$good" > "$tmp/artifact.tar.gz.sha256"
+  (PATH="$tmp/bin-$tool"; export PATH; verify_checksum "$tmp/artifact.tar.gz" "$tmp/artifact.tar.gz.sha256" >/dev/null 2>&1)
+  t "verify ok via $tool only" "0" "$?"
+  printf '%s  artifact.tar.gz\n' "0000000000000000000000000000000000000000000000000000000000000000" > "$tmp/artifact.tar.gz.sha256"
+  (PATH="$tmp/bin-$tool"; export PATH; verify_checksum "$tmp/artifact.tar.gz" "$tmp/artifact.tar.gz.sha256" >/dev/null 2>&1)
+  t_err "verify tampered rejected via $tool only" $?
+done
+
+# Neither tool: must REFUSE, not pass. An installer that cannot verify must not
+# install — this is the branch whose absence let an unverifiable download through.
+mkbin "$tmp/bin-none"
+printf '%s  artifact.tar.gz\n' "$good" > "$tmp/artifact.tar.gz.sha256"
+(PATH="$tmp/bin-none"; export PATH; verify_checksum "$tmp/artifact.tar.gz" "$tmp/artifact.tar.gz.sha256" >/dev/null 2>&1)
+t_err "verify refuses when no checksum tool exists" $?
+
 echo "----------------------------------------"
 echo "pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
