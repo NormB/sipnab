@@ -577,7 +577,10 @@ fn rust_toolchain_pins_agree() {
     let mut pins: BTreeSet<String> = BTreeSet::new();
     for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
         let p = entry.expect("entry").path();
-        if p.extension().and_then(|e| e.to_str()) != Some("yml") {
+        // GitHub accepts BOTH .yml and .yaml for workflows. Reading only one
+        // makes the extension a proxy for "is a workflow", and a file named
+        // the other way is invisible to every assertion below.
+        if !p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
             continue;
         }
         let text = std::fs::read_to_string(&p).expect("read workflow");
@@ -2019,7 +2022,9 @@ fn packaging_scripts_reference_existing_paths() {
         };
         for e in entries.flatten() {
             let p = e.path();
-            if p.extension().is_some_and(|x| x == "sh" || x == "yml") {
+            if p.extension()
+                .is_some_and(|x| x == "sh" || x == "yml" || x == "yaml")
+            {
                 files.push(p);
             }
         }
@@ -2158,7 +2163,10 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
 
     for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
         let p = entry.expect("entry").path();
-        if p.extension().and_then(|e| e.to_str()) != Some("yml") {
+        // GitHub accepts BOTH .yml and .yaml for workflows. Reading only one
+        // makes the extension a proxy for "is a workflow", and a file named
+        // the other way is invisible to every assertion below.
+        if !p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
             continue;
         }
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
