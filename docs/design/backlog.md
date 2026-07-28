@@ -274,6 +274,20 @@ Tiers:
 
 ## P4 — test quality
 
+- [ ] **Unlabeled code fences carry a copy button no gate reads** (2026-07-28).
+  `shell_fence_is_one_clipboard_payload` reads fences whose info string names a
+  shell, but `website/templates/page.html:90` attaches the copy button to every
+  `pre`. The scanned corpus holds **230 unlabeled fences, 132 of them
+  command-looking** — none checked. The one live multi-command instance
+  (`CONTRIBUTING.md`'s regenerate-the-mirrors pair) is fixed; the class is not.
+
+  Scanning them by heuristic was rejected and should stay rejected: "starts with
+  a command-looking word" also matches terminal transcripts and output samples,
+  and a gate that cries wolf gets muted, which is worse than one with a stated
+  limit. The real fix is to give every fence a language label, after which the
+  existing gate covers them with no heuristic — a remediation of ~230 fences,
+  not a change to the gate. Do it as its own pass, not folded into a release.
+
 - [x] **Gates that hardcode their subjects cannot see a new one** — surfaced by
   executing the `docs/internals/walkthroughs.md` checklists rather than
   reasoning about them (2026-07-25). Three cases, each proven by making the
