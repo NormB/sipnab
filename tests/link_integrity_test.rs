@@ -564,3 +564,41 @@ fn slugify_matches_known_rendered_anchors() {
         "dedup -1 suffix missing: {anchors:?}"
     );
 }
+
+/// Every operator doc must be reachable from the docs index.
+///
+/// `architecture.md` (169 lines) and `backers.md` were both in `docs/` and
+/// linked from nowhere in `docs/README.md`. Neither was broken and neither was
+/// stale — a reader starting at the index simply had no path to them. Nothing
+/// in the repo could notice, because an unreferenced file is indistinguishable
+/// from a file nobody needs.
+///
+/// The index is the only entry point the wiki and a GitHub browse share, so
+/// "reachable from somewhere in the repo" is not the bar; reachable from here
+/// is.
+#[test]
+fn every_docs_page_is_linked_from_the_index() {
+    let index = std::fs::read_to_string("docs/README.md").expect("docs/README.md");
+    let mut unlinked = Vec::new();
+    let mut checked = 0usize;
+    for entry in std::fs::read_dir("docs").expect("docs/").flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".md") || name == "README.md" {
+            continue;
+        }
+        checked += 1;
+        if !index.contains(&format!("]({name}")) {
+            unlinked.push(name);
+        }
+    }
+    assert!(
+        checked >= 10,
+        "only {checked} docs pages seen — the scan is not reading docs/"
+    );
+    unlinked.sort();
+    assert!(
+        unlinked.is_empty(),
+        "these docs/ pages are not linked from docs/README.md, so a reader \
+         starting at the index cannot reach them: {unlinked:?}"
+    );
+}
