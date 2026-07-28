@@ -2,7 +2,7 @@
 
 ## Orientation
 
-Start with [ARCHITECTURE.md](ARCHITECTURE.md) — the module map, data flow,
+Start with [docs/architecture.md](docs/architecture.md) — the module map, data flow,
 and the "where to add things" table. Then the
 **[developer index](docs/internals/README.md)**, which is the reading order
 for everything below the codemap: the SIP/RTP

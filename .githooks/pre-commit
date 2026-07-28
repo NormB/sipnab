@@ -52,6 +52,13 @@ for root, dirs, files in os.walk('src'):
     for f in files:
         if not f.endswith('.rs') or f.endswith('_test.rs'):
             continue
+        # Dev-only tools that live under src/ but ship to nobody. gen_fixture
+        # regenerates test fixtures and is already excluded from coverage on
+        # the same grounds (codecov.yml, quality.yml). It moved from the repo
+        # root into src/bin/ to satisfy Cargo's layout, which is what brought
+        # it under this scan; the scan's subject is shipped code, not location.
+        if os.path.join(root, f).replace(os.sep, '/') == 'src/bin/gen_fixture.rs':
+            continue
         path = os.path.join(root, f)
         in_test = False
         with open(path) as fh:

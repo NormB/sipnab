@@ -388,7 +388,7 @@ Tiers:
   symbols must resolve to a definition, links must be relative, every page must
   be registered in `build-wiki.py`, and the diagram conventions are enforced.
   `build-wiki.py` gained `CODE_LINK_RE` so code links rewrite to blob URLs
-  instead of reaching the flat wiki dead. ARCHITECTURE.md and CONTRIBUTING.md
+  instead of reaching the flat wiki dead. ../docs/architecture.md and CONTRIBUTING.md
   delegate into the set rather than duplicating it. Note the **SIP problem
   diagnosis** item above is a separate P5 and is untouched by this work.
 - [ ] **Confirm visually that the wiki renders the developer-doc mermaid

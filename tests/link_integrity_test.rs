@@ -507,7 +507,7 @@ fn no_references_to_merged_away_mcp_pages() {
     for name in [
         "README.md",
         "CONTRIBUTING.md",
-        "ARCHITECTURE.md",
+        "docs/architecture.md",
         "SECURITY.md",
     ] {
         files.push(PathBuf::from(name));

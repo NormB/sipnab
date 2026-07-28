@@ -38,7 +38,7 @@ Already written, and narrower:
 - [TUI testing](tui-testing.md) — snapshot and state testing for the terminal
   UI.
 
-The one-screen map of the tree is [`ARCHITECTURE.md`](../../ARCHITECTURE.md);
+The one-screen map of the tree is [`../architecture.md`](../architecture.md);
 contributor mechanics (setup, hooks, PR expectations) are in
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md). Failure behavior — what sipnab
 does when something goes wrong — is [the fault model](../fault-model.md).
@@ -53,19 +53,19 @@ here.
 
 | Document | What it is |
 |---|---|
-| [`ARCHITECTURE.md`](../../ARCHITECTURE.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
-| [`MAINTAINABILITY-PERF-SPEC.md`](../../MAINTAINABILITY-PERF-SPEC.md) | The rationale behind the current shape of the code — why the pipeline was unified, why `main.rs` was decomposed into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
+| [`../architecture.md`](../architecture.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
+| [`../design/maintainability-perf-spec.md`](../design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why the pipeline was unified, why `main.rs` was decomposed into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
 | [`tasks/todo.md`](../../tasks/todo.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
-| [`codex_analysis.md`](../../codex_analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
+| [`../research/codex-analysis.md`](../research/codex-analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
 
 **Archaeological** — kept for the determination record, superseded in places:
 
 | Document | Read it for | Do not trust |
 |---|---|---|
-| [`implementation-plan-v6.md`](../../implementation-plan-v6.md) | The design-decision catalog D1–D21 and the original phase plan. | Its feature tables. The `tls-wolfssl`, `tls-openssl` and `grpc` features described there were never implemented and are not in `Cargo.toml`. D14's pluggable crypto backend was dropped: one backend ships (`ring` + `rustls`). |
-| [`implementation-plan-phases-8-10.md`](../../implementation-plan-phases-8-10.md) | The MCP, HEP and observability designs, and the "Resolved Decisions" section that formally retires parts of v6. | Its D-numbering. It defines its own D20 (infrastructure-optional integration) and D21 (capture vs enrichment sources), which collide with v6's D20 and D21. Always say which document a D-number comes from. |
-| [`COMPACT-HEADERS-SPEC.md`](../../COMPACT-HEADERS-SPEC.md) | Why all 19 RFC 3261 / IANA compact header forms are supported, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — it is implemented and pinned by tests. |
-| [`KILL-TARGET-SPOOFING-SPEC.md`](../../KILL-TARGET-SPOOFING-SPEC.md) | The scope and ethics of sending a scanner-kill response from the victim's `ip:port` rather than an ephemeral one. | Nothing — but read `--kill-scanner`'s guard rails in [`cli.rs`](../../src/cli.rs) alongside it. |
+| [`../design/implementation-plan-v6.md`](../design/implementation-plan-v6.md) | The design-decision catalog D1–D21 and the original phase plan. | Its feature tables. The `tls-wolfssl`, `tls-openssl` and `grpc` features described there were never implemented and are not in `Cargo.toml`. D14's pluggable crypto backend was dropped: one backend ships (`ring` + `rustls`). |
+| [`../design/implementation-plan-phases-8-10.md`](../design/implementation-plan-phases-8-10.md) | The MCP, HEP and observability designs, and the "Resolved Decisions" section that formally retires parts of v6. | Its D-numbering. It defines its own D20 (infrastructure-optional integration) and D21 (capture vs enrichment sources), which collide with v6's D20 and D21. Always say which document a D-number comes from. |
+| [`../design/compact-headers-spec.md`](../design/compact-headers-spec.md) | Why all 19 RFC 3261 / IANA compact header forms are supported, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — it is implemented and pinned by tests. |
+| [`../design/kill-target-spoofing-spec.md`](../design/kill-target-spoofing-spec.md) | The scope and ethics of sending a scanner-kill response from the victim's `ip:port` rather than an ephemeral one. | Nothing — but read `--kill-scanner`'s guard rails in [`cli.rs`](../../src/cli.rs) alongside it. |
 
 ## Glossary
 
@@ -73,7 +73,7 @@ Identifiers that appear in commit messages, code comments and the backlog
 without expansion.
 
 **D1–D21 — design decisions.** The catalog in
-[`implementation-plan-v6.md`](../../implementation-plan-v6.md). The ones cited
+[`../design/implementation-plan-v6.md`](../design/implementation-plan-v6.md). The ones cited
 most often in code: D2 (synchronous core, async only at the edges — the packet
 path in [`pipeline.rs`](../../src/pipeline.rs) never awaits), D3 (zero-copy
 payload spine), D10 (feature gates keep the binary small), D11 (key material is
@@ -83,7 +83,7 @@ streams with no SIP at all), D15/D16 (privilege drop and process isolation),
 D17 (warn and continue on malformed input), D18 (localhost default for every
 listener). Beware the numbering collision noted above. **D22, D23 and D24**
 also exist, but only in
-[`implementation-plan-phases-8-10.md`](../../implementation-plan-phases-8-10.md)
+[`../design/implementation-plan-phases-8-10.md`](../design/implementation-plan-phases-8-10.md)
 — v6's catalog stops at D21. D22 is competitive-feature-borrowing discipline,
 whose prompt-injection rule is the one cited in
 [`src/mcp/server.rs`](../../src/mcp/server.rs); D23 makes documentation a
@@ -93,7 +93,7 @@ code-bearing sub-phase in that plan carries a `Tests — X.Y deliverables` block
 beside its `Gate` and `Docs` blocks.
 
 **WS0–WS8 — workstreams.** The refactor program in
-[`MAINTAINABILITY-PERF-SPEC.md`](../../MAINTAINABILITY-PERF-SPEC.md). WS0 was a
+[`../design/maintainability-perf-spec.md`](../design/maintainability-perf-spec.md). WS0 was a
 batch of independent quick wins; WS1 unified the per-packet pipeline into the
 single [`classify_packet()`](../../src/pipeline.rs) router; WS2 decomposed
 `main.rs` into [`src/app/`](../../src/app); WS3–WS5 were structural and
@@ -107,7 +107,7 @@ A "P1" in a commit message means the commit fixed something that produced a
 wrong answer, not that it was merely important.
 
 **SN-01/02/03 — security findings** from
-[`codex_analysis.md`](../../codex_analysis.md), all fixed: SN-01 unauthenticated
+[`../research/codex-analysis.md`](../research/codex-analysis.md), all fixed: SN-01 unauthenticated
 HEP metadata driving active network responses (the reason
 [`parse_packet()`](../../src/capture/parse.rs) tracks HEP origin per packet and
 scanner-kill refuses HEP-origin packets without `--hep-allow-kill`), SN-02 an

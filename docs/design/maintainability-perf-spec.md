@@ -190,12 +190,12 @@ empty; all feature combos build.
 
 **Accept:** covered by the WS4.0 benches; suite green.
 
-### WS0.7 `ARCHITECTURE.md` + threading doc  *(docs)*
+### WS0.7 `../architecture.md` + threading doc  *(docs)*
 
 The architecture content exists but hides in `implementation-plan-v6.md`
 (2,744 lines, planning-flavored name; README links it as "architecture and
 roadmap"). Extract the Module Map + design decisions into a top-level
-`ARCHITECTURE.md` (matklad convention); link from CONTRIBUTING.md. Add
+`../architecture.md` (matklad convention); link from CONTRIBUTING.md. Add
 `docs/internals/threading.md` with the actual topology (capture thread(s) →
 PacketRx → processing thread → `Arc<RwLock<Store>>` ← TUI `try_read` readers;
 API/MCP/MCP-HTTP/Prometheus/DNS/scanner-kill side threads) — today it is

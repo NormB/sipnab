@@ -1,7 +1,7 @@
 # Subsystem guide
 
 One packet's journey, from the wire to the screen. Read
-[`ARCHITECTURE.md`](../../ARCHITECTURE.md) first for the one-screen map of the
+[`../architecture.md`](../architecture.md) first for the one-screen map of the
 tree; this page is the function-level trace through it.
 
 ## The program spine
