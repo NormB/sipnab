@@ -129,9 +129,16 @@ SRC_TO_SLUG = {src: slug for src, slug, _, _, _ in PAGES}
 # a site page (website/content/docs/tui.md, a hand-made copy) while being
 # absent from this map, so a link to it from any generated page would have
 # been rewritten to a blob URL — sending a reader to GitHub past the site page
-# that existed. Every entry below is now also registered in
-# build-site-pages.py or build-site-internals.py's own PAGES, so a site page
-# that is not in this map is a page the generator does not write.
+# that existed.
+#
+# The invariant that actually holds, and that docs_to_site_map_is_complete
+# derives rather than asserts in prose: every value here names a site page that
+# EXISTS, and every generated site page appears here. Most entries are pages one
+# of the two generators writes; `benchmarks.md` is the deliberate exception —
+# both copies are hand-maintained on purpose, because they frame the same
+# measured tables differently, so it has a site page without being generated.
+# An earlier version of this comment claimed every entry was generator-written,
+# which was false for exactly that one and checked by nothing.
 DOCS_TO_SITE = {
     "install.md": "install.md",
     "examples.md": "cookbook.md",
