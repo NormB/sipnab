@@ -3,7 +3,7 @@
 # xml, tls_mgm, httpd, rest_client), so the build needs only a minimal dep set
 # while still producing the modules this harness uses: proto_udp, tm, sl, rr,
 # maxfwd, usrloc, registrar, rtpengine, sipmsgops, textops, nathelper, mi_fifo.
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
 ARG OPENSIPS_GIT_URL=https://github.com/NormB/opensips.git
 ARG OPENSIPS_GIT_REF=d8586fa6

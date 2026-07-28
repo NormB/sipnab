@@ -28,8 +28,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         # GitHub-hosted runners ship ~20GB of preinstalled SDKs a Rust build
@@ -51,11 +50,11 @@ jobs:
         # need are in the main Ubuntu archives, which still refresh.
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
           components: clippy, rustfmt
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -161,7 +160,7 @@ jobs:
     name: Installer (install.sh)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run install.sh test suite
         run: sh tests/install-sh/run-tests.sh
       - name: Shellcheck
@@ -174,7 +173,7 @@ jobs:
     name: Deb packaging (build-deb.sh)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test build-deb.sh (full + noaudio variants)
         run: bash packaging/deb/test-build-deb.sh
 
@@ -188,7 +187,7 @@ jobs:
     name: Homebrew formula (update-formula.sh)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test update-formula.sh
         run: bash packaging/homebrew/test-update-formula.sh
 
@@ -217,8 +216,7 @@ jobs:
           - "native,hep,api,mcp,mcp-http"
           - wasm
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Free disk space
         # Reclaim ~20GB of preinstalled SDKs a Rust build never uses
         # (dotnet/android/ghc/CodeQL) — a full --all-features build across
@@ -236,9 +234,8 @@ jobs:
         # need are in the main Ubuntu archives, which still refresh.
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.97.1
-
-      - uses: actions/cache@v6
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -284,20 +281,18 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install libpcap
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
 
-      - uses: dtolnay/rust-toolchain@1.97.1
-
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2
         with:
           tool: cargo-audit
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2
         with:
           tool: cargo-deny
 
@@ -329,8 +324,8 @@ jobs:
     name: Fuzz targets compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
       - name: Install libpcap
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
       - name: Install cargo-fuzz

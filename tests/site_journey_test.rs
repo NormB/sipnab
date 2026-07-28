@@ -561,9 +561,19 @@ fn homepage_test_counts_agree_with_each_other() {
 /// The pin appears in six workflow steps, the Dockerfile base image and two
 /// `rust-version` fields. "Keep in sync" by comment is what let the glibc floor
 /// drift; this is the same shape of duplication with no comparison.
+///
+/// The actions are pinned by commit SHA (a moved tag is a supply-chain
+/// injection, and OpenSSF Scorecard flags an unpinned one), so the version now
+/// lives in the trailing `# X.Y.Z` comment Dependabot maintains. That comment
+/// is the only place the version survives, which makes it load-bearing rather
+/// than decorative — so this asserts the SHA is really a SHA. Without that, a
+/// future edit could drop back to `@1.98.0`, silently contribute no pin here,
+/// and leave the set empty rather than disagreeing.
 #[test]
 fn rust_toolchain_pins_agree() {
-    let pin_re = regex::Regex::new(r"dtolnay/rust-toolchain@([0-9]+\.[0-9]+\.[0-9]+)").unwrap();
+    let pin_re =
+        regex::Regex::new(r"dtolnay/rust-toolchain@(\S+)\s*#\s*([0-9]+\.[0-9]+\.[0-9]+)").unwrap();
+    let sha_re = regex::Regex::new(r"^[0-9a-f]{40}$").unwrap();
     let mut pins: BTreeSet<String> = BTreeSet::new();
     for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
         let p = entry.expect("entry").path();
@@ -572,9 +582,23 @@ fn rust_toolchain_pins_agree() {
         }
         let text = std::fs::read_to_string(&p).expect("read workflow");
         for c in pin_re.captures_iter(&text) {
-            pins.insert(c[1].to_string());
+            assert!(
+                sha_re.is_match(&c[1]),
+                "dtolnay/rust-toolchain in {} is pinned to {:?}, not a 40-hex commit SHA — \
+                 a tag can be moved under you, and this gate reads the version from the \
+                 trailing comment, so an unpinned ref contributes nothing here instead of \
+                 disagreeing",
+                p.display(),
+                &c[1]
+            );
+            pins.insert(c[2].to_string());
         }
     }
+    assert!(
+        !pins.is_empty(),
+        "no `dtolnay/rust-toolchain@<sha> # X.Y.Z` pin found in any workflow — the \
+         version comment was dropped, and every comparison below would compare nothing"
+    );
     assert_eq!(
         pins.len(),
         1,
@@ -2107,5 +2131,94 @@ fn release_publishes_and_attests_the_sboms() {
     assert!(
         files.contains("*.cdx.json"),
         "SBOMs are generated and attested but never uploaded to the release:\n{files}"
+    );
+}
+
+/// Every GitHub Action and every container base image is pinned by digest.
+///
+/// A tag is a moving pointer. `actions/checkout@v7` and
+/// `ghcr.io/cross-rs/x86_64-unknown-linux-musl:main` both resolve to whatever
+/// their owner last pushed, so an upstream compromise — or a well-meaning
+/// force-push — silently changes what runs in CI and what is baked into the
+/// image published to users. OpenSSF Scorecard flagged 72 unpinned references
+/// here, which is what prompted this.
+///
+/// Pinning is only safe because it has an update path: `.github/dependabot.yml`
+/// covers both `github-actions` and `docker` weekly, and Dependabot maintains
+/// the `# vN` comment beside each SHA. Without that this gate would be freezing
+/// dependencies rather than pinning them, which trades a supply-chain risk for
+/// an unpatched-CVE one.
+#[test]
+fn ci_actions_and_base_images_are_pinned_by_digest() {
+    let sha40 = regex::Regex::new(r"@[0-9a-f]{40}(\s|$)").unwrap();
+    let digest = regex::Regex::new(r"@sha256:[0-9a-f]{64}").unwrap();
+    let mut problems = Vec::new();
+    let mut actions = 0;
+    let mut images = 0;
+
+    for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("yml") {
+            continue;
+        }
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        for (i, line) in std::fs::read_to_string(&p)
+            .expect("read workflow")
+            .lines()
+            .enumerate()
+        {
+            let t = line.trim_start();
+            // A commented-out example is documentation, not a dependency.
+            if t.starts_with('#') || !t.starts_with("uses:") && !t.starts_with("- uses:") {
+                continue;
+            }
+            actions += 1;
+            if !sha40.is_match(line) {
+                problems.push(format!(
+                    "{name}:{}: {} — pin to a 40-hex commit SHA with the version in a \
+                     trailing comment, e.g. `uses: actions/checkout@<sha> # v7`",
+                    i + 1,
+                    t
+                ));
+            }
+        }
+    }
+
+    // Every Dockerfile in the tree, found rather than listed: a new one added
+    // without a digest is exactly the case this exists to catch.
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "Dockerfile", "*.Dockerfile", "**/Dockerfile*"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files");
+    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+        for (i, line) in read(rel).lines().enumerate() {
+            if !line.starts_with("FROM ") {
+                continue;
+            }
+            images += 1;
+            if !digest.is_match(line) {
+                problems.push(format!(
+                    "{rel}:{}: {} — pin the base image by digest, keeping the tag: \
+                     `FROM image:tag@sha256:<64-hex>`",
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        actions >= 40 && images >= 4,
+        "only {actions} action refs and {images} FROM lines examined — the scan \
+         stopped matching and this gate is reporting a safety it is not providing"
+    );
+    assert!(
+        problems.is_empty(),
+        "unpinned CI dependencies ({} of {} actions + {} images):\n  {}",
+        problems.len(),
+        actions,
+        images,
+        problems.join("\n  ")
     );
 }

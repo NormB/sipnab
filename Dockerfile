@@ -1,12 +1,25 @@
 # Multi-stage build for minimal image
-FROM rust:1.97-slim-trixie AS builder
+#
+# Both stages are pinned by digest, with the tag kept alongside it. A tag is a
+# moving pointer: `debian:trixie-slim` can be republished under you, and this
+# image ships to users through GHCR, so what they run would change without any
+# commit here. The tag stays because it is what a reader and Dependabot read —
+# and because rust_toolchain_pins_agree parses `FROM rust:X.Y` to check the
+# builder compiles with the same toolchain CI pins.
+#
+# Updating: the runtime `debian` digest is Dependabot's (docker ecosystem,
+# weekly). The `rust` builder is on Dependabot's ignore list, deliberately — a
+# tag bump there would contradict the toolchain gate — so bump its digest by
+# hand when you move the pinned toolchain. A stale builder digest is the
+# tolerable half of that trade: the builder is not shipped, only its output is.
+FROM rust:1.97-slim-trixie@sha256:5c6f46a6e4472ab1ca7ba7d494e6677f2f219ebc02f32025d3986f057635ec9c AS builder
 RUN apt-get update && apt-get install -y libpcap-dev libasound2-dev pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY . .
 RUN cargo build --release --features full
 RUN strip target/release/sipnab
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 # trixie renamed these runtime libs in the 64-bit time_t transition
 # (libpcap0.8 -> libpcap0.8t64, libasound2 -> libasound2t64).
 RUN apt-get update && apt-get install -y libpcap0.8t64 libasound2t64 && rm -rf /var/lib/apt/lists/*

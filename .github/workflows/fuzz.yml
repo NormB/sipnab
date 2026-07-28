@@ -44,8 +44,8 @@ jobs:
           - fuzz_tcp_reassembly
           - fuzz_siprec
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
       - name: Install libpcap
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
       - name: Install cargo-fuzz
@@ -66,7 +66,7 @@ jobs:
             -max_total_time="$MAX_TOTAL_TIME" -print_final_stats=1
       - name: Upload crash reproducers
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/

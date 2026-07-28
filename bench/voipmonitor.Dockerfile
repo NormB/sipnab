@@ -13,7 +13,7 @@
 # Dependency list is voipmonitor's own README_debian.md, which is why it is not
 # trimmed: guessing at it produces a configure that succeeds and a binary
 # missing codecs.
-FROM debian:bookworm
+FROM debian:bookworm@sha256:9344f8b8992482f80cba753f323adeaf17690076c095ccff6cc9536be98185dc
 
 # `time` is GNU time, for peak-RSS measurement inside the container; the shell
 # builtin reports CPU time only.

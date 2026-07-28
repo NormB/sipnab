@@ -121,9 +121,16 @@ locally:
 
 | Location | Form |
 |---|---|
-| `ci.yml` (3 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@1.97.1` |
+| `ci.yml` (3 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.97.1` |
 | `Cargo.toml`, `crates/sipnab-audio/Cargo.toml` | `rust-version = "1.97"` (MSRV) |
-| `Dockerfile`, `harness/sipnab/Dockerfile` | `FROM rust:1.97-slim-trixie` |
+| `Dockerfile`, `harness/sipnab/Dockerfile` | `FROM rust:1.97-slim-trixie@sha256:<digest>` |
+
+The action is pinned by commit SHA, so the **version lives in the trailing
+comment** — which makes that comment load-bearing rather than decorative.
+`rust_toolchain_pins_agree` reads it, and also asserts the ref really is a
+40-hex SHA: an edit dropping back to `@1.98.0` would otherwise contribute
+nothing to the comparison instead of failing it. The Dockerfiles keep the tag
+beside the digest for the same reason — that gate parses `FROM rust:X.Y`.
 
 There is **no `rust-toolchain.toml`**, so your local `rustup default` is
 whatever you last set — nothing in the repo corrects it. This is not
