@@ -178,6 +178,20 @@ jobs:
       - name: Test build-deb.sh (full + noaudio variants)
         run: bash contrib/deb/test-build-deb.sh
 
+  # Homebrew formula generation. update-formula.sh runs on every release to
+  # produce sipnab.rb from SHA256SUMS.txt, and its 21-assertion test harness
+  # sat in the tree unrun — no workflow referenced it, so the only thing that
+  # had ever executed it was whoever wrote it. The deb builder next door has
+  # had a CI job all along; this is the same contract with nothing watching.
+  # Pure bash over a fixture sums file — no Rust toolchain needed.
+  homebrew-formula:
+    name: Homebrew formula (update-formula.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test update-formula.sh
+        run: bash contrib/homebrew/test-update-formula.sh
+
   # Reduced feature combinations must keep compiling (lib AND test code).
   # --all-features alone let `#[cfg]`-gating rot: at one point 7 of 8
   # reduced combos failed to build. `cargo check --tests` is enough to
@@ -330,7 +344,13 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [check, features, audit, fuzz-check]
+    # Every other job in this file, enforced by ci_success_gates_every_job
+    # in site_journey_test.rs. This list read [check, features, audit,
+    # fuzz-check] while the comment above claimed "every other job" —
+    # so install-sh and deb-package could both fail with the one required
+    # check on main still green.
+    needs: [check, install-sh, deb-package, homebrew-formula, features,
+            audit, fuzz-check]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

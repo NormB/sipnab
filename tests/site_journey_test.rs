@@ -1851,3 +1851,77 @@ mod multileg_demo_ladder {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The branch-protection gate must actually stand for the whole workflow.
+// ---------------------------------------------------------------------------
+
+/// `CI success` is the single required status check on `main`, and its own
+/// comment promises it is "green only if every other job succeeded".
+///
+/// It was not. `needs:` named four of the seven jobs, leaving `install-sh`
+/// (the end-user installer suite that sipnab.com serves) and `deb-package`
+/// outside the gate entirely: either could fail while the required check
+/// stayed green and the branch stayed mergeable. The aggregator pattern is
+/// chosen precisely so protection survives adding a job — but only if adding
+/// a job also adds it here, which nothing checked.
+///
+/// This is that check. It compares the `needs:` list against the jobs actually
+/// defined in the file, so a new job either joins the gate or fails this test.
+#[test]
+fn ci_success_gates_every_job() {
+    let yaml = read(".github/workflows/ci.yml");
+    // Job keys are the 2-space-indented mapping keys under `jobs:`. Anchor on
+    // that header first: `on:` also has 2-space children (`push:`), which a
+    // whole-file scan would collect as phantom jobs.
+    let jobs_block = yaml
+        .split_once("\njobs:\n")
+        .expect("ci.yml has no jobs: block")
+        .1;
+    let defined: BTreeSet<String> = jobs_block
+        .lines()
+        .filter_map(|l| {
+            let name = l.strip_prefix("  ")?.strip_suffix(':')?;
+            (!name.starts_with(' ')
+                && !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+            .then(|| name.to_string())
+        })
+        .collect();
+
+    // The needs: list may wrap across lines, so read to the closing bracket
+    // rather than to end-of-line.
+    let after = jobs_block
+        .split_once("needs: [")
+        .expect("ci-success has no needs: list")
+        .1;
+    let list = &after[..after.find(']').expect("unterminated needs: list")];
+    let gated: BTreeSet<String> = list
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let expected: BTreeSet<String> = defined
+        .iter()
+        .filter(|j| *j != "ci-success")
+        .cloned()
+        .collect();
+    assert!(
+        !expected.is_empty(),
+        "parsed no jobs from ci.yml — the jobs: block changed shape"
+    );
+    let ungated: Vec<_> = expected.difference(&gated).collect();
+    assert!(
+        ungated.is_empty(),
+        "these ci.yml jobs can fail while the required \"CI success\" check \
+         stays green: {ungated:?}. Add them to ci-success's needs:."
+    );
+    let phantom: Vec<_> = gated.difference(&expected).collect();
+    assert!(
+        phantom.is_empty(),
+        "ci-success needs jobs that no longer exist: {phantom:?}"
+    );
+}
