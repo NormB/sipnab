@@ -65,6 +65,10 @@ pub struct ParallelConfig {
     pub portrange: (u16, u16),
     /// Skip dialog reconstruction (`--no-dialog`).
     pub no_dialog: bool,
+    /// How messages are grouped (`--dialog-track`). Carried through the config
+    /// because each worker builds its own store; without it the parallel path
+    /// would silently ignore the flag the single-core path honours.
+    pub dialog_tracking: crate::sip::dialog_store::DialogTracking,
     /// Skip RTP/RTCP processing (`--no-rtp`).
     pub no_rtp: bool,
     /// Suppress the bad-parse diagnostic (`--quiet-bad-parse`, sipgrep `-x`).
@@ -188,8 +192,12 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                 let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly)
                     .with_reassembly(cfg.reassembly)
                     .with_parse_limit(cfg.parse_limit);
-                let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate)
-                    .with_xcid_headers(cfg.xcid_headers.clone());
+                let mut ds = {
+                    let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+                    ds.set_tracking(cfg.dialog_tracking);
+                    ds
+                }
+                .with_xcid_headers(cfg.xcid_headers.clone());
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false); // batch mode never reads audio buffers
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
@@ -238,8 +246,12 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     }
 
     // Merge thread-local stores into one, then resolve cross-worker associations.
-    let mut ds =
-        DialogStore::new(cfg.max_dialogs, cfg.rotate).with_xcid_headers(cfg.xcid_headers.clone());
+    let mut ds = {
+        let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+        ds.set_tracking(cfg.dialog_tracking);
+        ds
+    }
+    .with_xcid_headers(cfg.xcid_headers.clone());
     let mut ss = StreamStore::new(cfg.max_streams);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
@@ -299,8 +311,12 @@ pub fn run_offline_parallel_file(
                 let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly)
                     .with_reassembly(cfg.reassembly)
                     .with_parse_limit(cfg.parse_limit);
-                let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate)
-                    .with_xcid_headers(cfg.xcid_headers.clone());
+                let mut ds = {
+                    let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+                    ds.set_tracking(cfg.dialog_tracking);
+                    ds
+                }
+                .with_xcid_headers(cfg.xcid_headers.clone());
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false);
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
@@ -392,8 +408,12 @@ pub fn run_offline_parallel_file(
         );
     }
 
-    let mut ds =
-        DialogStore::new(cfg.max_dialogs, cfg.rotate).with_xcid_headers(cfg.xcid_headers.clone());
+    let mut ds = {
+        let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+        ds.set_tracking(cfg.dialog_tracking);
+        ds
+    }
+    .with_xcid_headers(cfg.xcid_headers.clone());
     let mut ss = StreamStore::new(cfg.max_streams);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
@@ -572,6 +592,7 @@ mod tests {
             max_reassembly: 1024,
             portrange: (1, 65535),
             no_dialog: false,
+            dialog_tracking: crate::sip::dialog_store::DialogTracking::default(),
             no_rtp: false,
             quiet_bad_parse: false,
             xcid_headers: Vec::new(),

@@ -183,6 +183,7 @@ fn parallel_config(
         max_reassembly: cli.max_reassembly as usize,
         portrange,
         no_dialog: cli.no_dialog,
+        dialog_tracking: cli.dialog_track.unwrap_or_default(),
         no_rtp,
         quiet_bad_parse: cli.quiet_bad_parse,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
@@ -458,8 +459,14 @@ impl BatchRunner {
             .with_reassembly(!cli.no_reassembly)
             .with_parse_limit(cli.limitlen);
         let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(
-            DialogStore::new(cli.limit as usize, cli.rotate_enabled())
-                .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
+            {
+                let mut ds = DialogStore::new(cli.limit as usize, cli.rotate_enabled());
+                // The wiring whose absence made the old --dialog-track a dead
+                // flag: declared, parsed, and never handed to anything.
+                ds.set_tracking(cli.dialog_track.unwrap_or_default());
+                ds
+            }
+            .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
         ));
         let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
         let stream_store: Arc<RwLock<StreamStore>> = {

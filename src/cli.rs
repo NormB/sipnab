@@ -591,6 +591,17 @@ pub struct Cli {
     #[arg(help_heading = "Dialog", long = "no-rotate", overrides_with = "rotate")]
     pub no_rotate: bool,
 
+    /// How to group messages into tracked units: `call-id` (default, one unit
+    /// per dialog) or `branch` (one unit per SIP transaction).
+    ///
+    /// `branch` is for captures where one Call-ID is reused across many
+    /// transactions — load generators, proxies under test. Note that a single
+    /// call yields SEVERAL units under `branch`: RFC 3261 gives the ACK to a
+    /// 2xx a new branch and the BYE another. That is the transaction view, not
+    /// a miscount.
+    #[arg(help_heading = "Dialog", long, value_name = "METHOD", value_parser = parse_dialog_track)]
+    pub dialog_track: Option<crate::sip::dialog_store::DialogTracking>,
+
     /// Disable dialog tracking entirely (message-only mode).
     #[arg(help_heading = "Dialog", long)]
     pub no_dialog: bool,
@@ -1365,6 +1376,14 @@ pub fn resolve_file_or_inline_secret(
 
 /// Unit tests for CLI parsing, flag defaults, argument validation, and
 /// file-vs-inline secret resolution.
+/// Parse `--dialog-track`, rejecting anything that is not a known method.
+///
+/// The flag this replaces accepted every value — `--dialog-track telepathy`
+/// exited 0 and changed nothing — so a typo silently selected the default.
+fn parse_dialog_track(s: &str) -> Result<crate::sip::dialog_store::DialogTracking, String> {
+    s.parse()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

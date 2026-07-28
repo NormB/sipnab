@@ -2,6 +2,39 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **`--dialog-track` is back, and this time it does something.** It groups
+  messages by `call-id` (default, one unit per dialog) or `branch` (one unit
+  per SIP transaction), for captures where a single Call-ID is reused across
+  many transactions — load generators, proxies under test.
+
+  The version removed in 0.5.52 was declared in `src/cli.rs` and read nowhere,
+  so every value including invented ones produced identical output and exit 0.
+  This one is wired through the single-core store, the TUI store and the
+  `--cores` parallel config, and proven by the modes *disagreeing*: on
+  `sipp-branch-scenario.pcapng` (one Call-ID, many transactions) `call-id`
+  reports 1,334 units and `branch` reports 3,907, identically under `--cores 4`.
+
+  An unknown method is now **rejected** (`exit 2`, naming the value) rather
+  than silently selecting the default.
+
+  **`branch` counts transactions, not calls.** RFC 3261 gives the ACK to a 2xx
+  a new branch (§17.1.1.3) and the BYE another, so one ordinary call appears as
+  three units. That is the transaction view working as intended, it is asserted
+  by a test rather than left to be discovered, and it means `--limit` counts
+  transactions in this mode. Design notes and the rejected alternatives are in
+  `docs/design/dialog-tracking-modes.md`.
+
+  A Call-ID still resolves to a dialog in `branch` mode — `--call-report`, the
+  REST API, the MCP tools, the TUI and the WASM analyzer all look up by
+  Call-ID, and `DialogStore::get` returns the first matching unit so none of
+  them changed behaviour. `get_by_key` addresses one specific transaction.
+
+  The default path still allocates no per-message key: `call-id` mode keeps the
+  original borrowed lookup, and only `branch` composes an owned key.
+
 ## [0.5.53] - 2026-07-27
 
 ### Fixed
