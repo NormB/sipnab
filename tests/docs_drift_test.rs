@@ -124,6 +124,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/mcp.md",
             "docs/mcp-walkthrough.md",
             "website/content/docs/mcp-walkthrough.md",
+            "CONTRIBUTING.md",
         ],
     ),
     (
@@ -187,7 +188,216 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     // The benchmark harness flags were excused for docs/benchmarks.md but not
     // for its hand-maintained site twin, which is deliberately not generated.
-    ("install", &["README.md"]),
+    // Developer-tree tool flags: cargo, npm, git, insta and the `--your-flag`
+    // placeholder in the "add a CLI flag" walkthrough. docs/internals/ is in the
+    // corpus because it is published (wiki + site nav), so a phantom sipnab flag
+    // there is a real defect; these belong to other tools and are excused per page.
+    (
+        "accept",
+        &[
+            "docs/internals/testing.md",
+            "docs/internals/tui-testing.md",
+            "website/content/docs/internals/testing.md",
+            "website/content/docs/internals/tui-testing.md",
+            "CONTRIBUTING.md",
+        ],
+    ),
+    (
+        "all-features",
+        &[
+            "docs/internals/README.md",
+            "docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/_index.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "website/content/docs/internals/testing.md",
+            "CONTRIBUTING.md",
+        ],
+    ),
+    (
+        "all-targets",
+        &[
+            "docs/internals/README.md",
+            "docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/_index.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "website/content/docs/internals/testing.md",
+            "CONTRIBUTING.md",
+        ],
+    ),
+    (
+        "bin",
+        &[
+            "docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "calls",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "check",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "CONTRIBUTING.md",
+        ],
+    ),
+    (
+        "features",
+        &[
+            "docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "docs/internals/tui-testing.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "website/content/docs/internals/testing.md",
+            "website/content/docs/internals/tui-testing.md",
+        ],
+    ),
+    (
+        "flag",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "ignored",
+        &[
+            "docs/internals/build-ci-release.md",
+            "docs/internals/tui-testing.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "website/content/docs/internals/tui-testing.md",
+        ],
+    ),
+    (
+        "install-",
+        &[
+            "docs/internals/README.md",
+            "website/content/docs/internals/_index.md",
+        ],
+    ),
+    (
+        "no-default-features",
+        &[
+            "docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "no-deps",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "CONTRIBUTING.md",
+        ],
+    ),
+    (
+        "no-typescript",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "out",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "out-dir",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "package",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "path",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "profile",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+            "CONTRIBUTING.md",
+        ],
+    ),
+    (
+        "repo",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "runs",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "target",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "test",
+        &[
+            "docs/internals/testing.md",
+            "docs/internals/tui-testing.md",
+            "website/content/docs/internals/testing.md",
+            "website/content/docs/internals/tui-testing.md",
+        ],
+    ),
+    (
+        "tests",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "workspace",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "CONTRIBUTING.md",
+        ],
+    ),
+    (
+        "your-flag",
+        &[
+            "docs/internals/walkthroughs.md",
+            "website/content/docs/internals/walkthroughs.md",
+        ],
+    ),
+    ("all", &["CONTRIBUTING.md"]),
+    ("install", &["README.md", "CONTRIBUTING.md"]),
     // docker run flags (install docs)
     (
         "net",
@@ -295,19 +505,32 @@ fn extract_long_flags(text: &str) -> BTreeSet<String> {
 
 /// Every published markdown page, as `(repo-relative path, contents)`.
 ///
-/// The published surface is what a user can read: the repository root pages,
-/// `docs/` including `docs/internals/`, and the Zola content tree. The
-/// planning trees are excluded for the same reason `link_integrity_test`
-/// excludes them — they are a historical record, not documentation anyone is
-/// pointed at, and editing them to satisfy a rendering gate corrupts them.
+/// The published surface is everything a reader can reach: the repository root
+/// pages, all of `docs/` including `docs/internals/`, and the Zola content
+/// tree. Only the planning trees are excluded, for the same reason
+/// `link_integrity_test` excludes them — they are a historical record, not
+/// documentation anyone is pointed at, and editing them to satisfy a gate
+/// corrupts them.
+///
+/// `docs/internals/` is in scope because it is PUBLISHED: `build-wiki.py` maps
+/// all ten pages to `Internals-*` wiki pages and the site nav links the
+/// mirrors. An earlier version of this excluded it, with a comment claiming it
+/// was covered because "its own drift gates live in dev_docs_drift_test" —
+/// true for links, symbols and mermaid, and false for flags, which that file
+/// never checks. A phantom flag added there passed 82 tests while live on two
+/// published pages.
 fn published_markdown() -> Vec<(String, String)> {
-    // Root pages a user reads. CONTRIBUTING.md, CHANGELOG.md and
-    // THIRD-PARTY-NOTICES.md are deliberately out: the first two are developer
-    // and historical material thick with cargo/git flags, and the third is
-    // generated. A phantom sipnab flag there misleads a contributor, not a
-    // user, and pulling them in would mean excusing ~30 foreign flags — an
-    // allowlist that large stops being a gate and starts being a filter.
-    const ROOT_PAGES: &[&str] = &["README.md", "SECURITY.md"];
+    // Root pages a reader reaches. CONTRIBUTING.md is in: a phantom sipnab
+    // flag there misleads a contributor, which is a real reader.
+    //
+    // Two root pages stay out, on principle rather than convenience:
+    //   CHANGELOG.md — a historical record. An entry naming a flag that has
+    //     since been renamed or removed is CORRECT, and gating it against the
+    //     current CLI would force the history to be rewritten to stay green.
+    //   THIRD-PARTY-NOTICES.md — generated from the dependency tree; its
+    //     content is not authored here.
+    const ROOT_PAGES: &[&str] = &["README.md", "SECURITY.md", "CONTRIBUTING.md"];
+    const SKIP: &[&str] = &["docs/design/", "docs/research/", "docs/superpowers/"];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
         .args(["ls-files", "*.md"])
@@ -318,13 +541,11 @@ fn published_markdown() -> Vec<(String, String)> {
     let mut pages: Vec<(String, String)> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|rel| {
-            // docs/ top level only: docs/internals/ is the developer tree
-            // (its own drift gates live in dev_docs_drift_test) and
-            // docs/design|research|superpowers are planning records.
-            let top_level_docs = rel.starts_with("docs/") && rel.matches('/').count() == 1;
-            let site = rel.starts_with("website/content/")
-                && !rel.starts_with("website/content/docs/internals/");
-            top_level_docs || site || ROOT_PAGES.contains(rel)
+            if SKIP.iter().any(|d| rel.starts_with(d)) {
+                return false;
+            }
+            let in_docs = rel.starts_with("docs/");
+            in_docs || rel.starts_with("website/content/") || ROOT_PAGES.contains(rel)
         })
         .filter_map(|rel| {
             std::fs::read_to_string(root.join(rel))
