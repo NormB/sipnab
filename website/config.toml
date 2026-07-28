@@ -26,7 +26,7 @@ theme = "ayu-dark"
 # overwrites this from Cargo.toml at build time (single source of truth), and a
 # pre-commit hook fails if the two drift — so the homepage version badge and the
 # download links always match the released crate. Update Cargo.toml, not this.
-version = "0.5.52"
+version = "0.5.53"
 # Release date of the current `version` above. Shown on /download next to the
 # version. Update alongside Cargo.toml/version when cutting a release.
 release_date = "2026-07-27"
