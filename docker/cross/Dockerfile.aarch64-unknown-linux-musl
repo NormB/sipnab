@@ -1,4 +1,4 @@
-FROM ghcr.io/cross-rs/aarch64-unknown-linux-musl:main
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-musl:main@sha256:972cd947b3b190b890b00a840660c146806fdf26f946cc1449742d275ac569ac
 
 # Build libpcap from source against musl for static linking
 RUN apt-get update && apt-get install -y flex bison wget xz-utils && rm -rf /var/lib/apt/lists/* \

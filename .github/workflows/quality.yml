@@ -10,6 +10,13 @@ concurrency:
   group: quality-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege by default. All three jobs below declare their own
+# `permissions:` block, which REPLACES this one rather than adding to it — so
+# this grants the floor for any job added later that forgets to, instead of
+# handing it the repository default.
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # Benchmarks: four criterion suites live in benches/ (parser, store, pipeline,
@@ -33,14 +40,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install system deps
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.97.1
-
-      - uses: actions/cache@v6
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -71,8 +76,7 @@ jobs:
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # ubuntu-latest ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
       # GHC, Swift, CodeQL bundle) we never use. A full --all-features
       # --all-targets build plus the cargo cache and llvm-cov instrumentation
@@ -89,11 +93,11 @@ jobs:
       - name: Install system deps
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
           components: llvm-tools-preview
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -105,7 +109,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2
         with:
           tool: cargo-llvm-cov
 
@@ -150,7 +154,7 @@ jobs:
           cargo llvm-cov report --html --ignore-filename-regex 'gen_fixture\.rs'
 
       - name: Upload HTML coverage artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-html
           path: target/llvm-cov/html
@@ -158,7 +162,7 @@ jobs:
 
       - name: Upload to Codecov
         if: ${{ env.CODECOV_TOKEN != '' }}
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: lcov.info
           token: ${{ env.CODECOV_TOKEN }}
@@ -177,8 +181,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # ubuntu-latest ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
       # GHC, Swift, CodeQL bundle) we never use. A full --all-features
       # --all-targets build plus the cargo cache and llvm-cov instrumentation
@@ -195,11 +198,11 @@ jobs:
       - name: Install system deps
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
           components: clippy
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -211,7 +214,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install clippy-sarif tooling
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2
         with:
           tool: clippy-sarif,sarif-fmt
 
@@ -224,7 +227,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           sarif_file: clippy.sarif
           category: clippy

@@ -13,8 +13,11 @@ on:
       - '.github/workflows/wiki-sync.yml'
   workflow_dispatch:
 
+# Read by default; only the job that pushes gets write. A workflow-level
+# `contents: write` hands every job — including any added later — a token that
+# can rewrite the repository, when exactly one step needs it.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: wiki-sync
@@ -23,9 +26,12 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # The wiki lives at <repo>.wiki.git and is pushed with GITHUB_TOKEN, so
+    # this job genuinely needs write. It is the only one that does.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Build wiki tree from docs/
         run: python3 scripts/build-wiki.py build/wiki
 

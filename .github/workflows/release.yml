@@ -11,8 +11,13 @@ on:
         default: 'true'
         type: boolean
 
+# Read by default. Only the `release` job publishes, and it restates what it
+# needs in its own block. `preflight` and `build` just check out and upload
+# artifacts, and `tap` reads the release with github.token but pushes to
+# NormB/homebrew-tap with a separate secret — GITHUB_TOKEN cannot write to
+# another repository, so none of the three needs write here.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,7 +41,7 @@ jobs:
     name: Tag matches crate version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Compare the tag against Cargo.toml
         run: |
           set -euo pipefail
@@ -110,10 +115,9 @@ jobs:
             cross: false
 
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
           targets: ${{ matrix.target }}
 
@@ -508,7 +512,7 @@ jobs:
           mv "sipnab-${rpm_version}-1.${rpm_arch}${suffix}.rpm" dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sipnab-${{ matrix.target }}${{ steps.features.outputs.suffix }}
           path: dist/
@@ -526,10 +530,9 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts/
           merge-multiple: true
@@ -553,7 +556,7 @@ jobs:
       # sipnab binary published here, which is the safe direction to err.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2
         with:
           tool: cargo-cyclonedx
 
@@ -600,7 +603,7 @@ jobs:
       # copy is detectable. Anyone can check a download with
       #   gh attestation verify <file> --repo NormB/sipnab
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
         with:
           subject-path: |
             artifacts/*.tar.gz
@@ -654,7 +657,7 @@ jobs:
           echo "-------------------------"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           generate_release_notes: true
           files: |
@@ -671,8 +674,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Pull the SHA256SUMS.txt that the release job just attached to the GitHub
       # release; it is the single source of truth for every artifact checksum.
       - name: Download release checksums
