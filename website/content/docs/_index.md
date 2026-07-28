@@ -79,21 +79,27 @@ binary, and your pcap never leaves your machine.
 
 ## Quick start
 
+Analyze a pcap file in the TUI:
+
 ```bash
-# Analyze a pcap file in the TUI
 sipnab -I capture.pcap
-
-# Live capture on eth0
-sudo sipnab -d eth0
-
-# Headless: only the calls that went wrong, as NDJSON
-sipnab -N -I capture.pcap --problems --json
 ```
 
-`-N` is headless mode and `--json` emits one JSON object per line, so the third
-command drops straight into `jq` or a log pipeline. Live capture needs packet
-permissions — run `sudo sipnab --setup-caps` once on Linux to grant them and
-drop the `sudo` afterwards.
+Capture live on eth0. Live capture needs packet permissions — run
+`sudo sipnab --setup-caps` once on Linux to grant them, and drop the `sudo`
+afterwards:
+
+```bash
+sudo sipnab -d eth0
+```
+
+Headless, reporting only the calls that went wrong as NDJSON. `-N` is headless
+mode and `--json` emits one JSON object per line, so this one drops straight
+into `jq` or a log pipeline:
+
+```bash
+sipnab -N -I capture.pcap --problems --json
+```
 
 ## What is in your build
 

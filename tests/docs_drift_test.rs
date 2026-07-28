@@ -1168,3 +1168,342 @@ fn mcp_tool_table_lists_every_registered_tool() {
          {phantom:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// One fenced shell block is one clipboard payload.
+//
+// Every surface that publishes these files puts a single copy button on a
+// fence and hands over the whole body: the site does it in
+// website/templates/page.html:98 (`code.innerText`), and GitHub does it for
+// docs/**, README.md and the wiki with its own button. A repository cannot
+// influence GitHub's — class, data-*, <button> and <script> are all stripped
+// from rendered markdown — so the only lever with three-of-three reach is the
+// bytes inside the fence.
+//
+// A block holding two independent recipes therefore hands the reader both.
+// They asked for one, they get two, and they believe they ran one. That is
+// merely untidy for a `sipnab --json | jq` pair; it is an incident when the
+// extra command writes: `openssl rand -hex 32 > /etc/sipnab/mcp-token`
+// destroys a live MCP bearer token, after which the server serves a secret no
+// configured agent has.
+// ---------------------------------------------------------------------------
+
+const SHELL_LANGS: &[&str] = &["bash", "sh", "shell", "console", "zsh"];
+
+/// First line of a block that declares itself one ordered procedure.
+const SEQUENCE_MARKER: &str = "# Run all of these, in order.";
+
+/// `(1-based line of the opening fence, info word, body)` for every fenced
+/// block, tracking fence character and length so a nested ```` ```markdown ````
+/// sample does not corrupt the walk.
+fn fenced_with_info(text: &str) -> Vec<(usize, String, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim_start();
+        let ch = if t.starts_with("```") {
+            '`'
+        } else if t.starts_with("~~~") {
+            '~'
+        } else {
+            i += 1;
+            continue;
+        };
+        let n = t.chars().take_while(|c| *c == ch).count();
+        let info = t[n..].trim().to_string();
+        // A closing fence carries no info string; an info string means opening.
+        let start = i;
+        let mut body = String::new();
+        i += 1;
+        while i < lines.len() {
+            let c = lines[i].trim_start();
+            if c.starts_with(&ch.to_string().repeat(n)) && c[n..].trim().is_empty() {
+                break;
+            }
+            body.push_str(lines[i]);
+            body.push('\n');
+            i += 1;
+        }
+        i += 1;
+        let word = info.split_whitespace().next().unwrap_or("").to_lowercase();
+        out.push((start + 1, word, body));
+    }
+    out
+}
+
+/// The top-level command units in a shell fence body.
+///
+/// A line does not start a new unit when the previous one continues into it:
+/// a trailing `\`, a quote left open across the newline, an open heredoc, or a
+/// trailing `|`, `&&`, `||` or `&`. Blank and `#`-comment lines are not units.
+///
+/// Quote state is carried ACROSS physical lines, deliberately. Resetting it
+/// per line reads the prose inside `git commit -m "…"` as separate commands,
+/// which is the same mistake a blank-line heuristic makes — and a gate that
+/// cries wolf gets muted, which is worse than no gate.
+///
+/// Heredocs are handled as prevention rather than a fix: the scanned corpus
+/// contains none today, and they are the one construct that would otherwise
+/// make this gate report a multi-line document body as many commands.
+fn command_units(body: &str) -> Vec<String> {
+    let mut starts = Vec::new();
+    let mut pending = false;
+    let mut here: Option<String> = None;
+    let mut quote: Option<char> = None;
+
+    for raw in body.lines() {
+        if let Some(tag) = &here {
+            if raw.trim() == tag.trim() {
+                here = None;
+            }
+            continue;
+        }
+        let stripped = raw.trim();
+        if quote.is_none() && !pending && (stripped.is_empty() || stripped.starts_with('#')) {
+            continue;
+        }
+        if quote.is_none() && !pending {
+            starts.push(raw.to_string());
+        }
+
+        // Rescan the line to carry quote state forward.
+        let mut q = quote;
+        let mut esc = false;
+        let chars: Vec<char> = raw.chars().collect();
+        for (idx, c) in chars.iter().enumerate() {
+            if esc {
+                esc = false;
+                continue;
+            }
+            match q {
+                None => {
+                    if *c == '\\' {
+                        esc = true;
+                    } else if *c == '\'' || *c == '"' {
+                        q = Some(*c);
+                    } else if *c == '#' && (idx == 0 || chars[idx - 1].is_whitespace()) {
+                        break;
+                    }
+                }
+                Some('\'') => {
+                    if *c == '\'' {
+                        q = None;
+                    }
+                }
+                Some(_) => {
+                    if *c == '\\' {
+                        esc = true;
+                    } else if *c == '"' {
+                        q = None;
+                    }
+                }
+            }
+        }
+        quote = q;
+
+        if quote.is_none() {
+            let rt = raw.trim_end();
+            // `<<<` is a herestring, not a heredoc: it takes no terminator, so
+            // treating it as one would swallow the rest of the block.
+            if !rt.contains("<<<")
+                && let Some(caps) = heredoc_re().captures(rt)
+            {
+                here = Some(caps[1].to_string());
+            }
+            pending = rt.ends_with('\\')
+                || rt.ends_with('|')
+                || rt.ends_with("&&")
+                || rt.ends_with("||")
+                || rt.ends_with('&');
+        } else {
+            pending = false;
+        }
+    }
+    starts
+}
+
+fn heredoc_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)"#).unwrap())
+}
+
+/// Markdown the gate scans: every **tracked** `*.md`, minus planning trees
+/// and minus generated mirrors.
+///
+/// The file list comes from `git ls-files` rather than a directory walk, so
+/// build output and scratch are excluded by definition instead of by a
+/// hand-kept skip list. A walk initially reported 205 offenders against
+/// `git`'s 135, the difference being `build/wiki/` — `scripts/build-wiki.py`'s
+/// gitignored output — and later `.superpowers/`. Each would have been a new
+/// entry in a list that only grows, and each double-reports a defect whose
+/// only real fix is in `docs/`.
+///
+/// Mirrors are excluded rather than forgiven. Both site generators' `render()`
+/// rewrites links and prepends front matter; fence bodies pass through
+/// byte-identically, and that identity is gated by
+/// `site_pages_mirror_is_current`. So fixing `docs/examples.md` and
+/// regenerating is the only way the mirror can be green — coverage is
+/// transitive and stricter than scanning it directly. Reporting the mirror
+/// would point the author at a file whose own header says "do not edit".
+fn scanned_markdown() -> Vec<std::path::PathBuf> {
+    // Planning material, never published. Retro-editing a historical record to
+    // satisfy a rendering gate would corrupt it. Same exclusion and reason as
+    // link_integrity_test's docs-tree scan.
+    const SKIP_DIRS: &[&str] = &["docs/superpowers/", "docs/design/", "docs/research/"];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "*.md"])
+        .current_dir(root)
+        .output()
+        .expect("git ls-files");
+    assert!(
+        out.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|rel| !SKIP_DIRS.iter().any(|d| rel.starts_with(d)))
+        .map(|rel| root.join(rel))
+        .collect()
+}
+
+/// A fenced shell block must hand the reader exactly one command, unless it
+/// declares itself an ordered procedure.
+#[test]
+fn shell_fence_is_one_clipboard_payload() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+    let mut offenders = Vec::new();
+    let mut scanned = 0;
+
+    for path in scanned_markdown() {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("Generated by scripts/build-site") {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        for (line, info, body) in fenced_with_info(&text) {
+            if !SHELL_LANGS.contains(&info.as_str()) {
+                continue;
+            }
+            scanned += 1;
+            let first = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            if first.trim() == SEQUENCE_MARKER {
+                continue;
+            }
+            let units = command_units(&body);
+            if units.len() > 1 {
+                offenders.push(format!(
+                    "{rel}:{line}: one copy button hands the reader {} commands:\n      {}",
+                    units.len(),
+                    units
+                        .iter()
+                        .map(|u| u.trim().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n      ")
+                ));
+            }
+        }
+    }
+
+    assert!(
+        scanned >= 200,
+        "only {scanned} shell fences scanned — the walk or the fence parser \
+         stopped matching, and this gate is reporting a safety it is not providing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "shell fences whose single copy button hands the reader more than one \
+         command — the reader believes they ran one:\n  {}\n\n\
+         Fix at the source:\n  \
+         - alternatives  -> one fenced block each, so each gets its own copy button\n  \
+         - one procedure -> add `{SEQUENCE_MARKER}` as the first line\n  \
+         - dense catalog -> drop the fence; a markdown list with inline `code` \
+         has no copy button on any surface\n  \
+         (Never edit a website/content/docs page carrying the generator banner \
+         — fix docs/ and re-run scripts/build-site-pages.py.)\n\n\
+         Scope: this asserts the button hands over exactly ONE command. It does \
+         NOT assert that command is correct or safe.",
+        offenders.join("\n  ")
+    );
+}
+
+/// The corpus scan goes green the moment the docs are fixed, so these pin the
+/// lexer itself against the defect that motivated it. Without them,
+/// `command_units` could be softened to always return one unit and every gate
+/// above would still pass.
+#[test]
+fn command_units_splits_the_shipped_two_command_block() {
+    // docs/troubleshooting.md:9 as published in v0.5.55 — the block whose
+    // copy button handed the reader a --call-report that wrote report.md they
+    // never asked for.
+    let body = "\
+# All failed calls: Call-ID + response code + reason per response message
+sipnab -N -I capture.pcap --filter \"state == 'Failed'\" --json \\
+  | jq -c 'select(.is_request == false) | {call_id, status_code, reason}'
+
+# Detailed report for one call (Markdown, ready for a ticket)
+sipnab -I capture.pcap --call-report \"abc123@host\" --markdown > report.md
+";
+    let units = command_units(body);
+    assert_eq!(
+        units.len(),
+        2,
+        "the shipped two-command block must read as 2 units, got {}: {units:#?}",
+        units.len()
+    );
+}
+
+#[test]
+fn command_units_joins_continuations_quotes_and_heredocs() {
+    // Trailing backslash.
+    assert_eq!(
+        command_units("sipnab -N \\\n  --json \\\n  -I x.pcap\n").len(),
+        1
+    );
+    // Pipe into a continued expression.
+    assert_eq!(
+        command_units("sipnab -N --json |\n  jq .call_id\n").len(),
+        1
+    );
+    // && chain.
+    assert_eq!(command_units("cd /tmp &&\n  ls\n").len(), 1);
+    // A quote left open across lines: the prose inside is NOT a command. This
+    // is the case a blank-line heuristic gets wrong.
+    assert_eq!(
+        command_units("git commit -m \"line one\n\nline two\n\nline three\"\n").len(),
+        1,
+        "quote state must carry across newlines"
+    );
+    // Heredoc body is not a series of commands.
+    assert_eq!(
+        command_units("cat <<'EOF' > /tmp/f\nalpha\nbeta\nEOF\n").len(),
+        1
+    );
+    // A herestring is not a heredoc.
+    assert_eq!(command_units("jq . <<< \"$x\"\necho done\n").len(), 2);
+    // Comments and blanks are not units.
+    assert_eq!(command_units("# just a note\n\n# another\n").len(), 0);
+}
+
+#[test]
+fn sequence_marker_admits_a_declared_procedure() {
+    let body = format!(
+        "{SEQUENCE_MARKER}\nmkdir -p /etc/sipnab\nopenssl rand -hex 32 > /etc/sipnab/mcp-token\nchmod 0600 /etc/sipnab/mcp-token\n"
+    );
+    assert!(
+        command_units(&body).len() > 1,
+        "the procedure genuinely holds several commands"
+    );
+    let first = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    assert_eq!(
+        first.trim(),
+        SEQUENCE_MARKER,
+        "and the gate admits it on the strength of the declaration alone"
+    );
+}

@@ -12,8 +12,11 @@ cargo test --features tui --test tui_snapshot_test
 ```
 
 ### Updating snapshots
-When rendering changes intentionally:
+When rendering changes intentionally — `--accept` rewrites the `.snap` files in
+place, and staging them in the same commit is what keeps CI comparing against
+the new rendering:
 ```bash
+# Run all of these, in order.
 cargo insta test --features tui --accept
 git add tests/snapshots/
 ```

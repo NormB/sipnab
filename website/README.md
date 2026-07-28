@@ -6,6 +6,7 @@ Static site for [sipnab.com](https://www.sipnab.com), built with
 ## Local preview
 
 ```bash
+# Run all of these, in order.
 cd website
 zola serve
 ```
@@ -15,6 +16,7 @@ Open <http://127.0.0.1:1111>. Live-reload on save.
 ## Build
 
 ```bash
+# Run all of these, in order.
 cd website
 zola build
 ```
@@ -62,10 +64,18 @@ The homepage demo tabs are GIFs rendered with [VHS](https://github.com/charmbrac
 from tape scripts in `../demos/`. Every tape `Source`s `demos/common.tape`
 for a single shared look (theme, font, size), so styling lives in one place.
 
+Rendering needs `vhs`, `ttyd` and `ffmpeg` on `PATH`, plus an installed
+`sipnab` (0.5.x). To render every demo plus the hero still into
+`static/demos/`:
+
 ```sh
-# needs: vhs, ttyd, ffmpeg on PATH, and `sipnab` (0.5.x) installed
-make -C demos            # render every demo + the hero still into static/demos/
-make -C demos 09-detail.gif   # just one
+make -C demos
+```
+
+To re-render a single demo — much faster when you are iterating on one tape:
+
+```sh
+make -C demos 09-detail.gif
 ```
 
 Run from the repo root so tapes resolve `tests/pcap-samples/*`. Outputs land

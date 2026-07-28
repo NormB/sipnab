@@ -149,13 +149,11 @@ tool. They expand to DSL expressions internally.
 | `late-media` | — (use `--filter late-media`) | `late_media == true` |
 
 `--filter` first tries to resolve the argument as an alias name; if no alias
-matches, it parses the argument as a DSL expression. Both forms below are
-equivalent:
-
-```
-sipnab -N -I capture.pcap --filter codec-asym
-sipnab -N -I capture.pcap --filter "codec_asymmetry == true"
-```
+matches, it parses the argument as a DSL expression. The alias and the
+expression it expands to select the same dialogs, so
+`sipnab -N -I capture.pcap --filter codec-asym` and
+`sipnab -N -I capture.pcap --filter "codec_asymmetry == true"` are equivalent —
+pick whichever reads better in the command you are writing.
 
 ## Examples
 
@@ -330,14 +328,19 @@ Dialogs with many messages often indicate retransmission issues or complex call 
 
 ### Stream investigation by codec or SSRC
 
+Select every dialog carrying one codec, for codec-specific quality analysis:
+
 ```bash
 sipnab -N -I capture.pcap --filter "rtp.codec == 'PCMU'" --json
-sipnab -N -I capture.pcap --filter "rtp.ssrc == '0x12345678'" --json
 ```
 
-Useful for codec-specific quality analysis or tracing a single media stream.
-`rtp.ssrc` compares against the SSRC rendered as `0x`-prefixed lowercase hex,
-so the literal needs the `0x` prefix to match.
+Trace a single media stream by its SSRC. `rtp.ssrc` compares against the SSRC
+rendered as `0x`-prefixed lowercase hex, so the literal needs the `0x` prefix or
+it matches nothing:
+
+```bash
+sipnab -N -I capture.pcap --filter "rtp.ssrc == '0x12345678'" --json
+```
 
 ### RTCP Extended Reports
 

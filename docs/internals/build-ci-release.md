@@ -242,6 +242,7 @@ Detecting a real regression is a release-time step on the reference host,
 because that is the only place the numbers mean anything:
 
 ```sh
+# Run all of these, in order.
 gh release download vX.Y.Z -p 'sipnab-*-aarch64-unknown-linux-gnu.tar.gz*'
 sha256sum -c sipnab-*-aarch64-unknown-linux-gnu.tar.gz.sha256   # never a dev build
 tar xzf sipnab-*.tar.gz

@@ -75,6 +75,7 @@ itself):
    `curl -LO https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/SIP_CALL_RTP_G711`):
 
    ```bash
+   # Run all of these, in order.
    {
      echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
      sleep 0.3
@@ -201,11 +202,18 @@ key is the authentication; when the session ends, nothing is left running.
 
    (The pcap path is a path **on the server**.)
 
-4. **[laptop]** Verify and use:
+4. **[laptop]** Verify the client picked it up — the entry should read
+   `sipnab-prod ✓ connected`:
 
    ```bash
-   claude mcp list          # sipnab-prod ✓ connected
-   claude                   # "summarize the failed calls in this capture"
+   claude mcp list
+   ```
+
+   Then start an agent against it and ask, for example, *"summarize the
+   failed calls in this capture"*:
+
+   ```bash
+   claude
    ```
 
 Live capture over SSH works too, if the remote binary has the capability
@@ -228,17 +236,24 @@ or 4.
 
 1. **[server]** Do [Step 0](#step-0--install-sipnab-every-server-once).
 
-2. **[server]** Create an unprivileged user and grant the binary capture
-   rights (skip `setcap` if you'll feed HEP instead — scenario 3):
+2. **[server]** Create the unprivileged user the service will run as:
 
    ```bash
    sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
+   ```
+
+   Then grant the binary capture rights. Skip this second command if you'll
+   feed HEP instead (scenario 3): a HEP listener is a plain UDP socket, so
+   `cap_net_raw` would be privilege the service never uses.
+
+   ```bash
    sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
    ```
 
 3. **[server]** Generate the bearer token file:
 
    ```bash
+   # Run all of these, in order.
    sudo mkdir -p /etc/sipnab
    head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
    sudo chmod 600 /etc/sipnab/mcp.token
@@ -279,6 +294,7 @@ or 4.
 5. **[server]** Start it and check it came up:
 
    ```bash
+   # Run all of these, in order.
    sudo systemctl daemon-reload
    sudo systemctl enable --now sipnab-mcp
    systemctl status sipnab-mcp --no-pager
@@ -288,9 +304,12 @@ or 4.
    without a readable token file — that refusal is deliberate (fail
    closed).
 
-6. **[server]** Verify locally before involving the laptop:
+6. **[server]** Verify locally before involving the laptop. The `curl` reads
+   `$TOKEN` out of the shell the first line sets, so the two only work
+   together:
 
    ```bash
+   # Run all of these, in order.
    TOKEN=$(sudo cat /etc/sipnab/mcp.token)
    curl -sS http://127.0.0.1:8731/mcp \
      -H "Content-Type: application/json" \
@@ -305,23 +324,51 @@ or 4.
    firewall governs this host (nftables/ufw/cloud security group) —
    ideally to specific source addresses, not the world.
 
-8. **[laptop]** Copy the token once and register the server:
+8. **[laptop]** Copy the token, then register the server. First, somewhere
+   to keep it that only you can read:
 
    ```bash
    mkdir -p ~/.config/sipnab && chmod 700 ~/.config/sipnab
-   ssh prod01.example.net sudo cat /etc/sipnab/mcp.token > ~/.config/sipnab/prod01.token
-   chmod 600 ~/.config/sipnab/prod01.token
+   ```
 
+   Now fetch the token. Run this one by itself and read what it prints: your
+   local shell creates and truncates `prod01.token` *before* `ssh` runs, so a
+   failed connection or a `sudo` that wants a password leaves you holding an
+   empty file rather than no file at all.
+
+   ```bash
+   ssh prod01.example.net sudo cat /etc/sipnab/mcp.token > ~/.config/sipnab/prod01.token
+   ```
+
+   Check that the file is non-empty and matches the server's, then close its
+   permissions:
+
+   ```bash
+   chmod 600 ~/.config/sipnab/prod01.token
+   ```
+
+   Finally register the server. The `$(cat …)` resolves when you run this, so
+   an empty token file here registers an empty bearer and every later call
+   comes back `401`:
+
+   ```bash
    claude mcp add --transport http \
      --header "Authorization: Bearer $(cat ~/.config/sipnab/prod01.token)" \
      sipnab-prod http://prod01.example.net:8731/mcp
    ```
 
-9. **[laptop]** Verify and use:
+9. **[laptop]** Verify the client connected — the entry should read
+   `sipnab-prod ✓ connected`:
 
    ```bash
-   claude mcp list          # sipnab-prod ✓ connected
-   claude                   # "any calls with one-way audio right now?"
+   claude mcp list
+   ```
+
+   Then start an agent and ask it something only the running capture can
+   answer, for example *"any calls with one-way audio right now?"*:
+
+   ```bash
+   claude
    ```
 
 ### Scenario 2C — SSH tunnel + loopback HTTP: persistent, nothing exposed
@@ -359,6 +406,11 @@ the auth *and* the encryption.
 
    ```bash
    claude mcp add --transport http sipnab-prod http://127.0.0.1:8731/mcp
+   ```
+
+   Then confirm the client reaches the server through the tunnel:
+
+   ```bash
    claude mcp list
    ```
 
@@ -503,10 +555,17 @@ keep sipnab on loopback and let nginx own the public endpoint.
        -d eth0
    ```
 
-2. **[server]** Install nginx and a certificate:
+2. **[server]** Install nginx and certbot:
 
    ```bash
    sudo apt install nginx certbot python3-certbot-nginx
+   ```
+
+   Then issue the certificate. certbot needs `capture.example.com` already
+   resolving to this host, asks for a contact address, and rewrites the nginx
+   config in place — run it on its own so you can answer it:
+
+   ```bash
    sudo certbot --nginx -d capture.example.com
    ```
 
@@ -557,14 +616,21 @@ entry in one client config:
 
 1. **[each server]** Any persistent wiring above (2B shown here).
 
-2. **[laptop]** Register them all:
+2. **[laptop]** Register them all — the loop is one command and does nothing
+   unless you take the whole of it:
 
    ```bash
+   # Run all of these, in order.
    for h in nyc1 chi1 lax1; do
      claude mcp add --transport http \
        --header "Authorization: Bearer $(cat ~/.config/sipnab/$h.token)" \
        "sipnab-$h" "https://$h.example.net/mcp"
    done
+   ```
+
+   Then confirm all three registered:
+
+   ```bash
    claude mcp list
    ```
 
@@ -647,7 +713,11 @@ url = "https://capture.example.com/mcp"
 bearer_token_env_var = "SIPNAB_MCP_TOKEN"
 ```
 
+`bearer_token_env_var` names a variable read from the environment codex is
+launched with, so the export and the launch have to happen in the same shell:
+
 ```bash
+# Run all of these, in order.
 export SIPNAB_MCP_TOKEN=$(cat ~/.config/sipnab/prod01.token)
 codex   # then e.g.: "which calls had one-way audio?"
 ```

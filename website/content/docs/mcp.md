@@ -32,11 +32,18 @@ see the features a binary was compiled with.
 
 ## Quick start (stdio)
 
-The simplest way to drive sipnab from a local agent:
+The simplest way to drive sipnab from a local agent is to replay a pcap.
+Stdio is the default transport, so no `--mcp-transport` is needed:
 
 ```bash
-sipnab --mcp -N -I capture.pcap         # stdio is the default transport
-sudo sipnab --mcp -N -d eth0            # live capture (root / CAP_NET_RAW)
+sipnab --mcp -N -I capture.pcap
+```
+
+To serve a live capture instead, run as root or grant the binary
+`CAP_NET_RAW`:
+
+```bash
+sudo sipnab --mcp -N -d eth0
 ```
 
 `--mcp` requires `-N`/`--no-tui`: **stdout is the JSON-RPC wire**, so the
@@ -85,9 +92,12 @@ The agent then connects to `https://your-host/mcp` with a `Bearer
 
 ### Token bootstrap
 
-Non-loopback binds require a bearer token. Generate one once:
+Non-loopback binds require a bearer token. Generate one once — the middle
+command overwrites any token already in that file, and every agent still
+configured with the old value is then locked out:
 
 ```bash
+# Run all of these, in order.
 sudo mkdir -p /etc/sipnab
 head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
 sudo chmod 600 /etc/sipnab/mcp.token
@@ -152,6 +162,7 @@ WantedBy=multi-user.target
 ```
 
 ```bash
+# Run all of these, in order.
 sudo systemctl daemon-reload
 sudo systemctl enable --now sipnab-mcp
 ```
@@ -503,27 +514,37 @@ Restart Claude Desktop. The agent will list `sipnab` under "Connected" — ask i
 
 ### Claude Code
 
-From your project directory:
+Run these from your project directory. For stdio against a fixed pcap, the
+`--` ends the `claude mcp add` flags so the trailing `sipnab -N --mcp ...` is
+treated as the command to launch:
 
 ```bash
-# Stdio against a fixed pcap (`--` ends `claude mcp add` flags so the
-# trailing `sipnab -N --mcp ...` is treated as the launched command)
 claude mcp add sipnab -- sipnab -N --mcp -I "$PWD/capture.pcap" --quiet
+```
 
-# HTTP against a remote sipnab — flags before the positional name + URL
+For HTTP against a remote sipnab, the flags come before the positional name
+and URL:
+
+```bash
 claude mcp add --transport http \
        --header "Authorization: Bearer $(cat ~/.config/sipnab/token)" \
        sipnab-remote https://capture.example.com/mcp
+```
 
-# Verify
+Either way, confirm the server registered:
+
+```bash
 claude mcp list
 ```
 
 ### Raw stdio JSON-RPC test (for client developers)
 
-The simplest way to confirm the server is alive without an MCP client:
+This is the simplest way to confirm the server is alive without an MCP
+client. The whole block is one pipeline — the brace group feeds sipnab's
+stdin and the `sleep`s pace the handshake — so paste it as a unit:
 
 ```bash
+# Run all of these, in order.
 {
   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
   sleep 0.3
@@ -542,18 +563,28 @@ Expected first line of response:
 
 ### Raw HTTP test
 
+Set the token and endpoint once. Every request below expands `$TOKEN` and
+`$URL`, so run them in the same shell:
+
 ```bash
+# Run all of these, in order.
 TOKEN=$(cat /etc/sipnab/mcp.token)
 URL="http://capture.example.com:8731/mcp"
+```
 
-# Initialize
+Initialize the session:
+
+```bash
 curl -sS "$URL" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+```
 
-# tools/call — find_problems with multiple aliases
+Call `find_problems` with several diagnostic aliases at once:
+
+```bash
 curl -sS "$URL" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -591,8 +622,9 @@ Each array element is a dialog summary (`call_id`, `state`, `method`,
 dialog document is what `get_dialog_report` returns (the
 [REST API](@/docs/api.md) returns the same shape).
 
+Fetch one dialog a page at a time, starting at the first message:
+
 ```bash
-# tools/call — get_dialog with pagination
 curl -sS "$URL" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -600,8 +632,11 @@ curl -sS "$URL" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call",
        "params":{"name":"get_dialog",
                  "arguments":{"call_id":"abc123@host","cursor":0,"max_messages":50}}}'
+```
 
-# tools/call — security_findings
+Pull recent security findings, narrowed to two rule names:
+
+```bash
 curl -sS "$URL" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -662,6 +697,7 @@ if __name__ == "__main__":
 Install + run:
 
 ```bash
+# Run all of these, in order.
 pip install 'mcp>=1.0'
 python sipnab_mcp.py /path/to/capture.pcap
 ```

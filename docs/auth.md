@@ -57,14 +57,20 @@ rotated naturally; long-TTL tokens are the ones to check.
 
 ## 1. Configure a signing key
 
-Give the server one or more HMAC signing keys (use a long, random secret):
+Give the server one or more HMAC signing keys (use a long, random secret). Each
+surface reads its own flag, so configure the one you are actually exposing.
+
+The REST API takes `--api-signing-key`:
 
 ```bash
-# REST API
 sipnab -N -I capture.pcap --api 127.0.0.1:8080 \
   --api-signing-key "$(openssl rand -hex 32)"
+```
 
-# HTTP MCP
+The HTTP MCP server takes `--mcp-signing-key`. Running both of these mints two
+unrelated keys — deliberate, since a token is bound to one audience anyway:
+
+```bash
 sipnab -N -I capture.pcap --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
   --mcp-signing-key "$(openssl rand -hex 32)"
 ```
@@ -77,13 +83,18 @@ Keys may also be supplied via `--api-signing-key-file` / `--mcp-signing-key-file
 ## 2. Mint (issue) a token
 
 `--mint-token` signs a token with the **first** configured signing key, prints
-it, and exits — it does not start any capture or server:
+it, and exits — it does not start any capture or server.
+
+An API token at the default one-hour TTL needs nothing but the signing key:
 
 ```bash
-# 1-hour API token (default TTL 3600s)
 sipnab --mint-token --api-signing-key "$KEY"
+```
 
-# 24-hour MCP token with an explicit id (for later revocation)
+An MCP token for a CI runner gets a 24-hour life and an explicit id, so that it
+can be named on a denylist later:
+
+```bash
 sipnab --mint-token --mcp-signing-key "$KEY" --mcp-token-ttl 86400 --token-id ci-runner-1
 ```
 
@@ -120,9 +131,11 @@ Two independent mechanisms:
 ## 6. Revocation
 
 To kill a still-valid token before its `exp`, add its `id` to a denylist file
-and point the server at it:
+and point the server at it. Both steps are needed — an id in a file no server
+reads revokes nothing:
 
 ```bash
+# Run all of these, in order.
 echo "ci-runner-1" >> /etc/sipnab/revoked.txt
 sipnab ... --api-signing-key "$KEY" --api-revoked-file /etc/sipnab/revoked.txt
 ```

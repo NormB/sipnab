@@ -15,21 +15,33 @@ If you're new, start with **Recipe 1**. If you have a specific symptom, jump to 
 
 **Commands:**
 
+Open the call list and scan it visually — the interactive TUI:
+
 ```bash
-# 1. Interactive: open the call list, scan visually
 sipnab -I capture.pcap
+```
 
-# 2. Headless overview: dialog count, methods, average PDD
+The same capture as a headless overview: dialog count, methods, average PDD.
+
+```bash
 sipnab -N -I capture.pcap
+```
 
-# 3. One-flag diagnostic sweep — retransmits and failed dialogs
+A one-flag diagnostic sweep — retransmits and failed dialogs:
+
+```bash
 sipnab -N -I capture.pcap --problems
+```
 
-# 4. Same in JSON for piping
+The same sweep in JSON, for piping into another tool:
+
+```bash
 sipnab -N -I capture.pcap --problems --json
+```
 
-# 5. The wider net: the 'problems' DSL alias also covers one-way audio,
-#    loss/jitter, NAT mismatch, asymmetry and late media
+The wider net: the `problems` DSL alias also covers one-way audio, loss/jitter, NAT mismatch, asymmetry and late media.
+
+```bash
 sipnab -N -I capture.pcap --filter problems
 ```
 
@@ -59,11 +71,15 @@ INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060  Failed  408 Req
 
 **Commands:**
 
-```bash
-# Capture on eth0, only this user's calls (matches From or To)
-sudo sipnab -d eth0 --filter "from.user == '1001' OR to.user == '1001'"
+Capture on eth0, keeping only this user's calls — the filter matches From or To:
 
-# Same, with a CLI summary line per dialog (not the TUI)
+```bash
+sudo sipnab -d eth0 --filter "from.user == '1001' OR to.user == '1001'"
+```
+
+The same capture with a CLI summary line per dialog instead of the TUI:
+
+```bash
 sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --json
 ```
 
@@ -87,17 +103,24 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 `sipnab -N --json` emits per-message records (one JSON line per SIP message), not per-dialog summaries. The `status_code` field is on response messages; combined with `--filter` (which evaluates against the dialog so all messages from matched dialogs flow through), you get a histogram of every response code seen during failed dialogs:
 
+Every failed call's response messages — Call-ID, status_code and reason:
+
 ```bash
-# Every failed call's response messages (Call-ID + status_code + reason)
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
   | jq 'select(.is_request == false) | {call_id, status_code, reason}'
+```
 
-# Histogram of response codes seen in failed dialogs
+A histogram of the response codes seen in failed dialogs:
+
+```bash
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
   | jq -r 'select(.is_request == false) | .status_code' \
   | sort | uniq -c | sort -rn
+```
 
-# Detailed report for one failure (Markdown, paste into a ticket)
+A detailed report for one failure, in Markdown, ready to paste into a ticket:
+
+```bash
 sipnab -N -I capture.pcap --call-report 'abc123@host' --markdown > failure-report.md
 ```
 
@@ -129,23 +152,29 @@ The histogram output looks like (`uniq -c` count, then status code):
 
 **Commands:**
 
+First, confirm the diagnosis engine flagged it. The diagnosis block lives on the dialog-level JSON that `--call-report` emits, not on per-message records.
+
 ```bash
-# 1. Confirm the diagnosis engine flagged it (the diagnosis block lives on the
-#    dialog-level JSON that --call-report emits, not on per-message records)
 sipnab -N -I capture.pcap --call-report 'abc123@host' --json --no-cli-print \
   | jq '{call_id, state, diagnosis}'
+```
 
-# 2. Get the human-readable call report — NAT mismatch, SDP offer/answer, media path
+Then get the human-readable call report — NAT mismatch, SDP offer/answer, media path:
+
+```bash
 sipnab -N -I capture.pcap --call-report 'abc123@host' --markdown --no-cli-print
+```
 
-# 3. Inspect the actual RTP streams for that call (TUI)
+Finally, inspect the actual RTP streams for that call in the TUI:
+
+```bash
 sipnab -I capture.pcap
 #   → press '/' to filter, type 'abc123', Enter
 #   → Tab to switch to RTP streams view
 #   → Enter on each stream to see packet count, jitter, loss
 ```
 
-Step 1 should print a diagnosis object like:
+The first command should print a diagnosis object like:
 
 ```json
 {
@@ -180,20 +209,33 @@ Step 1 should print a diagnosis object like:
 
 The filter DSL has 31 fields and 7 operators. These five cover most operational triage:
 
+Slow setup — every dialog that took more than 3 seconds from INVITE to 200 OK:
+
 ```bash
-# A. Slow setup — anything over 3 seconds INVITE→200 OK
 sipnab -N -I capture.pcap --filter "pdd > 3.0" --json
+```
 
-# B. REGISTER failures
+REGISTER dialogs that failed:
+
+```bash
 sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND state == 'Failed'" --json
+```
 
-# C. Short calls — under 10s, completed (likely UX or cancellation problem)
+Short calls — completed, but under 10 seconds, which usually points at a UX or cancellation problem:
+
+```bash
 sipnab -N -I capture.pcap --filter "duration < 10.0 AND state == 'Completed'" --json
+```
 
-# D. Heavy retransmits — packet loss on the SIP path
+Heavy retransmits, the signature of packet loss on the SIP path:
+
+```bash
 sipnab -N -I capture.pcap --filter "retransmits > 5" --json
+```
 
-# E. Specific User-Agent (regex)
+A specific User-Agent, matched as a regex:
+
+```bash
 sipnab -N -I capture.pcap --filter "ua =~ '(?i)friendly.*scanner|sipvicious'" --json
 ```
 
@@ -212,12 +254,16 @@ For per-call asymmetry checks (different codec on each leg, late media, etc.), s
 
 ### 6a. Set up the listener
 
+Build sipnab with HEP support — skip this if you installed a package that already has it:
+
 ```bash
-# Build sipnab with HEP support
 cargo build --release --no-default-features \
     --features native,hep,api,mcp,mcp-http
+```
 
-# Run as a daemon. UDP :9060 receives HEP, TCP :9100 serves REST + Prometheus
+Run it as a daemon. UDP :9060 receives HEP, TCP :9100 serves REST + Prometheus.
+
+```bash
 sipnab -N --hep-listen 0.0.0.0:9060 --api 0.0.0.0:9100 --no-priv-drop --syslog
 ```
 
@@ -277,14 +323,21 @@ route {
 
 ### 6c. Verify packets are arriving
 
+On the sipnab host, tcpdump the HEP socket to see whether anything is arriving at all:
+
 ```bash
-# On the sipnab host, tcpdump the HEP socket
 sudo tcpdump -i eth0 -n udp port 9060
+```
 
-# Confirm dialogs are being created from the HEP feed
+Confirm dialogs are being created from the HEP feed:
+
+```bash
 curl -s http://localhost:9100/v1/stats | jq
+```
 
-# Watch dialogs accumulate live
+Watch dialogs accumulate live:
+
+```bash
 watch -n 1 'curl -s http://localhost:9100/v1/dialogs?limit=5 | jq ".dialogs[] | {call_id, state}"'
 ```
 
@@ -302,37 +355,51 @@ watch -n 1 'curl -s http://localhost:9100/v1/dialogs?limit=5 | jq ".dialogs[] | 
 
 ### 7a. Live decryption (UA produces keys, sipnab follows)
 
+Build sipnab with the `tls` feature, or use `--features full`:
+
 ```bash
-# 0. Build sipnab with the tls feature (or use --features full)
 cargo build --release --features tls,hep,api
+```
 
-# 1. On the SIP user agent, set SSLKEYLOGFILE in its environment
+On the SIP user agent — a different machine from the capture host — set `SSLKEYLOGFILE` in its environment:
+
+```bash
 SSLKEYLOGFILE=/tmp/sipua.keylog /opt/myua/bin/start
+```
 
-# 2. Start sipnab watching the keylog file (live updates)
+Then, on the capture host, start sipnab watching that keylog file for live updates:
+
+```bash
 sudo sipnab -N -d eth0 \
             --keylog /tmp/sipua.keylog --keylog-watch
 ```
 
 ### 7b. Offline decryption (capture once, decrypt later)
 
-```bash
-# Capture the encrypted pcap normally
-sudo sipnab -N -d eth0 -O encrypted.pcap
+Capture the encrypted pcap normally:
 
-# Later, decrypt using the keylog the UA wrote during the call
+```bash
+sudo sipnab -N -d eth0 -O encrypted.pcap
+```
+
+Later — minutes or months — decrypt it using the keylog the UA wrote during the call:
+
+```bash
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog
 ```
 
 ### 7c. Export decrypted pcap for Wireshark
 
+The default mode writes decrypted plaintext payloads to the output pcap:
+
 ```bash
-# Default mode: write decrypted plaintext payloads to the output pcap
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
        -O decrypted.pcap --pcap-export-mode decrypted
+```
 
-# encrypted+dsb mode: keep encrypted bytes + add a Decryption Secrets
-# Block so Wireshark itself can decrypt
+The `encrypted+dsb` mode instead keeps the encrypted bytes and adds a Decryption Secrets Block, so Wireshark itself can decrypt:
+
+```bash
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
        -O wireshark-friendly.pcap --pcap-export-mode encrypted+dsb
 ```
@@ -359,11 +426,15 @@ sipnab -I capture.pcap --dtls-keylog /tmp/dtls.keylog
 
 ### 8a. Stdio (local agent)
 
-```bash
-# One-shot, agent reads a pcap
-sipnab -N --mcp -I capture.pcap --quiet
+One-shot: the agent reads a pcap you already have.
 
-# Live capture
+```bash
+sipnab -N --mcp -I capture.pcap --quiet
+```
+
+The same, against a live capture instead of a file:
+
+```bash
 sudo sipnab -N --mcp -d eth0 --quiet
 ```
 
@@ -388,13 +459,18 @@ claude mcp add sipnab -- sipnab -N --mcp -I "$PWD/capture.pcap" --quiet
 
 ### 8b. HTTP (remote agent, single user)
 
+Generate the bearer token once, when you first set the host up. `openssl rand` overwrites `/etc/sipnab/mcp-token` — run it against a live server and it starts serving a secret none of the configured agents hold, with no way to recover the old one.
+
 ```bash
-# Generate a token
+# Run all of these, in order.
 mkdir -p /etc/sipnab && chmod 0755 /etc/sipnab
 openssl rand -hex 32 > /etc/sipnab/mcp-token
 chmod 0600 /etc/sipnab/mcp-token
+```
 
-# Run sipnab listening on a private network interface
+Then run sipnab listening on a private network interface. This is the every-boot command: it reads the token file, it does not create one.
+
+```bash
 sipnab -N --mcp --mcp-transport http \
        --mcp-bind 0.0.0.0:8731 \
        --mcp-token-file /etc/sipnab/mcp-token \
@@ -406,10 +482,15 @@ The agent connects to `http://capture.example.com:8731/mcp` with `Authorization:
 
 ### 8c. Test the JSON-RPC handshake from a shell
 
+Each probe below sends the bearer token, so read it into the shell first. The three requests are independent — none of them carries a session on to the next, so run whichever one you need.
+
 ```bash
 TOKEN=$(cat /etc/sipnab/mcp-token)
+```
 
-# Initialize (pretend to be an MCP client)
+Initialize, pretending to be an MCP client:
+
+```bash
 curl -sS http://capture.example.com:8731/mcp \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
@@ -418,15 +499,21 @@ curl -sS http://capture.example.com:8731/mcp \
           "params":{"protocolVersion":"2025-06-18",
                     "capabilities":{},
                     "clientInfo":{"name":"curl","version":"0"}}}'
+```
 
-# List the 11 read-only tools
+List the 11 read-only tools:
+
+```bash
 curl -sS http://capture.example.com:8731/mcp \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
      -H "Authorization: Bearer $TOKEN" \
      -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+```
 
-# Call find_problems and get JSON of problematic dialogs
+Call `find_problems` and get JSON of the problematic dialogs:
+
+```bash
 curl -sS http://capture.example.com:8731/mcp \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
@@ -462,14 +549,20 @@ The 11 read-only tools you should see listed: `list_dialogs`, `get_dialog_report
 
 ### 9a. Use the bundled stack
 
+Clone the repository and take a copy of the sample environment. Do this once per host: `cp .env.example .env` overwrites `.env`, so on a host where you have already edited it, skip straight to starting the stack.
+
 ```bash
+# Run all of these, in order.
 git clone https://github.com/NormB/sipnab.git
 cd sipnab/contrib/observability
 cp .env.example .env
+```
 
-# If sipnab runs on a different host, point at it:
-# echo 'SIPNAB_HOST=192.0.2.10' >> .env       # or capture.example.com
+If sipnab runs on a different host, point the stack at it before starting: `echo 'SIPNAB_HOST=192.0.2.10' >> .env`, or the hostname (`capture.example.com`) if that is how it resolves.
 
+Start the stack from `contrib/observability` — `docker compose` reads its compose file out of the working directory, so a fresh shell needs the `cd` above first:
+
+```bash
 docker compose up -d
 ```
 
@@ -477,21 +570,29 @@ This boots Prometheus (`:9090`), Grafana (`:3000`, admin/admin), an OTel Collect
 
 ### 9b. Run sipnab so Prometheus can scrape it
 
-```bash
-# Standalone metrics endpoint
-sipnab -N -d eth0 --metrics 0.0.0.0:9100 --json
+A standalone metrics endpoint:
 
-# Or as part of the REST API (single port for both)
+```bash
+sipnab -N -d eth0 --metrics 0.0.0.0:9100 --json
+```
+
+Or serve the metrics from the REST API, so one port carries both:
+
+```bash
 sipnab -N -d eth0 --api 0.0.0.0:9100
 ```
 
 ### 9c. Verify the scrape
 
-```bash
-# From the Prometheus host
-curl -s http://localhost:9090/api/v1/query?query=up{job=\"sipnab\"} | jq
+From the Prometheus host, confirm the target is up:
 
-# Spot-check a metric value
+```bash
+curl -s http://localhost:9090/api/v1/query?query=up{job=\"sipnab\"} | jq
+```
+
+Then spot-check a metric value:
+
+```bash
 curl -s 'http://localhost:9090/api/v1/query?query=rate(sipnab_messages_total[1m])' | jq
 ```
 
@@ -619,31 +720,34 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 The asymmetry signals (Phase 8.7) live on sipnab's internal `MediaDiagnosis` struct and are exposed through the filter DSL — not the dialog JSON output's `diagnosis` block. `--filter` accepts the alias name directly (`codec-asym`) and falls back to the raw DSL expression if it isn't an alias. Both forms are equivalent.
 
+All five asymmetry checks at once, via the `problems` DSL alias — not the `--problems` flag, which only covers retransmits and Failed:
+
 ```bash
-# All five asymmetry checks at once via the 'problems' DSL alias.
-# Not the --problems flag: that one only covers retransmits + Failed.
 sipnab -N -I capture.pcap --filter problems --json
+```
 
-# Targeted, one signal at a time — alias name or raw DSL, both work
-sipnab -N -I capture.pcap --filter codec-asym    --json
-sipnab -N -I capture.pcap --filter ptime-asym    --json
-sipnab -N -I capture.pcap --filter payload-asym  --json
-sipnab -N -I capture.pcap --filter duration-asym --json
-sipnab -N -I capture.pcap --filter late-media    --json
+Targeted, one signal at a time:
 
-# Equivalent raw-DSL forms
-sipnab -N -I capture.pcap --filter "codec_asymmetry == true"  --json
-sipnab -N -I capture.pcap --filter "ptime_asymmetry == true"  --json
+- `sipnab -N -I capture.pcap --filter codec-asym    --json` — different codec on each leg
+- `sipnab -N -I capture.pcap --filter ptime-asym    --json` — different packetization interval on each leg
+- `sipnab -N -I capture.pcap --filter payload-asym  --json` — same codec, different dynamic payload type
+- `sipnab -N -I capture.pcap --filter duration-asym --json` — the two streams ran for noticeably different lengths
+- `sipnab -N -I capture.pcap --filter late-media    --json` — media started well after the answering 200 OK
 
-# Multiple signals OR'd require raw DSL (alias names cover only one signal each)
+The equivalent raw-DSL forms, for the two most common of those:
+
+- `sipnab -N -I capture.pcap --filter "codec_asymmetry == true"  --json`
+- `sipnab -N -I capture.pcap --filter "ptime_asymmetry == true"  --json`
+
+Multiple signals OR'd together require raw DSL — an alias name covers only one signal each:
+
+```bash
 sipnab -N -I capture.pcap \
        --filter "codec_asymmetry == true OR ptime_asymmetry == true OR late_media == true" \
        --json
-
-# From an MCP client, multiple alias names go through find_problems:
-#   tools/call find_problems {"kinds": ["codec-asym", "ptime-asym", "late-media"]}
-# See the MCP docs for the full client-side syntax.
 ```
+
+From an MCP client, multiple alias names go through `find_problems` instead: `tools/call find_problems {"kinds": ["codec-asym", "ptime-asym", "late-media"]}`. See the MCP docs for the full client-side syntax.
 
 **What to look for:**
 
@@ -665,14 +769,21 @@ sipnab -N -I capture.pcap \
 
 In `-N` (non-interactive) mode, sipnab normally prints each captured SIP message to stdout and then emits the report. Pass `--no-cli-print` to suppress the per-message dump so only the report reaches stdout. (`-N` is required: without it sipnab tries to start the TUI and the report output never reaches stdout.)
 
+Markdown, to paste into a ticket or a markdown editor:
+
 ```bash
-# Markdown — paste into a ticket or markdown editor
 sipnab -N -I capture.pcap --call-report 'abc123@host' --markdown --no-cli-print > ticket.md
+```
 
-# Plain text (default report format)
+Plain text, the default report format:
+
+```bash
 sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print > ticket.txt
+```
 
-# JSON
+JSON, for a tool on the other end:
+
+```bash
 sipnab -N -I capture.pcap --call-report 'abc123@host' --json --no-cli-print > ticket.json
 ```
 
@@ -681,6 +792,7 @@ The report covers: SIP message timeline, SDP offers/answers, RTP stream stats pe
 **Tip:** combine with Recipe 3's filter to bulk-generate reports for every failed call. The CLI `--filter` outputs per-message records, so deduplicate to call_ids first:
 
 ```bash
+# Run all of these, in order.
 mkdir -p /tmp/reports
 # First pass: enumerate matching calls (no --no-cli-print here — we want the
 # per-message JSON so jq can extract call_id).
@@ -745,59 +857,38 @@ The analyze page supports `.pcap`, `.pcapng`, `.cap` (pcap format), and their gz
 ## Quick reference: one-liners by task
 
 The recipes above walk through a problem end to end. This section is the
-other shape: dense, numbered commands to copy when you already know what
+other shape: dense one-line commands to copy when you already know what
 you want and just need the invocation. Every flag used here is covered in
 [cli-reference.md](@/docs/cli.md).
 
 ### Triage a capture fast
 
-```bash
-# 1. Watch SIP interactively on an interface (TUI, sngrep-style)
-sudo sipnab -d eth0
-
-# 2. Show only problem calls from a pcap. The --problems flag is a narrow
-#    sweep: retransmits, or a Failed dialog. For the broad diagnostic set
-#    (one-way audio, loss/jitter, NAT, asymmetry, late media) use the
-#    same-named DSL alias via --filter problems.
-sipnab -N -I capture.pcap --problems
-sipnab -N -I capture.pcap --filter problems
-
-# 3. Deep-dive one call: ladder, timing, SDP, RTP quality, diagnosis
-sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1'
-
-# 4. The same as a Markdown report for a ticket
-sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --markdown > call.md
-
-# 5. Post-capture aggregate summary only (no per-message noise)
-sipnab -N -I capture.pcap --report --no-cli-print
-```
+- `sudo sipnab -d eth0` — watch SIP interactively on an interface (TUI, sngrep-style)
+- `sipnab -N -I capture.pcap --problems` — show only problem calls from a pcap. The `--problems` flag is a narrow sweep: retransmits, or a Failed dialog. For the broad diagnostic set (one-way audio, loss/jitter, NAT, asymmetry, late media) use the same-named DSL alias instead: `sipnab -N -I capture.pcap --filter problems`
+- `sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1'` — deep-dive one call: ladder, timing, SDP, RTP quality, diagnosis
+- `sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --markdown > call.md` — the same as a Markdown report for a ticket
+- `sipnab -N -I capture.pcap --report --no-cli-print` — post-capture aggregate summary only, no per-message noise
 
 ### Narrow a capture to the calls you care about
 
-```bash
-# 6. Calls from/to specific users (regex)
-sudo sipnab -N -d eth0 --from '^1001@' --to '^18005551212'
-
-# 7. Filter DSL: INVITE dialogs that ended with bad audio quality
-sipnab -N -I capture.pcap --filter "method == 'INVITE' and rtp.mos < 3.5"
-
-# 8. Diagnostic aliases via the same flag (see docs/filter-dsl.md)
-sipnab -N -I capture.pcap --filter codec-asym
-sipnab -N -I capture.pcap --filter late-media
-
-# 9. Slow call setup (long post-dial delay)
-sipnab -N -I capture.pcap --slow-setup
-```
+- `sudo sipnab -N -d eth0 --from '^1001@' --to '^18005551212'` — calls from/to specific users, matched as regexes
+- `sipnab -N -I capture.pcap --filter "method == 'INVITE' and rtp.mos < 3.5"` — filter DSL: INVITE dialogs that ended with bad audio quality
+- `sipnab -N -I capture.pcap --filter codec-asym` — diagnostic aliases go through the same flag (see docs/filter-dsl.md); `sipnab -N -I capture.pcap --filter late-media` is the same flag with the late-media alias
+- `sipnab -N -I capture.pcap --slow-setup` — slow call setup, meaning long post-dial delay
 
 ### Feed NDJSON into jq and other tools
 
+NDJSON to jq, counting failures by status code:
+
 ```bash
-# 10. NDJSON to jq: count failures by status code
 sipnab -N -I capture.pcap --json \
   | jq -s 'map(select(.status_code >= 400)) | group_by(.status_code)
            | map({code: .[0].status_code, n: length})'
+```
 
-# 11. Every Call-ID seen on the wire (feed back into --call-report)
+Every Call-ID seen on the wire, ready to feed back into `--call-report`:
+
+```bash
 sipnab -N -I capture.pcap --json | jq -r '.call_id // empty' | sort -u
 ```
 
@@ -805,53 +896,38 @@ More in [output-formats.md](@/docs/output-formats.md).
 
 ### Record traffic to disk, encrypted or not
 
-```bash
-# 12. Capture SIP+RTP to rotating pcapng files (50 MiB chunks)
-sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50
+Capture SIP+RTP to rotating pcapng files, 50 MiB chunks:
 
-# 13. Decrypt SIPS signaling with a TLS key log and export decryptable
-#     pcapng. --keylog is the SIP/TLS NSS keylog -- signaling only; it
-#     does not decrypt media. SRTP needs media keys instead:
-#     --dtls-keylog (DTLS-SRTP handshakes) or --srtp-keys (AES-CM
-#     master keys; SDES a=crypto keys are also learned from SDP).
+```bash
+sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50
+```
+
+Decrypt SIPS signaling with a TLS key log and export decryptable pcapng. `--keylog` is the SIP/TLS NSS keylog — signaling only; it does not decrypt media.
+
+```bash
 sudo sipnab -N -d eth0 --keylog /tmp/sslkeys.log --keylog-watch \
      -O decrypted.pcapng --pcapng
-sipnab -N -I capture.pcap --dtls-keylog /tmp/dtls.keylog
-sipnab -N -I capture.pcap --srtp-keys /tmp/srtp-keys.txt
 ```
+
+SRTP needs media keys instead:
+
+- `sipnab -N -I capture.pcap --dtls-keylog /tmp/dtls.keylog` — keys recovered from DTLS-SRTP handshakes
+- `sipnab -N -I capture.pcap --srtp-keys /tmp/srtp-keys.txt` — AES-CM master keys; SDES `a=crypto` keys are also learned from SDP
 
 ### Detect scanners and block abuse
 
-```bash
-# 14. Detect SIP scanners and answer them (rate-limited)
-sudo sipnab -N -d eth0 --kill-scanner --alert syslog
-
-# 15. Emit fail2ban-compatible lines for scanner/flood sources
-sudo sipnab -N -d eth0 --fail2ban
-```
+- `sudo sipnab -N -d eth0 --kill-scanner --alert syslog` — detect SIP scanners and answer them, rate-limited
+- `sudo sipnab -N -d eth0 --fail2ban` — emit fail2ban-compatible lines for scanner/flood sources
 
 ### Run a command when a call or its quality changes
 
-```bash
-# 16. Run a command on every dialog state change (details arrive as
-#     SIPNAB_* env vars + SIPNAB_JSON payload — never shell-interpolated)
-sudo sipnab -N -d eth0 --on-dialog-exec '/usr/local/bin/call-logger'
-
-# 17. Alert when RTP quality drops
-sudo sipnab -N -d eth0 --on-quality-exec '/usr/local/bin/page-noc'
-```
+- `sudo sipnab -N -d eth0 --on-dialog-exec '/usr/local/bin/call-logger'` — run a command on every dialog state change; details arrive as `SIPNAB_*` env vars plus a `SIPNAB_JSON` payload, never shell-interpolated
+- `sudo sipnab -N -d eth0 --on-quality-exec '/usr/local/bin/page-noc'` — alert when RTP quality drops
 
 ### Exchange HEP with Kamailio, OpenSIPS or Homer
 
-```bash
-# 18. Receive HEP from Kamailio/OpenSIPS/Asterisk and analyze live.
-#     -L/--hep-listen decodes HEP on its own; --hep-parse is only for
-#     unwrapping HEP that arrives inside ordinary UDP capture.
-sipnab -N -L 0.0.0.0:9060
-
-# 19. Mirror captured traffic to Homer
-sudo sipnab -N -d eth0 -H homer.example.net:9060
-```
+- `sipnab -N -L 0.0.0.0:9060` — receive HEP from Kamailio/OpenSIPS/Asterisk and analyze live. `-L`/`--hep-listen` decodes HEP on its own; `--hep-parse` is only for unwrapping HEP that arrives inside ordinary UDP capture
+- `sudo sipnab -N -d eth0 -H homer.example.net:9060` — mirror captured traffic to Homer
 
 ---
 

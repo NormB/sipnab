@@ -205,21 +205,47 @@ predates it. The tables above do not exercise the JSON sink.
 
 Full instructions, including artifact download and checksum verification, are in
 [`bench/README.md`](https://github.com/NormB/sipnab/blob/main/bench/README.md).
-In short:
+In short — the generator runs first, because both harnesses read the corpus it
+writes:
 
 ```sh
+# Run all of these, in order.
 python3 bench/carrier.py --calls 5000 --out corpus.pcap
 bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
 bench/compare.sh "$BIN" corpus.pcap 535000 --runs 5
 ```
 
-Each tool driven offline/headless to parse the whole file and exit:
+The tool comparison is four separate runs over the same `corpus.pcap`, each
+driven offline/headless so it parses the whole file and exits. Run them one at
+a time: two of these competing for the same cores measures the contention, not
+the tools.
+
+sngrep 1.8.0, reading the file to EOF and quitting instead of opening its
+interactive ladder:
 
 ```sh
-sngrep       sngrep  -I corpus.pcap -r -N -q
-sipgrep      sipgrep -I corpus.pcap -C -G
-voipmonitor  voipmonitor -r corpus.pcap -c -k --config-file=bench/vm.conf
-sipnab       sipnab -N -I corpus.pcap --cores 4 --report --no-cli-print
+sngrep  -I corpus.pcap -r -N -q
+```
+
+sipgrep 2.2.1, line-oriented SIP matching with Call-ID grouping and no RTP work
+at all:
+
+```sh
+sipgrep -I corpus.pcap -C -G
+```
+
+voipmonitor 2026.07.1, pointed at `bench/vm.conf` so spooling is off and the
+`sdp_multiplication` guard does not suppress the corpus's duplicate-SDP streams:
+
+```sh
+voipmonitor -r corpus.pcap -c -k --config-file=bench/vm.conf
+```
+
+sipnab 0.5.47 at four cores, with the per-message stream suppressed so only the
+end-of-run report prints:
+
+```sh
+sipnab -N -I corpus.pcap --cores 4 --report --no-cli-print
 ```
 
 sipnab flag reference: [`--cores`](@/docs/cli.md#resource-limits),

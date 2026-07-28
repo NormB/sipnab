@@ -28,6 +28,7 @@ jq 'del(.__inputs, .__requires, .templating) |
 ## Running it
 
 ```bash
+# Run all of these, in order.
 cp .env.example .env
 docker compose up -d
 ```
@@ -56,7 +57,15 @@ inside each container by the compose-injected `extra_hosts` entry.
 
 ## Validating the stack
 
+These are read-only probes covering each service in turn, and running the whole
+set is what validating the stack means. Take them in order: the first three all
+go through Prometheus, so when `/-/healthy` fails the two after it report
+nothing about sipnab rather than a second, independent fault. The last two hit
+the collector and Grafana directly and still answer with Prometheus down.
+
 ```bash
+# Run all of these, in order.
+
 # Prometheus is up, scrape targets healthy.
 curl -s localhost:9090/-/healthy
 curl -s localhost:9090/api/v1/targets | jq '.data.activeTargets[] | {job:.labels.job, health}'

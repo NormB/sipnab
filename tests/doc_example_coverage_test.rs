@@ -84,20 +84,43 @@ fn doc_corpus() -> Vec<(String, String)> {
     docs
 }
 
-/// Concatenated text of every ```bash fenced block in the corpus.
+/// Concatenated text of every example command in the corpus: the body of
+/// every ```bash fenced block, plus every inline-code span that is itself a
+/// sipnab invocation.
+///
+/// Inline code counts because a fenced block is not the only way a doc
+/// demonstrates a command. `docs/cli-reference.md` publishes its dense
+/// per-section catalogs as markdown lists (``- `sipnab …` — what it does``)
+/// so no surface can put a single copy button on a stack of unrelated
+/// alternatives; those are still runnable examples and this ratchet must see
+/// them. Harvesting only ```bash fences would have silently dropped 107 flags
+/// below the minimum the moment the website mirror was regenerated.
+///
+/// The `sipnab` prefix is what keeps the ratchet honest: a flag named in a
+/// reference table (`` `--json` ``) or in prose is not an example and is not
+/// counted.
 ///
 /// # Arguments
 /// * `corpus` — `(path, text)` pairs from `doc_corpus`.
 ///
 /// # Returns
-/// All bash-fence bodies joined with newlines.
+/// All bash-fence bodies and inline sipnab commands, joined with newlines.
 fn all_bash_blocks(corpus: &[(String, String)]) -> String {
-    let re = regex::Regex::new(r"(?s)```bash\n(.*?)```").unwrap();
+    let fence = regex::Regex::new(r"(?s)```bash\n(.*?)```").unwrap();
+    // Inline code spans, single-line only: ``…`` never wraps a line here.
+    let inline = regex::Regex::new(r"`([^`\n]+)`").unwrap();
     let mut out = String::new();
     for (_, text) in corpus {
-        for cap in re.captures_iter(text) {
+        for cap in fence.captures_iter(text) {
             out.push_str(&cap[1]);
             out.push('\n');
+        }
+        for cap in inline.captures_iter(text) {
+            let span = cap[1].trim_start();
+            if span.starts_with("sipnab ") || span.starts_with("sudo sipnab ") {
+                out.push_str(&cap[1]);
+                out.push('\n');
+            }
         }
     }
     out
