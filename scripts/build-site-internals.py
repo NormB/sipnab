@@ -399,7 +399,10 @@ def main() -> int:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # Remove stale pages so a renamed source cannot leave an orphan behind.
-    for existing in out_dir.glob("*.md"):
+    # rglob for the same reason as the on-disk scan above: a non-recursive
+    # cleanup leaves a nested orphan in the mirror, surviving regeneration and
+    # reported by nothing.
+    for existing in out_dir.rglob("*.md"):
         existing.unlink()
 
     (out_dir / "_index.md").write_text(

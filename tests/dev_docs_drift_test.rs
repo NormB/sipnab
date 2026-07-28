@@ -243,10 +243,15 @@ fn every_internals_page_is_registered_for_the_wiki() {
     let wiki = read("scripts/build-wiki.py");
     let mut unregistered = Vec::new();
     for page in internals_pages() {
-        let key = format!(
-            "internals/{}",
-            page.file_name().expect("file name").to_string_lossy()
-        );
+        // Keyed on the path under docs/, not the basename. A basename key
+        // makes docs/internals/rtp/threading.md match the top-level
+        // threading.md's registration, so a nested page reports as registered
+        // while publishing nowhere — demonstrated.
+        let key = page
+            .strip_prefix("docs/")
+            .expect("under docs/")
+            .to_string_lossy()
+            .into_owned();
         let quoted = format!("\"{key}\"");
         // PAGES maps the key to a title; GROUPS places it in the sidebar.
         // build-wiki.py errors on a PAGES entry with no file, but silently
@@ -535,11 +540,17 @@ fn mermaid_fences_avoid_syntax_hazards() {
 
 /// `docs/internals/<name>.md` -> the site file it generates.
 fn site_mirror_name(page: &Path) -> String {
-    let name = page.file_name().expect("file name").to_string_lossy();
-    if name == "README.md" {
-        "_index.md".to_string()
-    } else {
-        name.into_owned()
+    // The path under docs/internals/, not the basename: two READMEs at
+    // different depths both mapped to `_index.md`, so a nested page was
+    // reported as published by matching the top-level page's mirror.
+    let rel = page
+        .strip_prefix("docs/internals/")
+        .expect("under docs/internals/")
+        .to_string_lossy()
+        .into_owned();
+    match rel.strip_suffix("README.md") {
+        Some(dir) => format!("{dir}_index.md"),
+        None => rel,
     }
 }
 
