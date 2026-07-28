@@ -191,7 +191,7 @@ gates that, by their nature, cannot be tested except by cutting a release.
   obvious way to check — returns `success` for a step that failed. Only the job
   logs show the truth.
 - The fuzz-target count and the enumerated target list in `docs/fault-model.md`
-  and `ARCHITECTURE.md` are gated against `fuzz/fuzz_targets/`. A new target
+  and `docs/architecture.md` are gated against `fuzz/fuzz_targets/`. A new target
   previously left the security-facing page describing a smaller fuzz surface
   than the tree actually has.
 
@@ -627,7 +627,7 @@ behavior changes.
   variant actually includes. Every flag and capability claim was verified
   against the built binary, and the page is now in the flag-drift corpus so it
   stays that way.
-- `ARCHITECTURE.md` and `CONTRIBUTING.md` delegate into the developer docs
+- `docs/architecture.md` and `CONTRIBUTING.md` delegate into the developer docs
   rather than duplicating them. `CONTRIBUTING.md`'s Git Hooks section was
   wrong — it described the pre-push clippy gate as a "soft warning" when it is
   a hard gate, omitted the rustdoc and fuzz gates, implied `SKIP_FMT_HOOK`
@@ -687,8 +687,8 @@ behavior changes.
   0.5.37: the version-marker gate's corpus covered the website copy but not the
   in-repo one. Both benchmark pages and both MCP walkthroughs are now in that
   corpus.
-- `ARCHITECTURE.md` documented a `--jobs` flag that does not exist; the flag is
-  `--cores`. `ARCHITECTURE.md` is now in the flag-drift corpus.
+- `docs/architecture.md` documented a `--jobs` flag that does not exist; the flag is
+  `--cores`. `docs/architecture.md` is now in the flag-drift corpus.
 - The installation docs stated a glibc floor of 2.39; the floor enforced by
   `release.yml` is 2.36.
 - The README feature table omitted `metrics` and misstated `full` and `native`.
@@ -1701,7 +1701,7 @@ Session-Expires, `y` Identity. Two of these fixed real analysis gaps:
 - **Transfer tracking:** a REFER using `r:` (RFC 3515) now drives the
   `Transferring` dialog state and `refer_to` like the long form.
 
-Determination and design in COMPACT-HEADERS-SPEC.md. SigComp (RFC 3320
+Determination and design in docs/design/compact-headers-spec.md. SigComp (RFC 3320
 "compressed SIP") remains explicitly out of scope.
 
 ### Changed — one canonical dialog/stream summary across all surfaces (WS3)
@@ -1724,7 +1724,7 @@ the shared shape. **Wire changes:**
   instead of `"unknown"`.
 - The browser/WASM `get_dialogs` surface intentionally keeps its current
   shape (website JS consumes it); unifying it is tracked in
-  MAINTAINABILITY-PERF-SPEC.md.
+  docs/design/maintainability-perf-spec.md.
 
 ## [0.4.18] - 2026-07-02
 

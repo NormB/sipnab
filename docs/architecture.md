@@ -2,7 +2,7 @@
 
 A codemap for contributors: what lives where, how data flows, and the design
 decisions that explain the shape of the code. For the historical roadmap and
-the full design-decision catalog (D1–D21), see `implementation-plan-v6.md`;
+the full design-decision catalog (D1–D21), see `design/implementation-plan-v6.md`;
 this file tracks the code as it exists.
 
 ## One binary, two modes
@@ -41,7 +41,7 @@ the captured frame end to end (see `docs/internals/zero-copy-payloads.md`).
 
 For the same journey narrated packet by packet — every decision point, both
 store writes, and where each of the four paths diverges — see
-[docs/internals/subsystem-guide.md](docs/internals/subsystem-guide.md).
+[docs/internals/subsystem-guide.md](internals/subsystem-guide.md).
 
 ## Module map
 
@@ -130,7 +130,7 @@ that owns all store writes; TUI/API/MCP are readers. Batch `--cores N` shards
 packets by host pair to worker threads with thread-local stores, merged at
 EOF.
 
-## Key design decisions (abridged; full text in implementation-plan-v6.md)
+## Key design decisions (abridged; full text in design/implementation-plan-v6.md)
 
 - **D2 — Synchronous core, async only at the edges.** The packet path is
   plain threads + channels; tokio appears only inside the optional
@@ -165,5 +165,5 @@ EOF.
 
 This table names the files; it does not name the order, the tests each change
 owes, or the gates that will reject it.
-[docs/internals/walkthroughs.md](docs/internals/walkthroughs.md) has an ordered
+[docs/internals/walkthroughs.md](internals/walkthroughs.md) has an ordered
 checklist for each row.

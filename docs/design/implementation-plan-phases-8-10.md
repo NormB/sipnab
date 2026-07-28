@@ -15,7 +15,7 @@
 > **documentation & website overhaul (Phase 12)** all shipped; the
 > foundational cleanups this plan lists under Phase 8.0 were folded into the
 > WS0–WS7 maintainability workstreams and shipped in v0.5.0 (see
-> `MAINTAINABILITY-PERF-SPEC.md`). Still unbuilt: the event-bus sinks
+> `maintainability-perf-spec.md`). Still unbuilt: the event-bus sinks
 > (8.4), the `.sipnab` project file + `open_project` tool (8.6), all of
 > **Phase 9** (OpenAPI + OpenTelemetry — neither the `otel` feature nor an
 > OpenAPI spec exists yet), and **Phase 11** (NISQA perceptual MOS). Phase 10

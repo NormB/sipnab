@@ -262,6 +262,6 @@ bench = false
 
 [[bin]]
 name = "gen_fixture"
-path = "tools_gen_fixture.rs"
+path = "src/bin/gen_fixture.rs"
 required-features = ["native"]
 bench = false

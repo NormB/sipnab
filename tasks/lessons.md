@@ -36,7 +36,7 @@
 - `filter-dsl.md` claimed 24 fields when source had 30; missing all 5 Phase 8.7 asymmetry aliases (`codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media`).
 - `CHANGELOG.md` `[Unreleased]` was missing 12+ user-visible commits; release dates were wrong (0.3.1 dated *before* 0.3.0).
 - `CLAUDE.md` module layout omitted entire directories (`src/mcp/`, audio modules under `rtp/`, `src/crypto.rs`, `src/privilege.rs`, `src/process_isolation.rs`, `src/signals.rs`, `src/wasm.rs`) and named one (`src/sip/correlation.rs`) that doesn't exist.
-- `implementation-plan-v6.md` D14 still described a multi-backend crypto plan that was silently dropped (only `ring`/`rustls` ever shipped).
+- `../docs/design/implementation-plan-v6.md` D14 still described a multi-backend crypto plan that was silently dropped (only `ring`/`rustls` ever shipped).
 
 These drifted because each individual change was small enough not to think "should I update the docs?" — but the cumulative drift was substantial.
 

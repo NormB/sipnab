@@ -47,7 +47,7 @@ domain model will reintroduce exactly these.
 |---|---|---|
 | D-1 | Expand `docs/internals/`; do not create a sibling directory | The dir already exists with 3 pages and is already registered in `build-wiki.py`. Zero migration, no link rewrites, `docs/README.md` already points there. |
 | D-2 | All 8 pages in scope | The gap analysis found none of them exist anywhere in the tree. |
-| D-3 | Fix existing doc drift as Phase 0 | New pages link into `README.md`, `ARCHITECTURE.md`, and `threading.md`. Shipping docs that point at wrong statements makes the drift worse. |
+| D-3 | Fix existing doc drift as Phase 0 | New pages link into `README.md`, `../../architecture.md`, and `threading.md`. Shipping docs that point at wrong statements makes the drift worse. |
 | D-4 | Add `tests/dev_docs_drift_test.rs` | Matches house style — the project already has 12 such tests. Docs that aren't enforced decay silently. |
 | D-5 | Code references are **markdown links into the code**, never `file:line` | Docs and code live in one repo, so a relative link is clickable on GitHub and takes the reader straight to the file. Line numbers are wrong within a release; a link plus a `()`-suffixed symbol in the link text is stable, greppable, and machine-checkable. |
 | D-6 | 17 mermaid `sequenceDiagram` blocks | sipnab already emits this exact format from its own call-flow ladder ([`export_mermaid()`](../../../src/tui/call_flow/export.rs)), so readers can regenerate the domain diagrams from a real capture with the `E` key. |
@@ -137,8 +137,8 @@ than restating**. `invariants.md` cross-links `threading.md` and
 
 ### `internals/README.md`
 Developer index. Classifies the existing corpus as live vs archaeological —
-`ARCHITECTURE.md` and `MAINTAINABILITY-PERF-SPEC.md` are live;
-`implementation-plan-v6.md` and `implementation-plan-phases-8-10.md` are
+`../../architecture.md` and `../../design/maintainability-perf-spec.md` are live;
+`../../design/implementation-plan-v6.md` and `../../design/implementation-plan-phases-8-10.md` are
 historical design records with known phantom content. Glossary of project
 shorthand used freely and defined nowhere: D1–D21, WS0–WS8, P0–P5, SN-01/02/03,
 "the gate suite", "the drift tests", "the smoke fuzz floor".
@@ -261,7 +261,7 @@ Assertions carry anti-vacuity floors, matching the house pattern in
   pre-commit gates; the two-doc-tree mirroring obligation; and the citation
   form with the rule that a change to linked code updates the page that links
   it.
-- `ARCHITECTURE.md` — stays the codemap; delegates depth to
+- `../../architecture.md` — stays the codemap; delegates depth to
   `subsystem-guide.md`.
 - `scripts/build-wiki.py` — 5 new `PAGES` entries, `GROUPS` placement, and
   code-link rewriting to `BLOB` URLs (D-7).
@@ -275,7 +275,7 @@ New pages link into these, so they are corrected first.
 |---|---|---|
 | `README.md` | 2 dead links: `./docs/mcp-overview.md`, `docs/mcp-setup.md` | yes, 2026-07-25 |
 | `README.md` | Feature table omits `metrics`; misstates `full` and `native` | reported |
-| `ARCHITECTURE.md` | Says `--jobs`; the flag is `--cores` with no alias | reported |
+| `../../architecture.md` | Says `--jobs`; the flag is `--cores` with no alias | reported |
 | `internals/threading.md` | Prometheus shown as a tokio task; it is a raw `TcpListener` thread | reported |
 | `internals/threading.md` | `pcap-load` thread missing — the only second writer to the live stores | reported |
 | `internals/threading.md` | Channel-flavor table stale for the batch path | reported |
@@ -312,4 +312,4 @@ time. Where a claim cannot be verified, it is omitted rather than hedged.
 | Tier-2 coupling gate could become noise contributors learn to ignore | Kept advisory and scoped to files the docs actually link, and it names the cited symbols rather than saying "docs may be stale". If it proves noisy, the fix is to narrow the file set, not to escalate it to blocking. |
 | `walkthroughs.md` is the page most likely to rot; the drift test catches moved files but not a changed *sequence* | Accepted. Each step cites the enforcing test, so a changed sequence surfaces as a failing gate rather than silently wrong prose. |
 | Scope is large — 8 pages, 17 diagrams, a new test, and a fix phase | Sequenced so it lands incrementally: Phase 0 fixes, Phase 1 core four, Phase 2 the rest. Each phase is independently shippable. |
-| Phase 0 touches version-marker-gated files | `README.md` and `ARCHITECTURE.md` carry no version markers; `docs/install.md` does. Its glibc edit must not disturb the four `docs_current_version_markers_match_cargo` patterns. |
+| Phase 0 touches version-marker-gated files | `README.md` and `../../architecture.md` carry no version markers; `docs/install.md` does. Its glibc edit must not disturb the four `docs_current_version_markers_match_cargo` patterns. |

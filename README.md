@@ -165,8 +165,8 @@ Note: `audio` is in the default feature set, but it does **not** add a load-time
 - [Config Reference](docs/config-reference.md) -- TOML config file format
   (starter file: [contrib/sipnabrc.example](contrib/sipnabrc.example))
 - [MCP Server](docs/mcp.md) -- tools, transports, token bootstrap, systemd unit, troubleshooting
-- [Architecture](ARCHITECTURE.md) -- module map, data flow, threading model
-- [Implementation Plan](implementation-plan-v6.md) -- historical design decisions and roadmap
+- [Architecture](docs/architecture.md) -- module map, data flow, threading model
+- [Implementation Plan](docs/design/implementation-plan-v6.md) -- historical design decisions and roadmap
 
 ## Contributing
 

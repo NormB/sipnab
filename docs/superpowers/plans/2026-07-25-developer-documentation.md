@@ -49,9 +49,9 @@
 | File | Change |
 |---|---|
 | `tests/link_integrity_test.rs` | Extend merged-away-page scan to root markdown |
-| `tests/docs_drift_test.rs` | Add `ARCHITECTURE.md` to the flag corpus; add a feature-table gate |
+| `tests/docs_drift_test.rs` | Add `../../architecture.md` to the flag corpus; add a feature-table gate |
 | `README.md` | 2 dead links; feature table |
-| `ARCHITECTURE.md` | `--jobs` → `--cores` ×3; delegate depth to `subsystem-guide.md` |
+| `../../architecture.md` | `--jobs` → `--cores` ×3; delegate depth to `subsystem-guide.md` |
 | `docs/internals/threading.md` | Prometheus placement, `pcap-load` thread (1 diagram), channel table |
 | `docs/README.md` | One "Contributing to sipnab" pointer |
 | `CONTRIBUTING.md` | Developer-index link, pre-commit gates, doc-mirroring obligation, citation form |
@@ -90,7 +90,7 @@ In `tests/link_integrity_test.rs`, inside `no_references_to_merged_away_mcp_page
     //     page while describing the merge.
     let mut files = wiki_source_files();
     files.extend(md_files_recursive("website/content/docs"));
-    for name in ["README.md", "CONTRIBUTING.md", "ARCHITECTURE.md", "SECURITY.md"] {
+    for name in ["README.md", "CONTRIBUTING.md", "../../architecture.md", "SECURITY.md"] {
         files.push(PathBuf::from(name));
     }
 ```
@@ -111,7 +111,7 @@ See [`docs/mcp.md`](./docs/mcp.md).
 `README.md` line 166 — replace the list entry:
 
 ```markdown
-- [MCP Server](docs/mcp.md) -- tools, transports, token bootstrap, systemd unit, troubleshooting
+- [MCP Server](../../mcp.md) -- tools, transports, token bootstrap, systemd unit, troubleshooting
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -230,26 +230,26 @@ silently undocumented."
 
 ---
 
-## Task 3: ARCHITECTURE.md `--jobs` → `--cores`
+## Task 3: ../../architecture.md `--jobs` → `--cores`
 
-`ARCHITECTURE.md` names a flag that does not exist. `readme_long_flags_exist_in_cli` would catch it, but `ARCHITECTURE.md` is not in that test's corpus.
+`../../architecture.md` names a flag that does not exist. `readme_long_flags_exist_in_cli` would catch it, but `../../architecture.md` is not in that test's corpus.
 
 **Files:**
 - Modify: `tests/docs_drift_test.rs` (the `docs` corpus array)
-- Modify: `ARCHITECTURE.md` (3 sites)
+- Modify: `../../architecture.md` (3 sites)
 
-- [ ] **Step 1: Add ARCHITECTURE.md to the flag corpus**
+- [ ] **Step 1: Add ../../architecture.md to the flag corpus**
 
 In `tests/docs_drift_test.rs`, in the `(label, include_str!(...))` array inside `readme_long_flags_exist_in_cli`, add:
 
 ```rust
-        ("ARCHITECTURE.md", include_str!("../ARCHITECTURE.md")),
+        ("../../architecture.md", include_str!("../../architecture.md")),
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test --features native --test docs_drift_test readme_long_flags_exist_in_cli`
-Expected: FAIL naming `--jobs` in `ARCHITECTURE.md`.
+Expected: FAIL naming `--jobs` in `../../architecture.md`.
 
 - [ ] **Step 3: Confirm no `--jobs` alias exists before editing**
 
@@ -258,7 +258,7 @@ Expected: no `#[arg]` long name or alias `jobs`. If one exists, stop — the doc
 
 - [ ] **Step 4: Replace all three sites**
 
-Run: `grep -n -- '--jobs' ARCHITECTURE.md`
+Run: `grep -n -- '--jobs' ../../architecture.md`
 Expected: lines 38, 58, 125. Replace `--jobs` with `--cores` at each, keeping surrounding prose intact.
 
 - [ ] **Step 5: Run the test to verify it passes**
@@ -274,10 +274,10 @@ Replace each occurrence in doc comments with `--cores`. These are rustdoc-visibl
 - [ ] **Step 7: Commit**
 
 ```bash
-git add tests/docs_drift_test.rs ARCHITECTURE.md src/
+git add tests/docs_drift_test.rs ../../architecture.md src/
 git commit -m "fix(docs): --jobs does not exist; the flag is --cores
 
-Add ARCHITECTURE.md to the flag-drift corpus so a phantom flag in the
+Add ../../architecture.md to the flag-drift corpus so a phantom flag in the
 codemap fails CI the way one in README already does."
 ```
 
@@ -591,8 +591,8 @@ Expected: `linked_code_targets_exist` and `linked_symbols_resolve_to_a_definitio
 The developer index. Required sections:
 
 1. **Start here** — a reading order: `domain-primer.md` if you are not a VoIP engineer, then `subsystem-guide.md`, then `invariants.md` before your first PR, then `testing.md` when a gate fails you.
-2. **The corpus, live vs archaeological** — one line each for `ARCHITECTURE.md` (live codemap), `MAINTAINABILITY-PERF-SPEC.md` (live rationale, linked from nowhere else), `COMPACT-HEADERS-SPEC.md`, `KILL-TARGET-SPOOFING-SPEC.md`, `codex_analysis.md`, and the two `implementation-plan-*.md` files (historical design record; `implementation-plan-v6.md` still contains phantom `tls-wolfssl`/`tls-openssl`/`grpc` feature tables — say so).
-3. **Glossary** — D1–D21, WS0–WS8, P0–P5, SN-01/02/03, "the gate suite", "the drift tests", "the smoke fuzz floor". Verify each expansion against `implementation-plan-v6.md`, `MAINTAINABILITY-PERF-SPEC.md` and `tasks/todo.md` before writing it.
+2. **The corpus, live vs archaeological** — one line each for `../../architecture.md` (live codemap), `../../design/maintainability-perf-spec.md` (live rationale, linked from nowhere else), `../../design/compact-headers-spec.md`, `../../design/kill-target-spoofing-spec.md`, `../../research/codex-analysis.md`, and the two `implementation-plan-*.md` files (historical design record; `../../design/implementation-plan-v6.md` still contains phantom `tls-wolfssl`/`tls-openssl`/`grpc` feature tables — say so).
+3. **Glossary** — D1–D21, WS0–WS8, P0–P5, SN-01/02/03, "the gate suite", "the drift tests", "the smoke fuzz floor". Verify each expansion against `../../design/implementation-plan-v6.md`, `../../design/maintainability-perf-spec.md` and `tasks/todo.md` before writing it.
 
 Link at least 12 code targets, using the relative form from the Global Constraints, so the anti-vacuity floor progresses. No mermaid on this page.
 
@@ -1255,7 +1255,7 @@ bug. This is the model the code assumes the reader already has."
 
 **Files:**
 - Modify: `tests/dev_docs_drift_test.rs` (restore the anti-vacuity floors)
-- Modify: `docs/README.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md`
+- Modify: `docs/README.md`, `CONTRIBUTING.md`, `../../architecture.md`
 
 - [ ] **Step 1: Restore the anti-vacuity floors**
 
@@ -1358,9 +1358,9 @@ otherwise, and a pre-commit notice flags edits to cited files before you get
 that far.
 ```
 
-- [ ] **Step 6: Delegate depth from `ARCHITECTURE.md`**
+- [ ] **Step 6: Delegate depth from `../../architecture.md`**
 
-Add one line under "Data flow" pointing at `docs/internals/subsystem-guide.md` for the function-level trace, and one under "Where to add things" pointing at `docs/internals/walkthroughs.md`. Do not duplicate content — `ARCHITECTURE.md` stays the codemap.
+Add one line under "Data flow" pointing at `docs/internals/subsystem-guide.md` for the function-level trace, and one under "Where to add things" pointing at `docs/internals/walkthroughs.md`. Do not duplicate content — `../../architecture.md` stays the codemap.
 
 - [ ] **Step 7: Run the full gate suite**
 
@@ -1389,7 +1389,7 @@ In `tasks/todo.md`, mark the P5 "Developer documentation" item complete, noting 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add tests/dev_docs_drift_test.rs docs/README.md CONTRIBUTING.md ARCHITECTURE.md tasks/todo.md
+git add tests/dev_docs_drift_test.rs docs/README.md CONTRIBUTING.md ../../architecture.md tasks/todo.md
 git commit -m "docs: wire developer documentation into the reader's path
 
 Restores the drift-test anti-vacuity floors now the full page set exists,

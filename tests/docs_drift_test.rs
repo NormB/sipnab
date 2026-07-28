@@ -268,7 +268,10 @@ fn readme_long_flags_exist_in_cli() {
             "website/analyze.md",
             include_str!("../website/content/analyze/_index.md"),
         ),
-        ("ARCHITECTURE.md", include_str!("../ARCHITECTURE.md")),
+        (
+            "docs/architecture.md",
+            include_str!("../docs/architecture.md"),
+        ),
     ];
 
     let known = cli_long_flags();
@@ -662,7 +665,10 @@ fn fuzz_target_count_and_names_match_the_tree() {
             "docs/fault-model.md",
             include_str!("../docs/fault-model.md"),
         ),
-        ("ARCHITECTURE.md", include_str!("../ARCHITECTURE.md")),
+        (
+            "docs/architecture.md",
+            include_str!("../docs/architecture.md"),
+        ),
     ] {
         assert!(
             text.contains(&format!("{n} targets")) || text.contains(&format!("targets ({n})")),

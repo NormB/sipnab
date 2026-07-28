@@ -3,7 +3,7 @@
 //! Cross-surface consistency for the canonical dialog/stream summaries.
 //!
 //! Guards against the projection drift that shipped before WS3 (see
-//! MAINTAINABILITY-PERF-SPEC.md): MCP said `message_count` where CLI/API
+//! ../docs/design/maintainability-perf-spec.md): MCP said `message_count` where CLI/API
 //! said `msg_count`, and MCP put Debug-formatted methods (`Invite`) on the
 //! wire where every other surface used the canonical form (`INVITE`).
 //! Every output surface must project a dialog through

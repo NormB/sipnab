@@ -110,7 +110,7 @@ touching the help failed two assertions in `keybinding_drift_test`.
 2. Write the description as a **statement of what the tool returns**. Never
    instruct the model to "trust", "verify", "act on" or "ensure" anything about
    the content — that is the prompt-injection rule (D22 in
-   [`implementation-plan-phases-8-10.md`](../../implementation-plan-phases-8-10.md)).
+   [`../design/implementation-plan-phases-8-10.md`](../design/implementation-plan-phases-8-10.md)).
    **(unenforced — the module comment in `server.rs` cites
    `scripts/check-tool-descriptions.sh`, which does not exist; the lint is
    still an open backlog item.)**

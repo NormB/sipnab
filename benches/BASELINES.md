@@ -1,7 +1,7 @@
 # Benchmark baselines
 
 Reference numbers for spotting regressions and measuring WS4.x optimization
-work (see `MAINTAINABILITY-PERF-SPEC.md`). Criterion's own history lives in
+work (see `../docs/design/maintainability-perf-spec.md`). Criterion's own history lives in
 `target/criterion` and does not survive `cargo clean`; the durable record is
 this file. Run with `cargo bench --profile profiling` (mandatory — see
 CONTRIBUTING.md "Running Benchmarks").
