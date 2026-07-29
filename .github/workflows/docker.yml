@@ -104,3 +104,33 @@ jobs:
           subject-name: ghcr.io/normb/sipnab
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      # The attestation was gated only by a test asserting the string
+      # "actions/attest-build-provenance@" appears in this file — which stays
+      # true if the step above is commented out, and did: the whole step was
+      # commented and every gate stayed green. release.yml has verified its own
+      # attestation since 0.5.49; this workflow never did, while the download
+      # page tells users to run exactly this command.
+      #
+      # The exit code IS the gate. `gh attestation verify` fails when the image
+      # does not match a signed attestation for this repo, so a broken or
+      # missing attestation fails the push that produced it rather than a user's
+      # verify weeks later.
+      - name: Verify the attestation we just created
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          subject="oci://ghcr.io/normb/sipnab@${DIGEST}"
+          echo "verifying $subject"
+          # --format json because the human summary prints only on a TTY: on a
+          # runner a passing run would otherwise leave no evidence in the log.
+          out=$(gh attestation verify "$subject" --repo "${{ github.repository }}" \
+                  --format json 2>&1) || { echo "$out"; exit 1; }
+          echo "--- what was verified ---"
+          printf '%s' "$out" | jq -r '
+            [.. | objects | select(has("buildDefinition"))][0]
+            | "  workflow: \(.buildDefinition.externalParameters.workflow.path // "?")",
+              "  ref:      \(.buildDefinition.externalParameters.workflow.ref // "?")"
+          ' || echo "  (verified; summary shape not recognised)"

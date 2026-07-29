@@ -6,7 +6,7 @@ tokio exists only inside the optional servers.
 
 ## Topology
 
-```
+```text
                        ┌──────────────────────────────────────────────────┐
                        │                 shared state                     │
                        │  Arc<RwLock<DialogStore>>  Arc<RwLock<StreamStore>>

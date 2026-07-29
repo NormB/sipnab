@@ -57,7 +57,7 @@ two or three vertical lifelines with horizontal labeled arrows between
 them. Render a stylized, simplified ladder as the right-hand third or as
 a subtle background panel, for example:
 
-```
+```text
  10.0.0.1                 10.0.0.2
     │      INVITE ──────────▶ │
     │ ◀────────── 180 Ringing │

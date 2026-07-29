@@ -40,7 +40,7 @@ top of `scripts/deploy-website.sh` for the full env-var contract
 
 ## Layout
 
-```
+```text
 website/
 ├── config.toml             # Zola config (base_url, [extra] vars, search index)
 ├── content/                # Markdown source

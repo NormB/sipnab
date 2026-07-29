@@ -972,9 +972,56 @@ fn installer_targets_match_release_matrix() {
             .captures_iter(&read("website/static/install.sh"))
             .map(|c| c[1].to_string())
             .collect();
+    // Count the `echo`ed artifact names in choose_artifact and require the
+    // regex to have found every one. The pattern `[a-z0-9.-]+` silently skips a
+    // name built from anything else (a `${_flavor}` segment, an underscore), so
+    // a new artifact form would contribute nothing rather than failing here.
+    let installer = read("website/static/install.sh");
+    let echoed = installer
+        .lines()
+        // `contains`, not `starts_with`: one arm is `darwin) echo "sipnab-…`,
+        // so a line-prefix would miss it — the same proxy this gate is about.
+        .filter(|l| l.contains("echo \"sipnab-"))
+        .count();
+    assert_eq!(
+        suffixes.len(),
+        echoed,
+        "choose_artifact echoes {echoed} artifact names but the pattern matched \
+         {} — a name the regex cannot read contributes nothing instead of failing, \
+         so the comparison below silently narrows",
+        suffixes.len()
+    );
     assert!(
         !suffixes.is_empty(),
         "no artifact names found in install.sh — choose_artifact changed shape"
+    );
+
+    // A target in the matrix only becomes a downloadable tarball if the
+    // packaging step runs for it. That step carries a guard, and the guard is
+    // not read by the matrix scan above — so excluding a target there leaves it
+    // building, publishing nothing, and this gate green while every install.sh
+    // run for that platform 404s.
+    //
+    // Evaluating a GitHub expression here is not the job; noticing that it
+    // changed is. Pin it, so widening the guard fails and forces whoever did it
+    // to re-derive which targets still publish.
+    const PACKAGING_GUARD: &str = "matrix.variant != 'noaudio'";
+    let pack = workflow_step_body(
+        ".github/workflows/release.yml",
+        "Package (tar.gz + checksum)",
+    );
+    let guard = pack
+        .lines()
+        .find(|l| l.trim_start().starts_with("if:"))
+        .map(|l| l.trim().trim_start_matches("if:").trim().to_string());
+    assert_eq!(
+        guard.as_deref(),
+        Some(PACKAGING_GUARD),
+        "the tarball packaging step's guard changed. Every target below is \
+         compared against the matrix, but only targets reaching THIS step get a \
+         tarball — a narrowed guard silently stops publishing one while the \
+         matrix still lists it. Re-derive the published set, then update this \
+         constant."
     );
 
     // install.sh only ever detects these two arches (detect_arch).
@@ -1589,10 +1636,40 @@ fn releases_are_attested_and_site_content_is_licensed() {
     }
 
     // Container image: attested by digest and pushed to the registry.
+    //
+    // Located by STEP, not by whole-file `contains`. The string
+    // "actions/attest-build-provenance@" survives the step being commented
+    // out, and did — commenting the entire attest step left every gate green
+    // while `gh attestation verify oci://ghcr.io/normb/sipnab:<tag>`, which the
+    // download page tells users to run, failed for everyone.
     let docker = read(".github/workflows/docker.yml");
+    let docker_steps: Vec<&str> = docker
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    let docker_live = docker_steps.join("\n");
     assert!(
-        docker.contains("actions/attest-build-provenance@"),
-        "docker.yml lost its image attestation step"
+        docker_live.contains("- name: Attest image provenance"),
+        "docker.yml has no live `Attest image provenance` step — it was removed \
+         or commented out, and the image ships unattested while the download \
+         page tells users to verify it"
+    );
+    assert!(
+        docker_live.contains("actions/attest-build-provenance@"),
+        "docker.yml lost its image attestation action"
+    );
+    // And the attestation is verified where it is created. release.yml has done
+    // this since 0.5.49; docker.yml did not, which is why a commented-out step
+    // could ship.
+    assert!(
+        docker_live.contains("- name: Verify the attestation we just created"),
+        "docker.yml no longer verifies the attestation it just created — an \
+         attestation nothing checks is the same evidence-free tick this gate exists \
+         to refuse"
+    );
+    assert!(
+        docker_live.contains("gh attestation verify"),
+        "docker.yml's verification step no longer runs `gh attestation verify`"
     );
     for perm in ["id-token: write", "attestations: write"] {
         assert!(
@@ -2220,11 +2297,17 @@ fn ci_success_gates_every_job() {
         .lines()
         .filter_map(|l| {
             let name = l.strip_prefix("  ")?.strip_suffix(':')?;
+            // The full legal charset, not this repo's house style. GitHub
+            // allows `_` and uppercase in a job id, so a job named `wasm_build`
+            // was invisible here: it could fail on every push while the single
+            // required status check reported green. Every current id is
+            // kebab-case, which is exactly why the narrower charset looked
+            // right.
             (!name.starts_with(' ')
                 && !name.is_empty()
                 && name
                     .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
             .then(|| name.to_string())
         })
         .collect();
