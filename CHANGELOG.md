@@ -26,7 +26,30 @@ entry that carries them.
   unchanged, and a HEP listener blocked on its socket still exits in
   milliseconds rather than hanging the join.
 
+- **`unknown` no longer stands in for an absent header.** Three spellings of
+  the same condition were in the tree at once — `"unknown"` in the fail2ban
+  path, `""` in `ScannerAlert`, `"-"` in the kill-target alert — so the same
+  missing `User-Agent` read differently depending on which line printed it.
+  `ScannerAlert::ua` and `format_scanner_event`'s `ua` are now `Option`, with a
+  single `output::render_absent` deciding how absence renders. A `REFER`
+  carrying no `Refer-To` now records `SdpEvent::Transfer { target: None }`
+  instead of a transfer to a party literally named "unknown" — a URI-typed
+  field should not be made to hold a non-URI. JSON output already emitted
+  `null` and is unchanged.
+
 ### Changed
+- **Release downloads say which one you want.** A release page lists twenty-odd
+  files whose Linux names carry `unknown-linux-gnu` — the *vendor* field of the
+  Rust target triple, the canonical value for "no specific vendor", which is why
+  the macOS files say `apple` in the same position — and nothing on the page
+  explained it or said which to take. `ops/release/platform-table.sh` now
+  renders a table into the release body, derived from the artifacts that
+  actually built rather than a hand-kept list, so it cannot advertise a missing
+  build or omit a new one; an unmapped target fails the release step. Filenames
+  are deliberately unchanged: they match `rustc -vV`, they are what
+  `SHA256SUMS.txt` and the provenance attestation cover, and `install.sh`
+  constructs them.
+
 - **ThreadSanitizer is now meaningful on this codebase.** The `sanitizers.yml`
   job reported a data race on the file-capture path; it was **mimalloc**, which
   `src/main.rs` installs as the global allocator. mimalloc is C compiled by the

@@ -200,12 +200,19 @@ jobs:
   # push, instead of only on the weekly run it gates.
   # Pure bash over fixture logs — no Rust toolchain needed.
   tsan-verdict:
-    name: TSan verdict (verdict.sh)
+    name: Ops scripts (verdict.sh, platform-table.sh)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test ops/tsan/verdict.sh
         run: bash ops/tsan/test-verdict.sh
+
+      # The release-body download table. release.yml runs only on a tag, so
+      # without this the first time anyone learns the table is broken is a
+      # release — and a broken table either fails the release step or silently
+      # omits a platform.
+      - name: Test ops/release/platform-table.sh
+        run: bash ops/release/test-platform-table.sh
 
   # Reduced feature combinations must keep compiling (lib AND test code).
   # --all-features alone let `#[cfg]`-gating rot: at one point 7 of 8

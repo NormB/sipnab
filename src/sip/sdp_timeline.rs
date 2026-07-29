@@ -49,8 +49,14 @@ pub enum SdpEvent {
     MediaAnchorChange,
     /// Call transfer initiated via REFER.
     Transfer {
-        /// Refer-To target URI.
-        target: String,
+        /// Refer-To target URI, or `None` when the REFER carried no `Refer-To`.
+        ///
+        /// `None` rather than a placeholder string: a REFER without `Refer-To`
+        /// is malformed, and this used to record the literal `"unknown"`, which
+        /// renders in a call-flow export as a transfer to a party named
+        /// "unknown" and is indistinguishable from a real target of that name.
+        /// A URI-typed field should not be made to hold a non-URI.
+        target: Option<String>,
     },
 }
 
@@ -173,12 +179,13 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
 ///
 /// Appends a synthetic `SdpExchange` marked as a transfer (no media fields)
 /// to `timeline` for REFER requests; the `Refer-To` header value becomes
-/// the transfer target (`"unknown"` when absent).
+/// the transfer target, or `None` when the header is absent — a REFER without
+/// one is malformed, and saying so beats inventing a target for it.
 pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
     if !msg.is_request || msg.method.as_ref() != Some(&super::method::SipMethod::Refer) {
         return;
     }
-    let target = msg.header("Refer-To").unwrap_or("unknown").to_string();
+    let target = msg.header("Refer-To").map(str::to_string);
     timeline.push(SdpExchange {
         timestamp: msg.timestamp,
         direction: OfferAnswer::Offer,
@@ -873,8 +880,50 @@ a=sendrecv\r\n";
         assert_eq!(
             timeline[0].event,
             Some(SdpEvent::Transfer {
-                target: "<sip:carol@example.com>".to_string(),
+                target: Some("<sip:carol@example.com>".to_string()),
             })
+        );
+    }
+
+    /// A REFER with no `Refer-To` records `None`, not a fabricated target.
+    ///
+    /// It used to record the literal `"unknown"`, which a call-flow export
+    /// renders as a transfer to a party of that name — indistinguishable from a
+    /// real one, and not a URI. A malformed REFER should read as malformed.
+    #[test]
+    fn track_transfer_records_no_target_when_refer_to_is_absent() {
+        let mut timeline = Vec::new();
+        let t0 = base_ts();
+
+        // Same REFER as the test above, minus the Refer-To header.
+        let raw = build_sip(
+            "REFER sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                "Call-ID: transfer-no-target@example.com",
+                "CSeq: 3 REFER",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse REFER");
+
+        track_transfer(&mut timeline, &msg);
+        assert_eq!(timeline.len(), 1, "the REFER itself is still recorded");
+        assert_eq!(
+            timeline[0].event,
+            Some(SdpEvent::Transfer { target: None }),
+            "an absent Refer-To must not become a target string"
         );
     }
 
