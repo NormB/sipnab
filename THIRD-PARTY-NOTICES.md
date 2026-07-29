@@ -43,7 +43,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | Crate | Version | Licence |
 |---|---|---|
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
-| aes | 0.9.1 | MIT OR Apache-2.0 |
+| aes | 0.9.2 | MIT OR Apache-2.0 |
 | ahash | 0.8.12 | MIT OR Apache-2.0 |
 | aho-corasick | 1.1.4 | Unlicense OR MIT |
 | allocator-api2 | 0.2.21 | MIT OR Apache-2.0 |
@@ -90,7 +90,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | cipher | 0.5.2 | MIT OR Apache-2.0 |
 | clap | 4.6.3 | MIT OR Apache-2.0 |
 | clap_builder | 4.6.2 | MIT OR Apache-2.0 |
-| clap_complete | 4.6.7 | MIT OR Apache-2.0 |
+| clap_complete | 4.6.8 | MIT OR Apache-2.0 |
 | clap_derive | 4.6.3 | MIT OR Apache-2.0 |
 | clap_lex | 1.1.0 | MIT OR Apache-2.0 |
 | cmake | 0.1.58 | MIT OR Apache-2.0 |
