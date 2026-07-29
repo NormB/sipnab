@@ -63,6 +63,14 @@ file:
 - `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` — same, for arm64
 - `sipnab-<version>-x86_64-apple-darwin.tar.gz` / `sipnab-<version>-aarch64-apple-darwin.tar.gz` — macOS
 
+The `unknown` in `x86_64-unknown-linux-gnu` is the **vendor** field of the Rust
+target triple (`arch-vendor-os-abi`) — the canonical value meaning "no specific
+vendor", which is why the macOS files say `apple` in that position. It is part
+of the platform name, not a failed detection or a broken build. Names are kept
+as the canonical triple deliberately: they match `rustc -vV`, they are what
+`SHA256SUMS.txt` and the build-provenance attestation cover, and the install
+script constructs them.
+
 Architecture naming: `x86_64` = `amd64` (Intel/AMD), `aarch64` = `arm64`
 (ARM); tarballs use the former, `.deb` packages the latter. `uname -m` tells
 you which one you are.

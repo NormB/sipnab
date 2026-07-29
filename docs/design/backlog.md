@@ -595,6 +595,7 @@ reason it was introduced.
 
 | Decision | Status | Notes |
 |----------|--------|-------|
+| Release tarball names carry the Rust target triple | KEPT | `x86_64-unknown-linux-gnu`, not a friendlier alias. The `unknown` is the triple's *vendor* field — the canonical value for "no specific vendor", which is why the macOS artifacts say `apple` in the same slot — and it reads as a failure to people who have not met it. Renaming was considered and rejected: the name is derived from the build matrix, matches `rustc -vV`, is what `SHA256SUMS.txt` and the provenance attestation cover, and is what `install.sh` constructs. A friendly alias would be a second, hand-maintained name for the same file — the drift class this repo has spent a lot of effort removing. The gap was that nothing *explained* it, so `ops/release/platform-table.sh` now renders a decode table into the release body. |
 | wolfSSL/OpenSSL TLS backends | REMOVED | ring covers ~95% of cases; re-add only if FIPS demand arises. |
 | gRPC API | REMOVED | REST API is complete; re-add only if streaming demand arises. |
 | STIR/SHAKEN cert verification | DEFERRED | Would require HTTP cert fetching — added attack surface, intentionally skipped. |
