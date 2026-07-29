@@ -33,6 +33,13 @@ entry that carries them.
   now track `published_version`; the `sipnab <version> (<hash>)` samples still
   track the crate, because they show what a build of this tree prints. One gate
   was serving two different facts.
+- **CI could not run the new release gate at all.** `actions/checkout` fetches
+  no tags, so `site_advertises_only_a_released_version` saw zero and refused to
+  answer — correctly, but it turned CI red on the 0.5.64 release commit. The
+  three checkouts that run the suite now fetch full history, so the gate is real
+  in CI rather than skipped where it matters most. The assertion message had
+  named this exact failure mode ("a shallow clone fetches no tags") before it
+  happened.
 - **The latest-version `curl` on `/download` rendered as prose.** It sat inline
   in a paragraph rather than in a terminal block like the fetch-and-verify
   command directly above it, so it could not be copied cleanly. It now has the
