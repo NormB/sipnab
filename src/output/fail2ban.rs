@@ -15,6 +15,31 @@ fn sanitize_log_value(s: &str) -> String {
     s.replace(['\r', '\n'], " ")
 }
 
+/// Render an optional header value for a log field.
+///
+/// # Arguments
+///
+/// * `v` — the header value, or `None` when the message carried no such header.
+///
+/// # Returns
+///
+/// The sanitized value, or the absent marker.
+///
+/// This is the ONE place the absent marker is decided. Before it, three
+/// spellings of the same condition were in the tree at once -- `"unknown"` in
+/// the fail2ban path, `""` in `ScannerAlert`, and `"-"` in the kill-target
+/// alert -- so the same missing header read differently depending on which line
+/// printed it, and no filter could match all three.
+pub fn render_absent(v: Option<&str>) -> String {
+    match v {
+        Some(s) => sanitize_log_value(s),
+        None => ABSENT.to_string(),
+    }
+}
+
+/// What an absent header renders as in a log field.
+const ABSENT: &str = "unknown";
+
 /// Format a SIP scanner detection event for fail2ban log parsing.
 ///
 /// Output format:
@@ -28,18 +53,26 @@ fn sanitize_log_value(s: &str) -> String {
 /// # Arguments
 ///
 /// * `src_ip` — Source IP of the suspected scanner.
-/// * `ua` — Offending User-Agent string.
+/// * `ua` — Offending `User-Agent`, or `None` when the request carried no such
+///   header.
 /// * `method` — SIP method the scanner used.
+///
+/// `ua` is an `Option` rather than a pre-substituted string because the two
+/// cases are different evidence. A request with **no** `User-Agent` is itself a
+/// scanner signal — plenty of scanners omit it — and the callers used to
+/// collapse that into the literal `"unknown"`, which a benign client can also
+/// send. The output that feeds a ban decision should not merge the more
+/// suspicious case into the less.
 ///
 /// # Returns
 ///
 /// The formatted log line (local-time timestamp); the caller is
 /// responsible for emitting it — nothing is written here.
-pub fn format_scanner_event(src_ip: &str, ua: &str, method: &str) -> String {
+pub fn format_scanner_event(src_ip: &str, ua: Option<&str>, method: &str) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let pid = std::process::id();
     let safe_src = sanitize_log_value(src_ip);
-    let safe_ua = sanitize_log_value(ua);
+    let safe_ua = render_absent(ua);
     let safe_method = sanitize_log_value(method);
     format!(
         "{now} sipnab[{pid}]: scanner_detected src={safe_src} ua={safe_ua} method={safe_method}"
@@ -82,7 +115,7 @@ mod tests {
     /// `YYYY-MM-DD HH:MM:SS` timestamp.
     #[test]
     fn scanner_event_format() {
-        let event = format_scanner_event("10.0.0.5", "friendly-scanner", "OPTIONS");
+        let event = format_scanner_event("10.0.0.5", Some("friendly-scanner"), "OPTIONS");
 
         assert!(event.contains("sipnab["), "should contain 'sipnab[' prefix");
         assert!(
@@ -121,7 +154,7 @@ mod tests {
     /// CR/LF embedded in every field is stripped — no forged log entries.
     #[test]
     fn scanner_event_sanitizes_all_fields() {
-        let event = format_scanner_event("10.0.0.1\r\nfake", "evil\nua", "INVITE\rmethod");
+        let event = format_scanner_event("10.0.0.1\r\nfake", Some("evil\nua"), "INVITE\rmethod");
 
         assert!(
             !event.contains('\r') && !event.contains('\n'),
@@ -160,7 +193,7 @@ mod tests {
     /// Benign values pass through unmodified and newline-free.
     #[test]
     fn scanner_event_normal_values() {
-        let event = format_scanner_event("192.168.1.50", "Ooma/3.0", "OPTIONS");
+        let event = format_scanner_event("192.168.1.50", Some("Ooma/3.0"), "OPTIONS");
 
         assert!(
             event.contains("scanner_detected"),

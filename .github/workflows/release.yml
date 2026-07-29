@@ -661,9 +661,19 @@ jobs:
             || printf '%s\n' "$out" | head -20
           echo "-------------------------"
 
+      # The download table, derived from the artifacts that actually built. A
+      # release page lists twenty-odd files whose Linux names carry
+      # `unknown-linux-gnu` — the vendor field of the Rust target triple, not a
+      # failed detection — and nothing on that page said which one to take. The
+      # rows come from the directory rather than a hand-kept list, and an
+      # unmapped target fails the step instead of quietly dropping a platform.
+      - name: Render the platform table
+        run: bash ops/release/platform-table.sh artifacts > release-body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
+          body_path: release-body.md
           generate_release_notes: true
           files: |
             artifacts/*.tar.gz

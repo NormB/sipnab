@@ -68,8 +68,13 @@ struct BehavioralState {
 pub struct ScannerAlert {
     /// Source IP address of the scanner.
     pub src_ip: IpAddr,
-    /// User-Agent string from the message (if present).
-    pub ua: String,
+    /// `User-Agent` from the triggering message, or `None` when it carried
+    /// none.
+    ///
+    /// `Option`, not an empty string: a request with no `User-Agent` is itself
+    /// a scanner signal, and collapsing it into `""` made it indistinguishable
+    /// from a header present but empty — which an attacker can send.
+    pub ua: Option<String>,
     /// SIP method of the triggering message.
     pub method: String,
     /// How the scanner was detected: `"ua_pattern"`, `"behavioral"` (rate), or
@@ -143,15 +148,19 @@ impl ScannerDetector {
             return None; // Only check requests
         };
 
-        let ua = msg.user_agent().unwrap_or("").to_string();
+        let ua = msg.user_agent().map(str::to_string);
 
-        // Check UA pattern match
-        if !ua.is_empty() {
+        // Check UA pattern match. An absent header matches nothing — the
+        // patterns describe what a scanner *says*, and a request that says
+        // nothing is caught by the behavioural analysis below instead.
+        if let Some(ref ua) = ua
+            && !ua.is_empty()
+        {
             for pattern in &self.known_patterns {
-                if pattern.is_match(&ua) {
+                if pattern.is_match(ua) {
                     return Some(ScannerAlert {
                         src_ip: msg.src_addr,
-                        ua,
+                        ua: Some(ua.clone()),
                         method: method.to_string(),
                         detection_method: "ua_pattern".to_string(),
                     });
@@ -341,7 +350,7 @@ mod tests {
         assert!(alert.is_some(), "should detect friendly-scanner");
         let alert = alert.unwrap();
         assert_eq!(alert.detection_method, "ua_pattern");
-        assert_eq!(alert.ua, "friendly-scanner");
+        assert_eq!(alert.ua.as_deref(), Some("friendly-scanner"));
     }
 
     /// A sipvicious User-Agent is detected via signature match.

@@ -1557,13 +1557,15 @@ fn process_parsed_packet<W: std::io::Write>(
                     alert.src_ip,
                     &format!(
                         "method={} ua={} detection={}",
-                        alert.method, alert.ua, alert.detection_method
+                        alert.method,
+                        output::render_absent(alert.ua.as_deref()),
+                        alert.detection_method
                     ),
                 );
                 if cli.fail2ban {
                     let event = output::format_scanner_event(
                         &alert.src_ip.to_string(),
-                        &alert.ua,
+                        alert.ua.as_deref(),
                         &alert.method,
                     );
                     sink.write_str(&event);
@@ -1598,11 +1600,14 @@ fn process_parsed_packet<W: std::io::Write>(
                     .any(|t| t.matches(sip_msg.src_addr, sip_msg.src_port))
             {
                 let method = sip_msg.method.as_ref().map_or("-", |m| m.as_str());
-                let ua = sip_msg.user_agent().unwrap_or("-");
+                let ua = sip_msg.user_agent();
                 alert_engine.write().fire(
                     "scanner",
                     sip_msg.src_addr,
-                    &format!("method={method} ua={ua} detection=kill-target"),
+                    &format!(
+                        "method={method} ua={} detection=kill-target",
+                        output::render_absent(ua)
+                    ),
                 );
                 if cli.fail2ban {
                     let event =
@@ -1943,7 +1948,7 @@ fn dispatch_sip_output<W: std::io::Write>(
     } else if cli.fail2ban {
         // Fail2ban output for scanner-like messages
         if msg.is_request {
-            let ua = msg.user_agent().unwrap_or("unknown");
+            let ua = msg.user_agent();
             let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
             let event = output::format_scanner_event(&msg.src_addr.to_string(), ua, method);
             sink.write_str(&event);
@@ -1986,7 +1991,7 @@ fn render_sip_output(
         if !msg.is_request {
             return None;
         }
-        let ua = msg.user_agent().unwrap_or("unknown");
+        let ua = msg.user_agent();
         let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
         Some(format!(
             "{}\n",
