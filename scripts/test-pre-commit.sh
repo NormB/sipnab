@@ -13,8 +13,13 @@
 #   2. A complete captured run sums every `test result:` passed column.
 #   3. A non-zero test exit is rejected at step 2 (fails "retry"), so a
 #      truncated run can never reach the count comparison.
+#   4. Gate 8 advises and never blocks.
+#   5. The unwrap scanner scopes #[cfg(test)] to the item, and covers every
+#      workspace member rather than the literal path src/.
 #
-# This test never runs cargo; it exercises the hook's shell logic directly.
+# The hook is EXECUTED, in a throwaway git repo with `cargo` stubbed onto PATH.
+# It used to be grepped instead, and the greps are what let two of the exact
+# regressions this file names slip back in -- see the sandbox comment below.
 
 set -eu
 
@@ -27,37 +32,120 @@ FAIL=0
 ok()  { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
 
-# ── Scenario 1: exactly one full-suite invocation ──────────────────────────
-# Count real invocations only — the command-substitution form
-# `$(cargo test --features full` — not error-message text that names the
-# command for the human to re-run.
-RUNS=$(grep -c '\$(cargo test --features full' "$HOOK" || true)
+# ── The sandbox: run the REAL hook against a stubbed cargo ─────────────────
+# Everything below used to be grepped for out of the hook's source, which made
+# the hook's exact SPELLING the proxy for its behaviour, twice over:
+#
+#   * `grep -c '\$(cargo test --features full'` counted the literal `$(`. The
+#     regression this script is the designated pin for -- a second full-suite
+#     run -- was reintroduced spelled with backticks (identical POSIX command
+#     substitution) and this reported "exactly once (got 1)", 11/11 green. The
+#     script never executed the hook at all.
+#   * Scenario 2 summed a `test result:` fixture with its OWN copy of
+#     `awk '{sum += $4}'`. Changing the hook's copy to `$6` left 11/11 green,
+#     because the assertion never read the hook's expression.
+#
+# The fix is to run the hook and observe what it did. `cargo` is stubbed onto
+# PATH so it is instant and its output is known exactly; the stub appends one
+# line per invocation, which is what "exactly once" is now measured against.
+sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
+	_d=$(mktemp -d)
+	mkdir -p "$_d/src" "$_d/crates/sipnab-audio/src" "$_d/scripts" \
+		"$_d/website/templates" "$_d/docs/internals" "$_d/bin"
+
+	cat > "$_d/Cargo.toml" <<-EOF
+		[workspace]
+		members = [".", "crates/sipnab-audio"]
+		[package]
+		name = "sipnab"
+		version = "9.9.9"
+	EOF
+	echo 'pub fn prod() -> u8 { 1 }' > "$_d/src/lib.rs"
+	echo 'pub fn audio() -> u8 { 1 }' > "$_d/crates/sipnab-audio/src/lib.rs"
+	cp "$REPO_ROOT/scripts/check-unwrap.py" "$_d/scripts/"
+
+	# The cargo stub. Every invocation is logged; `test` emits the canned
+	# per-binary results the caller asked for.
+	cat > "$_d/bin/cargo" <<-EOF
+		#!/bin/sh
+		echo "\$*" >> "$_d/cargo-invocations"
+		case "\$1" in
+		  test) shift; cat "$_d/canned-test-output" ;;
+		  *) : ;;
+		esac
+		exit 0
+	EOF
+	chmod +x "$_d/bin/cargo"
+	: > "$_d/cargo-invocations"
+	: > "$_d/canned-test-output"
+	_total=0
+	for _n in "$@"; do
+		echo "test result: ok. $_n passed; 0 failed; 0 ignored" >> "$_d/canned-test-output"
+		_total=$((_total + _n))
+	done
+	# The homepage the hook will check, carrying the true total.
+	cat > "$_d/website/templates/index.html" <<-EOF
+		<span class="arch-stat" data-count="$_total" data-suffix="">$_total</span>
+		<p>Automated tests</p>
+		<tr><td>$_total automated tests.</td></tr>
+	EOF
+
+	( cd "$_d" && git init -q . && git config user.email t@t && git config user.name t \
+		&& git add -A && git commit -qm base )
+	echo "$_d"
+}
+
+# Sets HOOK_OUT and HOOK_RC. Deliberately does NOT echo: a caller writing
+# `OUT=$(run_hook "$D")` would run it in a subshell, where the assignment to
+# HOOK_RC is discarded and the parent reads a STALE exit code from an earlier
+# run. The first draft of this file did exactly that and reported gate 8 as
+# blocking when the hook had returned 0 -- the same "success you did not
+# observe" shape these scenarios exist to catch, in the test itself.
+HOOK_OUT=""
+HOOK_RC=0
+run_hook() { # run_hook <sandbox-dir>
+	set +e
+	HOOK_OUT=$(cd "$1" && PATH="$1/bin:$PATH" bash "$HOOK" 2>&1)
+	HOOK_RC=$?
+	set -e
+}
+
+# ── Scenario 1: exactly one full-suite invocation, measured by running it ──
+D=$(sandbox 264 1600 974)
+run_hook "$D"
+RUNS=$(grep -c '^test ' "$D/cargo-invocations" || true)
 if [ "$RUNS" -eq 1 ]; then
-	ok "hook invokes 'cargo test --features full' exactly once (got $RUNS)"
+	ok "hook invoked 'cargo test' exactly once (counted $RUNS actual invocations)"
 else
-	bad "hook must invoke 'cargo test --features full' exactly once, got $RUNS (a second run is the flaky-count regression)"
+	bad "hook must invoke 'cargo test' exactly once, it invoked it $RUNS times (a second run is the flaky-count regression)"
 fi
 
-# The count step must reuse the captured output, not shell out again.
-if grep -q 'echo "\$TEST_OUTPUT" | grep "test result:"' "$HOOK"; then
-	ok "count is derived from the captured \$TEST_OUTPUT"
+# ── Scenario 2: the hook's own summing, exercised end to end ───────────────
+# 264 + 1600 + 974 = 2838, and the sandbox homepage says 2838. If the hook's
+# awk column were wrong the sum would not match and the gate would fail.
+run_hook "$D"
+if printf '%s' "$HOOK_OUT" | grep -q 'Homepage test count.*OK (2838)'; then
+	ok "hook summed the passed column across three binaries (2838)"
 else
-	bad "count step must reuse \$TEST_OUTPUT from step 2"
+	bad "hook did not compute 2838 from 264+1600+974; output was: $HOOK_OUT"
 fi
 
-# ── Scenario 2: a complete run sums correctly ──────────────────────────────
+# And it must FAIL when the homepage disagrees — otherwise the above proves
+# only that the gate is quiet, not that it compares.
+sed -i 's/2838/9999/g' "$D/website/templates/index.html"
+run_hook "$D"
+if [ "$HOOK_RC" -ne 0 ]; then
+	ok "hook rejects a homepage count that disagrees with the run"
+else
+	bad "hook accepted a homepage count of 9999 against a real 2838"
+fi
+rm -rf "$D"
+
+# ── Scenario 3: the step-2 gate rejects a non-zero (partial) run ────────────
 COMPLETE=$(printf '%s\n' \
 	'test result: ok. 264 passed; 0 failed; 0 ignored' \
 	'test result: ok. 1600 passed; 0 failed' \
 	'test result: ok. 974 passed; 0 failed')
-SUM=$(printf '%s\n' "$COMPLETE" | grep 'test result:' | awk '{sum += $4} END {print sum}')
-if [ "$SUM" = "2838" ]; then
-	ok "complete run sums the passed column (2838)"
-else
-	bad "complete run should sum to 2838, got $SUM"
-fi
-
-# ── Scenario 3: the step-2 gate rejects a non-zero (partial) run ────────────
 # Mirrors the hook's guard: [ "$TEST_RC" -ne 0 ] || grep -q "FAILED\|error["
 gate() { # args: rc, output
 	if [ "$1" -ne 0 ] || printf '%s' "$2" | grep -q "FAILED\|error\["; then
@@ -84,15 +172,33 @@ else
 	bad "hook is missing the developer-docs coupling gate"
 fi
 
-# Extract the gate-8 block and prove it contains no exit — advisory by
-# construction, not merely by intent.
-GATE8=$(awk '/8\. Developer docs cite code/,/All pre-commit checks passed/' "$HOOK" \
-	| grep -v 'All pre-commit checks passed' || true)
-if printf '%s' "$GATE8" | grep -q 'exit'; then
-	bad "gate 8 must never exit — it is advisory (found an exit in the block)"
+# Advisory means "a commit with a cited file staged still succeeds" — so stage
+# one and see whether the hook lets it through.
+#
+# This replaced two stacked proxies. The block was located with
+# `awk '/8\. Developer docs cite code/,/All pre-commit checks passed/'`, so
+# rewording a COMMENT made GATE8 the empty string and the check vacuous; and
+# absence of the literal word "exit" stood in for "cannot block a commit",
+# though the hook runs under `set -e`, where a bare `false` blocks with no
+# "exit" anywhere. Rewording the header and adding `exit 1` left this reporting
+# "gate 8 contains no exit" while a real commit of a cited file was REFUSED.
+D=$(sandbox 10)
+printf 'See [pipeline](../../src/lib.rs).\n' > "$D/docs/internals/x.md"
+( cd "$D" && git add -A && git commit -qm docs )
+printf 'pub fn prod() -> u8 { 2 }\n' > "$D/src/lib.rs"
+( cd "$D" && git add src/lib.rs )
+run_hook "$D"
+if [ "$HOOK_RC" -eq 0 ]; then
+	ok "a commit staging a cited file is allowed through (gate 8 is advisory)"
 else
-	ok "gate 8 contains no exit (cannot block a commit)"
+	bad "gate 8 BLOCKED a commit staging a cited file — it must only advise; output: $HOOK_OUT"
 fi
+if printf '%s' "$HOOK_OUT" | grep -q 'REVIEW'; then
+	ok "gate 8 still prints REVIEW for a staged cited file"
+else
+	bad "gate 8 did not notice a staged cited file at all; output: $HOOK_OUT"
+fi
+rm -rf "$D"
 
 # The cited-file set the gate matches against, built from the real pages so a
 # broken regex or sed pipeline shows up here.
@@ -146,8 +252,13 @@ src/pipeline.rs')" = "OK" ] \
 # The scanner runs against ./src, so each case is a temp tree with cwd set to it.
 scan() { # scan <src-file-body> -> exit status of the scanner
 	_d=$(mktemp -d)
-	mkdir -p "$_d/src"
+	mkdir -p "$_d/src" "$_d/crates/sipnab-audio/src"
+	cat > "$_d/Cargo.toml" <<-EOF
+		[workspace]
+		members = [".", "crates/sipnab-audio"]
+	EOF
 	printf '%s\n' "$1" > "$_d/src/lib.rs"
+	printf '%s\n' "${2:-pub fn audio() -> u8 { 1 }}" > "$_d/crates/sipnab-audio/src/lib.rs"
 	( cd "$_d" && python3 "$REPO_ROOT/scripts/check-unwrap.py" >/dev/null 2>&1 )
 	_rc=$?
 	rm -rf "$_d"
@@ -187,6 +298,14 @@ fn prod() -> u8 { "7".parse::<u8>().unwrap() }' \
 scan 'fn prod() -> Result<u8, std::num::ParseIntError> { "7".parse::<u8>() }' \
 	&& ok "clean production code reports nothing" \
 	|| bad "clean production code must not be reported"
+
+# A second workspace member is production code too. The scanner walked the
+# literal path `src`, so crates/sipnab-audio/src/lib.rs -- which compiles to
+# libsipnab_audio.so and is installed by build-deb.sh -- was outside the ban
+# entirely, and an unwrap() appended there committed cleanly.
+scan 'pub fn prod() -> u8 { 1 }' 'pub fn a() -> u8 { Some(1u8).unwrap() }' \
+	&& bad "an unwrap in crates/sipnab-audio/src must be reported (the walk is not covering workspace members)" \
+	|| ok "an unwrap in a second workspace member is reported"
 
 # The hook must read the scanner's EXIT STATUS, not parse merged output: stderr
 # is unbuffered and stdout is not, so a violation line can arrive after the
