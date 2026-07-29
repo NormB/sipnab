@@ -1,6 +1,6 @@
 # Dialog tracking modes (`--dialog-track`)
 
-**Status:** spec, not yet implemented.
+**Status:** IMPLEMENTED (0.5.54, 2026-07-27).
 **Context:** `--dialog-track <METHOD>` shipped from an unknown release until
 0.5.52 as a *dead flag* — declared in `src/cli.rs`, read nowhere, accepting any
 value including nonsense and changing nothing. It was removed rather than left

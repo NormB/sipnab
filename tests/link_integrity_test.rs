@@ -716,9 +716,21 @@ fn every_docs_page_is_linked_from_the_index() {
             }
         }
     }
-    assert!(
-        checked >= 10,
-        "only {checked} docs pages seen — the scan is not reading docs/"
+    // Pinned, not floored. This read `>= 10` while the walk saw 19, which the
+    // gate audit reported; the fix widened the walk to recurse into
+    // subdirectories, taking the true count to 28 — and left the floor at 10,
+    // so the guard ended up nearly three times looser than when it was flagged.
+    // The walk could have dropped from 28 pages to 11 and still reported the
+    // docs tree as fully checked.
+    //
+    // An exact pin makes a DROP the failure, which is the only direction that
+    // matters here, and matches how `linked_code_targets_exist` pins its link
+    // count. Adding a docs page fails this once, deliberately: bump the number.
+    assert_eq!(
+        checked, 28,
+        "docs-page walk saw {checked} pages, expected 28. More is fine — bump \
+         this. FEWER means the walk stopped reading part of docs/ and every \
+         reachability assertion above it silently narrowed."
     );
     unlinked.sort();
     assert!(

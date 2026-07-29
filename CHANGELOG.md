@@ -8,6 +8,32 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+- **A design doc told readers a shipped feature did not exist.**
+  `docs/design/dialog-tracking-modes.md` read "**Status:** spec, not yet
+  implemented" for six releases after `--dialog-track` shipped in 0.5.54 —
+  while `src/cli.rs` declared it, `cli_flag_behavior_test` exercised it under a
+  section header citing that page, and `dialog_store.rs` pointed readers at it
+  for the design. `docs/internals/README.md` had even recorded the drift, so it
+  was noticed and left. `an_unimplemented_design_doc_does_not_name_a_shipped_flag`
+  now fails when a design doc calls itself unimplemented while naming a long
+  flag `Cli` accepts.
+
+### Changed
+- **Two coverage counters were floored far below reality.**
+  `every_docs_page_is_linked_from_the_index` asserted `checked >= 10` against a
+  true 28 — the gate audit reported that floor as "10 against a true 19", and
+  the fix widened the walk to recurse without touching the floor, leaving the
+  guard looser than when it was flagged. `packaging_scripts_reference_existing_paths`
+  asserted `>= 10` against a true 52, so four fifths of the packaging references
+  could stop being checked silently. Both are exact pins now, matching how
+  `linked_code_targets_exist` pins its link count: a DROP is the failure, which
+  is the only direction that matters. Verified by mutation — a non-recursive
+  docs walk sees 19 pages, the audit's original number, and the pin catches what
+  the floor allowed.
+
 ## [0.5.60] - 2026-07-29
 
 ### Fixed
