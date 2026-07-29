@@ -91,7 +91,19 @@ EOF
 # the caller's SKIP_FMT_HOOK; each case sets it explicitly.
 run_hook() {
 	# $1 = value for SKIP_FMT_HOOK ("" means unset)
-	( cd "$CRATE" && env -u SKIP_FMT_HOOK ${1:+SKIP_FMT_HOOK="$1"} "$HOOK" ) >"$TMP/out.log" 2>&1
+	# $2 = optional pre-push stdin line ("<local_ref> <local_sha> <remote_ref>
+	#      <remote_sha>"); empty means a push with nothing on stdin.
+	#
+	# stdin is redirected ALWAYS. The hook reads it to learn which refs are
+	# being pushed, and real git always supplies it -- a harness that leaves it
+	# attached to the terminal would hang here instead of testing anything.
+	if [ -n "${2:-}" ]; then
+		printf '%s\n' "$2" >"$TMP/refs.in"
+	else
+		: >"$TMP/refs.in"
+	fi
+	( cd "$CRATE" && env -u SKIP_FMT_HOOK ${1:+SKIP_FMT_HOOK="$1"} "$HOOK" \
+		<"$TMP/refs.in" ) >"$TMP/out.log" 2>&1
 }
 
 # -- GIVEN unformatted Rust, THEN hook blocks --------------------------------
@@ -265,6 +277,93 @@ else
 	sed 's/^/    /' "$TMP/out.log"
 fi
 rm -f "$CRATE/tests/reduced.rs"
+
+# v* tag gate: a tag must point at a commit whose CI is green.
+#
+# `gh` is stubbed on PATH, the way ops/tsan/test-verdict.sh stubs nm. The gate's
+# contract is what it does with gh's OUTPUT, and a stub gives every case
+# deterministically and offline -- including the red one, which cannot be
+# produced on demand against a real repository.
+STUB_BIN="$TMP/stubbin"
+mkdir -p "$STUB_BIN"
+make_gh() { # $1 = json array the stub prints for `gh run list`
+	cat >"$STUB_BIN/gh" <<EOF
+#!/bin/sh
+case "\$1" in
+run) printf '%s' '$1' ;;
+*)   exit 1 ;;
+esac
+EOF
+	chmod +x "$STUB_BIN/gh"
+}
+
+# The fixture needs to be a real git repo with a real commit: the hook resolves
+# the pushed sha with `git rev-list -n1`, which is how an ANNOTATED tag's object
+# becomes the commit it marks. A synthetic sha would make that resolution fail
+# and the gate skip the ref -- the scenarios below would then pass by not
+# running, which is the failure mode this suite exists to avoid.
+( cd "$CRATE" \
+	&& git init -q . \
+	&& git config user.email t@example.com \
+	&& git config user.name test \
+	&& git add -A \
+	&& git commit -qm fixture ) >/dev/null 2>&1
+TAGGED=$( cd "$CRATE" && git rev-parse HEAD )
+REFLINE="refs/tags/v9.9.9 $TAGGED refs/tags/v9.9.9 0000000000000000000000000000000000000000"
+
+# GREEN: every run for the commit completed successfully -> allowed.
+make_gh "[{\"headSha\":\"$TAGGED\",\"status\":\"completed\",\"conclusion\":\"success\",\"name\":\"CI\"}]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	ok "tag gate allows a tag on a commit whose CI is green"
+else
+	bad "tag gate BLOCKED a tag on a green commit"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# RED: a failed run for the commit -> blocked. This is the 0.5.61 case.
+make_gh "[{\"headSha\":\"$TAGGED\",\"status\":\"completed\",\"conclusion\":\"failure\",\"name\":\"CI\"}]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a tag on a commit whose CI failed"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate blocks a tag on a commit whose CI failed"
+fi
+
+# STILL RUNNING: not green YET is not green. Tagging here races the result.
+make_gh "[{\"headSha\":\"$TAGGED\",\"status\":\"in_progress\",\"conclusion\":null,\"name\":\"CI\"}]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a tag while CI was still running"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate blocks a tag while CI is still running"
+fi
+
+# NO RUNS: the commit was never pushed, so nothing has verified it.
+make_gh "[]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a tag on a commit with no CI runs"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate blocks a tag on a commit with no CI runs at all"
+fi
+
+# NON-TAG PUSH: an ordinary branch push must not consult CI at all.
+make_gh "[{\"headSha\":\"$TAGGED\",\"status\":\"completed\",\"conclusion\":\"failure\",\"name\":\"CI\"}]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "refs/heads/main $TAGGED refs/heads/main 0000000000000000000000000000000000000000"; then
+	ok "tag gate ignores an ordinary branch push"
+else
+	bad "tag gate blocked an ordinary branch push"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# TAG DELETION: an all-zero local sha has no commit to verify.
+make_gh "[]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "(delete) 0000000000000000000000000000000000000000 refs/tags/v9.9.9 $TAGGED"; then
+	ok "tag gate ignores a tag deletion"
+else
+	bad "tag gate blocked a tag deletion"
+	sed 's/^/    /' "$TMP/out.log"
+fi
 
 # -- Summary ------------------------------------------------------------------
 printf '\n--- test-pre-push summary: %d passed, %d failed ---\n' "$PASS" "$FAIL"
