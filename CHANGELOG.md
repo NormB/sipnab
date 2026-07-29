@@ -8,6 +8,36 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+- **The SIPp scenario export could write an invented SIP method onto the
+  wire.** `tui/save.rs` substituted the literal `UNKNOWN` when a request's
+  method was absent, and both arms write it straight into the scenario — a
+  `<send>` request line and a `<recv request="...">` — so the export produced
+  something SIPp will run and a peer will reject. A request whose method cannot
+  be parsed is now skipped. (`parse_first_line` sets `Some(..)` for every
+  request it accepts, so this was unreachable; it is written as a skip because
+  the alternative is only safe while that stays true and nothing here would
+  notice if it stopped.)
+
+### Changed
+- **Thread teardown is documented, not just enforced.** The rule that every
+  fatal exit after `start_capture()` goes through `capture::stop_and_join()` was
+  enforced by a test and by ThreadSanitizer treating `thread leak` as fatal, but
+  written down nowhere: `threading.md` had Topology, Named threads, Lock
+  discipline and Channels, and no section on how a thread *ends*. It now has
+  one, and `invariants.md` gains invariant 12. Enforcement without documentation
+  is how the next person reintroduces the defect.
+- **`WAIVED` now ratchets both ways.** Its doc comment claimed to mirror the
+  `KNOWN_UNTESTED` convention in `flag_coverage_test.rs`, which fails when a
+  listed flag *becomes* tested — the half that caught `--chroot`. `WAIVED` only
+  checked that a waiver named a real flag, so a flag that later gained examples
+  stayed excused forever. Both gates now measure examples through one shared
+  helper, so the ratchet cannot disagree with the gate it ratchets against.
+  Nothing was stale when this landed; a ratchet is installed before it is
+  needed.
+
 ## [0.5.59] - 2026-07-29
 
 ### Added

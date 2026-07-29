@@ -78,6 +78,43 @@ straight back to a row here.
 | `clipboard` | [`tui/clipboard.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/clipboard.rs) | Holds the X11/Wayland selection alive after a copy without stalling the UI. |
 | `crash-probe` | [`crash.rs`](https://github.com/NormB/sipnab/blob/main/src/crash.rs) | Startup probe that classifies the crash-report directory before any report is written. |
 
+## How the capture thread ends
+
+Every fatal exit taken *after* [`start_capture()`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)
+has to go through
+[`stop_and_join()`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs). There is no second correct
+way out.
+
+The reason is where the thread starts.
+[`bootstrap::launch()`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) spawns it **before** the
+readiness hand-shake, the chroot and the privilege drop, because the capture
+source must be open while the process still holds `CAP_NET_RAW`. Every failure
+from that point on — an unopenable source, an unusable `--chroot`, a refused
+privilege drop, a hardening step the kernel rejects, a companion server that
+cannot start — happens with a capture thread already running and holding its
+source. `std::process::exit` joins nothing and runs no destructors, so exiting
+directly abandons it.
+
+`stop_and_join` sets the global shutdown flag, drops the packet receiver, and
+joins. Both signals are needed and neither is redundant: dropping the receiver
+ends a thread blocked on a send, and the flag ends one blocked elsewhere in its
+loop — a live capture waiting out its read timeout reaches the flag check first.
+The join is unbounded, matching the one the batch receive loop already performs
+at end of capture; a HEP listener blocked on its socket returns in milliseconds
+rather than hanging it.
+
+One consequence for callers that cannot reach the handle:
+[`BatchRunner::new()`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) does not own it, so its four fatal
+paths return a `PlanError` instead of exiting, and `batch::run` — which holds
+both the handle and the receiver — does the teardown. A function that cannot
+clean up must hand the failure to one that can.
+
+**How this is enforced.** ThreadSanitizer treats `thread leak` as a fatal
+finding, not a warning, and `cli_flag_behavior_test` exercises both shapes (a
+source that never opens, and a failure after it opened) so a regression fails
+there rather than waiting for the weekly sanitizer run. Before this rule,
+`sipnab -I /nonexistent.pcap` — a mistyped filename — leaked a thread.
+
 ## The second writer: `pcap-load`
 
 Opening a pcap from inside the TUI spawns a second writer: the `pcap-load`

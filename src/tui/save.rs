@@ -846,9 +846,24 @@ pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
             .unwrap_or(false);
 
         if m.is_request {
+            // A request whose method could not be parsed is skipped, not
+            // invented. Both arms below write the method straight onto the
+            // wire -- into a `<send>` request line and a `<recv request="...">`
+            // -- so substituting the literal "UNKNOWN" (which is what this did)
+            // emits a scenario SIPp will run and a peer will reject. Dropping
+            // the message costs one line of an exported scenario; fabricating a
+            // method costs the whole run, at the point someone is trying to
+            // reproduce a fault.
+            //
+            // `parse_first_line` sets `Some(..)` for every request it accepts,
+            // so this is unreachable today. It is written as a skip anyway
+            // because the alternative is only safe for as long as that stays
+            // true, and nothing here would notice if it stopped.
+            let Some(method) = m.method.as_ref().map(|m| m.as_str()) else {
+                continue;
+            };
             if is_from_caller {
                 // Caller sends request
-                let method = m.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
                 let ruri = m
                     .request_uri
                     .as_deref()
@@ -880,7 +895,6 @@ pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
                 xml.push_str("    ]]>\n  </send>\n");
             } else {
                 // Callee sends request (e.g., BYE from remote) — receive it
-                let method = m.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
                 xml.push_str(&format!("\n  <recv request=\"{method}\"/>\n"));
             }
         } else {

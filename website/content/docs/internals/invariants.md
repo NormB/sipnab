@@ -311,6 +311,35 @@ and the coverage-guided targets in
 **Fails as.** A single crafted packet ends the capture, and the evidence you
 were capturing is what you lose.
 
+## 12. A fatal exit never abandons the capture thread
+
+**Rule.** Every fatal exit taken after
+[`start_capture()`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs) goes through
+[`stop_and_join()`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs) — shutdown flag set, receiver
+dropped, thread joined — before the process ends. A function that cannot reach
+the handle returns the failure to one that can rather than exiting where it
+stands.
+
+**Why.** [`launch()`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) spawns the capture thread
+*before* the readiness hand-shake, the chroot and the privilege drop, because
+the source must be open while the process still holds `CAP_NET_RAW`. Every
+failure from there on happens with that thread running and holding its source,
+and `std::process::exit` joins nothing and runs no destructors. Nineteen exits
+in `launch` and four more in
+[`BatchRunner::new()`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) abandoned it — and the trigger
+was not exotic: `sipnab -I /nonexistent.pcap`, a mistyped filename, was enough.
+
+**Enforced by.** ThreadSanitizer, which classes `thread leak` as fatal rather
+than warning about it, over the five suites `sanitizers.yml` runs; and
+[`cli_flag_behavior_test`](https://github.com/NormB/sipnab/blob/main/tests/cli_flag_behavior_test.rs), which
+exercises both shapes — a source that never opens, and a failure after it opened
+— so a regression fails on every push instead of waiting for the weekly
+sanitizer run.
+
+**Fails as.** A process that exits while a thread still holds an open capture
+device, mid-read. Benign on most exits and invisible without a sanitizer, which
+is why it survived until one was pointed at it.
+
 ## Two cultural norms
 
 They are not enforced by a test, which is precisely why they are written down.

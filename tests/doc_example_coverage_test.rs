@@ -235,6 +235,31 @@ fn user_facing_long_flags() -> Vec<String> {
 }
 
 /// Every non-waived user-facing flag appears at least `MIN_EXAMPLES` (2) times
+/// How many runnable examples name `--flag` in `blocks`.
+///
+/// Shared by the coverage gate and the waiver ratchet below, deliberately: if
+/// the ratchet counted examples its own way, a flag could be "documented
+/// enough" for one and not the other, and the disagreement would read as a
+/// stale waiver that is not stale — or hide one that is.
+///
+/// Counts occurrences of `--flag` not followed by a flag character, so `--api`
+/// does not match inside `--api-token-ttl`. The `regex` crate has no
+/// look-ahead, so the trailing byte is checked by hand.
+fn example_count(blocks: &str, flag: &str) -> usize {
+    let needle = format!("--{flag}");
+    blocks
+        .match_indices(&needle)
+        .filter(|(i, _)| {
+            let after = i + needle.len();
+            blocks[after..]
+                .chars()
+                .next()
+                .map(|c| !(c.is_ascii_alphanumeric() || c == '-'))
+                .unwrap_or(true)
+        })
+        .count()
+}
+
 /// in the corpus's bash example blocks; under-demonstrated flags fail with a list.
 #[test]
 fn every_flag_has_at_least_two_examples() {
@@ -247,21 +272,7 @@ fn every_flag_has_at_least_two_examples() {
         if waived.contains_key(flag.as_str()) {
             continue;
         }
-        // Count occurrences of `--flag` not followed by a flag char, so
-        // `--api` doesn't match inside `--api-token-ttl`. The `regex` crate
-        // has no look-ahead, so check the trailing byte by hand.
-        let needle = format!("--{flag}");
-        let n = blocks
-            .match_indices(&needle)
-            .filter(|(i, _)| {
-                let after = i + needle.len();
-                blocks[after..]
-                    .chars()
-                    .next()
-                    .map(|c| !(c.is_ascii_alphanumeric() || c == '-'))
-                    .unwrap_or(true)
-            })
-            .count();
+        let n = example_count(&blocks, &flag);
         if n < MIN_EXAMPLES {
             under.push(format!("--{flag}: {n} example(s)"));
         }
@@ -289,4 +300,48 @@ fn waived_flags_still_exist() {
         .filter(|f| !real.contains(*f))
         .collect();
     assert!(stale.is_empty(), "waivers for nonexistent flags: {stale:?}");
+}
+
+/// A waived flag that has since gained enough examples fails, so the waiver is
+/// removed rather than left standing.
+///
+/// This is the other half of the ratchet. `WAIVED`'s own doc comment says each
+/// entry mirrors "the `KNOWN_UNTESTED` ratchet convention in
+/// `flag_coverage_test.rs`" — and that list ratchets BOTH ways: it fails when a
+/// listed flag becomes tested, which is what caught `--chroot` once its failure
+/// path got a test. `WAIVED` only checked that a waiver named a real flag, so a
+/// flag that later became documented stayed excused forever, and the file went
+/// on claiming an exemption it no longer needed.
+///
+/// Nothing was stale when this was written — all three waivers still measured
+/// zero examples — so this is a latch against the drift rather than a fix for
+/// it. That is the point of a ratchet: it is installed before it is needed.
+#[test]
+fn waivers_are_removed_once_a_flag_is_documented() {
+    let corpus = doc_corpus();
+    let blocks = all_bash_blocks(&corpus);
+
+    let unneeded: Vec<String> = WAIVED
+        .iter()
+        .map(|(flag, _)| (flag, example_count(&blocks, flag)))
+        .filter(|(_, n)| *n >= MIN_EXAMPLES)
+        .map(|(flag, n)| format!("--{flag}: {n} example(s)"))
+        .collect();
+
+    assert!(
+        unneeded.is_empty(),
+        "{} waiver(s) are no longer needed — the flag now carries at least \
+         {MIN_EXAMPLES} examples, so remove the entry from WAIVED:\n{}",
+        unneeded.len(),
+        unneeded.join("\n")
+    );
+
+    // The corpus must actually be readable; an empty one makes every waiver
+    // look necessary and this gate vacuous.
+    assert!(
+        blocks.len() > 1000,
+        "example corpus is only {} bytes — the block extractor is reading \
+         nothing and no waiver can look stale",
+        blocks.len()
+    );
 }
