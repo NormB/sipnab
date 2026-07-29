@@ -554,7 +554,7 @@ fn published_markdown() -> Vec<(String, String)> {
         })
         .collect();
     assert!(
-        pages.len() >= 30,
+        pages.len() >= 55,
         "only {} published markdown pages found — the derivation is reading \
          almost nothing and every gate built on it passes vacuously",
         pages.len()
@@ -1224,7 +1224,12 @@ fn readme_feature_table_covers_every_cargo_feature() {
         }
     }
 
-    assert!(seen >= 10, "feature extraction found only {seen} features");
+    assert_eq!(
+        seen, 11,
+        "feature extraction found {seen} features, expected 11. Bump when a \
+         feature is added; a drop means the parser stopped reading Cargo.toml's \
+         table and the comparison below narrowed."
+    );
     assert!(
         missing.is_empty(),
         "README feature table is missing: {}",
@@ -1257,9 +1262,12 @@ fn theme_slots_are_documented_and_counted_correctly() {
         .filter_map(|l| l.split(':').next())
         .collect();
 
-    assert!(
-        slots.len() >= 10,
-        "ThemeConfig field extraction found only {} slots — parser broken?",
+    assert_eq!(
+        slots.len(),
+        12,
+        "ThemeConfig field extraction found {} slots, expected 12. Bump when a \
+         slot is added; a drop means the parser stopped reading the struct and \
+         the documentation comparison below narrowed with it.",
         slots.len()
     );
 
@@ -1416,8 +1424,9 @@ fn mcp_tool_table_lists_every_registered_tool() {
         .captures_iter(&server)
         .map(|c| c[1].to_string())
         .collect();
-    assert!(
-        registered.len() >= 8,
+    assert_eq!(
+        registered.len(),
+        11,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -1707,9 +1716,10 @@ fn shell_fence_is_one_clipboard_payload() {
     }
 
     assert!(
-        scanned >= 200,
-        "only {scanned} shell fences scanned — the walk or the fence parser \
-         stopped matching, and this gate is reporting a safety it is not providing"
+        scanned >= 300,
+        "only {scanned} shell fences scanned (346 at the time of writing) — the \
+         walk or the fence parser stopped matching, and this gate is reporting a \
+         safety it is not providing"
     );
     assert!(
         offenders.is_empty(),
