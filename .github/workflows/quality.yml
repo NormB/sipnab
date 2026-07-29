@@ -41,15 +41,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # The suite includes site_advertises_only_a_released_version, which
-          # asks git whether published_version has a matching tag. actions/
-          # checkout fetches NO tags by default, so that gate saw zero and
-          # refused to answer -- correctly, but it turned CI red on a release
-          # commit. Fetch them so the gate is real here rather than skipped
-          # where it matters most.
-          fetch-tags: true
-          fetch-depth: 0
       - name: Install system deps
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
@@ -86,6 +77,18 @@ jobs:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The suite includes site_advertises_only_a_released_version, which
+          # asks git whether published_version has a matching tag. actions/
+          # checkout fetches NO tags by default, so that gate saw zero and
+          # refused to answer -- correctly, but it turned CI red on a release
+          # commit. Fetch them so the gate is real here rather than skipped
+          # where it matters most. depth 0 rather than fetch-tags alone: a full
+          # history unambiguously includes every tag, and after shipping a gate
+          # whose own message predicted this failure and still hit it, the few
+          # seconds of clone are worth not guessing at checkout semantics.
+          fetch-tags: true
+          fetch-depth: 0
       # ubuntu-latest ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
       # GHC, Swift, CodeQL bundle) we never use. A full --all-features
       # --all-targets build plus the cargo cache and llvm-cov instrumentation
