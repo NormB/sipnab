@@ -12,6 +12,24 @@
 
 // Faster general-purpose allocator: sipnab's offline ingestion does one heap
 // allocation per captured packet, so the allocator is on the hot path.
+//
+// NOT under ThreadSanitizer. mimalloc is C compiled by the `cc` crate, and
+// `-Zsanitizer=thread` instruments Rust only, so TSan sees neither its
+// alloc/free (no shadow reset when a block is recycled) nor its internal
+// cross-thread synchronisation (no happens-before edges). Every block mimalloc
+// hands from one thread to another therefore reads as a data race. That is not
+// a hypothetical: it made `sanitizers.yml` report a race on the file-capture
+// path, and the report named `read`/`Vec::append_elements_unreserved` with no
+// allocator frame in either stack — so a name-based TSan suppression could not
+// have matched it. Removing the uninstrumented allocator is the only fix that
+// addresses the cause.
+//
+// `cfg(sanitize = "thread")` would say this directly but is nightly-only
+// (E0658), and the release build is pinned to stable; a Cargo feature would be
+// worse still, since `--all-features` runs throughout this repo and would drop
+// mimalloc from ordinary test builds. Hence a plain cfg, set by RUSTFLAGS in
+// the sanitizer job and declared in build.rs so a typo cannot pass silently.
+#[cfg(not(sipnab_tsan))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

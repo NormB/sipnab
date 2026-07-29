@@ -479,15 +479,52 @@ Tiers:
   file via `openat()` on an `O_DIRECTORY|O_NOFOLLOW` dirfd to remove the
   parent-component symlink / `exists()→create→chmod` TOCTOU window.
 
-## Open: ThreadSanitizer race in the file-capture path
+## Closed: the ThreadSanitizer "race" was the uninstrumented allocator
 
-The `sanitizers.yml` job added on 2026-07-28 reported a data race on its second
-run, and it has not been diagnosed yet. **The job is red on `main` on purpose:
-it found something.** It is weekly and is not part of `ci-success`, so it does
-not block merges.
+*Diagnosed 2026-07-29. Not a defect in sipnab.* The reported race was
+**mimalloc**, which `src/main.rs` installs as the global allocator. mimalloc is
+C compiled by the `cc` crate, and `-Zsanitizer=thread` instruments Rust only, so
+TSan sees neither its alloc/free (no shadow reset when a block is recycled) nor
+its internal cross-thread synchronisation (no happens-before edges). Every block
+the allocator hands from one thread to another therefore reads as a data race.
 
-What TSan reported, on `api_test`, inside the `sipnab` binary itself (one
-process, not the test harness):
+The bisect: the same binary, same fixture, same TSan options, differing only in
+the allocator.
+
+| Allocator | Runs | Races | Process |
+|-----------|------|-------|---------|
+| mimalloc | 5 | 5 | aborted by `halt_on_error` (exit 66) |
+| system | 9 | 0 | healthy; served the API for the full 60 s |
+
+Locally the report surfaced with `_mi_memset` → `__rust_alloc` on **both**
+sides, which named the cause outright. The CI report did not: its stacks were
+`read`/`Vec::append_elements_unreserved` with no allocator frame at all, because
+the recorded shadow was the *user's* write to a block mimalloc later recycled.
+That is why a name-based TSan suppression was never an option — there is no
+allocator frame to match. `src/main.rs` now drops mimalloc under
+`--cfg sipnab_tsan`, set by the job; the shipped binary is unchanged.
+
+Three further defects fell out of this, all fixed:
+
+- **`tests/support/server.rs` named a timeout it never waited out.** When the
+  spawned server died, stderr closed, and the `Disconnected` arm broke out of
+  the wait loop to a panic that reported the whole budget — "did not report a
+  listening address within 180s" for a suite that finished in 55s. All nine
+  failures were one abort, not nine slow starts, and the message sent the first
+  round of this investigation after runner speed.
+- **The gate could not see child processes.** The suites spawn `sipnab` and
+  consume its stderr, so a report from a child reached the log only if some test
+  printed that stderr into an assertion message. The first run's "0 races" meant
+  "nothing was printed", not "nothing was found". `log_path` now gives every
+  process its own file and the verdict reads all of them.
+- **The verdict announced a finding type it had not matched.** It failed on any
+  `WARNING: ThreadSanitizer` and called it "a data race", which would have
+  labelled a thread leak a race. It now classifies, and a missing
+  `__tsan_init` fails the job rather than passing as a clean run.
+
+The original report, kept because it is the shape this class of false positive
+takes — on `api_test`, inside the `sipnab` binary itself (one process, not the
+test harness):
 
 ```
 WARNING: ThreadSanitizer: data race
@@ -504,20 +541,23 @@ WARNING: ThreadSanitizer: data race
 ```
 
 The two writes overlap: an 8-byte write at `…098` covers `098`–`09f`, and the
-4-byte write at `…09c` covers `09c`–`09f`. So bytes `09c`–`09f` are written by
-the main thread and by the capture thread spawned in
-[`start_capture`](../../src/capture/native.rs).
+4-byte write at `…09c` covers `09c`–`09f`. Both are in the same process and one
+is on the capture thread spawned in
+[`start_capture`](../../src/capture/native.rs) — all true, and all consistent
+with the allocator handing the same block to both. The objects themselves were
+the tell: a `Vec<u8>` local to `read_pcapng_metadata` and `tracing-subscriber`'s
+**thread-local** format buffer cannot alias, so the only way they share an
+address is reuse.
 
-Before treating it as confirmed, rule out the two ways this report could be
-wrong: memory reuse across threads that TSan cannot see a happens-before edge
-for (an allocator recycling a buffer), and synchronisation TSan does not model.
-Neither has been checked. What is NOT in doubt is that the two accesses are in
-the same process and one of them is on the capture thread.
+Two structural facts made the reuse visible rather than harmless. The capture
+thread is not joined until [`batch.rs` `run_loop`](../../src/app/batch.rs),
+which runs *after* `BatchRunner::new` reads the pcapng metadata, so no
+happens-before edge covers the thread's exit; and TSan reset no shadow on the
+free, because the free was mimalloc's.
 
-The first run of this job failed on timeouts instead, which is why
-`SIPNAB_TEST_TIMEOUT_SCALE` exists — see `tests/support/timeout.rs`. That is
-worth remembering when reading the history: a sanitizer whose red means "the
-runner was slow" trains everyone to ignore the run where it means this.
+`SIPNAB_TEST_TIMEOUT_SCALE` survives this — instrumented builds really are
+several times slower — but see `tests/support/timeout.rs` for the corrected
+reason it was introduced.
 
 ## Standing decisions
 

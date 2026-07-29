@@ -74,8 +74,30 @@ coverage.
 which TSan cannot instrument. Each entry carries the reason it is not a real
 race; an unexplained suppression turns a race detector into a race ignorer.
 
-The step greps the log rather than trusting the exit code: TSan can report a
-race and still exit 0 when the test itself passes.
+**mimalloc is dropped under the sanitizer.** `RUSTFLAGS` carries
+`--cfg sipnab_tsan`, and `src/main.rs` skips its `#[global_allocator]` when that
+cfg is set. mimalloc is C compiled by the `cc` crate, so `-Zsanitizer=thread`
+does not instrument it, and TSan sees neither its alloc/free (no shadow reset on
+a recycled block) nor its internal cross-thread synchronisation: every block
+handed from one thread to another reads as a data race. The 2026-07-29 run
+reported exactly that, and its stacks named `read` and
+`Vec::append_elements_unreserved` with no allocator frame anywhere — so a
+suppression could not have matched it. `docs/design/backlog.md` records the
+bisect. The shipped binary keeps mimalloc; only the sanitizer build differs.
+
+**The verdict reads every process, and classifies.** The step greps rather than
+trusting the exit code (TSan can report a finding and still exit 0 when the test
+passes), but two things make that grep mean something. `log_path` gives each
+process its own `tsan.<pid>`: the suites spawn the `sipnab` binary and consume
+its stderr, so before that, a report from a child reached the log only if some
+test happened to print the child's stderr into an assertion message — the first
+run's "0 races" meant "nothing was printed". And the verdict fails only on
+race-class findings, listing anything else as a warning, because sipnab exits
+several fail-fast paths through `std::process::exit`, which by design skips the
+join in `batch::run_loop`; an unjoined capture thread at exit is expected and is
+not a race. A missing `__tsan_init` in the built binary fails the job outright,
+since a build that quietly lost its instrumentation would otherwise report a
+clean run forever.
 
 ### What actually gates a merge
 

@@ -11,15 +11,16 @@
 /// Every wall-clock deadline in the integration suites is a bet on how fast the
 /// binary starts and answers. Under ThreadSanitizer that bet is wrong by
 /// roughly an order of magnitude — instrumented code against an instrumented
-/// `std` runs several times slower — and the 15-second wait for the API to
-/// report its bound port expired before the server had finished binding. The
-/// first sanitizer run came back red with seven `did not report a listening
-/// address` failures and **zero races**.
+/// `std` runs several times slower — so the deadlines are scaled rather than
+/// raced against.
 ///
-/// That is the failure mode worth naming: a sanitizer whose red means "the
-/// runner was slow" teaches everyone to ignore it, and then the run where it
-/// means "there is a data race" is ignored too. The scale exists so the job's
-/// red keeps meaning what the job is for.
+/// The history is worth stating accurately, because this file used to state it
+/// wrongly. The seven `did not report a listening address` failures that first
+/// motivated this scale were **not** slowness: the spawned servers were being
+/// aborted by TSan's `halt_on_error`, and `support/server.rs` reported a
+/// deadline it had never waited out. Scaling remains right for instrumented
+/// builds — it simply was not the fix for that run, and reading it as the fix
+/// cost a full cycle of investigation aimed at runner speed.
 ///
 /// It is an environment variable rather than a TSan-specific constant because
 /// the same slowdown appears under `cargo-llvm-cov` and on a loaded runner. An

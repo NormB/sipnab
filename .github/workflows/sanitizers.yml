@@ -23,6 +23,15 @@ on:
     paths:
       - '.github/workflows/sanitizers.yml'
       - 'ops/tsan/**'
+      # Two files outside this workflow decide whether its result means
+      # anything, so a change to either has to re-run it. src/main.rs carries
+      # the `#[cfg(not(sipnab_tsan))]` on the global allocator — drop that and
+      # every run reports allocator false positives again. tests/support/server.rs
+      # is how a spawned server's death gets reported; it once reported a
+      # timeout instead, and the misdiagnosis cost a full investigation cycle.
+      # Both are low-churn, so this does not put the job on the hot path.
+      - 'src/main.rs'
+      - 'tests/support/server.rs'
 
 permissions:
   contents: read
@@ -54,27 +63,50 @@ jobs:
 
       - name: Run the threaded suites under ThreadSanitizer
         env:
-          RUSTFLAGS: -Zsanitizer=thread
-          RUSTDOCFLAGS: -Zsanitizer=thread
+          # --cfg sipnab_tsan swaps mimalloc for the system allocator; see the
+          # comment on the #[global_allocator] in src/main.rs. Without it this
+          # job reports a data race on every block the allocator recycles across
+          # threads, because mimalloc is C that -Zsanitizer=thread does not
+          # instrument. That is not theoretical -- it is what the 2026-07-29 run
+          # actually reported, and it took a bisect against the system allocator
+          # to tell that finding apart from a real race.
+          RUSTFLAGS: -Zsanitizer=thread --cfg sipnab_tsan
+          RUSTDOCFLAGS: -Zsanitizer=thread --cfg sipnab_tsan
           # Instrumented code against an instrumented std runs several times
           # slower, and every integration deadline is a wall-clock bet on the
-          # binary's speed. The first run of this job came back red with seven
-          # "did not report a listening address" failures and zero races --
-          # a sanitizer whose red means "the runner was slow" gets ignored, and
-          # then so does the run where it means "there is a data race".
+          # binary's speed, so deadlines are scaled rather than raced against.
+          #
+          # Read the history carefully: the seven "did not report a listening
+          # address" failures that first motivated this were NOT slowness. The
+          # children were being aborted by halt_on_error below, and the harness
+          # named a timeout it had never waited out (fixed in
+          # tests/support/server.rs). Scaling is still right for instrumented
+          # builds; it just was not the fix for that run.
           SIPNAB_TEST_TIMEOUT_SCALE: '12'
 
-          # halt_on_error keeps the first race as the failure rather than
+          # halt_on_error keeps the first finding as the failure rather than
           # letting a later clean test overwrite the verdict. history_size
           # widens the recorded stack depth, which is what makes a report
           # actionable instead of a bare address.
+          #
+          # log_path is what makes CHILD processes visible. The suites spawn the
+          # sipnab binary and consume its stderr, so a report from a child
+          # reaches the cargo log only if some test happens to print the child's
+          # stderr into an assertion message. The first run of this job reported
+          # "0 races" for exactly that reason. With log_path, every process --
+          # harness and child alike -- writes its own tsan.<pid>, and the verdict
+          # below reads all of them.
           TSAN_OPTIONS: >-
             suppressions=${{ github.workspace }}/ops/tsan/suppressions.txt
+            log_path=${{ github.workspace }}/tsan-logs/tsan
             halt_on_error=1
             history_size=4
             second_deadlock_stack=1
         run: |
           set -o pipefail
+          # TSan appends <pid> to log_path but will not create the directory.
+          mkdir -p "${{ github.workspace }}/tsan-logs"
+
           # SCOPE, stated because it is a sample and not the whole suite: these
           # are the integration tests that actually spawn threads — the REST API
           # and its token path, the HEP listener, the MCP stdio server, and the
@@ -84,6 +116,13 @@ jobs:
           #
           # A race in a path not listed here will NOT be found. Add the suite
           # rather than assuming coverage.
+          #
+          # The exit code is captured rather than allowed to abort the step
+          # (`run:` is `bash -e`). A failing suite must not skip the verdict
+          # below: a race and a test failure arrive together far more often than
+          # either arrives alone -- one aborted child fails nine tests -- and the
+          # race is the more informative of the two. Both still fail the job.
+          rc=0
           cargo +nightly test \
             -Zbuild-std \
             --target x86_64-unknown-linux-gnu \
@@ -93,22 +132,54 @@ jobs:
             --test hep_test \
             --test mcp_stdio_test \
             --test cli_flag_behavior_test \
-            2>&1 | tee tsan.log
+            2>&1 | tee tsan.log || rc=$?
 
-          # TSan reports a race and can still exit 0 when the test itself
-          # passes, so the exit code alone is not the verdict — grep the log.
-          # This is the same "reporting success you did not observe" shape the
-          # rest of this repository's gates were audited for.
-          if grep -q 'WARNING: ThreadSanitizer' tsan.log; then
-            echo "::error::ThreadSanitizer reported a data race — see the log above"
+          # A build that quietly lost -Zsanitizer=thread would report no races
+          # forever, and "no races reported" would be the most reassuring
+          # possible way to say nothing was checked. Prove the runtime is linked
+          # before believing any verdict drawn from its silence.
+          if ! nm -C target/x86_64-unknown-linux-gnu/debug/sipnab | grep -q __tsan_init; then
+            echo "::error::sipnab is not ThreadSanitizer-instrumented — a clean run would be vacuous"
             exit 1
           fi
-          echo "no races reported"
+
+          # TSan reports a finding and can still exit 0 when the test itself
+          # passes, so the exit code alone is not the verdict — read the logs.
+          # This is the same "reporting success you did not observe" shape the
+          # rest of this repository's gates were audited for.
+          #
+          # Classify rather than lump. An earlier draft failed on any
+          # `WARNING: ThreadSanitizer` and announced "a data race" — which would
+          # have called a thread leak a race. sipnab exits several fail-fast
+          # paths through std::process::exit, which by design skips the join in
+          # batch::run_loop, so an unjoined capture thread at exit is expected
+          # and is not what this job is looking for.
+          LOGS="tsan.log $(ls "${{ github.workspace }}"/tsan-logs/tsan.* 2>/dev/null || true)"
+          FATAL='data race|heap-use-after-free|lock-order-inversion|signal-unsafe call|unlock of an unlocked mutex|destroy of a locked mutex'
+          if grep -hoE "WARNING: ThreadSanitizer: ($FATAL)" $LOGS | sort -u | grep .; then
+            echo "::error::ThreadSanitizer reported the findings listed above — see the uploaded logs"
+            exit 1
+          fi
+          # Surface the rest without failing, and without claiming a type that
+          # was never matched.
+          grep -hoE 'WARNING: ThreadSanitizer: [a-z -]+' $LOGS | sort -u | while read -r w; do
+            echo "::warning::$w (not a race; not failing the job)"
+          done
+          echo "no race-class findings reported"
+
+          # The suites' own verdict, reported after the sanitizer's so a red
+          # suite never hides a race.
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the sanitizer suites failed (cargo test exit $rc) — see tsan.log"
+            exit "$rc"
+          fi
 
       - name: Upload the sanitizer log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: tsan-log
-          path: tsan.log
+          path: |
+            tsan.log
+            tsan-logs/
           if-no-files-found: warn

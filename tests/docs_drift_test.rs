@@ -77,6 +77,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/build.md",
         ],
     ),
+    // `rustc --cfg sipnab_tsan`, in the ThreadSanitizer section: the flag that
+    // drops mimalloc for the sanitizer build. A rustc flag, not a sipnab one.
+    (
+        "cfg",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `sha256sum --ignore-missing` and `gh attestation verify --repo`, in the
     // download-verification recipes.
     (
