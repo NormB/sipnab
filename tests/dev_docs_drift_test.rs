@@ -181,7 +181,16 @@ fn linked_code_targets_exist() {
             }
         }
     }
-    assert!(seen >= 40, "code-link extraction found only {seen} links");
+    // Exact, not a floor. A round number under the truth cannot see the
+    // extraction narrow: this read 40 while 265 links existed, so a regex that
+    // stopped matching 200 of them would still have passed. Bump when the
+    // corpus grows; never lower it to make a build pass.
+    assert_eq!(
+        seen, 265,
+        "code-link extraction found {seen} links, expected 265. More links is \
+         fine — bump this. FEWER means the extractor stopped matching, and \
+         every assertion below it silently narrowed."
+    );
     assert!(
         missing.is_empty(),
         "developer docs link to code that has moved or been deleted:\n  {}",
@@ -208,7 +217,12 @@ fn linked_symbols_resolve_to_a_definition() {
             }
         }
     }
-    assert!(seen >= 30, "symbol extraction found only {seen} claims");
+    assert_eq!(
+        seen, 49,
+        "symbol extraction found {seen} claims, expected 49. Bump when the \
+         developer docs cite more symbols; a drop means the `()`-suffix pattern \
+         stopped matching and unresolvable symbols pass unseen."
+    );
     assert!(
         missing.is_empty(),
         "developer docs name functions that no longer exist:\n  {}",
