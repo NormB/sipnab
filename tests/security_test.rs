@@ -1141,7 +1141,7 @@ fn fail2ban_sanitizes_newlines_in_ua() {
     let event = fail2ban::format_scanner_event(
         "10.0.0.5",
         Some("scanner\nfake_log_line src=1.2.3.4"),
-        "OPTIONS",
+        Some("OPTIONS"),
     );
     assert!(
         !event.contains('\n'),
@@ -1156,7 +1156,7 @@ fn fail2ban_sanitizes_newlines_in_ua() {
 /// M3: Fail2ban output must sanitize carriage returns in User-Agent.
 #[test]
 fn fail2ban_sanitizes_carriage_return_in_ua() {
-    let event = fail2ban::format_scanner_event("10.0.0.5", Some("scanner\rfake"), "OPTIONS");
+    let event = fail2ban::format_scanner_event("10.0.0.5", Some("scanner\rfake"), Some("OPTIONS"));
     assert!(
         !event.contains('\r'),
         "carriage returns must be sanitized: {event}"

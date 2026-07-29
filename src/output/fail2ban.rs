@@ -25,11 +25,13 @@ fn sanitize_log_value(s: &str) -> String {
 ///
 /// A quoted, escaped value, or the bare absent marker `-`.
 ///
-/// This is the ONE place the absent marker is decided. Before it, three
-/// spellings of the same condition were in the tree at once — `"unknown"` in
-/// the fail2ban path, `""` in `ScannerAlert`, and `"-"` in the kill-target
-/// alert — so the same missing header read differently depending on which line
-/// printed it, and no filter could match all three.
+/// This is the ONE place the absent marker is decided, and every field of a
+/// scanner line now goes through it. Before, FIVE spellings of the same
+/// condition were in the tree at once — `"unknown"` and `""` and `"-"` for a
+/// missing `User-Agent`, `"UNKNOWN"` and `"-"` for a missing method — so two
+/// lines describing identical input could disagree, and no filter could match
+/// them all. The first pass through this fixed only `ua`, which left the claim
+/// on this very comment untrue for `method` for one release.
 ///
 /// Present values are QUOTED, which is what makes the absent case
 /// unambiguous: a `User-Agent` whose value is literally `-` renders as `"-"`
@@ -79,25 +81,34 @@ const ABSENT: &str = "-";
 /// * `src_ip` — Source IP of the suspected scanner.
 /// * `ua` — Offending `User-Agent`, or `None` when the request carried no such
 ///   header.
-/// * `method` — SIP method the scanner used.
+/// * `method` — SIP method the scanner used, or `None` when the request line
+///   carried none.
 ///
-/// `ua` is an `Option` rather than a pre-substituted string because the two
-/// cases are different evidence. A request with **no** `User-Agent` is itself a
-/// scanner signal — plenty of scanners omit it — and the callers used to
-/// collapse that into the literal `"unknown"`, which a benign client can also
-/// send. The output that feeds a ban decision should not merge the more
-/// suspicious case into the less.
+/// Both are `Option` rather than pre-substituted strings because absence and a
+/// value that happens to look like a placeholder are different evidence. A
+/// request with **no** `User-Agent` is itself a scanner signal — plenty of
+/// scanners omit it — and the callers used to collapse that into the literal
+/// `"unknown"`, which a benign client can also send. `method` had the same
+/// problem twice over: `"UNKNOWN"` on one detection path and `"-"` on another
+/// for the same condition, so two lines describing identical input disagreed
+/// about what absence looks like. The output that feeds a ban decision should
+/// not merge the more suspicious case into the less, nor spell it two ways.
 ///
 /// # Returns
 ///
 /// The formatted log line (local-time timestamp); the caller is
 /// responsible for emitting it — nothing is written here.
-pub fn format_scanner_event(src_ip: &str, ua: Option<&str>, method: &str) -> String {
+pub fn format_scanner_event(src_ip: &str, ua: Option<&str>, method: Option<&str>) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let pid = std::process::id();
     let safe_src = sanitize_log_value(src_ip);
     let safe_ua = render_absent(ua);
-    let safe_method = sanitize_log_value(method);
+    // Quoted like `ua`, and for the same reason: `SipMethod::Custom` carries
+    // whatever token preceded the first space on the request line, so `method`
+    // is attacker-influenced text too. It cannot contain a space, so it cannot
+    // forge a whole field — but it can contain `=` or `"`, which is ambiguous
+    // unquoted and would break a consumer's own quoting.
+    let safe_method = render_absent(method);
     format!(
         "{now} sipnab[{pid}]: scanner_detected src={safe_src} ua={safe_ua} method={safe_method}"
     )
@@ -139,7 +150,7 @@ mod tests {
     /// `YYYY-MM-DD HH:MM:SS` timestamp.
     #[test]
     fn scanner_event_format() {
-        let event = format_scanner_event("10.0.0.5", Some("friendly-scanner"), "OPTIONS");
+        let event = format_scanner_event("10.0.0.5", Some("friendly-scanner"), Some("OPTIONS"));
 
         assert!(event.contains("sipnab["), "should contain 'sipnab[' prefix");
         assert!(
@@ -151,7 +162,10 @@ mod tests {
             event.contains(r#"ua="friendly-scanner""#),
             "should contain user agent"
         );
-        assert!(event.contains("method=OPTIONS"), "should contain method");
+        assert!(
+            event.contains(r#"method="OPTIONS""#),
+            "should contain method"
+        );
         // Verify timestamp format (YYYY-MM-DD HH:MM:SS)
         let parts: Vec<&str> = event.splitn(3, ' ').collect();
         assert!(parts.len() >= 2, "should have date and time parts");
@@ -174,8 +188,8 @@ mod tests {
     /// changes.
     #[test]
     fn an_absent_user_agent_is_not_the_same_line_as_a_literal_one() {
-        let absent = format_scanner_event("10.0.0.5", None, "OPTIONS");
-        let literal = format_scanner_event("10.0.0.5", Some(ABSENT), "OPTIONS");
+        let absent = format_scanner_event("10.0.0.5", None, Some("OPTIONS"));
+        let literal = format_scanner_event("10.0.0.5", Some(ABSENT), Some("OPTIONS"));
 
         let field = |line: &str| {
             line.split(" ua=")
@@ -247,7 +261,7 @@ mod tests {
     #[test]
     fn a_crafted_user_agent_cannot_forge_a_field() {
         let craft = "evil method=REGISTER src=1.2.3.4";
-        let event = format_scanner_event("10.0.0.5", Some(craft), "OPTIONS");
+        let event = format_scanner_event("10.0.0.5", Some(craft), Some("OPTIONS"));
         let f = fields(&event);
 
         let srcs: Vec<_> = f.iter().filter(|(k, _)| k == "src").collect();
@@ -264,17 +278,65 @@ mod tests {
             1,
             "a User-Agent forged a second method= in {event}"
         );
-        assert_eq!(methods[0].1, "OPTIONS", "the method= was overwritten");
+        assert_eq!(methods[0].1, r#""OPTIONS""#, "the method= was overwritten");
     }
 
     /// A quote in the User-Agent cannot close the quoting early and escape.
     #[test]
     fn a_quote_in_the_user_agent_cannot_break_out() {
-        let event = format_scanner_event("10.0.0.5", Some(r#"a" src=9.9.9.9 x=""#), "OPTIONS");
+        let event =
+            format_scanner_event("10.0.0.5", Some(r#"a" src=9.9.9.9 x=""#), Some("OPTIONS"));
         let f = fields(&event);
 
         let srcs: Vec<_> = f.iter().filter(|(k, _)| k == "src").collect();
         assert_eq!(srcs.len(), 1, "an embedded quote escaped ua= in {event}");
+        assert_eq!(srcs[0].1, "10.0.0.5", "the forged src= won");
+    }
+
+    /// The same guard for `method`, which had the defect twice over.
+    ///
+    /// An absent method rendered as `"UNKNOWN"` on the scanner path and `"-"`
+    /// on the kill-target path, so two lines describing identical input
+    /// disagreed — and `SipMethod::Custom` can hold either spelling, since it
+    /// keeps whatever token preceded the first space on the request line. The
+    /// first pass of this work fixed `ua` and left `method` behind, which made
+    /// the "ONE place" claim on `render_absent` untrue for a release.
+    #[test]
+    fn an_absent_method_is_not_the_same_line_as_a_literal_one() {
+        let absent = format_scanner_event("10.0.0.5", Some("ua"), None);
+        let literal = format_scanner_event("10.0.0.5", Some("ua"), Some(ABSENT));
+        let legacy = format_scanner_event("10.0.0.5", Some("ua"), Some("UNKNOWN"));
+
+        let field = |line: &str| {
+            line.split(" method=")
+                .nth(1)
+                .expect("every scanner line carries a method= field")
+                .to_string()
+        };
+
+        assert_ne!(
+            field(&absent),
+            field(&literal),
+            "no method and a method of `-` produce the same field"
+        );
+        assert_ne!(
+            field(&absent),
+            field(&legacy),
+            "no method and a Custom method of `UNKNOWN` produce the same field"
+        );
+    }
+
+    /// A `Custom` method cannot break out of its quoting.
+    ///
+    /// It cannot contain a space — the parser takes everything before the first
+    /// one — so it cannot forge a whole field. It CAN contain `=` and `"`.
+    #[test]
+    fn a_custom_method_cannot_break_out_of_its_field() {
+        let event = format_scanner_event("10.0.0.5", Some("ua"), Some(r#"X" src=9.9.9.9"#));
+        let f = fields(&event);
+
+        let srcs: Vec<_> = f.iter().filter(|(k, _)| k == "src").collect();
+        assert_eq!(srcs.len(), 1, "a Custom method forged a src= in {event}");
         assert_eq!(srcs[0].1, "10.0.0.5", "the forged src= won");
     }
 
@@ -297,7 +359,8 @@ mod tests {
     /// CR/LF embedded in every field is stripped — no forged log entries.
     #[test]
     fn scanner_event_sanitizes_all_fields() {
-        let event = format_scanner_event("10.0.0.1\r\nfake", Some("evil\nua"), "INVITE\rmethod");
+        let event =
+            format_scanner_event("10.0.0.1\r\nfake", Some("evil\nua"), Some("INVITE\rmethod"));
 
         assert!(
             !event.contains('\r') && !event.contains('\n'),
@@ -313,7 +376,7 @@ mod tests {
             "sanitized UA should be present"
         );
         assert!(
-            event.contains("method=INVITE"),
+            event.contains(r#"method="INVITE"#),
             "sanitized method should be present"
         );
     }
@@ -339,7 +402,7 @@ mod tests {
     /// Benign values pass through unmodified and newline-free.
     #[test]
     fn scanner_event_normal_values() {
-        let event = format_scanner_event("192.168.1.50", Some("Ooma/3.0"), "OPTIONS");
+        let event = format_scanner_event("192.168.1.50", Some("Ooma/3.0"), Some("OPTIONS"));
 
         assert!(
             event.contains("scanner_detected"),
@@ -353,7 +416,10 @@ mod tests {
             event.contains(r#"ua="Ooma/3.0""#),
             "should contain user agent"
         );
-        assert!(event.contains("method=OPTIONS"), "should contain method");
+        assert!(
+            event.contains(r#"method="OPTIONS""#),
+            "should contain method"
+        );
         // Should not have any stray newlines
         assert!(
             !event.contains('\r') && !event.contains('\n'),

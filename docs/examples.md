@@ -642,16 +642,18 @@ sudo sipnab -N -d eth0 --kill-scanner --fail2ban \
 Sample log line shape (from `src/output/fail2ban.rs`):
 
 ```text
-2026-05-05 12:34:56 sipnab[12345]: scanner_detected src=203.0.113.42 ua="friendly-scanner" method=OPTIONS
-2026-05-05 12:34:57 sipnab[12345]: scanner_detected src=203.0.113.43 ua=- method=REGISTER
+2026-05-05 12:34:56 sipnab[12345]: scanner_detected src=203.0.113.42 ua="friendly-scanner" method="OPTIONS"
+2026-05-05 12:34:57 sipnab[12345]: scanner_detected src=203.0.113.43 ua=- method="REGISTER"
 2026-05-05 12:34:57 sipnab[12345]: reg_flood src=203.0.113.42 count=37
 ```
 
-The `ua=` value is **quoted**, and a bare `-` means the request carried no
-`User-Agent` at all — which is itself a scanner signal, so it is worth keeping
-distinct from a client that sends the string `-`, which renders as `"-"`.
-Quoting is also what stops a crafted `User-Agent` forging a second `src=` field
-inside the line; embedded `"` and `\` are escaped.
+The `ua=` and `method=` values are **quoted**, and a bare `-` means the request
+carried none — an absent `User-Agent` is itself a scanner signal, so it is worth
+keeping distinct from a client that sends the string `-`, which renders as
+`"-"`. Both fields carry attacker-influenced text (`method` can be a
+non-standard token), so quoting is also what stops a crafted value forging a
+second `src=` field inside the line; embedded `"` and `\` are escaped. `src=`
+is unquoted: it is a parsed IP address, not text from the wire.
 
 `/etc/fail2ban/filter.d/sipnab.conf`:
 
