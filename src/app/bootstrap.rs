@@ -49,6 +49,24 @@ impl PlanError {
         tracing::error!("{}", self.message);
         std::process::exit(self.exit_code);
     }
+
+    /// Like [`exit`](Self::exit), but runs `cleanup` between reporting and
+    /// exiting. Never returns.
+    ///
+    /// # Arguments
+    ///
+    /// * `cleanup` — teardown that must happen before the process dies, such as
+    ///   stopping a capture thread that is already running.
+    ///
+    /// The error is reported first so the reason reaches the user ahead of any
+    /// noise the teardown emits, and `std::process::exit` is called only after
+    /// the cleanup returns — it runs no destructors, so anything not done here
+    /// does not happen at all.
+    pub fn exit_after(self, cleanup: impl FnOnce()) -> ! {
+        tracing::error!("{}", self.message);
+        cleanup();
+        std::process::exit(self.exit_code);
+    }
 }
 
 /// Which top-level mode this invocation runs.
@@ -462,10 +480,12 @@ pub fn launch(
             } else {
                 tracing::error!("Capture source failed to open: {e}");
             }
+            capture::stop_and_join(handle, rx);
             std::process::exit(1);
         }
         Err(_) => {
             tracing::error!("Capture thread exited before signaling ready");
+            capture::stop_and_join(handle, rx);
             std::process::exit(1);
         }
     }
@@ -477,6 +497,7 @@ pub fn launch(
         && let Err(e) = privilege::do_chroot(std::path::Path::new(chroot_dir))
     {
         tracing::error!("Failed to chroot: {e}");
+        capture::stop_and_join(handle, rx);
         std::process::exit(1);
     }
 
@@ -497,6 +518,7 @@ pub fn launch(
                          Grant CAP_NET_RAW (sipnab --setup-caps / run under sudo) or use \
                          --kill-spoof ephemeral."
                     );
+                    capture::stop_and_join(handle, rx);
                     std::process::exit(1);
                 }
                 tracing::warn!(
@@ -515,6 +537,7 @@ pub fn launch(
     let effective_no_priv_drop = cli.no_priv_drop || config.privilege.no_priv_drop.unwrap_or(false);
     if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
         tracing::error!("Failed to drop privileges: {e}");
+        capture::stop_and_join(handle, rx);
         std::process::exit(1);
     }
 
@@ -527,6 +550,7 @@ pub fn launch(
     #[cfg(not(feature = "hep"))]
     if cli.hep_send.is_some() {
         tracing::error!("HEP support requires --features hep");
+        capture::stop_and_join(handle, rx);
         std::process::exit(2);
     }
 
@@ -534,6 +558,7 @@ pub fn launch(
     #[cfg(not(feature = "hep"))]
     if cli.hep_parse {
         tracing::error!("HEP support requires --features hep");
+        capture::stop_and_join(handle, rx);
         std::process::exit(2);
     }
 
@@ -542,18 +567,22 @@ pub fn launch(
     {
         if cli.tls_key.is_some() {
             tracing::error!("--tls-key requires the 'tls' feature (not compiled in)");
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
         if cli.keylog.is_some() {
             tracing::error!("--keylog requires the 'tls' feature (not compiled in)");
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
         if cli.keylog_watch {
             tracing::error!("--keylog-watch requires the 'tls' feature (not compiled in)");
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
         if cli.srtp_keys.is_some() {
             tracing::error!("--srtp-keys requires the 'tls' feature (not compiled in)");
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
     }
@@ -563,18 +592,22 @@ pub fn launch(
     {
         if cli.api.is_some() {
             tracing::error!("--api requires the 'api' feature (not compiled in)");
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
         if cli.api_key.is_some() {
             tracing::error!("--api-key requires the 'api' feature (not compiled in)");
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
         if cli.api_tls_cert.is_some() {
             tracing::error!("--api-tls-cert requires the 'api' feature (not compiled in)");
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
         if cli.api_tls_key.is_some() {
             tracing::error!("--api-tls-key requires the 'api' feature (not compiled in)");
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
     }
@@ -586,6 +619,7 @@ pub fn launch(
             tracing::error!(
                 "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
             );
+            capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
     }
@@ -595,12 +629,14 @@ pub fn launch(
     #[cfg(not(feature = "tls"))]
     if cli.dtls_keylog.is_some() {
         tracing::error!("--dtls-keylog requires the 'tls' feature (not compiled in)");
+        capture::stop_and_join(handle, rx);
         std::process::exit(2);
     }
 
     // 16g. Validate --api-tls-cert/--api-tls-key consistency
     if cli.api_tls_cert.is_some() != cli.api_tls_key.is_some() {
         tracing::error!("--api-tls-cert and --api-tls-key must both be specified together");
+        capture::stop_and_join(handle, rx);
         std::process::exit(2);
     }
 
@@ -614,6 +650,7 @@ pub fn launch(
         && let Err(e) = privilege::disable_core_dumps()
     {
         tracing::error!("Failed to disable core dumps: {e}");
+        capture::stop_and_join(handle, rx);
         std::process::exit(1);
     }
 

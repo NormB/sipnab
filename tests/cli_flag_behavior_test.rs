@@ -1030,3 +1030,51 @@ fn call_report_resolves_by_call_id_in_branch_mode() {
         "a Call-ID must still resolve under branch tracking:\n{err}"
     );
 }
+
+/// A startup failure after the capture thread is spawned exits cleanly.
+///
+/// `bootstrap::launch` starts the capture thread before the readiness
+/// hand-shake, the chroot and the privilege drop, and every failure from there
+/// on used to call `std::process::exit` directly — which joins nothing, so the
+/// capture thread was abandoned mid-read while still holding its source. That
+/// is invisible to an ordinary test run: the exit code and the message are the
+/// same either way, and the process dies before anything can observe the
+/// difference.
+///
+/// It is NOT invisible under ThreadSanitizer, which reports the abandoned
+/// thread as a thread leak — and this suite is one of the five the sanitizer
+/// job runs. So this test is the guard: ordinarily it asserts the contract
+/// below, and under `sanitizers.yml` it additionally forces the leak to
+/// reappear if `capture::stop_and_join` is ever dropped from these paths.
+/// `-I <missing>` is the everyday version (a mistyped filename), which is why
+/// it earns a test rather than being left to the exotic ones.
+#[test]
+fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
+    // Readiness hand-shake failure: the source never opens.
+    let (_out, err, code) = run_support::run(&["-N", "-I", "/nonexistent.pcap"], Some("error"));
+    assert_eq!(
+        code,
+        Some(1),
+        "a missing capture file must exit 1, not {code:?}:\n{err}"
+    );
+    assert!(
+        err.contains("failed to open"),
+        "the failure must say the source could not be opened:\n{err}"
+    );
+
+    // Post-hand-shake failure: the file opens, the capture thread is running,
+    // and a later startup step fails.
+    let (_out, err, code) = run_support::run(
+        &["-N", "-I", FIXTURE, "--chroot", "/nonexistent-dir"],
+        Some("error"),
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "an unusable --chroot must exit 1, not {code:?}:\n{err}"
+    );
+    assert!(
+        err.contains("Failed to chroot"),
+        "the failure must name chroot as the cause:\n{err}"
+    );
+}
