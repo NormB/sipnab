@@ -445,9 +445,62 @@ fn linked_code_uses_relative_paths() {
     );
 }
 
+/// Run a snippet of Python against the generator registries and parse its JSON.
+///
+/// The registries are imported, not read as text. Every gate below used to
+/// grep the generator source, which made "the string appears twice in the file"
+/// the proxy for "the page is registered" — and a commented-out entry
+/// (`# "internals/threading.md",`), the single most likely way a nav entry
+/// disappears, satisfies the count while registering nothing.
+fn registries(expr: &str) -> serde_json::Value {
+    let script = format!(
+        "import importlib.util as u, json\n\
+         def load(p, n):\n\
+         \x20   s = u.spec_from_file_location(n, p); m = u.module_from_spec(s); \
+         s.loader.exec_module(m); return m\n\
+         w = load('scripts/build-wiki.py', 'w')\n\
+         i = load('scripts/build-site-internals.py', 'i')\n\
+         p = load('scripts/build-site-pages.py', 'p')\n\
+         print(json.dumps({expr}))"
+    );
+    let out = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(&script)
+        .current_dir(repo())
+        .output()
+        .expect("run python3 against the generator registries");
+    assert!(
+        out.status.success(),
+        "could not import the generator registries: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("generator registries as JSON")
+}
+
 #[test]
 fn every_internals_page_is_registered_for_the_wiki() {
-    let wiki = read("scripts/build-wiki.py");
+    // PAGES maps a docs-relative key to a wiki page name; GROUPS places that
+    // key in the sidebar. A page in PAGES but not GROUPS publishes and is
+    // reachable from nowhere — the exact failure this test's message names,
+    // and one the old textual count could not see, because commenting the
+    // GROUPS entry out left the string in the file.
+    let reg = registries(
+        "{'pages': list(w.PAGES), 'groups': [s for _t, srcs in w.GROUPS for s in srcs]}",
+    );
+    let listed = |key: &str, which: &str| -> bool {
+        reg[which]
+            .as_array()
+            .expect("registry list")
+            .iter()
+            .any(|v| v.as_str() == Some(key))
+    };
+    assert!(
+        reg["pages"].as_array().map_or(0, Vec::len) >= 10,
+        "read {} PAGES entries — the registry import is broken and this gate \
+         is checking nothing",
+        reg["pages"].as_array().map_or(0, Vec::len)
+    );
+
     let mut unregistered = Vec::new();
     for page in internals_pages() {
         // Keyed on the path under docs/, not the basename. A basename key
@@ -459,18 +512,23 @@ fn every_internals_page_is_registered_for_the_wiki() {
             .expect("under docs/")
             .to_string_lossy()
             .into_owned();
-        let quoted = format!("\"{key}\"");
-        // PAGES maps the key to a title; GROUPS places it in the sidebar.
-        // build-wiki.py errors on a PAGES entry with no file, but silently
-        // declines to publish a file with no PAGES entry — this closes that.
-        if wiki.matches(&quoted).count() < 2 {
-            unregistered.push(key);
+        // Checked independently, because the two failures differ: absent from
+        // PAGES means it never publishes; absent from GROUPS means it
+        // publishes and nothing links to it.
+        if !listed(&key, "pages") {
+            unregistered.push(format!(
+                "{key} — not in build-wiki.py PAGES (never publishes)"
+            ));
+        } else if !listed(&key, "groups") {
+            unregistered.push(format!(
+                "{key} — in PAGES but not in any GROUPS entry (publishes, and \
+                 the sidebar links to it from nowhere)"
+            ));
         }
     }
     assert!(
         unregistered.is_empty(),
-        "docs/internals pages missing from build-wiki.py PAGES and/or GROUPS \
-         (they would never publish to the wiki):\n  {}",
+        "docs/internals pages are not registered for the wiki:\n  {}",
         unregistered.join("\n  ")
     );
 }
@@ -893,20 +951,42 @@ fn pages_with_diagrams_load_the_mermaid_bundle() {
         "expected at least 6 developer pages to carry diagrams, found {with_diagrams}"
     );
 
-    let tpl = read("website/templates/page.html");
-    assert!(
-        tpl.contains("page.extra.has_diagrams"),
-        "page.html must gate the mermaid bundle on page.extra.has_diagrams"
-    );
+    // Tera never renders `{# … #}`, so the template is read with comments
+    // blanked. Reading raw bytes could not tell a live `{% if %}` guard from
+    // the same words parked in a comment — and page.html opens with a comment
+    // that explains the flag by name, so deleting the guard and keeping the
+    // explanation left this green while every doc page unconditionally pulled
+    // a 3.4 MB bundle.
+    let tpl = markdown::blank_tera_comments(&read("website/templates/page.html"));
+    let guard = "{% if page.extra.has_diagrams %}";
+    let open = tpl.find(guard).unwrap_or_else(|| {
+        panic!("page.html must gate the mermaid bundle on {guard}");
+    });
+    let close = tpl[open..]
+        .find("{% endif %}")
+        .map(|n| open + n)
+        .unwrap_or_else(|| panic!("page.html has {guard} with no {{% endif %}}"));
+
     for asset in ["js/mermaid.min.js", "js/diagram-viewer.js"] {
-        assert!(
-            tpl.contains(asset),
-            "page.html does not load {asset} — the diagrams would render as \
-             raw mermaid source"
-        );
         assert!(
             repo().join("website/static").join(asset).is_file(),
             "website/static/{asset} is missing but page.html references it"
+        );
+        // Inside the guard, and nowhere outside it. "Appears somewhere in the
+        // file" is satisfied by a bundle loaded unconditionally, which is the
+        // second failure mode this test's doc comment names and the one the
+        // substring check could not distinguish from the first.
+        let inside = tpl[open..close].contains(asset);
+        let outside = tpl[..open].contains(asset) || tpl[close..].contains(asset);
+        assert!(
+            inside,
+            "page.html does not load {asset} inside {guard} — the diagrams \
+             would render as raw mermaid source"
+        );
+        assert!(
+            !outside,
+            "page.html loads {asset} outside {guard}, so every page pays for \
+             the mermaid bundle whether or not it has a diagram"
         );
     }
 }
@@ -917,17 +997,27 @@ fn pages_with_diagrams_load_the_mermaid_bundle() {
 /// never learned about them, so the only way to the pages was a direct URL.
 #[test]
 fn every_site_internals_page_is_in_the_docs_dropdown() {
-    let base = read("website/templates/base.html");
+    // Comments blanked first: replacing the Threading Model `<a>` with a Tera
+    // comment containing the same path left this green, while the text never
+    // reached rendered HTML and the page was reachable only by direct URL —
+    // precisely the gap the doc comment above says started this test.
+    let base = markdown::blank_tera_comments(&read("website/templates/base.html"));
     let mut missing = Vec::new();
     for page in internals_pages() {
-        let link = format!("@/docs/internals/{}", site_mirror_name(&page));
-        if !base.contains(&link) {
-            missing.push(link);
+        let path = format!("@/docs/internals/{}", site_mirror_name(&page));
+        // The path has to appear in an anchor's href, not merely somewhere in
+        // the file: a mention in a `<script>`, an attribute or leftover markup
+        // is not a link a reader can follow.
+        let linked = base.lines().any(|l| {
+            l.contains(&path) && l.contains("<a ") && l.contains("href=") && l.contains("get_url")
+        });
+        if !linked {
+            missing.push(path);
         }
     }
     assert!(
         missing.is_empty(),
-        "developer pages absent from the Docs dropdown in base.html:\n  {}",
+        "developer pages have no anchor in the Docs dropdown in base.html:\n  {}",
         missing.join("\n  ")
     );
 }
@@ -1157,6 +1247,83 @@ fn docs_to_site_map_is_complete() {
             ));
         }
     }
+    // The direction the generator lists could not supply. Every entry above is
+    // derived from what a generator WRITES, so the one site page no generator
+    // writes — `benchmarks.md`, hand-maintained on both sides on purpose — had
+    // its map entry guarded by nothing at all. Deleting it would send readers
+    // to GitHub past a site page that exists: the identical `tui-walkthrough.md`
+    // regression the comment above this map memorializes.
+    //
+    // Disk answers it. A `docs/X.md` that has a same-named site page is a page
+    // with two copies, and a link to it must reach the site copy.
+    let docs_dir = repo().join("docs");
+    let site_dir = repo().join("website/content/docs");
+    let mut paired = 0;
+    for entry in std::fs::read_dir(&docs_dir).expect("read docs/") {
+        let p = entry.expect("dir entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+        if !site_dir.join(&name).is_file() {
+            continue;
+        }
+        paired += 1;
+        if !json.contains(&format!("\"{name}\"")) {
+            problems.push(format!(
+                "docs/{name} and website/content/docs/{name} both exist, but \
+                 DOCS_TO_SITE has no entry for it — links to that docs page \
+                 become blob URLs, sending readers to GitHub past the site \
+                 page that exists"
+            ));
+        }
+    }
+    assert!(
+        paired >= 5,
+        "found only {paired} docs pages with a same-named site page — the \
+         pairing walk is reading nothing and this direction passes vacuously"
+    );
+
+    // And the reverse, with the exemption derived rather than listed. A site
+    // page needs no map entry only if nothing under docs/ could produce it:
+    // `_index.md` is Zola's section landing page, and `api-clients.md`,
+    // `build.md` and `integrations.md` are written for the site alone. Naming
+    // them in a hand-kept allowlist would be one more list to drift; asking
+    // disk whether a source exists cannot drift.
+    let mut exempt = Vec::new();
+    for entry in std::fs::read_dir(&site_dir).expect("read website/content/docs/") {
+        let p = entry.expect("dir entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+        if mapped.iter().any(|m| *m == name) || name == "_index.md" {
+            continue;
+        }
+        if docs_dir.join(&name).is_file() {
+            problems.push(format!(
+                "website/content/docs/{name} is not a DOCS_TO_SITE value even \
+                 though docs/{name} exists"
+            ));
+        } else {
+            exempt.push(name);
+        }
+    }
+    assert!(
+        exempt.len() <= 5,
+        "{} site pages claim to have no docs/ source ({exempt:?}) — that many \
+         means the pairing rule has stopped matching, not that the site grew",
+        exempt.len()
+    );
+
     assert!(
         problems.is_empty(),
         "DOCS_TO_SITE disagrees with what is on disk:\n  {}",

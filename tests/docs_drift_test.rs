@@ -1861,7 +1861,11 @@ fn no_documentation_table_repeats_a_row() {
         let scanned = markdown::blank_fences(&text);
         let lines: Vec<&str> = scanned.lines().collect();
         let mut table: Vec<(usize, &str)> = Vec::new();
-        for (n, line) in lines.iter().enumerate().chain(std::iter::once((lines.len(), &""))) {
+        for (n, line) in lines
+            .iter()
+            .enumerate()
+            .chain(std::iter::once((lines.len(), &"")))
+        {
             let l = line.trim();
             if l.starts_with('|') {
                 table.push((n + 1, l));
