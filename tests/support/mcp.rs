@@ -20,6 +20,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+include!("timeout.rs");
+
 /// A minimal HTTP response: status code + body (headers are discarded).
 pub struct HttpResponse {
     pub status: u16,
@@ -84,7 +86,7 @@ pub fn spawn_http(extra_args: &[&str]) -> Option<(Child, String)> {
         }
     });
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + test_timeout(5);
     while Instant::now() < deadline {
         if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
             if let Some(addr) = line.split("listening on ").nth(1) {
@@ -169,7 +171,7 @@ pub fn post_json(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> H
 
     let mut stream = TcpStream::connect((host, port)).expect("connect");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(test_timeout(5)))
         .expect("read timeout");
 
     let body_str = serde_json::to_string(body).expect("serialize");

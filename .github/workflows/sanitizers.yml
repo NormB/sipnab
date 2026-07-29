@@ -56,6 +56,14 @@ jobs:
         env:
           RUSTFLAGS: -Zsanitizer=thread
           RUSTDOCFLAGS: -Zsanitizer=thread
+          # Instrumented code against an instrumented std runs several times
+          # slower, and every integration deadline is a wall-clock bet on the
+          # binary's speed. The first run of this job came back red with seven
+          # "did not report a listening address" failures and zero races --
+          # a sanitizer whose red means "the runner was slow" gets ignored, and
+          # then so does the run where it means "there is a data race".
+          SIPNAB_TEST_TIMEOUT_SCALE: '12'
+
           # halt_on_error keeps the first race as the failure rather than
           # letting a later clean test overwrite the verdict. history_size
           # widens the recorded stack depth, which is what makes a report

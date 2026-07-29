@@ -113,3 +113,48 @@ fn multiple_tokens_on_one_line() {
         "<TS> call took <DUR> via 127.0.0.1:<PORT> pid=<PID> -> <TMP>",
     );
 }
+
+include!("support/timeout.rs");
+
+/// `test_timeout` scales deadlines, and refuses a scale that would zero them.
+///
+/// One test rather than three, deliberately: `cargo test` runs a binary's
+/// tests in parallel, so three tests mutating the same environment variable
+/// would race each other and pass or fail on scheduling. That is the same
+/// class of bug the sanitizer job exists to find, and writing it into the
+/// sanitizer job's own self-test would be a poor advertisement.
+#[test]
+fn timeout_scaling_contract() {
+    // SAFETY: the only test in this binary that touches this variable, so no
+    // other thread can be reading it concurrently.
+    let set = |v: Option<&str>| unsafe {
+        match v {
+            Some(v) => std::env::set_var("SIPNAB_TEST_TIMEOUT_SCALE", v),
+            None => std::env::remove_var("SIPNAB_TEST_TIMEOUT_SCALE"),
+        }
+    };
+    let secs = |d: std::time::Duration| d.as_secs();
+
+    // Unset: used as written.
+    set(None);
+    assert_eq!(secs(test_timeout(15)), 15);
+
+    // Set: multiplied. This is what keeps the sanitizer job's red meaning
+    // "there is a race" rather than "the runner was slow".
+    set(Some("12"));
+    assert_eq!(secs(test_timeout(15)), 180);
+
+    // Garbage, empty and zero all fall back to 1. A scale that silently read
+    // as zero would collapse every deadline to an instant timeout -- the same
+    // defect in the opposite direction, and one that would look like a flood
+    // of real failures.
+    for bad in ["0", "", "  ", "nope", "-3", "1.5"] {
+        set(Some(bad));
+        assert_eq!(
+            secs(test_timeout(5)),
+            5,
+            "scale {bad:?} must fall back to 1, not zero the deadline"
+        );
+    }
+    set(None);
+}

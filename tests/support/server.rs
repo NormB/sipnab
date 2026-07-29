@@ -21,6 +21,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+include!("timeout.rs");
+
 /// A minimal HTTP response: status code + body (headers are discarded).
 pub struct Resp {
     pub status: u16,
@@ -76,7 +78,8 @@ impl ApiServer {
         });
 
         // First wait for the bind line to learn the ephemeral port.
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let budget = test_timeout(15);
+        let deadline = Instant::now() + budget;
         let mut addr = None;
         while Instant::now() < deadline {
             match rx.recv_timeout(Duration::from_millis(200)) {
@@ -96,7 +99,7 @@ impl ApiServer {
         }
         let addr = addr.unwrap_or_else(|| {
             let _ = child.kill();
-            panic!("API server did not report a listening address within 15s");
+            panic!("API server did not report a listening address within {budget:?}");
         });
 
         // The API serves *concurrently* with offline-pcap processing, so a bound
@@ -134,7 +137,7 @@ impl ApiServer {
     /// returns anyway (the test's own assertions then surface the problem).
     fn await_stable(&self, api_key: Option<&str>) {
         let auth = api_key.map(|k| format!("Bearer {k}"));
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + test_timeout(10);
         let mut prev: Option<serde_json::Value> = None;
         while Instant::now() < deadline {
             // Compare PARSED values: equal content is "stable" regardless of any
@@ -176,7 +179,7 @@ impl Drop for ApiServer {
 /// Minimal blocking HTTP/1.1 GET over a fresh `Connection: close` socket.
 fn http_get(addr: &str, path: &str, auth: Option<&str>) -> Resp {
     let mut stream = TcpStream::connect(addr).unwrap_or_else(|e| panic!("connect {addr}: {e}"));
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_read_timeout(Some(test_timeout(10))).ok();
 
     let mut req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
     if let Some(a) = auth {
