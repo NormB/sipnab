@@ -257,17 +257,23 @@ fn website_intra_docs_links_resolve() {
     let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_./-]+?\.md)(#[A-Za-z0-9_.-]+)?").unwrap();
     // A plain relative .md link inside Zola content silently renders as a
     // dead URL — internal links must use @/docs/. Catch those too.
-    let rel_md = regex::Regex::new(r"\]\((\./)?([A-Za-z0-9_-]+\.md)(#[A-Za-z0-9_.-]+)?\)").unwrap();
+    // `/` and `.` belong in the class. Without them `[Threading](internals/threading.md)`
+    // and `[Up](../install.md)` matched nothing at all — so a plain relative
+    // link into a subdirectory, which Zola renders as a literal dead URL, was
+    // invisible to the check whose docstring says it flags exactly those.
+    let rel_md =
+        regex::Regex::new(r"\]\((\./)?([A-Za-z0-9_./-]+\.md)(#[A-Za-z0-9_.-]+)?\)").unwrap();
     // Same-page anchors: [text](#anchor)
     let self_re = regex::Regex::new(r"\]\(#([A-Za-z0-9_.-]+)\)").unwrap();
 
     let mut problems = Vec::new();
-    let mut seen = 0;
+    let mut seen_docs = 0;
+    let mut seen_anchors = 0;
     for file in website_docs_files() {
         let from = file.display().to_string();
         let text = prose(&file);
         for cap in re.captures_iter(&text) {
-            seen += 1;
+            seen_docs += 1;
             let raw = cap[0].to_string();
             let target = repo().join("website/content/docs").join(&cap[1]);
             if !target.is_file() {
@@ -295,7 +301,7 @@ fn website_intra_docs_links_resolve() {
             ));
         }
         for cap in self_re.captures_iter(&text) {
-            seen += 1;
+            seen_anchors += 1;
             check_anchor(
                 &file,
                 &cap[1],
@@ -305,9 +311,19 @@ fn website_intra_docs_links_resolve() {
             );
         }
     }
+    // Two counters, because two independent extractors ran into one. The
+    // combined floor of 20 was cleared by the 22 self-anchors alone, so
+    // breaking the @/docs regex entirely — 107 links down to zero — left the
+    // gate green with a link to a nonexistent page in the tree.
     assert!(
-        seen >= 20,
-        "extractor found only {seen} website links — regex broken?"
+        seen_docs >= 90,
+        "@/docs extractor found only {seen_docs} links (107 at the time of \
+         writing) — the regex stopped matching and broken links pass unseen"
+    );
+    assert!(
+        seen_anchors >= 15,
+        "self-anchor extractor found only {seen_anchors} links (22 at the time \
+         of writing) — the regex stopped matching"
     );
     assert!(
         problems.is_empty(),
@@ -479,8 +495,12 @@ fn template_docs_links_and_anchors_resolve() {
     // site_journey_test covers bare existence in base/index; this covers ALL
     // templates and validates anchors appended after the get_url call
     // (`{{ get_url(path='@/docs/x.md') }}#anchor`).
+    // `/` belongs in the class. Without it the ten `@/docs/internals/…` calls —
+    // the entire internals nav block in base.html — matched nothing, a 28%
+    // blind spot in a test whose comment says it covers ALL templates. A
+    // get_url to a nonexistent page there would have shipped a broken nav link.
     let re = regex::Regex::new(
-        r"get_url\(path='@/docs/([A-Za-z0-9_.-]+?\.md)'\)\s*\}\}(#[A-Za-z0-9_.-]+)?",
+        r"get_url\(path='@/docs/([A-Za-z0-9_./-]+?\.md)'\)\s*\}\}(#[A-Za-z0-9_.-]+)?",
     )
     .unwrap();
     let mut problems = Vec::new();
@@ -507,7 +527,42 @@ fn template_docs_links_and_anchors_resolve() {
                 continue;
             }
             if let Some(anchor) = cap.get(2) {
+                // Zola's rule alone. check_anchor unions the GitHub, task-spec
+                // and Zola slugs, which is right for docs/ — read on GitHub,
+                // published to the wiki AND generated onto the site — but these
+                // targets live under website/content/docs and are rendered by
+                // Zola and nothing else. The union accepted GitHub spellings
+                // Zola never emits: `#step-0--install-…` (two hyphens) passed
+                // here while the identical anchor in a content file failed
+                // generated_site_anchors_resolve_under_zola.
                 let target_rel = Path::new("website/content/docs").join(&cap[1]);
+                let zola_ok = {
+                    let mut seen_slugs: BTreeMap<String, usize> = BTreeMap::new();
+                    let mut ok = false;
+                    for h in headings(&target_rel) {
+                        let slug = slug_zola(&h);
+                        let n = seen_slugs.entry(slug.clone()).or_insert(0);
+                        let candidate = if *n == 0 {
+                            slug.clone()
+                        } else {
+                            format!("{slug}-{n}")
+                        };
+                        *n += 1;
+                        if candidate == anchor.as_str()[1..] {
+                            ok = true;
+                        }
+                    }
+                    ok
+                };
+                if !zola_ok {
+                    problems.push(format!(
+                        "{from}: `{raw}` -> #{} does not exist in {} under Zola's slug \
+                         rule — the site is the only thing that renders it",
+                        &anchor.as_str()[1..],
+                        target_rel.display()
+                    ));
+                    continue;
+                }
                 check_anchor(
                     &target_rel,
                     &anchor.as_str()[1..],
@@ -519,8 +574,10 @@ fn template_docs_links_and_anchors_resolve() {
         }
     }
     assert!(
-        seen >= 15,
-        "only {seen} template @/docs links found — extractor broken?"
+        seen >= 32,
+        "only {seen} template @/docs links found (36 at the time of writing) — \
+         the extractor stopped matching. A floor of 15 against a true 26 could \
+         not see that ten subdirectory links matched nothing at all."
     );
     assert!(
         problems.is_empty(),
