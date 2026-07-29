@@ -28,6 +28,13 @@ import re
 import sys
 from pathlib import Path
 
+# The generators are also loaded by tests via importlib, which does not put
+# their directory on sys.path -- so add it explicitly rather than relying on
+# being run as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib_markdown import fence_mask, fences, sub_outside_code  # noqa: E402
+
 REPO = "NormB/sipnab"
 BLOB = f"https://github.com/{REPO}/blob/main"
 
@@ -162,8 +169,8 @@ LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 # only matches `.md`, so without this a relative `../../src/pipeline.rs`
 # survives verbatim onto a site page and resolves to nothing.
 CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:src|tests|crates|benches|fuzz|scripts|contrib"
-    r"|harness|ops|man|demos|\.github|\.githooks)(?:/[^)\s]*)?)\s*\)"
+    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|benches|contrib|harness|scripts|website"
+    r"|\.cargo|crates|docker|bench|demos|tests|fuzz|man|ops|src)(?:/[^)\s]*)?)\s*\)"
 )
 
 
@@ -254,12 +261,12 @@ def zola_slug(text: str) -> str:
 def anchor_map(text: str) -> dict[str, str]:
     """`{github_slug: zola_slug}` for every ATX heading outside a code fence."""
     out: dict[str, str] = {}
-    in_fence = False
-    for line in text.splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            in_fence = not in_fence
-            continue
-        if in_fence or not line.startswith("#"):
+    # fence_mask, not a toggled bool: a `~~~` block containing a ``` line
+    # switches a toggle on with nothing to switch it back, and every heading
+    # after it drops out of the anchor map.
+    mask = fence_mask(text)
+    for n, line in enumerate(text.splitlines()):
+        if mask[n] or not line.startswith("#"):
             continue
         rendered = _heading_text(line)
         if not rendered:
@@ -296,27 +303,30 @@ def convert_mermaid(text: str) -> tuple[str, bool]:
     runs verbatim to its closing tag — blank lines included — so the diagram
     source reaches the browser exactly as authored, with no smart-punctuation
     pass mangling `-->>` into an arrow glyph.
+
+    The fence is found by the shared CommonMark lexer, not by comparing the
+    line to the string ``"```mermaid"``. That comparison made the exact
+    spelling of the marker the proxy for "is a diagram": a ``~~~mermaid``
+    fence, or one with a trailing space, was copied through as literal text and
+    shipped to the site as raw diagram source.
     """
     lines = text.splitlines()
+    blocks = {f.start: f for f in fences(text) if f.lang == "mermaid"}
     out: list[str] = []
     found = False
     i = 0
     while i < len(lines):
-        if lines[i].strip() == "```mermaid":
-            found = True
-            i += 1
-            body: list[str] = []
-            while i < len(lines) and lines[i].strip() != "```":
-                body.append(lines[i])
-                i += 1
-            i += 1  # closing fence
-            escaped = html.escape("\n".join(body), quote=False)
-            out.append('<pre class="mermaid">')
-            out.append(escaped)
-            out.append("</pre>")
-        else:
+        block = blocks.get(i)
+        if block is None:
             out.append(lines[i])
             i += 1
+            continue
+        found = True
+        escaped = html.escape("\n".join(block.body), quote=False)
+        out.append('<pre class="mermaid">')
+        out.append(escaped)
+        out.append("</pre>")
+        i = block.end
     return "\n".join(out) + "\n", found
 
 
@@ -349,7 +359,7 @@ BANNER = (
 def render(src_rel: str, src_text: str, title: str, weight: int, description: str) -> str:
     _, body = strip_leading_h1(src_text)
     body = LINK_RE.sub(rewrite_link, body)
-    body = CODE_LINK_RE.sub(rewrite_code_link, body)
+    body = sub_outside_code(CODE_LINK_RE, rewrite_code_link, body)
     body, has_diagrams = convert_mermaid(body)
     return (
         frontmatter(title, weight, description, has_diagrams)
@@ -361,7 +371,7 @@ def render(src_rel: str, src_text: str, title: str, weight: int, description: st
 def render_index(src_text: str) -> str:
     _, body = strip_leading_h1(src_text)
     body = LINK_RE.sub(rewrite_link, body)
-    body = CODE_LINK_RE.sub(rewrite_code_link, body)
+    body = sub_outside_code(CODE_LINK_RE, rewrite_code_link, body)
     body, _ = convert_mermaid(body)
     head = "\n".join(
         [

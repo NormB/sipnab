@@ -21,6 +21,13 @@ import re
 import sys
 from pathlib import Path
 
+# The generators are also loaded by tests via importlib, which does not put
+# their directory on sys.path -- so add it explicitly rather than relying on
+# being run as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib_markdown import sub_outside_code  # noqa: E402
+
 REPO = "NormB/sipnab"
 SITE = "https://www.sipnab.com"
 BLOB = f"https://github.com/{REPO}/blob/main"
@@ -92,8 +99,8 @@ LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 # (`../../harness`), and dev_docs_drift_test counts that as a code link too,
 # so both forms must rewrite or the bare one reaches the wiki dead.
 CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:src|tests|crates|bench|benches|fuzz|scripts"
-    r"|contrib|harness|ops|man|demos|\.github|\.githooks)(?:/[^)\s]*)?)\s*\)"
+    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|benches|contrib|harness|scripts|website"
+    r"|\.cargo|crates|docker|bench|demos|tests|fuzz|man|ops|src)(?:/[^)\s]*)?)\s*\)"
 )
 
 
@@ -162,7 +169,7 @@ def strip_leading_h1(text: str) -> str:
 def transform(src_text: str, src_rel: str) -> str:
     body = strip_leading_h1(src_text)
     body = LINK_RE.sub(rewrite_link(src_rel), body)
-    return CODE_LINK_RE.sub(rewrite_code_link(src_rel), body)
+    return sub_outside_code(CODE_LINK_RE, rewrite_code_link(src_rel), body)
 
 
 def build_home() -> str:

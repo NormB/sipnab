@@ -27,6 +27,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "support/markdown.rs"]
+mod markdown;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -82,24 +85,17 @@ fn links(text: &str) -> Vec<(String, String)> {
 }
 
 /// Links that point into the code rather than at another document. Anchored
-/// on a known top-level tree so an ordinary `../fault-model.md` doc link and
-/// an external URL are both excluded.
+/// on the repository's actual top-level trees so an ordinary
+/// `../fault-model.md` doc link and an external URL are both excluded.
+///
+/// The tree list is derived from `git ls-files`, not typed out here. The typed
+/// version listed thirteen names and disk had nineteen: `bench`, `packaging`,
+/// `docker` and `website` were missing, so a link into any of them was not
+/// classified as a code link at all and its existence was never checked. A
+/// citation to `../../bench/scaling-DELETED.sh` passed every suite and shipped
+/// to the live site. `generators_agree_on_the_code_tree_set` keeps the three
+/// generators' copies of the same list from drifting away from it again.
 fn code_links(text: &str) -> Vec<(String, String)> {
-    const TREES: &[&str] = &[
-        "src",
-        "tests",
-        "crates",
-        "benches",
-        "fuzz",
-        "scripts",
-        "contrib",
-        "harness",
-        "ops",
-        "man",
-        "demos",
-        ".github",
-        ".githooks",
-    ];
     links(text)
         .into_iter()
         .filter(|(_, target)| {
@@ -112,13 +108,167 @@ fn code_links(text: &str) -> Vec<(String, String)> {
             if target.starts_with("http") {
                 return target.contains("github.com/NormB/sipnab");
             }
-            // trim_start_matches strips repeatedly, so this handles ../../.
-            let stripped = target.trim_start_matches("./").trim_start_matches("../");
-            TREES
-                .iter()
-                .any(|t| stripped == *t || stripped.starts_with(&format!("{t}/")))
+            markdown::is_code_tree_path(target)
         })
         .collect()
+}
+
+/// The three generators rewrite code links into blob URLs using their own
+/// inline copy of the tree list, and all three had drifted apart:
+/// `build-wiki.py` knew `bench`, `build-site-pages.py` knew `packaging`,
+/// `build-site-internals.py` knew neither, and none knew `docker` or
+/// `website`. A tree missing from a generator's alternation is a link that
+/// silently publishes as a relative path into a wiki or a site that has no such
+/// file.
+///
+/// They cannot import the Rust helper, so this asserts their regexes still
+/// spell the derived set. Adding a top-level directory to the repository now
+/// fails here until all three learn about it.
+#[test]
+fn generators_agree_on_the_code_tree_set() {
+    let derived = markdown::code_trees();
+    // Concatenate the adjacent string literals of the CODE_LINK_RE assignment
+    // the way Python does, then read the alternation out of the resulting
+    // pattern. Stripping quote characters from the raw file instead looks
+    // simpler and is wrong: the first draft of this test also stripped the `r`
+    // raw-string prefix with a blanket replace and reported `crates` as
+    // `cates`, `src` as `sc` — a gate whose own extraction is a proxy.
+    let literal = regex::Regex::new(r#"r?"([^"]*)""#).expect("literal regex");
+    let alt = regex::Regex::new(r"\(\?:((?:[A-Za-z0-9_.\\]+\|)+[A-Za-z0-9_.\\]+)\)")
+        .expect("alternation regex");
+    let mut wrong = Vec::new();
+    for script in [
+        "scripts/build-wiki.py",
+        "scripts/build-site-pages.py",
+        "scripts/build-site-internals.py",
+    ] {
+        let src = read(script);
+        let Some(start) = src.find("CODE_LINK_RE = re.compile(") else {
+            wrong.push(format!("{script}: no CODE_LINK_RE assignment"));
+            continue;
+        };
+        let block = &src[start..];
+        let end = block.find("\n)").unwrap_or(block.len());
+        let pattern: String = literal
+            .captures_iter(&block[..end])
+            .map(|c| c[1].to_string())
+            .collect();
+        let Some(c) = alt.captures(&pattern) else {
+            wrong.push(format!(
+                "{script}: no CODE_LINK_RE tree alternation found — the rewrite \
+                 is not doing what this gate believes it does"
+            ));
+            continue;
+        };
+        let listed: std::collections::BTreeSet<String> = c[1]
+            .split('|')
+            .map(|t| t.replace("\\.", ".").trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        // A parse that yields a couple of names means the extraction broke,
+        // and every "missing" below would be an artifact of that rather than a
+        // real divergence.
+        assert!(
+            listed.len() >= 10,
+            "{script}: extracted only {} tree names from CODE_LINK_RE ({listed:?}) — \
+             the extraction is broken, not the generator",
+            listed.len()
+        );
+        let missing: Vec<&String> = derived.iter().filter(|d| !listed.contains(*d)).collect();
+        let extra: Vec<&String> = listed.iter().filter(|l| !derived.contains(*l)).collect();
+        if !missing.is_empty() || !extra.is_empty() {
+            wrong.push(format!(
+                "{script}: CODE_LINK_RE missing {missing:?}, has stale {extra:?}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "generator code-tree lists disagree with the repository's actual \
+         top-level directories:\n  {}",
+        wrong.join("\n  ")
+    );
+}
+
+/// No generator rewrites a link that a reader sees as code.
+///
+/// A bare `CODE_LINK_RE.sub()` has no idea what a code span is, so a page that
+/// *documents* link syntax gets its example rewritten. `testing.md` carries the
+/// literal `` `](../bench/)` `` in a code span; the moment `bench` joined the
+/// tree list, all three generators turned that example into
+/// `](…/blob/main/docs/bench)` — prose mangled, and a dead URL besides, since
+/// `docs/bench` does not exist.
+///
+/// Two things are checked, because either alone is a proxy. That the
+/// substitution goes through `sub_outside_code` — a direct `.sub()` is the
+/// bypass — and that `sub_outside_code` actually distinguishes the cases,
+/// including a `~~~` fence containing a ``` ``` ``` line, which is what every
+/// single-`bool` fence scanner in this repository got wrong.
+#[test]
+fn generators_do_not_rewrite_links_inside_code() {
+    let mut bypassing = Vec::new();
+    for script in [
+        "scripts/build-wiki.py",
+        "scripts/build-site-pages.py",
+        "scripts/build-site-internals.py",
+    ] {
+        let src = read(script);
+        if src.contains("CODE_LINK_RE.sub(") {
+            bypassing.push(script);
+        }
+        assert!(
+            src.contains("sub_outside_code(CODE_LINK_RE"),
+            "{script} does not route its link rewrite through sub_outside_code"
+        );
+    }
+    assert!(
+        bypassing.is_empty(),
+        "these generators call CODE_LINK_RE.sub() directly, which rewrites \
+         inside code spans and fences: {bypassing:?}"
+    );
+
+    // The helper itself, on the cases that distinguish a real fence lexer from
+    // a boolean toggle. Each probe is (document, must the link be rewritten?).
+    let probes: [(&str, bool); 5] = [
+        ("prose [x](../bench/x.sh) here", true),
+        ("a `](../bench/x.sh)` span", false),
+        ("```\n](../bench/x.sh)\n```\n", false),
+        ("~~~\n```\n](../bench/x.sh)\n~~~\n", false),
+        ("```txt\n](../bench/x.sh)\n```\n[y](../bench/x.sh)\n", true),
+    ];
+    for (doc, must_change) in probes {
+        let out = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(
+                "import sys, re\n\
+                 sys.path.insert(0, 'scripts')\n\
+                 from lib_markdown import sub_outside_code\n\
+                 rx = re.compile(r'\\]\\(\\.\\./bench/x\\.sh\\)')\n\
+                 print(sub_outside_code(rx, ']( REWRITTEN )', sys.stdin.read()), end='')",
+            )
+            .current_dir(repo())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut c| {
+                use std::io::Write;
+                c.stdin
+                    .as_mut()
+                    .expect("stdin")
+                    .write_all(doc.as_bytes())
+                    .and_then(|()| c.wait_with_output())
+            })
+            .expect("run sub_outside_code");
+        assert!(out.status.success(), "probe failed: {doc:?}");
+        let got = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            got != doc,
+            must_change,
+            "sub_outside_code on {doc:?} gave {got:?}; expected it to \
+             {} the link",
+            if must_change { "rewrite" } else { "leave" }
+        );
+    }
 }
 
 /// The `()`-suffixed symbol inside a link's text, if any: `` `foo()` ``,
@@ -283,25 +433,21 @@ fn every_internals_page_is_registered_for_the_wiki() {
 }
 
 /// Fenced mermaid blocks as `(line_index_of_opening_fence, body)`.
+///
+/// Delegates to the shared CommonMark lexer. The version that matched
+/// ` ```mermaid ` textually made the backtick the proxy for "is a diagram": a
+/// `~~~mermaid` fence — valid CommonMark, rendered by GitHub and by the site —
+/// was invisible to all five mermaid conventions *at once*, so one fence could
+/// open with `graph TD`, use `;` separators, carry a markdown link in a node
+/// label and sit under no prose, and every suite stayed green while
+/// `build-site-internals.py` shipped it to the site as raw diagram source with
+/// the in-fence link rewritten.
 fn mermaid_fences(text: &str) -> Vec<(usize, String)> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if lines[i].trim_start().starts_with("```mermaid") {
-            let start = i;
-            let mut body = String::new();
-            i += 1;
-            while i < lines.len() && !lines[i].trim_start().starts_with("```") {
-                body.push_str(lines[i]);
-                body.push('\n');
-                i += 1;
-            }
-            out.push((start, body));
-        }
-        i += 1;
-    }
-    out
+    markdown::fences(text)
+        .into_iter()
+        .filter(|f| f.lang == "mermaid")
+        .map(|f| (f.line - 1, f.body))
+        .collect()
 }
 
 #[test]
@@ -418,7 +564,12 @@ fn build_wiki_leaves_no_relative_links_in_the_output() {
             continue;
         }
         let page = path.file_name().unwrap().to_string_lossy().to_string();
-        let body = std::fs::read_to_string(&path).expect("wiki page");
+        let raw = std::fs::read_to_string(&path).expect("wiki page");
+        // Scan prose, not bytes. A page that documents link syntax carries the
+        // literal `](../bench/)` inside a code span — quoted, never rendered as
+        // a link, and correctly left alone by the generator. Reading raw bytes
+        // reported that example as a link that had escaped rewriting.
+        let body = markdown::prose(&raw);
         for cap in link.captures_iter(&body) {
             let target = cap[1].trim();
             // Valid on a flat wiki: an absolute URL, a pure anchor, or a wiki
