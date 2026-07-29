@@ -580,6 +580,64 @@ fn site_release_date_matches_changelog() {
     );
 }
 
+/// Every changelog entry sits under a version heading.
+///
+/// `site_release_date_matches_changelog` above searches for the heading naming
+/// the CURRENT site version and asserts its date. That says nothing about the
+/// entries: a `### Added` / `### Fixed` block belonging to no `## [x.y.z]` at
+/// all satisfies it completely, because the heading it looks for is still
+/// somewhere further down the file.
+///
+/// That is not hypothetical. An edit here replaced the `## [Unreleased]`
+/// heading along with the text it anchored on, orphaning two sections directly
+/// under the file header. It survived a commit, a push and a full CI run, and
+/// was found by eye while cutting the next release — the changelog's own gate
+/// had been green throughout, checking a version heading that was never the one
+/// at risk.
+///
+/// The property that actually matters is structural: nothing announces a change
+/// before the first release that contains one.
+#[test]
+fn no_changelog_entry_precedes_its_version_heading() {
+    let changelog = read("CHANGELOG.md");
+    let version_heading = regex::Regex::new(r"(?m)^## \[").expect("heading regex");
+    let section = regex::Regex::new(r"(?m)^### ").expect("section regex");
+
+    let first_version = version_heading
+        .find(&changelog)
+        .map(|m| m.start())
+        .expect("CHANGELOG.md has no `## [` version heading at all");
+
+    let orphans: Vec<&str> = section
+        .find_iter(&changelog[..first_version])
+        .map(|m| {
+            changelog[m.start()..]
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim_end()
+        })
+        .collect();
+
+    assert!(
+        orphans.is_empty(),
+        "CHANGELOG.md has {} section(s) before the first `## [version]` heading: \
+         {orphans:?} — these entries belong to no release, and the date gate \
+         cannot see them because it searches for the heading naming the current \
+         site version, which is still present further down",
+        orphans.len()
+    );
+
+    // The walk must be reading a real changelog, not an empty string that makes
+    // "no orphans" vacuously true.
+    let versions = version_heading.find_iter(&changelog).count();
+    assert!(
+        versions >= 10,
+        "only {versions} version headings found — the heading pattern stopped \
+         matching and this gate is reporting a structure it did not check"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Published-claim gates.
 //

@@ -137,18 +137,29 @@ keys to freed heap, and redaction on the output paths.
 **Fails as.** Keys recoverable from a crash report or a core file — an
 exposure with no error message attached to it.
 
-## 6. A bearer token is valid on exactly one surface
+## 6. A bearer token is valid on exactly one surface, and only as far as its scope
 
-**Rule.** A signed token names the surface it was minted for (`aud`), and each
+**Rule.** A signed token is bound on two axes, and both are checked.
+
+*Which surface* (`aud`): the token names the surface it was minted for, and each
 verifier accepts only its own audience. A token minted from
 `--api-signing-key` must never authenticate against HTTP MCP, and vice versa —
 including when both surfaces are configured with the same signing key.
+
+*How much of it* (`scope`): `full` reaches everything on that surface,
+`metrics` reaches `GET /metrics` and nothing else. A `full` token satisfies
+every requirement; a narrower one satisfies only its own.
 
 **Why.** The REST API and HTTP MCP read separate flags and separate
 environment variables, so an operator putting one secret in both
 `SIPNAB_API_SIGNING_KEY` and `SIPNAB_MCP_SIGNING_KEY` looks like tidy
 configuration. Before audience binding that silently made every API token a
 valid MCP token, with no warning and nothing in the logs.
+
+For `scope`: sipnab decrypts TLS, so `/v1/dialogs` and `/v1/streams` return
+message bodies — the call content itself. Without a scope split, a monitoring
+system that needs one counter has to be trusted with all of it. That is the one
+division of the surface worth having; the rest of it is a single trust domain.
 
 **Enforced by.** The `aud` check in
 [`verify_signed()`](https://github.com/NormB/sipnab/blob/main/src/auth.rs), which requires an `s2` token's audience
@@ -162,15 +173,35 @@ fails closed. Cross-surface rejection is pinned in both directions by tests in
 [`auth.rs`](https://github.com/NormB/sipnab/blob/main/src/auth.rs) and
 [`cli_flag_behavior_test`](https://github.com/NormB/sipnab/blob/main/tests/cli_flag_behavior_test.rs).
 
-**Fails as.** A token scoped to a read-only metrics scrape quietly granting an
-AI agent full MCP tool access, or the reverse — a privilege boundary that
-exists in the documentation but not in the code.
+The `scope` check sits in the same function, immediately before the expiry test,
+and the claim is part of the signed payload — so a holder cannot widen their own
+token by editing it. Routes demand a scope through
+[`guard_scoped()`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs); the plain `guard()` demands `full`,
+which is the RESTRICTIVE default: demanding `full` admits only full tokens,
+while demanding `metrics` admits both. A route added later and wired to the
+plain guard therefore inherits "full tokens only" rather than silently accepting
+a scrape-only credential. Enforcement is pinned at all three layers —
+the verifier in [`auth.rs`](https://github.com/NormB/sipnab/blob/main/src/auth.rs), the CLI flag in
+[`cli_flag_behavior_test`](https://github.com/NormB/sipnab/blob/main/tests/cli_flag_behavior_test.rs), and the real
+routes in [`api_token_test`](https://github.com/NormB/sipnab/blob/main/tests/api_token_test.rs) — because a route
+wired to the wrong guard passes every unit test and still serves the call
+content to a scrape job.
 
-**Scope.** The check is unconditional: the pre-`aud` `s1` format is no longer
+**Fails as.** A token meant for a read-only metrics scrape quietly granting an
+AI agent full MCP tool access, or reading dialog bodies on its own surface —
+a privilege boundary that exists in the documentation but not in the code.
+
+**Coverage.** (Named so rather than "Scope", which now means a claim.) The
+audience check is unconditional: the pre-`aud` `s1` format is no longer
 accepted, so there is no token version that reaches a surface without an
-audience. Static `--api-key` / `--mcp-token` secrets remain audience-less by
-design — they are shared secrets, not tokens, and an operator who sets the same
-static secret on both surfaces has deliberately shared one credential.
+audience. The scope check is deliberately *not* symmetric with it — an absent
+`scope` means `full`, where an absent `aud` fails closed. `aud` arrived with a
+format bump that stopped accepting the old tokens outright; tokens minted
+before `scope` existed are still valid `s2` tokens in the field, and denying
+them would revoke live credentials on upgrade. Static `--api-key` /
+`--mcp-token` secrets remain audience-less and `full` by design — they are
+shared secrets, not tokens, and an operator who sets the same static secret on
+both surfaces has deliberately shared one credential.
 
 ## 7. MCP tools are read-only and bounded
 
