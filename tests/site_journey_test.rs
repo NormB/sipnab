@@ -831,8 +831,18 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
         // The figure itself must be findable on the page the tile links to.
         let cell = format!("{count}M");
         let ratio = format!("{count}×");
+        // In a TABLE ROW, not anywhere in the file — the comment two lines up
+        // already says "the string that must appear in a table row". A
+        // re-measured figure quoted in prose ("down from the 2.06M this page
+        // reported on 0.5.47") satisfied a whole-file substring while the
+        // tile and the table disagreed.
+        let in_a_row = |needle: &str| {
+            bench
+                .lines()
+                .any(|l| l.trim_start().starts_with('|') && l.contains(needle))
+        };
         assert!(
-            bench.contains(&cell) || bench.contains(&ratio),
+            in_a_row(&cell) || in_a_row(&ratio),
             "homepage claims {count}{suffix} but no such figure appears in \
              website/content/docs/benchmarks.md — the front page is quoting a \
              number its own benchmarks page does not support"
@@ -1108,20 +1118,33 @@ fn installer_targets_match_release_matrix() {
 fn published_download_urls_name_versioned_assets() {
     let re = regex::Regex::new(r"releases/latest/download/(\S+)").unwrap();
     let literal_version = regex::Regex::new(r"\d+\.\d+\.\d+").unwrap();
+    // Every tracked file, not six named ones. The release uploads only
+    // versioned filenames, so a bare `releases/latest/download/…` URL is a
+    // permanent 404 — and neither download.html nor index.html was on the list,
+    // which is the page whose entire purpose is downloading. Demonstrated: a
+    // bare tarball link added to download.html passed.
+    let out = std::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files");
+    let tracked = String::from_utf8_lossy(&out.stdout);
     let mut bare = Vec::new();
-    for rel in [
-        "scripts/build-wiki.py",
-        "scripts/build-site-internals.py",
-        "docs/install.md",
-        "website/content/docs/install.md",
-        "README.md",
-        "website/static/install.sh",
-    ] {
+    let mut scanned = 0;
+    for rel in tracked.lines() {
         let path = repo().join(rel);
         if !path.is_file() {
             continue;
         }
-        let text = std::fs::read_to_string(&path).expect("read file");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue; // binary
+        };
+        // tests/ describe the pattern rather than publish it — this file
+        // contains the regex and the examples, and would flag itself.
+        if rel.starts_with("tests/") || !text.contains("releases/latest/download/") {
+            continue;
+        }
+        scanned += 1;
         for cap in re.captures_iter(&text) {
             let asset = cap[1].trim_end_matches(['"', ',', '`', ')', '\'']);
             // Versioned either by placeholder (docs tell you to substitute) or
@@ -1132,6 +1155,11 @@ fn published_download_urls_name_versioned_assets() {
             }
         }
     }
+    assert!(
+        scanned >= 3,
+        "only {scanned} files mention releases/latest/download/ (3 at the time of writing) — the sweep has \
+         gone blind and a bare, permanently-404 URL would pass"
+    );
     assert!(
         bare.is_empty(),
         "download URLs naming an unversioned asset — the release publishes only \
@@ -1315,7 +1343,13 @@ fn no_inline_event_handlers_in_templates() {
     // Match an inline handler used as an HTML attribute (quote follows the `=`).
     // JS assignments like `el.onclick = fn` and prose don't have that shape, and
     // `<script>`/`<style>` bodies are stripped first so real JS never trips this.
-    let re = regex::Regex::new(r#"(?i)\son(click|keydown|keyup|keypress|input|change|submit|mouseover|mouseout|focus|blur|load|error)\s*=\s*["']"#).unwrap();
+    // Any `on*=` attribute, not a hand-kept list of thirteen names. The CSP
+    // grants neither `unsafe-inline` nor `unsafe-hashes`, so the browser blocks
+    // ALL of them — the handler is dead on the live site while the page returns
+    // 200. `onpointerdown="selectDemo(0)"` passed the old alternation, and
+    // pointer events are the modern replacement for `onclick`, so that is the
+    // likely way this returns.
+    let re = regex::Regex::new(r#"(?i)\son[a-z]+\s*=\s*["']"#).unwrap();
     let block = regex::Regex::new(r"(?is)<(script|style)\b.*?</(script|style)>").unwrap();
     let dir = repo().join("website/templates");
     let mut offenders = Vec::new();
@@ -1421,7 +1455,15 @@ fn every_page_template_keeps_the_site_footer() {
         "base.html no longer renders .site-footer"
     );
 
-    let empty_override = regex::Regex::new(r"\{%\s*block footer\s*%\}\s*\{%\s*endblock").unwrap();
+    // A body of only whitespace OR Tera comments is still an empty footer: an
+    // override whose body is `{# keep the page clean #}` renders nothing, and a
+    // one-line justification comment is the natural way a developer blanks a
+    // block they think they do not need. /analyze shipped with no footer — no
+    // nav, no license, no credits — which is the regression this test is named
+    // after.
+    let empty_override =
+        regex::Regex::new(r"(?s)\{%\s*block footer\s*%\}((?:\s|\{#.*?#\})*)\{%\s*endblock")
+            .unwrap();
     let mut offenders = Vec::new();
     for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
         let p = entry.expect("entry").path();
@@ -1572,20 +1614,59 @@ fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
 /// style.css is cachebusted by Zola content hash (cachebust=true), never by `?v=` release version.
 #[test]
 fn stylesheet_link_is_content_hash_cachebusted() {
-    let base = read("website/templates/base.html");
-    let link = base
-        .lines()
-        .find(|l| l.contains("style.css") && l.contains("stylesheet"))
-        .expect("base.html has no style.css <link>");
+    // EVERY css/js asset in EVERY template, not the first matching line of
+    // base.html. `.find()` returned the first match, so a second, bad <link>
+    // added right after the good one passed — and `analyze.html` was shipping
+    // hand-bumped `?v=14` counters for its CSS and `?v=13` for its JS, the exact
+    // regression this test's header describes, while the gate looked only at
+    // base.html.
+    //
+    // Images are deliberately out of scope: a stale demo screenshot is
+    // cosmetic, while stale CSS or JS against new HTML is a broken page. Those
+    // still use `?v=` by choice.
+    let asset = regex::Regex::new(
+        r#"get_url\(\s*path\s*=\s*['"]([^'"]+\.(?:css|js))['"]([^)]*)\)([^">]*)"#,
+    )
+    .expect("asset regex");
+
+    let mut problems = Vec::new();
+    let mut seen = 0;
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("html") {
+            continue;
+        }
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&p).expect("read template");
+        for cap in asset.captures_iter(&text) {
+            seen += 1;
+            let (path, args, trailing) = (&cap[1], &cap[2], &cap[3]);
+            if !args.contains("cachebust=true") {
+                problems.push(format!(
+                    "{name}: {path} is not cachebust=true — a content change keeps the \
+                     URL identical and ships new HTML against stale cached assets"
+                ));
+            }
+            if trailing.contains("?v=") {
+                problems.push(format!(
+                    "{name}: {path} carries a hand-bumped `?v=` counter. Someone has to \
+                     remember to increment it, and the history of this one reads 4, 5, \
+                     … 14 — every bump is an occasion it was forgotten. Use \
+                     cachebust=true, which changes when the content does."
+                ));
+            }
+        }
+    }
+
     assert!(
-        !link.contains("?v="),
-        "style.css is busted by release version — a site-only change keeps \
-         the URL identical and ships new HTML with stale cached CSS: {link}"
+        seen >= 4,
+        "only {seen} css/js assets found across the templates — the extractor \
+         stopped matching and this gate is reporting a safety it is not providing"
     );
     assert!(
-        link.contains("cachebust=true"),
-        "style.css link must use get_url(..., cachebust=true) so the URL \
-         changes whenever the CSS content does: {link}"
+        problems.is_empty(),
+        "template assets that will be served stale:\n  {}",
+        problems.join("\n  ")
     );
 }
 
@@ -2415,14 +2496,71 @@ fn packaging_scripts_reference_existing_paths() {
     // rpm spec heredoc contains the substring "man/man1/sipnab.1.gz", which
     // is not a repo path. Only accept a match that starts a path token.
     fn candidates(text: &str) -> Vec<String> {
-        const ROOTS: [&str; 6] = [
+        // Path roots a script may legitimately name. Curated, because a
+        // derived list over-matches: `docker/build-push-action` is an Action
+        // namespace and `fuzz/artifacts` is gitignored output, both of which a
+        // blanket sweep reports as missing paths.
+        //
+        // What is NOT curated is the list's completeness. Six of sixteen
+        // top-level directories were named and `ops/` — referenced by pages.yml
+        // today — was not, silently, with no comment (the GENERATED exclusion
+        // below does carry one). A reference to a nonexistent ops/ script
+        // passed, and the csp job would then die on every site deploy, leaving
+        // the Cloudflare CSP stale while the browser blocks the homepage inline
+        // scripts, visible only in production.
+        //
+        // So every top-level directory must appear in one list or the other,
+        // and a new one fails until someone decides which.
+        const ROOTS: [&str; 11] = [
             "packaging/",
             "contrib/",
             "man/",
             "scripts/",
             "tests/",
             "website/",
+            "ops/",
+            ".github/",
+            ".githooks/",
+            ".cargo/",
+            ".config/",
         ];
+        // Directories deliberately not treated as path roots, each with the
+        // reason a match inside them would be a false positive.
+        const NOT_PATH_ROOTS: [&str; 9] = [
+            "docker/",  // collides with the docker/* GitHub Actions namespace
+            "fuzz/",    // artifacts/ and corpus growth are gitignored outputs
+            "crates/",  // sbom.json and other build outputs are generated
+            "src/",     // Rust module paths in prose, not file references
+            "docs/",    // prose cites docs by markdown link, checked elsewhere
+            "bench/",   // benchmark outputs are gitignored
+            "benches/", // criterion output paths are generated
+            "demos/",   // recorded asset paths are generated
+            "harness/", // compose-generated volumes are runtime paths
+        ];
+        {
+            let out = std::process::Command::new("git")
+                .args(["ls-files"])
+                .current_dir(repo())
+                .output()
+                .expect("git ls-files");
+            let mut top: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|p| p.split_once('/').map(|(d, _)| format!("{d}/")))
+                .collect();
+            top.sort();
+            top.dedup();
+            let unclassified: Vec<&String> = top
+                .iter()
+                .filter(|d| !ROOTS.contains(&d.as_str()) && !NOT_PATH_ROOTS.contains(&d.as_str()))
+                .collect();
+            assert!(
+                unclassified.is_empty(),
+                "top-level directories in neither ROOTS nor NOT_PATH_ROOTS: {unclassified:?}. \
+                 Add each to ROOTS if a script may name a path inside it, or to \
+                 NOT_PATH_ROOTS with the reason a match there is a false positive. \
+                 Leaving one out is how ops/ went unchecked."
+            );
+        }
         let bytes = text.as_bytes();
         let mut out = Vec::new();
         for (i, _) in text.char_indices() {
