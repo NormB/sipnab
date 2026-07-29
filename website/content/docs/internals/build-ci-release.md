@@ -252,7 +252,15 @@ checksum column. On 0.5.61 that window was not minutes: its release commit went
 red and was never tagged.
 
 So `published_version` is bumped **after** a release finishes publishing, as its
-own commit — never while cutting one.
+own commit — never while cutting one. The same split applies to the docs:
+`docs/install.md`'s `SIPNAB_VERSION=`, `e.g. <version>` and `rpm -i sipnab-<v>`
+lines are download instructions, so they track `published_version` too and must
+NOT be swept along when the crate version is bumped. A blanket
+`sed s/<old>/<new>/g` over `docs/install.md` at a release commit is exactly the
+mistake — `docs_current_version_markers_match_cargo` splits its list on this and
+fails the commit rather than shipping a documented `curl` that 404s. The
+`sipnab <version> (<hash>)` samples in the same file are the opposite case: they
+show what a build *of this tree* prints, so they follow `Cargo.toml`.
 `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag, so
 getting this wrong fails the suite instead of the visitor.
 

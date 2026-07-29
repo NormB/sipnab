@@ -840,8 +840,25 @@ fn man_page_version_and_license_match_cargo() {
 #[test]
 fn docs_current_version_markers_match_cargo() {
     let version = env!("CARGO_PKG_VERSION");
-    // (path, contents, marker regex whose capture 1 must be the crate version)
-    let sources: &[(&str, &str, &str)] = &[
+
+    // Markers that tell a reader WHICH VERSION TO DOWNLOAD track the last
+    // PUBLISHED release, not the crate version in the tree. They are two
+    // different facts, and this list used to conflate them exactly the way
+    // `/download` did before `published_version` existed: a release commit
+    // bumps `Cargo.toml`, this gate then demanded the docs say the new number,
+    // and for the whole commit -> CI -> tag -> release-build window the
+    // documented `SIPNAB_VERSION=x.y.z` named a release that did not exist. A
+    // reader copying that line got a 404 from install.sh.
+    //
+    // `install.sh` itself is unaffected — with `SIPNAB_VERSION` unset it asks
+    // the API for the latest release — so this only ever bit the person who
+    // followed the documented pinned example.
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
+        .unwrap()
+        .captures(include_str!("../website/config.toml"))
+        .expect("website/config.toml has no published_version")[1]
+        .to_string();
+    let download_markers: &[(&str, &str, &str)] = &[
         (
             "docs/install.md",
             include_str!("../docs/install.md"),
@@ -858,14 +875,38 @@ fn docs_current_version_markers_match_cargo() {
             r"sipnab-(\d+\.\d+\.\d+)-1\.x86_64\.rpm",
         ),
         (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"sipnab (\d+\.\d+\.\d+) \(",
-        ),
-        (
             "website/content/docs/install.md",
             include_str!("../website/content/docs/install.md"),
             r"e\.g\. (\d+\.\d+\.\d+)",
+        ),
+    ];
+    for (path, text, pattern) in download_markers {
+        let re = regex::Regex::new(pattern).unwrap();
+        let mut matched = false;
+        for cap in re.captures_iter(text) {
+            matched = true;
+            assert_eq!(
+                &cap[1], published,
+                "{path}: download marker '{pattern}' names {} but the last \
+                 PUBLISHED release is {published} — a reader copying this would \
+                 fetch a version that does not exist yet. Download instructions \
+                 track published_version, not Cargo.toml.",
+                &cap[1]
+            );
+        }
+        assert!(
+            matched,
+            "{path}: expected at least one '{pattern}' marker; the doc changed \
+             — update the marker list"
+        );
+    }
+
+    // (path, contents, marker regex whose capture 1 must be the CRATE version)
+    let sources: &[(&str, &str, &str)] = &[
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"sipnab (\d+\.\d+\.\d+) \(",
         ),
         (
             "website/content/docs/install.md",
