@@ -175,13 +175,26 @@ That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
 a test obliges you to update `website/templates/index.html` in the same commit.
 
-[`pre-push`](../../.githooks/pre-push) adds four hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds five hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --all-features --all-targets
--D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, and `cd fuzz &&
-cargo check`. Rustdoc lints and the separate fuzz workspace compile
-independently of the test build, so these are exactly the failures that
-otherwise appear ten minutes later in CI. `SKIP_FMT_HOOK=1` bypasses all of
-them; if you use it, expect CI to notice.
+-D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
+cargo check`, and a check of the reduced feature combinations `tls`, `api` and
+`wasm`. Rustdoc lints and the separate fuzz workspace compile independently of
+the test build, so these are exactly the failures that otherwise appear ten
+minutes later in CI. `SKIP_FMT_HOOK=1` bypasses all of them; if you use it,
+expect CI to notice.
+
+The reduced-combination gate is the newest and the least obvious. Every other
+check in that hook builds with `--all-features`, which cannot see `#[cfg]`-gating
+rot at all: an item that needs a feature-gated module compiles perfectly until
+someone builds without that feature. It has bitten twice — the `features` job
+below records "at one point 7 of 8 reduced combos failed to build", and it
+happened again on the 0.5.61 release commit, where a test reflecting over `Cli`
+(behind `native`) took a whole test target out of every build without it. Three
+combinations, not eleven: `tls` and `api` are the ones that *exclude* `native`,
+where the breakage lives, and `wasm` is the most distant target. The full matrix
+stays in CI. A combination the crate does not define is skipped, the way the
+fuzz gate skips a missing `fuzz/`.
 
 Both hooks have their own test scripts —
 [`test-pre-commit.sh`](../../scripts/test-pre-commit.sh) and
