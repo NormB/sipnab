@@ -535,6 +535,21 @@ Four further defects fell out of this, all fixed:
   `WARNING: ThreadSanitizer` and called it "a data race", which would have
   labelled the thread leak above a race. It now names what it matched, and a
   missing `__tsan_init` fails the job rather than passing as a clean run.
+- **The verdict was green exactly when the tree was dirty.** Written inline in
+  the workflow, its warning loop was a bare `grep … | sort -u | while read`, and
+  `run:` blocks execute under `bash -e -o pipefail`: with no findings, `grep`
+  exits 1, `pipefail` promotes it, and `-e` killed the step before it printed
+  anything. So the job **failed silently on a clean tree and passed while a
+  thread leak was present** — it went green on `e14a549` for that reason. Its
+  instrumentation guard had the mirror-image bug: `grep -q` exits on the match
+  while `nm` is still writing, `nm` dies of SIGPIPE (141), `pipefail` promotes
+  that, and an instrumented binary is reported as uninstrumented — deterministic
+  on a 284,000-symbol binary, invisible on a small one. Both now live in
+  `ops/tsan/verdict.sh` with `ops/tsan/test-verdict.sh` beside it and a CI job
+  running it on every push, because inline YAML cannot be run against a fixture.
+  The `nm` stub there emits ~100k symbols with the match first: a compiled
+  fixture could not reproduce the SIGPIPE case at all, since the linker placed
+  `__tsan_init` last in every ordering tried.
 
 All five suites now run clean under ThreadSanitizer: 58 tests, zero races, zero
 leaked threads, no TSan log file written by any process.

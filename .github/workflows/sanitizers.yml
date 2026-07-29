@@ -134,44 +134,20 @@ jobs:
             --test cli_flag_behavior_test \
             2>&1 | tee tsan.log || rc=$?
 
-          # A build that quietly lost -Zsanitizer=thread would report no races
-          # forever, and "no races reported" would be the most reassuring
-          # possible way to say nothing was checked. Prove the runtime is linked
-          # before believing any verdict drawn from its silence.
-          if ! nm -C target/x86_64-unknown-linux-gnu/debug/sipnab | grep -q __tsan_init; then
-            echo "::error::sipnab is not ThreadSanitizer-instrumented — a clean run would be vacuous"
-            exit 1
-          fi
-
           # TSan reports a finding and can still exit 0 when the test itself
-          # passes, so the exit code alone is not the verdict — read the logs.
-          # This is the same "reporting success you did not observe" shape the
-          # rest of this repository's gates were audited for.
-          #
-          # Classify rather than lump: an earlier draft failed on any
-          # `WARNING: ThreadSanitizer` while announcing "a data race", which
-          # would have named the wrong finding for anything that is not one.
-          #
-          # `thread leak` is fatal, not tolerated. It was briefly written off
-          # here as expected — sipnab exits fail-fast paths through
-          # std::process::exit, which joins nothing — but that reasoning had it
-          # backwards: those paths spawn the capture thread first, so exiting
-          # abandoned a thread still holding an open capture source, and
-          # `sipnab -I /nonexistent.pcap` was enough to do it. They now go
-          # through capture::stop_and_join, the suites report zero leaks, and
-          # this line is what keeps it that way.
-          LOGS="tsan.log $(ls "${{ github.workspace }}"/tsan-logs/tsan.* 2>/dev/null || true)"
-          FATAL='data race|thread leak|heap-use-after-free|lock-order-inversion|signal-unsafe call|unlock of an unlocked mutex|destroy of a locked mutex'
-          if grep -hoE "WARNING: ThreadSanitizer: ($FATAL)" $LOGS | sort -u | grep .; then
-            echo "::error::ThreadSanitizer reported the findings listed above — see the uploaded logs"
-            exit 1
-          fi
-          # Surface anything else without failing, and without claiming a type
-          # that was never matched.
-          grep -hoE 'WARNING: ThreadSanitizer: [a-z -]+' $LOGS | sort -u | while read -r w; do
-            echo "::warning::$w (not in the fatal set; not failing the job)"
-          done
-          echo "no races and no leaked threads reported"
+          # passes, so the exit code alone is not the verdict — the logs are.
+          # That logic lives in ops/tsan/verdict.sh, with scenario tests beside
+          # it, because the version that lived here was wrong in the direction
+          # nobody checks: its warning loop was a bare `grep | sort | while`, and
+          # this `run:` block is `bash -e -o pipefail`, so a tree with NO
+          # findings made grep exit 1 and killed the step before it printed
+          # anything. The job failed silently when the tree was clean and passed
+          # while a thread leak was present. Inline YAML cannot be run against a
+          # fixture; that is why this is one line now.
+          bash ops/tsan/verdict.sh \
+            target/x86_64-unknown-linux-gnu/debug/sipnab \
+            tsan.log \
+            "${{ github.workspace }}/tsan-logs"
 
           # The suites' own verdict, reported after the sanitizer's so a red
           # suite never hides a race.

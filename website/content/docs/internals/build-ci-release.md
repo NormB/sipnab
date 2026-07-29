@@ -117,6 +117,18 @@ A missing `__tsan_init` in the built binary fails the job outright, since a
 build that quietly lost its instrumentation would otherwise report a clean run
 forever.
 
+All of that lives in `ops/tsan/verdict.sh`, not inline in the workflow, with
+`ops/tsan/test-verdict.sh` beside it and a `tsan-verdict` job in `ci.yml`
+running it on every push. The inline version had to be moved because it was
+wrong in the direction nobody checks: `run:` blocks execute under
+`bash -e -o pipefail`, so its bare `grep … | while read` warning loop exited 1
+on a tree with **no** findings and killed the step before it could report — the
+job failed silently when clean and passed while a thread leak was present. The
+instrumentation guard had the mirror of it, `grep -q` closing the pipe on a
+still-writing `nm` and reading SIGPIPE as "not instrumented". Neither could have
+been caught without running the logic against a fixture, which is the whole
+argument for it being a script.
+
 ### What actually gates a merge
 
 `ci-success` requires exactly four jobs: **`check`, `features`, `audit`,

@@ -191,6 +191,22 @@ jobs:
       - name: Test update-formula.sh
         run: bash packaging/homebrew/test-update-formula.sh
 
+  # The ThreadSanitizer verdict. sanitizers.yml is weekly, so a bug in how it
+  # reads its own logs would sit undetected for a week at a time — and one did:
+  # the verdict used to fail the job when the tree was CLEAN (a bare grep found
+  # nothing, pipefail promoted the 1, `bash -e` killed the step) and pass while a
+  # thread leak was present. It went green on one commit for that reason. The
+  # logic now lives in a script so it can be run against fixtures here, on every
+  # push, instead of only on the weekly run it gates.
+  # Pure bash over fixture logs — no Rust toolchain needed.
+  tsan-verdict:
+    name: TSan verdict (verdict.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Test ops/tsan/verdict.sh
+        run: bash ops/tsan/test-verdict.sh
+
   # Reduced feature combinations must keep compiling (lib AND test code).
   # --all-features alone let `#[cfg]`-gating rot: at one point 7 of 8
   # reduced combos failed to build. `cargo check --tests` is enough to
@@ -344,8 +360,8 @@ jobs:
     # fuzz-check] while the comment above claimed "every other job" —
     # so install-sh and deb-package could both fail with the one required
     # check on main still green.
-    needs: [check, install-sh, deb-package, homebrew-formula, features,
-            audit, fuzz-check]
+    needs: [check, install-sh, deb-package, homebrew-formula, tsan-verdict,
+            features, audit, fuzz-check]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
