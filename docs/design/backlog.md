@@ -381,17 +381,16 @@ Tiers:
   scrape-only one. Verified end to end against the real server, not just the
   verifier — a route wired to the wrong guard passes every unit test and still
   hands a scrape job the call content.
-- [ ] **SIP problem diagnosis** — automated detection and explanation of SIP
-  signaling problems (the signaling-side complement to the existing RTP/NAT
-  `rtp/diagnosis.rs`). Candidate detections: failed/abandoned calls and their
-  cause (4xx/5xx/6xx final, CANCEL, no-answer timeout), registration failures,
-  retransmission storms / no-response transactions, auth loops (repeated
-  401/407 with no 2xx), CSeq/dialog anomalies, one-way-signaling and
-  ACK-not-received (RFC 3261 §17) cases, and delayed/absent provisional
-  responses (high PDD). Surface per-dialog with a plain-language explanation +
-  the evidence (which messages), consistent with how RTP diagnosis is
-  presented. Needs a brainstorm → spec first; scope the detection set and where
-  it renders (call list badge, call-flow annotation, and/or a diagnosis pane).
+- [ ] **SIP problem diagnosis** — the signalling-side complement to
+  `rtp/diagnosis.rs`. **Specced 2026-07-29:**
+  [`sip-problem-diagnosis.md`](./sip-problem-diagnosis.md) scopes seven
+  detections in build order (final failure with cause, auth loop,
+  retransmission storm, ACK-never-received, abandoned/cancelled, high PDD,
+  registration failure), the `SignalingDiagnosis` shape, and where each surface
+  renders it. Detections 1–3 carry most of the value and need no new plumbing.
+  The spec's two load-bearing rules: every detection names the messages it is
+  drawn from, and a truncated capture is reported as unknown rather than as
+  failure. Implementation not started.
 - [x] **Developer documentation** — **Done:** `docs/internals/` now carries a
   developer index (reading order, the live-vs-archaeological map of the
   root-level design corpus, and a glossary for D1–D21/D22, WS0–WS8, P0–P5,

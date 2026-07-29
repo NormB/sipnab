@@ -1854,10 +1854,15 @@ fn no_documentation_table_repeats_a_row() {
         .filter(|f| !f.is_empty())
         .map(str::to_string)
         .collect();
-    assert!(
-        files.len() >= 50,
-        "found only {} tracked markdown files — the sweep is reading almost \
-         nothing and would pass vacuously",
+    // Pinned. `>= 50` against a real 93 let the sweep lose nearly half the
+    // tracked markdown without noticing, which for a duplicate-row check means
+    // the duplicates it exists to find simply stop being looked for.
+    assert_eq!(
+        files.len(),
+        94,
+        "found {} tracked markdown files, expected 94. More is fine — bump \
+         this. FEWER means the sweep stopped reading part of the tree and this \
+         gate narrowed silently.",
         files.len()
     );
 
@@ -1899,10 +1904,14 @@ fn no_documentation_table_repeats_a_row() {
             table.clear();
         }
     }
-    assert!(
-        tables >= 40,
-        "walked only {tables} tables — the table detection stopped matching and \
-         this gate is checking nothing"
+    // Pinned. `>= 40` against a real 292 is the widest gap of the set: 250
+    // tables could stop being walked and the gate would still report the
+    // documentation as scanned.
+    assert_eq!(
+        tables, 293,
+        "walked {tables} tables, expected 293. More is fine — bump this. FEWER \
+         means the table detection stopped matching and this gate is checking \
+         less than it claims."
     );
     assert!(
         offenders.is_empty(),

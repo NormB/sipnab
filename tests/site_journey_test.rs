@@ -635,9 +635,23 @@ fn no_changelog_entry_precedes_its_version_heading() {
 
     // The walk must be reading a real changelog, not an empty string that makes
     // "no orphans" vacuously true.
+    //
+    // A FLOOR here, where the sibling counters in this suite are exact pins,
+    // and the difference is deliberate. Those count things that change only
+    // when someone edits docs, so a bump is a conscious act; this one grows by
+    // exactly one on every release, so pinning it would put a mandatory edit on
+    // the release path — the kind of tax that eventually gets removed rather
+    // than maintained.
+    //
+    // What is not deliberate is how loose it was. This read `>= 10` against 85,
+    // in the gate added to fix precisely that defect class, one day earlier.
+    // The floor now sits just under the real count: enough that adding
+    // releases never trips it, tight enough that a heading pattern which
+    // stopped matching — which drops this to roughly zero, not to 79 — fails
+    // immediately.
     let versions = version_heading.find_iter(&changelog).count();
     assert!(
-        versions >= 10,
+        versions >= 80,
         "only {versions} version headings found — the heading pattern stopped \
          matching and this gate is reporting a structure it did not check"
     );
@@ -697,11 +711,21 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
         if !(lower.contains("not yet implemented") || lower.contains("not implemented")) {
             continue;
         }
+        // Only the flag in the H1 — the doc's SUBJECT — not every flag it
+        // happens to mention. A spec legitimately references existing flags
+        // while describing something unbuilt ("renders alongside `--json`"), and
+        // the first draft of this reported all of them: three findings for
+        // dialog-tracking-modes, where one was the contradiction and two were
+        // incidental. A gate that also cries about `--limit` teaches people to
+        // skim its output, which is how the real line gets missed.
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        for c in flag.captures_iter(&text) {
+        let Some(title) = text.lines().find(|l| l.starts_with("# ")) else {
+            continue;
+        };
+        for c in flag.captures_iter(title) {
             if real.contains(&c[1]) {
                 problems.push(format!(
-                    "{name}: status says unimplemented, but --{} exists",
+                    "{name}: status says unimplemented, but its subject --{} exists",
                     &c[1]
                 ));
             }
