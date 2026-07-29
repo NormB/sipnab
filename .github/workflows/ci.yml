@@ -29,6 +29,15 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The suite includes site_advertises_only_a_released_version, which
+          # asks git whether published_version has a matching tag. actions/
+          # checkout fetches NO tags by default, so that gate saw zero and
+          # refused to answer -- correctly, but it turned CI red on a release
+          # commit. Fetch them so the gate is real here rather than skipped
+          # where it matters most.
+          fetch-tags: true
+          fetch-depth: 0
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         # GitHub-hosted runners ship ~20GB of preinstalled SDKs a Rust build
@@ -240,6 +249,15 @@ jobs:
           - wasm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The suite includes site_advertises_only_a_released_version, which
+          # asks git whether published_version has a matching tag. actions/
+          # checkout fetches NO tags by default, so that gate saw zero and
+          # refused to answer -- correctly, but it turned CI red on a release
+          # commit. Fetch them so the gate is real here rather than skipped
+          # where it matters most.
+          fetch-tags: true
+          fetch-depth: 0
       - name: Free disk space
         # Reclaim ~20GB of preinstalled SDKs a Rust build never uses
         # (dotnet/android/ghc/CodeQL) — a full --all-features build across
