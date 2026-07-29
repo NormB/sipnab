@@ -1,0 +1,106 @@
+name: Sanitizers
+
+# ThreadSanitizer over the threaded paths. Nightly is used as a TOOL here, never
+# as the toolchain: the release build stays pinned to the stable version
+# rust_toolchain_pins_agree enforces, exactly as fuzz.yml already does.
+#
+# Why this exists. sipnab runs a capture thread, a channel, and a processing
+# thread, and holds ~49 `unsafe` blocks, 41 of them libc FFI for privilege
+# dropping and capture setup. The borrow checker cannot see into either: it
+# stops at `unsafe`, and data races across threads are not its job. The existing
+# suite exercises those threads but cannot observe a race in them — a test that
+# passes and a test that raced look identical.
+#
+# Weekly rather than per-push: -Zbuild-std rebuilds the standard library with
+# instrumentation, and the run is minutes, not seconds.
+on:
+  schedule:
+    # Tuesdays 06:11 UTC — offset from fuzz.yml (Mondays 05:17) so two long
+    # nightly jobs do not contend for runners.
+    - cron: '11 6 * * 2'
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/sanitizers.yml'
+      - 'ops/tsan/**'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    # The whole point is to see failures, so no continue-on-error: a race that
+    # is detected and discarded is worse than one never looked for.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install system deps
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+
+      # rust-src is required by -Zbuild-std: the standard library has to be
+      # rebuilt with instrumentation, or TSan sees std's synchronisation as
+      # opaque and reports the channel itself as a race.
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
+        with:
+          components: rust-src
+
+      - name: Run the threaded suites under ThreadSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+          RUSTDOCFLAGS: -Zsanitizer=thread
+          # halt_on_error keeps the first race as the failure rather than
+          # letting a later clean test overwrite the verdict. history_size
+          # widens the recorded stack depth, which is what makes a report
+          # actionable instead of a bare address.
+          TSAN_OPTIONS: >-
+            suppressions=${{ github.workspace }}/ops/tsan/suppressions.txt
+            halt_on_error=1
+            history_size=4
+            second_deadlock_stack=1
+        run: |
+          set -o pipefail
+          # SCOPE, stated because it is a sample and not the whole suite: these
+          # are the integration tests that actually spawn threads — the REST API
+          # and its token path, the HEP listener, the MCP stdio server, and the
+          # CLI paths that drive a capture. Running everything under
+          # -Zbuild-std costs far more wall clock for tests that are
+          # single-threaded by construction.
+          #
+          # A race in a path not listed here will NOT be found. Add the suite
+          # rather than assuming coverage.
+          cargo +nightly test \
+            -Zbuild-std \
+            --target x86_64-unknown-linux-gnu \
+            --features full \
+            --test api_test \
+            --test api_token_test \
+            --test hep_test \
+            --test mcp_stdio_test \
+            --test cli_flag_behavior_test \
+            2>&1 | tee tsan.log
+
+          # TSan reports a race and can still exit 0 when the test itself
+          # passes, so the exit code alone is not the verdict — grep the log.
+          # This is the same "reporting success you did not observe" shape the
+          # rest of this repository's gates were audited for.
+          if grep -q 'WARNING: ThreadSanitizer' tsan.log; then
+            echo "::error::ThreadSanitizer reported a data race — see the log above"
+            exit 1
+          fi
+          echo "no races reported"
+
+      - name: Upload the sanitizer log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: tsan-log
+          path: tsan.log
+          if-no-files-found: warn

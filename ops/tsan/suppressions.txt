@@ -1,0 +1,22 @@
+# ThreadSanitizer suppressions for sipnab.
+#
+# TSan instruments Rust code compiled with -Zsanitizer=thread. It does NOT
+# instrument libpcap, libasound or libc, so it sees calls into them as opaque
+# and reports races it cannot prove absent. Those are not sipnab bugs and they
+# are not evidence of safety either — they are blind spots, listed here so the
+# distinction stays visible instead of being silently absorbed.
+#
+# Add an entry only with the reason it is not a real race. An unexplained
+# suppression turns a race detector into a race ignorer.
+
+# libpcap owns its own buffer and its own capture thread internals. sipnab
+# never touches pcap state from two threads: `src/capture/live.rs` reads on one
+# thread and hands owned `Bytes` down a channel.
+called_from_lib:libpcap
+
+# ALSA's mixer and PCM state is guarded inside libasound. The playback plugin
+# (crates/sipnab-audio) is dlopen'd and drives it from a single thread.
+called_from_lib:libasound
+
+# The dynamic loader's own bookkeeping during dlopen of the audio plugin.
+called_from_lib:ld-linux

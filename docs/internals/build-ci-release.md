@@ -28,7 +28,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The nine workflows
+## The ten workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -41,6 +41,41 @@ compiles, which is exactly why CI has a feature matrix.
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via `scripts/build-wiki.py`. |
 | `release.yml` | `v*` tags | The release. See below. |
+| `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
+
+### ThreadSanitizer
+
+`sanitizers.yml` runs the threaded integration suites under
+`-Zsanitizer=thread`, weekly. It exists because nothing else in the suite can
+see a data race: the capture thread, the channel and the processing thread are
+exercised by the tests, but a test that passes and a test that raced are
+indistinguishable to `cargo test`. The borrow checker does not help here either
+— it stops at `unsafe`, and 41 of this crate's 49 `unsafe` blocks are libc FFI
+for privilege dropping and capture setup.
+
+Three things about it are deliberate.
+
+**Nightly is a tool, not the toolchain.** `-Zsanitizer` is nightly-only, and so
+is `cargo-fuzz`; both run in their own workflow while the release build stays on
+the pinned stable version. Moving the build to nightly would break the toolchain
+pin, the MSRV promise, and the reproducibility of a released binary.
+
+**`-Zbuild-std` is required, not optional.** Without rebuilding the standard
+library with instrumentation, TSan sees `std`'s synchronisation as opaque and
+reports the channel itself as a race — the noise that gets a race detector
+switched off.
+
+**The scope is a sample, and the workflow says so.** Five suites run: the REST
+API and its token path, HEP, MCP stdio, and the CLI behaviour tests. A race in a
+path outside that list will not be found. Add the suite rather than assuming
+coverage.
+
+`ops/tsan/suppressions.txt` silences libpcap, libasound and the dynamic loader,
+which TSan cannot instrument. Each entry carries the reason it is not a real
+race; an unexplained suppression turns a race detector into a race ignorer.
+
+The step greps the log rather than trusting the exit code: TSan can report a
+race and still exit 0 when the test itself passes.
 
 ### What actually gates a merge
 
