@@ -708,6 +708,30 @@ impl Config {
         })
     }
 
+    /// Keys in `content` that sipnab does not recognize.
+    ///
+    /// Deserialization is deliberately lenient — an unknown key is ignored so
+    /// a config written for a newer version still starts — and the loader only
+    /// `warn!`s about them. That leniency is right for a running binary and
+    /// wrong for anything checking a config is correct, because "loaded
+    /// without error" and "did what it says" are not the same claim: a sample
+    /// with `devise` for `device` loads fine and configures nothing.
+    ///
+    /// This exposes the signal the loader already computes so a caller — the
+    /// documented-sample gate, or an operator validating a file — can tell
+    /// those two apart.
+    ///
+    /// # Errors
+    /// `content` is not valid TOML.
+    pub fn unknown_keys(content: &str) -> Result<Vec<String>, crate::Error> {
+        let value: toml::Value =
+            toml::from_str(content).map_err(|e| crate::Error::ConfigParse {
+                path: "<inline>".to_string(),
+                source: e,
+            })?;
+        Ok(collect_unknown_keys(&value))
+    }
+
     /// Load and parse a single config file.
     ///
     /// Parses TOML into a generic `toml::Value` first, walks the keys against

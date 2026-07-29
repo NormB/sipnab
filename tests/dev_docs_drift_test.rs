@@ -670,7 +670,7 @@ fn build_wiki_leaves_no_relative_links_in_the_output() {
         // literal `](../bench/)` inside a code span — quoted, never rendered as
         // a link, and correctly left alone by the generator. Reading raw bytes
         // reported that example as a link that had escaped rewriting.
-        let body = markdown::prose(&raw);
+        let body = markdown::linkable_prose(&raw);
         for cap in link.captures_iter(&body) {
             let target = cap[1].trim();
             // Valid on a flat wiki: an absolute URL, a pure anchor, or a wiki
