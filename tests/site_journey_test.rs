@@ -18,6 +18,7 @@
 //! the demo pcaps through the actual TUI `App`, and the CSP guards execute
 //! `ops/cloudflare/refresh_csp_hashes.py` in dry-run mode.
 
+use clap::CommandFactory;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
@@ -635,6 +636,79 @@ fn no_changelog_entry_precedes_its_version_heading() {
         versions >= 10,
         "only {versions} version headings found — the heading pattern stopped \
          matching and this gate is reporting a structure it did not check"
+    );
+}
+
+/// A design doc that calls itself unimplemented must not describe a shipped flag.
+///
+/// `docs/design/dialog-tracking-modes.md` read "**Status:** spec, not yet
+/// implemented" for six releases after `--dialog-track` shipped in 0.5.54 —
+/// while `src/cli.rs` declared it, `cli_flag_behavior_test` exercised it under a
+/// section header citing that very page, and `dialog_store.rs` pointed readers
+/// at it for the design. `docs/internals/README.md` even recorded the drift in
+/// the column that exists for exactly that, so it had been noticed and left.
+///
+/// A reader following the index to the rationale was told the feature did not
+/// exist. The check is derivable rather than curated: a doc whose status says
+/// it is not implemented must not name a long flag that `Cli` actually accepts.
+#[test]
+fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
+    let real: std::collections::BTreeSet<String> = sipnab::cli::Cli::command()
+        .get_arguments()
+        .filter_map(|a| a.get_long().map(str::to_string))
+        .collect();
+    assert!(
+        real.len() >= 50,
+        "only {} long flags read from Cli — the reflection broke and this gate \
+         cannot find a contradiction",
+        real.len()
+    );
+
+    let flag = regex::Regex::new(r"`--([a-z][a-z0-9-]+)`").expect("flag regex");
+    let mut problems = Vec::new();
+    let mut checked = 0;
+
+    let dir = repo().join("docs/design");
+    for entry in std::fs::read_dir(&dir).expect("read docs/design/") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read design doc");
+        let Some(status) = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("**Status:**"))
+        else {
+            continue;
+        };
+        checked += 1;
+        let lower = status.to_ascii_lowercase();
+        if !(lower.contains("not yet implemented") || lower.contains("not implemented")) {
+            continue;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        for c in flag.captures_iter(&text) {
+            if real.contains(&c[1]) {
+                problems.push(format!(
+                    "{name}: status says unimplemented, but --{} exists",
+                    &c[1]
+                ));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 3,
+        "only {checked} design docs carry a `**Status:**` line — the scan \
+         stopped matching and this gate is checking nothing"
+    );
+    problems.sort();
+    problems.dedup();
+    assert!(
+        problems.is_empty(),
+        "design doc(s) claim to be unimplemented while describing a shipped \
+         flag:\n  {}",
+        problems.join("\n  ")
     );
 }
 
@@ -2824,9 +2898,15 @@ fn packaging_scripts_reference_existing_paths() {
             }
         }
     }
-    assert!(
-        checked >= 10,
-        "only {checked} path literals examined — the extractor stopped matching"
+    // Pinned, not floored, for the same reason as the docs-page walk in
+    // link_integrity_test: `>= 10` against a true 52 let four fifths of the
+    // packaging references stop being checked without the gate noticing, and a
+    // reference to a nonexistent path is precisely what this exists to catch.
+    assert_eq!(
+        checked, 52,
+        "packaging path scan saw {checked} references, expected 52. More is \
+         fine — bump this. FEWER means the candidate extractor stopped matching \
+         and unverified paths pass unseen."
     );
     missing.sort();
     missing.dedup();
