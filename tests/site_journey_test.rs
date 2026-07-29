@@ -18,6 +18,10 @@
 //! the demo pcaps through the actual TUI `App`, and the CSP guards execute
 //! `ops/cloudflare/refresh_csp_hashes.py` in dry-run mode.
 
+// `Cli` lives behind the `native` feature, and this file's other 37 gates are
+// site/doc checks that must keep compiling in every reduced combination — so
+// the import and the one test that needs it are gated rather than the file.
+#[cfg(feature = "native")]
 use clap::CommandFactory;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -651,6 +655,13 @@ fn no_changelog_entry_precedes_its_version_heading() {
 /// A reader following the index to the rationale was told the feature did not
 /// exist. The check is derivable rather than curated: a doc whose status says
 /// it is not implemented must not name a long flag that `Cli` actually accepts.
+///
+/// Gated on `native` because that is where `Cli` lives, and this file's other
+/// gates are site/doc checks that must keep compiling in every reduced feature
+/// combination. Reflection over the real parser is the point — reading
+/// `long = "..."` out of `src/cli.rs` instead would be a second parser to keep
+/// in step with the first, which is the shape of defect this suite removes.
+#[cfg(feature = "native")]
 #[test]
 fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
     let real: std::collections::BTreeSet<String> = sipnab::cli::Cli::command()
