@@ -79,7 +79,8 @@ impl ApiServer {
 
         // First wait for the bind line to learn the ephemeral port.
         let budget = test_timeout(15);
-        let deadline = Instant::now() + budget;
+        let start = Instant::now();
+        let deadline = start + budget;
         let mut addr = None;
         while Instant::now() < deadline {
             match rx.recv_timeout(Duration::from_millis(200)) {
@@ -94,12 +95,53 @@ impl ApiServer {
                         panic!("sipnab --api exited early: {status}");
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                // stderr closed, which means the child is gone -- the deadline
+                // has NOT elapsed. This arm used to `break`, and the panic below
+                // then named a timeout that never happened: a ThreadSanitizer
+                // run whose children were being aborted by `halt_on_error`
+                // reported "did not report a listening address within 180s" for
+                // a suite that finished in 55s, and the resulting investigation
+                // went after runner speed instead of the abort. Report the
+                // child's own status, which is the actual cause.
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // stderr usually closes microseconds before the process is
+                    // reaped, so give it a moment rather than racing it and
+                    // reporting "still running" for a process that is exiting.
+                    let grace = Instant::now() + Duration::from_secs(2);
+                    let mut exit = None;
+                    while Instant::now() < grace {
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                exit = Some(status);
+                                break;
+                            }
+                            _ => thread::sleep(Duration::from_millis(50)),
+                        }
+                    }
+                    let status = match exit {
+                        Some(status) => format!("exited with {status}"),
+                        None => {
+                            let _ = child.kill();
+                            "still running with stderr closed (killed)".to_string()
+                        }
+                    };
+                    panic!(
+                        "sipnab --api closed stderr after {:?} without reporting a \
+                         listening address — {status}. This is the process dying, \
+                         not a timeout; under a sanitizer, check that build's log \
+                         for the abort that killed it.",
+                        start.elapsed()
+                    );
+                }
             }
         }
         let addr = addr.unwrap_or_else(|| {
             let _ = child.kill();
-            panic!("API server did not report a listening address within {budget:?}");
+            panic!(
+                "API server did not report a listening address within {budget:?} \
+                 (waited {:?})",
+                start.elapsed()
+            );
         });
 
         // The API serves *concurrently* with offline-pcap processing, so a bound

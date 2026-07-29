@@ -12,6 +12,14 @@ fn main() {
     // file and `packed-refs` covers both loose and packed refs.
     emit_git_rerun_triggers();
 
+    // `sipnab_tsan` is set by `.github/workflows/sanitizers.yml` (and by any
+    // local ThreadSanitizer build) to swap mimalloc for the system allocator --
+    // see the comment on the `#[global_allocator]` in src/main.rs. Declaring it
+    // here is what keeps `unexpected_cfgs` quiet on every ordinary build, so a
+    // typo in the flag name stays a lint error instead of silently never
+    // matching.
+    println!("cargo::rustc-check-cfg=cfg(sipnab_tsan)");
+
     let commit = git(&["rev-parse", "--short=8", "HEAD"]).unwrap_or_default();
     let tag = git(&["describe", "--tags", "--exact-match", "HEAD"]).unwrap_or_default();
     // "-dirty" reflects only TRACKED modifications. `--untracked-files=no` keeps
