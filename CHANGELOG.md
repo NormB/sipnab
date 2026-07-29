@@ -8,6 +8,62 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.58] - 2026-07-29
+
+### Fixed
+- **Every fatal startup path abandoned the running capture thread.**
+  `bootstrap::launch` spawns the capture thread *before* the readiness
+  hand-shake, the chroot and the privilege drop, and all nineteen fatal exits
+  from there on called `std::process::exit`, which joins nothing — so the
+  process died with a capture thread still running and still holding an open
+  capture source. `BatchRunner::new` had four more of the same shape and could
+  not fix them locally, because it does not own the handle. `sipnab -I
+  <missing-file>` — a mistyped filename — was enough to produce one, as was an
+  unusable `--chroot`. All twenty-three paths now go through
+  `capture::stop_and_join`, which sets the shutdown flag, drops the receiver and
+  joins; `BatchRunner::new` returns a `PlanError` so `batch::run` can clean up in
+  the scope holding both the handle and the receiver. Exit codes and messages are
+  unchanged, and a HEP listener blocked on its socket still exits in
+  milliseconds rather than hanging the join.
+
+### Changed
+- **ThreadSanitizer is now meaningful on this codebase.** The `sanitizers.yml`
+  job reported a data race on the file-capture path; it was **mimalloc**, which
+  `src/main.rs` installs as the global allocator. mimalloc is C compiled by the
+  `cc` crate and `-Zsanitizer=thread` instruments Rust only, so TSan sees neither
+  its alloc/free (no shadow reset on a recycled block) nor its internal
+  cross-thread synchronisation — every block handed from one thread to another
+  reads as a race. The reported stacks named `read` and
+  `Vec::append_elements_unreserved` with no allocator frame anywhere, so no
+  suppression could have matched it. The allocator is now dropped under
+  `--cfg sipnab_tsan`, set only by that job; **the shipped binary is
+  unchanged**. All five sanitizer suites run clean: 58 tests, zero races, zero
+  leaked threads.
+
+- **The sanitizer gate could not fail correctly, in either direction.** Its
+  verdict lived inline in the workflow, where `run:` blocks execute under
+  `bash -e -o pipefail`: a bare `grep … | while read` warning loop exited 1 when
+  there were **no** findings, killing the step before it printed anything. The
+  job therefore failed silently on a clean tree and passed while a thread leak
+  was present. Its instrumentation guard had the mirror-image bug — `grep -q`
+  closing the pipe on a still-writing `nm`, whose SIGPIPE read as "not
+  instrumented". Both now live in `ops/tsan/verdict.sh` with
+  `ops/tsan/test-verdict.sh` beside it and a `tsan-verdict` job running the eight
+  scenarios on every push, not only inside the weekly job they gate. `thread
+  leak` is in the fatal set rather than tolerated.
+
+- **The test harness reported a timeout it had never waited out.** When a
+  spawned API server died, its stderr closed and the `Disconnected` arm broke to
+  a panic naming the whole budget — "did not report a listening address within
+  180s" for a suite that finished in 55s. It now reports the child's exit status,
+  which is the actual cause.
+
+- Legacy-gate audit, tiers D and E (27 findings): the shared CommonMark lexer
+  behind the docs gates, WASM exports derived from `src/wasm.rs` rather than a
+  hand-kept list, pre-commit and pre-push hooks executed rather than grepped,
+  and the licence-election table deduplicated. Each fix verified by
+  reintroducing the demonstrated defect and observing the gate fire.
+
 ## [0.5.57] - 2026-07-29
 
 ### Fixed
