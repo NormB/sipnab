@@ -127,5 +127,60 @@ if [ -d fuzz ]; then
 	fi
 fi
 
+# -- Hard gate: reduced feature combinations ----------------------------------
+# Everything above this point builds with --all-features, and that is exactly
+# the blind spot: `#[cfg]`-gating rot is invisible to it. ci.yml's features job
+# records the earlier instance -- "at one point 7 of 8 reduced combos failed to
+# build" -- and it happened again on the 0.5.61 release commit, where a new test
+# reflected over `Cli` (behind the `native` feature) and took the whole
+# site_journey_test target out of every build without it. Cost: a red main, a
+# fix commit and a delayed release, for something a three-second check catches.
+#
+# A representative subset, not all eleven: `tls` and `api` are the combos that
+# EXCLUDE native, which is where the gating breaks, and `wasm` is the most
+# distant target. The full matrix stays in CI -- this is the cheap filter that
+# stops the obvious break reaching it.
+for combo in tls api; do
+	# Skip a combination this crate does not define, the way the fuzz gate
+	# skips a missing fuzz/. Without this the gate fails closed on any crate
+	# without these exact feature names -- which is every throwaway fixture in
+	# scripts/test-pre-push.sh, and it blocked all of them on the first run.
+	if ! grep -qE "^[[:space:]]*${combo}[[:space:]]*=" Cargo.toml; then
+		continue
+	fi
+	printf '  cargo check --no-default-features --features %s --tests ... ' "$combo"
+	if cargo check --no-default-features --features "$combo" --tests; then
+		printf '%bOK%b\n' "$GREEN" "$NC"
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '\n'
+		printf '%bPush blocked: the %s feature combination does not build.%b\n' "$RED" "$combo" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    cargo check --no-default-features --features %s --tests\n' "$combo"
+		printf 'Usually a test or item that needs a feature-gated module without\n'
+		printf 'saying so -- gate the item, not the whole file, so the checks that\n'
+		printf 'do not need the feature keep running everywhere.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
+done
+
+if grep -qE '^[[:space:]]*wasm[[:space:]]*=' Cargo.toml; then
+printf '  cargo check --no-default-features --features wasm --lib ... '
+if cargo check --no-default-features --features wasm --lib; then
+	printf '%bOK%b\n' "$GREEN" "$NC"
+else
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	printf '\n'
+	printf '%bPush blocked: the wasm build is broken.%b\n' "$RED" "$NC"
+	printf 'Reproduce with:\n'
+	printf '    cargo check --no-default-features --features wasm --lib\n'
+	printf '\n'
+	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+	exit 1
+fi
+fi
+
 printf '%bAll required pre-push checks passed.%b\n' "$GREEN" "$NC"
 exit 0

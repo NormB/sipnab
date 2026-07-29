@@ -375,9 +375,16 @@ fn wiki_intra_docs_links_resolve() {
             }
         }
     }
-    assert!(
-        seen >= 40,
-        "extractor found only {seen} wiki links — regex broken?"
+    // Pinned, not floored. This read `>= 40` while the extractor found 179, so
+    // the regex could have stopped matching three quarters of the wiki links and
+    // still reported itself healthy. A DROP is the only failure that matters
+    // here; growth costs one deliberate bump, the same contract
+    // `linked_code_targets_exist` uses.
+    assert_eq!(
+        seen, 179,
+        "extractor found {seen} wiki links, expected 179. More is fine — bump \
+         this. FEWER means the regex stopped matching and the anchor checks \
+         above it silently narrowed."
     );
     assert!(
         problems.is_empty(),

@@ -8,6 +8,38 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+- **Spec for SIP problem diagnosis** — the signalling-side complement to
+  `rtp/diagnosis.rs`, which can already report one-way audio and NAT mismatch
+  but cannot say a call failed on a `503` after three retransmitted INVITEs.
+  `docs/design/sip-problem-diagnosis.md` scopes seven detections in build
+  order, the `SignalingDiagnosis` shape, and where each surface renders it.
+  Two rules are load-bearing: every detection names the messages it is drawn
+  from, and a truncated capture is reported as unknown rather than as failure.
+  Not implemented.
+- **`pre-push` now checks reduced feature combinations** (`tls`, `api`, `wasm`).
+  Everything else in that hook builds with `--all-features`, which is blind to
+  `#[cfg]`-gating rot by construction — and that broke `Features (tls)` on the
+  0.5.61 release commit, costing a red `main`, a fix commit and a delayed
+  release for something a three-second check catches. A combination the crate
+  does not define is skipped, the way the fuzz gate skips a missing `fuzz/`.
+
+### Changed
+- **Four more coverage counters pinned to reality.** Measuring the whole class
+  rather than the two fixed last time: wiki links `>= 40` against a true 179,
+  documentation tables `>= 40` against 292, tracked markdown files `>= 50`
+  against 93, and changelog version headings `>= 10` against 85 — the last of
+  those in the gate added one day earlier *to fix this defect class*. The first
+  three are exact pins; the changelog count keeps a floor, tightened to 80,
+  because it grows by one on every release and pinning it would put a mandatory
+  edit on the release path.
+- **The design-status gate now checks the doc's subject**, the flag in its H1,
+  rather than every flag it mentions. A spec legitimately references existing
+  flags while describing something unbuilt, and the first draft reported three
+  findings for one contradiction.
+
 ## [0.5.61] - 2026-07-29
 
 ### Fixed

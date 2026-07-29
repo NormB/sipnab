@@ -204,6 +204,68 @@ else
 fi
 rm -rf "$CRATE/fuzz"
 
+# reduced feature combinations: the gate added after a new test reflected over a
+# `native`-gated module and broke `Features (tls)` on a release commit. The
+# fixture reproduces that exact shape -- an item that compiles under the default
+# features and not without them -- because a gate whose test cannot fail the way
+# production failed is a gate nobody has checked.
+cat >"$CRATE/Cargo.toml" <<'EOF'
+[package]
+name = "throwaway"
+version = "0.0.0"
+edition = "2021"
+
+[features]
+default = ["native"]
+native = []
+tls = []
+api = []
+wasm = []
+EOF
+mkdir -p "$CRATE/tests"
+cat >"$CRATE/src/lib.rs" <<'EOF'
+#[cfg(feature = "native")]
+pub mod gated {
+    pub fn thing() {}
+}
+EOF
+cat >"$CRATE/src/main.rs" <<'EOF'
+fn main() {}
+EOF
+cat >"$CRATE/tests/reduced.rs" <<'EOF'
+// Calls a `native`-gated path unconditionally: fine with default features,
+// broken under --no-default-features --features tls.
+#[test]
+fn uses_a_gated_module() {
+    throwaway::gated::thing();
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+if run_hook ""; then
+	bad "reduced-combo gate did NOT block a test that needs a feature-gated module"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "reduced-combo gate blocks a test that needs a feature-gated module"
+fi
+rm -f "$CRATE/tests/reduced.rs"
+
+# ...and passes once the item is gated, which is the fix the message recommends.
+cat >"$CRATE/tests/reduced.rs" <<'EOF'
+#[cfg(feature = "native")]
+#[test]
+fn uses_a_gated_module() {
+    throwaway::gated::thing();
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+if run_hook ""; then
+	ok "reduced-combo gate passes once the item itself is gated"
+else
+	bad "reduced-combo gate blocked a correctly gated test"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+rm -f "$CRATE/tests/reduced.rs"
+
 # -- Summary ------------------------------------------------------------------
 printf '\n--- test-pre-push summary: %d passed, %d failed ---\n' "$PASS" "$FAIL"
 if [ "$FAIL" -ne 0 ]; then
