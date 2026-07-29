@@ -62,7 +62,28 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	EOF
 	echo 'pub fn prod() -> u8 { 1 }' > "$_d/src/lib.rs"
 	echo 'pub fn audio() -> u8 { 1 }' > "$_d/crates/sipnab-audio/src/lib.rs"
-	cp "$REPO_ROOT/scripts/check-unwrap.py" "$_d/scripts/"
+	cp "$REPO_ROOT/scripts/check-unwrap.py" "$REPO_ROOT/scripts/check-wasm-exports.py" \
+		"$_d/scripts/"
+
+	# A WASM surface, so gates 4 and 7 are reachable rather than skipped. Ten
+	# exports is the floor check-wasm-exports.py refuses to go below.
+	mkdir -p "$_d/website/static/wasm"
+	{
+		echo '#[wasm_bindgen]'
+		echo 'impl Analyzer {'
+		for _i in 1 2 3 4 5 6 7 8 9 10 11; do
+			echo "    pub fn export_$_i(&self) -> u8 { 1 }"
+		done
+		echo '}'
+	} > "$_d/src/wasm.rs"
+	{
+		echo 'class Analyzer {'
+		for _i in 1 2 3 4 5 6 7 8 9 10 11; do
+			echo "    export_$_i() { return 1; }"
+		done
+		echo '}'
+	} > "$_d/website/static/wasm/sipnab.js"
+	printf '\0asm' > "$_d/website/static/wasm/sipnab_bg.wasm"
 
 	# The cargo stub. Every invocation is logged; `test` emits the canned
 	# per-binary results the caller asked for.
@@ -138,6 +159,48 @@ if [ "$HOOK_RC" -ne 0 ]; then
 	ok "hook rejects a homepage count that disagrees with the run"
 else
 	bad "hook accepted a homepage count of 9999 against a real 2838"
+fi
+rm -rf "$D"
+
+# ── Scenario 2b: gate 4 derives the export list from src/wasm.rs ───────────
+# The list used to be twelve hand-kept names in the hook and twelve more in
+# tests/wasm_exports_test.rs, while src/wasm.rs exported sixteen. Adding an
+# export to the Rust source and not to the glue is precisely the "stale WASM
+# build" the gate claims to catch, and a hand-kept list cannot: a NEW function
+# is by definition not on it.
+D=$(sandbox 10)
+echo '    pub fn brand_new_export(&self) -> u8 { 1 }' >> "$D/src/wasm.rs"
+run_hook "$D"
+if [ "$HOOK_RC" -ne 0 ] && printf '%s' "$HOOK_OUT" | grep -q 'brand_new_export'; then
+	ok "gate 4 catches a new src/wasm.rs export missing from the glue"
+else
+	bad "gate 4 missed a new export absent from the glue; output: $HOOK_OUT"
+fi
+rm -rf "$D"
+
+# ── Scenario 2c: gate 7 requires the compiled artifact, not any path ───────
+# `grep -q "website/static/wasm/sipnab"` matched sipnab.js, so a single
+# appended newline to the glue satisfied it while sipnab_bg.wasm stayed
+# byte-identical — a behaviour change to src/wasm.rs shipping with a stale
+# bundle.
+D=$(sandbox 10)
+echo '// behaviour change' >> "$D/src/wasm.rs"
+echo '' >> "$D/website/static/wasm/sipnab.js"
+( cd "$D" && git add src/wasm.rs website/static/wasm/sipnab.js )
+run_hook "$D"
+if [ "$HOOK_RC" -ne 0 ]; then
+	ok "gate 7 rejects a src/wasm.rs change with only the glue restaged"
+else
+	bad "gate 7 accepted a src/wasm.rs change whose .wasm was never rebuilt"
+fi
+# Restaging the compiled artifact clears it.
+printf '\0asmREBUILT' > "$D/website/static/wasm/sipnab_bg.wasm"
+( cd "$D" && git add website/static/wasm/sipnab_bg.wasm )
+run_hook "$D"
+if [ "$HOOK_RC" -eq 0 ]; then
+	ok "gate 7 passes once sipnab_bg.wasm is rebuilt and staged"
+else
+	bad "gate 7 still blocked after the .wasm was rebuilt; output: $HOOK_OUT"
 fi
 rm -rf "$D"
 

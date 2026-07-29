@@ -112,6 +112,28 @@ upper="$tmp/upper.txt"; sed 's/f94435e79a5aaae1cb24050cc9ac7f94041588c845b425f2c
 
 # A version that IS a regex metachar-laden prefix must be matched literally,
 # not as a pattern (e.g. '0.4.3' must not also match '0x4y3' style lines).
+#
+# This comment sat directly above `echo` and the summary: there was NO
+# assertion. The property is real in the generator -- it compares $2 == n, not
+# $2 ~ n -- and was wholly unasserted here, so relaxing the generator to a
+# regex match left 21/21 green while a sums file whose only match is
+# `sipnab-0x4y3-...` would bind the real v0.4.3 url to that bogus checksum.
+literal="$tmp/literal.txt"
+cat > "$literal" <<'EOF'
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  sipnab-0x4y3-aarch64-apple-darwin.tar.gz
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  sipnab-0x4y3-x86_64-apple-darwin.tar.gz
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  sipnab-0x4y3-aarch64-unknown-linux-gnu.tar.gz
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  sipnab-0x4y3-x86_64-unknown-linux-gnu.tar.gz
+EOF
+lit_out="$("$GEN" 0.4.3 "$literal" 2>/dev/null)"; lit_rc=$?
+if [ $lit_rc -ne 0 ]; then
+  ok "version is matched literally, not as a regex (0.4.3 does not match 0x4y3)"
+elif grep -qE 'aaaaaaaa|bbbbbbbb|cccccccc|dddddddd' <<<"$lit_out"; then
+  bad "version matched 0x4y3 as a regex and bound a bogus checksum to the real url"
+else
+  ok "version is matched literally, not as a regex (0.4.3 does not match 0x4y3)"
+fi
+
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

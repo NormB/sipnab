@@ -22,37 +22,37 @@ fn wasm_js_exports_all_required_functions() {
         js_path.display()
     );
 
-    let js = std::fs::read_to_string(js_path).expect("Failed to read sipnab.js");
-
-    let required_functions = [
-        "load_pcap",
-        "get_dialogs",
-        "get_call_flow",
-        "get_raw_message",
-        "filter",
-        "export_json",
-        "export_csv",
-        "export_mermaid",
-        "get_streams",
-        "get_stream_detail",
-        "stream_count",
-        "rtp_packet_count",
-    ];
-
-    let mut missing = Vec::new();
-    for func in &required_functions {
-        // Look for the function definition pattern: `funcname(`
-        let pattern = format!("{func}(");
-        if !js.contains(&pattern) {
-            missing.push(*func);
-        }
-    }
-
+    // The export list is DERIVED from src/wasm.rs, by the one script the
+    // pre-commit hook also runs. It used to be a hand-kept list of twelve
+    // names, byte-duplicated in .githooks/pre-commit, while src/wasm.rs
+    // exported sixteen: `new`, `dialog_count`, `packet_count` and
+    // `sip_message_count` were on neither, so renaming three of them in the
+    // built glue passed the shell gate, passed this test, and committed.
+    //
+    // The docstring above says this "catches stale WASM builds where new Rust
+    // functions were added" — and a hand-kept list is structurally incapable
+    // of that, since a new function is by definition not on it.
+    //
+    // Membership was also tested with `name + "("`, matching anywhere in the
+    // file, so `filter` was satisfied by any JS `.filter(` call.
+    let out = std::process::Command::new("python3")
+        .arg("scripts/check-wasm-exports.py")
+        .output()
+        .expect("run scripts/check-wasm-exports.py");
     assert!(
-        missing.is_empty(),
-        "WASM JS bindings are missing required exports: {missing:?}. \
+        out.status.success(),
+        "WASM glue does not export everything src/wasm.rs declares:\n{}{}\n\
          Rebuild with: wasm-pack build --target web --out-dir website/static/wasm \
-         --no-typescript -- --no-default-features --features wasm"
+         --no-typescript -- --no-default-features --features wasm",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The script reports how many it derived; a collapse in that number means
+    // the parse broke rather than the glue being complete.
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        report.contains("OK ("),
+        "check-wasm-exports.py did not report a derived export count: {report}"
     );
 }
 

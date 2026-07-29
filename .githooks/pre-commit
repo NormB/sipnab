@@ -57,18 +57,13 @@ echo -e "${GREEN}OK${NC}"
 # ── 4. WASM module in sync with source ────────────────────────────
 echo -n "  WASM exports in sync... "
 if [ -f "website/static/wasm/sipnab.js" ]; then
-    WASM_CHECK=$(python3 -c "
-js = open('website/static/wasm/sipnab.js').read()
-required = ['load_pcap', 'get_dialogs', 'get_call_flow', 'get_raw_message',
-            'filter', 'export_json', 'export_csv', 'export_mermaid',
-            'get_streams', 'get_stream_detail', 'stream_count', 'rtp_packet_count']
-missing = [fn for fn in required if fn + '(' not in js]
-if missing:
-    print('MISSING: ' + ', '.join(missing))
-else:
-    print('OK')
-")
-    if [[ "$WASM_CHECK" != "OK" ]]; then
+    # The export list is DERIVED from src/wasm.rs by the script, not restated
+    # here. This gate used to carry a hand-kept list of twelve names, duplicated
+    # byte-for-byte in tests/wasm_exports_test.rs, while src/wasm.rs exported
+    # sixteen — so renaming three of the four unlisted ones in the built glue
+    # passed both and committed. A hand-kept list cannot catch a NEW function,
+    # which is exactly what the guard claims to be for.
+    if ! WASM_CHECK=$(python3 scripts/check-wasm-exports.py 2>&1); then
         echo -e "${RED}FAIL${NC}"
         echo "  $WASM_CHECK"
         echo "  Rebuild: wasm-pack build --target web --out-dir website/static/wasm --no-typescript -- --no-default-features --features wasm"
@@ -194,9 +189,13 @@ fi
 # ── 7. Check for staged wasm.rs changes without WASM rebuild ──────
 echo -n "  WASM rebuild check... "
 if git diff --cached --name-only | grep -q "src/wasm.rs"; then
-    if ! git diff --cached --name-only | grep -q "website/static/wasm/sipnab"; then
+    # The compiled artifact specifically. Matching any "website/static/wasm/sipnab*"
+    # path meant a single appended newline to sipnab.js satisfied this while
+    # sipnab_bg.wasm stayed byte-identical — a behaviour change to src/wasm.rs
+    # shipping with a stale bundle.
+    if ! git diff --cached --name-only | grep -q "website/static/wasm/sipnab_bg.wasm"; then
         echo -e "${RED}FAIL${NC}"
-        echo "  src/wasm.rs changed but website/static/wasm/ not updated."
+        echo "  src/wasm.rs changed but website/static/wasm/sipnab_bg.wasm was not rebuilt."
         echo "  Rebuild: wasm-pack build --target web --out-dir website/static/wasm --no-typescript -- --no-default-features --features wasm"
         exit 1
     fi
