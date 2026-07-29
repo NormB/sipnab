@@ -82,6 +82,25 @@ if build 1.2.3 amd64 >/dev/null 2>&1 && [ -f sipnab_1.2.3_amd64.deb ]; then
     assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/LICENSE-MIT"
     assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/LICENSE-APACHE"
     assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/THIRD-PARTY-NOTICES.md"
+    # build-deb.sh installs seven things; this asserted three of them, so
+    # deleting the man page, the systemd unit and the postinst chmod outright
+    # left 25 passed / 0 failed while `dpkg-deb -c` showed man1/ and
+    # lib/systemd/system/ present but EMPTY, and the maintainer script that
+    # creates the privilege-drop `sipnab` user simply gone. The test copies
+    # those files into the sandbox and never checked they arrived.
+    assert_contains     "full contents" "$contents" "usr/share/man/man1/sipnab.1.gz"
+    assert_contains     "full contents" "$contents" "lib/systemd/system/sipnab.service"
+    # The maintainer script is not in `dpkg-deb -c` (that lists the data
+    # archive); it lives in the control archive.
+    scripts="$(dpkg-deb --ctrl-tarfile sipnab_1.2.3_amd64.deb 2>/dev/null | tar -t 2>/dev/null || true)"
+    assert_contains     "full control archive" "$scripts" "postinst"
+    # And it has to be executable, or dpkg refuses to run it and the
+    # privilege-drop user is never created.
+    perms="$(dpkg-deb --ctrl-tarfile sipnab_1.2.3_amd64.deb 2>/dev/null | tar -tv 2>/dev/null | grep postinst || true)"
+    case "$perms" in
+      *rwxr-xr-x*) pass "postinst is executable" ;;
+      *) fail "postinst is not executable (dpkg will skip it): $perms" ;;
+    esac
 else
     fail "full build failed or did not produce sipnab_1.2.3_amd64.deb"
 fi
