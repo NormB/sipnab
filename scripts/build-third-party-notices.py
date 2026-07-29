@@ -159,7 +159,14 @@ def render(rows: list[tuple[str, str, str]]) -> str:
         out.append("")
         out.append("| Crate | Offered | Elected |")
         out.append("|---|---|---|")
-        for name, _version, licence in sorted(set(elected)):
+        # Deduplicate on what is EMITTED, not on what was collected. The
+        # version is dropped from this table -- the licence election is a
+        # property of the crate, not of a version -- so a crate vendored at two
+        # versions passed `set()` as two distinct tuples and printed the same
+        # row twice. r-efi, at 5.3.0 and 6.0.0, did exactly that. Two versions
+        # declaring DIFFERENT licences still produce two rows, and the check
+        # below then fires on whichever disagrees with the recorded election.
+        for name, licence in sorted({(n, l) for n, _v, l in elected}):
             offered, choice = ELECTIONS[name]
             if licence != offered:
                 raise SystemExit(

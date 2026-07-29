@@ -19,6 +19,9 @@
 use clap::CommandFactory;
 use std::collections::BTreeSet;
 
+#[path = "support/markdown.rs"]
+mod markdown;
+
 /// Long flags mentioned in the docs that belong to OTHER tools (cargo, docker,
 /// apt, editcap, systemctl, voipmonitor, `claude mcp add`), not to sipnab —
 /// each scoped to the exact doc label(s) where it legitimately appears.
@@ -1810,5 +1813,88 @@ fn sequence_marker_admits_a_declared_procedure() {
         first.trim(),
         SEQUENCE_MARKER,
         "and the gate admits it on the strength of the declaration alone"
+    );
+}
+
+/// No documentation table repeats a row.
+///
+/// `THIRD-PARTY-NOTICES.md` listed `r-efi` twice under "Multi-licensed crates
+/// and the licence elected". The generator deduplicated with
+/// `set((name, version, licence))` and then emitted a row *without* the
+/// version, so a crate vendored at two versions — r-efi at 5.3.0 and 6.0.0 —
+/// passed the set as two distinct tuples and printed one identical row twice.
+///
+/// The shape generalises past that one file: a table row is a claim, and the
+/// same claim made twice is either a copy-paste artifact or a key that dropped
+/// the column distinguishing it. Neither is something a reader should have to
+/// resolve, so this sweeps every tracked markdown file rather than the one
+/// that happened to break.
+///
+/// Rows inside code fences are excluded — a fenced example may legitimately
+/// show a repeated line.
+#[test]
+fn no_documentation_table_repeats_a_row() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z", "*.md"])
+        .current_dir(repo)
+        .output()
+        .expect("git ls-files");
+    let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect();
+    assert!(
+        files.len() >= 50,
+        "found only {} tracked markdown files — the sweep is reading almost \
+         nothing and would pass vacuously",
+        files.len()
+    );
+
+    let mut offenders = Vec::new();
+    let mut tables = 0usize;
+    for file in &files {
+        let text = std::fs::read_to_string(repo.join(file)).unwrap_or_default();
+        // Blank fenced blocks so an example that repeats a line is not a
+        // finding, then walk consecutive `|` lines as one table.
+        let scanned = markdown::blank_fences(&text);
+        let lines: Vec<&str> = scanned.lines().collect();
+        let mut table: Vec<(usize, &str)> = Vec::new();
+        for (n, line) in lines.iter().enumerate().chain(std::iter::once((lines.len(), &""))) {
+            let l = line.trim();
+            if l.starts_with('|') {
+                table.push((n + 1, l));
+                continue;
+            }
+            if table.len() > 2 {
+                tables += 1;
+                for i in 0..table.len() {
+                    // A separator row (`|---|---|`) legitimately repeats
+                    // across tables but never within one.
+                    if table[i].1.chars().all(|c| "|-: ".contains(c)) {
+                        continue;
+                    }
+                    if let Some(j) = (0..i).find(|j| table[*j].1 == table[i].1) {
+                        offenders.push(format!(
+                            "{file}:{} duplicates line {}: {}",
+                            table[i].0, table[j].0, table[i].1
+                        ));
+                    }
+                }
+            }
+            table.clear();
+        }
+    }
+    assert!(
+        tables >= 40,
+        "walked only {tables} tables — the table detection stopped matching and \
+         this gate is checking nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "documentation tables repeat a row — either a copy-paste artifact, or a \
+         key that dropped the column telling the rows apart:\n  {}",
+        offenders.join("\n  ")
     );
 }

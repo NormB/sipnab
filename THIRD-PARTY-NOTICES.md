@@ -35,7 +35,6 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | Crate | Offered | Elected |
 |---|---|---|
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
-| r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
 ## Rust crates (373)
