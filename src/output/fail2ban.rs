@@ -15,7 +15,7 @@ fn sanitize_log_value(s: &str) -> String {
     s.replace(['\r', '\n'], " ")
 }
 
-/// Render an optional header value for a log field.
+/// Render an optional, attacker-controlled header value as one log field.
 ///
 /// # Arguments
 ///
@@ -23,22 +23,46 @@ fn sanitize_log_value(s: &str) -> String {
 ///
 /// # Returns
 ///
-/// The sanitized value, or the absent marker.
+/// A quoted, escaped value, or the bare absent marker `-`.
 ///
 /// This is the ONE place the absent marker is decided. Before it, three
-/// spellings of the same condition were in the tree at once -- `"unknown"` in
+/// spellings of the same condition were in the tree at once — `"unknown"` in
 /// the fail2ban path, `""` in `ScannerAlert`, and `"-"` in the kill-target
-/// alert -- so the same missing header read differently depending on which line
+/// alert — so the same missing header read differently depending on which line
 /// printed it, and no filter could match all three.
+///
+/// Present values are QUOTED, which is what makes the absent case
+/// unambiguous: a `User-Agent` whose value is literally `-` renders as `"-"`
+/// and cannot be confused with a message that carried no header at all.
+///
+/// Quoting also closes a field-injection hole. `sanitize_log_value` strips CR
+/// and LF, so a crafted header could not forge a whole log *line* — but the
+/// fields are space-separated, so it could forge a field *within* one:
+/// `User-Agent: evil method=REGISTER src=1.2.3.4` produced
+/// `… src=<real> ua=evil method=REGISTER src=1.2.3.4 method=OPTIONS`, giving a
+/// parser two `src=` values, one of them attacker-chosen, in the output that
+/// feeds a ban decision. Escaping `\` and `"` inside the quotes closes the
+/// quoted form against the same trick.
+///
+/// This follows the Apache combined-log convention — quoted User-Agent, bare
+/// `-` for absent — so the shape is already familiar to anyone writing filters.
 pub fn render_absent(v: Option<&str>) -> String {
     match v {
-        Some(s) => sanitize_log_value(s),
+        Some(s) => {
+            let escaped = sanitize_log_value(s)
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            format!("\"{escaped}\"")
+        }
         None => ABSENT.to_string(),
     }
 }
 
 /// What an absent header renders as in a log field.
-const ABSENT: &str = "unknown";
+///
+/// Bare, and the only unquoted value the field can take — that is precisely
+/// what distinguishes it from a header whose value is the same characters.
+const ABSENT: &str = "-";
 
 /// Format a SIP scanner detection event for fail2ban log parsing.
 ///
@@ -124,7 +148,7 @@ mod tests {
         );
         assert!(event.contains("src=10.0.0.5"), "should contain source IP");
         assert!(
-            event.contains("ua=friendly-scanner"),
+            event.contains(r#"ua="friendly-scanner""#),
             "should contain user agent"
         );
         assert!(event.contains("method=OPTIONS"), "should contain method");
@@ -133,6 +157,125 @@ mod tests {
         assert!(parts.len() >= 2, "should have date and time parts");
         assert_eq!(parts[0].len(), 10, "date should be YYYY-MM-DD");
         assert_eq!(parts[1].len(), 8, "time should be HH:MM:SS");
+    }
+
+    /// An ABSENT User-Agent is distinguishable from one whose value is the
+    /// literal absent marker.
+    ///
+    /// This is the whole reason `ua` is an `Option`. A request with no
+    /// `User-Agent` is itself a scanner signal — many scanners omit it — and
+    /// the callers used to substitute the string `"unknown"` for it, which any
+    /// client can send. The two collapsed into one log line, so a fail2ban
+    /// filter could not tell "no UA header" from "UA: unknown", and the more
+    /// suspicious case was the one that disappeared.
+    ///
+    /// The assertion is deliberately about the two being DIFFERENT rather than
+    /// about either exact spelling: it must keep holding when the absent marker
+    /// changes.
+    #[test]
+    fn an_absent_user_agent_is_not_the_same_line_as_a_literal_one() {
+        let absent = format_scanner_event("10.0.0.5", None, "OPTIONS");
+        let literal = format_scanner_event("10.0.0.5", Some(ABSENT), "OPTIONS");
+
+        let field = |line: &str| {
+            line.split(" ua=")
+                .nth(1)
+                .and_then(|r| r.split(' ').next())
+                .expect("every scanner line carries a ua= field")
+                .to_string()
+        };
+
+        assert_ne!(
+            field(&absent),
+            field(&literal),
+            "a message with no User-Agent and one sending the marker verbatim \
+             produce the same ua= field — the absent case is unrecoverable from \
+             the log, which is exactly what feeds the ban decision"
+        );
+    }
+
+    /// A crafted User-Agent cannot forge another field in the same line.
+    ///
+    /// `sanitize_log_value` strips CR/LF, so a whole forged LINE was already
+    /// impossible — but the fields are space-separated, and before quoting a
+    /// `User-Agent` of `evil method=REGISTER src=1.2.3.4` produced a line
+    /// carrying two `src=` values, the second attacker-chosen. In a fail2ban
+    /// pipeline that is an attacker-chosen ban target.
+    /// Split a log line into `key=value` fields the way a correct reader must:
+    /// honouring the quotes, so text inside a quoted value is one token and not
+    /// a field of its own.
+    ///
+    /// Counting substrings would NOT do here — quoting delimits the injected
+    /// text, it does not delete it, so `event.matches("src=")` still sees the
+    /// crafted copy and a test built on that fails against a correct
+    /// implementation. The claim being made is about parsing, so the test has to
+    /// parse.
+    fn fields(line: &str) -> Vec<(String, String)> {
+        let body = line.split(": ").nth(1).unwrap_or(line);
+        let mut out = Vec::new();
+        let mut chars = body.chars().peekable();
+        let mut token = String::new();
+        let mut in_quotes = false;
+        let mut escaped = false;
+        loop {
+            let c = chars.next();
+            match c {
+                Some('\\') if in_quotes && !escaped => escaped = true,
+                Some('"') if !escaped => {
+                    in_quotes = !in_quotes;
+                    token.push('"');
+                }
+                Some(' ') | None if !in_quotes => {
+                    if let Some((k, v)) = token.split_once('=') {
+                        out.push((k.to_string(), v.to_string()));
+                    }
+                    token.clear();
+                    if c.is_none() {
+                        break;
+                    }
+                }
+                Some(ch) => {
+                    escaped = false;
+                    token.push(ch);
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_crafted_user_agent_cannot_forge_a_field() {
+        let craft = "evil method=REGISTER src=1.2.3.4";
+        let event = format_scanner_event("10.0.0.5", Some(craft), "OPTIONS");
+        let f = fields(&event);
+
+        let srcs: Vec<_> = f.iter().filter(|(k, _)| k == "src").collect();
+        let methods: Vec<_> = f.iter().filter(|(k, _)| k == "method").collect();
+
+        assert_eq!(
+            srcs.len(),
+            1,
+            "a User-Agent forged a second src= in {event}"
+        );
+        assert_eq!(srcs[0].1, "10.0.0.5", "the src= is not the real source");
+        assert_eq!(
+            methods.len(),
+            1,
+            "a User-Agent forged a second method= in {event}"
+        );
+        assert_eq!(methods[0].1, "OPTIONS", "the method= was overwritten");
+    }
+
+    /// A quote in the User-Agent cannot close the quoting early and escape.
+    #[test]
+    fn a_quote_in_the_user_agent_cannot_break_out() {
+        let event = format_scanner_event("10.0.0.5", Some(r#"a" src=9.9.9.9 x=""#), "OPTIONS");
+        let f = fields(&event);
+
+        let srcs: Vec<_> = f.iter().filter(|(k, _)| k == "src").collect();
+        assert_eq!(srcs.len(), 1, "an embedded quote escaped ua= in {event}");
+        assert_eq!(srcs[0].1, "10.0.0.5", "the forged src= won");
     }
 
     /// Reg-flood lines carry prefix, event type, source IP, and count.
@@ -165,7 +308,10 @@ mod tests {
             event.contains("src=10.0.0.1"),
             "sanitized IP should be present"
         );
-        assert!(event.contains("ua=evil"), "sanitized UA should be present");
+        assert!(
+            event.contains(r#"ua="evil"#),
+            "sanitized UA should be present"
+        );
         assert!(
             event.contains("method=INVITE"),
             "sanitized method should be present"
@@ -203,7 +349,10 @@ mod tests {
             event.contains("src=192.168.1.50"),
             "should contain source IP"
         );
-        assert!(event.contains("ua=Ooma/3.0"), "should contain user agent");
+        assert!(
+            event.contains(r#"ua="Ooma/3.0""#),
+            "should contain user agent"
+        );
         assert!(event.contains("method=OPTIONS"), "should contain method");
         // Should not have any stray newlines
         assert!(

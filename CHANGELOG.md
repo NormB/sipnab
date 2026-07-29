@@ -38,6 +38,19 @@ entry that carries them.
   `null` and is unchanged.
 
 ### Changed
+- **BREAKING (log format): the fail2ban `ua=` field is now quoted, and `-`
+  means absent.** A scanner line reads
+  `... src=203.0.113.42 ua="friendly-scanner" method=OPTIONS`, and a request
+  with no `User-Agent` reads `ua=-` — distinct from a client sending the string
+  `-`, which renders as `"-"`. The documented `failregex` anchors on
+  `src=<HOST>` and is unaffected; a custom filter that captures `ua=(\S+)` will
+  need the quotes. Quoting closes a field-injection hole at the same time:
+  `sanitize_log_value` strips CR/LF so a forged *line* was impossible, but the
+  fields are space-separated, and a `User-Agent` of
+  `evil method=REGISTER src=1.2.3.4` produced a line carrying two `src=` values
+  — the second attacker-chosen, in the output that feeds a ban decision.
+  Embedded `"` and `\` are escaped.
+
 - **Release downloads say which one you want.** A release page lists twenty-odd
   files whose Linux names carry `unknown-linux-gnu` — the *vendor* field of the
   Rust target triple, the canonical value for "no specific vendor", which is why
