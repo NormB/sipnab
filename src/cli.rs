@@ -1104,6 +1104,20 @@ pub struct Cli {
     #[arg(help_heading = "Token minting", long = "token-id", value_name = "ID")]
     pub token_id: Option<String>,
 
+    /// Scope for --mint-token: `full` (default) or `metrics`.
+    ///
+    /// A `metrics` token reaches `GET /metrics` and nothing else — mint one for
+    /// a scrape job rather than handing it a credential that also reads
+    /// /v1/dialogs and the message bodies underneath.
+    #[arg(
+        help_heading = "Token minting",
+        long = "token-scope",
+        value_name = "SCOPE",
+        default_value = "full",
+        value_parser = ["full", "metrics"]
+    )]
+    pub token_scope: String,
+
     // ── Config ───────────────────────────────────────────────────────
     /// Path to configuration file.
     #[arg(

@@ -1139,7 +1139,24 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
         .clone()
         .unwrap_or_else(|| format!("tok-{}", chrono::Utc::now().timestamp_micros()));
 
-    Ok(crate::auth::mint(&key, &id, exp, audience))
+    // MCP has no metrics surface, so a scrape-only MCP token would name a
+    // route that does not exist there. Reject it rather than mint a token that
+    // can never authenticate anything.
+    if cli.token_scope == crate::auth::SCOPE_METRICS && audience == crate::auth::AUDIENCE_MCP {
+        return Err(
+            "--token-scope metrics applies to the REST API only; the MCP surface has no \
+             /metrics endpoint"
+                .to_string(),
+        );
+    }
+
+    Ok(crate::auth::mint(
+        &key,
+        &id,
+        exp,
+        audience,
+        &cli.token_scope,
+    ))
 }
 
 // ── Unit tests for the binary's pure helpers ────────────────────────────

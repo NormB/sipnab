@@ -75,6 +75,20 @@ pub const AUDIENCE_API: &str = "api";
 /// Audience value for HTTP MCP tokens.
 pub const AUDIENCE_MCP: &str = "mcp";
 
+/// Full access: every endpoint of the bound surface. The default for a token
+/// minted without an explicit scope, and what every pre-scope token is treated
+/// as — so adding this claim cannot revoke access a live token already had.
+pub const SCOPE_FULL: &str = "full";
+
+/// Scrape-only access: `GET /metrics` and nothing else.
+///
+/// A monitoring system needs one endpoint. Without this it had to be trusted
+/// with a `full` credential, which on a TLS-decrypting capture tool reads
+/// `/v1/dialogs`, `/v1/streams` and their message bodies — the call content
+/// itself. That is the least-privilege split worth having; the rest of the
+/// surface is one trust domain.
+pub const SCOPE_METRICS: &str = "metrics";
+
 /// Constant-time byte comparison for API keys and token signatures.
 ///
 /// Re-exported from `crate::crypto` (the always-compiled home for this
@@ -94,21 +108,38 @@ struct Payload {
     /// without it cannot match any configured audience, so it never verifies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     aud: Option<String>,
+    /// What the token may reach within that surface ([`SCOPE_FULL`] or
+    /// [`SCOPE_METRICS`]).
+    ///
+    /// Optional, and absent means [`SCOPE_FULL`] — unlike `aud`, which fails
+    /// closed when missing. The asymmetry is deliberate: `aud` was introduced
+    /// with a format bump (`s1` → `s2`) that stopped accepting the old tokens
+    /// outright, whereas tokens minted before `scope` existed are still valid
+    /// `s2` tokens in the field, and treating them as unscoped-therefore-denied
+    /// would revoke live credentials on upgrade. Defaulting to `full` keeps
+    /// them working exactly as they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
 }
 
 /// Mint a signed token from `signing_key`, with id `id`, absolute expiry
-/// `exp_unix` (Unix epoch seconds), and audience `audience` — one of
-/// [`AUDIENCE_API`] or [`AUDIENCE_MCP`].
+/// `exp_unix` (Unix epoch seconds), audience `audience` — one of
+/// [`AUDIENCE_API`] or [`AUDIENCE_MCP`] — and scope `scope`, one of
+/// [`SCOPE_FULL`] or [`SCOPE_METRICS`].
 ///
 /// Produces `s2.<b64url(payload)>.<b64url(sig)>`. The payload is compact JSON
 /// `{"id":...,"exp":...,"aud":...}` with no spaces. The version prefix is part
 /// of the signed input, so it cannot be rewritten to `s1` to shed the audience
 /// binding without invalidating the signature.
-pub fn mint(signing_key: &[u8], id: &str, exp_unix: i64, audience: &str) -> String {
+pub fn mint(signing_key: &[u8], id: &str, exp_unix: i64, audience: &str, scope: &str) -> String {
     let payload = Payload {
         id: id.to_string(),
         exp: exp_unix,
         aud: Some(audience.to_string()),
+        // Emitted only when it narrows something. A `full` token stays
+        // byte-identical to a pre-scope one, so the claim costs nothing on the
+        // common path and its presence always means "restricted".
+        scope: (scope != SCOPE_FULL).then(|| scope.to_string()),
     };
     // serde_json::to_string produces compact JSON (no spaces) by default, and
     // serializing this concrete `{id: String, exp: i64}` into an in-memory
@@ -278,12 +309,18 @@ impl TokenVerifier {
     /// `now_unix` is the current time in Unix epoch seconds (production passes
     /// `chrono::Utc::now().timestamp()`); injecting it keeps expiry logic
     /// deterministically testable. Fails closed on any parse/format error.
-    pub fn verify(&self, presented: &str, now_unix: i64) -> bool {
+    pub fn verify(&self, presented: &str, now_unix: i64, required_scope: &str) -> bool {
         // Try the signed-token path first.
-        if let Some(result) = self.verify_signed(presented, now_unix) {
+        if let Some(result) = self.verify_signed(presented, now_unix, required_scope) {
             return result;
         }
         // Fall back to static-secret comparison (no expiry).
+        //
+        // A static secret carries no claims at all, so it cannot express a
+        // scope and is treated as [`SCOPE_FULL`]. Narrowing it here would
+        // silently downgrade every existing `--api-key` deployment to
+        // scrape-only; an operator who wants least privilege mints a token,
+        // which is the mechanism that can carry the claim.
         self.verify_static(presented)
     }
 
@@ -291,7 +328,7 @@ impl TokenVerifier {
     /// a structurally-recognizable `s1.` token (so the caller can fall back to
     /// static secrets); `Some(true)`/`Some(false)` for accept/reject of a token
     /// that *is* an `s1.` token.
-    fn verify_signed(&self, presented: &str, now_unix: i64) -> Option<bool> {
+    fn verify_signed(&self, presented: &str, now_unix: i64, required_scope: &str) -> Option<bool> {
         // Split into exactly 3 dot-parts.
         let mut parts = presented.split('.');
         let version = parts.next()?;
@@ -347,6 +384,14 @@ impl TokenVerifier {
         // audience matches nothing, which fails closed. This is unconditional:
         // there is no version of the format that skips it.
         if payload.aud.as_deref() != Some(self.audience.as_str()) || self.audience.is_empty() {
+            return Some(false);
+        }
+
+        // Scope. A `full` token satisfies any requirement; a narrower one
+        // satisfies only its own. Absent means `full` — see `Payload::scope`
+        // for why that direction is safe and `aud`'s is not.
+        let scope = payload.scope.as_deref().unwrap_or(SCOPE_FULL);
+        if scope != SCOPE_FULL && scope != required_scope {
             return Some(false);
         }
 
@@ -423,7 +468,7 @@ mod tests {
     fn mint_escapes_hostile_id_in_payload() {
         let hostile = "id\"with\\meta\tand\u{0001}control";
         let exp = 4_000_000_000i64;
-        let token = mint(KEY_A, hostile, exp, AUDIENCE_API);
+        let token = mint(KEY_A, hostile, exp, AUDIENCE_API, SCOPE_FULL);
 
         // The payload segment must be valid, escaped JSON decoding back to id.
         let payload_b64 = token.split('.').nth(1).expect("payload segment");
@@ -440,7 +485,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            v.verify(&token, exp - 1),
+            v.verify(&token, exp - 1, SCOPE_FULL),
             "a token minted with a hostile id must still verify"
         );
     }
@@ -493,7 +538,7 @@ mod tests {
     /// expected compact `{"id":...,"exp":...}` JSON.
     #[test]
     fn minted_token_has_expected_shape() {
-        let token = mint(KEY_A, "abc", 9999999999, AUDIENCE_API);
+        let token = mint(KEY_A, "abc", 9999999999, AUDIENCE_API, SCOPE_FULL);
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3, "token should have 3 dot-parts: {token}");
         assert_eq!(parts[0], "s2");
@@ -512,8 +557,11 @@ mod tests {
             signing_keys: vec![KEY_A.to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000, AUDIENCE_API);
-        assert!(v.verify(&token, 999), "unexpired token should verify");
+        let token = mint(KEY_A, "id1", 1_000, AUDIENCE_API, SCOPE_FULL);
+        assert!(
+            v.verify(&token, 999, SCOPE_FULL),
+            "unexpired token should verify"
+        );
     }
 
     // ── expired ─────────────────────────────────────────────────────────
@@ -525,11 +573,17 @@ mod tests {
             signing_keys: vec![KEY_A.to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000, AUDIENCE_API);
+        let token = mint(KEY_A, "id1", 1_000, AUDIENCE_API, SCOPE_FULL);
         // now == exp → reject (exp must be strictly greater than now).
-        assert!(!v.verify(&token, 1_000), "exp == now should reject");
+        assert!(
+            !v.verify(&token, 1_000, SCOPE_FULL),
+            "exp == now should reject"
+        );
         // now > exp → reject.
-        assert!(!v.verify(&token, 1_001), "expired token should reject");
+        assert!(
+            !v.verify(&token, 1_001, SCOPE_FULL),
+            "expired token should reject"
+        );
     }
 
     // ── tampered payload ────────────────────────────────────────────────
@@ -541,7 +595,7 @@ mod tests {
             signing_keys: vec![KEY_A.to_vec()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API);
+        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         let mut parts: Vec<String> = token.split('.').map(String::from).collect();
         // Flip a byte in the payload b64. Pick a char and replace with another.
         let payload = parts[1].clone();
@@ -551,7 +605,7 @@ mod tests {
         parts[1] = String::from_utf8(bytes).unwrap();
         let tampered = parts.join(".");
         assert!(
-            !v.verify(&tampered, 1),
+            !v.verify(&tampered, 1, SCOPE_FULL),
             "tampered payload must fail signature/parse"
         );
     }
@@ -566,9 +620,9 @@ mod tests {
             ..Default::default()
         });
         // Token signed with a DIFFERENT key.
-        let forged = mint(KEY_B, "id1", 1_000_000, AUDIENCE_API);
+        let forged = mint(KEY_B, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
-            !v.verify(&forged, 1),
+            !v.verify(&forged, 1, SCOPE_FULL),
             "token signed with a non-configured key must reject"
         );
     }
@@ -592,7 +646,7 @@ mod tests {
             "s1.\0.\0",
         ] {
             assert!(
-                !v.verify(junk, 1),
+                !v.verify(junk, 1, SCOPE_FULL),
                 "junk {junk:?} must reject without panic"
             );
         }
@@ -607,10 +661,16 @@ mod tests {
             signing_keys: vec![KEY_A.to_vec(), KEY_B.to_vec()],
             ..Default::default()
         });
-        let token_a = mint(KEY_A, "ida", 1_000_000, AUDIENCE_API);
-        let token_b = mint(KEY_B, "idb", 1_000_000, AUDIENCE_API);
-        assert!(v.verify(&token_a, 1), "token signed by first key accepted");
-        assert!(v.verify(&token_b, 1), "token signed by second key accepted");
+        let token_a = mint(KEY_A, "ida", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        let token_b = mint(KEY_B, "idb", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        assert!(
+            v.verify(&token_a, 1, SCOPE_FULL),
+            "token signed by first key accepted"
+        );
+        assert!(
+            v.verify(&token_b, 1, SCOPE_FULL),
+            "token signed by second key accepted"
+        );
     }
 
     /// `mint` signs with the first key, so a verifier lacking it rejects.
@@ -619,12 +679,12 @@ mod tests {
         // A verifier that only knows KEY_B should reject a token minted by the
         // "first key" of a {A,B} config (which is A).
         let mint_cfg_first = KEY_A;
-        let token = mint(mint_cfg_first, "x", 1_000_000, AUDIENCE_API);
+        let token = mint(mint_cfg_first, "x", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         let v_b_only = verifier(VerifierConfig {
             signing_keys: vec![KEY_B.to_vec()],
             ..Default::default()
         });
-        assert!(!v_b_only.verify(&token, 1));
+        assert!(!v_b_only.verify(&token, 1, SCOPE_FULL));
     }
 
     // ── revocation ───────────────────────────────────────────────────────
@@ -645,12 +705,15 @@ mod tests {
 
         // A token with a revoked id is rejected even though the signature is
         // valid and it is unexpired.
-        let revoked = mint(KEY_A, "revoked-id-1", 1_000_000, AUDIENCE_API);
-        assert!(!v.verify(&revoked, 1), "revoked id must reject");
+        let revoked = mint(KEY_A, "revoked-id-1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        assert!(!v.verify(&revoked, 1, SCOPE_FULL), "revoked id must reject");
 
         // A fresh token with a different id is accepted.
-        let fresh = mint(KEY_A, "fresh-id", 1_000_000, AUDIENCE_API);
-        assert!(v.verify(&fresh, 1), "non-revoked id must accept");
+        let fresh = mint(KEY_A, "fresh-id", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        assert!(
+            v.verify(&fresh, 1, SCOPE_FULL),
+            "non-revoked id must accept"
+        );
 
         // Remove the revocation from the file; the previously-revoked id is now
         // accepted (mtime change triggers a reload). Touch mtime explicitly in
@@ -658,9 +721,9 @@ mod tests {
         // two writes.
         std::thread::sleep(std::time::Duration::from_millis(10));
         std::fs::write(&path, "# nothing revoked now\n").expect("rewrite");
-        let after = mint(KEY_A, "revoked-id-1", 1_000_000, AUDIENCE_API);
+        let after = mint(KEY_A, "revoked-id-1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
-            v.verify(&after, 1),
+            v.verify(&after, 1, SCOPE_FULL),
             "after removing from denylist, id should be accepted (reload)"
         );
     }
@@ -675,13 +738,16 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            v.verify("legacy-secret", 1),
+            v.verify("legacy-secret", 1, SCOPE_FULL),
             "correct static secret accepts"
         );
-        assert!(!v.verify("wrong-secret", 1), "wrong static secret rejects");
+        assert!(
+            !v.verify("wrong-secret", 1, SCOPE_FULL),
+            "wrong static secret rejects"
+        );
         // Static secrets never expire — now_unix is irrelevant for them.
         assert!(
-            v.verify("legacy-secret", i64::MAX),
+            v.verify("legacy-secret", i64::MAX, SCOPE_FULL),
             "static secret has no expiry"
         );
     }
@@ -699,7 +765,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            !v.verify(s2_shaped, 1),
+            !v.verify(s2_shaped, 1, SCOPE_FULL),
             "an s2.-shaped static secret is claimed by the signed path and fails"
         );
 
@@ -711,7 +777,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            v.verify(s1_shaped, 1),
+            v.verify(s1_shaped, 1, SCOPE_FULL),
             "an s1.-shaped static secret now falls through to the static path"
         );
     }
@@ -725,10 +791,10 @@ mod tests {
             static_keys: vec!["legacy".to_string()],
             ..Default::default()
         });
-        let token = mint(KEY_A, "id", 1_000_000, AUDIENCE_API);
-        assert!(v.verify(&token, 1), "signed token accepts");
-        assert!(v.verify("legacy", 1), "static secret accepts");
-        assert!(!v.verify("nope", 1), "unknown rejects");
+        let token = mint(KEY_A, "id", 1_000_000, AUDIENCE_API, SCOPE_FULL);
+        assert!(v.verify(&token, 1, SCOPE_FULL), "signed token accepts");
+        assert!(v.verify("legacy", 1, SCOPE_FULL), "static secret accepts");
+        assert!(!v.verify("nope", 1, SCOPE_FULL), "unknown rejects");
     }
 
     /// An unconfigured verifier reports so and rejects everything.
@@ -738,7 +804,7 @@ mod tests {
         assert!(v.is_unconfigured());
         // With nothing configured, even a well-formed-looking token rejects
         // (no key to verify against, no static secret to match).
-        assert!(!v.verify("anything", 1));
+        assert!(!v.verify("anything", 1, SCOPE_FULL));
     }
 
     /// A token minted for the REST API must be rejected by the HTTP MCP
@@ -747,7 +813,7 @@ mod tests {
     #[test]
     fn api_token_is_rejected_by_the_mcp_surface() {
         let shared = KEY_A;
-        let api_token = mint(shared, "id1", 1_000_000, AUDIENCE_API);
+        let api_token = mint(shared, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
 
         let api_v = verifier(VerifierConfig {
             signing_keys: vec![shared.to_vec()],
@@ -761,11 +827,11 @@ mod tests {
         });
 
         assert!(
-            api_v.verify(&api_token, 1_000),
+            api_v.verify(&api_token, 1_000, SCOPE_FULL),
             "an api token must work on the api surface"
         );
         assert!(
-            !mcp_v.verify(&api_token, 1_000),
+            !mcp_v.verify(&api_token, 1_000, SCOPE_FULL),
             "an api token must NOT work on the mcp surface, even with a shared key"
         );
     }
@@ -774,7 +840,7 @@ mod tests {
     #[test]
     fn mcp_token_is_rejected_by_the_api_surface() {
         let shared = KEY_A;
-        let mcp_token = mint(shared, "id1", 1_000_000, AUDIENCE_MCP);
+        let mcp_token = mint(shared, "id1", 1_000_000, AUDIENCE_MCP, SCOPE_FULL);
 
         let api_v = verifier(VerifierConfig {
             signing_keys: vec![shared.to_vec()],
@@ -787,8 +853,8 @@ mod tests {
             ..Default::default()
         });
 
-        assert!(mcp_v.verify(&mcp_token, 1_000));
-        assert!(!api_v.verify(&mcp_token, 1_000));
+        assert!(mcp_v.verify(&mcp_token, 1_000, SCOPE_FULL));
+        assert!(!api_v.verify(&mcp_token, 1_000, SCOPE_FULL));
     }
 
     /// Rewriting an `s2` token's version prefix to `s1` must not strip the
@@ -796,7 +862,7 @@ mod tests {
     /// downgrade invalidates the signature.
     #[test]
     fn s2_token_cannot_be_downgraded_to_s1() {
-        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API);
+        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             token.starts_with("s2."),
             "mint must produce s2, got {token}"
@@ -809,7 +875,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            !mcp_v.verify(&downgraded, 1_000),
+            !mcp_v.verify(&downgraded, 1_000, SCOPE_FULL),
             "a version-downgraded token must fail the signature check"
         );
     }
@@ -833,7 +899,7 @@ mod tests {
                 ..Default::default()
             });
             assert!(
-                !v.verify(&token, 1_000),
+                !v.verify(&token, 1_000, SCOPE_FULL),
                 "a correctly-signed, unexpired s1 token must be rejected on {aud}"
             );
         }
@@ -856,20 +922,126 @@ mod tests {
             audience: AUDIENCE_API.to_string(),
             ..Default::default()
         });
-        assert!(!v.verify(&token, 1_000));
+        assert!(!v.verify(&token, 1_000, SCOPE_FULL));
     }
 
     /// An empty configured audience must reject every `s2` token rather than
     /// accepting any of them — fail closed on a misconfigured verifier.
     #[test]
     fn empty_audience_rejects_every_s2_token() {
-        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API);
+        let token = mint(KEY_A, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         // Bypass the test `verifier()` helper, which fills in a default.
         let v = TokenVerifier::new(VerifierConfig {
             signing_keys: vec![KEY_A.to_vec()],
             audience: String::new(),
             ..Default::default()
         });
-        assert!(!v.verify(&token, 1_000));
+        assert!(!v.verify(&token, 1_000, SCOPE_FULL));
+    }
+
+    /// A `metrics`-scoped token reaches the metrics scope and nothing else.
+    ///
+    /// This is the whole point of the claim: a monitoring system needs one
+    /// endpoint, and before this it had to be trusted with a credential that
+    /// also reads `/v1/dialogs` and the message bodies underneath — which, on a
+    /// TLS-decrypting capture tool, is the call content.
+    #[test]
+    fn a_metrics_token_is_refused_where_full_access_is_required() {
+        let token = mint(KEY_A, "scrape", 2_000, AUDIENCE_API, SCOPE_METRICS);
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            ..Default::default()
+        });
+
+        assert!(
+            v.verify(&token, 1_000, SCOPE_METRICS),
+            "a metrics token must satisfy a metrics requirement"
+        );
+        assert!(
+            !v.verify(&token, 1_000, SCOPE_FULL),
+            "a metrics token must NOT satisfy a full requirement — that is the \
+             entire restriction this claim exists to impose"
+        );
+    }
+
+    /// A `full` token satisfies every requirement, including the narrow one.
+    ///
+    /// The asymmetry matters: demanding `full` on a route admits only full
+    /// tokens, demanding `metrics` admits both. That is why `full` is the
+    /// default requirement for any route that does not say otherwise.
+    #[test]
+    fn a_full_token_satisfies_both_requirements() {
+        let token = mint(KEY_A, "ops", 2_000, AUDIENCE_API, SCOPE_FULL);
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            ..Default::default()
+        });
+
+        assert!(v.verify(&token, 1_000, SCOPE_FULL));
+        assert!(
+            v.verify(&token, 1_000, SCOPE_METRICS),
+            "a full token must still reach /metrics — adding this claim must not \
+             narrow an existing deployment"
+        );
+    }
+
+    /// A token minted before `scope` existed keeps full access.
+    ///
+    /// Tokens carrying no `scope` claim are live in the field. Treating absent
+    /// as "no access" would revoke working credentials on upgrade, so absent
+    /// means `full` — the opposite of `aud`, which fails closed when missing.
+    /// Asserted against a hand-built payload rather than `mint`, because `mint`
+    /// can no longer produce one.
+    #[test]
+    fn a_pre_scope_token_still_has_full_access() {
+        let payload = r#"{"id":"legacy","exp":2000,"aud":"api"}"#;
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let signing_input = format!("{VERSION}.{payload_b64}");
+        let sig = hmac_sha256(KEY_A, signing_input.as_bytes());
+        let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig));
+
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            ..Default::default()
+        });
+
+        assert!(
+            v.verify(&token, 1_000, SCOPE_FULL),
+            "a token minted before the scope claim existed must keep working"
+        );
+    }
+
+    /// The scope claim is signed: editing it in the payload breaks the token.
+    ///
+    /// Without this, "restricted" would be a suggestion — a holder could widen
+    /// their own credential by rewriting one field.
+    #[test]
+    fn a_scope_cannot_be_widened_by_editing_the_payload() {
+        let token = mint(KEY_A, "scrape", 2_000, AUDIENCE_API, SCOPE_METRICS);
+        let mut parts = token.split('.');
+        let version = parts.next().expect("version");
+        let payload_b64 = parts.next().expect("payload");
+        let sig_b64 = parts.next().expect("sig");
+
+        let decoded = URL_SAFE_NO_PAD.decode(payload_b64).expect("decode");
+        let json = String::from_utf8(decoded).expect("utf8");
+        assert!(
+            json.contains("\"scope\":\"metrics\""),
+            "payload names the scope: {json}"
+        );
+        let widened = json.replace(r#","scope":"metrics""#, "");
+        let forged = format!(
+            "{version}.{}.{sig_b64}",
+            URL_SAFE_NO_PAD.encode(widened.as_bytes())
+        );
+
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            ..Default::default()
+        });
+        assert!(
+            !v.verify(&forged, 1_000, SCOPE_FULL),
+            "stripping the scope claim must invalidate the signature"
+        );
     }
 }

@@ -136,7 +136,37 @@ the binding applies to signed tokens only.
 | `--api-token-ttl <SECS>` | Lifetime of a minted token. Default `3600`. |
 | `--mint-token` | Sign a token with the first configured key, print it, and exit. Starts no capture and no server. |
 | `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
+| `--token-scope <SCOPE>` | `full` (default) or `metrics`. See **Scope** below. |
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
+
+**Scope.** `--token-scope metrics` mints a token that reaches `GET /metrics`
+and nothing else; every other route returns `401`. Mint one for a scrape job.
+
+The reason to bother: this is a TLS-decrypting capture tool, so `/v1/dialogs`
+and `/v1/streams` return message bodies — the call content itself. Without a
+scope split, a monitoring system that needs one counter has to be trusted with
+all of it.
+
+```bash
+# scrape-only credential for Prometheus
+sipnab --api-signing-key "$KEY" --mint-token --token-scope metrics
+```
+
+Three properties worth knowing:
+
+- **`full` is the default, and satisfies everything.** A `full` token still
+  reaches `/metrics`, so adding this claim narrowed no existing deployment.
+- **A token minted before the claim existed is `full`.** Absent `scope` means
+  `full` — the opposite of `aud`, which fails closed when missing. Upgrading
+  does not revoke credentials already in the field.
+- **The claim is signed.** Stripping or editing `scope` invalidates the
+  signature, so a holder cannot widen their own token.
+
+Static `--api-key` secrets carry no claims at all and are therefore `full`;
+scoping requires a signed token. The scope applies to the REST API — the MCP
+surface has no `/metrics`, so `--token-scope metrics` with `--mcp-signing-key`
+is refused at mint time rather than producing a token that can never
+authenticate.
 
 **Mint a token.** Generate the signing key first. Everything below reads it
 from `$KEY`, including the server — mint against one key and serve with

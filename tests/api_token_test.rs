@@ -36,6 +36,7 @@ fn valid_signed_token_is_accepted() {
         "valid-id",
         now() + 3600,
         sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
     );
     let resp = srv.get_bearer("/v1/dialogs", &token);
     assert_eq!(resp.status, 200, "valid signed token should be 200");
@@ -60,6 +61,7 @@ fn expired_signed_token_is_rejected() {
         "expired-id",
         now() - 1,
         sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
     );
     let resp = srv.get_bearer("/v1/dialogs", &token);
     assert_eq!(resp.status, 401, "expired token should be 401");
@@ -74,6 +76,7 @@ fn forged_wrong_key_token_is_rejected() {
         "id",
         now() + 3600,
         sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
     );
     let resp = srv.get_bearer("/v1/dialogs", &token);
     assert_eq!(resp.status, 401, "forged token should be 401");
@@ -88,6 +91,7 @@ fn tampered_payload_token_is_rejected() {
         "id",
         now() + 3600,
         sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
     );
     // Flip a byte in the payload (middle dot-part).
     let mut parts: Vec<String> = token.split('.').map(String::from).collect();
@@ -121,6 +125,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
         "revoked-jti",
         now() + 3600,
         sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
     );
     let resp = srv.get_bearer("/v1/dialogs", &revoked);
     assert_eq!(resp.status, 401, "revoked id should be 401");
@@ -131,6 +136,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
         "not-revoked-jti",
         now() + 3600,
         sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
     );
     let resp = srv.get_bearer("/v1/dialogs", &fresh);
     assert_eq!(resp.status, 200, "non-revoked id should be 200");
@@ -147,12 +153,14 @@ fn rotation_accepts_tokens_from_either_key() {
         "id1",
         now() + 3600,
         sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
     );
     let t2 = sipnab::auth::mint(
         key2.as_bytes(),
         "id2",
         now() + 3600,
         sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(srv.get_bearer("/v1/dialogs", &t1).status, 200, "key1 token");
     assert_eq!(srv.get_bearer("/v1/dialogs", &t2).status, 200, "key2 token");
@@ -175,4 +183,65 @@ fn static_api_key_backward_compat() {
         401,
         "wrong static key should be 401"
     );
+}
+
+/// A `metrics`-scoped token scrapes `/metrics` and is refused everywhere else.
+///
+/// End-to-end against the real server, because the unit test in `auth.rs`
+/// proves only that the verifier says no — it cannot show that the ROUTES
+/// demand the right scope. A route wired to the wrong guard would pass every
+/// unit test and still hand a scrape job the call content.
+///
+/// The point of the split: `/v1/dialogs` on a TLS-decrypting capture tool
+/// returns message bodies. Before this claim existed, a monitoring system that
+/// needed one counter had to hold a credential that could read all of it.
+#[test]
+fn a_metrics_scoped_token_reaches_only_the_metrics_endpoint() {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
+    let scrape = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "scrape-job",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_METRICS,
+    );
+
+    assert_eq!(
+        srv.get_bearer("/metrics", &scrape).status,
+        200,
+        "a metrics token must be able to scrape /metrics"
+    );
+
+    for path in ["/v1/dialogs", "/v1/streams", "/v1/stats"] {
+        assert_eq!(
+            srv.get_bearer(path, &scrape).status,
+            401,
+            "a metrics token must be refused at {path} — it is scoped to /metrics \
+             precisely so a scrape job cannot read dialogs or message bodies"
+        );
+    }
+}
+
+/// A `full` token still reaches everything, including `/metrics`.
+///
+/// Adding the scope claim must not narrow an existing deployment: every token
+/// already minted, and every one minted without `--token-scope`, is `full`.
+#[test]
+fn a_full_token_still_reaches_metrics_and_the_v1_surface() {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
+    let full = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "ops",
+        now() + 3600,
+        sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
+    );
+
+    for path in ["/metrics", "/v1/dialogs", "/v1/stats"] {
+        assert_eq!(
+            srv.get_bearer(path, &full).status,
+            200,
+            "a full token must still reach {path}"
+        );
+    }
 }

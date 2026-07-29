@@ -103,10 +103,11 @@ mod http {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.strip_prefix("Bearer "))
                 .ok_or(StatusCode::UNAUTHORIZED)?;
-            if !state
-                .verifier
-                .verify(provided, chrono::Utc::now().timestamp())
-            {
+            if !state.verifier.verify(
+                provided,
+                chrono::Utc::now().timestamp(),
+                crate::auth::SCOPE_FULL,
+            ) {
                 return Err(StatusCode::UNAUTHORIZED);
             }
         }

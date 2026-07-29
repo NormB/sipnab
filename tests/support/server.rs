@@ -167,6 +167,7 @@ impl ApiServer {
                 "readiness-poll",
                 exp,
                 sipnab::auth::AUDIENCE_API,
+                sipnab::auth::SCOPE_FULL,
             ));
         }
         let srv = ApiServer { child, addr };

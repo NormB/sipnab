@@ -138,9 +138,12 @@ fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
         audience: sipnab::auth::AUDIENCE_API.to_string(),
     });
     let now = chrono::Utc::now().timestamp();
-    assert!(verifier.verify(&token, now), "token must verify now");
     assert!(
-        !verifier.verify(&token, now + 61),
+        verifier.verify(&token, now, sipnab::auth::SCOPE_FULL),
+        "token must verify now"
+    );
+    assert!(
+        !verifier.verify(&token, now + 61, sipnab::auth::SCOPE_FULL),
         "token minted with --api-token-ttl 60 must be expired at now+61"
     );
 
@@ -153,7 +156,7 @@ fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
         audience: sipnab::auth::AUDIENCE_MCP.to_string(),
     });
     assert!(
-        !mcp_verifier.verify(&token, now),
+        !mcp_verifier.verify(&token, now, sipnab::auth::SCOPE_FULL),
         "an --api-signing-key token must not authenticate against HTTP MCP"
     );
 }
@@ -198,7 +201,7 @@ fn mint_with_mcp_signing_key_file_produces_token() {
         audience: sipnab::auth::AUDIENCE_API.to_string(),
     });
     assert!(
-        !api_verifier.verify(&token, now),
+        !api_verifier.verify(&token, now, sipnab::auth::SCOPE_FULL),
         "an --mcp-signing-key token must not authenticate against the REST API"
     );
 }
@@ -1076,5 +1079,95 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
     assert!(
         err.contains("Failed to chroot"),
         "the failure must name chroot as the cause:\n{err}"
+    );
+}
+
+/// `--token-scope metrics` mints a token the verifier treats as scrape-only,
+/// and `--token-scope full` (the default) mints one that is not.
+///
+/// The library tests prove the verifier honours the claim and the API tests
+/// prove the routes demand it; this covers the wiring in between — the CLI flag
+/// reaching `auth::mint`. A flag that never reached it would mint `full` tokens
+/// while the operator believed they were scoping them, which is the failure
+/// worth catching: it is silent, and it fails open.
+#[test]
+fn token_scope_flag_mints_a_scope_the_verifier_honours() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = dir.path().join("api.key");
+    let key = b"scope-flag-signing-key-0123456789";
+    std::fs::File::create(&key_path)
+        .unwrap()
+        .write_all(key)
+        .unwrap();
+
+    let mint = |scope: &str| {
+        run(&[
+            "--mint-token",
+            "--token-scope",
+            scope,
+            "--api-signing-key-file",
+            key_path.to_str().unwrap(),
+            "--token-id",
+            "scope-flag",
+        ])
+        .trim()
+        .to_string()
+    };
+
+    let verifier = TokenVerifier::new(VerifierConfig {
+        signing_keys: vec![key.to_vec()],
+        static_keys: vec![],
+        revoked_file: None,
+        audience: sipnab::auth::AUDIENCE_API.to_string(),
+    });
+    let now = chrono::Utc::now().timestamp();
+
+    let scoped = mint("metrics");
+    assert!(
+        verifier.verify(&scoped, now, sipnab::auth::SCOPE_METRICS),
+        "--token-scope metrics must mint a token accepted for metrics"
+    );
+    assert!(
+        !verifier.verify(&scoped, now, sipnab::auth::SCOPE_FULL),
+        "--token-scope metrics must NOT mint a token accepted for full access — \
+         the flag would otherwise be decorative"
+    );
+
+    let full = mint("full");
+    assert!(
+        verifier.verify(&full, now, sipnab::auth::SCOPE_FULL),
+        "--token-scope full must mint a full-access token"
+    );
+}
+
+/// `--token-scope metrics` is refused for the MCP surface at mint time.
+///
+/// MCP has no `/metrics`, so a scrape-only MCP token could never authenticate
+/// anything. Failing at mint beats handing the operator a token that silently
+/// works nowhere.
+#[test]
+fn token_scope_metrics_is_refused_for_the_mcp_surface() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = dir.path().join("mcp.key");
+    std::fs::File::create(&key_path)
+        .unwrap()
+        .write_all(b"mcp-scope-signing-key-0123456789")
+        .unwrap();
+
+    let (_out, err, code) = run_support::run(
+        &[
+            "--mint-token",
+            "--token-scope",
+            "metrics",
+            "--mcp-signing-key-file",
+            key_path.to_str().unwrap(),
+        ],
+        Some("error"),
+    );
+
+    assert_ne!(code, Some(0), "minting must fail, got success:\n{err}");
+    assert!(
+        err.contains("/metrics"),
+        "the error must say why — MCP has no metrics endpoint:\n{err}"
     );
 }

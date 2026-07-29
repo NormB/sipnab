@@ -452,7 +452,11 @@ fn enforce_bind_auth_policy(
 /// `Ok(())` when auth is unconfigured (disabled) or a valid
 /// `Bearer <token>` credential is presented; `Err(401 UNAUTHORIZED)` for a
 /// missing, non-ASCII, non-Bearer, or unverifiable credential.
-fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
+fn check_auth(
+    state: &ApiState,
+    headers: &HeaderMap,
+    required_scope: &str,
+) -> Result<(), StatusCode> {
     // No signing keys and no static secret configured ⇒ auth disabled
     // (loopback-allowed behavior unchanged from before this feature).
     if state.verifier.is_unconfigured() {
@@ -466,7 +470,9 @@ fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let auth_str = auth_header.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     if let Some(token) = auth_str.strip_prefix("Bearer ")
-        && state.verifier.verify(token, chrono::Utc::now().timestamp())
+        && state
+            .verifier
+            .verify(token, chrono::Utc::now().timestamp(), required_scope)
     {
         return Ok(());
     }
@@ -515,12 +521,44 @@ fn check_rate_limit(state: &ApiState, ip: IpAddr) -> Result<(), StatusCode> {
 ///
 /// Mutates the shared rate limiter via `check_rate_limit`.
 fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(), StatusCode> {
+    // SCOPE_FULL is the default on purpose: it is the RESTRICTIVE direction.
+    // A `full` token satisfies every requirement, so demanding `full` admits
+    // only full tokens, while demanding `metrics` would admit both. A route
+    // added later and wired to this function therefore inherits "full tokens
+    // only" rather than quietly accepting a scrape-only credential.
+    guard_scoped(state, headers, client_ip, crate::auth::SCOPE_FULL)
+}
+
+/// [`guard`], with the scope a caller demands stated explicitly.
+///
+/// # Arguments
+///
+/// * `state` — holds the rate limiter and token verifier.
+/// * `headers` — request headers; the `Authorization` header is inspected.
+/// * `client_ip` — peer address, charged to the per-IP rate budget.
+/// * `required_scope` — [`crate::auth::SCOPE_FULL`] or
+///   [`crate::auth::SCOPE_METRICS`].
+///
+/// # Errors
+///
+/// `429` when over the rate budget, `401` when the credential is missing,
+/// malformed, unverifiable, or scoped too narrowly for this route.
+///
+/// # Side effects
+///
+/// Mutates the shared rate limiter via `check_rate_limit`.
+fn guard_scoped(
+    state: &ApiState,
+    headers: &HeaderMap,
+    client_ip: IpAddr,
+    required_scope: &str,
+) -> Result<(), StatusCode> {
     // Rate-limit BEFORE authenticating: if auth ran first, a wrong-token
     // request would 401 without ever touching the limiter, letting an
     // attacker brute-force the token at unlimited speed. Charging every
     // request to the per-IP budget throttles that flood.
     check_rate_limit(state, client_ip)?;
-    check_auth(state, headers)
+    check_auth(state, headers, required_scope)
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -943,7 +981,10 @@ async fn get_metrics(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    guard(&state, &headers, addr.ip())?;
+    // The only route a SCOPE_METRICS token reaches. A `full` token still works
+    // here — full satisfies every requirement — so this narrows nothing for an
+    // existing deployment.
+    guard_scoped(&state, &headers, addr.ip(), crate::auth::SCOPE_METRICS)?;
 
     let mut metrics = PrometheusMetrics::default();
 
@@ -1328,6 +1369,7 @@ mod tests {
             "id1",
             chrono::Utc::now().timestamp() + 3600,
             crate::auth::AUDIENCE_API,
+            crate::auth::SCOPE_FULL,
         );
         let req =
             test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
@@ -1347,6 +1389,7 @@ mod tests {
             "id1",
             chrono::Utc::now().timestamp() - 1,
             crate::auth::AUDIENCE_API,
+            crate::auth::SCOPE_FULL,
         );
         let req =
             test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
@@ -1366,6 +1409,7 @@ mod tests {
             "id1",
             chrono::Utc::now().timestamp() + 3600,
             crate::auth::AUDIENCE_API,
+            crate::auth::SCOPE_FULL,
         );
         let req =
             test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));

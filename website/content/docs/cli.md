@@ -450,6 +450,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--syslog` | -- | off | Send alerts to syslog |
 | `--mint-token` | -- | off | Mint a signed bearer token from the first configured signing key (API or MCP), print it to stdout, and exit (no capture/servers). See [`auth.md`](https://github.com/NormB/sipnab/blob/main/docs/auth.md). |
 | `--token-id` | `<ID>` | -- | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
+| `--token-scope` | `<full\|metrics>` | `full` | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. REST API only; the MCP surface has no `/metrics`. |
 
 **Examples**
 
@@ -468,6 +469,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I capture.pcap --metrics 127.0.0.1:9090 --metrics-auth-file /etc/sipnab/metrics.cred` — loopback metrics endpoint reading its Basic-auth credential from a file (keeps user:pass out of the process list)
 - `sudo sipnab -d eth0 --metrics 0.0.0.0:9090 --metrics-auth-file /etc/sipnab/metrics.cred` — routable metrics endpoint (non-loopback requires auth) using a file-backed credential; terminate TLS at a reverse proxy
 - `sipnab --mint-token --token-id alice-2026 --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 3600` — mint a signed bearer token with a fixed id (for later revocation) and a 1-hour TTL, then exit
+- `sipnab --mint-token --token-scope metrics --token-id prom-scraper --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 86400` — mint a scrape-only token for Prometheus: it reaches `/metrics` and is refused at every `/v1/` route
+- `sipnab --mint-token --token-scope full --token-id ops-oncall --api-signing-key-file /etc/sipnab/signing.key` — the default scope, stated explicitly: full access to the REST API surface
 
 
 ## MCP Server
