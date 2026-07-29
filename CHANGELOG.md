@@ -23,6 +23,16 @@ entry that carries them.
   download link and version badge is built from it.
   `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
   so advertising something unreleased fails the suite rather than the visitor.
+- **The documented `curl … SIPNAB_VERSION=x.y.z` could name an unreleased
+  version.** The same defect as the download page, one surface over:
+  `docs_current_version_markers_match_cargo` gated the docs' version markers
+  against `Cargo.toml`, and three of them are copy-pasteable download
+  instructions — `SIPNAB_VERSION=`, `e.g. <version>`, `rpm -i sipnab-<v>`. At a
+  release commit they would name the new version while nothing was published,
+  so a reader copying the first line got a 404 from `install.sh`. Those three
+  now track `published_version`; the `sipnab <version> (<hash>)` samples still
+  track the crate, because they show what a build of this tree prints. One gate
+  was serving two different facts.
 - **The latest-version `curl` on `/download` rendered as prose.** It sat inline
   in a paragraph rather than in a terminal block like the fetch-and-verify
   command directly above it, so it could not be copied cleanly. It now has the
