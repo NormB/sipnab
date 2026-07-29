@@ -11,6 +11,20 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **A malformed response could permanently mislabel a real dialog.**
+  `SipDialog::new` fabricated `SipMethod::Custom("UNKNOWN")` when a response
+  carried no parseable `CSeq`. `method` is set once at creation and never
+  corrected, and dialogs are keyed by Call-ID — so such a response arriving
+  *before* the INVITE created a dialog labelled `UNKNOWN`, and the genuine
+  INVITE then matched that entry and left the label wrong for the rest of the
+  capture. `dialog_store`'s INVITE-specific matching stops working on that
+  dialog, and every per-method count, filter and export reports it under a
+  method nothing sent. A message whose method cannot be determined now creates
+  no dialog, exactly as one without a Call-ID already did — the message is still
+  captured, counted and searchable; only the correlation that could not be
+  established is withheld, which leaves the later INVITE free to create the
+  dialog correctly.
+
 - **The SIPp scenario export could write an invented SIP method onto the
   wire.** `tui/save.rs` substituted the literal `UNKNOWN` when a request's
   method was absent, and both arms write it straight into the scenario — a

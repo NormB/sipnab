@@ -216,8 +216,7 @@ impl SipDialog {
     /// - SUBSCRIBE → `Pending`
     /// - All others → `Trying`
     ///
-    /// For a response, the dialog method is derived from the CSeq header;
-    /// a missing or unparseable method falls back to the `UNKNOWN` sentinel.
+    /// For a response, the dialog method is derived from the CSeq header.
     ///
     /// # Arguments
     ///
@@ -227,19 +226,33 @@ impl SipDialog {
     ///
     /// # Returns
     ///
-    /// The new dialog, or `None` when the message has no Call-ID header
-    /// (no dialog identity exists without one).
+    /// The new dialog, or `None` when the message carries no Call-ID (no
+    /// dialog identity exists without one) or when its method cannot be
+    /// determined.
+    ///
+    /// The second case used to fabricate `SipMethod::Custom("UNKNOWN")`, and
+    /// that was not a cosmetic placeholder. `method` is set once here and never
+    /// corrected: a malformed response — Call-ID present, CSeq absent or
+    /// unparseable — arriving BEFORE the INVITE created a dialog under that
+    /// Call-ID labelled `UNKNOWN`, and the real INVITE then matched the
+    /// existing entry and left the label wrong for the rest of the capture.
+    /// `dialog_store`'s INVITE-specific matching (`candidate.method ==
+    /// SipMethod::Invite`) stops working on that dialog, and every per-method
+    /// count and filter reports it under a method nothing sent.
+    ///
+    /// Declining to create it is what keeps the later INVITE able to create it
+    /// correctly, and matches the rule already applied one line above: a
+    /// message that cannot supply a dialog identity does not get a dialog. The
+    /// message itself is still captured, counted and searchable — only the
+    /// dialog correlation is withheld, which is the thing that could not be
+    /// established.
     pub fn new(msg: &SipMessage) -> Option<Self> {
         let call_id = msg.call_id()?.to_string();
         let method = if msg.is_request {
-            msg.method
-                .clone()
-                .unwrap_or_else(|| SipMethod::parse("UNKNOWN"))
+            msg.method.clone()?
         } else {
-            // For responses, derive the method from CSeq
-            msg.cseq()
-                .map(|(_, m)| SipMethod::parse(m))
-                .unwrap_or_else(|| SipMethod::parse("UNKNOWN"))
+            // For responses, derive the method from CSeq.
+            msg.cseq().map(|(_, m)| SipMethod::parse(m))?
         };
 
         let initial_state = match method {
@@ -1117,6 +1130,56 @@ mod tests {
             dialog.state,
             DialogState::Transferring,
             "a Subscription-State prefixed with 'terminated' must not end the transfer"
+        );
+    }
+
+    /// A response with no CSeq creates no dialog, and — the point of the change
+    /// — the real INVITE that follows still creates one with the RIGHT method.
+    ///
+    /// `method` is set once in `new()` and never corrected afterwards, so
+    /// fabricating `UNKNOWN` here did not merely mislabel one malformed
+    /// message: the dialog it created was keyed by Call-ID, so the genuine
+    /// INVITE arriving later matched that entry instead of creating its own,
+    /// and the wrong method survived for the rest of the capture. The second
+    /// half of this test is what distinguishes a fix from a rename.
+    #[test]
+    fn a_response_without_cseq_does_not_poison_the_dialog_its_invite_creates() {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.com>;tag=t2",
+                "Call-ID: dialog-test@example.com",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let orphan = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse response");
+        assert!(orphan.cseq().is_none(), "fixture must have no CSeq");
+
+        assert!(
+            SipDialog::new(&orphan).is_none(),
+            "a response whose method cannot be determined must not create a \
+             dialog — it would be keyed by Call-ID and permanently labelled"
+        );
+
+        // The genuine INVITE, same Call-ID, is unaffected and correct.
+        let invite = make_request("INVITE");
+        let dialog = SipDialog::new(&invite).expect("INVITE creates a dialog");
+        assert_eq!(
+            dialog.method,
+            SipMethod::Invite,
+            "the INVITE's own method must be recorded, not inherited from an \
+             earlier malformed message"
         );
     }
 }
