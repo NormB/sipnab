@@ -39,6 +39,16 @@ dialog mid-flight. The tags are still captured — `to_tag` is filled the first
 time a response carries one — and forked calls that share a Call-ID are
 distinguished downstream rather than by the map key.
 
+Two things must be knowable before a message gets a dialog at all: its Call-ID,
+and its method. The method requirement is the less obvious one, and it exists
+because [`SipDialog::method`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) is set once at creation
+and never corrected. A response derives it from CSeq, so a malformed response —
+Call-ID present, CSeq absent — used to create a dialog under that Call-ID
+labelled with an invented method, and the genuine INVITE arriving afterwards
+matched that entry instead of creating its own. The label then outlived the
+capture. Such a message now creates no dialog; it is still captured, counted and
+searchable, and the INVITE that follows creates the dialog correctly.
+
 ### CSeq pins the transaction
 
 Every request carries `CSeq: <number> <METHOD>`. Responses echo it, and that
