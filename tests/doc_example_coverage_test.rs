@@ -23,7 +23,11 @@ use std::collections::BTreeMap;
 /// Minimum example occurrences required per user-facing flag.
 const MIN_EXAMPLES: usize = 2;
 
-/// Flags that legitimately cannot carry a runnable example (none today).
+/// Flags that legitimately cannot carry a runnable example.
+///
+/// The parenthetical "(none today)" survived here after three waivers were
+/// added underneath it, so the file said every flag was demonstrated while
+/// three were excused.
 /// Each entry MUST carry a written justification, mirroring the
 /// `KNOWN_UNTESTED` ratchet convention in `flag_coverage_test.rs`.
 const WAIVED: &[(&str, &str)] = &[

@@ -1059,12 +1059,35 @@ fn workflow_inventory_heading_counts_the_workflows() {
         "docs/internals/build-ci-release.md should say \"{heading}\" — \
          there are {n} workflow files: {names:?}"
     );
-    // Every workflow must appear in the table under that heading, not just be
-    // counted by it.
-    let missing: Vec<&String> = names.iter().filter(|f| !doc.contains(f.as_str())).collect();
+    // Every workflow must appear in the TABLE under that heading — which is
+    // what the sentence above used to claim and the code did not do. Searching
+    // the whole page let a deleted table row pass because the workflow's name
+    // still appeared in a mermaid diagram 150 lines below: the heading read
+    // "The nine workflows", there really were nine files, and `docker.yml` was
+    // described nowhere. `ci.yml`, `release.yml` and `quality.yml` had the same
+    // slack.
+    let start = doc.find(&heading).expect("heading located above");
+    let body = &doc[start + heading.len()..];
+    let end = body.find("\n## ").unwrap_or(body.len());
+    let table: String = body[..end]
+        .lines()
+        .filter(|l| l.trim_start().starts_with('|'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        table.lines().count() >= n,
+        "the inventory table under \"{heading}\" has {} rows for {n} workflows \
+         — the table slice is not reading what this gate believes it is",
+        table.lines().count()
+    );
+    let missing: Vec<&String> = names
+        .iter()
+        .filter(|f| !table.contains(f.as_str()))
+        .collect();
     assert!(
         missing.is_empty(),
-        "workflows counted but never described in build-ci-release.md: {missing:?}"
+        "workflows counted by the heading but absent from the table under it: \
+         {missing:?}"
     );
 }
 
