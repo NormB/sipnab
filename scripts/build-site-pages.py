@@ -27,6 +27,13 @@ import re
 import sys
 from pathlib import Path
 
+# The generators are also loaded by tests via importlib, which does not put
+# their directory on sys.path -- so add it explicitly rather than relying on
+# being run as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib_markdown import sub_outside_code  # noqa: E402
+
 # (docs source, site filename, expected H1, title, weight, description)
 PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
@@ -222,8 +229,8 @@ def _xlate(target: str, anchor: str) -> str:
 # Links into the code tree; a relative `packaging/deb/build-deb.sh` would
 # otherwise survive verbatim onto a site page and resolve to nothing.
 CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:src|tests|crates|benches|fuzz|scripts|contrib"
-    r"|packaging|harness|ops|man|demos|\.github|\.githooks)(?:/[^)\s]*)?)\s*\)"
+    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|benches|contrib|harness|scripts|website"
+    r"|\.cargo|crates|docker|bench|demos|tests|fuzz|man|ops|src)(?:/[^)\s]*)?)\s*\)"
 )
 
 
@@ -257,7 +264,7 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
     body = SELF_ANCHOR_RE.sub(
         lambda m: f"]({_xlate(rel, m.group(1))})", body
     )
-    body = CODE_LINK_RE.sub(rewrite_code_link, body)
+    body = sub_outside_code(CODE_LINK_RE, rewrite_code_link, body)
     head = "\n".join(
         [
             "+++",
