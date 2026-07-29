@@ -635,48 +635,94 @@ fn published_glibc_floor_matches_release_gate() {
          {enforced} — the installer would hand hosts the wrong artifact"
     );
 
-    // Prose that states the current floor, in either doc tree. Each pattern's
-    // capture 1 must be the enforced floor.
-    let claim_res = [
-        r"glibc >= (\d+\.\d+)",
-        r"GLIBC_(\d+\.\d+)' not found",
-        r"the (\d+\.\d+) floor",
-    ]
-    .map(|p| regex::Regex::new(p).expect("claim regex"));
+    // Every glibc version named anywhere in the published docs must be the
+    // enforced floor, unless it is listed below as deliberately something else.
+    //
+    // This was three hand-written phrasings over a hand-written six-file list.
+    // Both are proxies: a fourth wording escapes, and so does a seventh file.
+    // Demonstrated — adding "requires glibc 2.39 or newer" to docs/install.md
+    // and regenerating left every gate green with 2.39 published on the site,
+    // which is the drift this gate was written after. The installer cut over at
+    // 2.39 for eleven releases while the real floor was 2.36, so Debian 12 hosts
+    // silently got the static build and lost TUI audio.
+    //
+    // Default-deny: new prose is checked because it is new, and a number that is
+    // meant to differ has to be named here with its reason. The previous shape
+    // was default-allow, which is why prose nobody thought to pattern-match
+    // sailed through.
+    //
+    // CHANGELOG.md is excluded wholesale: it records the 2.39 incident, and a
+    // gate forcing history to match the present would corrupt the record.
+    const ILLUSTRATIVE: &[(&str, &str)] = &[
+        // Cross-compilation examples naming OTHER systems' glibc, not sipnab's
+        // floor: "if you build on Debian 13 / glibc 2.41 and deploy to Debian 12".
+        ("contrib/observability/README.md", "2.41"),
+        ("contrib/observability/README.md", "2.39"),
+        ("website/content/docs/build.md", "2.41"),
+    ];
+
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "*.md"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files");
+    let tracked = String::from_utf8_lossy(&out.stdout);
+
+    // A glibc-shaped version: `2.NN`, with the preceding character not part of
+    // a longer identifier. Both halves earn their place — without the boundary
+    // `libpcap0.8` reads as a version, and without the `2.` a line saying
+    // "glibc >= 2.36 — Debian 12+, Ubuntu 23.04+" reports 23.04 as a glibc
+    // version, then `rust:1.97-alpine` does the same. False positives are how a
+    // gate gets muted, so the pattern has to be about glibc and not about
+    // digits.
+    //
+    // This assumes glibc stays on the 2.x line, which has held since 1997. If a
+    // glibc 3 ever ships, this goes blind rather than wrong — the count
+    // assertion below is what would notice.
+    let ver = regex::Regex::new(r"(?:^|[^A-Za-z0-9._-])(2\.\d+)").expect("version regex");
 
     let mut wrong = Vec::new();
     let mut checked = 0;
-    for doc in [
-        "docs/install.md",
-        "docs/benchmarks.md",
-        "website/content/docs/install.md",
-        "website/content/docs/build.md",
-        "website/content/docs/troubleshooting.md",
-        "README.md",
-    ] {
-        let path = repo().join(doc);
-        if !path.is_file() {
+    for rel in tracked.lines() {
+        if rel == "CHANGELOG.md"
+            || rel.starts_with("docs/design/")
+            || rel.starts_with("docs/research/")
+            || rel.starts_with("docs/superpowers/")
+        {
             continue;
         }
-        let text = std::fs::read_to_string(&path).expect("read doc");
-        for re in &claim_res {
-            for cap in re.captures_iter(&text) {
+        let Ok(text) = std::fs::read_to_string(repo().join(rel)) else {
+            continue;
+        };
+        for line in text.lines() {
+            if !line.to_lowercase().contains("glibc") {
+                continue;
+            }
+            for cap in ver.captures_iter(line) {
+                let v = &cap[1];
                 checked += 1;
-                if cap[1] != enforced {
-                    wrong.push(format!("{doc}: \"{}\" (enforced is {enforced})", &cap[0]));
+                if v == enforced || ILLUSTRATIVE.iter().any(|(f, x)| *f == rel && *x == v) {
+                    continue;
                 }
+                wrong.push(format!(
+                    "{rel}: names glibc {v}, enforced is {enforced}\n      {}",
+                    line.trim()
+                ));
             }
         }
     }
     assert!(
-        checked >= 4,
-        "glibc prose extraction found only {checked} claims — the docs changed \
-         shape and this sweep has gone blind, which is exactly how build.md kept \
+        checked >= 20,
+        "glibc sweep examined only {checked} version mentions (23 at the time of \
+         writing) — the scan has gone blind, which is exactly how build.md kept \
          saying 2.39 under a green gate"
     );
     assert!(
         wrong.is_empty(),
-        "documentation states a glibc floor that release.yml does not enforce:\n  {}",
+        "documentation names a glibc version that is neither the enforced floor \
+         nor listed as illustrative:\n  {}\n\nIf the number is deliberate (an \
+         example naming another system's glibc), add it to ILLUSTRATIVE with the \
+         reason. Do not change the floor to make this pass.",
         wrong.join("\n  ")
     );
 }
