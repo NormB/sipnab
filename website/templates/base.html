@@ -49,7 +49,7 @@
 
   <!-- Search -->
   {% if config.build_search_index %}
-  <script src="{{ get_url(path='elasticlunr.min.js') }}" defer></script>
+  <script src="{{ get_url(path='elasticlunr.min.js', cachebust=true) }}" defer></script>
   {% endif %}
 
   <!-- Structured data -->

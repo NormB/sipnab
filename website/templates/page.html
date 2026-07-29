@@ -13,8 +13,8 @@
    execute in order (mermaid first) before DOMContentLoaded. #}
 {% block head_extra %}
 {% if page.extra.has_diagrams %}
-<script src="{{ get_url(path='js/mermaid.min.js') }}" defer></script>
-<script src="{{ get_url(path='js/diagram-viewer.js') }}" defer></script>
+<script src="{{ get_url(path='js/mermaid.min.js', cachebust=true) }}" defer></script>
+<script src="{{ get_url(path='js/diagram-viewer.js', cachebust=true) }}" defer></script>
 {% endif %}
 {% endblock head_extra %}
 
