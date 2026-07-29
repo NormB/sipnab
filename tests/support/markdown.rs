@@ -321,13 +321,31 @@ pub fn strip_frontmatter(md: &str) -> &str {
     }
 }
 
-/// What a reader actually sees as prose: frontmatter, code fences, inline code
-/// spans and HTML comments removed, line numbering intact.
+/// What a reader actually sees: frontmatter, code fences and HTML comments
+/// removed, line numbering intact.
 ///
-/// Order matters. Fences first, so backticks inside a fenced block are gone
-/// before span detection runs; spans before comments, so `` `<!-- x -->` `` is
-/// quoted markup rather than an opening comment.
+/// Inline code spans are **kept**, because their content renders. A heading
+/// written `` ### `find_problems` `` displays as `find_problems` and both
+/// GitHub and Zola slugify it that way — blanking the span here erased the
+/// heading text and turned every anchor pointing at it into a dangling link.
+/// Only the backticks are markup; what is between them is prose.
 pub fn prose(md: &str) -> String {
+    blank_html_comments(&blank_fences(strip_frontmatter(md)))
+}
+
+/// [`prose`], plus inline code spans blanked: for deciding whether a `](…)` is
+/// a link a reader can follow.
+///
+/// The distinction is not pedantry. A span's content is rendered *text*, so it
+/// belongs in a heading; it is not rendered *markup*, so a link inside one is
+/// being quoted rather than made. `docs/internals/testing.md` documents a past
+/// bug as `` `](../bench/)` ``, and reading that as a live relative link is
+/// what made a generator rewrite the example and a gate report the example as
+/// an escaped link.
+///
+/// Order matters: fences first, so backticks inside a fenced block are gone
+/// before span detection runs.
+pub fn linkable_prose(md: &str) -> String {
     blank_html_comments(&blank_inline_code(&blank_fences(strip_frontmatter(md))))
 }
 

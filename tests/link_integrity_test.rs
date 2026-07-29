@@ -43,6 +43,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+#[path = "support/markdown.rs"]
+mod markdown;
+
 /// Repository root, taken from `CARGO_MANIFEST_DIR`.
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -72,28 +75,18 @@ fn strip_frontmatter(md: &str) -> &str {
     }
 }
 
-/// Blank out fenced code blocks (``` ... ```): their `# comment` lines are
-/// not headings and their example text is not rendered links.
-fn strip_fences(md: &str) -> String {
-    let mut out = String::with_capacity(md.len());
-    let mut in_fence = false;
-    for line in md.lines() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-            out.push('\n');
-            continue;
-        }
-        if !in_fence {
-            out.push_str(line);
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// Rendered prose of a markdown file: frontmatter and code fences removed.
+/// Rendered prose of a markdown file: frontmatter, code fences, inline code
+/// spans and HTML comments removed.
+///
+/// Delegates to the shared CommonMark lexer. The scanner this replaces toggled
+/// one `bool` on any line starting with ` ``` `, which is wrong in a way that
+/// silently disarms every check built on it: a `~~~` block *containing* a
+/// ` ``` ` line switched fence mode ON with nothing to switch it back, so the
+/// entire remainder of the file was blanked. Both link tests then examined zero
+/// links while still counting the file as scanned — a whole page of links going
+/// dark with the suite greener than before.
 fn prose(rel: impl AsRef<Path>) -> String {
-    strip_fences(strip_frontmatter(&read(rel)))
+    markdown::prose(&read(rel))
 }
 
 // ---------------------------------------------------------------------------
@@ -681,17 +674,59 @@ fn slugify_matches_known_rendered_anchors() {
 /// is.
 #[test]
 fn every_docs_page_is_linked_from_the_index() {
-    let index = std::fs::read_to_string("docs/README.md").expect("docs/README.md");
+    // Links are extracted from PROSE, not from the file's bytes. A raw
+    // `contains("](backers.md")` counted a link that had been wrapped in an
+    // HTML comment: the substring was still there, the page was reachable from
+    // nowhere on GitHub or the wiki, and this test said it was linked.
+    let index = markdown::linkable_prose(&read("docs/README.md"));
+    let link_re = regex::Regex::new(r"\]\(\s*\.?/?([^)#\s]+\.md)").expect("link regex");
+    let linked: BTreeSet<String> = link_re
+        .captures_iter(&index)
+        .map(|c| c[1].trim_start_matches("./").to_string())
+        .collect();
+    assert!(
+        linked.len() >= 10,
+        "extracted only {} links from docs/README.md — the extraction stopped \
+         matching and every page below would report as unlinked",
+        linked.len()
+    );
+
+    // Recursive: `read_dir` stopped at the top level, so nothing checked
+    // whether a page under docs/internals/ was reachable at all.
     let mut unlinked = Vec::new();
     let mut checked = 0usize;
-    for entry in std::fs::read_dir("docs").expect("docs/").flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".md") || name == "README.md" {
-            continue;
-        }
-        checked += 1;
-        if !index.contains(&format!("]({name}")) {
-            unlinked.push(name);
+    let mut stack = vec![PathBuf::from("docs")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("docs/").flatten() {
+            let p = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if p.is_dir() {
+                // Planning material outside the published journey, matching the
+                // scope `scanned_markdown` already documents.
+                if !matches!(name.as_str(), "design" | "research" | "superpowers") {
+                    stack.push(p);
+                }
+                continue;
+            }
+            if !name.ends_with(".md") || name == "README.md" {
+                continue;
+            }
+            checked += 1;
+            let rel = p
+                .strip_prefix("docs")
+                .expect("under docs/")
+                .to_string_lossy()
+                .into_owned();
+            // A page is reachable if the index links it directly, or if it
+            // sits under a subdirectory whose own index the index links —
+            // docs/internals/ is reached through docs/internals/README.md.
+            let via_section = rel.contains('/')
+                && linked.iter().any(|l| {
+                    l.starts_with(&format!("{}/", rel.split('/').next().unwrap_or_default()))
+                });
+            if !linked.contains(&rel) && !linked.contains(&name) && !via_section {
+                unlinked.push(rel);
+            }
         }
     }
     assert!(
