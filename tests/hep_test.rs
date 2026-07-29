@@ -26,6 +26,8 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
 
+include!("support/timeout.rs");
+
 /// Call-ID embedded in the synthetic INVITE; tests grep stdout for it.
 const CALL_ID: &str = "hep-test-call-1@127.0.0.1";
 
@@ -114,7 +116,7 @@ impl HepListener {
             }
         });
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + test_timeout(10);
         while Instant::now() < deadline {
             if let Ok(p) = port_rx.recv_timeout(Duration::from_millis(200)) {
                 port = Some(p);
@@ -217,7 +219,7 @@ fn hep_listener_ingests_synthetic_hep3() {
     srv.send(&hep3_sip(&invite_bytes()));
 
     let line = srv
-        .wait_for_stdout(CALL_ID, Duration::from_secs(5))
+        .wait_for_stdout(CALL_ID, test_timeout(5))
         .expect("HEP-ingested INVITE must surface on --json stdout");
     let msg: serde_json::Value = serde_json::from_str(&line).expect("ndjson");
     assert_eq!(msg["method"], "INVITE");
@@ -242,7 +244,7 @@ fn hep_allowlist_rejects_source_outside_cidr() {
     assert!(
         srv.wait_for_stderr(
             "Dropping HEP packet from non-allowed source",
-            Duration::from_secs(5),
+            test_timeout(5),
         ),
         "a packet from a non-allowlisted source must be dropped by the allowlist"
     );
@@ -271,7 +273,7 @@ fn hep_rate_limit_drops_burst() {
         srv.send(&hep3_sip(&invite_bytes()));
     }
     assert!(
-        srv.wait_for_stderr("rate limit exceeded", Duration::from_secs(5)),
+        srv.wait_for_stderr("rate limit exceeded", test_timeout(5)),
         "a burst above --hep-rate-limit must log a drop"
     );
 }
@@ -282,9 +284,7 @@ fn hep_rate_limit_drops_burst() {
 fn hep_send_forwards_captured_sip_as_hep3() {
     // Bind a collector UDP socket; have sipnab forward a fixture's SIP to it.
     let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
-    collector
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
+    collector.set_read_timeout(Some(test_timeout(5))).unwrap();
     let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
 
     let pcap = format!(

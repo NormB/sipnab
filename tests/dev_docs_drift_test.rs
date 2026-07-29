@@ -295,24 +295,6 @@ fn resolve(page: &Path, target: &str) -> PathBuf {
     out
 }
 
-/// Concatenated Rust source across the workspace, for symbol resolution.
-fn all_rust_source() -> String {
-    let mut out = String::new();
-    let mut stack = vec![repo().join("src"), repo().join("crates")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
-            let p = entry.expect("dir entry").path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().and_then(|e| e.to_str()) == Some("rs") {
-                out.push_str(&std::fs::read_to_string(&p).unwrap_or_default());
-                out.push('\n');
-            }
-        }
-    }
-    out
-}
-
 #[test]
 fn linked_code_targets_exist() {
     let mut missing = Vec::new();
@@ -348,9 +330,48 @@ fn linked_code_targets_exist() {
     );
 }
 
+/// Every `.rs` file at or under a resolved link target.
+///
+/// A link may name a file (`../../src/parallel.rs`) or a subsystem directory
+/// (`../../src/capture`); a symbol claim against either has to be checked
+/// where the link actually sends the reader.
+fn rust_files_under(path: &Path) -> Vec<PathBuf> {
+    if path.is_file() {
+        return if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            vec![path.to_path_buf()]
+        } else {
+            Vec::new()
+        };
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn linked_symbols_resolve_to_a_definition() {
-    let source = all_rust_source();
+    // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
+    // was satisfied by `fn run_offline_parallel`, so a doc could name a function
+    // that has never existed and resolve against a real one whose name merely
+    // starts the same way — and `src/parallel.rs` really does carry the
+    // `run_offline_parallel` / `run_offline_parallel_file` pair, so renaming the
+    // shorter one would have left the docs green.
+    let def = |sym: &str| {
+        regex::Regex::new(&format!(r"\bfn\s+{}\s*[(<]", regex::escape(sym))).expect("def regex")
+    };
     let mut missing = Vec::new();
     let mut seen = 0;
     for page in internals_pages() {
@@ -359,10 +380,32 @@ fn linked_symbols_resolve_to_a_definition() {
                 continue; // a plain file/subsystem link carries no symbol claim
             };
             seen += 1;
-            if !source.contains(&format!("fn {sym}")) {
+            // Resolved against the file the link points at, not the whole
+            // concatenated workspace. `classify_packet()` cited against
+            // `src/auth.rs` used to pass while that file contained no such
+            // function: the link target was never consulted, so the doc could
+            // send a reader to a file that does not mention the symbol it
+            // promised, and only a symbol absent from every file in the
+            // workspace was reported.
+            let resolved = repo().join(resolve(&page, &target));
+            let files = rust_files_under(&resolved);
+            if files.is_empty() {
                 missing.push(format!(
-                    "{}: [{text}]({target}) — no `fn {sym}` in the workspace",
+                    "{}: [{text}]({target}) — the target holds no Rust source, so \
+                     the `{sym}()` claim resolves against nothing",
                     page.display()
+                ));
+                continue;
+            }
+            let re = def(&sym);
+            let found = files
+                .iter()
+                .any(|f| re.is_match(&std::fs::read_to_string(f).unwrap_or_default()));
+            if !found {
+                missing.push(format!(
+                    "{}: [{text}]({target}) — no `fn {sym}` defined in {}",
+                    page.display(),
+                    target
                 ));
             }
         }

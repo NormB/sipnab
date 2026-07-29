@@ -17,6 +17,8 @@ mod support;
 use server::{ApiServer, run_and_capture_stderr};
 use support::schema::{assert_valid, load_validator};
 
+include!("support/timeout.rs");
+
 /// The Call-ID of the single dialog in the default `sip_call.pcap` fixture,
 /// used to address per-dialog endpoints.
 const CALL_ID: &str = "test-call-1@10.0.0.1";
@@ -229,7 +231,7 @@ fn tls_flags_fail_fast_and_do_not_serve() {
             "--api-tls-key",
             "/tmp/none.pem",
         ],
-        std::time::Duration::from_secs(3),
+        test_timeout(3),
     );
     assert!(
         logs.contains("requires the axum-server crate"),

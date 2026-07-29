@@ -16,6 +16,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+include!("support/timeout.rs");
+
 /// Absolute path to a file under `tests/fixtures/`.
 ///
 /// # Arguments
@@ -110,7 +112,7 @@ fn list_dialogs_until_nonempty(
                 "params": {"name": "list_dialogs", "arguments": {}}
             }),
         );
-        let resp = read_response_with_id(reader, id, Duration::from_secs(5))
+        let resp = read_response_with_id(reader, id, test_timeout(5))
             .expect("list_dialogs response within 5s");
         assert!(
             resp["result"].is_object(),
@@ -176,7 +178,7 @@ fn stdio_mcp_round_trips_three_tools() {
     });
     send(&mut child, &init);
 
-    let init_resp = read_response_with_id(&mut reader, 1, Duration::from_secs(5))
+    let init_resp = read_response_with_id(&mut reader, 1, test_timeout(5))
         .expect("initialize response within 5s");
     assert!(
         init_resp.get("result").is_some(),
@@ -198,7 +200,7 @@ fn stdio_mcp_round_trips_three_tools() {
     });
     send(&mut child, &list);
 
-    let list_resp = read_response_with_id(&mut reader, 2, Duration::from_secs(5))
+    let list_resp = read_response_with_id(&mut reader, 2, test_timeout(5))
         .expect("tools/list response within 5s");
     let tools = list_resp["result"]["tools"]
         .as_array()
@@ -220,7 +222,7 @@ fn stdio_mcp_round_trips_three_tools() {
     // 3. tools/call list_dialogs with no filter — poll until the fixture
     //    pcap's dialog appears (sip_call.pcap has 1 dialog; ingestion is
     //    asynchronous, so the first reply may be empty on a slow runner).
-    let parsed = list_dialogs_until_nonempty(&mut child, &mut reader, 3, Duration::from_secs(10));
+    let parsed = list_dialogs_until_nonempty(&mut child, &mut reader, 3, test_timeout(10));
     let arr = parsed.as_array().expect("dialog summaries array");
 
     // 4. tools/call get_dialog_report with the call_id from the list — round-trip
@@ -236,7 +238,7 @@ fn stdio_mcp_round_trips_three_tools() {
     });
     send(&mut child, &call_report);
 
-    let report_resp = read_response_with_id(&mut reader, 4, Duration::from_secs(5))
+    let report_resp = read_response_with_id(&mut reader, 4, test_timeout(5))
         .expect("get_dialog_report response within 5s");
     assert!(
         report_resp["result"].is_object(),
@@ -256,8 +258,8 @@ fn stdio_mcp_round_trips_three_tools() {
     });
     send(&mut child, &call_unknown);
 
-    let err_resp = read_response_with_id(&mut reader, 5, Duration::from_secs(5))
-        .expect("error response within 5s");
+    let err_resp =
+        read_response_with_id(&mut reader, 5, test_timeout(5)).expect("error response within 5s");
     assert!(
         err_resp["error"].is_object(),
         "unknown call_id must return error: {err_resp}"
@@ -316,8 +318,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "clientInfo": {"name": "sipnab-test", "version": "0"}}
         }),
     );
-    let _ =
-        read_response_with_id(&mut reader, 1, Duration::from_secs(5)).expect("initialize response");
+    let _ = read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize response");
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -329,7 +330,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
     );
     let list_resp =
-        read_response_with_id(&mut reader, 2, Duration::from_secs(5)).expect("tools/list response");
+        read_response_with_id(&mut reader, 2, test_timeout(5)).expect("tools/list response");
     let names: Vec<String> = list_resp["result"]["tools"]
         .as_array()
         .unwrap()
@@ -357,7 +358,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     // Get the call_id we'll use for tool calls. Poll: replay ingestion is
     // asynchronous, so the dialog may not be visible yet (macOS CI flake,
     // run 29791219683: dialogs[0] was None on the first call).
-    let dialogs = list_dialogs_until_nonempty(&mut child, &mut reader, 3, Duration::from_secs(10));
+    let dialogs = list_dialogs_until_nonempty(&mut child, &mut reader, 3, test_timeout(10));
     let call_id = dialogs[0]["call_id"].as_str().unwrap().to_string();
 
     // get_dialog
@@ -369,8 +370,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"call_id": call_id, "max_messages": 100}}
         }),
     );
-    let resp =
-        read_response_with_id(&mut reader, 4, Duration::from_secs(5)).expect("get_dialog response");
+    let resp = read_response_with_id(&mut reader, 4, test_timeout(5)).expect("get_dialog response");
     let payload_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let payload: serde_json::Value = serde_json::from_str(payload_text).unwrap();
     assert!(
@@ -388,8 +388,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"call_id": call_id, "index": 0}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 5, Duration::from_secs(5))
-        .expect("get_message response");
+    let resp =
+        read_response_with_id(&mut reader, 5, test_timeout(5)).expect("get_message response");
     let msg_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let msg: serde_json::Value = serde_json::from_str(msg_text).unwrap();
     assert_eq!(msg["call_id"].as_str(), Some(call_id.as_str()));
@@ -403,8 +403,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"call_id": call_id, "index": 9999}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 6, Duration::from_secs(5))
-        .expect("get_message OOR response");
+    let resp =
+        read_response_with_id(&mut reader, 6, test_timeout(5)).expect("get_message OOR response");
     assert_eq!(resp["error"]["code"].as_i64(), Some(-32602));
 
     // render_ladder markdown
@@ -416,8 +416,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"call_id": call_id, "format": "markdown"}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 7, Duration::from_secs(5))
-        .expect("render_ladder response");
+    let resp =
+        read_response_with_id(&mut reader, 7, test_timeout(5)).expect("render_ladder response");
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
     assert!(!text.is_empty(), "ladder must not be empty");
 
@@ -430,8 +430,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"call_id": call_id}}
         }),
     );
-    let resp =
-        read_response_with_id(&mut reader, 8, Duration::from_secs(5)).expect("rtp_stats response");
+    let resp = read_response_with_id(&mut reader, 8, test_timeout(5)).expect("rtp_stats response");
     let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
     assert!(body["streams"].is_array());
@@ -445,8 +444,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"query": "INVITE"}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 9, Duration::from_secs(5))
-        .expect("search_messages response");
+    let resp =
+        read_response_with_id(&mut reader, 9, test_timeout(5)).expect("search_messages response");
     let hits_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let hits: serde_json::Value = serde_json::from_str(hits_text).unwrap();
     assert!(hits.as_array().map(|a| !a.is_empty()).unwrap_or(false));
@@ -459,8 +458,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "tail_dialogs", "arguments": {}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 10, Duration::from_secs(5))
-        .expect("tail_dialogs response");
+    let resp =
+        read_response_with_id(&mut reader, 10, test_timeout(5)).expect("tail_dialogs response");
     let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
     assert!(
@@ -479,7 +478,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"cursor": next_cursor}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 11, Duration::from_secs(5))
+    let resp = read_response_with_id(&mut reader, 11, test_timeout(5))
         .expect("tail_dialogs cursor response");
     let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
@@ -497,8 +496,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "stats", "arguments": {}}
         }),
     );
-    let resp =
-        read_response_with_id(&mut reader, 12, Duration::from_secs(5)).expect("stats response");
+    let resp = read_response_with_id(&mut reader, 12, test_timeout(5)).expect("stats response");
     let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
     assert!(body["dialog_count"].as_u64().unwrap_or(0) >= 1);
@@ -553,7 +551,7 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
                        "clientInfo": {"name": "sipnab-test", "version": "0"}}
         }),
     );
-    read_response_with_id(&mut reader, 1, Duration::from_secs(5)).expect("initialize");
+    read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize");
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -561,7 +559,7 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
 
     // Poll tail_dialogs until the tiny fixture replay drains. The contract
     // is polling-shaped, so the test polls exactly like a real client.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + test_timeout(10);
     let mut id: i64 = 1;
     let exhausted = loop {
         assert!(
@@ -576,8 +574,8 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
                 "params": {"name": "tail_dialogs", "arguments": {}}
             }),
         );
-        let resp = read_response_with_id(&mut reader, id, Duration::from_secs(5))
-            .expect("tail_dialogs response");
+        let resp =
+            read_response_with_id(&mut reader, id, test_timeout(5)).expect("tail_dialogs response");
         let body_text = resp["result"]["content"][0]["text"]
             .as_str()
             .expect("tail_dialogs text");
@@ -640,7 +638,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
                        "clientInfo": {"name": "sipnab-test", "version": "0"}}
         }),
     );
-    read_response_with_id(&mut reader, 1, Duration::from_secs(5)).expect("initialize");
+    read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize");
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -651,8 +649,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
     );
-    let list_resp =
-        read_response_with_id(&mut reader, 2, Duration::from_secs(5)).expect("tools/list");
+    let list_resp = read_response_with_id(&mut reader, 2, test_timeout(5)).expect("tools/list");
     let mut names: Vec<String> = list_resp["result"]["tools"]
         .as_array()
         .expect("tools array")
@@ -685,8 +682,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
             "params": {"name": "find_problems", "arguments": {}}
         }),
     );
-    let resp =
-        read_response_with_id(&mut reader, 3, Duration::from_secs(5)).expect("find_problems");
+    let resp = read_response_with_id(&mut reader, 3, test_timeout(5)).expect("find_problems");
     assert!(resp.get("error").is_none(), "find_problems errored: {resp}");
     let text = resp["result"]["content"][0]["text"]
         .as_str()
@@ -706,8 +702,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
             "params": {"name": "security_findings", "arguments": {}}
         }),
     );
-    let resp =
-        read_response_with_id(&mut reader, 4, Duration::from_secs(5)).expect("security_findings");
+    let resp = read_response_with_id(&mut reader, 4, test_timeout(5)).expect("security_findings");
     assert!(
         resp.get("error").is_none(),
         "security_findings errored: {resp}"
