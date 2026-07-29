@@ -62,19 +62,6 @@ fn read(rel: impl AsRef<Path>) -> String {
 // Markdown pre-processing
 // ---------------------------------------------------------------------------
 
-/// Strip Zola `+++` TOML frontmatter (lines in it can start with `#`, which
-/// are TOML comments, not headings).
-fn strip_frontmatter(md: &str) -> &str {
-    let rest = md.strip_prefix("+++").map(|r| r.trim_start_matches('\r'));
-    match rest {
-        Some(r) => match r.split_once("\n+++") {
-            Some((_, body)) => body,
-            None => md,
-        },
-        None => md,
-    }
-}
-
 /// Rendered prose of a markdown file: frontmatter, code fences, inline code
 /// spans and HTML comments removed.
 ///
