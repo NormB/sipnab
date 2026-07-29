@@ -9,6 +9,17 @@
 #   Given UNFORMATTED Rust but SKIP_FMT_HOOK=1,
 #     when the pre-push hook runs, then it ALLOWS the push (bypass).
 #
+# SCENARIO: the other three hard gates
+#   Given FORMATTED Rust that violates clippy's -D warnings, or carries a
+#     broken intra-doc link, or a fuzz/ workspace that fails cargo check,
+#     when the pre-push hook runs, then it BLOCKS the push.
+#
+#   These exist because only the rustfmt gate used to be reachable: the
+#   throwaway crate was clippy-clean, doc-clean, and had no fuzz/, so deleting
+#   the other three gates from the hook left 4/4 green and printed "GREEN: all
+#   pre-push BDD scenarios passed." CONTRIBUTING.md points contributors here,
+#   directly beneath the table listing all four gates.
+#
 # This test never performs a real `git push`. It builds an isolated temp crate,
 # invokes the hook from inside it, asserts exit codes, and cleans up on exit.
 
@@ -117,6 +128,81 @@ else
 	bad "formatted Rust was BLOCKED (expected allow)"
 	sed 's/^/    /' "$TMP/out.log"
 fi
+
+# -- The other three hard gates ----------------------------------------------
+# Only the rustfmt gate was ever reachable here. The throwaway crate is
+# clippy-clean, doc-clean, and has no fuzz/ directory, so deleting the clippy,
+# rustdoc and fuzz gates from the hook outright left 4/4 green and printed
+# "GREEN: all pre-push BDD scenarios passed." CONTRIBUTING.md tells contributors
+# to verify the hooks with this script, directly beneath the table listing all
+# four gates.
+#
+# Each case below writes FORMATTED source that violates exactly one gate, so a
+# block proves that gate ran rather than the fmt gate firing again.
+
+# clippy: `-D warnings` promotes the default-warn `unused_variables`.
+cat >"$CRATE/src/main.rs" <<'EOF'
+fn main() {
+    let unused_binding = 1;
+    println!("hi");
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+if run_hook ""; then
+	bad "clippy gate did NOT block a -D warnings violation (the gate is unreachable from this fixture)"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "clippy gate blocks a -D warnings violation"
+fi
+
+# rustdoc: a broken intra-doc link, which RUSTDOCFLAGS=-D warnings rejects and
+# neither clippy nor the test suite ever builds.
+cat >"$CRATE/src/main.rs" <<'EOF'
+/// See [`does::not::Exist`] for details.
+pub fn documented() {}
+
+fn main() {
+    documented();
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+if run_hook ""; then
+	bad "rustdoc gate did NOT block a broken intra-doc link"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "rustdoc gate blocks a broken intra-doc link"
+fi
+
+# fuzz: the hook runs `cd fuzz && cargo check`. With no fuzz/ directory that
+# step cannot fail, which is why it was never exercised. Give the fixture one
+# that does not compile.
+mkdir -p "$CRATE/fuzz/src"
+cat >"$CRATE/fuzz/Cargo.toml" <<'EOF'
+[package]
+name = "throwaway-fuzz"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+EOF
+cat >"$CRATE/fuzz/src/main.rs" <<'EOF'
+fn main() {
+    this_function_does_not_exist();
+}
+EOF
+cat >"$CRATE/src/main.rs" <<'EOF'
+fn main() {
+    println!("hi");
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+if run_hook ""; then
+	bad "fuzz gate did NOT block a fuzz/ workspace that fails cargo check"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "fuzz gate blocks a fuzz/ workspace that fails cargo check"
+fi
+rm -rf "$CRATE/fuzz"
 
 # -- Summary ------------------------------------------------------------------
 printf '\n--- test-pre-push summary: %d passed, %d failed ---\n' "$PASS" "$FAIL"
