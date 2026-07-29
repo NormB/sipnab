@@ -233,6 +233,22 @@ above in the same change.
 
 ## Releases
 
+**Tag a commit whose CI is green.** A tag is not a request to build — it
+publishes, immediately and irreversibly: eight artifacts, checksums, two SBOMs, a
+provenance attestation, a GHCR image and a Homebrew formula, from whatever that
+commit contains. The order is therefore: push the release commit, wait for CI,
+then tag the commit that passed.
+
+This is enforced, not merely advised. [`pre-push`](../../.githooks/pre-push)
+refuses a `v*` tag whose commit has a failed run, has runs still in flight, or
+has no runs at all. It skips with a warning when `gh` is unavailable rather than
+blocking — forcing `SKIP_FMT_HOOK=1` would switch off every other gate too, which
+turns one missing optional tool into running no checks at all.
+
+It exists because the manual version failed once already. The 0.5.61 release
+commit went red in `Features (tls)`, and the only thing between that and a
+published broken release was somebody happening to look.
+
 A release is a pushed `v*` tag. `release.yml` then runs a matrix of eight
 builds: `x86_64` and `aarch64` for `linux-gnu` (each also in a `noaudio`
 `.deb`-only variant), `x86_64` and `aarch64` `linux-musl`, and both macOS
@@ -279,7 +295,8 @@ sequenceDiagram
     participant Tap as homebrew-tap
     participant GHCR
 
-    Dev->>Rel: git push origin v0.5.x
+    Dev->>Dev: push the release commit, wait for CI green
+    Dev->>Rel: git push origin v0.5.x (pre-push re-checks CI)
     Rel->>Rel: build matrix (8 targets, bookworm for gnu)
     Rel->>Gate: readelf -V each gnu binary
     Gate-->>Rel: max GLIBC symbol <= 2.36 or fail
@@ -323,6 +340,18 @@ sipnab is pre-1.0, so the header states the versioning policy rather than
 claiming strict Semantic Versioning: the public API and CLI surface are not
 stable and a breaking change may land in any release. Say so in the entry that
 carries one.
+
+Work that has landed but not shipped goes under a `## [Unreleased]` heading,
+which cutting a release renames to `## [x.y.z] - <date>`. That heading is
+load-bearing rather than decorative: `no_changelog_entry_precedes_its_version_heading`
+requires every `###` section to sit under some `## [...]`, so entries added
+without one are orphans and fail. The gate accepts `Unreleased` precisely so
+work can accumulate between releases without doing that.
+
+It was written after the heading was destroyed by an edit whose anchor included
+it, leaving two sections under the file header. That survived a commit, a push
+and a full CI run, because the sibling gate searches for the heading naming the
+*current site version* — which was still present further down.
 
 Nothing gates the changelog's contents, which is deliberate — a gate on prose
 would be satisfied by prose. What *is* gated is the release date: it must match

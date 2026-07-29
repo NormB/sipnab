@@ -182,5 +182,91 @@ else
 fi
 fi
 
+# -- Hard gate: a v* tag must point at a commit whose CI is green -------------
+# `docs/internals/build-ci-release.md` used to open with "a release is a pushed
+# v* tag" and say nothing about checking first -- so the entire safeguard was
+# whoever happened to be tagging remembering to look. It mattered once already:
+# the 0.5.61 release commit went red in Features (tls), and only a manual check
+# stopped a broken build being published with SBOMs, provenance and a Homebrew
+# tap push attached to it.
+#
+# stdin is the only place a pre-push hook learns what is being pushed. git
+# always provides it; the loop simply finds nothing when a caller does not.
+tag_commits=""
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+	case "$remote_ref" in
+	refs/tags/v*) ;;
+	*) continue ;;
+	esac
+	# All-zero local sha means the tag is being DELETED -- nothing to verify.
+	case "$local_sha" in
+	0000000000000000000000000000000000000000) continue ;;
+	esac
+	# An annotated tag's sha is the tag object; resolve to the commit it marks.
+	commit=$(git rev-list -n 1 "$local_sha" 2>/dev/null || echo "")
+	if [ -n "$commit" ]; then
+		tag_commits="$tag_commits $commit"
+	fi
+done
+
+for commit in $tag_commits; do
+	short=$(printf '%s' "$commit" | cut -c1-7)
+	# Skip rather than block when gh is unusable. Blocking would force
+	# SKIP_FMT_HOOK=1, which switches off fmt, clippy, rustdoc, fuzz and the
+	# feature combinations too -- turning one missing optional tool into "run
+	# no checks at all". The gate works where it can and says so where it
+	# cannot.
+	if ! command -v gh >/dev/null 2>&1; then
+		printf '%b  tag %s: gh not installed -- CI status NOT verified%b\n' \
+			"$YELLOW" "$short" "$NC"
+		continue
+	fi
+	printf '  tag -> %s: checking CI ... ' "$short"
+	# Scoped by commit, NOT by recency. `--limit 30` was a window over the most
+	# recent runs, so an older commit fell out of it and the gate reported "no
+	# CI runs found" for one that had plenty -- the right verdict reached
+	# through a claim it had not checked, which is the defect this repository
+	# keeps finding. Note the FULL sha: `--commit` silently returns nothing for
+	# an abbreviated one.
+	runs=$(gh run list --commit "$commit" --limit 50 \
+		--json headSha,status,conclusion,name 2>/dev/null || echo "")
+	if [ -z "$runs" ]; then
+		printf '%bSKIPPED (gh unavailable or unauthenticated)%b\n' "$YELLOW" "$NC"
+		continue
+	fi
+	# The headSha filter is redundant with --commit and kept deliberately: if a
+	# future gh ignores the flag, this still refuses to judge one commit by
+	# another commit's runs.
+	mine=$(printf '%s' "$runs" | jq -r --arg c "$commit" \
+		'[.[] | select(.headSha == $c)] | .[] | "\(.status)/\(.conclusion // "-")/\(.name)"' 2>/dev/null || echo "")
+	if [ -z "$mine" ]; then
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '\n'
+		printf '%bPush blocked: no CI runs found for %s.%b\n' "$RED" "$short" "$NC"
+		printf 'Push the commit and let CI run before tagging it. A tag starts a\n'
+		printf 'release that publishes artifacts, SBOMs, provenance and a Homebrew\n'
+		printf 'formula -- from whatever that commit contains.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
+	unfinished=$(printf '%s\n' "$mine" | grep -cv '^completed/' || true)
+	failed=$(printf '%s\n' "$mine" | grep -c '^completed/[^s]' || true)
+	if [ "$unfinished" -ne 0 ] || [ "$failed" -ne 0 ]; then
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '\n'
+		printf '%bPush blocked: CI on %s is not green.%b\n' "$RED" "$short" "$NC"
+		printf '%s\n' "$mine" | sed 's/^/    /'
+		printf '\n'
+		printf 'Wait for it to finish, or fix it, then tag the commit that passed.\n'
+		printf 'Tagging a red commit publishes a broken release -- it happened on\n'
+		printf 'the 0.5.61 release commit, which failed Features (tls).\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
+	printf '%bOK%b\n' "$GREEN" "$NC"
+done
+
 printf '%bAll required pre-push checks passed.%b\n' "$GREEN" "$NC"
 exit 0

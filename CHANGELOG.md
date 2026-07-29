@@ -8,6 +8,30 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+- **`pre-push` refuses a `v*` tag whose commit's CI is not green.** A tag is not
+  a request to build — it publishes eight artifacts, checksums, two SBOMs, a
+  provenance attestation, a GHCR image and a Homebrew formula, from whatever
+  that commit contains. Until now the only safeguard was whoever was tagging
+  remembering to look, and that failed once already: the 0.5.61 release commit
+  went red in `Features (tls)`. The gate blocks a failed run, runs still in
+  flight, and a commit with no runs at all; it skips with a warning when `gh` is
+  unavailable, because forcing `SKIP_FMT_HOOK=1` would switch off every other
+  gate too. Six scenarios cover it against a stubbed `gh`, and it was verified
+  against the real repository in both directions — the red 0.5.61 commit is
+  blocked, the green 0.5.62 one passes.
+
+### Changed
+- **The release runbook documents the order.** It opened with "a release is a
+  pushed `v*` tag" and its diagram started at the tag push, so a reader
+  following it literally would publish from an unverified commit.
+- **The `## [Unreleased]` convention is written down**, next to the gate that
+  depends on it: `no_changelog_entry_precedes_its_version_heading` accepts that
+  heading, which is what lets work accumulate between releases without
+  orphaning entries under no version at all.
+
 ## [0.5.62] - 2026-07-29
 
 ### Added
