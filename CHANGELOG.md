@@ -8,6 +8,68 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.57] - 2026-07-29
+
+### Fixed
+- **The installer never verified a checksum on macOS.** `verify_checksum` has
+  three branches — `sha256sum`, `shasum`, and a refusal when neither exists —
+  and every test ran under a PATH that always had the first, so two of the three
+  never executed. On a macOS-shaped PATH the function returned success for an
+  artifact whose recorded digest was all zeros: **a tampered download installed
+  silently**, on a platform with its own published tarballs. Each branch is now
+  exercised under a PATH exposing exactly one tool, and the no-tool case asserts
+  refusal — an installer that cannot verify must not install.
+
+- **The Homebrew formula could ship each URL with another architecture's
+  digest.** Its test grepped for each checksum anywhere in the document, which
+  says nothing about which URL carries it; all four pairs could be rotated and
+  the test passed, while every `brew install` aborted on a sha256 mismatch. The
+  URL and its digest are now compared as a pair.
+
+- **`.unwrap()`/`.expect()` were unbanned across ~10,800 production lines.** The
+  pre-commit scanner treated the first `#[cfg(test)]` in a file as entering test
+  code and never left, so a per-item attribute above a `use` exempted everything
+  below it — eleven files under `src/`, one latching at line 23 of 1659. The
+  exemption is now scoped to the item the attribute annotates. The clean tree
+  reports zero, so this was a gate that could not have found a violation rather
+  than one that found none.
+
+- **The container image could ship unattested.** The gate asserted `docker.yml`
+  contains `actions/attest-build-provenance@`, which stays true when the step is
+  commented out — and the workflow never verified the attestation it created,
+  while the download page tells users to run `gh attestation verify`. The gate
+  now reads live steps, and `docker.yml` verifies its own attestation the way
+  `release.yml` has since 0.5.49.
+
+- **A release could publish no tarball for a target while the gate stayed
+  green.** `installer_targets_match_release_matrix` compared the build matrix,
+  not the packaging step that actually produces a tarball; excluding a target
+  from packaging left every `install.sh` run for that platform 404ing.
+
+### Changed
+- **Dependencies:** `aes` 0.9.1 → 0.9.2, `clap_complete` 4.6.7 → 4.6.8,
+  `jsonschema` 0.49.1 → 0.49.2 (patch), with `THIRD-PARTY-NOTICES.md`
+  regenerated.
+
+- **Every code fence declares its language.** An unlabeled fence still gets a
+  copy button on every surface, but the one-command gate only reads fences whose
+  info string names a shell, so unlabeled shell blocks were invisible to it.
+  Output, transcripts and diagrams are labelled `text` deliberately — labelling
+  them `bash` would put an unrunnable block under a gate demanding it be one
+  command.
+
+### Internal
+- Coverage floors that sat far below the truth are now exact or near it: one
+  asserted a corpus of at least 40 links where 265 existed, so an extractor that
+  stopped matching most of its corpus still passed. Measured: narrowing it to
+  read one tree instead of thirteen drops it to 136 links — above the old floor.
+- `ci_success_gates_every_job` matched job ids against this repository's naming
+  style rather than the charset GitHub accepts, so a job named with an
+  underscore could fail on every push while the single required check reported
+  green.
+- Pre-commit gate 5 printed `OK` after comparing nothing: both of its greps
+  could return empty and the comparison loop iterate zero times.
+
 ## [0.5.56] - 2026-07-28
 
 ### Fixed
