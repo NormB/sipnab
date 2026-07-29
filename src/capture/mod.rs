@@ -42,7 +42,9 @@ pub mod writer;
 #[cfg(feature = "native")]
 mod native;
 #[cfg(feature = "native")]
-pub use native::{CaptureConfig, CaptureHandle, CaptureSource, start_capture, start_multi_capture};
+pub use native::{
+    CaptureConfig, CaptureHandle, CaptureSource, start_capture, start_multi_capture, stop_and_join,
+};
 
 use std::time::Duration;
 

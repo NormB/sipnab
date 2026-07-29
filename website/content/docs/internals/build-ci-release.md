@@ -99,13 +99,23 @@ passes), but two things make that grep mean something. `log_path` gives each
 process its own `tsan.<pid>`: the suites spawn the `sipnab` binary and consume
 its stderr, so before that, a report from a child reached the log only if some
 test happened to print the child's stderr into an assertion message — the first
-run's "0 races" meant "nothing was printed". And the verdict fails only on
-race-class findings, listing anything else as a warning, because sipnab exits
-several fail-fast paths through `std::process::exit`, which by design skips the
-join in `batch::run_loop`; an unjoined capture thread at exit is expected and is
-not a race. A missing `__tsan_init` in the built binary fails the job outright,
-since a build that quietly lost its instrumentation would otherwise report a
-clean run forever.
+run's "0 races" meant "nothing was printed". And the verdict names the finding
+it actually matched instead of calling everything a data race — an earlier draft
+would have reported a thread leak as one.
+
+`thread leak` is in the fatal set. It was briefly written off as expected, on
+the reasoning that sipnab exits fail-fast paths through `std::process::exit`,
+which joins nothing. That had it backwards: `bootstrap::launch` spawns the
+capture thread *before* the readiness hand-shake, the chroot and the privilege
+drop, so every failure from there on abandoned a thread still holding an open
+capture source — and `sipnab -I /nonexistent.pcap`, a mistyped filename, was
+enough to do it. Those paths now go through `capture::stop_and_join`, which sets
+the shutdown flag, drops the receiver and joins; the suites report zero leaks,
+and the fatal classification is what keeps it that way.
+
+A missing `__tsan_init` in the built binary fails the job outright, since a
+build that quietly lost its instrumentation would otherwise report a clean run
+forever.
 
 ### What actually gates a merge
 

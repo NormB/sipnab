@@ -41,7 +41,10 @@ const KNOWN_UNTESTED: &[&str] = &[
     "srtp-keys",        // SRTP decrypt — needs an SRTP pcap + key material
     "pcap-export-mode", // encrypted-traffic export mode — pairs with the above
     // ── Root / system services (cannot run in the sandbox) ──────────────────
-    "chroot", // requires root to chroot()
+    // `chroot` was here for needing root to succeed. Its FAILURE path needs no
+    // root at all, and that is the path worth testing: it is one of the fatal
+    // exits that used to abandon the running capture thread. See
+    // cli_flag_behavior_test::startup_failures_after_the_capture_thread_starts_exit_cleanly.
     "syslog", // requires a syslog daemon to observe alerts
     // ── Need crafted fixtures / hard-to-trigger events ──────────────────────
     "telephone-event", // DTMF RTP display — needs a DTMF pcap + RTP-output check

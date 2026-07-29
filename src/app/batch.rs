@@ -316,11 +316,20 @@ pub fn run(
         return;
     }
 
-    BatchRunner::new(cli, config, batch, policy, raw_kill_sock).run_loop(
-        capture_config,
-        handle,
-        rx,
-    );
+    let runner = match BatchRunner::new(cli, config, batch, policy, raw_kill_sock) {
+        Ok(runner) => runner,
+        Err(fatal) => {
+            // `handle`'s thread has been running since bootstrap::launch, and
+            // it owns the capture source. Exiting straight from here abandons
+            // it mid-read — which is what ThreadSanitizer reported as a thread
+            // leak on the --api-tls-cert fail-fast path. Stop it and reap it
+            // first; this is the only scope that holds both the handle and the
+            // receiver, which is why the error had to travel here to be
+            // handled.
+            fatal.exit_after(|| capture::stop_and_join(handle, rx));
+        }
+    };
+    runner.run_loop(capture_config, handle, rx);
 }
 
 /// All owned batch-mode state: writer, detector engines, decryption state,
@@ -396,16 +405,27 @@ impl BatchRunner {
     /// is active; reads TLS keylog / RSA key / SRTP key / DTLS keylog files
     /// and embedded pcapng secrets from disk; starts the companion REST
     /// API + MCP servers on their shared runtime thread; logs progress via
-    /// `tracing`. Exits the process on an unloadable `--tls-key`,
-    /// `--srtp-keys`, or `--dtls-keylog` file (code 1) and on companion
-    /// server configuration errors (code 2).
+    /// `tracing`.
+    ///
+    /// # Errors
+    ///
+    /// An unloadable `--tls-key`, `--srtp-keys` or `--dtls-keylog` file (exit
+    /// code 1), or a companion-server configuration error (exit code 2).
+    ///
+    /// These used to call `std::process::exit` here. They cannot: the capture
+    /// thread is already running by this point — `bootstrap::launch` spawned it
+    /// before batch mode was entered — and this function does not own its
+    /// handle, so exiting from here abandons a thread that still holds an open
+    /// capture source. ThreadSanitizer reported exactly that as a thread leak
+    /// on the `--api-tls-cert` fail-fast path. Returning lets `run` stop the
+    /// capture thread first, which is the only place that can.
     fn new(
         cli: Cli,
         config: &Config,
         batch: BatchProcessing,
         policy: CapturePolicy,
         raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
-    ) -> Self {
+    ) -> Result<Self, crate::app::bootstrap::PlanError> {
         let matcher = batch.matcher;
         let filter_expr = batch.filter_expr;
         let output_opts = batch.output_opts;
@@ -613,8 +633,10 @@ impl BatchRunner {
                                     );
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to load --tls-key {keyfile}: {e}");
-                                    std::process::exit(1);
+                                    return Err(crate::app::bootstrap::PlanError {
+                                        exit_code: 1,
+                                        message: format!("Failed to load --tls-key {keyfile}: {e}"),
+                                    });
                                 }
                             }
                         }
@@ -672,8 +694,10 @@ impl BatchRunner {
                         Some(ctx)
                     }
                     Err(e) => {
-                        tracing::error!("Failed to load --srtp-keys {keyfile}: {e}");
-                        std::process::exit(1);
+                        return Err(crate::app::bootstrap::PlanError {
+                            exit_code: 1,
+                            message: format!("Failed to load --srtp-keys {keyfile}: {e}"),
+                        });
                     }
                 }
             } else {
@@ -703,8 +727,10 @@ impl BatchRunner {
                         Some(ex)
                     }
                     Err(e) => {
-                        tracing::error!("Failed to load --dtls-keylog {keylog}: {e}");
-                        std::process::exit(1);
+                        return Err(crate::app::bootstrap::PlanError {
+                            exit_code: 1,
+                            message: format!("Failed to load --dtls-keylog {keylog}: {e}"),
+                        });
                     }
                 }
             } else {
@@ -725,12 +751,12 @@ impl BatchRunner {
                 mcp: true,
             },
         )
-        .unwrap_or_else(|e| {
-            tracing::error!("{e}");
-            std::process::exit(2);
-        });
+        .map_err(|e| crate::app::bootstrap::PlanError {
+            exit_code: 2,
+            message: e.to_string(),
+        })?;
 
-        Self {
+        Ok(Self {
             cli,
             config: config.clone(),
             matcher,
@@ -756,7 +782,7 @@ impl BatchRunner {
             dtls_extractor,
             servers,
             policy,
-        }
+        })
     }
 
     /// The main receive loop (step 18) plus end-of-capture reporting and the

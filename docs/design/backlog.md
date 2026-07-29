@@ -504,8 +504,22 @@ That is why a name-based TSan suppression was never an option — there is no
 allocator frame to match. `src/main.rs` now drops mimalloc under
 `--cfg sipnab_tsan`, set by the job; the shipped binary is unchanged.
 
-Three further defects fell out of this, all fixed:
+Four further defects fell out of this, all fixed:
 
+- **Every fatal startup path after the capture thread spawned abandoned it.**
+  Once the allocator noise was gone, one real finding was left underneath it: a
+  thread leak. `bootstrap::launch` spawns the capture thread *before* the
+  readiness hand-shake, the chroot and the privilege drop, and all nineteen
+  fatal exits from there on called `std::process::exit`, which joins nothing —
+  so the process died with a capture thread still holding an open source.
+  `BatchRunner::new` had four more of the same, and could not fix them locally
+  because it does not own the handle; it now returns `PlanError` and `run`
+  cleans up. `sipnab -I /nonexistent.pcap` — a mistyped filename — was enough to
+  produce a leak. All twenty-three paths now go through
+  `capture::stop_and_join`, verified by mutation: removing it brings the leaks
+  straight back. `thread leak` is now in the job's fatal set rather than
+  tolerated, and `cli_flag_behavior_test` (one of the five suites the job runs)
+  exercises both shapes so a regression fails there.
 - **`tests/support/server.rs` named a timeout it never waited out.** When the
   spawned server died, stderr closed, and the `Disconnected` arm broke out of
   the wait loop to a panic that reported the whole budget — "did not report a
@@ -519,8 +533,11 @@ Three further defects fell out of this, all fixed:
   process its own file and the verdict reads all of them.
 - **The verdict announced a finding type it had not matched.** It failed on any
   `WARNING: ThreadSanitizer` and called it "a data race", which would have
-  labelled a thread leak a race. It now classifies, and a missing
-  `__tsan_init` fails the job rather than passing as a clean run.
+  labelled the thread leak above a race. It now names what it matched, and a
+  missing `__tsan_init` fails the job rather than passing as a clean run.
+
+All five suites now run clean under ThreadSanitizer: 58 tests, zero races, zero
+leaked threads, no TSan log file written by any process.
 
 The original report, kept because it is the shape this class of false positive
 takes — on `api_test`, inside the `sipnab` binary itself (one process, not the

@@ -148,24 +148,30 @@ jobs:
           # This is the same "reporting success you did not observe" shape the
           # rest of this repository's gates were audited for.
           #
-          # Classify rather than lump. An earlier draft failed on any
-          # `WARNING: ThreadSanitizer` and announced "a data race" — which would
-          # have called a thread leak a race. sipnab exits several fail-fast
-          # paths through std::process::exit, which by design skips the join in
-          # batch::run_loop, so an unjoined capture thread at exit is expected
-          # and is not what this job is looking for.
+          # Classify rather than lump: an earlier draft failed on any
+          # `WARNING: ThreadSanitizer` while announcing "a data race", which
+          # would have named the wrong finding for anything that is not one.
+          #
+          # `thread leak` is fatal, not tolerated. It was briefly written off
+          # here as expected — sipnab exits fail-fast paths through
+          # std::process::exit, which joins nothing — but that reasoning had it
+          # backwards: those paths spawn the capture thread first, so exiting
+          # abandoned a thread still holding an open capture source, and
+          # `sipnab -I /nonexistent.pcap` was enough to do it. They now go
+          # through capture::stop_and_join, the suites report zero leaks, and
+          # this line is what keeps it that way.
           LOGS="tsan.log $(ls "${{ github.workspace }}"/tsan-logs/tsan.* 2>/dev/null || true)"
-          FATAL='data race|heap-use-after-free|lock-order-inversion|signal-unsafe call|unlock of an unlocked mutex|destroy of a locked mutex'
+          FATAL='data race|thread leak|heap-use-after-free|lock-order-inversion|signal-unsafe call|unlock of an unlocked mutex|destroy of a locked mutex'
           if grep -hoE "WARNING: ThreadSanitizer: ($FATAL)" $LOGS | sort -u | grep .; then
             echo "::error::ThreadSanitizer reported the findings listed above — see the uploaded logs"
             exit 1
           fi
-          # Surface the rest without failing, and without claiming a type that
-          # was never matched.
+          # Surface anything else without failing, and without claiming a type
+          # that was never matched.
           grep -hoE 'WARNING: ThreadSanitizer: [a-z -]+' $LOGS | sort -u | while read -r w; do
-            echo "::warning::$w (not a race; not failing the job)"
+            echo "::warning::$w (not in the fatal set; not failing the job)"
           done
-          echo "no race-class findings reported"
+          echo "no races and no leaked threads reported"
 
           # The suites' own verdict, reported after the sanitizer's so a red
           # suite never hides a race.

@@ -126,6 +126,40 @@ pub struct CaptureHandle {
     pub source: CaptureSource,
 }
 
+/// Stop the capture thread and wait for it, for startup paths that fail after
+/// the thread is already running.
+///
+/// # Arguments
+///
+/// * `handle` — the capture thread's join handle.
+/// * `rx` — the packet receiver, dropped so the thread observes a disconnected
+///   channel.
+///
+/// # Side effects
+///
+/// Sets the global shutdown flag and blocks until the capture thread returns.
+///
+/// Every fatal exit between [`start_capture`] and the end of the receive loop
+/// has to come through here. `std::process::exit` runs no destructors and joins
+/// no threads, so exiting directly abandons a thread that still holds an open
+/// capture source — ThreadSanitizer reports it as a thread leak, and
+/// `sipnab -I /nonexistent.pcap` was enough to produce one.
+///
+/// Both stop signals are used deliberately: dropping `rx` ends a thread blocked
+/// on a send, and the shutdown flag ends one blocked elsewhere in its loop — a
+/// live capture waiting out its read timeout reaches the flag check first. The
+/// join is unbounded, matching the one the batch receive loop already performs
+/// at end of capture.
+pub fn stop_and_join(handle: CaptureHandle, rx: super::channel::PacketRx) {
+    crate::signals::request_shutdown();
+    drop(rx);
+    match handle.thread.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!("Capture thread error during shutdown: {e}"),
+        Err(_) => tracing::error!("Capture thread panicked during shutdown"),
+    }
+}
+
 /// Start a capture from the given source, sending packets into `tx`.
 ///
 /// Spawns a dedicated thread for the capture loop and returns a
