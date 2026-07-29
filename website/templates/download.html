@@ -2,11 +2,11 @@
 
 {% block title %}Download -- {{ config.title }}{% endblock title %}
 {% block og_title %}Download sipnab{% endblock og_title %}
-{% block description %}Install sipnab {{ config.extra.version }} -- Homebrew for macOS, .deb for Debian/Ubuntu, .rpm for RHEL/Fedora, static binaries for Linux. Intel and ARM64.{% endblock description %}
-{% block og_description %}Install sipnab {{ config.extra.version }} -- one-line installer, Homebrew, .deb, .rpm, or static binaries. Intel and ARM64.{% endblock og_description %}
+{% block description %}Install sipnab {{ config.extra.published_version }} -- Homebrew for macOS, .deb for Debian/Ubuntu, .rpm for RHEL/Fedora, static binaries for Linux. Intel and ARM64.{% endblock description %}
+{% block og_description %}Install sipnab {{ config.extra.published_version }} -- one-line installer, Homebrew, .deb, .rpm, or static binaries. Intel and ARM64.{% endblock og_description %}
 
 {% block content %}
-{% set v = config.extra.version %}
+{% set v = config.extra.published_version %}
 {% set rel = config.extra.github_url ~ "/releases/download/v" ~ v %}
 <div class="doc-layout dl-layout">
   <aside class="doc-sidebar" aria-label="Download page navigation">
@@ -271,7 +271,14 @@
           <button type="button" class="dl-copy" data-copy="curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256&#10;sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256" aria-label="Copy fetch-and-verify commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
-      <p class="dl-note">Swap the target triple from the <a href="#all-files">table below</a>. Latest-version discovery without scraping HTML: <code>curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest | jq -r .tag_name</code></p>
+      <p class="dl-note">Swap the target triple from the <a href="#all-files">table below</a>. To discover the latest version without scraping HTML:</p>
+      <div class="dl-term">
+        <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">latest release tag</span></div>
+        <div class="dl-term-body">
+          <code><span class="dl-prompt">$</span>curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest | jq -r .tag_name</code>
+          <button type="button" class="dl-copy" data-copy="curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest | jq -r .tag_name" aria-label="Copy latest-version command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        </div>
+      </div>
     </div>
   </section>
 

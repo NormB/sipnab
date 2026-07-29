@@ -9,7 +9,7 @@
 <section class="hero">
   <div class="hero-bg" aria-hidden="true"></div>
   <div class="hero-inner">
-    <h1 class="hero-title">sipnab <span class="version-badge" aria-hidden="true">v{{ config.extra.version }}</span></h1>
+    <h1 class="hero-title">sipnab <span class="version-badge" aria-hidden="true">v{{ config.extra.published_version }}</span></h1>
     <p class="hero-tagline">The <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">SIP</a> &amp; <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RTP</a> analysis tool for people who ship voice infrastructure.</p>
     <p class="hero-sub">One static binary, one dependency &mdash; reads live traffic or a pcap and shows you the call flow, RTP quality, and security signals.</p>
     <div class="hero-actions">
@@ -164,7 +164,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td>REST API + Prometheus</td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
           <tr><td>MCP server</td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. Eleven read-only tools cover dialogs, RTP, diagnostics, and security findings.</td></tr>
           <tr><td>Browser analysis</td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td>Built in Rust</td><td>Memory-safe by construction. 3072 automated tests. Under 10 MB static binary.</td></tr>
+          <tr><td>Built in Rust</td><td>Memory-safe by construction. 3073 automated tests. Under 10 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -235,7 +235,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label"><a href="{{ get_url(path='@/docs/benchmarks.md') }}">Offline reconstruction, four cores (measured v0.5.47)</a></span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="3072" data-suffix="">3072</span>
+        <span class="arch-stat" data-count="3073" data-suffix="">3073</span>
         <span class="arch-label"><a href="{{ config.extra.github_url }}/actions/workflows/ci.yml">Automated tests</a></span>
       </div>
     </div>

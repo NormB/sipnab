@@ -8,6 +8,26 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+- **Every download link on `/download` 404ed between a release commit and its
+  tag.** The page built its URLs from `config.extra.version`, which the Pages
+  step overwrites from `Cargo.toml` on every build — so the moment a release
+  *commit* landed on main, the site advertised assets for a tag nobody had
+  pushed yet. The file tiles, the sha256 column and `SHA256SUMS.txt` all pointed
+  at a release that did not exist. The window is the whole commit → CI → tag →
+  release-build cycle, and on 0.5.61 it was far longer: that release commit went
+  red and was never tagged. `website/config.toml` now carries
+  `published_version` — the last version that exists as a release — and every
+  download link and version badge is built from it.
+  `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
+  so advertising something unreleased fails the suite rather than the visitor.
+- **The latest-version `curl` on `/download` rendered as prose.** It sat inline
+  in a paragraph rather than in a terminal block like the fetch-and-verify
+  command directly above it, so it could not be copied cleanly. It now has the
+  same block treatment and a copy button.
+
 ## [0.5.63] - 2026-07-29
 
 ### Added
