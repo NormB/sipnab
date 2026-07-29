@@ -8,7 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+### Added
+- **Metrics-only token scope for the REST API.** `s2` tokens carry an optional
+  `scope` claim alongside `aud`; `--token-scope metrics` mints a credential that
+  reaches `GET /metrics` and returns `401` everywhere else. This is a
+  TLS-decrypting capture tool, so `/v1/dialogs` and `/v1/streams` return message
+  bodies — the call content — and until now a monitoring system that needed one
+  counter had to be trusted with all of it. `full` is the default and satisfies
+  every requirement, an absent claim means `full`, and static `--api-key`
+  secrets remain `full`, so no existing token or deployment is narrowed. The
+  claim is signed and cannot be widened by editing the payload. Routes default
+  to demanding `full`, which is the restrictive direction — a route added later
+  inherits "full tokens only" rather than quietly accepting a scrape-only
+  credential.
 
 ### Changed
 - **BREAKING (log format): the fail2ban `method=` field is now quoted too, and

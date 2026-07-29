@@ -368,22 +368,19 @@ Tiers:
 - [ ] Distributed capture cluster management.
 - [ ] Interactive pcap annotation and sharing.
 - [ ] YANG/NETCONF machine-readable diagnosis export.
-- [ ] **Metrics-only token scope for the REST API** — the one scope split with
-  real least-privilege value, deferred from the 2026-07-25 audience-binding
-  work. Today a bearer credential is all-or-nothing: any valid token can read
-  `/v1/dialogs`, `/v1/streams` and their full message bodies, which for a
-  TLS-decrypting capture tool means the call content itself. A monitoring
-  system that only needs `GET /metrics` must therefore be trusted with
-  everything. Adding a `scope` claim alongside `aud` (see `src/auth.rs`, the
-  `s2` payload) with values `full` and `metrics`, defaulting to `full` for
-  compatibility, would let an operator mint a scrape-only token.
-  **Not urgent:** the standalone `--metrics <ADDR>` server already solves this
-  case with its own HTTP Basic auth and its own bind, so the gap only bites
-  someone who deliberately wants Prometheus pointed at the REST API port
-  instead. Broader read/write scoping was considered and rejected — all eight
-  REST routes are `GET`, so there is no mutating operation for a scope to
-  protect.
-
+- [x] **Metrics-only token scope for the REST API** — **Done.** `s2` tokens
+  carry an optional `scope` claim (`full` / `metrics`) alongside `aud`;
+  `--token-scope metrics` mints a credential that reaches `GET /metrics` and
+  returns `401` everywhere else. `full` is the default and satisfies every
+  requirement, and an absent claim means `full`, so no existing token or
+  deployment was narrowed — the opposite of `aud`, which fails closed when
+  missing, because pre-scope tokens are live in the field. The claim is signed,
+  so it cannot be widened by editing the payload. Routes default to requiring
+  `full`, which is the restrictive direction: a route added later and wired to
+  the plain `guard` admits only full tokens rather than silently accepting a
+  scrape-only one. Verified end to end against the real server, not just the
+  verifier — a route wired to the wrong guard passes every unit test and still
+  hands a scrape job the call content.
 - [ ] **SIP problem diagnosis** — automated detection and explanation of SIP
   signaling problems (the signaling-side complement to the existing RTP/NAT
   `rtp/diagnosis.rs`). Candidate detections: failed/abandoned calls and their
@@ -427,15 +424,14 @@ Tiers:
   this host). Open one page in a real browser to close this out. Low risk
   either way: every diagram has a prose line above it carrying the same point,
   so the pages degrade to correct rather than to broken.
-- [ ] **glibc floor: installer runtime value** — `release.yml` enforces a 2.36
-  floor (bookworm container + `readelf -V` gate) but
-  `website/static/install.sh` still selects musl below
-  `SIPNAB_GLIBC_FLOOR="2.39"`. Lowering it to 2.36 would serve the gnu build
-  to glibc 2.36–2.38 users (Debian 12). Behavior change — confirm before
-  editing. `website/config.toml` carries the same 2.39 value with a comment
-  saying it drops to 2.36 "with the first bookworm-built release", which has
-  now shipped; both move together or neither does. `docs/install.md` states
-  the enforced 2.36 floor and notes the installer's stricter choice.
+- [x] **glibc floor: installer runtime value** — **Already done; this entry was
+  stale.** `website/static/install.sh` and `website/config.toml` both carry
+  `2.36`, matching the floor `release.yml` enforces, and
+  `published_glibc_floor_matches_release_gate` in `site_journey_test.rs` now
+  compares the published value against the release gate so they cannot drift
+  again. The entry survived describing a 2.39 that no longer existed, which is
+  worth noting on its own: a backlog is a document, and documents drift the same
+  way the gates in this repository did. Re-read the code before trusting one.
 
 ## Shipped (audit-period features, kept for context)
 

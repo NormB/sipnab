@@ -42,6 +42,7 @@ fn valid_signed_token_initialize_succeeds() {
         "id",
         now() + 3600,
         sipnab::auth::AUDIENCE_MCP,
+        sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
         initialize_status(&addr, Some(&token)),
@@ -63,6 +64,7 @@ fn expired_signed_token_is_rejected() {
         "id",
         now() - 1,
         sipnab::auth::AUDIENCE_MCP,
+        sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
         initialize_status(&addr, Some(&token)),
@@ -82,6 +84,7 @@ fn forged_wrong_key_token_is_rejected() {
         "id",
         now() + 3600,
         sipnab::auth::AUDIENCE_MCP,
+        sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
         initialize_status(&addr, Some(&token)),
@@ -111,6 +114,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
         "revoked-mcp-jti",
         now() + 3600,
         sipnab::auth::AUDIENCE_MCP,
+        sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
         initialize_status(&addr, Some(&revoked)),
@@ -123,6 +127,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
         "fresh-mcp-jti",
         now() + 3600,
         sipnab::auth::AUDIENCE_MCP,
+        sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
         initialize_status(&addr, Some(&fresh)),
@@ -143,12 +148,14 @@ fn rotation_accepts_tokens_from_either_key() {
         "id1",
         now() + 3600,
         sipnab::auth::AUDIENCE_MCP,
+        sipnab::auth::SCOPE_FULL,
     );
     let t2 = sipnab::auth::mint(
         key2.as_bytes(),
         "id2",
         now() + 3600,
         sipnab::auth::AUDIENCE_MCP,
+        sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(initialize_status(&addr, Some(&t1)), 200, "key1 token");
     assert_eq!(initialize_status(&addr, Some(&t2)), 200, "key2 token");
@@ -205,7 +212,7 @@ fn mint_token_cli_mode_produces_verifiable_token() {
         ..Default::default()
     });
     assert!(
-        verifier.verify(&token, now()),
+        verifier.verify(&token, now(), sipnab::auth::SCOPE_FULL),
         "CLI-minted token should verify under same key"
     );
 }
@@ -291,6 +298,7 @@ fn mcp_allowed_host_controls_host_header() {
         "host-test",
         now() + 3600,
         sipnab::auth::AUDIENCE_MCP,
+        sipnab::auth::SCOPE_FULL,
     );
 
     // The configured Host is accepted (and auth passes) → 200.
