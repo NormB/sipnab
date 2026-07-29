@@ -1328,7 +1328,7 @@ fn docs_to_site_map_is_complete() {
             .expect("file name")
             .to_string_lossy()
             .into_owned();
-        if mapped.iter().any(|m| *m == name) || name == "_index.md" {
+        if mapped.contains(&name) || name == "_index.md" {
             continue;
         }
         if docs_dir.join(&name).is_file() {
