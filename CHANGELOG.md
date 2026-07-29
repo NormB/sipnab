@@ -11,6 +11,16 @@ entry that carries them.
 ## [0.5.59] - 2026-07-29
 
 ### Added
+- **`no_changelog_entry_precedes_its_version_heading`** — a gate for a blind
+  spot in this file's own guard. `site_release_date_matches_changelog` searches
+  for the heading naming the current site version and asserts its date, which
+  says nothing about the entries: a `### Added` block belonging to no `## [x.y.z]`
+  at all satisfies it, because the heading it looks for is still further down.
+  That happened here — an edit replaced the `## [Unreleased]` heading along with
+  the text it anchored on, orphaning two sections under the file header, and it
+  survived a commit, a push and a full CI run with the changelog's own gate
+  green throughout.
+
 - **Metrics-only token scope for the REST API.** `s2` tokens carry an optional
   `scope` claim alongside `aud`; `--token-scope metrics` mints a credential that
   reaches `GET /metrics` and returns `401` everywhere else. This is a

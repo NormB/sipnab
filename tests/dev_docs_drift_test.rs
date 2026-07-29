@@ -318,8 +318,8 @@ fn linked_code_targets_exist() {
     // stopped matching 200 of them would still have passed. Bump when the
     // corpus grows; never lower it to make a build pass.
     assert_eq!(
-        seen, 265,
-        "code-link extraction found {seen} links, expected 265. More links is \
+        seen, 269,
+        "code-link extraction found {seen} links, expected 269. More links is \
          fine — bump this. FEWER means the extractor stopped matching, and \
          every assertion below it silently narrowed."
     );
@@ -411,8 +411,8 @@ fn linked_symbols_resolve_to_a_definition() {
         }
     }
     assert_eq!(
-        seen, 49,
-        "symbol extraction found {seen} claims, expected 49. Bump when the \
+        seen, 50,
+        "symbol extraction found {seen} claims, expected 50. Bump when the \
          developer docs cite more symbols; a drop means the `()`-suffix pattern \
          stopped matching and unresolvable symbols pass unseen."
     );
