@@ -75,8 +75,13 @@ pub struct ScannerAlert {
     /// a scanner signal, and collapsing it into `""` made it indistinguishable
     /// from a header present but empty — which an attacker can send.
     pub ua: Option<String>,
-    /// SIP method of the triggering message.
-    pub method: String,
+    /// SIP method of the triggering message, or `None` when the request line
+    /// carried none.
+    ///
+    /// `Option` for the same reason as [`ua`](Self::ua): the placeholder it
+    /// replaced, `"UNKNOWN"`, is a value `SipMethod::Custom` can legitimately
+    /// hold, so absence and a peculiar method read identically.
+    pub method: Option<String>,
     /// How the scanner was detected: `"ua_pattern"`, `"behavioral"` (rate), or
     /// `"enumeration"` (many distinct targets from one source).
     pub detection_method: String,
@@ -142,8 +147,11 @@ impl ScannerDetector {
     /// probing threshold.
     #[must_use]
     pub fn check(&mut self, msg: &SipMessage) -> Option<ScannerAlert> {
+        // `None` when the request line carried no recognisable method. It used
+        // to substitute the literal "UNKNOWN", which is a value a `Custom`
+        // method can also hold — the same collision the `ua` field had.
         let method = if msg.is_request {
-            msg.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN")
+            msg.method.as_ref().map(|m| m.as_str())
         } else {
             return None; // Only check requests
         };
@@ -161,7 +169,7 @@ impl ScannerDetector {
                     return Some(ScannerAlert {
                         src_ip: msg.src_addr,
                         ua: Some(ua.clone()),
-                        method: method.to_string(),
+                        method: method.map(str::to_string),
                         detection_method: "ua_pattern".to_string(),
                     });
                 }
@@ -169,7 +177,7 @@ impl ScannerDetector {
         }
 
         // Behavioral analysis: track REGISTER/OPTIONS/INVITE rates
-        if matches!(method, "REGISTER" | "OPTIONS" | "INVITE") {
+        if matches!(method, Some("REGISTER" | "OPTIONS" | "INVITE")) {
             let now = Instant::now();
 
             // Cap the behavioral map to prevent memory exhaustion (H4)
@@ -209,9 +217,9 @@ impl ScannerDetector {
             }
 
             match method {
-                "REGISTER" => state.register_count += 1,
-                "OPTIONS" => state.options_count += 1,
-                "INVITE" => state.invite_count += 1,
+                Some("REGISTER") => state.register_count += 1,
+                Some("OPTIONS") => state.options_count += 1,
+                Some("INVITE") => state.invite_count += 1,
                 _ => {}
             }
             // Track distinct probed extensions (To user, falling back to R-URI).
@@ -232,7 +240,7 @@ impl ScannerDetector {
                 return Some(ScannerAlert {
                     src_ip: msg.src_addr,
                     ua,
-                    method: method.to_string(),
+                    method: method.map(str::to_string),
                     detection_method: "enumeration".to_string(),
                 });
             }
@@ -244,7 +252,7 @@ impl ScannerDetector {
                 return Some(ScannerAlert {
                     src_ip: msg.src_addr,
                     ua,
-                    method: method.to_string(),
+                    method: method.map(str::to_string),
                     detection_method: "behavioral".to_string(),
                 });
             }

@@ -8,6 +8,22 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+- **BREAKING (log format): the fail2ban `method=` field is now quoted too, and
+  `-` means absent.** 0.5.58 routed the `ua=` field through a single
+  absent-marker renderer and left `method=` behind — where the same defect was
+  live twice over: an absent method rendered as `UNKNOWN` on the scanner path
+  and `-` on the kill-target path, so two lines describing identical input
+  disagreed about what absence looks like. `SipMethod::Custom` can hold either
+  spelling, since it keeps whatever token preceded the first space on the
+  request line, so neither was safe as a marker. Both fields now go through
+  `render_absent`, which makes the "one place decides" claim on that function
+  true rather than aspirational. `src=` stays unquoted: it is a parsed IP
+  address, not text from the wire. The documented `failregex` anchors on
+  `src=<HOST>` and is unaffected.
+
 ## [0.5.58] - 2026-07-29
 
 ### Fixed
