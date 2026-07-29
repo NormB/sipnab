@@ -747,6 +747,57 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
     );
 }
 
+/// The site only advertises a version that exists as a published release.
+///
+/// Every download link on /download is built from `published_version`, so if
+/// that names a version with no release behind it, every link 404s — the file
+/// tiles, the checksum column, `SHA256SUMS.txt`, all of it.
+///
+/// That was live. `download.html` used `config.extra.version`, which the Pages
+/// step overwrites from `Cargo.toml` on every build, so the moment a release
+/// COMMIT landed on main the site advertised assets for a tag nobody had pushed
+/// yet. The window is the whole commit → CI → tag → release-build cycle, and on
+/// 0.5.61 it ran far longer: that release commit went red and was never tagged.
+///
+/// A local tag is the check because it is the same thing `release.yml` triggers
+/// on — no network, and it cannot pass by being unable to look.
+#[test]
+fn site_advertises_only_a_released_version() {
+    let cfg = read("website/config.toml");
+    let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
+        .unwrap()
+        .captures(&cfg)
+        .expect("website/config.toml has no published_version")[1]
+        .to_string();
+
+    let out = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(repo())
+        .output()
+        .expect("git tag --list");
+    let tags: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+
+    // A clone with no tags cannot answer the question. Say so rather than pass.
+    assert!(
+        tags.len() >= 5,
+        "only {} git tags visible — this checkout cannot tell whether \
+         published_version is real (a shallow clone fetches no tags); the gate \
+         is not reporting a safety it can provide",
+        tags.len()
+    );
+
+    let wanted = format!("v{published}");
+    assert!(
+        tags.contains(&wanted),
+        "website/config.toml advertises published_version {published}, but no \
+         `{wanted}` tag exists — every download link on /download would 404. \
+         Bump published_version only AFTER the release publishes."
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Published-claim gates.
 //

@@ -61,7 +61,7 @@
     "applicationCategory": "DeveloperApplication",
     "applicationSubCategory": "SecurityApplication",
     "operatingSystem": "macOS, Linux",
-    "softwareVersion": {{ config.extra.version | json_encode | safe }},
+    "softwareVersion": {{ config.extra.published_version | json_encode | safe }},
     "downloadUrl": "{{ config.base_url }}/download/",
     "url": {{ config.base_url | json_encode | safe }},
     "description": {{ config.description | json_encode | safe }},
@@ -161,7 +161,7 @@
     <div class="footer-inner">
       <div class="footer-row">
         <span class="footer-logo">sipnab</span>
-        <span class="footer-version">v{{ config.extra.version }}</span>
+        <span class="footer-version">v{{ config.extra.published_version }}</span>
         <nav class="footer-links" aria-label="Footer">
           <a href="{{ get_url(path='@/download.md') }}">Download</a>
           <a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>

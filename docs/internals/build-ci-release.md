@@ -233,6 +233,21 @@ above in the same change.
 
 ## Releases
 
+**The site advertises the last PUBLISHED release, not the crate version.**
+`website/config.toml` carries both: `version`, which the Pages step overwrites
+from `Cargo.toml` on every build, and `published_version`, which every download
+link and version badge is built from. They are different facts, and conflating
+them broke the download page in production — the release *commit* bumped the
+crate version, Pages redeployed, and the whole of `/download` pointed at a tag
+nobody had pushed yet. Every link 404ed, including `SHA256SUMS.txt` and the
+checksum column. On 0.5.61 that window was not minutes: its release commit went
+red and was never tagged.
+
+So `published_version` is bumped **after** a release finishes publishing, as its
+own commit — never while cutting one.
+`site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag, so
+getting this wrong fails the suite instead of the visitor.
+
 **Tag a commit whose CI is green.** A tag is not a request to build — it
 publishes, immediately and irreversibly: eight artifacts, checksums, two SBOMs, a
 provenance attestation, a GHCR image and a Homebrew formula, from whatever that
