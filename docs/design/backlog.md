@@ -479,6 +479,46 @@ Tiers:
   file via `openat()` on an `O_DIRECTORY|O_NOFOLLOW` dirfd to remove the
   parent-component symlink / `exists()→create→chmod` TOCTOU window.
 
+## Open: ThreadSanitizer race in the file-capture path
+
+The `sanitizers.yml` job added on 2026-07-28 reported a data race on its second
+run, and it has not been diagnosed yet. **The job is red on `main` on purpose:
+it found something.** It is weekly and is not part of `ci-success`, so it does
+not block merges.
+
+What TSan reported, on `api_test`, inside the `sipnab` binary itself (one
+process, not the test harness):
+
+```
+WARNING: ThreadSanitizer: data race
+  Write of size 8 at 0x...098 by main thread:
+    #0 read
+    #1 <std::sys::fd::unix::FileDesc>::read_buf
+    #2 <std::sys::fs::unix::File>::read_buf
+  Previous write of size 4 at 0x...09c by thread T1:
+    #0 __tsan_memcpy
+    #1 core::ptr::copy_nonoverlapping::<u8>
+    #2 <alloc::vec::Vec<u8>>::append_elements_unreserved
+  Thread T1 created by:
+    #2 std::thread::...spawn_unchecked::<sipnab::capture::native::start_capture::{closure#1}, ...>
+```
+
+The two writes overlap: an 8-byte write at `…098` covers `098`–`09f`, and the
+4-byte write at `…09c` covers `09c`–`09f`. So bytes `09c`–`09f` are written by
+the main thread and by the capture thread spawned in
+[`start_capture`](../../src/capture/native.rs).
+
+Before treating it as confirmed, rule out the two ways this report could be
+wrong: memory reuse across threads that TSan cannot see a happens-before edge
+for (an allocator recycling a buffer), and synchronisation TSan does not model.
+Neither has been checked. What is NOT in doubt is that the two accesses are in
+the same process and one of them is on the capture thread.
+
+The first run of this job failed on timeouts instead, which is why
+`SIPNAB_TEST_TIMEOUT_SCALE` exists — see `tests/support/timeout.rs`. That is
+worth remembering when reading the history: a sanitizer whose red means "the
+runner was slow" trains everyone to ignore the run where it means this.
+
 ## Standing decisions
 
 | Decision | Status | Notes |
