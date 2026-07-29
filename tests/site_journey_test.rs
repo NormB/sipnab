@@ -18,7 +18,7 @@
 //! the demo pcaps through the actual TUI `App`, and the CSP guards execute
 //! `ops/cloudflare/refresh_csp_hashes.py` in dry-run mode.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -977,30 +977,104 @@ fn rust_toolchain_pins_agree() {
     let pin = pins.iter().next().expect("one pin").clone();
     let minor = pin.rsplit_once('.').expect("x.y.z").0.to_string();
 
-    let image = regex::Regex::new(r"FROM rust:([0-9]+\.[0-9]+)")
-        .unwrap()
-        .captures(&read("Dockerfile"))
-        .expect("Dockerfile has no `FROM rust:X.Y`")[1]
-        .to_string();
-    assert_eq!(
-        image, minor,
-        "Dockerfile builds on rust:{image} but CI pins {pin} — the image and CI \
-         would compile with different compilers"
-    );
+    // Every tracked file, not two hand-named ones. The docstring says "*Every*
+    // Rust toolchain pin in the repo names the same version" and the code read
+    // `Dockerfile` and two manifests by name, so `harness/sipnab/Dockerfile`
+    // could sit at rust:1.85 — nine minors below MSRV — and this stayed green.
+    let files = git_tracked_files();
+    let image_re = regex::Regex::new(r"FROM rust:([0-9]+\.[0-9]+)").expect("image regex");
+    let msrv_re = regex::Regex::new(r#"(?m)^rust-version = "([^"]+)""#).expect("msrv regex");
+    let mut images = 0usize;
+    let mut msrvs = 0usize;
+    let mut wrong = Vec::new();
+    // A tag and its digest travel together; the same tag resolving to two
+    // different digests in one repository means one of them was updated and
+    // the other was not. Verifying a digest actually *is* the tag needs a
+    // registry, which this suite cannot reach — this catches the drift that
+    // happens without one.
+    let tagged =
+        regex::Regex::new(r"FROM (rust:[^\s@]+)@(sha256:[0-9a-f]{64})").expect("tag regex");
+    let mut digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
-    let msrv_re = regex::Regex::new(r#"(?m)^rust-version = "([^"]+)""#).unwrap();
-    for manifest in ["Cargo.toml", "crates/sipnab-audio/Cargo.toml"] {
-        let msrv = msrv_re
-            .captures(&read(manifest))
-            .unwrap_or_else(|| panic!("{manifest} has no rust-version"))[1]
-            .to_string();
-        assert_eq!(
-            msrv, minor,
-            "{manifest} declares MSRV {msrv} but the toolchain pin is {pin}; this \
-             project deliberately keeps MSRV equal to the pinned toolchain, so \
-             move both or neither"
-        );
+    for rel in &files {
+        let Ok(text) = std::fs::read_to_string(repo().join(rel)) else {
+            continue;
+        };
+        for c in image_re.captures_iter(&text) {
+            images += 1;
+            if c[1] != *minor {
+                wrong.push(format!(
+                    "{rel} builds on rust:{} but CI pins {pin} — the image and CI \
+                     would compile with different compilers",
+                    &c[1]
+                ));
+            }
+        }
+        for c in tagged.captures_iter(&text) {
+            digests
+                .entry(c[1].to_string())
+                .or_default()
+                .insert(c[2].to_string());
+        }
+        if rel.ends_with("Cargo.toml")
+            && let Some(c) = msrv_re.captures(&text)
+        {
+            msrvs += 1;
+            if c[1] != *minor {
+                wrong.push(format!(
+                    "{rel} declares MSRV {} but the toolchain pin is {pin}; this \
+                     project deliberately keeps MSRV equal to the pinned toolchain, \
+                     so move both or neither",
+                    &c[1]
+                ));
+            }
+        }
     }
+    for (tag, ds) in &digests {
+        if ds.len() > 1 {
+            wrong.push(format!(
+                "{tag} is pinned to {} different digests across this repository \
+                 ({ds:?}) — one was updated and the other was not",
+                ds.len()
+            ));
+        }
+    }
+    // Floors, so a broken walk cannot pass as agreement.
+    assert!(
+        images >= 2,
+        "found only {images} `FROM rust:X.Y` lines — the tracked-file walk is \
+         reading nothing and this gate proves nothing"
+    );
+    assert!(
+        msrvs >= 2,
+        "found only {msrvs} rust-version declarations — same problem"
+    );
+    assert!(
+        wrong.is_empty(),
+        "Rust toolchain pins disagree:\n  {}",
+        wrong.join("\n  ")
+    );
+}
+
+/// Every git-tracked path, repo-relative.
+fn git_tracked_files() -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files");
+    assert!(out.status.success(), "git ls-files failed");
+    let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect();
+    assert!(
+        files.len() > 100,
+        "git ls-files returned {} paths — the derivation is broken",
+        files.len()
+    );
+    files
 }
 
 /// Every artifact `install.sh` can ask for is one the release actually builds.
@@ -1589,18 +1663,50 @@ fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
 
     // The stylesheet must actually forbid wrapping on the row.
     let scss = read("website/sass/style.scss");
-    let rule_at = scss
-        .find(".footer-row")
-        .expect("style.scss has no .footer-row rule");
-    let rule_end = scss[rule_at..]
-        .find('}')
-        .expect(".footer-row rule is unterminated");
-    let rule = &scss[rule_at..rule_at + rule_end];
+    let rule = scss_own_declarations(&scss, ".footer-row");
     assert!(
         rule.contains("flex-wrap: nowrap"),
         ".footer-row must declare `flex-wrap: nowrap` so the footer never \
-         breaks into a second line"
+         breaks into a second line; its own declarations are:\n{rule}"
     );
+}
+
+/// A rule's **own** declarations — nested rules excluded.
+///
+/// Slicing to the first `}` after the selector ends the slice at the first
+/// *nested* rule's closing brace, so a `flex-wrap: nowrap` inside a child
+/// selector satisfied a check on the parent — while the parent itself declared
+/// `flex-wrap: wrap` and the footer broke onto a second line, the exact thing
+/// the rule's comment says must never happen. Nesting a child above the
+/// parent's own declarations is idiomatic SCSS and this stylesheet does it
+/// elsewhere, so the shape is not exotic.
+///
+/// Braces are matched to depth, and only depth-1 text is returned.
+fn scss_own_declarations(scss: &str, selector: &str) -> String {
+    let at = scss
+        .find(selector)
+        .unwrap_or_else(|| panic!("style.scss has no `{selector}` rule"));
+    let open = scss[at..]
+        .find('{')
+        .map(|n| at + n + 1)
+        .unwrap_or_else(|| panic!("`{selector}` has no rule body"));
+
+    let mut depth = 1usize;
+    let mut own = String::new();
+    for (i, c) in scss[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return own;
+                }
+            }
+            _ if depth == 1 => own.push(scss[open + i..].chars().next().unwrap_or(c)),
+            _ => {}
+        }
+    }
+    panic!("`{selector}` rule is unterminated");
 }
 
 // ---------------------------------------------------------------------------
@@ -1847,24 +1953,40 @@ fn homepage_stat_fallback_text_matches_data_count() {
         r#"(?s)<span class="arch-stat" data-count="([0-9.]+)"[^>]*>(.*?)</span>"#,
     )
     .unwrap();
+    // The FIRST numeric run anywhere in the visible text, not only a run at
+    // its very start. Requiring the number at offset zero and skipping the
+    // tile when it was not there exempted every tile whose text opens with an
+    // entity or a glyph — and on the one such tile that nothing else pins,
+    // `data-count="11.1"` shipped beside visible text `≈7×`: a no-JS visitor
+    // read ≈7× while the animation counted to 11.1×.
+    let first_number = regex::Regex::new(r"[0-9]+(?:\.[0-9]+)?").expect("number regex");
     let mut offenders = Vec::new();
+    let mut checked = 0usize;
     for cap in re.captures_iter(&html) {
         let data = &cap[1];
-        // The leading numeric run of the visible text (e.g. "12.5&times; sngrep" -> "12.5").
         let text = cap[2].trim();
-        let num: String = text
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '.')
-            .collect();
-        if num.is_empty() {
-            continue;
-        }
-        if num != *data {
+        checked += 1;
+        let Some(num) = first_number.find(text).map(|m| m.as_str()) else {
+            // A counting tile whose fallback carries no number at all leaves a
+            // no-JS visitor with nothing where the statistic should be. That is
+            // a finding, not a reason to skip.
             offenders.push(format!(
-                "data-count={data} but fallback text starts {num:?}"
+                "data-count={data} but the fallback text {text:?} contains no \
+                 number — a no-JS visitor sees no statistic"
+            ));
+            continue;
+        };
+        if num != data {
+            offenders.push(format!(
+                "data-count={data} but fallback text reads {num:?} (full text: {text:?})"
             ));
         }
     }
+    assert!(
+        checked >= 3,
+        "matched only {checked} stat tiles — the regex has stopped matching and \
+         this gate is checking nothing"
+    );
     assert!(
         offenders.is_empty(),
         "homepage stat tile fallback text disagrees with its data-count \
