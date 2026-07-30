@@ -38,6 +38,15 @@ exclude = [
   # lychee turns them into file:// URIs before exclusions apply, so a pattern
   # anchored with ^@/ never matches.
   '/@/',
+  # Patreon answers GitHub-hosted runners with 403 Forbidden while serving the
+  # page normally elsewhere: it blocks datacenter address ranges, and a browser
+  # user-agent does not change it. Verified in both directions -- 308 (a live
+  # redirect) from a residential connection, 403 from the Actions runner on the
+  # same URL in the same minute. Excluded rather than adding 403 to `accept`,
+  # which would blind the whole run to real authorisation failures for the sake
+  # of one sponsor link. This is the failure mode that gets link checkers
+  # deleted, so it is written down instead of tuned away.
+  'patreon\.com',
 ]
 
 exclude_path = [
@@ -52,3 +61,19 @@ exclude_path = [
 # (The key is `include_mail`, defaulting off -- `exclude_mail` is not a field,
 # and lychee rejects the whole config rather than ignoring an unknown one.)
 include_mail = false
+
+# Fragment checking (`file.md#anchor`) is intentionally OFF, and not because it
+# would be noisy. Anchors are already gated by link_integrity_test --
+# generated_site_anchors_resolve_under_zola, website_intra_docs_links_resolve and
+# wiki_intra_docs_links_resolve -- which slugify headings the way Zola and the
+# GitHub wiki do, i.e. the way the places these documents are published do.
+#
+# lychee's slugger disagrees on headings containing a slash: for
+# `### GET /v1/dialogs` it wants `get-v1dialogs`, where Zola resolves
+# `get-v1-dialogs`. Enabled here it reported the repo's correct anchor as dead,
+# and changing the anchor to satisfy it broke all three of those gates at once.
+# Two sluggers, one of which is not used to publish anything.
+#
+# (Also worth knowing if you try: lychee 0.24.2 rejects `include_fragments` as a
+# config key while accepting --include-fragments as a flag, and a rejected key
+# fails the whole config rather than being ignored.)
