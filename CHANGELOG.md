@@ -33,6 +33,21 @@ entry that carries them.
   the failure `mockup_alignment_test` exists to catch.
 
 ### Fixed
+- **Two capitals after a colon that should have been lowercase**, in
+  `docs/rest-api.md` and `docs/troubleshooting.md`, where a bold label
+  introduced a noun phrase rather than a sentence.
+
+  These came out of working `Google.Colons`, which the config listed as 71
+  backlog alerts. **That rule is now measured and rejected, not deferred.** Its
+  token is `: [A-Z]` — a colon, a space, a capital — with no exception for any
+  of the three cases the page it links actually permits. Of 36 authored alerts,
+  34 were correct English: 22 where a complete sentence follows the colon (which
+  Google capitalises), 9 where an acronym or identifier does (`MOS score`,
+  `SN-01`, `D2`), and 3 a proper noun (`Ubuntu 24.04`, `**Dialogs**`). Enforcing
+  it would have meant lowercasing 34 correct sentences or suppressing them one
+  at a time. `.vale.ini` now carries that breakdown, so the number stops reading
+  as 71 pending defects.
+
 - **Two sentences this session's active-voice pass had broken.** `docs/auth.md`
   read "an explicit id, so that it a denylist can name later" and
   `docs/internals/walkthroughs.md` said the compiler "turns away an MCP tool …
