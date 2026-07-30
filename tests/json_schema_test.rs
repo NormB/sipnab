@@ -132,6 +132,29 @@ fn call_report_schema_validates_output() {
     ]);
     let inst: Value = serde_json::from_str(out.trim()).expect("RTP call-report JSON parses");
     assert_valid(&v, &inst, "call_report (rtp g711)");
+
+    // A call that actually went wrong, which is the shape the other two cannot
+    // reach: both are healthy, so neither emits `signaling_diagnosis` at all.
+    // The schema declared every other field with `additionalProperties: false`
+    // and simply never mentioned this one, so real diagnosed output failed
+    // validation while the suite stayed green — for as long as every fixture
+    // here was a call with nothing wrong with it.
+    let out = run_sipnab(&[
+        "-N",
+        "-I",
+        "tests/pcap-samples/sip-488-codec-reject.pcapng",
+        "--call-report",
+        "NA4y5nr9Jk",
+        "--json",
+        "--no-cli-print",
+    ]);
+    let inst: Value = serde_json::from_str(out.trim()).expect("failed-call report JSON parses");
+    assert!(
+        inst.get("signaling_diagnosis")
+            .is_some_and(|d| !d.is_null()),
+        "fixture must actually carry a diagnosis or this case proves nothing"
+    );
+    assert_valid(&v, &inst, "call_report (diagnosed failure)");
 }
 
 /// Negative test: removing `diagnosis`, mistyping `timing.retransmits`, or
