@@ -39,7 +39,7 @@ The same sweep in JSON, for piping into another tool:
 sipnab -N -I capture.pcap --problems --json
 ```
 
-The wider net: the `problems` DSL alias also covers one-way audio, loss/jitter, NAT mismatch, asymmetry and late media.
+The wider net: the `problems` DSL alias also covers one-way audio, loss/jitter, NAT mismatch, asymmetry, and late media.
 
 ```bash
 sipnab -N -I capture.pcap --filter problems

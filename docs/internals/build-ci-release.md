@@ -47,7 +47,7 @@ compiles, which is exactly why CI has a feature matrix.
 
 `sanitizers.yml` runs the threaded integration suites under
 `-Zsanitizer=thread`, weekly. It exists because nothing else in the suite can
-see a data race: the tests exercise the capture thread, the channel and the
+see a data race: the tests exercise the capture thread, the channel, and the
 processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`. The borrow checker does not help here either
 — it stops at `unsafe`, and 41 of this crate's 49 `unsafe` blocks are libc FFI
@@ -98,11 +98,11 @@ would have reported a thread leak as one.
 `thread leak` is in the fatal set. It was briefly written off as expected, on
 the reasoning that sipnab exits fail-fast paths through `std::process::exit`,
 which joins nothing. That had it backwards: `bootstrap::launch` spawns the
-capture thread *before* the readiness hand-shake, the chroot and the privilege
+capture thread *before* the readiness hand-shake, the chroot, and the privilege
 drop, so every failure from there on abandoned a thread still holding an open
 capture source — and `sipnab -I /nonexistent.pcap`, a mistyped filename, was
 enough to do it. Those paths now go through `capture::stop_and_join`, which sets
-the shutdown flag, drops the receiver and joins. The suites report zero leaks,
+the shutdown flag, drops the receiver, and joins. The suites report zero leaks,
 and the fatal classification is what keeps it that way.
 
 A missing `__tsan_init` in the built binary fails the job outright, since a
