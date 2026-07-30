@@ -8,6 +8,39 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+- **SIP problem diagnosis: detections 1–3.** `src/rtp/diagnosis.rs` could say a
+  call had one-way audio; nothing could say it failed on a `503` after three
+  retransmitted INVITEs, or that a phone had been looping on `401` for an hour
+  without ever authenticating. The evidence was always captured and never read as
+  a diagnosis. `src/sip/diagnosis.rs` now reads it, per the spec shipped in
+  0.5.62, which names these three as the slice carrying the value:
+  - **Final failure with cause** — the dialog's outcome `4xx`/`5xx`/`6xx`, with the
+    `Reason:` (RFC 3326) and `Warning:` headers that usually hold the real cause
+    behind a generic code. The *last* failure before any `2xx` wins: a dialog
+    challenged `401` then failed `503` failed on the `503`, and a rejected
+    mid-call re-INVITE is not the dialog failing at all.
+  - **Authentication loop** — three or more `401`/`407` with no `2xx`, split into
+    credential failure (client answers, gets re-challenged) and silent drop
+    (client never sends `Authorization`), because the fixes differ. Two challenges
+    is normal: the first request is unauthenticated by design.
+  - **Retransmission storm** — a request retransmitted with nothing coming back,
+    grouped by CSeq *and* top-`Via` branch, since CSeq alone would call three
+    distinct INVITEs a storm. Reports count and elapsed span, because "7 INVITEs
+    over 32 seconds" is diagnostic and "retransmissions detected" is not. ACK is
+    excluded: it is never answered, so counting its repeats would flag every
+    dialog.
+
+  Every finding names the messages it was drawn from, as indices into the
+  dialog's own message list — the spec's rule that a detection which cannot cite
+  its evidence is a guess the reader has to re-derive. Rendered as
+  `signaling_diagnosis` in the dialog JSON, omitted entirely when nothing is
+  detected, so a healthy dialog serializes exactly as before. Fields for
+  detections 4–7 are absent rather than always-null: a field that is never
+  populated reads as "checked, nothing found", which would be false.
+
 ## [0.5.65] - 2026-07-30
 
 ### Added

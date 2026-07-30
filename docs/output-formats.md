@@ -173,6 +173,24 @@ ring / teardown milliseconds, retransmit counts), `sdp_timeline`,
 serializer. It is documented once, with a full worked example, under
 [`GET /v1/dialogs/{call_id}` in the REST API reference](rest-api.md#get-v1-dialogs-1).
 
+A `signaling_diagnosis` object sits beside `diagnosis` when something is wrong
+with the signalling rather than the media, and is **omitted entirely** when
+nothing was detected — so a healthy dialog serializes exactly as it did before
+the field existed. It carries up to three findings, each naming the messages it
+was drawn from as indices into the dialog's own message list:
+
+| Field | Meaning |
+|---|---|
+| `final_failure` | The dialog ended on a `4xx`/`5xx`/`6xx`. Carries `code`, `reason_phrase`, and the `Reason:` (RFC 3326) and `Warning:` headers when present, which frequently hold the real cause behind a generic status code. |
+| `auth_loop` | Three or more `401`/`407` challenges with no `2xx`. `kind` is `credential_failure` when the client answers each challenge and is re-challenged, or `silent_drop` when it never sends `Authorization` at all — different faults with different fixes. |
+| `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. |
+
+Each finding has an `evidence` array of message indices, and `hints` carries one
+plain-language line per finding. Detections 4–7 in
+[the spec](design/sip-problem-diagnosis.md) are not implemented, and their fields
+are absent rather than always-null: a field that is never populated reads as
+"checked, nothing found", which would be a lie.
+
 The same document is what you get from:
 
 - the REST `GET /v1/dialogs/{call_id}` and
