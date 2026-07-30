@@ -310,7 +310,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 
 | Parameter | Type   | Default | Description |
 |-----------|--------|---------|-------------|
-| `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Cancelled`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
+| `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Cancelled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern) |
 | `limit`   | int    | 50      | Maximum results (capped at 1000) |
 | `offset`  | int    | 0       | Pagination offset |
@@ -931,7 +931,7 @@ Metric names emitted by `src/output/prometheus.rs`:
 
 | Metric | Type | Notes |
 |---|---|---|
-| `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
+| `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
 | `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
 | `sipnab_rtp_streams_active` | gauge | The two servers count different things under this one name. The `--api` server counts streams not flagged `orphaned` (linked to a dialog, or not yet old enough for the sweep to flag them — an unlinked stream is only flagged once it is 30 seconds old), however long ago the last packet arrived; the standalone `--metrics` server counts streams whose last packet arrived within the previous 30 seconds, whatever their dialog association. A call whose media died five minutes ago is still counted by `--api` and is not counted by `--metrics` — an alert threshold tuned on one scrape target does not carry over to the other. |
 | `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` once the sweep has found a stream unlinked to a dialog for 30 seconds, `established` otherwise. `--api` only. The standalone `--metrics` server never populates the map, and an empty family drops out rather than reporting zero, so on `--metrics` the series does not exist at all — a panel built on it stays permanently blank. |

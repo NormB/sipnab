@@ -1074,6 +1074,52 @@ fn response_class_matches_the_documented_table() {
     );
 }
 
+/// Every `DialogState` value appears in the docs that enumerate them.
+///
+/// Three pages list the states as prose — the filter DSL's valid values, the
+/// REST API's `state` query parameter, and the `sipnab_dialogs_total{state}`
+/// metric — and a fourth enumeration lives in `config_wiring_test`. None of the
+/// four is compiler-enforced, unlike the five `match` arms over the enum, which
+/// cannot compile if a variant is missed.
+///
+/// That asymmetry is the whole reason this exists: adding `Redirected` broke
+/// five matches loudly and would have left four lists quietly wrong. A filter
+/// value nobody documents is a filter nobody uses.
+#[test]
+fn documented_dialog_states_cover_the_enum() {
+    // The enumeration, mirrored from `DialogState`. Adding a variant without
+    // adding it here passes; adding it here without documenting it fails, which
+    // is the direction that matters — the docs are what a reader has.
+    const STATES: [&str; 13] = [
+        "Trying",
+        "Ringing",
+        "InCall",
+        "Completed",
+        "Cancelled",
+        "Failed",
+        "Redirected",
+        "Registered",
+        "Expired",
+        "Pending",
+        "Active",
+        "Terminated",
+        "Transferring",
+    ];
+    let pages: [(&str, &str); 2] = [
+        ("docs/filter-dsl.md", include_str!("../docs/filter-dsl.md")),
+        ("docs/rest-api.md", include_str!("../docs/rest-api.md")),
+    ];
+    for (path, text) in pages {
+        for state in STATES {
+            assert!(
+                text.contains(&format!("`{state}`")),
+                "{path} never mentions the `{state}` dialog state — a reader \
+                 cannot filter on a value the page does not list"
+            );
+        }
+    }
+}
+
 /// Docs that state the fuzz-target count as current must match the tree.
 ///
 /// `docs/fault-model.md` also names every target, so a new one added without

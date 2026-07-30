@@ -124,7 +124,7 @@ fn json_output_schema_is_complete() {
 //  Test 2: dialog_state_display_matches_debug
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// For all 12 `DialogState` variants, `Display` output equals `Debug` output —
+/// For all 13 `DialogState` variants, `Display` output equals `Debug` output —
 /// CSV export depends on this equivalence.
 #[test]
 fn dialog_state_display_matches_debug() {
@@ -137,6 +137,7 @@ fn dialog_state_display_matches_debug() {
         DialogState::Completed,
         DialogState::Cancelled,
         DialogState::Failed,
+        DialogState::Redirected,
         DialogState::Registered,
         DialogState::Expired,
         DialogState::Pending,

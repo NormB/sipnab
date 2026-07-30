@@ -1252,6 +1252,7 @@ fn state_to_str(state: &DialogState) -> &'static str {
         DialogState::Completed => "Completed",
         DialogState::Cancelled => "Cancelled",
         DialogState::Failed => "Failed",
+        DialogState::Redirected => "Redirected",
         DialogState::Registered => "Registered",
         DialogState::Expired => "Expired",
         DialogState::Pending => "Pending",

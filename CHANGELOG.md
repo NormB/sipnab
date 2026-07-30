@@ -11,6 +11,23 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **`DialogState::Redirected` — a 3xx is no longer indistinguishable from an
+  unanswered call.** RFC 3261 §21.3: a redirect names a Contact the UAC should
+  try instead. The dialog ended, the call did not fail, and the retry is a new
+  dialog with a new Call-ID. No handler matched 3xx at all before this, so a
+  redirected call kept its pre-answer state and read as one nobody answered.
+
+  All four state machines redirect now, guarded on the pre-answer states like
+  every other final-response transition, so a late or spurious 3xx cannot
+  un-answer a live call. `state == 'Redirected'` works in the filter DSL, the
+  REST `state` parameter and the `sipnab_dialogs_total{state}` metric.
+
+  Adding the variant broke five `match` arms loudly — the compiler found every
+  one — and would have left four hand-written enumerations quietly wrong: two doc
+  pages, a metric list, and a test array. That asymmetry is why
+  `documented_dialog_states_cover_the_enum` now checks the pages carry every
+  state. A filter value nobody documents is a filter nobody uses.
+
 - **An auth challenge no longer fails an INVITE dialog, and every
   method-by-response pair is now checked.** All four dialog handlers classify
   through `response_class()` instead of carrying their own ranges, and
