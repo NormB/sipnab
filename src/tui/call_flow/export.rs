@@ -198,6 +198,7 @@ mod tests {
             is_retransmission: false,
             is_rtp_bar: false,
             raw_index: None,
+            diagnosis_note: None,
         }
     }
 

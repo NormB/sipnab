@@ -272,6 +272,13 @@ fn detect_retransmissions(messages: &[SipMessage], diag: &mut SignalingDiagnosis
         let Some((num, method)) = msg.cseq() else {
             continue;
         };
+        // No top-Via branch means no way to prove two requests are the same
+        // transaction, so the message is skipped rather than grouped on CSeq
+        // alone. Via is mandatory in SIP, so this only happens on a malformed or
+        // truncated capture — and in that case reporting "no response" on a guess
+        // would be worse than reporting nothing. The consequence is that this
+        // detection is quietly unavailable for such captures, which is the right
+        // trade but worth knowing when a storm you can see by eye is not flagged.
         let Some(branch) = msg.top_via_branch() else {
             continue;
         };
