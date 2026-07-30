@@ -50,7 +50,7 @@ met: MIT and Apache-2.0 are both OSI-approved, and everything is in English.
 | `repo_public` | Met | `https://github.com/NormB/sipnab` |
 | `repo_track` | Met | Git |
 | `repo_interim` | Met | Work lands on `main` continuously between releases |
-| `version_unique` | Met | Crate version, currently 0.5.67 |
+| `version_unique` | Met | Crate version, currently 0.5.68 |
 | `release_notes` | Met | `CHANGELOG.md`, Keep a Changelog format |
 | `release_notes_vulns` | Met | The changelog calls out security-relevant fixes in the entry carrying them |
 
@@ -78,7 +78,7 @@ badge accepts that; inventing a number would be the only wrong move here.
 | Criterion | Answer | Evidence |
 |---|---|---|
 | `build` | Met | `cargo build`, reproduced by CI on every push |
-| `test` | Met | `cargo test --all-features`, 3126 tests, documented in `CONTRIBUTING.md` |
+| `test` | Met | `cargo test --all-features`, 3149 tests, documented in `CONTRIBUTING.md` |
 | `test_policy` | Met | `CONTRIBUTING.md` pull request step 4: "Add or update tests for new functionality" |
 | `tests_are_added` | Met | Recent history shows tests landing with the change, not after |
 | `warnings` | Met | `cargo clippy --all-features --all-targets -- -D warnings` |
