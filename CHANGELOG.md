@@ -10,6 +10,26 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+- **A `487 Request Terminated` with no `CANCEL` in the capture left the dialog
+  in `Ringing` forever.** The `487` match arm did nothing unless the dialog was
+  *already* `Cancelled`, and because it matches before the `400..=699` arm the
+  response did not fall through to `Failed` either. So a cancelled call whose
+  CANCEL went uncaptured reported as one still waiting for an answer — a
+  different diagnosis from the one the wire carried.
+
+  RFC 3261 §21.4.25 says a 487 means the request "was terminated by a BYE or
+  CANCEL request". The 487 is itself the proof; seeing the CANCEL is not a
+  precondition. A CANCEL can take a different path from the response, a capture
+  can start mid-dialog, and sampling can drop it. A 487 whose CSeq method is
+  INVITE now sets `Cancelled` from `Trying`, `Ringing` or `Cancelled`, guarded on
+  those pre-answer states for the same reason the 2xx arm is: once a final 2xx
+  has established the call the CANCEL has no effect (§9, §15), so a late 487 must
+  not un-answer it.
+
+  Neither path had a test and no sample capture in the repo contains a 487 at
+  all, which is why it survived. Both now have one.
+
 ### Added
 - **`docs/sip-response-codes.md` — every SIP response code, from the registry
   rather than a summary of it.** All 75 codes in the IANA *Response Codes*
