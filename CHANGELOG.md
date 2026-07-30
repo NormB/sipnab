@@ -10,6 +10,23 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+- **The release-artifact reference has one home instead of two.** `/download` held
+  a 19-row artifact table that `docs/install.md` restated in full, and that
+  duplication is what produced this release's version drift: the download markers
+  moved on one surface and not the other, and two of the three `rpm -i` recipes
+  were never gated at all. Diátaxis puts it plainly — a how-to should "refer to
+  the x reference guide for a full list of options" rather than inline it. The
+  table, the architecture-name mapping, and the platform floors now live in
+  `docs/install.md#release-artifacts`; `/download` keeps the task paths (installer,
+  per-platform packages, Docker, verify) and links to the reference. The docs table
+  uses `<version>` placeholders rather than 19 concrete version strings, so
+  consolidating did not trade one drift surface for a larger one.
+- **`docs/install.md` had the same `.rpm` omission as the download page.** Its
+  architecture-naming paragraph said tarballs use one spelling and `.deb` packages
+  the other, never mentioning that `.rpm` packages use the first — the identical
+  gap, on the second surface, which is what having two copies produces.
+
 ### Fixed
 - **The two checksum commands on `/download` could only be copied together.**
   The macOS `shasum` and Linux `sha256sum` recipes shared one terminal block and

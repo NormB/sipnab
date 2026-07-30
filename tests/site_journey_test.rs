@@ -931,21 +931,51 @@ fn published_macos_floors_match_the_toolchain() {
         );
     }
 
-    // Nothing may reintroduce a hand-written macOS floor on the download page:
-    // the two values above are the only ones a reader may be shown.
+    // The template must go through config; nothing may reintroduce a literal.
     let dl = read("website/templates/download.html");
     let hand_written = regex::Regex::new(r"macOS (\d+)(?:\.\d+)?\+").unwrap();
-    let found: Vec<&str> = hand_written
-        .find_iter(&dl)
-        .map(|m| m.as_str())
-        .filter(|s| !s.contains("{{"))
-        .collect();
+    let found: Vec<&str> = hand_written.find_iter(&dl).map(|m| m.as_str()).collect();
     assert!(
         found.is_empty(),
         "download.html hard-codes a macOS floor {found:?} — use \
          config.extra.macos_floor_arm / macos_floor_intel so the gate above \
          keeps it honest"
     );
+
+    // The docs carry the artifact reference and cannot template, so their floors
+    // ARE literals. Sweep them: every macOS version stated as a floor must be
+    // one of the two real ones. This is the same prose sweep the glibc gate
+    // does, and for the same reason — "macOS 12+" lived in exactly this kind of
+    // sentence, and a floor in prose is as load-bearing as one in a variable.
+    let arm = regex::Regex::new(r#"(?m)^macos_floor_arm = "([^"]+)""#)
+        .unwrap()
+        .captures(&cfg)
+        .expect("no macos_floor_arm")[1]
+        .to_string();
+    let intel = regex::Regex::new(r#"(?m)^macos_floor_intel = "([^"]+)""#)
+        .unwrap()
+        .captures(&cfg)
+        .expect("no macos_floor_intel")[1]
+        .to_string();
+
+    for path in [
+        "docs/install.md",
+        "website/content/docs/install.md",
+        "README.md",
+    ] {
+        let text = read(path);
+        for cap in hand_written.captures_iter(&text) {
+            let stated = cap[1].to_string();
+            let full = cap[0].trim_end_matches('+').trim_start_matches("macOS ");
+            assert!(
+                full == arm || full == intel,
+                "{path} states a macOS floor of {stated} ({:?}), but the released \
+                 binaries floor at {intel} (Intel) and {arm} (Apple Silicon) — \
+                 the two differ and neither is {stated}",
+                &cap[0]
+            );
+        }
+    }
 }
 
 /// Every published glibc floor — two constants and the doc prose — matches the

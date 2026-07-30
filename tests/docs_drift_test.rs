@@ -33,6 +33,13 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `rustc --print deployment-target`, in the macOS floor recipe. The floors
+    // are the compiler's defaults, so the compiler is what the doc tells the
+    // reader to ask — a copy of the number would be the thing this avoids.
+    (
+        "print",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
     // cargo / cross / xcode-select build & install recipes
     (
         "release",
@@ -1956,8 +1963,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 293,
-        "walked {tables} tables, expected 293. More is fine — bump this. FEWER \
+        tables, 295,
+        "walked {tables} tables, expected 295. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
