@@ -10,6 +10,14 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **`SipMethod` is pinned to the IANA methods registry.** All 14 registered
+  methods parse to a named variant, and each round-trips to its canonical token.
+  Nothing enforced that before, and the failure was silent by construction: an
+  unrecognised method becomes `Custom` and falls to the generic dialog handler,
+  which is right for a private extension and wrong for a registered one nobody
+  noticed. A new registration is now a decision rather than a default.
+
 ### Fixed
 - **A `487 Request Terminated` with no `CANCEL` in the capture left the dialog
   in `Ringing` forever.** The `487` match arm did nothing unless the dialog was
