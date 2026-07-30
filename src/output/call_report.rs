@@ -10,7 +10,9 @@ use std::fmt::Write;
 
 use crate::rtp::diagnosis::MediaDiagnosis;
 use crate::rtp::stream::RtpStream;
-use crate::sip::diagnosis::{AuthLoopKind, diagnose_signaling};
+use crate::sip::diagnosis::{
+    AbandonedKind, AuthLoopKind, RegistrationFailureKind, diagnose_signaling,
+};
 use crate::sip::dialog::{DialogState, SipDialog};
 
 /// Output format for the call report.
@@ -110,6 +112,67 @@ fn signaling_findings(dialog: &SipDialog) -> Vec<(String, String)> {
             ),
             evidence_label(dialog, &r.evidence),
         ));
+    }
+
+    if let Some(a) = &diag.ack_missing {
+        out.push((
+            format!(
+                "INVITE answered but never acknowledged: no ACK in {:.1}s, answer sent \
+                 {} time(s)",
+                a.waited_sec, a.answer_transmissions
+            ),
+            evidence_label(dialog, &a.evidence),
+        ));
+    }
+
+    if let Some(a) = &diag.abandoned {
+        // The wording carries the whole distinction. "Cancelled" is something
+        // that happened; "no final response" is something that did not get
+        // recorded, and a report that renders them alike hands the reader a
+        // conclusion the capture does not support.
+        let head = match a.kind {
+            AbandonedKind::Cancelled => {
+                format!(
+                    "Cancelled by caller after {:.1}s, before any final response",
+                    a.elapsed_sec
+                )
+            }
+            AbandonedKind::NoFinalResponse => format!(
+                "No final response after {:.1}s — OUTCOME UNKNOWN, not a failure: the \
+                 capture may have ended while the call was still up",
+                a.elapsed_sec
+            ),
+        };
+        out.push((head, evidence_label(dialog, &a.evidence)));
+    }
+
+    if let Some(p) = &diag.post_dial_delay {
+        out.push((
+            format!(
+                "Post-dial delay {:.1}s to the first {} (threshold {:.1}s) — the caller \
+                 hears silence for that interval",
+                p.delay_sec, p.responded_with, p.threshold_sec
+            ),
+            evidence_label(dialog, &p.evidence),
+        ));
+    }
+
+    if let Some(r) = &diag.registration_failure {
+        let head = match r.kind {
+            RegistrationFailureKind::Rejected => {
+                format!(
+                    "Registration rejected: {} — the endpoint is offline",
+                    r.code
+                )
+            }
+            RegistrationFailureKind::ShortenedExpiry => format!(
+                "Registration granted {}s against {}s requested — re-registers sooner \
+                 than intended",
+                r.granted_expiry_sec.unwrap_or_default(),
+                r.requested_expiry_sec.unwrap_or_default()
+            ),
+        };
+        out.push((head, evidence_label(dialog, &r.evidence)));
     }
 
     out
@@ -848,5 +911,99 @@ mod tests {
         let label = evidence_label(&dialog, &[0, 99]);
         assert!(label.contains("#0 INVITE"), "got {label}");
         assert!(label.contains("#99 (out of range)"), "got {label}");
+    }
+
+    /// A ringing call the capture watched for five minutes without an answer.
+    /// Past Timer C, so detection 5 reports it — as *unknown*.
+    fn make_unanswered_dialog() -> SipDialog {
+        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+        let raw_invite = build_sip(
+            "INVITE sip:1002@carrier.net SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKring",
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@carrier.net>",
+                "Call-ID: ringing-call@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let invite = parse_sip(
+            &raw_invite,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        let raw_ring = build_sip(
+            "SIP/2.0 180 Ringing",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKring",
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@carrier.net>;tag=t2",
+                "Call-ID: ringing-call@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let ring = parse_sip(
+            &raw_ring,
+            t0 + chrono::TimeDelta::seconds(300),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        let mut d = SipDialog::new(&invite).expect("should create");
+        d.messages.push(ring);
+        d
+    }
+
+    /// The report must not turn a capture that stopped early into a failure.
+    /// This is the one detection the spec singles out as most likely to lie,
+    /// and the lie would live in the wording rather than in the data.
+    #[test]
+    fn an_unanswered_call_is_reported_as_unknown_not_failed() {
+        let dialog = make_unanswered_dialog();
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            ReportFormat::Text,
+        );
+        assert!(
+            report.contains("OUTCOME UNKNOWN"),
+            "expected an explicit unknown, got:\n{report}"
+        );
+        assert!(
+            !report.contains("Final failure"),
+            "a call with no final response has not failed:\n{report}"
+        );
+    }
+
+    #[test]
+    fn markdown_report_renders_the_same_unknown_finding() {
+        let dialog = make_unanswered_dialog();
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            ReportFormat::Markdown,
+        );
+        assert!(report.contains("## Signalling"), "got:\n{report}");
+        assert!(report.contains("OUTCOME UNKNOWN"), "got:\n{report}");
     }
 }

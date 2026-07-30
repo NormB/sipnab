@@ -83,6 +83,43 @@ entry that carries them.
   reads `docs/sip-response-codes.md` and holds the two together, so adding a code
   to the page without teaching the classifier fails.
 
+- **SIP diagnosis detections 4–7 — missing `ACK`, abandoned/cancelled, high
+  post-dial delay, registration failure.** The set is complete: a dialog now
+  reports an answered `INVITE` that was never acknowledged, a call cancelled or
+  left without an outcome, ring-back slower than the E.721 target, and a
+  `REGISTER` that was rejected or granted less time than it asked for. Every
+  finding carries the message indices it was drawn from, and every surface —
+  `--json`, `--json-dialogs`, REST, MCP, the call report, both TUI views —
+  renders them from the same structure.
+
+  Three detections need a threshold and each is quoted from a numbered clause
+  rather than chosen: post-dial delay 11.0 s (Table 2/E.721, 95th-percentile
+  international at normal load — post-selection delay is `INVITE` to first
+  `18x` under ISDN names), the `ACK` window 32 s (Timer H), and the
+  no-final-response window 180 s (Timer C, whose defining sentence is "the case
+  where an INVITE request never generates a final response"). `SignalingThresholds`
+  makes all three configurable.
+
+  The care is in what these *do not* report. A missing `ACK` is suppressed by a
+  `BYE`, because RFC 3261 §15 means a hangup proves the `ACK` arrived — without
+  that guard an ordinary completed call whose capture dropped one packet was
+  reported as broken, which a TUI snapshot caught and no unit test would have.
+  A call with no final response is `NoFinalResponse`, never a failure, and is
+  bounded by Timer C so that in-flight calls at the end of a capture stay
+  quiet. `Expires: 0` is excluded from registration analysis, since that is a
+  phone deliberately going offline.
+
+### Fixed
+- **`signaling_diagnosis` was never declared in the call-report JSON schema.**
+  `call_report.schema.json` sets `additionalProperties: false`, so every
+  diagnosed call report failed validation — and had since detections 1–3
+  shipped, not since 4–7. The schema test never caught it because both of its
+  fixtures are healthy calls that emit no diagnosis at all, so the one shape
+  that could fail was the one shape never tested. The field is now fully
+  declared, and a diagnosed fixture is asserted to actually carry a diagnosis
+  before being validated.
+
+### Added
 - **`SUPPORT.md` and `MAINTAINERS.md`.** The routing already existed —
   `ISSUE_TEMPLATE/config.yml` has sent questions to Discussions and security
   reports to a private advisory for some time — but a reader had to open the

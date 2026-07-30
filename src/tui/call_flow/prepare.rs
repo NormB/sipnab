@@ -693,6 +693,26 @@ pub fn layout(
         if let Some(r) = &diag.retransmissions {
             notes.extend(r.evidence.iter().map(|&i| (i, "NO-RSP")));
         }
+        if let Some(a) = &diag.ack_missing {
+            notes.extend(a.evidence.iter().map(|&i| (i, "NO-ACK")));
+        }
+        if let Some(a) = &diag.abandoned {
+            // The two shapes get different tags: `CANCELLED` is a thing that
+            // happened, `NO-FINAL` is a thing that was not recorded. A shared
+            // tag would put a verdict on the ladder that the capture cannot
+            // support.
+            let tag = match a.kind {
+                crate::sip::diagnosis::AbandonedKind::Cancelled => "CANCELLED",
+                crate::sip::diagnosis::AbandonedKind::NoFinalResponse => "NO-FINAL",
+            };
+            notes.extend(a.evidence.iter().map(|&i| (i, tag)));
+        }
+        if let Some(p) = &diag.post_dial_delay {
+            notes.extend(p.evidence.iter().map(|&i| (i, "SLOW-PDD")));
+        }
+        if let Some(r) = &diag.registration_failure {
+            notes.extend(r.evidence.iter().map(|&i| (i, "REG")));
+        }
         for (idx, tag) in notes {
             if let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(idx)) {
                 // One message can be evidence for more than one detection — a
