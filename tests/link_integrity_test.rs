@@ -380,9 +380,17 @@ fn wiki_intra_docs_links_resolve() {
     // still reported itself healthy. A DROP is the only failure that matters
     // here; growth costs one deliberate bump, the same contract
     // `linked_code_targets_exist` uses.
+    //
+    // Lowered 180 -> 179 when the duplicated intro in `docs/rest-api.md` came
+    // out. A merge of two REST API pages had left both intros in place, so the
+    // page pointed at `mcp.md` twice in eight lines; deleting the second copy
+    // deleted a real link. Before changing this number, diff the link TARGETS
+    // against the previous revision and confirm which one disappeared — a drop
+    // that nobody can name is the regex breaking, which is exactly what this
+    // pin is here to catch, and editing the number is how it gets missed.
     assert_eq!(
-        seen, 180,
-        "extractor found {seen} wiki links, expected 180. More is fine — bump \
+        seen, 179,
+        "extractor found {seen} wiki links, expected 179. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

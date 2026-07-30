@@ -44,6 +44,20 @@ entry that carries them.
   one switched it off again. Any future promotion needs the same three lines.
 
 ### Fixed
+- **`docs/rest-api.md` opened by introducing itself twice.** The commit that
+  merged two REST API pages into one, shipped in 0.5.55, kept both intros: the same "sipnab
+  includes an optional REST API and Prometheus metrics endpoint…" sentence
+  appeared at lines 3 and 9, and the same "MCP serves the same stores" pointer at
+  lines 5 and 11, one as prose and one as a callout. A reader hit the page's first
+  claim, then hit it again four lines later in slightly different words, which
+  reads like the page is describing two different things. One intro survives, plus
+  the callout, which is the better wayfinding device of the two forms.
+
+  `wiki_intra_docs_links_resolve` caught the side effect: the page linked
+  `mcp.md` twice, so removing the duplicate removed a real link and the pin went
+  180 -> 179. Its comment now says how to tell that apart from the failure it
+  exists for — a drop nobody can name is the extractor's regex breaking, and
+  editing the number is how that gets missed.
 - **`docs/install.md` claimed the release does not set
   `MACOSX_DEPLOYMENT_TARGET`.** It has set it since 0.5.65, when the pin landed
   in `release.yml` alongside `published_macos_floors_match_the_toolchain`. The

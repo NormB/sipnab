@@ -2,11 +2,7 @@
 
 sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline — read-only; it never mutates capture state.
 
-The same dialog / RTP / diagnostic data is also exposed to AI agents over the Model Context Protocol; see [MCP Server](mcp.md). The MCP path uses the same in-memory stores as this REST API, so one running sipnab instance can serve both surfaces simultaneously.
-
 [CLI Reference](cli-reference.md#network-listeners) catalogues every API flag.
-
-sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline (read-only — it never mutates capture state).
 
 > **Looking for AI-agent access?** sipnab also exposes the same dialog / RTP / diagnostic data as a Model Context Protocol server. See [MCP Server](mcp.md) -- the MCP path uses the same in-memory stores as this REST API, so a running sipnab instance can serve both surfaces simultaneously.
 
