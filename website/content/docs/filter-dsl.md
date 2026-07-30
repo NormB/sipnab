@@ -148,7 +148,7 @@ tool. They expand to DSL expressions internally.
 | `duration-asym` | — (use `--filter duration-asym`) | `duration_asymmetry == true` |
 | `late-media` | — (use `--filter late-media`) | `late_media == true` |
 
-`--filter` first tries to resolve the argument as an alias name; if no alias
+`--filter` first tries to resolve the argument as an alias name. If no alias
 matches, it parses the argument as a DSL expression. The alias and the
 expression it expands to select the same dialogs, so
 `sipnab -N -I capture.pcap --filter codec-asym` and
@@ -249,7 +249,7 @@ NAT mismatch means the Contact header IP/port doesn't match the actual packet so
 sipnab -N -I capture.pcap --filter "rtp.jitter > 50.0 OR rtp.loss > 1.0" --json
 ```
 
-Jitter arrives in milliseconds (RFC 3550 interarrival jitter algorithm); high values indicate network congestion. Loss is a percentage (0.0-100.0); acceptable thresholds are codec-dependent.
+Jitter arrives in milliseconds (RFC 3550 interarrival jitter algorithm), and high values indicate network congestion. Loss is a percentage (0.0-100.0) whose acceptable thresholds are codec-dependent.
 
 ### Failed international calls
 

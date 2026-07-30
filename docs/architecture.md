@@ -2,16 +2,16 @@
 
 A codemap for contributors: what lives where, how data flows, and the design
 decisions that explain the shape of the code. For the historical roadmap and
-the full design-decision catalog (D1–D21), see `design/implementation-plan-v6.md`;
-this file tracks the code as it exists.
+the full design-decision catalog (D1–D21), see `design/implementation-plan-v6.md`.
+This file tracks the code as it exists.
 
 ## One binary, two modes
 
 `sipnab` is a single binary (plus the `sipnab-audio` dlopen'd plugin crate).
 It runs either as a **TUI** (interactive, ratatui) or in **batch/CLI mode**
 (parse → print/JSON/report → exit). Both modes share one library
-(`src/lib.rs`); the binary (`src/main.rs`) wires CLI flags to library calls.
-The core is synchronous; async (tokio) exists only at the edges, for the
+(`src/lib.rs`). The binary (`src/main.rs`) wires CLI flags to library calls.
+The core is synchronous, and async (tokio) exists only at the edges, for the
 optional API/MCP servers.
 
 ## Data flow
@@ -31,7 +31,7 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
                                           TUI (try_read) ─┴─ outputs / API / MCP (read) ───┘
 ```
 
-Parsing always happens **outside** the store locks; each store is
+Parsing always happens **outside** the store locks. Each store is
 write-locked once per packet, briefly. Payloads are `bytes::Bytes` slices of
 the captured frame end to end (see `docs/internals/zero-copy-payloads.md`).
 
@@ -45,7 +45,7 @@ store writes, and where each of the four paths diverges — see
 
 ## Module map
 
-Annotations cover only the load-bearing files; siblings follow the same pattern.
+Annotations cover only the load-bearing files. Siblings follow the same pattern.
 
 ```text
 src/
@@ -126,7 +126,7 @@ harness/                  # docker-compose e2e (opensips + rtpengine + sipp)
 
 See `docs/internals/threading.md` for the full topology and lock discipline.
 Short version: capture threads → bounded channel → one processing thread
-that owns all store writes; TUI/API/MCP are readers. Batch `--cores N` shards
+that owns all store writes. TUI, API and MCP are readers. Batch `--cores N` shards
 packets by host pair to worker threads with thread-local stores, merged at
 EOF.
 
@@ -163,7 +163,7 @@ EOF.
 | Add an MCP tool | `mcp/server.rs` (`#[tool]`) + `mcp/shape.rs` |
 | Add a CLI flag | `cli.rs` + `flag_coverage_test.rs` will force a test |
 
-This table names the files; it does not name the order, the tests each change
+This table names the files. It does not name the order, the tests each change
 owes, or the gates that will reject it.
 [docs/internals/walkthroughs.md](internals/walkthroughs.md) has an ordered
 checklist for each row.

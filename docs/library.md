@@ -2,7 +2,7 @@
 
 sipnab is primarily a CLI/TUI tool, but its analysis engine is a
 published Rust crate. The curated public API is re-exported at the crate
-root; anything under a `#[doc(hidden)]` module (`cli`, `tui`, `privilege`,
+root. Anything under a `#[doc(hidden)]` module (`cli`, `tui`, `privilege`,
 …) is binary-internal and carries **no** semver guarantee.
 
 ```toml
@@ -85,6 +85,6 @@ enums (`TransportProto`, `RtcpPacket`, `FraudType`, `CipherSuite`, …) are
 ## Features
 
 The crate is heavily feature-gated (see `Cargo.toml`). For pure parsing
-you only need `native`; `tls`/`hep`/`api`/`mcp` pull in their respective
+you only need `native`. `tls`, `hep`, `api` and `mcp` pull in their respective
 subsystems. See the feature table in
 [install.md](install.md#feature-flags).

@@ -33,7 +33,7 @@ sibling field is a self-referential struct).
   (`payload.clone()` is a refcount bump).
 
 `Bytes` derefs to `[u8]`, so consumers that read `&pp.payload` compile
-unchanged; only construction sites changed. Buffers free when the last
+unchanged. Only construction sites changed. Buffers free when the last
 clone drops — a stored `SipMessage` keeps its backing frame alive, which
 is the same memory the old design held as an owned copy.
 

@@ -52,7 +52,7 @@ fixed-state corpus (100 Call-IDs, 200 streams):
 
 The plateau past 2 cores is the single sequential pcap reader (read + buffer
 copy + host-pair peek), not the core count. Before v0.4.16 a per-packet
-cross-core hand-off collapsed this to 0.84M @ 4 cores and 0.50M @ 8; batching
+cross-core hand-off collapsed this to 0.84M @ 4 cores and 0.50M @ 8. Batching
 the hand-off removed the regression.
 
 ## Is the packet path still what it was at 0.5.18?

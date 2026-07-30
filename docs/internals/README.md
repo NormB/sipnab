@@ -1,7 +1,7 @@
 # Developer index
 
 Documentation for people changing sipnab, not people running it. Operator
-documentation lives one level up in `docs/`; the polished site is
+documentation lives one level up in `docs/`. The polished site is
 [sipnab.com](https://www.sipnab.com).
 
 Pages here link directly into the source tree. That is deliberate: docs and
@@ -38,8 +38,8 @@ Already written, and narrower:
 - [TUI testing](tui-testing.md) — snapshot and state testing for the terminal
   UI.
 
-The one-screen map of the tree is [`../architecture.md`](../architecture.md);
-contributor mechanics (setup, hooks, PR expectations) are in
+The one-screen map of the tree is [`../architecture.md`](../architecture.md).
+Contributor mechanics (setup, hooks, PR expectations) are in
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md). Failure behavior — what sipnab
 does when something goes wrong — is [the fault model](../fault-model.md).
 
@@ -89,18 +89,25 @@ also exist, but only in
 [`../design/implementation-plan-phases-8-10.md`](../design/implementation-plan-phases-8-10.md)
 — v6's catalog stops at D21. D22 is competitive-feature-borrowing discipline,
 whose prompt-injection rule is the one cited in
-[`src/mcp/server.rs`](../../src/mcp/server.rs); D23 makes documentation a
+[`src/mcp/server.rs`](../../src/mcp/server.rs). D23 makes documentation a
 tier-1 deliverable that lands in the same pull request as the code it
-describes; D24 makes tests a phase-completion gate, which is why every
+describes. D24 makes tests a phase-completion gate, which is why every
 code-bearing sub-phase in that plan carries a `Tests — X.Y deliverables` block
 beside its `Gate` and `Docs` blocks.
 
 **WS0–WS8 — workstreams.** The refactor program in
 [`../design/maintainability-perf-spec.md`](../design/maintainability-perf-spec.md). WS0 was a
+<!-- The workstream list: each item names a WS number, what it did, and links the
+code it landed in, so the items carry internal commas. Semicolons separate them;
+commas alone would not survive the links. -->
+<!-- vale Google.Semicolons = NO -->
+
 batch of independent quick wins; WS1 unified the per-packet pipeline into the
 single [`classify_packet()`](../../src/pipeline.rs) router; WS2 decomposed
 `main.rs` into [`src/app/`](../../src/app); WS3–WS5 were structural and
-performance work; WS6–WS7 hardened the API surface. WS0–WS7 shipped in v0.5.0;
+performance work; WS6–WS7 hardened the API surface. WS0–WS7 shipped in v0.5.0, and
+<!-- vale Google.Semicolons = YES -->
+
 WS8 (performance) is the only live section.
 
 **P0–P5 — backlog priority tiers** in [`docs/design/backlog.md`](../design/backlog.md):
@@ -122,7 +129,7 @@ the numbered gates in [`.githooks/pre-commit`](../../.githooks/pre-commit)
 (clippy, the full test suite, no `unwrap()`/`expect()` in production, WASM
 exports in sync, the homepage *test count*, sub-gate 5b for the site version —
 a different claim from the crate version — no TODO stubs, WASM rebuild, and an
-advisory notice when a commit touches code these pages cite; the TODO scan and
+advisory notice when a commit touches code these pages cite. The TODO scan and
 that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
 commit through). Sub-gate 5c no longer exists: it re-implemented a Rust test in shell,
 the copies diverged, and the surviving Rust version runs here *and* in CI. Also
@@ -199,6 +206,6 @@ process, so the floor is not optional.
   (`benchmark_tables_match_between_docs_and_website`), because the framing
   around them should differ.
   The wiki renders from `docs/`, so it showed whichever copy was thinner as
-  though it were the whole page. Register a page there; never copy the script. The site mirror exists because GitHub's wiki mermaid viewer
-  pins its controls over the diagram with no way to move them; the site
+  though it were the whole page. Register a page there. Never copy the script. The site mirror exists because GitHub's wiki mermaid viewer
+  pins its controls over the diagram with no way to move them. The site
   renders the same diagrams with a viewer we control.

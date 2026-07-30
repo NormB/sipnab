@@ -79,14 +79,14 @@ header is absent or unparseable.
 otherwise). `sdp` is the raw SDP body, emitted **only** when `Content-Type` is
 `application/sdp` and the body is valid UTF-8 — it lets a consumer verify the
 negotiated media (connection / `m=` / `a=rtpmap`) that dynamic-PT decode depends
-on; omitted for non-SDP or non-UTF-8 bodies.
+on. Omitted for non-SDP or non-UTF-8 bodies.
 
 `response_context` (`"<num> <method>"`, responses only — what the response
 answers) is a deprecated alias of `cseq`, retained for backward compatibility
 under `schema_version` 1. Prefer `cseq`.
 
 `malformed` is a list of structural-defect diagnostics, present **only** when a
-message arrives malformed; a well-formed message omits the field. It surfaces crafted
+message arrives malformed. A well-formed message omits the field. It surfaces crafted
 or broken input rather than silently accepting it: missing mandatory headers
 (`Call-ID`/`CSeq`/`From`/`To`/`Via`), an unparseable `CSeq`, a `Content-Length`
 larger than the body actually present (truncated/lying length), and control/NUL
@@ -208,7 +208,7 @@ under its own variable name — `SIPNAB_STREAM_JSON`, **not** `SIPNAB_JSON`.
 
 ## pcap / pcapng
 
-`-O <file>` writes captured packets; `--pcapng` selects PCAP-NG. With TLS
+`-O <file>` writes captured packets, and `--pcapng` selects PCAP-NG. With TLS
 decryption, `--pcap-export-mode` controls whether decryption secrets
 (DSBs) travel with the file for Wireshark. Rotation: `--split filesize:N` /
 `--split duration:N`, or SIGUSR1 on demand.
@@ -216,7 +216,7 @@ decryption, `--pcap-export-mode` controls whether decryption secrets
 pcapng timestamps are nanosecond-resolution, declared via `if_tsresol=9`
 in the Interface Description Block. Files written by sipnab <= 0.5.0
 stored nanosecond ticks but omitted that declaration, so other readers
-inflated every time value ×1000 (`capinfos` reporting year 58484);
+inflated every time value ×1000 (`capinfos` reporting year 58484).
 [`scripts/repair_pcapng_tsresol.py`](../scripts/repair_pcapng_tsresol.py)
 repairs such old captures in place without touching packet data.
 

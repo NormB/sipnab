@@ -10,7 +10,7 @@ CLI flags always override config file values (see [config-reference.md](config-r
 
 A few flag combinations to get productive fast. For the full task-oriented
 collection — triage, filtering, recording, security, HEP — see the
-[Cookbook](examples.md); for symptom-driven diagnostics see
+[Cookbook](examples.md). For symptom-driven diagnostics see
 [Troubleshooting](troubleshooting.md). This page is otherwise a flag
 reference (grouped below).
 

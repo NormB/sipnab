@@ -8,15 +8,15 @@ are the steps to be deliberate about.
 Checking the enforcement claims here meant making the change and watching the
 gate fail — or, more often than expected, watching it pass. Where the first
 draft of this page and reality disagreed, reality won: adding a CLI flag does
-*not* trip `docs_drift_test`; the compiler turns away an MCP tool that holds a lock across an await
- by the compiler before clippy gets a word in; and **three of the six
+*not* trip `docs_drift_test`, the compiler turns away an MCP tool that holds a
+lock across an await before clippy gets a word in, and **three of the six
 checklists turned out to name gates that do not fire at all** for the change
 they sat beside. Those steps now carry **(unenforced)**.
 
 The pattern behind all three: a gate that hardcodes its subjects — three flood
 scenarios, two output-flag behaviors, and until it was rewritten to enumerate
 the directory, a list of schema filenames — cannot see a *new* subject. It
-protects what exists from regressing; it does not notice an addition. Assume
+protects what exists from regressing. It does not notice an addition. Assume
 nothing enforces a new thing until you have watched it fail.
 
 ## Add a CLI flag

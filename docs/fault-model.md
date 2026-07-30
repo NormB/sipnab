@@ -41,7 +41,7 @@ layers:
   several link types) and the pcap file reader. A caught panic fails the
   test with the offending input hex-dumped for a repro seed.
 
-The smoke layer is the regression floor; it found the keylog panic in §5
+The smoke layer is the regression floor. It found the keylog panic in §5
 that nobody had ever run the committed fuzz target against.
 
 - **Property tests**: `tests/property_test.rs` (proptest) asserts the
@@ -51,9 +51,16 @@ that nobody had ever run the committed fuzz target against.
   on arbitrary text (parse then evaluate never panic).
 
 **Verified bounded already in code** (confirmed by audit, exercised by
+<!-- A list whose items carry their own parentheses and units. Semicolons are the
+separator that keeps it readable -- the super-comma use Google's own guidance
+keeps. Splitting on periods would turn one list into eight fragments. -->
+<!-- vale Google.Semicolons = NO -->
+
 fuzz): SIP header count (≤200) and fold size (≤8 KB); websocket payload
 (≤64 KB); TLS record length (≤18432); IP/GRE encapsulation depth (≤5);
 RTP CSRC / RTCP report counts (5-bit fields); all length-driven
+<!-- vale Google.Semicolons = YES -->
+
 `Vec::with_capacity` sites bounded by the actual slice. RTP/RTCP
 length-field arithmetic (`u16 * 4`) cannot overflow `usize`, and each
 multiply carries a bounds `ensure!` after it.
@@ -71,7 +78,7 @@ The #1 memory-DoS surface: an attacker invents unlimited unique Call-IDs
 | per-stream audio frames | 1500 | ring buffer | `stream_store.rs` |
 | IP/TCP reassembly | 10k entries / 30 s TTL | evict | `reassembly.rs` |
 
-Both eviction policies are memory-safe; `rotate=false` (default) trades
+Both eviction policies are memory-safe. `rotate=false` (default) trades
 availability (new calls dropped under a flood) for never evicting a
 tracked dialog. `rotate=true` is LRU.
 

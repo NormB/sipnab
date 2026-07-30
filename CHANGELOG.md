@@ -11,6 +11,37 @@ entry that carries them.
 ## [Unreleased]
 
 ### Changed
+- **Semicolons that joined two sentences are now two sentences, and
+  `Google.Semicolons` is enforced.** 137 authored alerts across 27 files, 221
+  counting the generated mirrors. **115 were a semicolon standing between two
+  independent clauses** — "The core is synchronous; async exists only at the
+  edges" — and read better split, which is the whole of Google's advice here.
+
+  The other 22 are kept, because the rule is blunter than the guidance it cites:
+  its entire definition is `tokens: [';']`. Semicolons separating list items that
+  carry their own commas are the one use Google's own page keeps, and this tree
+  has three such lists — the eight pre-commit gates, the bounded-input audit, and
+  the workstream history. Those are bracketed with
+  `<!-- vale Google.Semicolons = NO -->` in place.
+
+  Three pages are switched off by name instead, with their generated mirrors,
+  because a comment directive does not reach the content their semicolons live
+  in: `;branch=` and `;tag=` inside SIP headers in a raw-HTML terminal mockup,
+  `;` between CSS declarations in a `style` attribute, and an OpenSIPS `trace_id`
+  URI in a fence indented inside a numbered list item. Placing a directive inside
+  the `<pre>` was tried first and injected blank lines into the rendered mockup —
+  the failure `mockup_alignment_test` exists to catch.
+
+### Fixed
+- **Two sentences this session's active-voice pass had broken.** `docs/auth.md`
+  read "an explicit id, so that it a denylist can name later" and
+  `docs/internals/walkthroughs.md` said the compiler "turns away an MCP tool …
+  by the compiler". Both were substitutions that replaced a passive clause and
+  left its old subject or agent stranded. Found by reading the surrounding lines
+  while fixing semicolons in the same paragraphs, which is the argument for
+  re-reading a rewritten sentence whole rather than trusting that the replaced
+  span was the only part that mattered.
+
 - **Sentence-case headings across the published documentation, enforced.**
   `Google.Headings` was the largest item in the config's known backlog at 311
   alerts. That number counted the generated `website/content` mirrors; the

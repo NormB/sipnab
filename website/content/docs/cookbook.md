@@ -101,7 +101,7 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 **Commands:**
 
-`sipnab -N --json` emits per-message records (one JSON line per SIP message), not per-dialog summaries. The `status_code` field is on response messages; combined with `--filter` (which evaluates against the dialog so all messages from matched dialogs flow through), you get a histogram of every response code seen during failed dialogs:
+`sipnab -N --json` emits per-message records (one JSON line per SIP message), not per-dialog summaries. The `status_code` field is on response messages. Combined with `--filter` (which evaluates against the dialog so all messages from matched dialogs flow through), you get a histogram of every response code seen during failed dialogs:
 
 Every failed call's response messages — Call-ID, status_code and reason:
 
@@ -638,7 +638,7 @@ sudo sipnab -N -d eth0 \
             --json
 ```
 
-`--kill-scanner` actively responds to known scanner User-Agents (uses the isolated kill-child process). The response code defaults to **200**; pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog`.
+`--kill-scanner` actively responds to known scanner User-Agents (uses the isolated kill-child process). The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog`.
 
 ### 10b. Wire to fail2ban
 
@@ -663,7 +663,7 @@ carried none — an absent `User-Agent` is itself a scanner signal, so it is wor
 keeping distinct from a client that sends the string `-`, which renders as
 `"-"`. Both fields carry attacker-influenced text (`method` can be a
 non-standard token), so quoting is also what stops a crafted value forging a
-second `src=` field inside the line; sipnab escapes embedded `"` and `\`. `src=`
+second `src=` field inside the line, and sipnab escapes embedded `"` and `\`. `src=`
 carries no quotes: it holds a parsed IP address, not text from the wire.
 
 `/etc/fail2ban/filter.d/sipnab.conf`:
@@ -718,7 +718,7 @@ sudo sipnab -N -d eth0 --kill-scanner \
             --alert-exec '/usr/local/bin/notify-slack.sh "$SIPNAB_RULE" "$SIPNAB_SRC" "$SIPNAB_DETAIL"'
 ```
 
-Alert data reaches the hook as the `SIPNAB_RULE`, `SIPNAB_SRC`, and `SIPNAB_DETAIL` environment variables — never interpolated into the command string. sipnab rewrites only the three legacy placeholders `%rule`, `%src`, and `%detail` into those `$SIPNAB_*` references for you; anything else (`%type%`, `%source_ip%`, …) reaches the shell verbatim.
+Alert data reaches the hook as the `SIPNAB_RULE`, `SIPNAB_SRC`, and `SIPNAB_DETAIL` environment variables — never interpolated into the command string. sipnab rewrites only the three legacy placeholders `%rule`, `%src`, and `%detail` into those `$SIPNAB_*` references for you. Anything else (`%type%`, `%source_ip%`, …) reaches the shell verbatim.
 
 The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxed process.
 
@@ -919,7 +919,7 @@ Capture SIP+RTP to rotating pcapng files, 50 MiB chunks:
 sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50
 ```
 
-Decrypt SIPS signaling with a TLS key log and export decryptable pcapng. `--keylog` is the SIP/TLS NSS keylog — signaling only; it does not decrypt media.
+Decrypt SIPS signaling with a TLS key log and export decryptable pcapng. `--keylog` is the SIP/TLS NSS keylog — signaling only, and it does not decrypt media.
 
 ```bash
 sudo sipnab -N -d eth0 --keylog /tmp/sslkeys.log --keylog-watch \
