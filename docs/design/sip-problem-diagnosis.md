@@ -1,6 +1,8 @@
 # SIP problem diagnosis
 
-**Status:** spec, not yet implemented.
+**Status:** detections 1–3 implemented in [`src/sip/diagnosis.rs`](../../src/sip/diagnosis.rs)
+and rendered in the dialog JSON as `signaling_diagnosis`; detections 4–7 remain
+specified and unbuilt, per the build order at the end of this document.
 **Complements:** [`src/rtp/diagnosis.rs`](../../src/rtp/diagnosis.rs), which does
 the same job for the media side.
 

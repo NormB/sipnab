@@ -381,8 +381,8 @@ fn wiki_intra_docs_links_resolve() {
     // here; growth costs one deliberate bump, the same contract
     // `linked_code_targets_exist` uses.
     assert_eq!(
-        seen, 179,
-        "extractor found {seen} wiki links, expected 179. More is fine — bump \
+        seen, 180,
+        "extractor found {seen} wiki links, expected 180. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

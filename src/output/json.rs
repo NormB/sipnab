@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::rtp::diagnosis::MediaDiagnosis;
 use crate::rtp::stream::RtpStream;
 use crate::sip::SipMessage;
+use crate::sip::diagnosis::SignalingDiagnosis;
 use crate::sip::dialog::SipDialog;
 
 // ── JSON schema types ───────────────────────────────────────────────
@@ -235,6 +236,17 @@ struct DialogJson {
     sdp_timeline: Vec<SdpExchangeJson>,
     /// Media diagnosis findings.
     diagnosis: DiagnosisJson,
+    /// Signalling diagnosis findings, omitted entirely when nothing was
+    /// detected — the spec's rule, and what keeps a clean dialog's JSON the size
+    /// it was before this existed.
+    ///
+    /// `SignalingDiagnosis` is serialized directly rather than projected into a
+    /// `*Json` twin like the media diagnosis above. The projection exists there
+    /// because `MediaDiagnosis` carries fields the wire format does not want;
+    /// this type was designed as the wire shape, so a second copy would be two
+    /// definitions of one thing waiting to disagree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signaling_diagnosis: Option<SignalingDiagnosis>,
     /// Associated RTP streams.
     streams: Vec<StreamJson>,
 }
@@ -434,6 +446,11 @@ pub fn dialog_to_json(
         timing,
         sdp_timeline,
         diagnosis: diag,
+        // Computed here rather than taken as a parameter: it is a property of the
+        // dialog, which every caller already passes, so threading it through four
+        // call sites would only create a way for one of them to forget.
+        signaling_diagnosis: Some(crate::sip::diagnosis::diagnose_signaling(&dialog.messages))
+            .filter(|d| !d.is_empty()),
         streams: stream_jsons,
     };
 
@@ -1027,6 +1044,66 @@ mod tests {
         assert!(parsed["streams"].is_array(), "should have streams array");
         assert!(parsed["call_id"].is_string());
         assert!(parsed["state"].is_string());
+        // A single-INVITE dialog has nothing wrong with it, and the spec says the
+        // object is omitted entirely rather than emitted empty.
+        assert!(
+            parsed.get("signaling_diagnosis").is_none(),
+            "a clean dialog must omit signaling_diagnosis, got {:?}",
+            parsed.get("signaling_diagnosis")
+        );
+    }
+
+    /// A failed dialog carries `signaling_diagnosis` with its evidence indices.
+    ///
+    /// This is the wiring test, not a detection test — `sip::diagnosis` covers the
+    /// detections. What it proves is that the diagnosis reaches the surface at
+    /// all, which a module with passing unit tests and no caller would not.
+    #[test]
+    fn dialog_json_carries_signaling_diagnosis_when_the_call_failed() {
+        let msg = make_invite();
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
+
+        // A 503 on the same dialog: detection 1.
+        let raw = "SIP/2.0 503 Service Unavailable\r\n\
+                   Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1\r\n\
+                   From: <sip:a@example.com>;tag=1\r\n\
+                   To: <sip:b@example.com>;tag=2\r\n\
+                   Call-ID: test-call-id@example.com\r\n\
+                   CSeq: 1 INVITE\r\n\
+                   Reason: Q.850;cause=34\r\n\
+                   Content-Length: 0\r\n\r\n";
+        let resp = crate::sip::parser::parse_sip(
+            raw.as_bytes(),
+            msg.timestamp,
+            msg.dst_addr,
+            msg.src_addr,
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .expect("fixture parses");
+        dialog.messages.push(resp);
+
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let json_str = dialog_to_json(&dialog, &streams, &MediaDiagnosis::default());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json_str).expect("should be valid JSON");
+
+        let sd = &parsed["signaling_diagnosis"];
+        assert!(
+            sd.is_object(),
+            "expected signaling_diagnosis, got {json_str}"
+        );
+        assert_eq!(sd["final_failure"]["code"], 503);
+        assert_eq!(sd["final_failure"]["reason_header"], "Q.850;cause=34");
+        // Evidence points into dialog.messages: the response is index 1.
+        assert_eq!(sd["final_failure"]["evidence"][0], 1);
+        assert!(
+            sd["hints"][0].as_str().is_some_and(|h| h.contains("503")),
+            "hint should name the code, got {:?}",
+            sd["hints"]
+        );
     }
 
     /// Stream JSON carries schema, hex SSRC, and numeric quality fields.

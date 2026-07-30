@@ -10,6 +10,7 @@
 //! [`DialogState`](dialog::DialogState), [`SipMethod`],
 //! [`FilterExpr`](dsl::FilterExpr).
 
+pub mod diagnosis;
 pub mod dialog;
 pub mod dialog_store;
 pub mod dsl;
