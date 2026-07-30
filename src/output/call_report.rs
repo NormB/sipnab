@@ -10,6 +10,7 @@ use std::fmt::Write;
 
 use crate::rtp::diagnosis::MediaDiagnosis;
 use crate::rtp::stream::RtpStream;
+use crate::sip::diagnosis::{AuthLoopKind, diagnose_signaling};
 use crate::sip::dialog::{DialogState, SipDialog};
 
 /// Output format for the call report.
@@ -57,6 +58,88 @@ pub fn generate_call_report(
         ReportFormat::Json => super::json::dialog_to_json(dialog, streams, diagnosis),
         ReportFormat::Markdown => generate_markdown_report(dialog, streams, diagnosis),
     }
+}
+
+// ── Signalling diagnosis rendering ──────────────────────────────────
+
+/// One `(headline, evidence)` pair per signalling detection, ready for either
+/// output format.
+///
+/// Shared rather than written twice: the text and Markdown reports differ only in
+/// their bullet syntax, and two copies of the evidence formatting would be two
+/// places for "which messages" to drift out of agreement — which is exactly the
+/// class of defect the rest of this release was spent removing.
+fn signaling_findings(dialog: &SipDialog) -> Vec<(String, String)> {
+    let diag = diagnose_signaling(&dialog.messages);
+    let mut out = Vec::new();
+
+    if let Some(f) = &diag.final_failure {
+        let mut head = format!("Final failure: {} {}", f.code, f.reason_phrase);
+        // The Reason header is why this detection carries it at all: a bare 503
+        // says nothing, `Q.850;cause=34` says the trunk is full.
+        if let Some(r) = &f.reason_header {
+            head.push_str(&format!(" [Reason: {r}]"));
+        }
+        if let Some(w) = &f.warning {
+            head.push_str(&format!(" [Warning: {w}]"));
+        }
+        out.push((head, evidence_label(dialog, &f.evidence)));
+    }
+
+    if let Some(a) = &diag.auth_loop {
+        let shape = match a.kind {
+            AuthLoopKind::CredentialFailure => {
+                "credentials sent and rejected each time — wrong password"
+            }
+            AuthLoopKind::SilentDrop => {
+                "no Authorization header ever sent — client not attempting the \
+                 challenge, or a proxy stripping it"
+            }
+        };
+        out.push((
+            format!("Authentication loop: {} challenges, {shape}", a.challenges),
+            evidence_label(dialog, &a.evidence),
+        ));
+    }
+
+    if let Some(r) = &diag.retransmissions {
+        out.push((
+            format!(
+                "No response to {}: {} transmissions over {:.1}s",
+                r.method, r.count, r.span_sec
+            ),
+            evidence_label(dialog, &r.evidence),
+        ));
+    }
+
+    out
+}
+
+/// Render evidence indices as something a reader can act on.
+///
+/// The JSON surface emits bare indices because a machine will join them against
+/// the message list. A report pasted into a ticket has no such list to hand, so
+/// "messages 1, 3, 5" would send the reader back to the capture to find out what
+/// those were. Each index is labelled with what the message actually is.
+fn evidence_label(dialog: &SipDialog, indices: &[usize]) -> String {
+    let parts: Vec<String> = indices
+        .iter()
+        .map(|&i| match dialog.messages.get(i) {
+            Some(m) if m.is_request => match &m.method {
+                Some(meth) => format!("#{i} {meth}"),
+                None => format!("#{i} request"),
+            },
+            Some(m) => match (m.status_code, &m.reason) {
+                (Some(c), Some(r)) => format!("#{i} {c} {r}"),
+                (Some(c), None) => format!("#{i} {c}"),
+                _ => format!("#{i} response"),
+            },
+            // An index outside the list would mean the diagnosis and the dialog
+            // disagree about the message set. Say so rather than dropping it.
+            None => format!("#{i} (out of range)"),
+        })
+        .collect();
+    parts.join(", ")
 }
 
 // ── Text format ─────────────────────────────────────────────────────
@@ -191,6 +274,21 @@ fn generate_text_report(
         }
     }
 
+    // Signalling section, separate from the media issues above because the
+    // operator question differs: "was the audio bad" and "why did the call fail"
+    // send you to different teams. Omitted when nothing was detected rather than
+    // printing a reassuring "None" — the media section above already answers
+    // whether anything was checked.
+    let signaling = signaling_findings(dialog);
+    if !signaling.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "Signalling Issues:");
+        for (head, evidence) in &signaling {
+            let _ = writeln!(out, "  - {head}");
+            let _ = writeln!(out, "    evidence: {evidence}");
+        }
+    }
+
     out
 }
 
@@ -311,6 +409,18 @@ fn generate_markdown_report(
     } else {
         for hint in &diagnosis.hints {
             let _ = writeln!(out, "- {hint}");
+        }
+    }
+
+    // Signalling, as its own section for the same reason as the text report.
+    let signaling = signaling_findings(dialog);
+    if !signaling.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "## Signalling");
+        let _ = writeln!(out);
+        for (head, evidence) in &signaling {
+            let _ = writeln!(out, "- **{head}**");
+            let _ = writeln!(out, "  - evidence: {evidence}");
         }
     }
 
@@ -604,5 +714,139 @@ mod tests {
             !report.contains("Issues Detected: None"),
             "should not say None when there are issues"
         );
+    }
+
+    // ── Signalling diagnosis rendering ───────────────────────────────
+
+    /// A dialog that failed on a 503 carrying a `Reason:` header.
+    fn make_failed_dialog() -> SipDialog {
+        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+        let raw_invite = build_sip(
+            "INVITE sip:1002@carrier.net SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKfail",
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@carrier.net>",
+                "Call-ID: failed-call@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let invite = parse_sip(
+            &raw_invite,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        let raw_fail = build_sip(
+            "SIP/2.0 503 Service Unavailable",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKfail",
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@carrier.net>;tag=t2",
+                "Call-ID: failed-call@example.com",
+                "CSeq: 1 INVITE",
+                "Reason: Q.850;cause=34;text=\"no circuit available\"",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let fail = parse_sip(
+            &raw_fail,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        let mut d = SipDialog::new(&invite).expect("should create");
+        d.messages.push(fail);
+        d
+    }
+
+    #[test]
+    fn text_report_carries_the_signalling_section_with_evidence() {
+        let dialog = make_failed_dialog();
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            ReportFormat::Text,
+        );
+
+        assert!(
+            report.contains("Signalling Issues:"),
+            "expected a signalling section:\n{report}"
+        );
+        assert!(report.contains("Final failure: 503 Service Unavailable"));
+        // The Reason header is the whole reason the detection carries it.
+        assert!(
+            report.contains("no circuit available"),
+            "Reason header should reach the report:\n{report}"
+        );
+        // Evidence names the message, not a bare index.
+        assert!(
+            report.contains("evidence: #1 503 Service Unavailable"),
+            "evidence should label the message:\n{report}"
+        );
+    }
+
+    #[test]
+    fn markdown_report_carries_the_signalling_section() {
+        let dialog = make_failed_dialog();
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let report = generate_call_report(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+            ReportFormat::Markdown,
+        );
+
+        assert!(
+            report.contains("## Signalling"),
+            "expected a Signalling header:\n{report}"
+        );
+        assert!(report.contains("**Final failure: 503 Service Unavailable"));
+        assert!(report.contains("- evidence: #1 503 Service Unavailable"));
+    }
+
+    #[test]
+    fn a_healthy_dialog_gets_no_signalling_section() {
+        // make_dialog_with_messages ends on a 200 OK.
+        let dialog = make_dialog_with_messages();
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+
+        for format in [ReportFormat::Text, ReportFormat::Markdown] {
+            let report =
+                generate_call_report(&dialog, &streams, &MediaDiagnosis::default(), format);
+            assert!(
+                !report.contains("Signalling Issues:") && !report.contains("## Signalling"),
+                "a successful call must not get a signalling section ({format:?}):\n{report}"
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_label_reports_an_out_of_range_index_rather_than_dropping_it() {
+        // A silent drop here would mean the report claims fewer messages of
+        // evidence than the diagnosis found, which is the failure mode the
+        // evidence principle exists to prevent.
+        let dialog = make_failed_dialog();
+        let label = evidence_label(&dialog, &[0, 99]);
+        assert!(label.contains("#0 INVITE"), "got {label}");
+        assert!(label.contains("#99 (out of range)"), "got {label}");
     }
 }

@@ -40,6 +40,15 @@ entry that carries them.
   detected, so a healthy dialog serializes exactly as before. Fields for
   detections 4–7 are absent rather than always-null: a field that is never
   populated reads as "checked, nothing found", which would be false.
+- **The call report carries the signalling findings.** Text and Markdown both get a
+  Signalling section listing each detection with its evidence — which is also what
+  MCP's `get_dialog_report` returns for its non-JSON formats. Evidence is labelled
+  with the message rather than printed as a bare index: JSON emits `[1]` because a
+  machine will join it against the message list, but a report pasted into a ticket
+  has no such list to hand, so it reads `#1 503 Service Unavailable`. An index
+  outside the message list is reported as out-of-range rather than silently
+  dropped, since a quiet drop would make the report claim less evidence than the
+  diagnosis found.
 
 ## [0.5.65] - 2026-07-30
 
