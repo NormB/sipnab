@@ -58,12 +58,18 @@ entry that carries them.
   180 -> 179. Its comment now says how to tell that apart from the failure it
   exists for — a drop nobody can name is the extractor's regex breaking, and
   editing the number is how that gets missed.
-- **`docs/install.md` claimed the release does not set
-  `MACOSX_DEPLOYMENT_TARGET`.** It has set it since 0.5.65, when the pin landed
-  in `release.yml` alongside `published_macos_floors_match_the_toolchain`. The
-  workflow step and the sentence describing its absence shipped in the same
-  release, and the page went on telling readers the floors were incidental
-  compiler defaults that nothing in the repository pinned.
+- **Three places claimed the release does not set `MACOSX_DEPLOYMENT_TARGET`.**
+  It has set it since 0.5.65, when the pin landed in `release.yml` alongside
+  `published_macos_floors_match_the_toolchain` — the workflow step and the
+  sentences denying it shipped in the same release. `docs/install.md` told
+  readers the floors were incidental compiler defaults that nothing in the
+  repository pinned; `website/config.toml` said "release.yml never sets
+  MACOSX_DEPLOYMENT_TARGET" directly above the two values it pins; and the gate's
+  own doc comment explained that it asks rustc "precisely because `release.yml`
+  does not set a deployment target", while its body had already been rewritten to
+  read the workflow's pin. The first of the three was fixed a commit earlier and
+  the other two survived, which is the argument for grepping the claim rather
+  than the file you happened to be reading.
 - **The release-artifact counts in `docs/internals/build-ci-release.md` were
   wrong, and now come from the build matrix.** The page said a tag publishes
   "eight artifacts" and called the `noaudio` builds a `.deb`-only variant. A

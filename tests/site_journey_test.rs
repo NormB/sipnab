@@ -877,11 +877,17 @@ fn published_repo_slugs_agree() {
 /// was wrong for both arches (11.0 and 10.12) and stating one number for both
 /// concealed that they differ, so an Intel Mac on 10.15 was told to give up.
 ///
-/// The source of truth is the compiler, not a workflow step, precisely because
-/// `release.yml` does not set a deployment target: absent that, the floor is
-/// whatever rustc defaults to. Asking rustc means this gate keeps holding if a
-/// toolchain bump moves a default, and starts failing the moment someone sets an
-/// explicit target without republishing the number.
+/// The source of truth is now `release.yml`, which pins
+/// `MACOSX_DEPLOYMENT_TARGET` per target in its "Pin macOS deployment target"
+/// step — at the two values rustc already defaulted to, so no binary changed.
+/// This gate holds the published numbers to that pin, and separately refuses a
+/// pin *below* the compiler's own default: config and workflow would agree on
+/// paper while the page named an OS the binary cannot run on.
+///
+/// Before the pin, the floor was whatever rustc happened to default to and
+/// nothing in the repository named it — which is why this comment said for two
+/// releases that `release.yml` does not set a deployment target. It has since
+/// 0.5.65; the workflow step and the sentences denying it shipped together.
 ///
 /// `--print deployment-target` reads the built-in target spec, so it answers for
 /// darwin targets whose std is not installed — this runs on Linux CI.
