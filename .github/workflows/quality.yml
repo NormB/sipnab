@@ -299,6 +299,18 @@ jobs:
           path: src tests docs website benches harness scripts README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md
 
       # Pass one: Markdown that resolves on the filesystem. 257 unique links.
+      #
+      # Deliberately WITHOUT --include-fragments. Anchors are already gated, and
+      # better: link_integrity_test carries generated_site_anchors_resolve_under_zola,
+      # website_intra_docs_links_resolve and wiki_intra_docs_links_resolve, which
+      # slugify headings the way Zola and the GitHub wiki actually do.
+      #
+      # lychee's slugger disagrees with Zola's on headings containing a slash --
+      # for `### GET /v1/dialogs` it wants `get-v1dialogs` where Zola resolves
+      # `get-v1-dialogs`. Turning fragments on here reported the repo's correct,
+      # Zola-shaped anchor as dead; "fixing" it to satisfy lychee broke all three
+      # of the gates above, which are the ones describing where these documents
+      # are actually published.
       - name: Dead links (docs Markdown)
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
