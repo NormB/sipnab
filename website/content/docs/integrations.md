@@ -85,7 +85,7 @@ bantime = 3600
 action = iptables-allports[name=sipnab, protocol=udp]
 ```
 
-> **Tip:** Combine `--kill-scanner` with `--kill-ua "friendly-scanner|sipvicious"` to target specific scanner signatures. The `--kill-response` flag (default: 200) controls what SIP response code is sent back to detected scanners.
+> **Tip:** Combine `--kill-scanner` with `--kill-ua "friendly-scanner|sipvicious"` to target specific scanner signatures. The `--kill-response` flag (default: 200) picks the SIP response code that goes back to detected scanners.
 
 ## Syslog Alerts
 
@@ -95,4 +95,4 @@ Send security alerts to syslog:
 sipnab -d eth0 --kill-scanner --alert syslog --syslog
 ```
 
-Alerts are sent with facility `LOG_LOCAL0` and severity based on event type (scanner=warning, fraud=alert). Use your syslog server's filtering to route sipnab events to dedicated log files or SIEM systems.
+Alerts go out with facility `LOG_LOCAL0` and a severity keyed to event type (scanner=warning, fraud=alert). Use your syslog server's filtering to route sipnab events to dedicated log files or SIEM systems.

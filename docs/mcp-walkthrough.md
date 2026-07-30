@@ -2,13 +2,13 @@
 
 [MCP Server](mcp.md) is the reference: every flag, tool, and error code. This
 page walks a **first-time sipnab user** through each deployment scenario,
-command by command, on every machine involved. Steps are tagged with the
+command by command, on every machine involved. Each step carries a tag with the
 host they run on: **[server]** (where sipnab runs), **[laptop]** (where
 your MCP client / Claude Code runs), or **[proxy]** (your SIP proxy, in
 the HEP scenario).
 
-Every command here was verified end to end against a real build at 0.5.20. The
-flag names are held to the current CLI by `docs_drift_test`, but the walkthrough
+Every command here ran end to end against a real build at 0.5.20. The
+`docs_drift_test` holds the flag names to the current CLI, but the walkthrough
 itself has not been re-run since, so treat the transcript as illustrative rather
 than freshly measured.
 
@@ -33,7 +33,7 @@ has the exact config for each.
 Two invariants that apply everywhere:
 
 1. **The binary must have MCP compiled in.** All released artifacts
-   (installer script, tarballs, `.deb`, `.rpm`) are built with the full
+   (installer script, tarballs, `.deb`, `.rpm`) carry the full
    feature set, so this is only a concern for source builds — but always
    confirm with `sipnab --version`: the features list must include `mcp`
    (stdio) and, for the HTTP scenarios, `mcp-http`.
@@ -170,13 +170,13 @@ it with `claude mcp add --transport http sipnab http://127.0.0.1:8731/mcp`.
 
 A designed-for use case, not a workaround: the MCP surface is **read-only
 by construction** (no tool sends SIP or mutates capture state), every
-response is bounded, and non-loopback HTTP binds refuse to start without a
+response has a ceiling, and non-loopback HTTP binds refuse to start without a
 bearer token. Three wirings, in increasing order of setup.
 
 ### Scenario 2A — SSH-launched stdio: ad-hoc, zero server configuration
 
 The MCP "command" is simply `ssh`. Nothing listens on the server; your SSH
-key is the authentication; when the session ends, nothing is left running.
+key is the authentication; when the session ends, nothing keeps running.
 
 1. **[server]** Do [Step 0](#step-0--install-sipnab-every-server-once).
    That's *all* the server setup there is.
@@ -649,7 +649,7 @@ Nothing about MCP requires an interactive session.
 
 **Agent-in-cron** — headless Claude Code against any wiring above:
 
-1. **[laptop or ops host]** Confirm the MCP server is registered
+1. **[laptop or ops host]** Confirm the MCP server appears
    (`claude mcp list`), then test a one-shot run:
 
    ```bash
@@ -699,7 +699,7 @@ unchanged with `command` set to `ssh` and the sipnab invocation moved into
 
 `~/.codex/config.toml` (shared by the ChatGPT desktop app and IDE
 extension), one TOML table per server — `command` means stdio, `url` means
-streamable HTTP, mixing both is rejected:
+streamable HTTP, and mixing both fails:
 
 ```toml
 # stdio — scenario 1/2A
@@ -713,8 +713,8 @@ url = "https://capture.example.com/mcp"
 bearer_token_env_var = "SIPNAB_MCP_TOKEN"
 ```
 
-`bearer_token_env_var` names a variable read from the environment codex is
-launched with, so the export and the launch have to happen in the same shell:
+`bearer_token_env_var` names a variable read from the environment that launched
+codex with, so the export and the launch have to happen in the same shell:
 
 ```bash
 # Run all of these, in order.
@@ -818,7 +818,7 @@ rules as scenarios 2B and 4.
 
 ## Load on a busy server
 
-Two distinct costs; both are small, and both can be capped.
+Two distinct costs; both are small, and you can cap both.
 
 **The capture path** dwarfs the MCP path and is the one to size. Reference
 numbers ([benchmarks](benchmarks.md), modest 14-core aarch64 host):
@@ -833,7 +833,7 @@ one core's budget. What actually costs:
   disappears.
 - **HEP ingest** is the cheapest input: an unprivileged UDP socket, and
   `hep_rate_limit` (default 50k pps) hard-caps what sipnab will accept.
-- **Memory is bounded, not open-ended**: `[limits]` defaults cap tracked
+- **Memory has a ceiling, not an open end**: `[limits]` defaults cap tracked
   dialogs (100k), RTP streams (50k), messages per dialog (500), and TCP
   reassembly (10k). Tighten these on a shared box; a
   `dialog_limit = 20000`-class config keeps sipnab a well-behaved tenant.
@@ -863,7 +863,7 @@ What remains **your** call:
 - **Captured SIP is sensitive.** Dialogs carry phone numbers, IPs,
   User-Agents, digest `Authorization` headers, and (if captured) media
   stats. Two consequences: treat the MCP endpoint with the same care as
-  the pcaps themselves, and remember that whatever a tool returns is sent
+  the pcaps themselves, and remember that whatever a tool returns goes
   to the agent's model provider — if that's a cloud LLM, capture content
   leaves your network by design. Scope what the server can see (BPF
   filter, signaling-only HEP) to what you're comfortable exporting.

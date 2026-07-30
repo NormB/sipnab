@@ -51,7 +51,7 @@ Same-binary A/B isolating the changed operation on a 160-byte payload:
 
 Honest conclusion: at typical SIP/RTP packet sizes the heap copy was
 already as cheap as the refcounted slice — the analysis claim of a
-20-30% hot-path win is refuted. The change is cost-neutral on the
+20-30% hot-path win did not hold. The change costs nothing measurable on the
 single-threaded hot path (`packet_decap/eth_ipv4_udp_160b` ~127 ns
 total either way, within environment noise on a loaded host).
 

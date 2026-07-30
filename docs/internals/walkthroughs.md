@@ -1,17 +1,17 @@
 # Contributor walkthroughs
 
 Six ordered checklists for the changes people actually make. Each step names
-the test that fails if you skip it. Where no test enforces a step it is marked
+the test that fails if you skip it. Where no test enforces a step, it carries
 **(unenforced)** — that is prose, and prose is what gets forgotten, so those
 are the steps to be deliberate about.
 
-The enforcement claims here were checked by making the change and watching the
+Checking the enforcement claims here meant making the change and watching the
 gate fail — or, more often than expected, watching it pass. Where the first
 draft of this page and reality disagreed, reality won: adding a CLI flag does
-*not* trip `docs_drift_test`; an MCP tool that holds a lock across an await is
-rejected by the compiler before clippy gets a word in; and **three of the six
+*not* trip `docs_drift_test`; the compiler turns away an MCP tool that holds a lock across an await
+ by the compiler before clippy gets a word in; and **three of the six
 checklists turned out to name gates that do not fire at all** for the change
-they were attached to. Those steps are now marked **(unenforced)**.
+they sat beside. Those steps now carry **(unenforced)**.
 
 The pattern behind all three: a gate that hardcodes its subjects — three flood
 scenarios, two output-flag behaviors, and until it was rewritten to enumerate
@@ -27,7 +27,7 @@ nothing enforces a new thing until you have watched it fail.
    ~140-flag help output.
 2. Wire it wherever it takes effect — usually
    [`plan()`](../../src/app/bootstrap.rs), so the flag becomes part of
-   `RunPlan` rather than being read at the point of use.
+   `RunPlan` rather than at the point of use.
 3. Give it a config fallback in [`config.rs`](../../src/config.rs) if its peers
    have one.
    → [`config_wiring_test`](../../tests/config_wiring_test.rs) catches a config
@@ -171,7 +171,7 @@ sequenceDiagram
 Verified: a new `src/security/` module holding an uncapped `HashMap<IpAddr, u64>`,
 exported from `mod.rs`, left `resource_bounds_test` at 3/3 and `security_test`
 at 38/38. Both steps above are real obligations with no gate behind them —
-which is exactly why they are written down.
+which is exactly why this page writes them down.
 5. If it can *transmit* anything, it must be opt-in and must respect the
    HEP-origin restriction (SN-01): HEP-sourced packets are ineligible for
    active response without `--hep-allow-kill`.
@@ -191,7 +191,7 @@ which is exactly why they are written down.
    [`tests/schemas/`](../../tests/schemas). No registration step: the
    `all_schemas_compile` case in
    [`json_schema_test`](../../tests/json_schema_test.rs) enumerates the
-   directory, so a new file is compiled into a validator the moment it lands
+   directory, so a new file becomes a validator the moment it lands
    and a malformed one fails there. What is still on you is *live-output*
    validation — proving the surface actually emits what the schema describes.
 4. Add behavior coverage to

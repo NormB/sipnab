@@ -34,7 +34,7 @@ cd sipnab
 
 It runs `cargo install --path . --bin sipnab` (forwarding any arguments), then
 on Linux invokes the binary's own `--setup-caps` so live capture works without
-`sudo`. Non-Linux platforms skip the capability step and are told to use `sudo`.
+`sudo`. Non-Linux platforms skip the capability step and point you at `sudo`.
 
 This is a *source* install and is distinct from the one-line installer at
 <https://www.sipnab.com/install.sh>, which downloads a prebuilt release binary
@@ -132,7 +132,7 @@ cargo build --release --no-default-features \
 
 ### Audio on musl and Alpine
 
-**A statically linked musl build can never play audio, whatever features you compile in.** The plugin is loaded with `dlopen`, and static musl has no dynamic loader at all — `dlopen` returns `NULL` with *"Dynamic loading not supported"*. This is why the released `…-linux-musl` tarballs are built without `audio`.
+**A statically linked musl build can never play audio, whatever features you compile in.** The plugin arrives through `dlopen`, and static musl has no dynamic loader at all — `dlopen` returns `NULL` with *"Dynamic loading not supported"*. This is why the release builds the `…-linux-musl` tarballs without `audio`.
 
 This matters because it fails quietly. `cargo build --release --features full` on Alpine succeeds, and the binary then reports:
 
@@ -165,7 +165,7 @@ RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --features full
 RUSTFLAGS="-C target-feature=-crt-static" cargo build --release -p sipnab-audio
 ```
 
-Both paths are verified on `rust:1.97-alpine`: the full test suite passes on Alpine with zero failures and the same test count as the glibc host, and in the dynamic build the plugin links `libasound.so.2` and `dlopen`s successfully while the `sipnab` binary itself still links only libpcap, libgcc and libc.
+A CI job checks both paths on `rust:1.97-alpine`: the full test suite passes on Alpine with zero failures and the same test count as the glibc host, and in the dynamic build the plugin links `libasound.so.2` and `dlopen`s successfully while the `sipnab` binary itself still links only libpcap, libgcc and libc.
 
 ### Cross-glibc compatibility
 

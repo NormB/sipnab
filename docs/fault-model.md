@@ -19,14 +19,14 @@ Date: 2026-06-12.
 |---|-------|---------|-----------|
 | 1 | **Hostile packet bytes** | every parser reachable from raw frames | parse returns `Result`/`Option`, never panics; bounded work + allocation |
 | 2 | **Hostile capture file** | pcap/pcapng reader | malformed/truncated file → clean error or `None`, never panic |
-| 3 | **Resource exhaustion** | dialog table, RTP stream table, reassembly, audio buffers | every attacker-keyed store is capped + evicts; memory bounded under unique-key floods |
+| 3 | **Resource exhaustion** | dialog table, RTP stream table, reassembly, audio buffers | every attacker-keyed store has a ceiling + evicts; memory bounded under unique-key floods |
 | 4 | **Capture-source faults** | live capture loop | iface down / perms / transient recv error → clean error, no hang |
 | 5 | **Output-sink faults** | json / prometheus / fail2ban / event_exec / api | write failure propagates via `?`; packet data is shell-escaped (env-var exec) and log-sanitized |
 | 6 | **Concurrency / shutdown** | channels, signals, locks | Ctrl-C drains cleanly; `parking_lot` locks (no poison cascade); closed-peer sends handled |
 
 ## 2. Parser panic surface (class 1 & 2)
 
-Every parser reachable from packet/file bytes is exercised by two
+Two harnesses exercise every parser reachable from packet or file bytes
 layers:
 
 - **Coverage-guided fuzzing**: `fuzz/fuzz_targets/` (cargo-fuzz /
@@ -42,7 +42,7 @@ layers:
   test with the offending input hex-dumped for a repro seed.
 
 The smoke layer is the regression floor; it found the keylog panic in §5
-that the committed fuzz target had never been run against.
+that nobody had ever run the committed fuzz target against.
 
 - **Property tests**: `tests/property_test.rs` (proptest) asserts the
   *semantic* invariants the fuzzers cannot — a SIP message built from
@@ -56,7 +56,7 @@ fuzz): SIP header count (≤200) and fold size (≤8 KB); websocket payload
 RTP CSRC / RTCP report counts (5-bit fields); all length-driven
 `Vec::with_capacity` sites bounded by the actual slice. RTP/RTCP
 length-field arithmetic (`u16 * 4`) cannot overflow `usize`, and each
-multiply is followed by a bounds `ensure!`.
+multiply carries a bounds `ensure!` after it.
 
 ## 3. Resource bounds (class 3)
 
@@ -87,7 +87,7 @@ Audited, found sound (true-positive findings: none):
   breaks cleanly. A transient `recv()` error is currently fatal to the
   capture thread (logged, clean exit) — acceptable, but untested
   (see §6 gaps).
-- **event_exec**: packet-derived fields are passed as `$SIPNAB_*` env
+- **event_exec**: packet-derived fields travel as `$SIPNAB_*` env
   vars, never shell-interpolated (no command injection); spawn queue
   capped at 100; children reaped. Tested.
 - **Log/JSON sinks**: `serde` escaping; `\r\n` stripped from alert log
@@ -128,4 +128,4 @@ Audited, found sound (true-positive findings: none):
   `libopus`; its FFI input is length-checked but the codec itself is not
   fuzzed here.
 - No disk-full test for the pcap/wav writers (writes propagate `?`; no
-  panic, but the error path is unexercised).
+  panic, but no test covers the error path).

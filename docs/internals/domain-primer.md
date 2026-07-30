@@ -10,8 +10,8 @@ the source.
 
 The diagrams here use the same mermaid `sequenceDiagram` form sipnab itself
 exports: press `E` in the Call Flow view to copy a diagram to the clipboard, or
-`F2` and Tab through the save formats to Mermaid. Every one of them can be
-regenerated from a real capture.
+`F2` and Tab through the save formats to Mermaid. You can regenerate every one
+of them from a real capture.
 
 ## SIP
 
@@ -27,13 +27,13 @@ sipnab's [`DialogStore`](../../src/sip/dialog_store.rs) keys its map on
 [`SipDialog`](../../src/sip/dialog.rs). That is a deliberate simplification for
 a capture tool: at capture time the To-tag does not exist yet (it arrives in
 the first response), so keying on the full triple would mean re-keying every
-dialog mid-flight. The tags are still captured — `to_tag` is filled the first
-time a response carries one — and forked calls that share a Call-ID are
-distinguished downstream rather than by the map key.
+dialog mid-flight. sipnab still captures the tags — `to_tag` fills in the first
+time a response carries one — and it tells forked calls that share a Call-ID
+apart downstream rather than by the map key.
 
 Two things must be knowable before a message gets a dialog at all: its Call-ID,
 and its method. The method requirement is the less obvious one, and it exists
-because [`SipDialog::method`](../../src/sip/dialog.rs) is set once at creation
+because [`SipDialog::method`](../../src/sip/dialog.rs) takes its value once at creation
 and never corrected. A response derives it from CSeq, so a malformed response —
 Call-ID present, CSeq absent — used to create a dialog under that Call-ID
 labelled with an invented method, and the genuine INVITE arriving afterwards
@@ -60,8 +60,8 @@ a healthy carrier's traffic as failed.
 
 [`SipDialog`](../../src/sip/dialog.rs) therefore treats 401/407 as
 *intermediate*: the reported outcome is the maximum non-challenge final
-response, and the challenge only becomes the answer when the call was
-challenged and **never** authenticated.
+response, and the challenge only becomes the answer for a call that drew a
+challenge and **never** authenticated.
 
 The exchange, with what each hop tells the analyzer.
 
@@ -90,8 +90,8 @@ sequenceDiagram
 
 ### The INVITE three-way handshake, and why ACK is special
 
-INVITE alone among SIP methods is confirmed by a separate ACK transaction. Two
-consequences the code encodes: ACK is recorded but causes **no state
+INVITE alone among SIP methods takes a separate ACK transaction to confirm. Two
+consequences the code encodes: sipnab records the ACK but makes **no state
 transition** (the 200 already moved the dialog to `InCall`), and an ACK may
 carry SDP — see delayed offer below.
 
@@ -102,7 +102,7 @@ request/response with no ACK at all.
 
 `pdd_ms()` in [`timing.rs`](../../src/sip/timing.rs) measures INVITE → first
 180/183. A `100 Trying` **does not count**: it means "I got your request", not
-"the callee is being alerted", and any proxy emits it immediately. Measuring to
+"the callee's phone is ringing", and any proxy emits it immediately. Measuring to
 the 100 would report an excellent PDD for a call the caller experienced as ten
 seconds of silence.
 
@@ -159,14 +159,14 @@ sequenceDiagram
 
 ### CANCEL versus 200 OK is a race
 
-CANCEL asks to abandon an INVITE that has not been answered. If the callee's
+CANCEL asks to abandon an INVITE with no final response yet. If the callee's
 200 OK crosses it on the wire, both exist in the capture and the naive reading
 ("last response wins") gives the wrong outcome.
 
 The state machine in [`dialog.rs`](../../src/sip/dialog.rs) resolves this by
 CSeq method: a CANCEL request moves the dialog to `Cancelled`, and the 487 that
 confirms it is the reported outcome — the 200 that merely acknowledged the
-CANCEL transaction is excluded, because it belongs to a different CSeq.
+CANCEL transaction drops out, because it belongs to a different CSeq.
 
 ```mermaid
 sequenceDiagram
@@ -198,13 +198,13 @@ exists because most deployments do not set it.
 
 ### Streams exist without dialogs
 
-An RTP stream is identified by its **SSRC**, a 32-bit random number, not by any
+An RTP stream carries its identity in its **SSRC**, a 32-bit random number, not in any
 SIP field. It has no Call-ID, no From, nothing linking it to signaling except
 the IP/port pair the SDP advertised.
 
 That is why [`StreamStore`](../../src/rtp/stream_store.rs) is a first-class
-store rather than a child of the dialog store (D13), why streams are discovered
-heuristically when their SDP was never captured, and why the `--cores` merge
+store rather than a child of the dialog store (D13), why sipnab discovers streams
+heuristically when it never saw their SDP, and why the `--cores` merge
 needs a re-association pass: the media and the signaling can be sharded to
 different workers.
 
@@ -238,7 +238,7 @@ about 4.29 billion.
 RTCP receiver reports carry a jitter field too, but **in RTP timestamp units**.
 [`stream_store.rs`](../../src/rtp/stream_store.rs) converts with the stream's
 clock rate before storing it, so the RTCP-reported and locally measured numbers
-are comparable and MOS is fed a millisecond value either way.
+are comparable and MOS gets a millisecond value either way.
 
 The report block is where two of this codebase's historical bugs lived, and
 both are visible in the same six fields.
@@ -274,11 +274,11 @@ faint crackle a codec's concealment mostly hides.
 [`analyze_burst_gap()`](../../src/rtp/quality.rs) classifies which it is, and
 the loss map view renders it in sequence space.
 
-### DTMF is carried out of band, and depends on the clock
+### DTMF travels out of band, and depends on the clock
 
 RFC 4733 telephone-events carry digits as their own payload type, negotiated
 in SDP. [`extract_dtmf_with_clock()`](../../src/rtp/dtmf.rs) needs both the
-negotiated PT and its **rtpmap clock rate** — event duration is expressed in
+negotiated PT and its **rtpmap clock rate** — event duration arrives in
 clock ticks, so decoding a 16 kHz telephone-event with an assumed 8 kHz clock
 reports every digit as twice its real length.
 
@@ -289,8 +289,8 @@ Behind NAT the address in the SDP is the private one and the media actually
 arrives from a translated address — so the naive match of SDP address against
 observed source fails, and the stream looks unassociated.
 
-[`diagnose_media()`](../../src/rtp/diagnosis.rs) is where this is untangled:
-one-way audio is inferred from the directed-endpoint set, `nat_mismatch` from
+[`diagnose_media()`](../../src/rtp/diagnosis.rs) is where sipnab untangles this:
+it infers one-way audio from the directed-endpoint set, `nat_mismatch` from
 SDP-versus-observed address disagreement, and the two combine into the
 diagnosis an operator reads. It also checks whether comfort-noise frames
 explain an asymmetry before flagging it — silence suppression is not a fault.
@@ -321,11 +321,11 @@ place where correct-looking code encoded a wrong protocol assumption.
 |---|---|---|
 | A 200 OK answers the INVITE | A re-INVITE's 200 overwrote `answered_at`; held calls reported absurd setup times | `invite_cseq` pinning in [`timing.rs`](../../src/sip/timing.rs) |
 | RTCP jitter is milliseconds | Reported jitter off by the clock-rate factor, and MOS fed the wrong units | Clock-rate conversion in [`stream_store.rs`](../../src/rtp/stream_store.rs) |
-| `cumulative_lost` is unsigned | A 24-bit **signed** field zero-extended: net-duplicate streams reported ~16.7M lost packets | Sign extension in [`rtcp.rs`](../../src/rtp/rtcp.rs), clamped at zero |
-| Transit deltas can be unsigned | One reordered packet underflowed to a ~4.29e9 jitter spike | Signed `i32` delta in [`stream.rs`](../../src/rtp/stream.rs) |
+| `cumulative_lost` has no sign bit | A 24-bit **signed** field zero-extended: net-duplicate streams reported ~16.7M lost packets | Sign extension in [`rtcp.rs`](../../src/rtp/rtcp.rs), clamped at zero |
+| Transit deltas never go negative | One reordered packet underflowed to a ~4.29e9 jitter spike | Signed `i32` delta in [`stream.rs`](../../src/rtp/stream.rs) |
 | Sequence numbers only increase | A "loss burst" of 65,000 packets once per wrap | `wrapping_add` comparison in [`stream.rs`](../../src/rtp/stream.rs) |
 | SDP role follows message type | Delayed-offer calls labeled backwards | [`determine_offer_answer()`](../../src/sip/sdp_timeline.rs) |
 | 401/407 is a failure | Most of a healthy carrier's calls reported as failed | Non-challenge maximum in [`dialog.rs`](../../src/sip/dialog.rs) |
 
 The lesson generalizes: when a number looks wrong, the bug is usually not in
-the arithmetic. It is in what the field was assumed to mean.
+the arithmetic. It is in what someone assumed the field meant.

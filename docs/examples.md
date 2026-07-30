@@ -324,7 +324,7 @@ On the sipnab host, tcpdump the HEP socket to see whether anything is arriving a
 sudo tcpdump -i eth0 -n udp port 9060
 ```
 
-Confirm dialogs are being created from the HEP feed:
+Confirm the HEP feed is producing dialogs:
 
 ```bash
 curl -s http://localhost:9100/v1/stats | jq
@@ -409,7 +409,7 @@ sipnab -I capture.pcap --dtls-keylog /tmp/dtls.keylog
 
 **Pitfalls:**
 
-- `tls` is a **build-time** feature, not a runtime flag. There is no `sipnab --features tls` invocation; pass `--features` to `cargo build` and use the resulting binary. `sipnab --version` only prints the version string and a commit hash — it does *not* enumerate compiled-in features. To verify support, `sipnab --help | grep -E '\-\-keylog|\-\-tls-key'` — if the flags appear, `tls` was compiled in.
+- `tls` is a **build-time** feature, not a runtime flag. There is no `sipnab --features tls` invocation; pass `--features` to `cargo build` and use the resulting binary. `sipnab --version` only prints the version string and a commit hash — it does *not* enumerate the features in the build. To verify support, `sipnab --help | grep -E '\-\-keylog|\-\-tls-key'` — if the flags appear, the build has `tls`.
 - The keylog format is the standard NSS `SSLKEYLOGFILE` (one line per session). Same format Firefox/Chrome/curl produce.
 - TLS 1.3 + ECDH ephemeral handshakes are fully supported via the `ring` backend.
 
@@ -534,7 +534,7 @@ The 11 read-only tools you should see listed: `list_dialogs`, `get_dialog_report
 
 - Stdout is the JSON-RPC wire in stdio mode. Use `--quiet` and don't combine with `--json`/`--report`/etc. — sipnab refuses to start.
 - Non-loopback bind without a token: refused at startup. Loopback bind needs no token.
-- `--mcp-allowed-host` is required when the client connects via the actual hostname (rmcp's default Host allowlist is just `localhost`/`127.0.0.1`/`::1`).
+- Pass `--mcp-allowed-host` when the client connects via the actual hostname (rmcp's default Host allowlist is just `localhost`/`127.0.0.1`/`::1`).
 
 ---
 
@@ -610,7 +610,7 @@ histogram_quantile(0.1, rate(sipnab_mos_bucket[5m]))
 **Pitfalls:**
 
 - The dashboard ships with the metric names sipnab actually emits. If you wrote a custom panel using older docs, double-check against [the metrics list in the API page](rest-api.md).
-- Some metrics (`sipnab_responses_total`, `sipnab_security_alerts_total`) are declared but not yet wired — they'll stay empty until upstream populates them. Don't put alerts on them today.
+- Some metrics (`sipnab_responses_total`, `sipnab_security_alerts_total`) exist in name only, with nothing wired — they'll stay empty until upstream populates them. Don't put alerts on them today.
 
 ---
 
@@ -652,8 +652,8 @@ carried none — an absent `User-Agent` is itself a scanner signal, so it is wor
 keeping distinct from a client that sends the string `-`, which renders as
 `"-"`. Both fields carry attacker-influenced text (`method` can be a
 non-standard token), so quoting is also what stops a crafted value forging a
-second `src=` field inside the line; embedded `"` and `\` are escaped. `src=`
-is unquoted: it is a parsed IP address, not text from the wire.
+second `src=` field inside the line; sipnab escapes embedded `"` and `\`. `src=`
+carries no quotes: it holds a parsed IP address, not text from the wire.
 
 `/etc/fail2ban/filter.d/sipnab.conf`:
 
@@ -707,13 +707,13 @@ sudo sipnab -N -d eth0 --kill-scanner \
             --alert-exec '/usr/local/bin/notify-slack.sh "$SIPNAB_RULE" "$SIPNAB_SRC" "$SIPNAB_DETAIL"'
 ```
 
-Alert data reaches the hook as the `SIPNAB_RULE`, `SIPNAB_SRC`, and `SIPNAB_DETAIL` environment variables — never interpolated into the command string. Only the three legacy placeholders `%rule`, `%src`, and `%detail` are rewritten to those `$SIPNAB_*` references for you; anything else (`%type%`, `%source_ip%`, …) is passed through to the shell verbatim.
+Alert data reaches the hook as the `SIPNAB_RULE`, `SIPNAB_SRC`, and `SIPNAB_DETAIL` environment variables — never interpolated into the command string. sipnab rewrites only the three legacy placeholders `%rule`, `%src`, and `%detail` into those `$SIPNAB_*` references for you; anything else (`%type%`, `%source_ip%`, …) reaches the shell verbatim.
 
 The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxed process.
 
 **Pitfalls:**
 
-- The kill-child process needs `CAP_NET_RAW` to forge SIP responses. Run sipnab as root or with capabilities — privilege drop happens after the kill-child is spawned.
+- The kill-child process needs `CAP_NET_RAW` to forge SIP responses. Run sipnab as root or with capabilities — privilege drop happens after the kill-child starts.
 - `--kill-ua "<regex>"` adds a custom User-Agent pattern beyond the built-in scanner list.
 
 ---
@@ -722,7 +722,7 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 **Problem:** A call sounds bad in one direction. The codec/ptime might differ between legs.
 
-The asymmetry signals (Phase 8.7) live on sipnab's internal `MediaDiagnosis` struct and are exposed through the filter DSL — not the dialog JSON output's `diagnosis` block. `--filter` accepts the alias name directly (`codec-asym`) and falls back to the raw DSL expression if it isn't an alias. Both forms are equivalent.
+The asymmetry signals (Phase 8.7) live on sipnab's internal `MediaDiagnosis` struct and surface through the filter DSL — not the dialog JSON output's `diagnosis` block. `--filter` accepts the alias name directly (`codec-asym`) and falls back to the raw DSL expression if it isn't an alias. Both forms are equivalent.
 
 All five asymmetry checks at once, via the `problems` DSL alias — not the `--problems` flag, which only covers retransmits and Failed:
 
@@ -771,7 +771,7 @@ From an MCP client, multiple alias names go through `find_problems` instead: `to
 
 **Problem:** A support ticket needs full call details attached.
 
-In `-N` (non-interactive) mode, sipnab normally prints each captured SIP message to stdout and then emits the report. Pass `--no-cli-print` to suppress the per-message dump so only the report reaches stdout. (`-N` is required: without it sipnab tries to start the TUI and the report output never reaches stdout.)
+In `-N` (non-interactive) mode, sipnab normally prints each captured SIP message to stdout and then emits the report. Pass `--no-cli-print` to suppress the per-message dump so only the report reaches stdout. (`-N` is not optional: without it sipnab tries to start the TUI and the report output never reaches stdout.)
 
 Markdown, to paste into a ticket or a markdown editor:
 
@@ -809,7 +809,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json 2>/dev/null \
     done
 ```
 
-> **Compatibility note:** `--no-cli-print` was added in v0.3.2. On older binaries strip the leading per-message text by piping through `sed -n '/^# Call Report:/,$p'` (markdown) or `awk '/^{$/{found=1} found'` (JSON).
+> **Compatibility note:** `--no-cli-print` arrived in v0.3.2. On older binaries strip the leading per-message text by piping through `sed -n '/^# Call Report:/,$p'` (markdown) or `awk '/^{$/{found=1} found'` (JSON).
 
 ---
 
@@ -862,7 +862,7 @@ The analyze page supports `.pcap`, `.pcapng`, `.cap` (pcap format), and their gz
 
 The recipes above walk through a problem end to end. This section is the
 other shape: dense one-line commands to copy when you already know what
-you want and just need the invocation. Every flag used here is covered in
+you want and just need the invocation. You will find every flag used here in
 [cli-reference.md](cli-reference.md).
 
 ### Triage a capture fast

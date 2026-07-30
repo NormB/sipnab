@@ -4,7 +4,7 @@ sipnab includes an optional REST API and Prometheus metrics endpoint, enabled wi
 
 The same dialog / RTP / diagnostic data is also exposed to AI agents over the Model Context Protocol; see [MCP Server](mcp.md). The MCP path uses the same in-memory stores as this REST API, so one running sipnab instance can serve both surfaces simultaneously.
 
-All API flags are catalogued in [CLI Reference](cli-reference.md#network-listeners).
+[CLI Reference](cli-reference.md#network-listeners) catalogues every API flag.
 
 sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline (read-only — it never mutates capture state).
 
@@ -34,7 +34,7 @@ You create the API key yourself -- there's no registration. Pick any string:
 export SIPNAB_API_KEY="my-secret-token-change-this"
 ```
 
-> **Security:** Use a strong random string in production. The key is sent as a Bearer token in every request. Using an environment variable avoids it appearing in `ps` output.
+> **Security:** Use a strong random string in production. Every request carries the key as a Bearer token. An environment variable keeps it out of `ps` output.
 
 ### Step 3: Start sipnab with the API
 
@@ -63,7 +63,7 @@ curl -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs
 ## Authentication
 
 Credentials are always presented the same way — an `Authorization: Bearer`
-header. Nothing else is accepted: not an `X-API-Key` header, not a query
+header. sipnab takes nothing else: not an `X-API-Key` header, not a query
 parameter, not HTTP Basic (Basic applies only to the standalone metrics server,
 below).
 
@@ -112,11 +112,11 @@ where `payload` is compact JSON
 `HMAC-SHA256(signing_key, "s2." + base64url(payload))`. Verification is
 stateless: the server recomputes the HMAC, compares it in constant time against
 every configured signing key, then requires the audience to match, `exp > now`,
-and that `id` is not revoked. Any malformed token is rejected (fail-closed).
+and that `id` is not revoked. A malformed token loses, every time (fail-closed).
 
-**Audience binding.** `aud` names the surface the token was minted for, so a
-token minted from `--api-signing-key` is rejected by the HTTP MCP endpoint and
-vice versa — **even when both are configured with the same signing key**. The
+**Audience binding.** `aud` names the surface the token belongs to, so the HTTP
+MCP endpoint turns away a token minted from `--api-signing-key`, and vice versa —
+**even when both carry the same signing key**. The
 version prefix is part of the signed input, so an `s2` token cannot be rewritten
 as `s1` to shed its binding. The pre-`aud` `s1` format is **no longer
 accepted** — it carried no audience, so honoring it would have left this
@@ -139,7 +139,7 @@ and nothing else; every other route returns `401`. Mint one for a scrape job.
 
 The reason to bother: this is a TLS-decrypting capture tool, so `/v1/dialogs`
 and `/v1/streams` return message bodies — the call content itself. Without a
-scope split, a monitoring system that needs one counter has to be trusted with
+scope split, a monitoring system that needs one counter must hold the keys to
 all of it.
 
 ```bash
@@ -154,13 +154,13 @@ Three properties worth knowing:
 - **A token minted before the claim existed is `full`.** Absent `scope` means
   `full` — the opposite of `aud`, which fails closed when missing. Upgrading
   does not revoke credentials already in the field.
-- **The claim is signed.** Stripping or editing `scope` invalidates the
-  signature, so a holder cannot widen their own token.
+- **The signature covers the claim.** Stripping or editing `scope` invalidates
+  the signature, so a holder cannot widen their own token.
 
 Static `--api-key` secrets carry no claims at all and are therefore `full`;
 scoping requires a signed token. The scope applies to the REST API — the MCP
 surface has no `/metrics`, so `--token-scope metrics` with `--mcp-signing-key`
-is refused at mint time rather than producing a token that can never
+fails at mint time rather than producing a token that can never
 authenticate.
 
 **Mint a token.** Generate the signing key first. Everything below reads it
@@ -191,7 +191,7 @@ sipnab --api 127.0.0.1:8080 --api-signing-key "$KEY" \
   --api-revoked-file /etc/sipnab/revoked.txt
 ```
 
-**Expiry** needs no server action — a token is rejected once `exp <= now`.
+**Expiry** needs no server action — a token stops verifying once `exp <= now`.
 
 **Rotation** comes in two independent forms. Rotate *tokens* by minting a new
 one before the old lapses and migrating clients; several tokens are valid at
@@ -208,10 +208,10 @@ echo "ci-runner-1" >> /etc/sipnab/revoked.txt
 The file is re-read when its mtime changes, so the token stops working within
 the next request — no restart.
 
-### When authentication is required
+### When sipnab requires authentication
 
-**If you configure neither an API key nor a signing key, authentication is
-disabled** and every endpoint is served without credentials. That is allowed
+**If you configure neither an API key nor a signing key, sipnab runs without
+authentication** and serves every endpoint to anyone who asks. That is deliberate
 only on a loopback bind. On a non-loopback bind with no credentials configured,
 **the server refuses to start** rather than exposing an open API:
 
@@ -221,12 +221,12 @@ REST API refuses to start: --api 0.0.0.0:8080 is non-loopback but no
 supplied. Bind 127.0.0.1, or configure authentication.
 ```
 
-Once credentials are configured, every endpoint **except `/health`** requires
+Once you configure credentials, every endpoint **except `/health`** requires
 them. `/health` is always unauthenticated. Missing, malformed, non-Bearer,
 expired, or revoked credentials return `401 Unauthorized`. All comparisons are
 constant-time, to prevent timing side channels.
 
-Note that rate limiting is checked *before* authentication, so a client over
+Note that sipnab checks the rate limit *before* authentication, so a client over
 its per-IP budget receives `503 Service Unavailable` even when its credentials
 are invalid.
 
@@ -528,8 +528,8 @@ console.log(`State: ${dialog.state}`);
 
 **Additional dialog fields:**
 
-- **`diagnosis.hints`** -- Free-text diagnostic strings from the media analyzer: one-way audio, NAT mismatch (SDP `c=` address vs. actual RTP source), comfort-noise asymmetry (shown in the example above), codec / payload-type / ptime / duration asymmetry, and late media. Empty array when nothing was detected.
-- **STIR/SHAKEN** -- When `--stir-shaken` validation is enabled (requires the `tls` build feature), the attestation level, orig/dest TNs, and verification status are written to the capture log. They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`. Tokens whose `iat` (issued-at) claim is more than 60 seconds from the current time are marked `Expired` per RFC 8224 Section 4.4.
+- **`diagnosis.hints`** -- Free-text diagnostic strings from the media analyzer: one-way audio, NAT mismatch (SDP `c=` address vs. actual RTP source), comfort-noise asymmetry (shown in the example above), codec / payload-type / ptime / duration asymmetry, and late media. Empty array when the analyzer found nothing.
+- **STIR/SHAKEN** -- With `--stir-shaken` validation active (requires the `tls` build feature), sipnab writes the attestation level, orig/dest TNs, and verification status to the capture log. They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`. sipnab marks a token `Expired` per RFC 8224 Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the current time.
 
 Returns `404` if the Call-ID is not found.
 
@@ -629,7 +629,7 @@ available via the MCP `get_dialog_report` tool and the CLI `--call-report`.
 For a call with negotiated media, `sdp_timeline[]` and `streams[]` carry the
 same objects shown in the `GET /v1/dialogs/{call_id}` example above. Optional
 fields (`from`, `to`, `from_display`, `to_display`, `tags`, per-timing values)
-are omitted — not `null` — when absent.
+drop out entirely — they never appear as `null` — when absent.
 
 Returns `404` if the Call-ID is not found.
 
@@ -933,7 +933,7 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
 | `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
 | `sipnab_rtp_streams_active` | gauge | The two servers count different things under this one name. The `--api` server counts streams not flagged `orphaned` (linked to a dialog, or not yet old enough for the sweep to flag them — an unlinked stream is only flagged once it is 30 seconds old), however long ago the last packet arrived; the standalone `--metrics` server counts streams whose last packet arrived within the previous 30 seconds, whatever their dialog association. A call whose media died five minutes ago is still counted by `--api` and is not counted by `--metrics` — an alert threshold tuned on one scrape target does not carry over to the other. |
-| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` once the sweep has found a stream unlinked to a dialog for 30 seconds, `established` otherwise. `--api` only. The standalone `--metrics` server never populates the map, and an empty family is skipped rather than written as zero, so on `--metrics` the series does not exist at all — a panel built on it stays permanently blank. |
+| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` once the sweep has found a stream unlinked to a dialog for 30 seconds, `established` otherwise. `--api` only. The standalone `--metrics` server never populates the map, and an empty family drops out rather than reporting zero, so on `--metrics` the series does not exist at all — a panel built on it stays permanently blank. |
 | `sipnab_kill_responses_sent_total{mode}` | counter | Scanner-kill responses sent, by source mode: `raw` (source-spoofed via a raw socket) or `ephemeral` (sipnab's own port). Alert on unexpected `ephemeral` to catch a silent spoof fallback. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
@@ -942,7 +942,7 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-The following metric *names* are declared in source but are not yet wired to the data plane as of 0.5.66 — nothing in the capture path ever increments them. They do not all fail the same way, which matters when you write the alert. The three labelled families — `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{type}` — are map-backed, and an empty family is skipped, so those series are absent from the scrape and a rule over them goes no-data. The two scalars — `sipnab_capture_packets_total` and `sipnab_reassembly_timeouts_total` — are written unconditionally and therefore report a hard `0`, which is indistinguishable from a capture that has genuinely stopped receiving packets. Don't depend on any of these in alerts yet, and in particular don't read `sipnab_capture_packets_total 0` as evidence that capture is alive or dead.
+The source declares the following metric *names*, but nothing wires them to the data plane as of 0.5.66 — nothing in the capture path ever increments them. They do not all fail the same way, which matters when you write the alert. The three labelled families — `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{type}` — are map-backed, and an empty family drops out, so those series are absent from the scrape and a rule over them goes no-data. sipnab writes the two scalars — `sipnab_capture_packets_total` and `sipnab_reassembly_timeouts_total` — unconditionally, so they report a hard `0`, which is indistinguishable from a capture that has genuinely stopped receiving packets. Don't depend on any of these in alerts yet, and in particular don't read `sipnab_capture_packets_total 0` as evidence that capture is alive or dead.
 
 ## Status codes
 
@@ -988,7 +988,7 @@ curl -fsS "$API/v1/dialogs?limit=1000" $H \
 ```
 
 Or print one line per poor-MOS stream, which is the shape to feed an alerting
-hook — it is silent when nothing is degraded:
+hook — it stays silent while every stream is healthy:
 
 ```bash
 curl -fsS "$API/v1/streams?mos_below=3.0" $H \

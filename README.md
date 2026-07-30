@@ -74,7 +74,7 @@ The binary is at `target/release/sipnab`. Live capture requires root or
 
 ### Cross-Compilation
 
-Pre-built binaries for x86_64 and aarch64 Linux can be built from macOS using
+You can produce pre-built binaries for x86_64 and aarch64 Linux from macOS using
 [cross](https://github.com/cross-rs/cross):
 
 Build for x86_64 Linux. The result is dynamically linked, so the target host
@@ -148,7 +148,7 @@ with additional features:
 - **Extended flow** -- merge correlated dialog legs into a single ladder (`F4`/`x`)
 - **RTP stream list** -- jitter, loss, MOS scores (Tab to switch)
 
-All sngrep keybindings are supported. Press `F1` for the full shortcut reference.
+sipnab honours every sngrep keybinding. Press `F1` for the full shortcut reference.
 
 ## Feature Flags
 

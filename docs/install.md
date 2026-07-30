@@ -29,7 +29,7 @@ curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=0.5.66 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
-so no root is involved:
+so root never enters into it:
 
 ```bash
 curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
@@ -55,8 +55,8 @@ ready-made links for the current release.
 
 ### Release artifacts
 
-Substitute the release version for `<version>` throughout. Every file is
-covered by `SHA256SUMS.txt`; the tarballs additionally ship an individual
+Substitute the release version for `<version>` throughout. `SHA256SUMS.txt`
+covers every file; the tarballs additionally ship an individual
 `.sha256` sidecar.
 
 | File | CPU | Runs on | Notes |
@@ -80,9 +80,13 @@ covered by `SHA256SUMS.txt`; the tarballs additionally ship an individual
 | `sipnab-audio-<version>.cdx.json` | — | — | CycloneDX SBOM — audio feature subtree |
 | `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.97+ builds | tagged source tree |
 
-The two macOS floors differ because the release does not set
-`MACOSX_DEPLOYMENT_TARGET`, so each target keeps the compiler's own default.
-Read them from the pinned toolchain rather than trusting a copy of the number:
+The two macOS floors differ because they are the pinned compiler's own defaults,
+one per target. `release.yml` now pins `MACOSX_DEPLOYMENT_TARGET` to exactly
+those two values, so a toolchain bump cannot move a published floor without
+someone deciding to, and `published_macos_floors_match_the_toolchain` holds
+`website/config.toml` to what the workflow pins — refusing a floor below the
+compiler's own default, which would agree on paper and still name an OS the
+binary cannot run on. Read them from the toolchain rather than trusting a copy:
 
 ```bash
 rustc --print deployment-target --target x86_64-apple-darwin
@@ -101,8 +105,8 @@ packages use `amd64`/`arm64`. `uname -m` reports which one you have.
 The `unknown` in `x86_64-unknown-linux-gnu` is the **vendor** field of the Rust
 target triple (`arch-vendor-os-abi`) — the canonical value meaning "no specific
 vendor", which is why the macOS files say `apple` in that position. It is part
-of the platform name, not a failed detection or a broken build. Names are kept
-as the canonical triple deliberately: they match `rustc -vV`, they are what
+of the platform name, not a failed detection or a broken build. The names stay
+canonical triples deliberately: they match `rustc -vV`, they are what
 `SHA256SUMS.txt` and the build-provenance attestation cover, and the install
 script constructs them.
 
@@ -139,8 +143,8 @@ sudo install -m 755 "sipnab-$V-$T/sipnab" /usr/local/bin/sipnab
 ```
 
 The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback but
-require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. That floor is
-enforced, not estimated: the gnu targets build inside a Debian bookworm
+require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. A gate holds that
+floor rather than estimating it: the gnu targets build inside a Debian bookworm
 container and a release-workflow gate rejects any binary linking a newer
 `GLIBC_` symbol. On an older distro they fail with `` version `GLIBC_2.36' not
 found `` -- use the static musl build.
@@ -152,7 +156,7 @@ cargo install sipnab --features full
 ```
 
 > **On Alpine or any musl target, `--features full` will not give you audio.**
-> The playback plugin is loaded with `dlopen`, and static musl has no dynamic
+> The playback plugin arrives through `dlopen`, and static musl has no dynamic
 > loader — it returns "Dynamic loading not supported". The build succeeds and
 > the binary reports `audio` in `--version`, but playback can never work. Build
 > without the `audio` feature, or build dynamically linked
@@ -188,7 +192,7 @@ sudo apt install ./sipnab_<version>_arm64.deb
 
 The package installs `/usr/bin/sipnab`, the man page, and a systemd unit, and
 creates a `sipnab` system user for privilege dropping. On Ubuntu 24.04+ the
-dependency is satisfied by `libpcap0.8t64`.
+dependency resolves to `libpcap0.8t64`.
 
 The standard package ships the audio playback plugin and therefore
 *Recommends* `libasound2`, which apt installs by default — pulling the ALSA
@@ -216,7 +220,7 @@ sudo apt install ./sipnab_<version>_arm64-noaudio.deb
 Alternatively, install the standard package with
 `sudo apt install --no-install-recommends ./sipnab_<version>_amd64.deb` to
 skip the ALSA packages while keeping the plugin on disk (playback then works
-as soon as `libasound2` is installed).
+as soon as `libasound2` lands).
 
 ### RHEL/Fedora (.rpm)
 
@@ -265,7 +269,7 @@ cd sipnab
 
 It runs `cargo install --path . --bin sipnab` (forwarding any arguments), then
 on Linux invokes the binary's own `--setup-caps` so live capture works without
-`sudo`. Non-Linux platforms skip the capability step and are told to use `sudo`.
+`sudo`. Non-Linux platforms skip the capability step and point you at `sudo`.
 
 This is a *source* install and is distinct from the one-line installer at
 <https://www.sipnab.com/install.sh>, which downloads a prebuilt release binary
@@ -309,7 +313,7 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 
 **Provenance.** A checksum only proves the file matches the list; it says
 nothing about who produced the list. The attestation is cryptographic proof the
-artifact was built by sipnab's own release workflow, from a specific commit:
+artifact came from sipnab's own release workflow, at a specific commit:
 
 ```bash
 gh attestation verify sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz \
@@ -342,7 +346,7 @@ quietly miss them. Feed either to any CycloneDX-aware scanner:
 grype sbom:sipnab-<version>.cdx.json      # or trivy sbom, osv-scanner, ...
 ```
 
-The binary SBOM is generated with all features enabled, so it is a superset of
+The binary SBOM covers all features, so it is a superset of
 what any single published binary contains — it will never under-report.
 
 ## Live Capture Permissions
@@ -370,7 +374,7 @@ device and then drops privileges to an unprivileged user (`nobody` by default,
 or `--user <name>`). That dropped user usually **cannot read your home
 directory**, so the in-TUI file browser (`O`) comes up empty — it will show a
 "run without sudo" message explaining why. Running unprivileged with
-capabilities avoids this entirely. (Re-running `--setup-caps` is needed after
+capabilities avoids this entirely. (Re-run `--setup-caps` after
 each reinstall, since replacing the file clears its capabilities.)
 
 > macOS and other non-Linux platforms have no file capabilities; run live
@@ -419,8 +423,7 @@ by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary
 `dlopen`s this plugin only when you actually play a stream, so an audio-enabled
 binary starts fine on a host without libasound. If libasound (or the plugin) is
 missing, playback returns a clear error and you can still export the stream to a
-WAV file (F2). On Debian/Ubuntu `libasound2` is shipped as a `Recommends` of the
-package; install it for live playback. Only `libpcap0.8` is a hard dependency.
+WAV file (F2). On Debian/Ubuntu the package carries `libasound2` as a `Recommends`; install it for live playback. Only `libpcap0.8` is a hard dependency.
 For a fully audio-free build, drop the `audio` feature and the plugin is not
 built.
 
@@ -446,7 +449,7 @@ Target binary size (musl, stripped): <= 10 MB. Enforced against the real artifac
 
 ## Cross-Compilation
 
-sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. Supported targets are configured in `Cross.toml`.
+sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. `Cross.toml` lists the supported targets.
 
 `cross` is a separate binary, so install it first:
 
@@ -476,7 +479,7 @@ The cross images automatically install the required `libpcap-dev` headers for th
 docker run --rm --net=host ghcr.io/normb/sipnab:latest -N -d eth0
 ```
 
-`--net=host` is required for live capture. For reading pcap files, mount the file into the container:
+Live capture needs `--net=host`. For reading pcap files, mount the file into the container:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
@@ -508,7 +511,7 @@ Should build and run. Live capture support depends on platform pcap implementati
 ## Verify Installation
 
 After installing, confirm sipnab is working. Print the version, which also
-names the features the binary was compiled with:
+names the features in the binary:
 
 ```bash
 sipnab --version
@@ -545,7 +548,7 @@ sipnab -D
 sipnab 0.5.66 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
 ```
 
-This is the fastest way to confirm a build was produced with the feature set
+This is the fastest way to confirm a build carries the feature set
 you expected (e.g. that `mcp-http` is present on a server build).
 
 A first non-interactive run against a capture looks like this:

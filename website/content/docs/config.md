@@ -28,7 +28,7 @@ foreground = "#cdd6f4"
 
 ## File Locations
 
-Configuration is loaded from the first file found in this order:
+sipnab reads configuration from the first file it finds in this order:
 
 | Priority | Source |
 |----------|--------|
@@ -40,7 +40,7 @@ Configuration is loaded from the first file found in this order:
 
 Use `--no-config` (`-F`) to skip all file loading. Use `--dump-config` (`-D`) to print the effective merged configuration.
 
-Unknown keys produce a warning and are ignored, allowing configs to be shared across versions.
+Unknown keys produce a warning and go no further, so one config can span versions.
 
 ## Format
 
@@ -117,7 +117,7 @@ SIP protocol handling.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `xcid_headers` | array | `["X-Call-ID"]` | Header names used to correlate B2BUA call legs (sngrep `sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID is correlated. Add carrier-specific headers here; an empty/unset list keeps the `X-Call-ID` default |
+| `xcid_headers` | array | `["X-Call-ID"]` | Header names used to correlate B2BUA call legs (sngrep `sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID joins that dialog. Add carrier-specific headers here; an empty/unset list keeps the `X-Call-ID` default |
 
 ```toml
 [sip]
@@ -218,14 +218,14 @@ persist_to_config = true
 
 What happens when sipnab panics: the panic hook restores the terminal
 (release builds abort without unwinding, so raw mode / mouse capture would
-otherwise be left on), writes a crash report, and then either exits cleanly
+otherwise stay on), writes a crash report, and then either exits cleanly
 or aborts so the OS can produce a core dump.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `reports` | boolean | `true` | Write a crash-report file on panic (message, location, thread, version, backtrace) |
 | `backtrace` | boolean | `true` | Capture a full backtrace in the report (independent of `RUST_BACKTRACE`) |
-| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports (`sipnab-crash-<timestamp>-<pid>.log`) are written to |
+| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports (`sipnab-crash-<timestamp>-<pid>.log`) land in |
 | `core` | boolean | `false` | `true`: abort after the report so the kernel can dump core (subject to `ulimit -c` / `core_pattern`); `false`: exit cleanly with status 101, suppressing the core |
 
 ```toml
@@ -275,7 +275,7 @@ border = "#444466"
 
 ### [keybindings]
 
-TUI key binding overrides. All 11 configurable actions are listed below. Unset fields use built-in defaults.
+TUI key binding overrides. The 11 configurable actions appear below. Unset fields use built-in defaults.
 
 Accepted key formats:
 - Single characters: `"q"`, `"/"`, `"A"`
@@ -407,4 +407,4 @@ clear_calls = "F5"
 column_selector = "F10"
 ```
 
-> **Tip:** Use `sipnab --dump-config` to see the effective configuration — the loaded file merged over the built-in defaults, with the path it came from. It is a config-file view only: CLI flags are applied later in startup and are *not* reflected, and there is no environment-variable override layer (`SIPNAB_CONFIG` only selects which file is read). To check what a flag does, compare against the [CLI reference](@/docs/cli.md).
+> **Tip:** Use `sipnab --dump-config` to see the effective configuration — the loaded file merged over the built-in defaults, with the path it came from. It is a config-file view only: CLI flags arrive later in startup and never show up there, and there is no environment-variable override layer (`SIPNAB_CONFIG` only selects which file to read). To check what a flag does, compare against the [CLI reference](@/docs/cli.md).

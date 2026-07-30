@@ -10,8 +10,8 @@ tree; this page is the function-level trace through it.
 [`main.rs`](../../src/main.rs), each delegating to
 [`app/bootstrap.rs`](../../src/app/bootstrap.rs). The order matters: logging
 before anything can log, immediate commands (`--setup-caps`,
-`--strip-secrets`) before config is loaded, signal handlers and CLI validation
-before any resource is acquired, the crash hook armed before the first
+`--strip-secrets`) before config loading, signal handlers and CLI validation
+before it acquires any resource, the crash hook armed before the first
 fallible step, and only then the plan.
 
 [`plan()`](../../src/app/bootstrap.rs) decides *everything* up front and
@@ -28,13 +28,13 @@ result is a `RunPlan`, and `RunPlan::mode` is one of three variants:
 | `Batch` | [`run()`](../../src/app/batch.rs) | Capture thread → channel → the main thread's own receive loop. |
 | `CoresFile` | [`run_cores_file()`](../../src/app/batch.rs) | No capture thread at all: the file reader shards straight to worker threads. |
 
-`CoresFile` is dispatched *before*
+`CoresFile` dispatches *before*
 [`launch()`](../../src/app/bootstrap.rs) — multi-core file reconstruction owns
 its own reader, so the capture thread, channel, and privilege-drop handshake
 are all skipped. For the other two modes `launch()` builds the channel, starts
 the capture thread, waits for the readiness handshake, then chroots, drops
-privileges, and applies runtime hardening. Privileges are shed after the
-socket exists and before the first packet is parsed.
+privileges, and applies runtime hardening. sipnab sheds privileges after the
+socket exists and before it parses the first packet.
 
 Startup is a straight line with exactly one branch, which is easier to follow
 as a sequence.
@@ -88,7 +88,7 @@ Every mode is the same six hops; only who performs hop 5 differs.
    `Rtp { .. }`, `Rtcp(..)` or `None`. WebSocket-SIP unwrap, SDP link
    extraction via [`extract_sdp_links()`](../../src/pipeline.rs), SRTP/DTLS
    key learning and heuristic RTP discovery all happen here. **No store is
-   touched and no lock is held.**
+   touched and holding no lock.**
 5. **Apply.** The caller applies that action to its stores —
    [`DialogStore`](../../src/sip/dialog_store.rs) and
    [`StreamStore`](../../src/rtp/stream_store.rs). This is the only hop that
@@ -110,12 +110,12 @@ logic that must not vary, application is store access that legitimately does.
 | `--cores N` | [`reconstruct()`](../../src/parallel.rs) | Plain `&mut` on thread-local stores. |
 | TUI file open | [`run_pcap_load()`](../../src/tui/controllers/file_open.rs) | `write()` locks on the live stores, concurrent with the render thread. |
 
-Before the pipeline was unified (WS1), each of these had its own copy of the
+Before one pipeline replaced four (WS1), each of these carried its own copy of the
 classification logic, and they had already drifted: heuristic RTP discovery
 and WebSocket unwrap worked on some paths and not others. The rule now is
 absolute — **a new protocol behavior goes in `classify_packet()`, never in an
 applier** — and `PacketAction` is what makes it enforceable, since an applier
-that ignores a variant fails to compile once the variant is added.
+that ignores a variant fails to compile once the variant lands.
 
 The live path is the one with locks, and its ordering is the deadlock-relevant
 detail.
@@ -154,7 +154,7 @@ its caches under `try_read()`, draws, then runs deferred work and drains every
 queued input event before the next redraw.
 
 The ordering is deliberate at two points: deferred saves and audio playback run
-*after* the frame that painted their status, and input is drained in full so a
+*after* the frame that painted their status, and it drains input in full so a
 paste burst is not metered out one keystroke per frame.
 
 ```mermaid
@@ -198,11 +198,11 @@ reader peeks only the link and IP headers —
 transport parse and no allocation — then
 [`shard_for()`](../../src/parallel.rs) maps that pair to a worker. The mapping
 is direction-independent, so a call's request and response legs land on the
-same worker and its bidirectional RTP is reconstructed without any
+same worker, which rebuilds its bidirectional RTP without any
 cross-thread coordination.
 
 Each worker owns a private `PacketProcessor` and thread-local stores, so the
-hot path takes no locks at all; the stores are folded together only at EOF.
+hot path takes no locks at all; the stores merge only at EOF.
 
 ```mermaid
 sequenceDiagram

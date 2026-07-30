@@ -35,7 +35,7 @@ A reading order, not a table of contents:
 5. [Walkthroughs](@/docs/internals/walkthroughs.md) — ordered checklists for the common
    changes: a new TUI view, a new detector, a new CLI flag, a new MCP tool.
 6. [Build, CI and release](@/docs/internals/build-ci-release.md) — features, workflows, hooks,
-   and how a release is cut.
+   and how to cut a release.
 
 Already written, and narrower:
 
@@ -54,27 +54,27 @@ does when something goes wrong — is [the fault model](https://github.com/NormB
 ## The corpus: live vs archaeological
 
 The long design documents live in `docs/design/` and `docs/research/`, with the
-codemap one level up in `docs/` itself. They are not all current, and reading
-the wrong one as current is the main way to be misled here.
+codemap one level up in `docs/` itself. They are not all current, and
+reading the wrong one as current is the main trap here.
 
 **Live:**
 
 | Document | What it is |
 |---|---|
 | [`../architecture.md`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
-| [`../design/maintainability-perf-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why the pipeline was unified, why `main.rs` was decomposed into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
+| [`../design/maintainability-perf-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why one pipeline replaced four, why `main.rs` broke up into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
 | [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
 | [`../design/lessons.md`](https://github.com/NormB/sipnab/blob/main/docs/design/lessons.md) | Four defects that reached a release, each with the rule derived from it: TUI state no renderer read, feature flags gating nothing, config parsed and never used, and the 2026-05-05 audit that found four blocking and ~17 major doc drifts accumulated since 0.3.1. Its cheap-regression greps have themselves rotted — the field-count one calls 30 current, and `dsl.rs` now has 31. |
 | [`../research/codex-analysis.md`](https://github.com/NormB/sipnab/blob/main/docs/research/codex-analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
-| [`../research/capture-performance.md`](https://github.com/NormB/sipnab/blob/main/docs/research/capture-performance.md) | The packet-capture throughput roadmap: four phases ordered cheapest-first, each after the first carrying an explicit trigger condition so the complexity is only paid once the previous phase proves insufficient. Research, not committed work — one item is marked done, the auto-grow capture channel. Its baseline section still cites `file:line` positions that have moved: `src/main.rs:428` names a file that is now 130 lines long. |
+| [`../research/capture-performance.md`](https://github.com/NormB/sipnab/blob/main/docs/research/capture-performance.md) | The packet-capture throughput roadmap: four phases ordered cheapest-first, each after the first carrying an explicit trigger condition so the complexity is only paid once the previous phase proves insufficient. Research, not committed work — one item carries a done mark, the auto-grow capture channel. Its baseline section still cites `file:line` positions that have moved: `src/main.rs:428` names a file that is now 130 lines long. |
 
 **Archaeological** — kept for the determination record, superseded in places:
 
 | Document | Read it for | Do not trust |
 |---|---|---|
-| [`../design/implementation-plan-v6.md`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md) | The design-decision catalog D1–D21 and the original phase plan. | Its feature tables. The `tls-wolfssl`, `tls-openssl` and `grpc` features described there were never implemented and are not in `Cargo.toml`. D14's pluggable crypto backend was dropped: one backend ships (`ring` + `rustls`). |
+| [`../design/implementation-plan-v6.md`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md) | The design-decision catalog D1–D21 and the original phase plan. | Its feature tables. The `tls-wolfssl`, `tls-openssl` and `grpc` features described there were never implemented and are not in `Cargo.toml`. D14's pluggable crypto backend never happened: one backend ships (`ring` + `rustls`). |
 | [`../design/implementation-plan-phases-8-10.md`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-phases-8-10.md) | The MCP, HEP and observability designs, and the "Resolved Decisions" section that formally retires parts of v6. | Its D-numbering. It defines its own D20 (infrastructure-optional integration) and D21 (capture vs enrichment sources), which collide with v6's D20 and D21. Always say which document a D-number comes from. |
-| [`../design/compact-headers-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/compact-headers-spec.md) | Why all 19 RFC 3261 / IANA compact header forms are supported, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — it is implemented and pinned by tests. |
+| [`../design/compact-headers-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/compact-headers-spec.md) | Why sipnab accepts all 19 RFC 3261 / IANA compact header forms, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — the code implements it and tests pin it. |
 | [`../design/kill-target-spoofing-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/kill-target-spoofing-spec.md) | The scope and ethics of sending a scanner-kill response from the victim's `ip:port` rather than an ephemeral one. | Nothing — but read `--kill-scanner`'s guard rails in [`cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) alongside it. |
 | [`../design/dialog-tracking-modes.md`](https://github.com/NormB/sipnab/blob/main/docs/design/dialog-tracking-modes.md) | Why `--dialog-track` keys on Call-ID or on Call-ID plus top-Via branch, what the branch view costs everything downstream of the store, and the rejected alternatives. | Nothing outstanding. Its status line read "spec, not yet implemented" for six releases after the flag shipped in 0.5.54 — recorded here and left — and now reads IMPLEMENTED. `an_unimplemented_design_doc_does_not_name_a_shipped_flag` fails if a design doc calls itself unimplemented while naming a flag `Cli` accepts, so this column no longer has to carry that job. |
 
@@ -132,7 +132,7 @@ exports in sync, the homepage *test count*, sub-gate 5b for the site version —
 a different claim from the crate version — no TODO stubs, WASM rebuild, and an
 advisory notice when a commit touches code these pages cite; the TODO scan and
 that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
-commit through). Sub-gate 5c is gone: it re-implemented a Rust test in shell,
+commit through). Sub-gate 5c no longer exists: it re-implemented a Rust test in shell,
 the copies diverged, and the surviving Rust version runs here *and* in CI. Also
 four in
 [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) (`fmt`,
@@ -168,8 +168,8 @@ process, so the floor is not optional.
   URL pins a branch and goes stale silently;
   [`build-wiki.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-wiki.py) rewrites the relative form
   into a blob URL when publishing to the wiki.
-- **Write heading anchors in GitHub's spelling.** That is what `docs/` is read
-  in, and the generators translate on the way out:
+- **Write heading anchors in GitHub's spelling.** That is the spelling readers of `docs/` see,
+  and the generators translate on the way out:
   [`build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) rewrites an
   anchor to Zola's slug when it emits a site link, because the two renderers
   disagree — GitHub drops an em dash and keeps its surrounding spaces
@@ -178,15 +178,15 @@ process, so the floor is not optional.
   checks the generated tree under Zola's rule alone; the older
   `anchor_candidates` unions all three slug rules, which is right for `docs/`
   and too generous for a page only Zola will ever render.
-- **Diagrams are mermaid `sequenceDiagram`, and every one is preceded by a
-  prose line** that carries the same point, so a page still reads where mermaid
+- **Diagrams are mermaid `sequenceDiagram`, and a prose line precedes every
+  one** that carries the same point, so a page still reads where mermaid
   does not render.
 - **A change to linked code updates the page that links it, in the same pull
   request.** The hard gate is `dev_docs_drift_test` in CI.
 - **These pages publish twice, and this tree is the source of both.**
   [`build-wiki.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-wiki.py) renders them into the GitHub
   wiki; [`build-site-internals.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-internals.py)
-  renders them into `website/content/docs/internals/`, which is committed so
+  renders them into `website/content/docs/internals/`, which the repo commits so
   the site builds with Zola alone. Never edit either mirror — regenerate it.
   `dev_docs_drift_test` re-runs the site generator and fails if the committed
   output is stale. The same arrangement covers the operator
@@ -203,9 +203,9 @@ process, so the floor is not optional.
   without them.
 
   `benchmarks.md` is the deliberate exception — both copies exist, neither is
-  generated, and only the measured tables are gated
+  generated, and a gate covers only the measured tables
   (`benchmark_tables_match_between_docs_and_website`), because the framing
-  around them is meant to differ.
+  around them should differ.
   The wiki renders from `docs/`, so it showed whichever copy was thinner as
   though it were the whole page. Register a page there; never copy the script. The site mirror exists because GitHub's wiki mermaid viewer
   pins its controls over the diagram with no way to move them; the site

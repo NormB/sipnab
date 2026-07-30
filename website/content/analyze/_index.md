@@ -1,7 +1,7 @@
 +++
 title = "Analyze PCAP"
 template = "analyze.html"
-description = "Analyze SIP & RTP traffic in your browser. Drag and drop a pcap file — nothing is uploaded."
+description = "Analyze SIP & RTP traffic in your browser. Drag and drop a pcap file — nothing leaves your browser."
 +++
 
 <!-- This section renders via templates/analyze.html; the live copy lives in the
