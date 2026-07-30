@@ -869,10 +869,17 @@ fn docs_current_version_markers_match_cargo() {
             include_str!("../docs/install.md"),
             r"e\.g\. (\d+\.\d+\.\d+)",
         ),
+        // Every rpm variant, not just the x86_64 standard one. The pattern was
+        // `-1\.x86_64\.rpm`, which pinned line one of three `rpm -i` recipes
+        // sitting in the same section -- the `-noaudio` and `aarch64` lines went
+        // ungated and were still naming 0.5.63 while the gated line moved. Same
+        // section, same copy-paste, same 404; the gate simply could not see two
+        // thirds of it. The arch and variant are alternations so a new package
+        // flavour is covered the day it is documented.
         (
             "docs/install.md",
             include_str!("../docs/install.md"),
-            r"sipnab-(\d+\.\d+\.\d+)-1\.x86_64\.rpm",
+            r"sipnab-(\d+\.\d+\.\d+)-1\.(?:x86_64|aarch64)(?:-noaudio)?\.rpm",
         ),
         (
             "website/content/docs/install.md",

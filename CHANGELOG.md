@@ -29,6 +29,13 @@ entry that carries them.
   the reason is that you are about to run a binary fetched over the network and
   install it into `/usr/local/bin` under `sudo`. Both the section lead and the
   download-tile hint now say that instead.
+- **Two of the three `rpm -i` recipes in `docs/install.md` were ungated.**
+  `docs_current_version_markers_match_cargo` pinned `-1.x86_64.rpm` literally, so
+  the `-noaudio` and `aarch64` lines sitting in the same section — same
+  copy-paste, same 404 if stale — were invisible to it. Verified by reverting the
+  pattern and watching the gate pass with a stale version present. The arch and
+  variant are now alternations, so a new package flavour is covered the day it is
+  documented.
 
 ## [0.5.64] - 2026-07-29
 
