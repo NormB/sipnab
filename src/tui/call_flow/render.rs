@@ -632,12 +632,23 @@ pub fn render_call_flow_direct(
                     // annotation zone right of the ladder may be covered by
                     // the split detail pane, and a hidden fold reads as data
                     // loss. (Auth fold headers already say so in the label.)
-                    let arrow_label = match &msg.fold_label {
+                    let mut arrow_label = match &msg.fold_label {
                         Some(fl) if msg.folded_count > 0 && fl.starts_with("(+") => {
                             format!("{} (+{} retx)", msg.label, msg.folded_count)
                         }
                         _ => msg.label.clone(),
                     };
+                    // Evidence tags ride on the arrow for the same reason the retx
+                    // count above does. The annotation zone right of the ladder
+                    // starts one column left of the rightmost pipe, so at 80
+                    // columns there is room for a single character before the
+                    // clip — a tag drawn there is invisible in practice, and an
+                    // invisible "this is the message your problem came from" is
+                    // worse than none, because the reader trusts the ladder to be
+                    // showing them everything.
+                    if let Some(ref note) = msg.diagnosis_note {
+                        arrow_label.push_str(&format!(" [{note}]"));
+                    }
                     let (arrow_str, arrow_x) =
                         format_arrow(&arrow_label, src_x, dst_x, msg.is_response);
                     let arrow_style = match msg.selection_state {
@@ -685,6 +696,12 @@ pub fn render_call_flow_direct(
                 let w = draw_annotation(buf, annotation_x, &badge_str, badge_style);
                 annotation_x += w;
             }
+
+            // The signalling-diagnosis tag is NOT drawn here. It rides on the
+            // arrow label above instead — see the comment there: this zone has
+            // about one usable column at 80 wide, so an evidence tag placed here
+            // would be clipped away and the reader would never know a message had
+            // been cited.
 
             // Fold label (Feature 3)
             if let Some(ref fl) = msg.fold_label {
@@ -2004,6 +2021,7 @@ mod tests {
             is_retransmission: false,
             is_rtp_bar: false,
             raw_index: None,
+            diagnosis_note: None,
         }
     }
 
@@ -2116,6 +2134,60 @@ mod tests {
             dcol,
             w - 9,
             "badge must be flush-right (Δ at width-9), got column {dcol}"
+        );
+    }
+
+    /// The evidence annotation actually reaches the drawn buffer.
+    ///
+    /// `prepare` has tests for which messages get a note; this covers the other
+    /// half, that the note is drawn. Without it the field could be populated
+    /// correctly and never rendered, and every test would still pass — the same
+    /// unwired-code trap the JSON surface has a test for.
+    #[test]
+    fn direct_render_draws_the_diagnosis_note() {
+        let theme = Theme::default();
+        let parts = vec![
+            Participant {
+                addr: "10.0.0.1:5060".into(),
+                label: "10.0.0.1:5060".into(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".into(),
+                label: "10.0.0.2:5060".into(),
+            },
+        ];
+        let mut m0 = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1);
+        m0.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_000).unwrap();
+        m0.sdp_badge = None;
+        m0.diagnosis_note = Some("FAILURE".to_string());
+        let msgs = vec![m0];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+        };
+        let w = 80u16;
+        let mut term = terminal(w, 24);
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+
+        // Search every row: which row the annotation lands on depends on the
+        // ladder layout, and pinning the row number here would test the layout
+        // rather than the annotation.
+        let mut all = String::new();
+        for y in 0..8u16 {
+            let row: String = (0..w)
+                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                .collect();
+            all.push_str(&format!("{y}: {row}\n"));
+        }
+        assert!(
+            all.contains("[FAILURE]"),
+            "the evidence annotation must be drawn; buffer was:\n{all}"
         );
     }
 

@@ -259,6 +259,11 @@ pub struct FormattedMessage {
     /// synthetic rows: spacers and RTP bars). Keeps folding, expansion and
     /// selection independent of display-mode row insertion.
     pub raw_index: Option<usize>,
+    /// Signalling-diagnosis annotation when this message is cited as evidence
+    /// for a detection — the surface that makes "evidence, not verdicts" visible,
+    /// by marking the exact messages a finding was drawn from rather than
+    /// asserting the finding somewhere else and leaving the reader to locate them.
+    pub diagnosis_note: Option<String>,
 }
 
 /// Tests for `ladder_split_width` / `arrow_gap_for_label`: the split-view

@@ -58,6 +58,17 @@ entry that carries them.
   list, the visibility array, the column selector and the width table at three
   breakpoints. It is deliberately only a marker: the call list is a dense scan
   view, and what a badge on a row owes the reader is "this one is worth opening".
+- **The TUI call flow points at the evidence.** Each message cited by a detection
+  carries a `[FAILURE]`, `[AUTH]` or `[NO-RSP]` tag on its arrow, which is the
+  surface where "evidence, not verdicts" stops being a data-model decision and
+  becomes something a reader sees. A message cited twice keeps both tags rather
+  than the last detection overwriting the first. The tag rides on the arrow rather
+  than in the annotation zone right of the ladder, for the reason already written
+  next to the retransmission-fold count: that zone begins one column left of the
+  rightmost pipe and is clipped to roughly a single character at 80 columns, so a
+  tag drawn there would be invisible — and an invisible "this is where your
+  problem came from" is worse than none, because the reader trusts the ladder to
+  be showing them everything.
 
 ## [0.5.65] - 2026-07-30
 

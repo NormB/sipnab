@@ -230,6 +230,11 @@ pub struct LayoutRow {
     pub is_retransmission: bool,
     /// Index into the raw message slice (`None` for synthetic rows).
     pub raw_index: Option<usize>,
+    /// Signalling-diagnosis annotation when this message is cited as evidence
+    /// for a detection — the surface that makes "evidence, not verdicts" visible,
+    /// by marking the exact messages a finding was drawn from rather than
+    /// asserting the finding somewhere else and leaving the reader to locate them.
+    pub diagnosis_note: Option<String>,
 }
 
 /// The arrow color rotation used by `ColorMode::CallId` / `ColorMode::CSeq`.
@@ -533,6 +538,7 @@ pub fn layout(
             sdp_badge: None,
             is_retransmission: msg.is_retransmission,
             raw_index: Some(mi),
+            diagnosis_note: None,
         });
 
         // Push the deferred RTP bar as a separate selectable entry
@@ -594,6 +600,7 @@ pub fn layout(
                 sdp_badge: None,
                 is_retransmission: false,
                 raw_index: None,
+                diagnosis_note: None,
             });
         }
 
@@ -660,6 +667,51 @@ pub fn layout(
         }
     }
 
+    // ── Signalling-diagnosis evidence annotation ──────────────────
+    //
+    // Marks the exact messages a detection was drawn from. This is the surface
+    // where the spec's "evidence, not verdicts" rule stops being a data-model
+    // decision and becomes something a reader sees: the JSON carries indices, the
+    // report names the messages, and here the ladder points at them in place.
+    //
+    // Computed from `messages` — the same slice being annotated — rather than
+    // from a dialog passed in alongside. The evidence indices are then
+    // definitionally consistent with the rows they land on, so a caller that
+    // hands in a filtered view gets an annotation of that view instead of
+    // indices silently pointing at the wrong rows. `raw_index` is the join, the
+    // same one the SDP badge above uses; synthetic rows carry `None` and are
+    // skipped by construction.
+    {
+        let diag = crate::sip::diagnosis::diagnose_signaling(messages);
+        let mut notes: Vec<(usize, &'static str)> = Vec::new();
+        if let Some(f) = &diag.final_failure {
+            notes.extend(f.evidence.iter().map(|&i| (i, "FAILURE")));
+        }
+        if let Some(a) = &diag.auth_loop {
+            notes.extend(a.evidence.iter().map(|&i| (i, "AUTH")));
+        }
+        if let Some(r) = &diag.retransmissions {
+            notes.extend(r.evidence.iter().map(|&i| (i, "NO-RSP")));
+        }
+        for (idx, tag) in notes {
+            if let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(idx)) {
+                // One message can be evidence for more than one detection — a
+                // retransmitted INVITE that also ends in failure. Join rather
+                // than overwrite, so the last detection to run does not erase
+                // what the earlier ones found.
+                match &mut fm.diagnosis_note {
+                    Some(existing) => {
+                        if !existing.split(' ').any(|t| t == tag) {
+                            existing.push(' ');
+                            existing.push_str(tag);
+                        }
+                    }
+                    None => fm.diagnosis_note = Some(tag.to_string()),
+                }
+            }
+        }
+    }
+
     // ── Retransmit folding + Auth collapse (Feature 3) ────────────
     // Folding runs BEFORE spacer insertion so that which rows exist is
     // identical in every timestamp mode; synthetic rows (raw_index == None)
@@ -712,6 +764,7 @@ pub fn layout(
                         sdp_badge: None,
                         is_retransmission: false,
                         raw_index: None,
+                        diagnosis_note: None,
                     });
                 }
                 prev_ts_raw = msg.raw_timestamp;
@@ -792,6 +845,7 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                 is_retransmission: row.is_retransmission,
                 is_rtp_bar: row.kind == RowKind::RtpBar,
                 raw_index: row.raw_index,
+                diagnosis_note: row.diagnosis_note.clone(),
             }
         })
         .collect();
@@ -1746,6 +1800,185 @@ mod tests {
             .expect("badge on re-INVITE");
         assert!(badge.contains("+G722"), "expected codec add: {badge}");
         assert!(badge.contains("PCMU"), "expected codec removal: {badge}");
+    }
+
+    // ── Signalling-diagnosis evidence annotation ──────────────────
+
+    /// The failure response carries the note; the INVITE that provoked it does
+    /// not. Only the messages the detection actually cited are marked.
+    #[test]
+    fn prepare_annotates_the_failure_response_only() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let msgs = vec![
+            invite("failnote", 1, t0()),
+            response(
+                "failnote",
+                503,
+                "Service Unavailable",
+                1,
+                "INVITE",
+                t0() + TimeDelta::seconds(1),
+            ),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+
+        let note_for = |raw: usize| -> Option<String> {
+            prepared
+                .iter()
+                .find(|fm| fm.raw_index == Some(raw))
+                .and_then(|fm| fm.diagnosis_note.clone())
+        };
+
+        assert_eq!(note_for(1).as_deref(), Some("FAILURE"));
+        assert!(
+            note_for(0).is_none(),
+            "the INVITE was not cited as evidence and must not be marked"
+        );
+    }
+
+    /// An auth loop marks each challenge it counted.
+    #[test]
+    fn prepare_annotates_every_auth_challenge() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let mut msgs = Vec::new();
+        for i in 0..3u32 {
+            msgs.push(register(
+                "authnote",
+                i + 1,
+                None,
+                t0() + TimeDelta::seconds(i as i64 * 2),
+            ));
+            msgs.push(response(
+                "authnote",
+                401,
+                "Unauthorized",
+                i + 1,
+                "REGISTER",
+                t0() + TimeDelta::seconds(i as i64 * 2 + 1),
+            ));
+        }
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+
+        // The three 401s are raw indices 1, 3, 5.
+        for raw in [1usize, 3, 5] {
+            let note = prepared
+                .iter()
+                .find(|fm| fm.raw_index == Some(raw))
+                .and_then(|fm| fm.diagnosis_note.clone());
+            assert_eq!(
+                note.as_deref(),
+                Some("AUTH"),
+                "challenge at raw index {raw} should be marked"
+            );
+        }
+        // The REGISTERs themselves are not the evidence.
+        for raw in [0usize, 2, 4] {
+            assert!(
+                prepared
+                    .iter()
+                    .find(|fm| fm.raw_index == Some(raw))
+                    .and_then(|fm| fm.diagnosis_note.clone())
+                    .is_none(),
+                "request at raw index {raw} must not be marked"
+            );
+        }
+    }
+
+    /// A message cited by two detections keeps both tags rather than the last
+    /// one written winning.
+    #[test]
+    fn prepare_joins_notes_when_one_message_is_evidence_twice() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        // Three identical INVITEs (same CSeq and branch) with no response is a
+        // no-response storm; a later failure on a different transaction keeps the
+        // storm unanswered, and both detections fire on the same dialog.
+        //
+        // Built here rather than with the `invite` helper because that helper
+        // emits no Via header, and retransmission detection needs the top-Via
+        // branch to prove two requests are the same transaction — without it the
+        // messages are skipped, which is correct and made this test fail first
+        // time round.
+        let retx = |ts: DateTime<Utc>| {
+            parse_req(
+                &build_raw(
+                    "INVITE sip:bob@10.0.0.2 SIP/2.0",
+                    &[
+                        "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKboth",
+                        "From: <sip:alice@10.0.0.1>;tag=t1",
+                        "To: <sip:bob@10.0.0.2>",
+                        "Call-ID: bothnote",
+                        "CSeq: 1 INVITE",
+                        "Content-Length: 0",
+                    ],
+                    "",
+                ),
+                ts,
+            )
+        };
+        let mut msgs = vec![
+            retx(t0()),
+            retx(t0() + TimeDelta::seconds(1)),
+            retx(t0() + TimeDelta::seconds(3)),
+        ];
+        msgs.push(response(
+            "bothnote",
+            503,
+            "Service Unavailable",
+            2,
+            "INVITE",
+            t0() + TimeDelta::seconds(4),
+        ));
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+
+        let notes: Vec<Option<String>> = (0..4)
+            .map(|raw| {
+                prepared
+                    .iter()
+                    .find(|fm| fm.raw_index == Some(raw))
+                    .and_then(|fm| fm.diagnosis_note.clone())
+            })
+            .collect();
+
+        // The three INVITEs are the storm evidence.
+        for (raw, note) in notes.iter().enumerate().take(3) {
+            assert!(
+                note.as_deref().is_some_and(|n| n.contains("NO-RSP")),
+                "INVITE {raw} should be marked NO-RSP, got {note:?}"
+            );
+        }
+        // The 503 is the failure evidence.
+        assert!(
+            notes[3].as_deref().is_some_and(|n| n.contains("FAILURE")),
+            "the 503 should be marked FAILURE, got {:?}",
+            notes[3]
+        );
+    }
+
+    /// A clean dialog gets no annotations at all.
+    #[test]
+    fn prepare_leaves_a_healthy_dialog_unannotated() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let msgs = vec![
+            invite("oknote", 1, t0()),
+            response(
+                "oknote",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                t0() + TimeDelta::seconds(1),
+            ),
+            ack("oknote", 1, t0() + TimeDelta::seconds(1)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert!(
+            prepared.iter().all(|fm| fm.diagnosis_note.is_none()),
+            "a successful call must carry no evidence annotations"
+        );
     }
 
     // ── prepare_messages: RTP bar insertion on ACK ────────────────────
