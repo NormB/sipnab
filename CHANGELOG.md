@@ -8,6 +8,28 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+- **The two checksum commands on `/download` could only be copied together.**
+  The macOS `shasum` and Linux `sha256sum` recipes shared one terminal block and
+  one copy button, so a drag-select or the button took both lines. Whichever
+  command was wrong for the visitor's machine came along with the right one, and
+  pasting that into a shell runs a command they did not choose. Each is now its
+  own block with its own copy button, titled by OS.
+- **"View install.sh" downloaded the script instead of showing it.** The link
+  pointed at the Pages-served copy, which is sent as `application/x-sh` with
+  `nosniff`, so the browser saved a shell script to disk. A link inviting a
+  reader to audit the code before piping it to `sh` must not hand them the file
+  to run, and `Content-Type` is the server's to set — no markup attribute
+  overrides it. It now points at the GitHub blob view, where the same
+  `website/static/install.sh` renders as text.
+- **The verify section justified itself with the product tagline.** "sipnab is a
+  security tool" was the stated reason to check a checksum, which is circular:
+  the reason is that you are about to run a binary fetched over the network and
+  install it into `/usr/local/bin` under `sudo`. Both the section lead and the
+  download-tile hint now say that instead.
+
 ## [0.5.64] - 2026-07-29
 
 ### Fixed
