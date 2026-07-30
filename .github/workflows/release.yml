@@ -153,6 +153,40 @@ jobs:
             echo "PKG_CONFIG_ALLOW_CROSS=1"
           } >> "$GITHUB_ENV"
 
+      # Pin the macOS floor instead of inheriting it.
+      #
+      # Nothing set MACOSX_DEPLOYMENT_TARGET, so the floor of each darwin tarball
+      # was whatever the pinned rustc happened to default to for that target --
+      # a real value that no file in this repo named. /download stated "macOS
+      # 12+" for both, which was wrong for both and hid that the two differ.
+      #
+      # These are deliberately the current rustc defaults, so declaring them
+      # changes no binary. The point is that a toolchain bump can no longer move
+      # the published floor silently: it is set here, `published_macos_floors`
+      # asserts website/config.toml matches these two lines, and the same gate
+      # asserts neither is below what the compiler would produce -- a floor lower
+      # than the compiler's is a claim the binary cannot honour.
+      #
+      # To change real support, change these and let the gate walk the published
+      # numbers to match.
+      - name: Pin macOS deployment target
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        # TARGET through env rather than interpolated into the script. This one is
+        # a matrix literal and cannot carry attacker input, but the habit is what
+        # keeps the next step that reads a branch name or a commit message safe.
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            aarch64-apple-darwin) floor="11.0" ;;
+            x86_64-apple-darwin)  floor="10.12" ;;
+            *) echo "unhandled darwin target $TARGET" >&2; exit 1 ;;
+          esac
+          echo "MACOSX_DEPLOYMENT_TARGET=$floor" >> "$GITHUB_ENV"
+          echo "pinned $TARGET to macOS $floor"
+
       - name: Compute feature set
         id: features
         shell: bash
