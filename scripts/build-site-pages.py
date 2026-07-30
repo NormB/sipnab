@@ -145,6 +145,15 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "streams.",
     ),
     (
+        "docs/sip-header-fields.md",
+        "sip-header-fields.md",
+        "SIP header fields",
+        "Header Fields",
+        20,
+        "Every SIP header field in the IANA registry, its compact form, and the "
+        "RFC that defines it.",
+    ),
+    (
         "docs/sip-methods.md",
         "sip-methods.md",
         "SIP request methods",

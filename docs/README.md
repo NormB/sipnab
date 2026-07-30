@@ -57,6 +57,8 @@ through.
 - [Filter DSL](filter-dsl.md) — grammar, fields, operators, aliases.
 - [Keybindings](keybindings.md) — every TUI key, per view.
 - [Output Formats](output-formats.md) — JSON/NDJSON schemas, pcapng, jq.
+- [SIP header fields](sip-header-fields.md) — every field in the IANA
+  registry, with the nineteen compact forms.
 - [SIP request methods](sip-methods.md) — every method in the IANA registry
   and the dialog state machine it drives.
 - [SIP response codes](sip-response-codes.md) — every code in the IANA

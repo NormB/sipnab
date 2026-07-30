@@ -11,6 +11,20 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **`docs/sip-header-fields.md` — every header field, and the nineteen compact
+  forms pinned to the registry.** All 134 fields from the IANA *Header Fields*
+  registry, each with its compact alias where one exists and the RFC that defines
+  it, plus RFC 3261 §20's own description for the 47 it defines.
+
+  The compact forms are the part that matters. RFC 3261 §7.3.3 makes `v:` and
+  `Via:` exactly equivalent, so a parser that knows only the long form does not
+  merely miss a header — it can be walked past deliberately, which is the `y:`
+  STIR/SHAKEN evasion `docs/design/compact-headers-spec.md` already records.
+  `COMPACT_HEADERS` carries all nineteen and matches the registry exactly;
+  `compact_headers_match_the_iana_registry` now holds it there, and separately
+  checks that each one actually expands through the parser — a correct table
+  wired to nothing would pass a comparison on its own.
+
 - **`docs/sip-methods.md` — every SIP method, recorded the way the response
   codes are.** All 14 in the IANA *Methods* registry, each with the RFC section
   that defines it, a deep link, the RFC's own words, and which of sipnab's four

@@ -389,8 +389,8 @@ fn wiki_intra_docs_links_resolve() {
     // that nobody can name is the regex breaking, which is exactly what this
     // pin is here to catch, and editing the number is how it gets missed.
     assert_eq!(
-        seen, 182,
-        "extractor found {seen} wiki links, expected 182. More is fine — bump \
+        seen, 185,
+        "extractor found {seen} wiki links, expected 185. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
@@ -735,15 +735,15 @@ fn every_docs_page_is_linked_from_the_index() {
     // gate audit reported; the fix widened the walk to recurse into
     // subdirectories, taking the true count to 28 — and left the floor at 10,
     // so the guard ended up nearly three times looser than when it was flagged.
-    // The walk could have dropped from 30 pages to 11 and still reported the
+    // The walk could have dropped from 31 pages to 11 and still reported the
     // docs tree as fully checked.
     //
     // An exact pin makes a DROP the failure, which is the only direction that
     // matters here, and matches how `linked_code_targets_exist` pins its link
     // count. Adding a docs page fails this once, deliberately: bump the number.
     assert_eq!(
-        checked, 30,
-        "docs-page walk saw {checked} pages, expected 30. More is fine — bump \
+        checked, 31,
+        "docs-page walk saw {checked} pages, expected 31. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );
