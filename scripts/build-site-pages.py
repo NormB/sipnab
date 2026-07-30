@@ -145,6 +145,15 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "streams.",
     ),
     (
+        "docs/sip-methods.md",
+        "sip-methods.md",
+        "SIP request methods",
+        "Request Methods",
+        19,
+        "Every SIP method in the IANA registry, the RFC section defining it, and "
+        "which dialog state machine sipnab runs it through.",
+    ),
+    (
         "docs/sip-response-codes.md",
         "sip-response-codes.md",
         "SIP response codes",

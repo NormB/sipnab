@@ -11,6 +11,13 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **`docs/sip-methods.md` — every SIP method, recorded the way the response
+  codes are.** All 14 in the IANA *Methods* registry, each with the RFC section
+  that defines it, a deep link, the RFC's own words, and which of sipnab's four
+  dialog state machines it drives. `INVITE`, `REGISTER` and `SUBSCRIBE` each get
+  their own; the other eleven share a generic one, which is worth knowing before
+  reading a state a method never had semantics for.
+
 - **`SipMethod` is pinned to the IANA methods registry.** All 14 registered
   methods parse to a named variant, and each round-trips to its canonical token.
   Nothing enforced that before, and the failure was silent by construction: an
