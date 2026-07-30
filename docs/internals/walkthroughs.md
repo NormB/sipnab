@@ -203,7 +203,7 @@ History, and the reason step 3 now reads that way: a deliberately malformed
 `json_schema_test` at 6 passed, 0 failed — the test walked a hardcoded list of
 four filenames and never opened the file. That experiment is what motivated
 the switch to directory enumeration, and the test's own doc comment records
-it. Steps 1, 2 and 4 are still convention with no gate behind them.
+it. Steps 1, 2, and 4 are still convention with no gate behind them.
 5. Document it in [`docs/output-formats.md`](../output-formats.md), and mirror
    into the website page. The flag that selects it then owes the CLI-flag
    checklist above.

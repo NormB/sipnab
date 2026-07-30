@@ -272,10 +272,10 @@ show what a build *of this tree* prints, so they follow `Cargo.toml`.
 getting this wrong fails the suite instead of the visitor.
 
 **Tag a commit whose CI is green.** A tag is not a request to build — it
-publishes, immediately and irreversibly, whatever that commit contains: fourteen
+publishes immediately and irreversibly, whatever that commit contains: fourteen
 installable artifacts (six `.tar.gz`, four `.deb`, four `.rpm`), a `.sha256`
 beside each tarball, a combined `SHA256SUMS.txt`, two SBOMs, a provenance
-attestation, a GHCR image and a Homebrew formula — twenty-three release assets in
+attestation, a GHCR image, and a Homebrew formula — twenty-three release assets in
 all. The order is therefore: push the release commit, wait for CI, then tag the
 commit that passed.
 
