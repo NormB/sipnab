@@ -206,6 +206,20 @@ Tiers:
 
 ## P3 — code health
 
+- [x] **Proofread the active-voice rewrite** — `99e6ab8` rewrote 331 prose
+  lines across 28 files to name their actor, and three of them shipped as
+  grammatical garbage that Vale, codespell and the full suite all passed:
+  `auth.md` "an explicit id, so that it a denylist can name later",
+  `walkthroughs.md` "the compiler turns away an MCP tool … by the compiler",
+  and a `goes unfound` that was not a word. Each was a substitution that left
+  the old subject or agent stranded — a class no gate catches, because the
+  result is well-formed English that means nothing. **Done:** all 331 lines
+  re-read line by line; the three known breaks were already fixed, and a
+  stranded-agent/doubled-word scan over the whole set turned up nothing else
+  outstanding. Worth remembering that the only reason this was tractable is
+  that the rewrite was one commit — the same edits spread over a month would
+  have had no reviewable boundary.
+
 - [x] **`TransportProto::Sctp` doc comment said "stub for future use"** —
   `src/net.rs`. SCTP is implemented: `src/capture/parse.rs` recognizes IP
   protocol 132, walks the chunk list, and extracts SIP from the first complete
