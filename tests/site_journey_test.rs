@@ -3284,6 +3284,68 @@ fn release_publishes_and_attests_the_sboms() {
     );
 }
 
+/// The Vale style package is pinned to a release, not to "latest".
+///
+/// `Packages = Google` resolves through the registry to
+/// `.../releases/latest/download/Google.zip`. CI runs `vale sync` on every job,
+/// so that spelling makes the prose gates depend on whatever upstream published
+/// most recently, with no commit in this repository. A local run cannot predict
+/// CI, because a local styles tree is only as fresh as the last manual sync.
+///
+/// Google v0.7.0 shipped 2026-07-30 13:43 UTC and rewrote `Google.OxfordComma`
+/// from a pattern allowing one word before the conjunction to a lookahead
+/// allowing five. The rule had been measured, mutation-tested and enabled
+/// against the previous package: local said 0 alerts, CI said 35, main went red.
+///
+/// This gate is the same contract `ci_actions_and_base_images_are_pinned_by_digest`
+/// enforces below, for the one dependency that was outside it.
+#[test]
+fn vale_style_package_is_pinned_to_a_release() {
+    let cfg = read(".vale.ini");
+    let line = cfg
+        .lines()
+        .find(|l| l.trim_start().starts_with("Packages ="))
+        .expect(
+            ".vale.ini has no `Packages =` line — the Google style package is \
+                 what every prose gate is built on",
+        );
+    let value = line
+        .split_once('=')
+        .expect("Packages line has no `=`")
+        .1
+        .trim();
+
+    assert!(
+        value.starts_with("https://"),
+        "`Packages = {value}` names a registry package, which resolves to \
+         releases/latest/download and re-floats on every `vale sync`. Pin the \
+         full release URL instead."
+    );
+    assert!(
+        !value.contains("/latest/"),
+        "`Packages = {value}` points at a `latest` URL — the same floating \
+         dependency by another spelling."
+    );
+    let version = regex::Regex::new(r"/download/(v[0-9]+\.[0-9]+\.[0-9]+)/")
+        .unwrap()
+        .captures(value)
+        .unwrap_or_else(|| {
+            panic!(
+                "`Packages = {value}` carries no `/download/vX.Y.Z/` version — \
+                 this gate cannot tell what it is pinned to"
+            )
+        })[1]
+        .to_string();
+
+    // The pinned version must be stated in prose too, so a reader upgrading
+    // knows what they are moving from without parsing a URL.
+    assert!(
+        cfg.contains(&format!("Google {version} shipped")) || cfg.contains(&format!("{version}\n")),
+        "the pin is {version} but .vale.ini never names that version in its \
+         explanation — say which release is pinned and why"
+    );
+}
+
 /// Every GitHub Action and every container base image is pinned by digest.
 ///
 /// A tag is a moving pointer. `actions/checkout@v7` and

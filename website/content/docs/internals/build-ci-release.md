@@ -41,7 +41,7 @@ compiles, which is exactly why CI has a feature matrix.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | push, PR | The merge gate. See below. |
-| `quality.yml` | push to main, PR | Coverage (`cargo-llvm-cov`) and clippy SARIF upload. Not required by `ci-success`. |
+| `quality.yml` | push to main, PR | Coverage (`cargo-llvm-cov`), clippy SARIF upload, and the prose gates below. Not required by `ci-success`. |
 | `codeql.yml` | push to main, PR | GitHub's static analysis. |
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
@@ -128,6 +128,32 @@ instrumentation guard had the mirror of it, `grep -q` closing the pipe on a
 still-writing `nm` and reading SIGPIPE as "not instrumented". Nothing could have
 caught either without running the logic against a fixture, which is the whole
 argument for it being a script.
+
+### The prose gates
+
+`quality.yml`'s `Docs` job runs three tools over `docs/`, `website/content/` and
+`README.md`: Vale with the Google style package, codespell, and lychee twice —
+once over the Markdown, once over the site Zola builds from it. The built-site
+pass matters because it is the only place the generated pages get checked, and it
+cannot run on this project's own aarch64 hardware, where no Zola binary exists.
+
+`.vale.ini` carries the whole policy, and reading it beats re-deriving it: which
+rules fail the build, which ones sit disabled with the alert count each produced,
+and which ones a measurement rejected because the advice did not survive contact
+with this corpus. Five rules fail the build today. Four more sit off, with their
+reasoning recorded rather than left for the next reader to rediscover.
+
+**This repo pins the style package to an exact release.** `Packages = Google`
+resolves through the registry to `releases/latest/download`, and CI runs
+`vale sync` on every job, so that spelling makes every prose gate depend on
+whatever upstream published last. A local styles tree is only as fresh as the
+last manual sync, so a green local run says nothing about CI. Google v0.7.0
+landed 2026-07-30 13:43 UTC and rewrote one rule's regex. A gate measured and
+enabled against the older package reported 0 alerts locally and 35 in CI, and
+main went red.
+`vale_style_package_is_pinned_to_a_release` holds the pin now. To upgrade: change
+the version, `vale sync`, then re-run Vale and read the diff in alert counts
+before committing.
 
 ### What actually gates a merge
 
