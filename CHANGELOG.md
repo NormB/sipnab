@@ -11,6 +11,13 @@ entry that carries them.
 ## [Unreleased]
 
 ### Changed
+- **Present tense where the docs said "will", and `Google.Will` is enforced.**
+  20 authored alerts across 12 files, 38 counting the generated mirrors, and
+  every one was real: "the gates that will reject it" became "the gates that
+  reject it", "it will never under-report" became "it never under-reports". The
+  smallest of the four backlog rules worked this session and the only one that
+  needed no exception, no suppression and no fork.
+
 - **Semicolons that joined two sentences are now two sentences, and
   `Google.Semicolons` is enforced.** 137 authored alerts across 27 files, 221
   counting the generated mirrors. **115 were a semicolon standing between two

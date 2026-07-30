@@ -184,7 +184,7 @@ process, so the floor is not optional.
   GitHub keeps an underscore where Zola makes it a dash. `generated_site_anchors_resolve_under_zola`
   checks the generated tree under Zola's rule alone; the older
   `anchor_candidates` unions all three slug rules, which is right for `docs/`
-  and too generous for a page only Zola will ever render.
+  and too generous for a page only Zola ever renders.
 - **Diagrams are mermaid `sequenceDiagram`, and a prose line precedes every
   one** that carries the same point, so a page still reads where mermaid
   does not render.

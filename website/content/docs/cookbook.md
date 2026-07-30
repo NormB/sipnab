@@ -875,7 +875,7 @@ The analyze page supports `.pcap`, `.pcapng`, `.cap` (pcap format), and their gz
 
 The recipes above walk through a problem end to end. This section is the
 other shape: dense one-line commands to copy when you already know what
-you want and just need the invocation. You will find every flag used here in
+you want and just need the invocation. Every flag used here appears in
 [cli-reference.md](@/docs/cli.md).
 
 ### Triage a capture fast

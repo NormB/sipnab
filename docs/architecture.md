@@ -161,9 +161,9 @@ EOF.
 | Add a TUI view/keybinding | `tui/mod.rs` (App/Popup) + `tui/state.rs` + `tui/controllers/` + `render/` + keybinding drift test |
 | Add a detection | `security/` + wiring in `app/batch.rs` |
 | Add an MCP tool | `mcp/server.rs` (`#[tool]`) + `mcp/shape.rs` |
-| Add a CLI flag | `cli.rs` + `flag_coverage_test.rs` will force a test |
+| Add a CLI flag | `cli.rs` + `flag_coverage_test.rs` forces a test |
 
 This table names the files. It does not name the order, the tests each change
-owes, or the gates that will reject it.
+owes, or the gates that reject it.
 [docs/internals/walkthroughs.md](internals/walkthroughs.md) has an ordered
 checklist for each row.

@@ -51,7 +51,7 @@ Two invariants that apply everywhere:
 
 ## Step 0 — install sipnab (every server, once)
 
-On each machine that will *run* sipnab (in scenario 1 that's the laptop
+On each machine that *runs* sipnab (in scenario 1 that's the laptop
 itself):
 
 1. **[server]** Install. The installer picks the right build for your OS,
@@ -247,7 +247,7 @@ or 4.
 
 1. **[server]** Do [Step 0](#step-0-install-sipnab-every-server-once).
 
-2. **[server]** Create the unprivileged user the service will run as:
+2. **[server]** Create the unprivileged user the service runs as:
 
    ```bash
    sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
@@ -272,7 +272,7 @@ or 4.
 
 4. **[server]** Install the systemd unit as
    `/etc/systemd/system/sipnab-mcp.service`. `--mcp-allowed-host` must
-   name whatever the laptop will put in the URL — without it, DNS-rebind
+   name whatever the laptop puts in the URL — without it, DNS-rebind
    protection answers `403 Forbidden: Host header is not allowed`:
 
    ```ini
@@ -843,7 +843,7 @@ one core's budget. What actually costs:
   or feed HEP — proxies mirror signaling only), and RTP tracking cost
   disappears.
 - **HEP ingest** is the cheapest input: an unprivileged UDP socket, and
-  `hep_rate_limit` (default 50k pps) hard-caps what sipnab will accept.
+  `hep_rate_limit` (default 50k pps) hard-caps what sipnab accepts.
 - **Memory has a ceiling, not an open end**: `[limits]` defaults cap tracked
   dialogs (100k), RTP streams (50k), messages per dialog (500), and TCP
   reassembly (10k). Tighten these on a shared box; a

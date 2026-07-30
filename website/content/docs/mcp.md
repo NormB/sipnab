@@ -509,7 +509,7 @@ For a live capture (requires `CAP_NET_RAW` or root — Claude Desktop won't gran
 
 (`sudo -n` fails fast if no NOPASSWD rule is in place — keeps the agent from hanging on a password prompt.)
 
-Restart Claude Desktop. The agent will list `sipnab` under "Connected" — ask it "what dialogs failed in this capture?" and watch it call `find_problems` for you.
+Restart Claude Desktop. The agent lists `sipnab` under "Connected" — ask it "what dialogs failed in this capture?" and watch it call `find_problems` for you.
 
 ### Claude Code
 

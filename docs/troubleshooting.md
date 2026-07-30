@@ -171,7 +171,7 @@ Get the diagnosis detail (`one_way_audio`, `nat_mismatch`, hints) per call with 
 
 ## Poor call quality
 
-MOS below 3.0 means quality degradation users will notice. Below 2.5, calls are unusable.
+MOS below 3.0 means quality degradation users notice. Below 2.5, calls are unusable.
 
 Find the calls in a capture whose MOS fell below the noticeable-degradation line:
 

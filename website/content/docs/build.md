@@ -156,7 +156,7 @@ cargo build --release --no-default-features \
 ```
 
 Alpine-only, with audio. Dynamically linked, so `dlopen` works and the plugin
-loads. Needs alsa-lib at runtime and will NOT run on glibc hosts.
+loads. Needs alsa-lib at runtime and does NOT run on glibc hosts.
 
 ```bash
 # Run all of these, in order.

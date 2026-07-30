@@ -52,8 +52,8 @@ an `s1` token authenticated against both surfaces — honoring it would have lef
 the binding above best-effort rather than absolute.
 
 If you are still holding an `s1` token, it now returns `401`. Re-mint with
-`--mint-token`. Since the default TTL is one hour, most callers will have
-rotated naturally. Long-TTL tokens are the ones to check.
+`--mint-token`. Since the default TTL is one hour, most callers have
+rotated naturally already. Long-TTL tokens are the ones to check.
 
 ## 1. Configure a signing key
 
