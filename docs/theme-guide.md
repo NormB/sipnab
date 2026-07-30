@@ -1,10 +1,10 @@
-# Theme Customization Guide
+# Theme customization guide
 
 > **Quick start:** Create `~/.config/sipnab/sipnab.toml` with a `[theme]` section to customize colors. Or copy one of the preset themes below.
 
 sipnab's TUI uses 11 semantic color slots (plus `highlight`, a legacy alias for `selected`) that control every visual element. Customize them via the `[theme]` section in your config file.
 
-## Color Slots
+## Color slots
 
 | Slot | Default | What It Affects |
 |------|---------|-----------------|
@@ -24,9 +24,9 @@ sipnab's TUI uses 11 semantic color slots (plus `highlight`, a legacy alias for 
 `status_bg` is configurable like every other color above; its dark blue-gray
 default stays readable on both dark and light terminals.
 
-## Supported Color Syntax
+## Supported color syntax
 
-### Named Colors
+### Named colors
 
 `black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray` (or `grey`), `dark_gray` (or `dark_grey`, `darkgray`, `darkgrey`), `reset` (or `default`)
 
@@ -34,14 +34,14 @@ default stays readable on both dark and light terminals.
 
 `"#RRGGBB"` format, e.g., `"#ff8800"`, `"#1a1a2e"`. Requires a terminal with true-color (24-bit) support.
 
-## How to Apply
+## How to apply
 
 Create or edit your config file — sipnab loads the first one found, see
 [File Locations](config-reference.md#file-locations) in the Config Reference —
 then add a `[theme]` section with the color values you want to override.
 Omitted fields use the built-in defaults.
 
-## Example Themes
+## Example themes
 
 Each theme below pairs a TOML block to copy into your config with a preview of
 the call list under that palette. The previews carry their colors inline, so a
@@ -201,7 +201,7 @@ border = "#7c6f64"
   <span style="color:#d3869b">5  INVITE     1005           1006           </span><span style="color:#b8bb26">Completed</span></pre>
 </div>
 
-### Light Terminal
+### Light terminal
 
 For light terminal backgrounds (white/cream). Uses darker colors for readability.
 
@@ -232,7 +232,7 @@ border = "dark_gray"
   <span style="color:#8b008b">5  INVITE     1005           1006           </span><span style="color:#006400">Completed</span></pre>
 </div>
 
-### High Contrast
+### High contrast
 
 Maximum readability for accessibility or bright environments.
 

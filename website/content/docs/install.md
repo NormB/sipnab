@@ -51,7 +51,7 @@ previously cut over at 2.39 for eleven releases, so hosts between 2.36 and
 2.39 (Debian 12 among them) received the static build and lost TUI audio even
 though the gnu build ran there fine.
 
-## Pre-built Binaries
+## Pre-built binaries
 
 Every [GitHub release](https://github.com/NormB/sipnab/releases) ships the
 artifacts below. This table is the reference; the
@@ -170,7 +170,7 @@ cargo install sipnab --features full
 > [Build from Source](https://www.sipnab.com/docs/build/#audio-on-musl-and-alpine)
 > page for both recipes.
 
-## Package Managers
+## Package managers
 
 ### Debian/Ubuntu (.deb)
 
@@ -258,7 +258,7 @@ sudo rpm -i sipnab-0.5.67-1.aarch64.rpm
 brew install sipnab
 ```
 
-## Building from Source
+## Building from source
 
 ### Install from a checkout, with capabilities
 
@@ -302,7 +302,7 @@ cargo build --release --features full
 SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 ```
 
-## Verifying a Download
+## Verifying a download
 
 Every release artifact is checksummed, signed with sigstore build provenance,
 and accompanied by a CycloneDX SBOM. The installer script verifies the sha256
@@ -385,7 +385,7 @@ each reinstall, since replacing the file clears its capabilities.)
 > macOS and other non-Linux platforms have no file capabilities; run live
 > capture under `sudo` there.
 
-## Feature Flags
+## Feature flags
 
 sipnab uses Cargo feature flags to control optional capability. The default build includes `native`, `tui`, `audio`, and `metrics`.
 
@@ -439,7 +439,7 @@ Claude Desktop, …), see [mcp.md](@/docs/mcp.md), which documents building with
 `mcp`/`mcp-http` features and the runtime configuration, including token-file
 generation and the systemd unit pattern.
 
-## Release Profile
+## Release profile
 
 The release build uses LTO, single codegen unit, and symbol stripping for a small binary:
 
@@ -452,7 +452,7 @@ strip = true
 
 Target binary size (musl, stripped): <= 10 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
 
-## Cross-Compilation
+## Cross-compilation
 
 sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. `Cross.toml` lists the supported targets.
 
@@ -499,7 +499,7 @@ docker build -t sipnab .
 
 The multi-stage Dockerfile uses `rust:1.97-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
 
-## Platform Notes
+## Platform notes
 
 ### Linux
 
@@ -509,7 +509,7 @@ Full capability. Live capture requires `CAP_NET_RAW` capability or root. Privile
 
 TUI and pcap file analysis work fully. Live capture requires root or BPF device access. Install libpcap headers via Xcode Command Line Tools (included by default) or Homebrew.
 
-### FreeBSD / Other
+### FreeBSD / other
 
 Should build and run. Live capture support depends on platform pcap implementation. Not regularly tested.
 

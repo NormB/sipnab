@@ -247,7 +247,7 @@ sipnab -d any --multi-device --delta-time
 - `sipnab -N -I capture.pcap --match "OPTIONS" --word --invert` — suppress keep-alive noise: show messages that do not contain the whole word OPTIONS
 
 
-## Name Resolution
+## Name resolution
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
@@ -265,7 +265,7 @@ See the [Name Resolution](@/docs/keybindings.md#name-resolution) keys for in-TUI
 - `sipnab -N -I capture.pcap --reverse-dns --names ~/.config/sipnab/lab-names` — replay an offline pcap and resolve its addresses with reverse DNS, supplemented by a local mapping file
 
 
-## pcapng Metadata
+## pcapng metadata
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
@@ -286,7 +286,7 @@ and DSB TLS secrets back, and decrypts with them. See
 - `sipnab -N -I tls-call.pcapng --strip-secrets tls-call-clean.pcapng` — strip embedded TLS secrets from a decrypted-session capture before sharing it in a support ticket
 
 
-## Diagnostic Aliases
+## Diagnostic aliases
 
 Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl.md](@/docs/filter-dsl.md) for the exact expansion of each alias.
 
@@ -412,7 +412,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json` — offline audit of a pcap for digest leaks and STIR/SHAKEN validity, emitting structured JSON alerts
 
 
-## Event Execution
+## Event execution
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
@@ -420,7 +420,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--on-quality-exec` | `<CMD>` | -- | Execute command when RTP quality drops below threshold |
 | `--exec-rate-limit` | `<N>` | `10` | Maximum exec invocations per second |
 
-## Network Listeners
+## Network listeners
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
@@ -473,7 +473,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab --mint-token --token-scope full --token-id ops-oncall --api-signing-key-file /etc/sipnab/signing.key` — the default scope, stated explicitly: full access to the REST API surface
 
 
-## MCP Server
+## MCP server
 
 Run sipnab as a Model Context Protocol server so an AI agent can drive
 it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#network-listeners) lists the `--mint-token` /
@@ -492,7 +492,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token`. Feature: `mcp-http` |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
 
-## TLS / Decryption
+## TLS / decryption
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
@@ -528,7 +528,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sudo sipnab --setup-caps` — grant the binary the capture capabilities (cap_net_raw,cap_net_admin) so future runs work without sudo, then exit
 
 
-## Resource Limits
+## Resource limits
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
@@ -560,7 +560,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sipnab --completions zsh > _sipnab` — print a zsh completion script into a file suitable for the zsh fpath
 
 
-## Validation Rules
+## Validation rules
 
 - Output flags (`--json`, `--json-pretty`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui` mode, unless `--call-report` is also specified.
 - `--kill-response` accepts values 100-699 only.
@@ -582,7 +582,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sipnab -d eth0 -H 192.0.2.50:9060` — capture with HEP mirror
 - `sipnab -d eth0 --keylog /tmp/sslkeys.log --keylog-watch` — live TLS decryption
 
-## Exit Codes
+## Exit codes
 
 Scripts can rely on these:
 

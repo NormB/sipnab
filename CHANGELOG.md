@@ -8,6 +8,54 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+- **Sentence-case headings across the published documentation, enforced.**
+  `Google.Headings` was the largest item in the config's known backlog at 311
+  alerts. That number counted the generated `website/content` mirrors; the
+  authored scope was **156 across 18 files**. 87 were genuine Title Case and are
+  rewritten — `Build Dependencies` becomes `Build dependencies`, `Exit Codes`
+  becomes `Exit codes`. The rest were the rule not knowing the domain.
+
+  **No anchor moved and no link changed.** Every slugger in the repo lowercases
+  before slugging, so `## Call List` and `## Call list` both produce `call-list`.
+  Verified rather than assumed: zero link targets added or removed across the
+  changed files.
+
+  Forked as `sipnab.Headings` rather than used as shipped, following the
+  `sipnab.LyHyphens` precedent. Google's exception list knows Azure and
+  TypeScript; it does not know that RTP and DTMF are not words, that `GET` names
+  an HTTP method, or that `488 Not Acceptable Here` is a reason phrase from
+  RFC 3261. Four sets of headings keep their capitalisation behind scoped
+  `<!-- vale sipnab.Headings = NO -->` comments, each explaining itself where it
+  sits: the literal TOML tables heading each section of the config reference, the
+  alphanumerically numbered sub-sections in the cookbook and the MCP walkthrough
+  (Vale reads `10a.` as the first word and lowercases what follows, while
+  handling a plain `13.` correctly), and that SIP reason phrase.
+
+  Three things worth knowing before touching this rule again:
+
+  - **An unescaped bracket in the exceptions list silently disables all of it.**
+    Vale compiles the list into a regex, so `[capture]` is a character class
+    matching any of `c/a/p/t/u/r/e` — which matches nearly every word in every
+    heading. The authored count fell from 120 to 11 and read like progress; a
+    planted `## A Deliberately Title Cased Heading` went unreported. Escaped, it
+    matches nothing; as a bare word it pins `## Capture` lowercase. All three
+    forms are recorded in the rule file.
+  - **The auto-generated vocabulary fights this rule in both directions.**
+    `boolean` and `dialog` sit in `accept.txt` lowercase, so Vale demanded
+    lowercase even at the start of a heading; `Combinators` sits there
+    capitalised, captured from a Title Case heading, so it demanded a capital
+    mid-sentence. Both are the self-referential defect `.vale.ini` already
+    records for `Vale.Terms`: the vocabulary was generated from what the docs
+    happened to say. Five entries corrected.
+  - **`build-site-pages.py` pins an expected H1 per page and fails closed.**
+    Renaming six page titles aborted the generator rather than publishing a
+    mismatched mirror. Only the expected-H1 field moved; the sidebar label beside
+    it is a separate field the script warns not to touch, because changing it
+    silently reorders the docs navigation.
+
 ## [0.5.67] - 2026-07-30
 
 ### Changed

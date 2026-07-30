@@ -12,7 +12,7 @@ Most users should [install a binary](@/docs/install.md); build from source when 
 cargo install sipnab --features full
 ```
 
-## Building from Source
+## Building from source
 
 ### Build prerequisites
 
@@ -62,7 +62,7 @@ cargo build --release --features full
 SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 ```
 
-## Feature Flags
+## Feature flags
 
 sipnab uses Cargo feature flags to control optional capability. The default build includes `native`, `tui`, and `audio`.
 
@@ -99,7 +99,7 @@ Everything — the feature set the official glibc and macOS releases ship:
 cargo build --release --features full
 ```
 
-### What Features Do You Need?
+### What features do you need?
 
 - **Most users (interactive analysis):** `cargo build --release` -- default features (`native` + `tui` + `audio`) give you interactive TUI, CLI mode, and audio playback of captured RTP.
 - **CI/scripting only (no TUI):** `cargo build --release --no-default-features --features native` -- headless binary for automation pipelines.
@@ -173,7 +173,7 @@ The release `-gnu` builds require **glibc >= 2.36** (the floor the release workf
 
 The same applies to your own builds: if you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and deploy to an older one (Debian 12 / glibc 2.36), build inside a container matching the target's glibc -- for example, `rust:1-bookworm` for Debian 12 deploys, or use musl (the static `--target x86_64-unknown-linux-musl` builds the release CI publishes).
 
-## Release Profile
+## Release profile
 
 The release build uses LTO, single codegen unit, and symbol stripping for a small binary:
 
@@ -186,7 +186,7 @@ strip = true
 
 Target binary size (musl, stripped): <= 10 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
 
-## Cross-Compilation
+## Cross-compilation
 
 sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. It
 runs each build in a container that already carries the target's toolchain, so

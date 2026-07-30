@@ -419,6 +419,12 @@ sipnab -I capture.pcap --dtls-keylog /tmp/dtls.keylog
 
 **Problem:** You want an AI agent (Claude Code, Claude Desktop, anything MCP-capable) to query a capture without you typing CLI flags.
 
+<!-- The sub-section markers below ("8a.", "10d.") are labels, not sentences, so
+the word after them opens the heading and takes a capital. Vale reads "10a." as
+the first word and wants everything after it lowercased. Purely numeric markers
+("13.") it skips correctly; only the alphanumeric ones misfire. -->
+<!-- vale sipnab.Headings = NO -->
+
 ### 8a. Stdio (local agent)
 
 One-shot: the agent reads a pcap you already have.
@@ -717,6 +723,8 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 - `--kill-ua "<regex>"` adds a custom User-Agent pattern beyond the built-in scanner list.
 
 ---
+
+<!-- vale sipnab.Headings = YES -->
 
 ## 11. Per-call asymmetry diagnosis
 

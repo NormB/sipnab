@@ -1,0 +1,179 @@
+﻿# Sentence-case headings, with the vocabulary this project actually writes in.
+#
+# A copy of Google.Headings (same `capitalization` extension, same `$sentence`
+# match, same `indicators`) with the exception list extended. Google's list knows
+# Azure, Kubernetes and TypeScript; it does not know that RTP, SRTP and DTMF are
+# not words, that GET names an HTTP method, or that `[capture]` is a TOML table
+# rather than a sentence that forgot its capital letter.
+#
+# The rule is worth having: Title Case headings are a house-style choice a reader
+# never benefits from, and sentence case is what Google, Microsoft and every
+# style guide this project consulted specify. What is NOT worth having is a lint
+# that renames a protocol.
+#
+# Every entry below is a proper noun, an acronym, or a literal identifier that
+# appears verbatim in a heading. Grouped so a reader can tell why each is here.
+# An entry that is merely convenient does not belong: the point of the list is to
+# stop the rule from being wrong, not to stop it from firing.
+extends: capitalization
+message: "'%s' should use sentence-style capitalization."
+link: "https://developers.google.com/style/capitalization#capitalization-in-titles-and-headings"
+level: warning
+scope: heading
+match: $sentence
+indicators:
+  - ":"
+exceptions:
+  # --- Google's originals, kept so this is a superset ---
+  - Azure
+  - Boolean
+  - CLI
+  - Cosmos
+  - Docker
+  - Emmet
+  - gRPC
+  - I
+  - JSON
+  - Kubernetes
+  - Linux
+  - macOS
+  - Marketplace
+  - MongoDB
+  - REPL
+  - Studio
+  - TypeScript
+  - URLs
+  - Visual
+  - VS
+  - Windows
+
+  # --- Protocols and telephony terms. These are the subject matter; a heading
+  # that says "Rtp streams" is wrong, not styled. ---
+  - DTLS
+  - DTMF
+  - HEP
+  - MOS
+  - NAT
+  - PCAP
+  - RTCP
+  - RTP
+  - SDP
+  - SIP
+  - SRTP
+  - SSRC
+  - STIR
+  - SHAKEN
+  - UA
+
+  # --- Transport, wire formats and interfaces ---
+  - API
+  - DNS
+  - DSL
+  - HTTP
+  - HTTPS
+  - MCP
+  - NDJSON
+  - PTY
+  - RGB
+  - REST
+  - SSH
+  - TCP
+  - TLS
+  - TUI
+  - UDP
+  - WAV
+  - WASM
+
+  # --- HTTP and SIP methods, and the response text that goes with them. A
+  # heading naming `GET /v1/dialogs` or "CANCEL versus 200 OK" is quoting the
+  # wire, and lowercasing it would name something that does not exist. ---
+  - ACK
+  - BYE
+  - CANCEL
+  - DELETE
+  - GET
+  - INVITE
+  - OK
+  - OPTIONS
+  - POST
+  - PUT
+  - REGISTER
+
+  # --- Products and projects named in the docs ---
+  - Alpine
+  - Cascade
+  - Catppuccin
+  - Claude
+  - Code
+  - Codex
+  - Copilot
+  - Cursor
+  - Dark
+  - Debian
+  - Desktop
+  - Fedora
+  - FreeBSD
+  - Gemini
+  - GitHub
+  - Grafana
+  - Gruvbox
+  - Homebrew
+  - Homer
+  - Kamailio
+  - Mocha
+  - OpenSIPS
+  - Prometheus
+  - PromQL
+  - RHEL
+  - Solarized
+  - ThreadSanitizer
+  - Ubuntu
+  - Windsurf
+  - Wireshark
+
+  # --- Words Vale's sentence matcher rejects even when they are already correct.
+  # `Post-dial` and `Post-mortem` fail as the first word of a heading while
+  # `Deep-dive` and `One-way` in the same position pass, so this is not about
+  # hyphens; the matcher simply disagrees about these two. `F2`/`F7`/`F8` are
+  # function keys named in parentheses -- `## Filter dialog` passes and
+  # `## Filter dialog (F7)` does not. Listing them pins the spelling that is
+  # already right. ---
+  - F2
+  - F7
+  - F8
+  - Post-dial
+  - Post-mortem
+
+  # --- Always lowercase, everywhere they appear, including in their own
+  # tooling. An entry here PINS the spelling in both directions: Vale treats an
+  # exception as "this word is spelled exactly like this", so listing `stdio`
+  # also makes `Stdio` fail. That is the intent for these three and the reason
+  # the TOML table names are NOT listed here — `capture`, `security` and
+  # `privilege` are ordinary words that legitimately open a heading with a
+  # capital, and pinning them lowercase broke `## Security` and `## Capture`
+  # the first time this file listed them. ---
+  - curl
+  - pcapng
+  - sipnab
+  - stdio
+
+  # --- NOT here: the TOML table names (`[capture]`, `[display]`, ...) that head
+  # each section of the config reference. They cannot satisfy sentence case —
+  # the first "word" is a lowercase identifier, and `## Capture` would document
+  # a table nobody can type — but neither form of exception works:
+  #
+  #   `[capture]`     Vale compiles this list into a regex, so the brackets are
+  #                   a character class matching any of c/a/p/t/u/r/e. It matches
+  #                   nearly every word in every heading and silently switches
+  #                   the whole rule off. Measured: the authored count fell from
+  #                   120 to 11, which read like progress until a planted
+  #                   `## A Deliberately Title Cased Heading` went unreported.
+  #   `\[capture\]`   Escaped, it is a valid regex and matches nothing.
+  #
+  #   `capture`       Pins the bare word lowercase everywhere, so the unrelated
+  #                   `## Capture` heading about capturing packets starts failing.
+  #
+  # docs/config-reference.md brackets that section with
+  # `<!-- vale sipnab.Headings = NO -->` instead: narrow, visible in the file it
+  # affects, and it leaves the rule enforced on every other heading in the page.
+  # Verified by planting a Title Case heading after the re-enabling comment.

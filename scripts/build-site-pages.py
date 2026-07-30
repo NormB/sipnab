@@ -49,7 +49,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/rest-api.md",
         "api.md",
-        "REST API & Metrics",
+        "REST API & metrics",
         # Title and weight are the site's originals: they set the sidebar
         # label and its position, so changing them here silently reorders the
         # docs nav. The description is deliberately not the original — the
@@ -119,7 +119,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/theme-guide.md",
         "theme.md",
-        "Theme Customization Guide",
+        "Theme customization guide",
         "Theme Guide",
         6,
         "Customize sipnab's TUI colors with 11 semantic color slots and "
@@ -128,7 +128,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/cli-reference.md",
         "cli.md",
-        "CLI Reference",
+        "CLI reference",
         "CLI Reference",
         7,
         "Complete flag reference for sipnab, organized by functional group.",
@@ -136,9 +136,9 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/filter-dsl.md",
         "filter-dsl.md",
-        # Source H1 is "Filter DSL Reference"; the sidebar label is the
+        # Source H1 is "Filter DSL reference"; the sidebar label is the
         # shorter site original.
-        "Filter DSL Reference",
+        "Filter DSL reference",
         "Filter DSL",
         8,
         "Declarative filter language for matching SIP dialogs and RTP "
@@ -156,7 +156,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/config-reference.md",
         "config.md",
-        "Config Reference",
+        "Config reference",
         "Config Reference",
         10,
         "TOML configuration file format and all configurable sections.",

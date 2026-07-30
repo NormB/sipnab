@@ -32,7 +32,7 @@ sipnab
 
 You can open a different capture at any time with `O` -- no restart needed.
 
-## 2. Find your way around the Call List
+## 2. Find your way around the call list
 
 The Call List is the home view: one row per SIP dialog, with method, endpoints,
 state, message count, and PDD (post-dial delay).

@@ -26,7 +26,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 All 31 addressable fields, organized by type.
 
-### String Fields
+### String fields
 
 | Field | Description | Example Values |
 |-------|-------------|----------------|
@@ -51,7 +51,7 @@ All 31 addressable fields, organized by type.
 > emitted too. Use `-e` for grep-style streaming output; use `payload` inside a
 > larger `--filter` expression.
 
-### Numeric Fields
+### Numeric fields
 
 | Field | Description | Unit |
 |-------|-------------|------|
@@ -67,7 +67,7 @@ All 31 addressable fields, organized by type.
 | `rtp.loss` | Packet loss (worst/highest across streams) | percentage (0-100) |
 | `rtp.packets` | Total RTP packets (sum across all streams) | count |
 
-### Boolean Fields
+### Boolean fields
 
 | Field | Description |
 |-------|-------------|
@@ -118,7 +118,7 @@ classes still reach the engine unchanged (`from.user =~ '\d\d\d\d'`,
 
 > **Tip:** sipnab compiles each regex once and reuses it across all messages. Avoid unbounded quantifiers on large captures (e.g., prefer `from.user =~ '^100[0-9]$'` over `from.user =~ '.*100[0-9].*'`).
 
-## Boolean Combinators
+## Boolean combinators
 
 | Keyword | Description |
 |---------|-------------|
@@ -128,7 +128,7 @@ classes still reach the engine unchanged (`from.user =~ '\d\d\d\d'`,
 
 Parentheses `( )` group sub-expressions to override default precedence.
 
-## Named Aliases
+## Named aliases
 
 These preset expressions are available as dedicated CLI flags where they exist
 (`--problems`, etc.), as shorthand to `--filter` (e.g. `--filter codec-asym`),
@@ -327,7 +327,7 @@ it matches nothing:
 sipnab -N -I capture.pcap --filter "rtp.ssrc == '0x12345678'" --json
 ```
 
-### RTCP Extended Reports
+### RTCP extended reports
 
 When RTCP XR (PT=207) is present in the capture, sipnab extracts VoIP Metrics (RFC 3611 Section 4.7) including:
 - Round-trip delay, end-system delay
@@ -338,7 +338,7 @@ When RTCP XR (PT=207) is present in the capture, sipnab extracts VoIP Metrics (R
 
 These metrics appear in the call flow detail panel and in JSON/report output, augmenting the RTP-derived MOS calculation with endpoint-reported quality data.
 
-## Parser Constraints
+## Parser constraints
 
 - Maximum parenthesis nesting depth: **50 levels**
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)

@@ -31,7 +31,7 @@ security analysis.
 
 ## Prerequisites
 
-### Build Dependencies
+### Build dependencies
 
 - **Rust 1.97+** (edition 2024)
 - **libpcap headers**
@@ -39,7 +39,7 @@ security analysis.
   - Debian/Ubuntu: `apt install libpcap-dev`
   - Fedora/RHEL: `dnf install libpcap-devel`
 
-### Runtime Dependencies
+### Runtime dependencies
 
 sipnab dynamically links to system libraries. These must be present on the
 target system:
@@ -72,7 +72,7 @@ cargo build --release
 The binary is at `target/release/sipnab`. Live capture requires root or
 `CAP_NET_RAW` (Linux) / BPF access (macOS).
 
-### Cross-Compilation
+### Cross-compilation
 
 You can produce pre-built binaries for x86_64 and aarch64 Linux from macOS using
 [cross](https://github.com/cross-rs/cross):
@@ -93,7 +93,7 @@ cross build --release --target aarch64-unknown-linux-gnu
 Cross-compilation requires Docker (via [Colima](https://github.com/abiosoft/colima),
 Docker Desktop, or similar) and `cross` (`cargo install cross`).
 
-## Quick Start
+## Quick start
 
 The default mode is the TUI -- an interactive call list. It puts the terminal in
 raw mode, so anything pasted after it arrives as keystrokes rather than as a
@@ -150,7 +150,7 @@ with additional features:
 
 sipnab honours every sngrep keybinding. Press `F1` for the full shortcut reference.
 
-## Feature Flags
+## Feature flags
 
 | Flag       | Description                                                          | Default |
 |------------|----------------------------------------------------------------------|---------|

@@ -30,7 +30,7 @@ Mirror captured traffic to a Homer collector:
 sipnab -d eth0 -H 192.0.2.50:9060
 ```
 
-## Event Execution
+## Event execution
 
 sipnab can execute external commands on dialog state changes or quality drops. The command receives event data via `SIPNAB_*` environment variables (`SIPNAB_JSON` carries the full dialog JSON) — never on stdin and never interpolated into the command line. Event execution works in **all modes** (TUI, CLI, and API) -- it is not specific to the API feature.
 
@@ -87,7 +87,7 @@ action = iptables-allports[name=sipnab, protocol=udp]
 
 > **Tip:** Combine `--kill-scanner` with `--kill-ua "friendly-scanner|sipvicious"` to target specific scanner signatures. The `--kill-response` flag (default: 200) picks the SIP response code that goes back to detected scanners.
 
-## Syslog Alerts
+## Syslog alerts
 
 Send security alerts to syslog:
 
