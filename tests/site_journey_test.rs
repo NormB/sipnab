@@ -3029,7 +3029,8 @@ fn packaging_scripts_reference_existing_paths() {
         //
         // So every top-level directory must appear in one list or the other,
         // and a new one fails until someone decides which.
-        const ROOTS: [&str; 11] = [
+        const ROOTS: [&str; 12] = [
+            ".vale/",
             "packaging/",
             "contrib/",
             "man/",
@@ -3167,8 +3168,8 @@ fn packaging_scripts_reference_existing_paths() {
     // packaging references stop being checked without the gate noticing, and a
     // reference to a nonexistent path is precisely what this exists to catch.
     assert_eq!(
-        checked, 52,
-        "packaging path scan saw {checked} references, expected 52. More is \
+        checked, 55,
+        "packaging path scan saw {checked} references, expected 55. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );

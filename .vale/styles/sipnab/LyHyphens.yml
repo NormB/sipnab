@@ -1,0 +1,24 @@
+extends: existence
+message: "'%s' doesn't need a hyphen."
+link: "https://developers.google.com/style/hyphens"
+level: error
+ignorecase: false
+nonword: true
+# Google's LyHyphens with an exception for nouns that happen to end in "ly".
+#
+# The rule exists because an -ly adverb never needs a hyphen to attach to what it
+# modifies: "structurally mutated", not "structurally-mutated". Its token regex
+# matches any word ending in "ly" followed by a hyphen, which also catches nouns:
+# a "raised reassembly-session ceiling" and "`-Zsanitizer` is nightly-only" are
+# both correct compound modifiers built from the nouns "reassembly" and
+# "nightly". The negative lookahead below carries the noun stems rather than
+# scattering `<!-- vale ... -->` comments through prose that gets mirrored to the
+# website; add a stem here when a new one appears.
+action:
+  name: edit
+  params:
+    - regex
+    - "-"
+    - " "
+tokens:
+  - '\b(?!(?:reassemb|night|assemb|month|week|dai|hour|fami|supp|app|on)ly-)[^\s-]+ly-\w+\b'

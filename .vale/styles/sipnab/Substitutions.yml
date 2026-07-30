@@ -1,0 +1,19 @@
+extends: substitution
+message: "Use '%s' instead of '%s'."
+level: error
+ignorecase: true
+# The subset of Google's word list that is right for this project. Google's own
+# rule was disabled because most of its substitutions fight domain language --
+# see .vale.ini. These are the ones that are genuine clarity wins, and nothing
+# here collides with SIP, RTP or shell vocabulary.
+swap:
+  functionality: capability
+  utilize: use
+  leverage(?:s|d)? as a verb: use
+  in order to: to
+  at this point in time: now
+  a large number of: many
+  is able to: can
+  are able to: can
+  prior to: before
+  subsequent to: after

@@ -156,7 +156,7 @@ All sngrep keybindings are supported. Press `F1` for the full shortcut reference
 |------------|----------------------------------------------------------------------|---------|
 | `native`   | Live capture, file capture, output writers, signal handling, CLI. Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, and `mcp-http`; NOT required by `tls`, `audio`, or `wasm` | yes     |
 | `tui`      | Interactive terminal UI (ratatui + crossterm)                        | yes     |
-| `audio`    | RTP audio playback in TUI via the lazily-loaded `sipnab-audio` plugin + WAV export | yes     |
+| `audio`    | RTP audio playback in TUI via the lazily loaded `sipnab-audio` plugin + WAV export | yes     |
 | `tls`      | TLS/DTLS decryption + SRTP key extraction (ring, zeroize, rustls)    | no      |
 | `hep`      | HEP v3 send + HEP v2/v3 receive (Homer Encapsulation Protocol)              | no      |
 | `api`      | REST API + Prometheus metrics endpoint (axum, tokio)                 | no      |

@@ -22,3 +22,10 @@ build/
 # Subagent-driven-development scratch: ledgers, task briefs, review packages.
 # Ephemeral coordination state; the git history is the durable record.
 .superpowers/
+
+# Vale's third-party style packages, fetched by `vale sync` from the
+# `Packages =` line in .vale.ini. Not vendored: they are upstream rules that
+# would go stale in review, and the CI job syncs them before linting. What IS
+# committed is this project's own rules and vocabulary under
+# .vale/styles/sipnab and .vale/styles/config.
+.vale/styles/Google/

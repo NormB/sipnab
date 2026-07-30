@@ -818,7 +818,7 @@ rules as scenarios 2B and 4.
 
 ## Load on a busy server
 
-Two distinct costs; both are small, and both are cappable.
+Two distinct costs; both are small, and both can be capped.
 
 **The capture path** dwarfs the MCP path and is the one to size. Reference
 numbers ([benchmarks](benchmarks.md), modest 14-core aarch64 host):

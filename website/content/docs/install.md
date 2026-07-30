@@ -383,7 +383,7 @@ each reinstall, since replacing the file clears its capabilities.)
 
 ## Feature Flags
 
-sipnab uses Cargo feature flags to control optional functionality. The default build includes `native`, `tui`, `audio`, and `metrics`.
+sipnab uses Cargo feature flags to control optional capability. The default build includes `native`, `tui`, `audio`, and `metrics`.
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
@@ -500,7 +500,7 @@ The multi-stage Dockerfile uses `rust:1.97-slim-trixie` for the build stage and 
 
 ### Linux
 
-Full functionality. Live capture requires `CAP_NET_RAW` capability or root. Privilege dropping (`--user`) uses `setuid`/`setgid` after opening capture devices.
+Full capability. Live capture requires `CAP_NET_RAW` capability or root. Privilege dropping (`--user`) uses `setuid`/`setgid` after opening capture devices.
 
 ### macOS
 

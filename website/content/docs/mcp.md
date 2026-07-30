@@ -330,7 +330,7 @@ timestamp. Dialogs can share an `updated_at`, so resuming from the
 `(updated_at, Call-ID)` pair is what keeps a tie group split across a
 page boundary from being dropped or returned twice. Pass it back
 unmodified. A client that rebuilds a bare timestamp from a dialog's
-`updated_at` instead falls back to the pre-compound strictly-after
+`updated_at` instead falls back to the pre-compound strictly after
 filter and loses or repeats the tied dialogs — that bare-timestamp
 form is still accepted, so the mistake is silent rather than an error.
 `|` occurs in neither an RFC 3339 timestamp nor a valid Call-ID

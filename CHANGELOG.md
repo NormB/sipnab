@@ -10,6 +10,22 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **Documentation CI: prose style, spelling, and dead links.** The Rust suite
+  compares documented values against the code that produces them and is thorough
+  at that, but it cannot tell whether a word is misspelled or a URL still
+  resolves — and a page of correct-but-dead links fails a reader as hard as a
+  wrong version number. Three checks now run in `Quality`: Vale with the Google
+  developer style guide, codespell, and lychee over both the docs Markdown (257
+  unique links) and the built site, which is the only pass that can resolve
+  site-absolute URLs or see the download page at all, since it is a template.
+  Every exclusion in the three configs records the alert count it produced on
+  first run, so a considered exemption is distinguishable from a silenced
+  inconvenience: Vale went from 13,892 alerts to zero, and the disabled rules are
+  the ones whose advice is wrong here — "spell out SIP" on a SIP analyser (3,675),
+  "command-line tool" for CLI (171), and American quote placement in prose that
+  quotes exact protocol literals (47).
+
 ### Changed
 - **The release-artifact reference has one home instead of two.** `/download` held
   a 19-row artifact table that `docs/install.md` restated in full, and that

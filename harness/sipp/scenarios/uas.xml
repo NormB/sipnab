@@ -34,7 +34,7 @@
   <!-- are also discarded.                                              -->
   <!--                                                                  -->
   <!-- If the specified header was present several times in the         -->
-  <!-- message, all occurences are concatenated (CRLF seperated)        -->
+  <!-- message, all occurrences are concatenated (CRLF separated)        -->
   <!-- to be used in place of the '[last_*]' keyword.                   -->
 
   <send>
