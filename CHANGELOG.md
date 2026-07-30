@@ -29,6 +29,51 @@ entry that carries them.
   the reason is that you are about to run a binary fetched over the network and
   install it into `/usr/local/bin` under `sudo`. Both the section lead and the
   download-tile hint now say that instead.
+- **`/download` invented a macOS floor.** The artifact table said "macOS 12+" for
+  both darwin tarballs. Nothing produced that number: `release.yml` never sets
+  `MACOSX_DEPLOYMENT_TARGET`, so the real floor is whatever the pinned rustc
+  defaults to — 11.0 for `aarch64-apple-darwin` and 10.12 for
+  `x86_64-apple-darwin`. It was wrong for both, and printing one number for both
+  hid the fact that they differ, so an Intel Mac on 10.15 was told to give up on a
+  binary that runs there. The two floors are now config constants and
+  `published_macos_floors_match_the_toolchain` reads them back out of `rustc
+  --print deployment-target`, which also refuses a hand-written floor on the page.
+- **"Every file, one table" was missing two files.** The section heading and the
+  table caption both claimed completeness while omitting the two CycloneDX SBOMs —
+  the artifacts an auditor opens that table to find. Both are listed now, and the
+  `SHA256SUMS.txt` row no longer describes its coverage by row position
+  ("every artifact above"), which adding rows underneath had quietly falsified.
+- **The verify section told readers a checksum proves authenticity.** "An `OK`
+  line means it's authentic" is wrong in the dangerous direction: a checksum
+  compares a file to a list, so anyone serving both files passes it. The page
+  already said so correctly one paragraph later, and `docs/install.md` says it
+  correctly too, so the page contradicted itself on a security claim. Integrity
+  and origin are now two labelled steps, with the `gh attestation verify` command
+  promoted out of a parenthetical into its own copyable block.
+- **`/download` hard-coded the repo slug and container image.** `NormB/sipnab`
+  appeared literally in a `gh attestation verify --repo` command and a releases-API
+  URL, and `ghcr.io/normb/sipnab` in the Docker recipes, while `github_url` sat in
+  `config.toml`. A rename would have left copy-pasteable commands aimed at a
+  repository that no longer exists. Both come from config now, pinned by
+  `published_repo_slugs_agree`. Two older gates asserted the literal strings and
+  therefore directly contradicted the new one; they now check the same intent
+  through config.
+- **Copy buttons failed silently.** `navigator.clipboard.writeText` had no
+  rejection handler, so on an insecure origin, with the permission denied, or with
+  the document unfocused, the button did nothing and looked identical to a
+  successful copy. Failure is now visible and selects the command as a fallback.
+  The accompanying `&amp;` unescaping was dead code — `getAttribute` already
+  returns decoded values — and would have corrupted any command containing that
+  literal text.
+- **Windows visitors got a run-on sentence.** The detector put its advice in the
+  platform-name slot, rendering "Detected: Windows — use WSL or build from source ·
+  Intel/AMD (x86_64 / amd64) — the highlighted choice below is the one you want."
+  The advice moved to the note field the iOS branch already used correctly.
+- **The architecture name map skipped `.rpm`.** It explained that tarballs and
+  `.deb` files spell the same chip differently but never said which spelling `.rpm`
+  packages use, leaving RHEL readers to guess. It also referred to the names by
+  where they sat on screen ("the left name", "the middle one"), which stops being
+  true when the chips wrap on a narrow viewport.
 - **Two of the three `rpm -i` recipes in `docs/install.md` were ungated.**
   `docs_current_version_markers_match_cargo` pinned `-1.x86_64.rpm` literally, so
   the `-noaudio` and `aarch64` lines sitting in the same section — same

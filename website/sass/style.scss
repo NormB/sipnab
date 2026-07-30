@@ -2273,6 +2273,14 @@ input:focus-visible,
 .dl-copy svg { width: 15px; height: 15px; }
 .dl-copy.copied { color: $code-green; border-color: rgba($good, 0.45); }
 .dl-copy.copied::after { content: "Copied"; font-size: 0.72rem; font-family: $font-sans; }
+// A blocked copy has to look different from a successful one. Silence here read
+// as success: the visitor pressed the button, nothing moved, and nothing said
+// why. The JS selects the command as a fallback, so the label points at that.
+.dl-copy.failed { color: $warn; border-color: rgba($warn, 0.5); }
+.dl-copy.failed::after {
+  content: "Press Ctrl/Cmd+C"; font-size: 0.72rem; font-family: $font-sans;
+  white-space: nowrap;
+}
 
 .dl-note { color: $text-dim; font-size: 0.85rem; margin: 1rem 0 0; }
 .dl-note code, .dl-lead code {
@@ -2327,6 +2335,9 @@ input:focus-visible,
 .dl-verify-ico svg { width: 20px; height: 20px; }
 .dl-verify-head h2 { font-size: 1.1rem; margin: 0; }
 .dl-verify-head p { color: $text-dim; font-size: 0.88rem; margin: 0.3rem 0 0; line-height: 1.55; max-width: 40rem; }
+// Provenance is a second step, not a footnote -- it is the one that answers who
+// built the file, which the checksum cannot.
+.dl-verify-sub { font-size: 0.95rem; margin: 1.6rem 0 0; }
 
 // Detection banner: tells rookies which of the files below is theirs.
 .dl-detect {

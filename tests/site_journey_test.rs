@@ -808,6 +808,146 @@ fn site_advertises_only_a_released_version() {
 // than to whatever produces it.
 // ---------------------------------------------------------------------------
 
+/// The `owner/repo` slug and the GHCR image name agree with what produces them,
+/// and `/download` never hand-writes either.
+///
+/// Both were spelled out literally on the download page — "NormB/sipnab" in a
+/// `gh attestation verify --repo` command, in a releases-API URL, and
+/// "ghcr.io/normb/sipnab" in the docker recipes — while `github_url` sat in
+/// config.toml. Copy-pasteable commands naming a repository are the worst place
+/// for a stale slug: they fail in the reader's terminal, not in a build.
+#[test]
+fn published_repo_slugs_agree() {
+    let cfg = read("website/config.toml");
+    let field = |name: &str| {
+        regex::Regex::new(&format!(r#"(?m)^{name} = "([^"]+)""#))
+            .unwrap()
+            .captures(&cfg)
+            .unwrap_or_else(|| panic!("website/config.toml has no {name}"))[1]
+            .to_string()
+    };
+
+    let url = field("github_url");
+    let slug = field("github_repo");
+    let expected = url
+        .trim_end_matches('/')
+        .rsplit("github.com/")
+        .next()
+        .expect("github_url is not a github.com URL")
+        .to_string();
+    assert_eq!(
+        slug, expected,
+        "github_repo is {slug} but github_url points at {expected} — a rename \
+         would leave `gh --repo {slug}` commands aimed at nothing"
+    );
+
+    // GHCR requires a lowercase path, and docker.yml is what actually pushes.
+    let image = field("ghcr_image");
+    assert_eq!(
+        image,
+        image.to_lowercase(),
+        "ghcr_image must be lowercase — GHCR rejects mixed case: {image}"
+    );
+    assert_eq!(
+        image,
+        format!("ghcr.io/{}", expected.to_lowercase()),
+        "ghcr_image {image} does not match the repository docker.yml publishes \
+         from ({expected})"
+    );
+
+    // The page must go through config for both, or these gates are decoration.
+    let dl = read("website/templates/download.html");
+    for literal in [slug.as_str(), image.as_str()] {
+        assert!(
+            !dl.contains(literal),
+            "download.html hard-codes `{literal}` — use config.extra.github_repo \
+             / config.extra.ghcr_image so a rename cannot strand a command"
+        );
+    }
+}
+
+/// Every published macOS floor matches what the pinned toolchain actually
+/// targets, per architecture.
+///
+/// `/download` stated "macOS 12+" for both darwin tarballs. Nothing produced
+/// that number — no `MACOSX_DEPLOYMENT_TARGET` in `release.yml`, no constant, no
+/// doc. It existed only in the table a reader consults before downloading, which
+/// is exactly the shape of the glibc floor bug below: a platform floor that is
+/// *decided* by the build and independently *restated* where it is acted on. It
+/// was wrong for both arches (11.0 and 10.12) and stating one number for both
+/// concealed that they differ, so an Intel Mac on 10.15 was told to give up.
+///
+/// The source of truth is the compiler, not a workflow step, precisely because
+/// `release.yml` does not set a deployment target: absent that, the floor is
+/// whatever rustc defaults to. Asking rustc means this gate keeps holding if a
+/// toolchain bump moves a default, and starts failing the moment someone sets an
+/// explicit target without republishing the number.
+///
+/// `--print deployment-target` reads the built-in target spec, so it answers for
+/// darwin targets whose std is not installed — this runs on Linux CI.
+#[test]
+fn published_macos_floors_match_the_toolchain() {
+    let cfg = read("website/config.toml");
+
+    for (key, target) in [
+        ("macos_floor_arm", "aarch64-apple-darwin"),
+        ("macos_floor_intel", "x86_64-apple-darwin"),
+    ] {
+        let published = regex::Regex::new(&format!(r#"(?m)^{key} = "([^"]+)""#))
+            .unwrap()
+            .captures(&cfg)
+            .unwrap_or_else(|| panic!("website/config.toml has no {key}"))[1]
+            .to_string();
+
+        let out = std::process::Command::new("rustc")
+            .args(["--print", "deployment-target", "--target", target])
+            .output()
+            .expect("rustc --print deployment-target");
+        assert!(
+            out.status.success(),
+            "rustc could not report the deployment target for {target}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Shaped `MACOSX_DEPLOYMENT_TARGET=11.0`.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let actual = stdout
+            .trim()
+            .rsplit('=')
+            .next()
+            .expect("deployment-target output has no `=`")
+            .trim()
+            .to_string();
+        assert!(
+            !actual.is_empty(),
+            "rustc reported an empty deployment target for {target} — did the \
+             `--print` output shape change? raw: {stdout:?}"
+        );
+
+        assert_eq!(
+            published, actual,
+            "website/config.toml {key} is {published} but the pinned rustc \
+             targets macOS {actual} for {target} — /download would state a \
+             minimum the binaries do not have"
+        );
+    }
+
+    // Nothing may reintroduce a hand-written macOS floor on the download page:
+    // the two values above are the only ones a reader may be shown.
+    let dl = read("website/templates/download.html");
+    let hand_written = regex::Regex::new(r"macOS (\d+)(?:\.\d+)?\+").unwrap();
+    let found: Vec<&str> = hand_written
+        .find_iter(&dl)
+        .map(|m| m.as_str())
+        .filter(|s| !s.contains("{{"))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "download.html hard-codes a macOS floor {found:?} — use \
+         config.extra.macos_floor_arm / macos_floor_intel so the gate above \
+         keeps it honest"
+    );
+}
+
 /// Every published glibc floor — two constants and the doc prose — matches the
 /// one `release.yml` enforces.
 ///
@@ -2013,10 +2153,17 @@ fn download_page_serves_devops_and_source_personas() {
     let tpl = read("website/templates/download.html");
 
     // DevOps: container image, pinned + latest tags.
+    //
+    // Checked through the config key rather than the literal image name. This
+    // asserted `tpl.contains("ghcr.io/normb/sipnab")`, which required the page to
+    // hard-code the value that `published_repo_slugs_agree` requires it NOT to —
+    // the two gates flatly contradicted each other, and the literal one would
+    // have won by being older. What this test is for is that the page *offers a
+    // container image*; where the name comes from is the other gate's business.
     assert!(
-        tpl.contains("ghcr.io/normb/sipnab"),
-        "download page must offer the ghcr.io/normb/sipnab container image \
-         (docker.yml publishes it on every tag)"
+        tpl.contains("config.extra.ghcr_image"),
+        "download page must offer the container image docker.yml publishes, via \
+         config.extra.ghcr_image"
     );
     // DevOps: an automation section, reachable from the page ToC.
     assert!(
@@ -2032,11 +2179,12 @@ fn download_page_serves_devops_and_source_personas() {
         tpl.contains("SIPNAB_VERSION"),
         "automation section must document SIPNAB_VERSION for pinned installs"
     );
-    // DevOps: latest-version discovery without scraping HTML.
+    // DevOps: latest-version discovery without scraping HTML. The repo slug
+    // comes from config for the same reason as the image name above.
     assert!(
-        tpl.contains("api.github.com/repos/NormB/sipnab/releases/latest"),
+        tpl.contains("api.github.com/repos/{{ config.extra.github_repo }}/releases/latest"),
         "automation section must show latest-version discovery via the \
-         releases API"
+         releases API, with the repo slug from config.extra.github_repo"
     );
     // DevOps: checksum sidecars are linked next to the artifacts.
     assert!(
@@ -2277,7 +2425,7 @@ fn inline_script_edits_require_csp_hash_refresh() {
         ),
         (
             "download.html",
-            "sha256-Xtyi8+j9vCissO93mpqXa8azlys1i9B1bM6M7KOXx6Q=",
+            "sha256-rFx04kn3jGSGf1MKxuWCk8HI8WZnRlpR9OD2RDUMHPI=",
         ),
         (
             "index.html",
