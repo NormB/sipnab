@@ -289,14 +289,14 @@ jobs:
       # exempted by glob sections in .vale.ini because they are working
       # documents. Curation brought this from 13,892 alerts to zero.
       - name: Prose style (Vale + Google)
-        run: vale docs/ website/content/ README.md
+        run: vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md
 
       - name: Spelling (codespell)
         uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 # v2.2
         with:
           # Reads .codespellrc for skips and the ignore list. The action needs
           # the paths passed explicitly rather than inheriting them from config.
-          path: src tests docs website benches harness scripts README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md
+          path: src tests docs website benches harness scripts README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md
 
       # Pass one: Markdown that resolves on the filesystem. 257 unique links.
       #

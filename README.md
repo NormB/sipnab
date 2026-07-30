@@ -200,6 +200,14 @@ Note: `audio` is in the default feature set, but it does **not** add a load-time
 - [Architecture](docs/architecture.md) -- module map, data flow, threading model
 - [Implementation Plan](docs/design/implementation-plan-v6.md) -- historical design decisions and roadmap
 
+## Getting help
+
+Usage questions belong in
+[Discussions](https://github.com/NormB/sipnab/discussions). Bug reports belong in
+[Issues](https://github.com/NormB/sipnab/issues/new/choose).
+[SUPPORT.md](SUPPORT.md) covers which is which, and
+[MAINTAINERS.md](MAINTAINERS.md) is honest about who answers and how fast.
+
 ## Contributing
 
 Contributions are welcome -- see [CONTRIBUTING.md](CONTRIBUTING.md) for the

@@ -402,6 +402,82 @@ fn wiki_intra_docs_links_resolve() {
     );
 }
 
+/// The root community-health files cross-reference each other by relative
+/// path, and nothing above covers them: `wiki_source_files()` walks `docs/`
+/// and `website_docs_files()` walks the Zola content, so a rename of
+/// `SECURITY.md` would break `SUPPORT.md` and `MAINTAINERS.md` in silence.
+///
+/// These are the files a first-time reader lands on from the GitHub sidebar,
+/// which makes a dead link here more expensive than one buried in the
+/// reference, not less.
+#[test]
+fn root_community_file_links_resolve() {
+    const ROOT_FILES: &[&str] = &[
+        "README.md",
+        "SUPPORT.md",
+        "MAINTAINERS.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "CODE_OF_CONDUCT.md",
+    ];
+    let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)").unwrap();
+    let mut problems = Vec::new();
+    let mut seen = 0;
+    for name in ROOT_FILES {
+        assert!(
+            repo().join(name).is_file(),
+            "{name} is listed here but missing from the repo root — GitHub \
+             renders these in the sidebar, so losing one is user-visible."
+        );
+        for cap in link_re.captures_iter(&prose(name)) {
+            let raw = cap[1].to_string();
+            if raw.starts_with("http://")
+                || raw.starts_with("https://")
+                || raw.starts_with("mailto:")
+            {
+                continue;
+            }
+            let (path_part, anchor) = match raw.split_once('#') {
+                Some((p, a)) => (p, Some(a.to_string())),
+                None => (raw.as_str(), None),
+            };
+            if !path_part.is_empty() && !path_part.ends_with(".md") {
+                continue;
+            }
+            seen += 1;
+            let target = if path_part.is_empty() {
+                PathBuf::from(name)
+            } else {
+                PathBuf::from(path_part)
+            };
+            if !repo().join(&target).is_file() {
+                problems.push(format!(
+                    "{name}: link `{raw}` -> MISSING FILE {}",
+                    target.display()
+                ));
+                continue;
+            }
+            if let Some(a) = anchor {
+                check_anchor(&target, &a, name, &raw, &mut problems);
+            }
+        }
+    }
+    // Pinned for the same reason as the wiki pin above: a floor cannot tell a
+    // healthy repo from an extractor that stopped matching.
+    assert_eq!(
+        seen, 34,
+        "extractor found {seen} root community links, expected 34. More is \
+         fine — bump this. FEWER means the regex stopped matching and this \
+         gate narrowed silently."
+    );
+    assert!(
+        problems.is_empty(),
+        "{} broken root community link(s):\n  {}",
+        problems.len(),
+        problems.join("\n  ")
+    );
+}
+
 /// The `_index.md` task cards' hrefs (`/docs/NAME/`, optionally with an
 /// `#anchor`) must point at existing content pages, and the anchor must
 /// resolve (the cards bypass @/docs resolution, so Zola will not catch a
