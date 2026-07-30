@@ -23,7 +23,7 @@ sipnab -N -I capture.pcap --problems --json
 
 ---
 
-## Failed Calls
+## Failed calls
 
 Calls rejected with `403 Forbidden`, `404 Not Found`, `486 Busy Here`, `488 Not Acceptable Here`, or timing out with `408 Request Timeout`? Find every call that never established, then triage by response code.
 
@@ -95,6 +95,10 @@ The call report shows the full SIP message timeline plus per-stream RTP stats (i
 
 ---
 
+<!-- "488 Not Acceptable Here" is the SIP reason phrase verbatim (RFC 3261).
+Sentence-casing it would name a response that does not exist. -->
+<!-- vale sipnab.Headings = NO -->
+
 ## 488 Not Acceptable Here (codec mismatch)
 
 An INVITE comes back `488 Not Acceptable Here`: the callee (or an SBC in the path) found no common codec between the SDP offer and what it supports.
@@ -124,7 +128,9 @@ The call report's **SDP timeline** lists each offer/answer with its codec set. A
 
 ---
 
-## One-Way Audio
+<!-- vale sipnab.Headings = YES -->
+
+## One-way audio
 
 One direction of RTP has zero packets. The caller can hear the callee (or vice versa) but not both.
 
@@ -168,7 +174,7 @@ Get the diagnosis detail (`one_way_audio`, `nat_mismatch`, hints) per call with 
 
 ---
 
-## Poor Call Quality
+## Poor call quality
 
 MOS below 3.0 means quality degradation users will notice. Below 2.5, calls are unusable.
 
@@ -202,7 +208,7 @@ sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 
 **Next steps:** If jitter is high but loss is low, the problem is buffering or path instability (check for Wi-Fi hops, VPN tunnels, or missing QoS marking). If loss is high, run a path MTR/traceroute to find where packets are dropping.
 
-### Deep-dive with Stream Detail
+### Deep-dive with stream detail
 
 In the TUI, navigate to a call's flow view and press `Enter` on an RTP bar (or press `r` to jump to the streams list, then `Enter` on a stream) to open the **Stream Detail** view. This shows:
 
@@ -215,7 +221,7 @@ This same data is available in the browser analyzer at [sipnab.com/analyze/](htt
 
 ---
 
-## Slow Call Setup (Post-Dial Delay)
+## Slow call setup (post-dial delay)
 
 PDD over 3 seconds is perceptible to users. Over 5 seconds and they'll hang up.
 
@@ -241,7 +247,7 @@ sipnab -N -I capture.pcap --slow-setup --report
 
 ---
 
-## NAT Traversal Issues
+## NAT traversal issues
 
 The Contact or Via header advertises a private IP that doesn't match the actual packet source.
 
@@ -267,7 +273,7 @@ sipnab -N -I capture.pcap --nat-issues
 
 ---
 
-## SIP Scanner Detection
+## SIP scanner detection
 
 Scanners probe for open registrations and try credential stuffing. Detect them early and feed the IPs to fail2ban.
 
@@ -293,7 +299,7 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 
 ---
 
-## Registration Failures
+## Registration failures
 
 REGISTER rejected with `401 Unauthorized`, `403 Forbidden`, or `423 Interval Too Brief`? Phones not registering means no inbound calls and potentially no outbound.
 
@@ -313,7 +319,7 @@ sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND state == 'Failed'" 
 
 ---
 
-## Generating Reports
+## Generating reports
 
 Export call data for tickets, post-mortems, or automated pipelines.
 
@@ -338,7 +344,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
 
 ---
 
-## Quick Browser Analysis
+## Quick browser analysis
 
 No install, no upload, no data leaves your machine.
 
@@ -346,7 +352,7 @@ Drop a pcap file at [sipnab.com/analyze/](https://sipnab.com/analyze/) -- your b
 
 ---
 
-## Export Call Audio
+## Export call audio
 
 When metrics aren't enough — export the actual audio to hear what the caller heard.
 

@@ -48,6 +48,12 @@ Standard [TOML](https://toml.io/). All sections and keys are optional. Only set 
 
 ## Sections
 
+<!-- Each section below is headed by the literal TOML table a user types into
+sipnab.toml, so the first "word" is a lowercase identifier and sentence case
+cannot be satisfied: "## Capture" would document a table that does not exist.
+An exceptions entry cannot express this -- see .vale/styles/sipnab/Headings.yml. -->
+<!-- vale sipnab.Headings = NO -->
+
 ### [capture]
 
 Packet capture defaults.
@@ -313,7 +319,9 @@ clear_calls = "F5"
 column_selector = "F10"
 ```
 
-## Full Example
+<!-- vale sipnab.Headings = YES -->
+
+## Full example
 
 A configuration for a SIP monitoring server:
 

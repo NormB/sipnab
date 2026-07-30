@@ -6,7 +6,7 @@ description = "Client code for the sipnab REST API in curl, Python, Node/TypeScr
 
 Ready-to-adapt clients for the [REST API](@/docs/api.md) in curl, Python, Node/TypeScript, Rust, and Go.
 
-## Client Examples
+## Client examples
 
 End-to-end examples in five languages. Each one covers: bearer-token auth, listing dialogs filtered by state, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
 

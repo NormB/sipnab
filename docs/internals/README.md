@@ -43,7 +43,7 @@ contributor mechanics (setup, hooks, PR expectations) are in
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md). Failure behavior — what sipnab
 does when something goes wrong — is [the fault model](../fault-model.md).
 
-## The corpus: live vs archaeological
+## The corpus: Live vs archaeological
 
 The long design documents live in `docs/design/` and `docs/research/`, with the
 codemap one level up in `docs/` itself. They are not all current, and

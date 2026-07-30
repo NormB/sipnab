@@ -435,7 +435,7 @@ agents. Override via the per-call `limit` parameter where supported.
   `privilege::drop_privileges` so sipnab runs as the unprivileged
   `sipnab` user. Default port (8731) is ≥ 1024 to permit this.
 
-## Stdio invariant
+## stdio invariant
 
 In stdio mode, **stdout is the JSON-RPC wire**. sipnab routes all
 logging through `tracing-subscriber` to stderr (Phase 8.0b); a regression

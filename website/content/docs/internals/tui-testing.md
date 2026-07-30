@@ -7,7 +7,7 @@ description = "Snapshot, state and interaction testing for the terminal UI."
 
 sipnab tests its TUI at three levels.
 
-## 1. Snapshot Tests (tests/tui_snapshot_test.rs)
+## 1. Snapshot tests (tests/tui_snapshot_test.rs)
 
 Uses ratatui's `TestBackend` to render views to an in-memory buffer, then `insta` for snapshot comparison.
 
@@ -32,7 +32,7 @@ git add tests/snapshots/
 3. Run `cargo insta test --accept` to create the initial snapshot
 4. Commit the `.snap` file
 
-## 2. State Machine Tests (tests/tui_state_test.rs)
+## 2. State machine tests (tests/tui_state_test.rs)
 
 Tests `App` state transitions without rendering. Uses `App::new_test()` and `App::handle_key()`.
 
@@ -40,7 +40,7 @@ Tests `App` state transitions without rendering. Uses `App::new_test()` and `App
 cargo test --features tui --test tui_state_test
 ```
 
-## 3. PTY End-to-End Tests (tests/tui_e2e_test.rs)
+## 3. PTY end-to-end tests (tests/tui_e2e_test.rs)
 
 Drives the real binary inside a detached `tmux` session — not a bare PTY. sipnab's TUI queries the terminal at startup (crossterm emits `ESC[6n` to read the cursor position), and a bare pseudo-terminal has no emulator behind it to answer, so the TUI aborts with `cursor position could not be read`. tmux *is* a terminal emulator: it answers the query, provides a real window size, and lets the test send keys and snapshot the screen with `capture-pane`. These are `#[ignore]` by default and need `tmux` on `PATH`.
 

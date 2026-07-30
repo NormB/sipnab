@@ -11,7 +11,7 @@ sipnab includes an optional REST API and Prometheus metrics endpoint, enabled wi
 
 > **Looking for AI-agent access?** sipnab also exposes the same dialog / RTP / diagnostic data as a Model Context Protocol server. See [MCP Server](@/docs/mcp.md) -- the MCP path uses the same in-memory stores as this REST API, so a running sipnab instance can serve both surfaces simultaneously.
 
-## Getting Started
+## Getting started
 
 ### Step 1: Build with API support
 
@@ -261,7 +261,7 @@ The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Al
 
 `--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
-## Endpoint Reference
+## Endpoint reference
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Data endpoints use a `/v1/` prefix. Utility endpoints (`/health`, `/metrics`) have no prefix.
 
@@ -1016,7 +1016,7 @@ The metrics endpoint is lightweight and suitable for 5–15 second scrape interv
 
 Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error handling) in curl, Python (sync + async), Node/TypeScript, Rust, and Go are on the website's API Client Examples page: <https://www.sipnab.com/docs/api-clients/>.
 
-## Security Model
+## Security model
 
 - The API thread only reads dialog/stream metadata: no capture fd access, no key material exposure
 - All network listeners bind to localhost by default

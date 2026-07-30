@@ -97,6 +97,10 @@ itself):
 The MCP client launches sipnab as a child process and talks JSON-RPC over
 the pipe. No port, no token, nothing to deploy.
 
+<!-- "1A."/"1B." are labels, not sentences: the word after opens the heading.
+Same Vale misfire as the numbered sections in examples.md. -->
+<!-- vale sipnab.Headings = NO -->
+
 ### 1A. Post-mortem on a capture file
 
 1. **[laptop]** Do [Step 0](#step-0--install-sipnab-every-server-once) on
@@ -165,6 +169,8 @@ scenario-2B service bound to `127.0.0.1` (loopback needs no token) and add
 it with `claude mcp add --transport http sipnab http://127.0.0.1:8731/mcp`.
 
 ---
+
+<!-- vale sipnab.Headings = YES -->
 
 ## Scenario 2 — sipnab on a remote/production server, Claude Code on a laptop
 

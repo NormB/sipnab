@@ -6,7 +6,7 @@ You can remap keys marked **(configurable)** in the `[keybindings]` config secti
 
 Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at the bottom of this page.
 
-## Essential Keys
+## Essential keys
 
 > **Quick start:** `j`/`k` for vim-style up/down, `Enter` to drill into a call, `Esc` to go back, `Tab` to switch between Call List and RTP Streams.
 
@@ -54,7 +54,7 @@ capture off and drag as usual, then `F12` again to get wheel scrolling back.
 In many terminals holding **Shift** while dragging bypasses mouse capture
 without toggling anything.
 
-## Call List
+## Call list
 
 | Key | Action |
 |-----|--------|
@@ -99,7 +99,7 @@ active filter.
 
 > **Gotcha:** the `clear_calls` action binds `F5` in *both* views — in the Call List it clears calls, in the Call Flow it resets a pending message-compare selection. Rebinding `clear_calls` moves both.
 
-## Call Flow
+## Call flow
 
 | Key | Action |
 |-----|--------|
@@ -147,7 +147,7 @@ and gets a highlighted border. When either pane has more rows than fit, a
 vertical scrollbar appears on its right edge. `[` and `]` always scroll the
 detail pane regardless of focus.
 
-## Raw Message
+## Raw message
 
 | Key | Action |
 |-----|--------|
@@ -166,7 +166,7 @@ detail pane regardless of focus.
 | F2 | Save **(configurable: `save`)** |
 | Esc | Back to the view you came from (call flow or call list) |
 
-## Message Diff
+## Message diff
 
 | Key | Action |
 |-----|--------|
@@ -178,7 +178,7 @@ detail pane regardless of focus.
 | Esc | Back to call flow |
 | F1 / ? | Help **(configurable: `help`)** |
 
-## Combined Detail
+## Combined detail
 
 Opened from the call flow with `a` (transaction) or `A` (whole dialog): every
 message of the selection rendered as one scrollable document.
@@ -192,7 +192,7 @@ message of the selection rendered as one scrollable document.
 | F1 / ? | Help **(configurable: `help`)** |
 | Esc | Back to call flow |
 
-## RTP Streams
+## RTP streams
 
 | Key | Action |
 |-----|--------|
@@ -211,7 +211,7 @@ message of the selection rendered as one scrollable document.
 | F2 | Save the selected stream's audio as WAV **(configurable: `save`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 
-## Stream Detail
+## Stream detail
 
 | Key | Action |
 |-----|--------|
@@ -227,7 +227,7 @@ message of the selection rendered as one scrollable document.
 
 The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis (RFC 3611), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
 
-## Quality Dashboard
+## Quality dashboard
 
 Live call-quality overview: aggregate MOS/jitter/loss with the worst
 streams ranked first and per-stream trend sparklines. Open with `D` from
@@ -257,7 +257,7 @@ the Call List or RTP Streams view.
 |-----|--------|
 | Esc / F1 / q | Close help |
 
-## Save Popup
+## Save popup
 
 | Key | Action |
 |-----|--------|
@@ -272,7 +272,7 @@ the Call List or RTP Streams view.
 
 Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **Mermaid/HTML**, **Markdown**, **WAV**, **SIPp XML**, **RTP JSON**
 
-## Filter Popup
+## Filter popup
 
 | Key | Action |
 |-----|--------|
@@ -292,7 +292,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 The SIP-method grid starts with an **All** master checkbox: Space on it checks
 or unchecks every method at once.
 
-## Settings Popup
+## Settings popup
 
 | Key | Action |
 |-----|--------|
@@ -303,7 +303,7 @@ or unchecks every method at once.
 
 Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display mode, Syntax highlighting
 
-## File Open Popup
+## File open popup
 
 | Key | Action |
 |-----|--------|
@@ -322,7 +322,7 @@ home directory — the dialog shows the reason instead of a blank list. Run
 sipnab **without** `sudo` (see [install.md](install.md) for capabilities) to
 browse your own files.
 
-## Column Selector
+## Column selector
 
 | Key | Action |
 |-----|--------|
@@ -332,7 +332,7 @@ browse your own files.
 | s | Save the current layout to `[display] visible_columns` in your sipnabrc (persists across runs) |
 | Enter / Esc | Close selector |
 
-## Timestamp Modes
+## Timestamp modes
 
 Press `t` in the Call List or Call Flow to cycle through the timestamp modes (both views share the mode):
 
@@ -363,7 +363,7 @@ Press `t` in the Call List or Call Flow to cycle through the timestamp modes (bo
 
 > **Tip:** Delta-prev mode is ideal for spotting latency spikes in call setup. Delta-first mode is useful for measuring total elapsed time from the first message.
 
-## Name Resolution
+## Name resolution
 
 sipnab can display host names instead of raw IP addresses (Wireshark-style),
 in the call list **Source**/**Destination** columns, call-flow participant
@@ -408,9 +408,9 @@ PTR lookups; implies `--resolve`), `--names <FILE>` (preload an
 
 ---
 
-## TUI Views
+## TUI views
 
-### Call List View
+### Call list view
 
 The call list is the main view when sipnab starts. It shows all tracked SIP dialogs with their state, timing, and quality metrics.
 
@@ -435,7 +435,7 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
 
 > **Tip:** Press `Space` to star dialogs — a starred row shows `[*]` in the `#` column (the `▸` above is just the cursor). `F2` then saves only the starred dialogs, and `Enter` opens two or more of them as a single merged flow. Use `<` / `>` to sort by different columns and `Z` to reverse sort direction.
 
-### Call Flow View
+### Call flow view
 
 The call flow shows a ladder diagram for a selected dialog, with timing, SDP, and RTP quality indicators.
 
@@ -468,7 +468,7 @@ The call flow shows a ladder diagram for a selected dialog, with timing, SDP, an
 
 > **Tip:** Press `m` to set a mark at any message, then navigate to another message to see the delta badge showing elapsed time between them. Press `M` to clear the mark. Use `d` to cycle through SDP display modes (none / summary / full).
 
-### Raw Message View
+### Raw message view
 
 Full SIP message with optional syntax highlighting, searchable.
 
@@ -502,7 +502,7 @@ Full SIP message with optional syntax highlighting, searchable.
 <span class="t-muted">  Esc Back  / Search  s Highlight  c Color</span></pre>
 </div>
 
-### RTP Streams View
+### RTP streams view
 
 Shows all tracked RTP streams with quality metrics. Switch here from the Call List with `Tab`.
 
@@ -525,7 +525,7 @@ Shows all tracked RTP streams with quality metrics. Switch here from the Call Li
 
 > **Tip:** Streams marked `orphan` have no matching SIP dialog. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.
 
-### Filter Dialog (F7)
+### Filter dialog (F7)
 
 The filter popup lets you build filter expressions with text fields and checkboxes for common options.
 
@@ -552,7 +552,7 @@ The filter popup lets you build filter expressions with text fields and checkbox
 
 > **Tip:** The Filter field accepts the full [Filter DSL](filter-dsl.md) syntax. Combine it with the From/To text fields for powerful multi-criteria matching. Press `F9` to clear all filters at once.
 
-### Save Dialog (F2)
+### Save dialog (F2)
 
 Save captured data in multiple formats. Use `Tab` to cycle through formats.
 
@@ -578,7 +578,7 @@ Save captured data in multiple formats. Use `Tab` to cycle through formats.
 
 > **Tip:** Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog shows the count and saves only those. **Mermaid** format exports a sequence diagram you can paste into documentation.
 
-### Settings Dialog (F8)
+### Settings dialog (F8)
 
 Toggle display options without leaving the TUI.
 

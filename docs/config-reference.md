@@ -1,4 +1,4 @@
-# Config Reference
+# Config reference
 
 sipnab reads configuration from a TOML file. CLI flags ([cli-reference.md](cli-reference.md)) always override config file values.
 
@@ -42,6 +42,12 @@ Unknown keys produce a warning and go no further, so one config can span version
 Standard [TOML](https://toml.io/). All sections and keys are optional. Only set values you want to change from defaults.
 
 ## Sections
+
+<!-- Each section below is headed by the literal TOML table a user types into
+sipnab.toml, so the first "word" is a lowercase identifier and sentence case
+cannot be satisfied: "## Capture" would document a table that does not exist.
+An exceptions entry cannot express this -- see .vale/styles/sipnab/Headings.yml. -->
+<!-- vale sipnab.Headings = NO -->
 
 ### [capture]
 
@@ -308,7 +314,9 @@ clear_calls = "F5"
 column_selector = "F10"
 ```
 
-## Full Example
+<!-- vale sipnab.Headings = YES -->
+
+## Full example
 
 A configuration for a SIP monitoring server:
 
