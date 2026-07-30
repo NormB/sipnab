@@ -5,6 +5,76 @@
 //! Provides human-readable descriptions and common causes for SIP response
 //! codes, useful for diagnostics and the TUI display.
 
+/// What a response code means for the outcome of a call.
+///
+/// The dialog state machine used to answer this with inline ranges — `400..=699`
+/// in one arm, `401 | 407` in another, a bare `487` in a third — restated across
+/// four handlers. Two defects lived in the gaps: a `487` could not move a dialog
+/// at all, and `3xx` was handled nowhere. One classifier means the question is
+/// answered once.
+///
+/// The classes are the ones an operator acts on differently, not the RFC's
+/// 1xx–6xx split. A call that drew a [`Challenge`](ResponseClass::Challenge) and
+/// never authenticated is a provisioning problem; one that ended
+/// [`Cancelled`](ResponseClass::Cancelled) is a caller who hung up; one that came
+/// back [`Declined`](ResponseClass::Declined) reached a human who said no. Only
+/// [`Failure`](ResponseClass::Failure) is a failed call.
+///
+/// `docs/sip-response-codes.md` carries the same classification per code, and
+/// `response_class_matches_the_documented_table` holds the two together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseClass {
+    /// 1xx — the request is in progress. Never an outcome.
+    Provisional,
+    /// 2xx — the request succeeded.
+    Success,
+    /// 3xx — the request needs different routing. Not a failure, not an answer.
+    Redirect,
+    /// The server wants credentials or a security agreement, and the client
+    /// retries. Intermediate, not an outcome.
+    Challenge,
+    /// 487 — the INVITE transaction was terminated. Abandonment, not failure.
+    Cancelled,
+    /// The callee or an intermediary was reached and refused.
+    Declined,
+    /// The call attempt failed.
+    Failure,
+}
+
+/// Classify a SIP response code for dialog-outcome purposes.
+///
+/// See [`ResponseClass`]. Codes outside 100–699 classify as
+/// [`Failure`](ResponseClass::Failure): nothing on the wire should carry one,
+/// and treating an impossible code as a success would be the worse error.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::sip::response_codes::{response_class, ResponseClass};
+///
+/// assert_eq!(response_class(180), ResponseClass::Provisional);
+/// assert_eq!(response_class(401), ResponseClass::Challenge);
+/// assert_eq!(response_class(487), ResponseClass::Cancelled);
+/// assert_eq!(response_class(486), ResponseClass::Declined);
+/// assert_eq!(response_class(503), ResponseClass::Failure);
+/// ```
+#[must_use]
+pub fn response_class(code: u16) -> ResponseClass {
+    match code {
+        100..=199 => ResponseClass::Provisional,
+        200..=299 => ResponseClass::Success,
+        300..=399 => ResponseClass::Redirect,
+        // 401/407 challenge for credentials; 494 for a security agreement.
+        // All three mean "retry with more", not "this failed".
+        401 | 407 | 494 => ResponseClass::Challenge,
+        487 => ResponseClass::Cancelled,
+        // Reached its destination and was refused: busy here, busy everywhere,
+        // declined by the user, unwanted, rejected by an intermediary.
+        486 | 600 | 603 | 607 | 608 => ResponseClass::Declined,
+        _ => ResponseClass::Failure,
+    }
+}
+
 /// Returns a human-readable explanation and common causes for a SIP response code.
 ///
 /// Coverage includes all commonly encountered codes from RFC 3261 and key
@@ -119,9 +189,14 @@ pub fn explain_response_code(code: u16) -> Option<&'static str> {
             "408 Request Timeout — The server could not produce a response in \
              time. The callee may be unreachable or unresponsive.",
         ),
+        // Not in the IANA registry: 409 is an RFC 2543 code that RFC 3261
+        // dropped. Kept because a capture from an old implementation can still
+        // carry one, and a reader who sees it deserves to be told it is dead
+        // rather than shown nothing.
         409 => Some(
-            "409 Conflict — The request conflicts with the current state of \
-             the resource.",
+            "409 Conflict — Obsolete. Defined by RFC 2543 and removed by \
+             RFC 3261; it appears in no current registry. Treat a 409 on the \
+             wire as a non-standard implementation.",
         ),
         410 => Some(
             "410 Gone — The user existed but is no longer available at this \
@@ -162,6 +237,19 @@ pub fn explain_response_code(code: u16) -> Option<&'static str> {
         422 => Some(
             "422 Session Interval Too Small — The Session-Expires value is \
              below the minimum. Check Min-SE header in the response.",
+        ),
+        424 => Some(
+            "424 Bad Location Information — The location information in the \
+             request was malformed or unsatisfactory (RFC 6442).",
+        ),
+        425 => Some(
+            "425 Bad Alert Message — The alert-info body in the request was \
+             malformed or not supported (RFC 8876).",
+        ),
+        430 => Some(
+            "430 Flow Failed — The flow to the registering UA has failed; the \
+             edge proxy could not reach it over the stored flow (RFC 5626). \
+             Distinct from 403: the registration is valid, the path is not.",
         ),
         423 => Some(
             "423 Interval Too Brief — The registration expiration is too short. \
@@ -422,8 +510,8 @@ mod tests {
         300, 301, 302, 305, 380, //
         // 4xx
         400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 412, 413, 414, 415, 416, 417, 420,
-        421, 422, 423, 428, 429, 433, 436, 437, 438, 439, 440, 469, 470, 480, 481, 482, 483, 484,
-        485, 486, 487, 488, 489, 491, 493, 494, //
+        421, 422, 423, 424, 425, 428, 429, 430, 433, 436, 437, 438, 439, 440, 469, 470, 480, 481,
+        482, 483, 484, 485, 486, 487, 488, 489, 491, 493, 494, //
         // 5xx
         500, 501, 502, 503, 504, 505, 513, 555, 580, //
         // 6xx
@@ -472,8 +560,8 @@ mod tests {
     fn unimplemented_and_boundary_codes_return_none() {
         // Boundaries just outside real classes, plus reserved/unused codes.
         for &code in &[
-            0u16, 1, 99, 101, 150, 184, 198, 201, 203, 205, 299, 303, 399, 411, 418, 430, 490, 499,
-            511, 599, 601, 605, 699, 700, 999, 1000,
+            0u16, 1, 99, 101, 150, 184, 198, 201, 203, 205, 299, 303, 399, 411, 418, 490, 499, 511,
+            599, 601, 605, 699, 700, 999, 1000,
         ] {
             assert!(
                 explain_response_code(code).is_none(),
