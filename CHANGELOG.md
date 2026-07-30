@@ -83,6 +83,20 @@ entry that carries them.
   reads `docs/sip-response-codes.md` and holds the two together, so adding a code
   to the page without teaching the classifier fails.
 
+- **`SUPPORT.md` and `MAINTAINERS.md`.** The routing already existed —
+  `ISSUE_TEMPLATE/config.yml` has sent questions to Discussions and security
+  reports to a private advisory for some time — but a reader had to open the
+  YAML to find it. Both files state what is already configured rather than
+  inventing process, including the parts nobody enjoys writing down: one
+  maintainer, no SLA, no maintenance branches, no succession plan.
+
+  Vale now lints both (`CONTRIBUTING.md` and `SECURITY.md` stay out for now:
+  35 alerts between them, which is a backlog, not a gate), codespell covers
+  them, and `root_community_file_links_resolve` checks that the six root
+  community files' cross-references and anchors resolve. Nothing had been
+  checking those — the link tests walk `docs/` and the Zola content, so a
+  rename of `SECURITY.md` would have broken the sidebar files in silence.
+
 ### Fixed
 - **`explain_response_code()` had drifted from the registry in both
   directions.** It explained **409 Conflict**, an RFC 2543 code that RFC 3261
