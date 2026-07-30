@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.66] - 2026-07-30
 
 ### Added
 - **SIP problem diagnosis: detections 1–3.** `src/rtp/diagnosis.rs` could say a
