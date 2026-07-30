@@ -8,6 +8,31 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+- **The release-artifact counts in `docs/internals/build-ci-release.md` were
+  wrong, and now come from the build matrix.** The page said a tag publishes
+  "eight artifacts" and called the `noaudio` builds a `.deb`-only variant. A
+  release publishes twenty-three assets, fourteen of them installable — six
+  `.tar.gz`, four `.deb`, four `.rpm` — and the `noaudio` builds ship an `.rpm`
+  too, because both packaging steps gate on the target and never on the variant.
+  Neither number had drifted into being wrong: `noaudio` landed 2026-07-07 and
+  gained `.rpm` 2026-07-09, while the `.deb`-only sentence was written 2026-07-25
+  and the artifact count 2026-07-29. Both were wrong the day they were typed, by
+  reading the matrix and counting its rows — eight is the number of *builds*, and
+  it stopped equalling the tarball count the moment a build existed that produces
+  packages and no tarball.
+
+  `release_artifact_counts_match_the_build_matrix` now derives every count from
+  the matrix and the packaging steps' own `if` conditions, so the prose cannot
+  restate them freely. It reads the doc's number words and compares numbers,
+  rather than formatting expected words and string-matching: the first version did
+  the latter, and adding one build to the matrix made it panic about its
+  number-word list instead of naming the stale sentence. It also fails when a
+  claim is deleted rather than corrected, and refuses to state one count for
+  `.deb` and `.rpm` if their conditions ever diverge.
+
 ## [0.5.66] - 2026-07-30
 
 ### Added

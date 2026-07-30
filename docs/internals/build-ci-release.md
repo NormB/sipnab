@@ -257,10 +257,12 @@ show what a build *of this tree* prints, so they follow `Cargo.toml`.
 getting this wrong fails the suite instead of the visitor.
 
 **Tag a commit whose CI is green.** A tag is not a request to build — it
-publishes, immediately and irreversibly: eight artifacts, checksums, two SBOMs, a
-provenance attestation, a GHCR image and a Homebrew formula, from whatever that
-commit contains. The order is therefore: push the release commit, wait for CI,
-then tag the commit that passed.
+publishes, immediately and irreversibly, whatever that commit contains: fourteen
+installable artifacts (six `.tar.gz`, four `.deb`, four `.rpm`), a `.sha256`
+beside each tarball, a combined `SHA256SUMS.txt`, two SBOMs, a provenance
+attestation, a GHCR image and a Homebrew formula — twenty-three release assets in
+all. The order is therefore: push the release commit, wait for CI, then tag the
+commit that passed.
 
 This is enforced, not merely advised. [`pre-push`](../../.githooks/pre-push)
 refuses a `v*` tag whose commit has a failed run, has runs still in flight, or
@@ -274,8 +276,21 @@ published broken release was somebody happening to look.
 
 A release is a pushed `v*` tag. `release.yml` then runs a matrix of eight
 builds: `x86_64` and `aarch64` for `linux-gnu` (each also in a `noaudio`
-`.deb`-only variant), `x86_64` and `aarch64` `linux-musl`, and both macOS
-architectures. The gnu targets build inside a `rust:1-bookworm` container so
+packages-only variant, shipping a `.deb` and an `.rpm` but no tarball, since the
+static musl tarballs already cover the no-audio tarball case), `x86_64` and
+`aarch64` `linux-musl`, and both macOS architectures.
+
+Eight builds, six tarballs — the number of builds is not the number of artifacts.
+This page previously described a release as publishing "eight artifacts", and
+called the `noaudio` variants `.deb`-only. Neither had drifted: the `noaudio`
+variants landed on 2026-07-07 and gained `.rpm` on 2026-07-09, while the
+`.deb`-only sentence was written on 2026-07-25 and the "eight artifacts" count on
+2026-07-29. Both were wrong on the day they were written, by someone reading the
+matrix and counting its rows. That is the failure mode a re-stated number has when
+nothing produces it, so `release_artifact_counts_match_the_build_matrix` now
+derives every count here from the matrix itself.
+
+The gnu targets build inside a `rust:1-bookworm` container so
 their glibc floor is 2.36; aarch64 gnu cross-compiles inside that same
 container via Debian multiarch rather than cross-rs, for the same reason.
 

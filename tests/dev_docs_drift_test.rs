@@ -1091,6 +1091,229 @@ fn workflow_inventory_heading_counts_the_workflows() {
     );
 }
 
+/// The release-artifact counts must come from the build matrix.
+///
+/// `build-ci-release.md` described a tag as publishing "eight artifacts" and the
+/// `noaudio` builds as a `.deb`-only variant. A release publishes twenty-three
+/// assets, fourteen of them installable, and the `noaudio` builds ship an `.rpm`
+/// too. Neither number had drifted: `noaudio` landed 2026-07-07 and gained `.rpm`
+/// 2026-07-09, while the `.deb`-only sentence was written 2026-07-25 and the
+/// artifact count 2026-07-29. Both were wrong on the day they were typed, by
+/// counting matrix rows and calling the result artifacts.
+///
+/// Eight is the matrix. It stopped equalling the tarball count the moment a build
+/// existed that produces packages and no tarball, and nothing connected the two
+/// facts, so the prose was free to be confidently wrong. Derive them instead:
+///
+///   builds   — every `- target:` in the matrix
+///   tarballs — those the `Package (tar.gz + checksum)` step does not skip
+///   deb/rpm  — those whose target matches the packaging steps' `if`
+///
+/// Both packaging steps gate on the target alone, NOT on the variant, which is
+/// precisely why the `noaudio` jobs ship both package formats. Reading their
+/// conditions rather than assuming keeps this gate honest if that ever changes.
+#[test]
+fn release_artifact_counts_match_the_build_matrix() {
+    // The doc spells these out, so the gate reads its words and compares
+    // numbers. The first version did the reverse — formatted each derived count
+    // into a word and string-matched it — which meant a count landing outside
+    // the word list panicked about the list instead of naming the stale
+    // sentence. Adding one build was enough: it takes the asset total to 25.
+    // Parsing this direction, an unlisted word is the doc's problem to state
+    // differently, and every failure names the number that is wrong.
+    const WORDS: [&str; 21] = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+    ];
+    // "twenty-three" and friends, so the doc can keep house style past twenty.
+    let parse_word = |w: &str| -> Option<usize> {
+        if let Some(n) = WORDS.iter().position(|x| *x == w) {
+            return Some(n);
+        }
+        let (tens, units) = w.split_once('-')?;
+        let tens = match tens {
+            "twenty" => 20,
+            "thirty" => 30,
+            "forty" => 40,
+            _ => return None,
+        };
+        let units = WORDS.iter().position(|x| *x == units).filter(|u| *u < 10)?;
+        Some(tens + units)
+    };
+
+    let yaml = read(".github/workflows/release.yml");
+
+    // The matrix block: `include:` up to the blank line before `steps:`.
+    let block = yaml
+        .split_once("      matrix:\n        include:\n")
+        .expect("release.yml has no build matrix")
+        .1;
+    let block = &block[..block.find("\n\n").unwrap_or(block.len())];
+
+    // One entry per `- target:`. Splitting on the marker drops the text before
+    // the first one, which is empty by construction here.
+    let entries: Vec<&str> = block.split("- target: ").skip(1).collect();
+    assert!(
+        entries.len() >= 4,
+        "parsed only {} matrix entries — the matrix layout changed and this gate \
+         is no longer reading it:\n{block}",
+        entries.len()
+    );
+
+    let target_of = |e: &str| e.lines().next().unwrap_or("").trim().to_string();
+    let is_noaudio = |e: &&str| e.contains("variant: noaudio");
+
+    // Tarballs come from every build the packaging step does not skip.
+    let pkg = yaml
+        .split_once("      - name: Package (tar.gz + checksum)\n")
+        .expect("release.yml no longer has the tar.gz packaging step")
+        .1;
+    let pkg_if = pkg.lines().next().unwrap_or("").trim();
+    assert_eq!(
+        pkg_if, "if: matrix.variant != 'noaudio'",
+        "the tar.gz step's condition changed to `{pkg_if}` — this gate assumes \
+         it skips exactly the noaudio builds"
+    );
+
+    // Packages come from the gnu targets, both variants: the condition names
+    // targets and never mentions `variant`.
+    let deb_if = yaml
+        .split_once("      - name: Build .deb (gnu Linux targets)\n")
+        .expect("release.yml no longer builds .deb")
+        .1
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let rpm_if = yaml
+        .split_once("      - name: Build .rpm (gnu Linux targets)\n")
+        .expect("release.yml no longer builds .rpm")
+        .1
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    assert_eq!(
+        deb_if, rpm_if,
+        "the .deb and .rpm steps no longer share a condition, so the doc cannot \
+         state one count for both"
+    );
+    assert!(
+        !deb_if.contains("variant"),
+        "the packaging condition now mentions `variant` (`{deb_if}`) — the \
+         noaudio builds may no longer ship packages, and the doc's claim that \
+         they ship a .deb and an .rpm needs rewriting, not just recounting"
+    );
+    let pkg_targets: Vec<&str> = deb_if
+        .split("matrix.target == ")
+        .skip(1)
+        .filter_map(|s| s.split('\'').nth(1))
+        .collect();
+    assert!(
+        !pkg_targets.is_empty(),
+        "could not read any target out of the packaging condition `{deb_if}`"
+    );
+
+    let builds = entries.len();
+    let tarballs = entries.iter().filter(|e| !is_noaudio(e)).count();
+    let packages = entries
+        .iter()
+        .filter(|e| pkg_targets.contains(&target_of(e).as_str()))
+        .count();
+    // Every tarball carries a sibling .sha256; then SHA256SUMS.txt and 2 SBOMs.
+    let installable = tarballs + packages * 2;
+    let assets = tarballs * 2 + packages * 2 + 1 + 2;
+
+    // Normalise: the prose is hard-wrapped, so every claim spans line breaks.
+    // Lowercased too — these counts appear mid-sentence and at sentence starts,
+    // and a gate that fails on a capital letter teaches people to reword rather
+    // than recount.
+    let doc = read("docs/internals/build-ci-release.md");
+    let flat = doc
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    // (what it counts, pattern whose captures are number words, expected)
+    let w = r"([a-z]+(?:-[a-z]+)?)";
+    let claims: &[(&str, String, Vec<usize>)] = &[
+        (
+            "builds in the matrix",
+            format!(r"a matrix of {w} builds"),
+            vec![builds],
+        ),
+        (
+            "the artifact breakdown",
+            format!(r"{w} installable artifacts \({w} `\.tar\.gz`, {w} `\.deb`, {w} `\.rpm`\)"),
+            vec![installable, tarballs, packages, packages],
+        ),
+        (
+            "the asset total",
+            format!(r"{w} release assets in all"),
+            vec![assets],
+        ),
+        (
+            "the builds-vs-tarballs contrast",
+            format!(r"{w} builds, {w} tarballs"),
+            vec![builds, tarballs],
+        ),
+    ];
+
+    for (what, pattern, expected) in claims {
+        let re = regex::Regex::new(pattern).expect("claim pattern");
+        let caps = re.captures(&flat).unwrap_or_else(|| {
+            panic!(
+                "docs/internals/build-ci-release.md no longer states {what} in the \
+                 form this gate reads (/{pattern}/). The matrix has {builds} builds \
+                 producing {tarballs} tarballs and {packages} of each package format \
+                 — {installable} installable, {assets} assets. Restate it or update \
+                 the pattern; do not delete the claim."
+            )
+        });
+        let found: Vec<usize> = (1..=expected.len())
+            .map(|i| {
+                let word = caps.get(i).map(|m| m.as_str()).unwrap_or("");
+                parse_word(word).unwrap_or_else(|| {
+                    panic!(
+                        "docs/internals/build-ci-release.md writes \"{word}\" in \
+                         {what}, which is not a number word this gate can read. \
+                         Expected {expected:?} for that sentence."
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            &found, expected,
+            "docs/internals/build-ci-release.md states {found:?} for {what}, but \
+             release.yml's matrix produces {expected:?} — {builds} builds, \
+             {tarballs} tarballs, {packages} of each package format, \
+             {installable} installable, {assets} assets"
+        );
+    }
+}
+
 /// Site pages generated from `docs/` must match what the generator produces.
 ///
 /// Every page under `scripts/build-site-pages.py` was maintained by hand on
