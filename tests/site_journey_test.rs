@@ -2500,8 +2500,12 @@ fn inline_script_edits_require_csp_hash_refresh() {
             "sha256-rFx04kn3jGSGf1MKxuWCk8HI8WZnRlpR9OD2RDUMHPI=",
         ),
         (
+            // Re-pinned in 0.5.68: the hero now swaps its static screenshot
+            // for the animated demo on `load`, so the inline script grew a
+            // block. The static frame stays the LCP element and the swap is
+            // gated on prefers-reduced-motion.
             "index.html",
-            "sha256-agjs/cHNZYY0f80LNPmsmDq33ApENbBpIkiotSX7et8=",
+            "sha256-Q+4br/fhk2omBptuVKkv3Cb5jRi9UFaPfZgxQHFxrV8=",
         ),
         (
             "page.html",
@@ -2552,6 +2556,62 @@ fn inline_script_edits_require_csp_hash_refresh() {
          only allows inline scripts by sha256 hash. The pages.yml csp job \
          refreshes the Cloudflare rule automatically on deploy; update PINNED \
          in this test to the computed list above to acknowledge the change."
+    );
+}
+
+/// The hero swaps a static screenshot for an animated demo after `load`. Four
+/// properties make that safe, and each is one careless edit from being lost.
+///
+/// The animated file is 350 KiB against the static frame's 206 KiB. If the
+/// swap ever moves off `load`, or the `fetchpriority` moves onto the animated
+/// URL, the hero stops being a cheap LCP element and starts being the reason
+/// the page scores badly — a regression that looks like nothing in review and
+/// shows up only in field data.
+///
+/// Video was measured and rejected: 18 frames of terminal text over 14.2s is a
+/// slideshow, and every encode smaller than the lossless WebP blurs the text
+/// the demo exists to show.
+#[test]
+fn hero_swap_keeps_the_static_frame_as_the_lcp_element() {
+    let html = std::fs::read_to_string(repo().join("website/templates/index.html"))
+        .expect("read index.html");
+
+    let hero_line = html
+        .lines()
+        .find(|l| l.contains("id=\"hero-shot\""))
+        .expect("hero <img> must carry id=\"hero-shot\" — the swap looks it up by id");
+
+    assert!(
+        hero_line.contains("demos/hero-static.webp")
+            && hero_line.contains("fetchpriority=\"high\""),
+        "the STATIC frame must be the src with fetchpriority=\"high\"; putting \
+         either on the animated file makes a 350 KiB asset the LCP element:\n{hero_line}"
+    );
+    assert!(
+        hero_line.contains("data-animated=") && hero_line.contains("demos/01-intro.webp"),
+        "the animated URL belongs in data-animated so Zola resolves it, not \
+         hardcoded in the script:\n{hero_line}"
+    );
+    assert!(
+        hero_line.contains("width=\"1200\"") && hero_line.contains("height=\"700\""),
+        "both files are 1200x700 and the dimensions must be declared, or the \
+         swap shifts layout:\n{hero_line}"
+    );
+
+    assert!(
+        html.contains("prefers-reduced-motion: reduce"),
+        "the swap must honour prefers-reduced-motion — the animation loops \
+         forever, which is what someone setting that asked not to receive"
+    );
+    assert!(
+        html.contains("window.addEventListener('load'"),
+        "the swap must wait for `load`; running it earlier puts the animated \
+         fetch in contention with the LCP image"
+    );
+    assert!(
+        html.contains("pre.onload"),
+        "the animated image must decode before the swap, or a slow fetch \
+         blanks the hero instead of leaving the screenshot up"
     );
 }
 
