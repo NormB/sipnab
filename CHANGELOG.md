@@ -83,6 +83,20 @@ entry that carries them.
   reads `docs/sip-response-codes.md` and holds the two together, so adding a code
   to the page without teaching the classifier fails.
 
+- **The hero animates, without costing the LCP metric.** The static screenshot
+  stays the `fetchpriority="high"` element and the animated demo swaps in on
+  `load`, once first paint is already recorded. Both files are 1200x700, so
+  nothing shifts; the animated image decodes before the swap, so a slow fetch
+  leaves the screenshot up rather than blanking the hero; and
+  `prefers-reduced-motion` skips the swap *and* the fetch, since that
+  animation loops forever.
+
+  Video was measured and rejected. 18 frames of terminal text over 14.2s is a
+  slideshow, not motion, and video codecs have no temporal continuity to
+  exploit: the h264 encodes that beat the 350 KiB lossless WebP do it at SSIM
+  0.985 on the text the demo exists to show, and the encode that holds
+  fidelity costs 415 KiB — 18% *more* than the WebP already shipping.
+
 - **SIP diagnosis detections 4–7 — missing `ACK`, abandoned/cancelled, high
   post-dial delay, registration failure.** The set is complete: a dialog now
   reports an answered `INVITE` that was never acknowledged, a call cancelled or
