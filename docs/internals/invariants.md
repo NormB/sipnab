@@ -2,7 +2,7 @@
 
 The rules that must not break. Each entry states the rule, why it exists, what
 enforces it, and how it fails when broken. If you are about to violate one, the
-enforcement will usually catch you — but knowing *why* is faster than reading a
+enforcement usually catches you — but knowing *why* is faster than reading a
 CI failure.
 
 Threading detail belongs to [Threading](threading.md). Failure semantics — what

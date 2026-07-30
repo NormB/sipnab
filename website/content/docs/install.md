@@ -160,7 +160,7 @@ found `` -- use the static musl build.
 cargo install sipnab --features full
 ```
 
-> **On Alpine or any musl target, `--features full` will not give you audio.**
+> **On Alpine or any musl target, `--features full` does not give you audio.**
 > The playback plugin arrives through `dlopen`, and static musl has no dynamic
 > loader — it returns "Dynamic loading not supported". The build succeeds and
 > the binary reports `audio` in `--version`, but playback can never work. Build
@@ -186,7 +186,7 @@ sudo apt install ./sipnab_<version>_amd64.deb
 ```
 
 On an arm64 (aarch64) host, take the arm64 package instead — installing the
-wrong-architecture `.deb` over the right one leaves you with a binary that will
+wrong-architecture `.deb` over the right one leaves you with a binary that does
 not run:
 
 ```bash
@@ -352,7 +352,7 @@ grype sbom:sipnab-<version>.cdx.json      # or trivy sbom, osv-scanner, ...
 ```
 
 The binary SBOM covers all features, so it is a superset of
-what any single published binary contains — it will never under-report.
+what any single published binary contains — it never under-reports.
 
 ## Live Capture Permissions
 
@@ -377,7 +377,7 @@ sipnab            # live capture works; no sudo needed
 Prefer this to `sudo sipnab`. When started as root, sipnab opens the capture
 device and then drops privileges to an unprivileged user (`nobody` by default,
 or `--user <name>`). That dropped user usually **cannot read your home
-directory**, so the in-TUI file browser (`O`) comes up empty — it will show a
+directory**, so the in-TUI file browser (`O`) comes up empty — it shows a
 "run without sudo" message explaining why. Running unprivileged with
 capabilities avoids this entirely. (Re-run `--setup-caps` after
 each reinstall, since replacing the file clears its capabilities.)

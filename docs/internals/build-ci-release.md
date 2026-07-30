@@ -143,7 +143,7 @@ argument for it being a script.
 — the installer test suite plus shellcheck, and the `.deb` build for both the
 full and `noaudio` variants — but a failure in either does **not** block a
 merge. If you touch `website/static/install.sh` or `packaging/deb/`, read their
-logs yourself. Nothing else will make you.
+logs yourself. Nothing else makes you.
 
 ## Hooks
 

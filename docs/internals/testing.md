@@ -35,7 +35,7 @@ binaries, so an explicit path attribute pulls shared helpers in:
 mod run;
 ```
 
-That idiom is why you will see the same module included by several test files
+That idiom is why the same module appears in several test files
 with no `mod.rs` chain — each test binary compiles its own copy.
 
 | Helper | Provides |
