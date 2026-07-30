@@ -178,6 +178,29 @@ ring / teardown milliseconds, retransmit counts), `sdp_timeline`,
 serializer. One place documents it, with a full worked example, under
 [`GET /v1/dialogs/{call_id}` in the REST API reference](@/docs/api.md#get-v1-dialogs-1).
 
+### One object per dialog
+
+`--json` is a per-message stream. `--json-dialogs` emits the same dialog document
+the REST API returns, one compact line per call, after capture completes:
+
+```bash
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select(.state == "Failed") | {call_id, final_status_code, final_status_reason}'
+```
+
+Reach for it when the question is *which calls failed and why* rather than *what
+did the wire carry*. A dialog-level filter like `state == 'Failed'` selects
+dialogs, and `--json` then emits every message belonging to them — the 100
+Trying and the 401 challenge alongside the 488 that actually failed the call, all
+carrying the same `call_id`. Joining those back together is work the per-dialog
+form does for you.
+
+`final_status_code` is the response that decided the outcome, with auth
+challenges excluded: a call challenged and then answered reports 200, not the
+401. `final_status_reason` is the phrase from the wire, which RFC 3261 §7.2
+leaves as free text — `500 Service Unavailable` is legal and common, so match on
+the code.
+
 A `signaling_diagnosis` object sits beside `diagnosis` when something is wrong
 with the signalling rather than the media, and **drops out entirely** when
 the detections found nothing — so a healthy dialog serializes exactly as before

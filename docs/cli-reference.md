@@ -306,6 +306,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 |------|-------|---------|-------------|
 | `--json` | -- | off | Output as NDJSON (one JSON object per line, schema in [output-formats.md](output-formats.md)). Requires `-N` |
 | `--json-pretty` | -- | off | Output each message as pretty-printed multi-line JSON (use `--json` for line-oriented NDJSON). Requires `-N` |
+| `--json-dialogs` | -- | off | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; pair with `--no-cli-print` to get only the objects). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it. |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
 | `--markdown` | -- | off | Format report output as Markdown |
@@ -327,6 +328,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 **Examples**
 
+- `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
+- `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector
 - `sipnab -N -I capture.pcap --json-pretty --payload-limit 1000 > messages.json` — export every SIP message from a capture as pretty-printed JSON, truncating displayed payloads to 1000 bytes
 - `sudo sipnab -d eth0 -N --json-pretty --group-by method --line-buffer > live.json` — stream live SIP traffic as pretty-printed JSON grouped by method, flushing after each line for downstream tooling
 - `sipnab -N -I capture.pcap --text-dump --hexdump --proto-number --color never` — dump raw SIP text with hex payloads and IANA protocol numbers, uncolored for log archiving

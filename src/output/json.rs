@@ -220,6 +220,21 @@ struct DialogJson {
     to_display: Option<String>,
     /// Current dialog state (Display form, e.g. "InCall").
     state: String,
+    /// The final response code that decided the outcome behind `state` — 200
+    /// for an answered call, the 4xx/5xx/6xx for a failed one, 487 for a
+    /// cancelled one. `None` while the call is still in progress.
+    ///
+    /// Auth challenges are excluded: a call challenged then answered reports
+    /// 200, not the 401. The challenge is the outcome only for a call that drew
+    /// one and never authenticated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_status_code: Option<u16>,
+    /// The reason phrase carried beside `final_status_code`, verbatim from the
+    /// wire. Free text per RFC 3261 §7.2 — a sender may write anything, so
+    /// `500 Service Unavailable` is legal and common. Match on the code, not
+    /// this. `None` when there is no final response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_status_reason: Option<String>,
     /// SIP method that initiated the dialog.
     method: String,
     /// Number of SIP messages in the dialog.
@@ -364,6 +379,43 @@ pub fn message_to_json_pretty(msg: &SipMessage) -> String {
     pretty
 }
 
+/// Serialize a dialog as one compact NDJSON line, newline-terminated.
+///
+/// The per-message stream has had a compact form since the beginning
+/// ([`message_to_json`]); the per-dialog document has only ever existed
+/// pretty-printed, over REST and MCP. That left the CLI with no way to ask
+/// "one record per call" — the shape an operator actually wants when
+/// triaging — so the documented answer was `--json` plus `jq` gymnastics
+/// against a per-message stream, joining `status_code` back to `call_id`
+/// by hand.
+///
+/// Same object as [`dialog_to_json`], one line instead of many, so a
+/// pipeline can read it with `jq -c` or split on newlines.
+///
+/// # Arguments
+///
+/// * `dialog` — The dialog to serialize.
+/// * `streams` — RTP streams associated with the dialog.
+/// * `diagnosis` — Pre-computed media diagnosis to embed.
+///
+/// # Returns
+///
+/// One compact JSON object followed by `\n`; an `{"error": ...}` line on
+/// serialization failure, matching [`dialog_to_json`]'s behaviour.
+#[must_use]
+pub fn dialog_to_ndjson(
+    dialog: &SipDialog,
+    streams: &[&RtpStream],
+    diagnosis: &MediaDiagnosis,
+) -> String {
+    let pretty = dialog_to_json(dialog, streams, diagnosis);
+    let mut line = serde_json::from_str::<serde_json::Value>(&pretty)
+        .and_then(|v| serde_json::to_string(&v))
+        .unwrap_or(pretty);
+    line.push('\n');
+    line
+}
+
 /// Serialize a dialog with associated streams and diagnosis as JSON.
 ///
 /// Produces a complete JSON object with timing, SDP timeline, diagnosis,
@@ -439,6 +491,15 @@ pub fn dialog_to_json(
         from_display: dialog.from_display.clone(),
         to_display: dialog.to_display.clone(),
         state: dialog.state().to_string(),
+        final_status_code: dialog.final_status_code(),
+        final_status_reason: dialog.final_status_code().and_then(|code| {
+            dialog
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.status_code == Some(code))
+                .and_then(|m| m.reason.clone())
+        }),
         method: dialog.method.to_string(),
         msg_count: dialog.messages.len(),
         duration_sec,
@@ -546,6 +607,31 @@ mod tests {
                 "Call-ID: json-test@example.com",
                 "CSeq: 1 INVITE",
                 "User-Agent: TestUA/1.0",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse")
+    }
+
+    /// A 200 OK to the `make_invite` transaction, so a dialog has an outcome.
+    fn make_ok() -> SipMessage {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@example.com>;tag=t2",
+                "Call-ID: json-test@example.com",
+                "CSeq: 1 INVITE",
                 "Content-Length: 0",
             ],
             b"",
@@ -1107,6 +1193,70 @@ mod tests {
     }
 
     /// Stream JSON carries schema, hex SSRC, and numeric quality fields.
+    /// `dialog_to_ndjson` is one compact line carrying the same object.
+    ///
+    /// The per-message stream has had a compact form from the start; the
+    /// per-dialog document only existed pretty-printed, over REST and MCP, so
+    /// the CLI had no way to ask for one record per call. The documented answer
+    /// was `--json` plus jq, joining `status_code` back to `call_id` by hand
+    /// across a per-message stream that also carries every provisional response.
+    #[test]
+    fn dialog_ndjson_is_one_compact_line() {
+        let msg = make_invite();
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
+        dialog.messages.push(make_ok());
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let line = dialog_to_ndjson(&dialog, &streams, &MediaDiagnosis::default());
+
+        assert!(line.ends_with('\n'), "must be newline-terminated");
+        assert_eq!(
+            line.trim_end().lines().count(),
+            1,
+            "one dialog is one line, or a reader cannot split on newlines"
+        );
+        let compact: serde_json::Value = serde_json::from_str(line.trim_end()).expect("valid JSON");
+        let pretty: serde_json::Value = serde_json::from_str(&dialog_to_json(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+        ))
+        .expect("valid JSON");
+        assert_eq!(compact, pretty, "same document, different whitespace");
+    }
+
+    /// The dialog document carries the code that decided the outcome.
+    ///
+    /// Without it, `state` says `Failed` and the reader still has to go back to
+    /// the message stream to learn whether that was a 486, a 503 or a 404 —
+    /// which is the whole reason the per-message workaround existed.
+    #[test]
+    fn dialog_json_carries_the_final_status() {
+        let msg = make_invite();
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
+        dialog.messages.push(make_ok());
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let v: serde_json::Value = serde_json::from_str(&dialog_to_json(
+            &dialog,
+            &streams,
+            &MediaDiagnosis::default(),
+        ))
+        .expect("valid JSON");
+        // The fixture answers with a 200, so the outcome is 200 and the reason
+        // is whatever the fixture's response carried.
+        assert_eq!(
+            v.get("final_status_code")
+                .and_then(serde_json::Value::as_u64),
+            Some(200),
+            "an answered dialog reports its 200"
+        );
+        assert!(
+            v.get("final_status_reason").is_some(),
+            "a code with no reason phrase beside it makes a ticket harder to read"
+        );
+    }
+
     #[test]
     fn stream_to_json_contains_required_fields() {
         let stream = make_stream();
