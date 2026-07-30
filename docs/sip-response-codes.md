@@ -1,0 +1,174 @@
+# SIP response codes
+
+Every SIP response code in the IANA registry, the section of the RFC that
+defines it, and how sipnab classifies it.
+
+**Source.** <https://www.iana.org/assignments/sip-parameters/sip-parameters-7.csv>
+— the IANA *Response Codes* registry, retrieved 2026-07-30. IANA is the registry
+of record: RFC 3261 §21 defines 50 of these and later RFCs register the other 25,
+so no single RFC carries the whole list. A blank `Reference` in that CSV means
+RFC 3261, which is why those 50 line up exactly with RFC 3261 §21.
+
+**Wikipedia disagrees with the registry, so prefer this table.** Its list differs
+in five phrases and carries two codes that no registry has. 437 is *Unsupported
+Credential*, not *Unsupported Certificate* — [RFC 8224 §6.2.2] names the latter as
+the previous name. 500 is *Server Internal Error*, not *Internal Server Error*.
+202 reads *Accepted (Deprecated)*. 409 *Conflict* and 411 *Length Required* come from
+RFC 2543, which RFC 3261 obsoleted.
+
+[RFC 8224 §6.2.2]: https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2
+
+**Reason phrases on the wire are free text.** RFC 3261 §7.2 lets a sender write
+anything after the code, so a capture showing `500 Service Unavailable` or `487
+Request Cancelled` is legal, and both are common in the field. The phrase in this
+table is the canonical one. Match on the code, never on the text.
+
+## Classification
+
+| Class | Meaning |
+|---|---|
+| `provisional` | The request is in progress. Never an outcome. |
+| `success` | The request succeeded. |
+| `redirect` | The request needs different routing. Not a failure of the call, and not an answer either. |
+| `challenge` | The server wants credentials or a security agreement, and the client retries. Intermediate, not an outcome. |
+| `cancelled` | The caller gave up before a final response. Abandonment, not failure. |
+| `declined` | The call reached the callee or an intermediary, which refused it. A human or a policy said no. |
+| `failure` | The call attempt failed. |
+
+Only `failure` is a failed call. `challenge`, `cancelled`, `redirect` and
+`declined` each point somewhere different, and folding them together loses the
+distinction that tells an operator what to do next. A call that drew a `challenge`
+and never authenticated is a provisioning problem. One that ended `cancelled` is a
+caller who hung up. One that came back `declined` reached a human who said no.
+
+<!-- vale off -->
+
+<!-- The Description column quotes the RFC that defines each code. Normative text
+     is not ours to reword for a house style guide, so the prose rules are off for
+     the tables below. -->
+
+## 1xx provisional
+
+The request is in progress. Never an outcome.
+
+| Code | Reason phrase | Defined in | Description |
+|---|---|---|---|
+| `100` | Trying | [RFC 3261 §21.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.1) | This response indicates that the request has been received by the next-hop server and that some unspecified action is being taken on behalf of this call (for example, a database is being consulted). This response, like all other provisional responses, stops retransmissions of an INVITE by a UAC. |
+| `180` | Ringing | [RFC 3261 §21.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.2) | The UA receiving the INVITE is trying to alert the user. This response MAY be used to initiate local ringback. |
+| `181` | Call Is Being Forwarded | [RFC 3261 §21.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.3) | A server MAY use this status code to indicate that the call is being forwarded to a different set of destinations. |
+| `182` | Queued | [RFC 3261 §21.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.4) | The called party is temporarily unavailable, but the server has decided to queue the call rather than reject it. When the callee becomes available, it will return the appropriate final status response. |
+| `183` | Session Progress | [RFC 3261 §21.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.1.5) | The 183 (Session Progress) response is used to convey information about the progress of the call that is not otherwise classified. The Reason-Phrase, header fields, or message body MAY be used to convey more details about the call progress. |
+| `199` | Early Dialog Terminated | [RFC 6228 §4](https://www.rfc-editor.org/rfc/rfc6228#section-4) | Upstream SIP entities might receive multiple 2xx final responses. When a SIP entity receives the first 2xx final response, and it does not intend to accept any subsequent 2xx final responses, it will automatically terminate any other outstanding early dialog associated with the request. |
+
+## 2xx success
+
+The request succeeded.
+
+| Code | Reason phrase | Defined in | Description |
+|---|---|---|---|
+| `200` | OK | [RFC 3261 §21.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.2.1) | The request has succeeded. The information returned with the response depends on the method used in the request. |
+| `202` | Accepted (Deprecated) | [RFC 6665 §8](https://www.rfc-editor.org/rfc/rfc6665#section-8) | 8.3.1. 202 (Accepted) Response Code . |
+| `204` | No Notification | [RFC 5839 §5.6](https://www.rfc-editor.org/rfc/rfc5839#section-5.6) | 7.1. 204 (No Notification) Response Code . |
+
+## 3xx redirect
+
+The request needs different routing. Not a failure of the call, and not an answer either.
+
+| Code | Reason phrase | Defined in | Description |
+|---|---|---|---|
+| `300` | Multiple Choices | [RFC 3261 §21.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.1) | The address in the request resolved to several choices, each with its own specific location, and the user (or UA) can select a preferred communication end point and redirect its request to that location. |
+| `301` | Moved Permanently | [RFC 3261 §21.3.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.2) | The user can no longer be found at the address in the Request-URI, and the requesting client SHOULD retry at the new address given by the Contact header field (Section 20.10). |
+| `302` | Moved Temporarily | [RFC 3261 §21.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.3) | The requesting client SHOULD retry the request at the new address(es) given by the Contact header field (Section 20.10). The Request-URI of the new request uses the value of the Contact header field in the response. |
+| `305` | Use Proxy | [RFC 3261 §21.3.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.4) | The requested resource MUST be accessed through the proxy given by the Contact field. The Contact field gives the URI of the proxy. |
+| `380` | Alternative Service | [RFC 3261 §21.3.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.3.5) | The call was not successful, but alternative services are possible. The alternative services are described in the message body of the response. |
+
+## Challenge
+
+The server wants credentials or a security agreement, and the client retries. Intermediate, not an outcome.
+
+| Code | Reason phrase | Defined in | Description |
+|---|---|---|---|
+| `401` | Unauthorized | [RFC 3261 §21.4.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.2) | The request requires user authentication. This response is issued by UASs and registrars, while 407 (Proxy Authentication Required) is used by proxy servers. |
+| `407` | Proxy Authentication Required | [RFC 3261 §21.4.8](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.8) | This code is similar to 401 (Unauthorized), but indicates that the client MUST first authenticate itself with the proxy. SIP access authentication is explained in Sections 26 and 22.3. |
+| `494` | Security Agreement Required | [RFC 3329 §6.5](https://www.rfc-editor.org/rfc/rfc3329#section-6.5) | the client with a 494 (Security Agreement Required) response. The server MUST add a Security-Server header field to this response listing the security mechanisms that the server supports. |
+
+## Cancelled
+
+The caller gave up before a final response. Abandonment, not failure.
+
+| Code | Reason phrase | Defined in | Description |
+|---|---|---|---|
+| `487` | Request Terminated | [RFC 3261 §21.4.25](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.25) | The request was terminated by a BYE or CANCEL request. This response is never returned for a CANCEL request itself. |
+
+## Declined
+
+The call reached the callee or an intermediary, which refused it. A human or a policy said no.
+
+| Code | Reason phrase | Defined in | Description |
+|---|---|---|---|
+| `486` | Busy Here | [RFC 3261 §21.4.24](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.24) | The callee's end system was contacted successfully, but the callee is currently not willing or able to take additional calls at this end system. The response MAY indicate a better time to call in the Retry-After header field. |
+| `600` | Busy Everywhere | [RFC 3261 §21.6.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.1) | The callee's end system was contacted successfully but the callee is busy and does not wish to take the call at this time. The response MAY indicate a better time to call in the Retry-After header field. |
+| `603` | Decline | [RFC 3261 §21.6.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.2) | The callee's machine was successfully contacted but the user explicitly does not wish to or cannot participate. The response MAY indicate a better time to call in the Retry-After header field. |
+| `607` | Unwanted | [RFC 8197 §?](https://www.rfc-editor.org/rfc/rfc8197#section-?) | This document defines the 607 (Unwanted) SIP response code, allowing called parties to indicate that the call or message was unwanted. SIP entities may use this information to adjust how future calls from this calling party are handled for the called party or more broadly. |
+| `608` | Rejected | [RFC 8688 §?](https://www.rfc-editor.org/rfc/rfc8688#section-?) | This document defines the 608 (Rejected) Session Initiation Protocol (SIP) response code. This response code enables calling parties to learn that an intermediary rejected their call attempt. |
+
+## Failure
+
+The call attempt failed.
+
+| Code | Reason phrase | Defined in | Description |
+|---|---|---|---|
+| `400` | Bad Request | [RFC 3261 §21.4.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.1) | The request could not be understood due to malformed syntax. The Reason-Phrase SHOULD identify the syntax problem in more detail, for example, "Missing Call-ID header field". |
+| `402` | Payment Required | [RFC 3261 §21.4.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.3) | Reserved for future use. |
+| `403` | Forbidden | [RFC 3261 §21.4.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.4) | The server understood the request, but is refusing to fulfill it. Authorization will not help, and the request SHOULD NOT be repeated. |
+| `404` | Not Found | [RFC 3261 §21.4.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.5) | The server has definitive information that the user does not exist at the domain specified in the Request-URI. This status is also returned if the domain in the Request-URI does not match any of the domains handled by the recipient of the request. |
+| `405` | Method Not Allowed | [RFC 3261 §21.4.6](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.6) | The method specified in the Request-Line is understood, but not allowed for the address identified by the Request-URI. The response MUST include an Allow header field containing a list of valid methods for the indicated address. |
+| `406` | Not Acceptable | [RFC 3261 §21.4.7](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.7) | The resource identified by the request is only capable of generating response entities that have content characteristics not acceptable according to the Accept header field sent in the request. |
+| `408` | Request Timeout | [RFC 3261 §21.4.9](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.9) | The server could not produce a response within a suitable amount of time, for example, if it could not determine the location of the user in time. The client MAY repeat the request without modifications at any later time. |
+| `410` | Gone | [RFC 3261 §21.4.10](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.10) | The requested resource is no longer available at the server and no forwarding address is known. This condition is expected to be considered permanent. |
+| `412` | Conditional Request Failed | [RFC 3903 §8.2](https://www.rfc-editor.org/rfc/rfc3903#section-8.2) | 11.2.1. "412 Conditional Request Failed" Response Code 19 11.3. |
+| `413` | Request Entity Too Large | [RFC 3261 §21.4.11](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.11) | The server is refusing to process a request because the request entity-body is larger than the server is willing or able to process. The server MAY close the connection to prevent the client from continuing the request. |
+| `414` | Request-URI Too Long | [RFC 3261 §21.4.12](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.12) | The server is refusing to service the request because the Request-URI is longer than the server is willing to interpret. |
+| `415` | Unsupported Media Type | [RFC 3261 §21.4.13](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.13) | The server is refusing to service the request because the message body of the request is in a format not supported by the server for the requested method. The server MUST return a list of acceptable formats using the Accept, Accept-Encoding, or Accept-Language header field, depending on the specific problem with the content. |
+| `416` | Unsupported URI Scheme | [RFC 3261 §21.4.14](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.14) | The server cannot process the request because the scheme of the URI in the Request-URI is unknown to the server. Client processing of this response is described in Section 8.1.3.5. |
+| `417` | Unknown Resource-Priority | [RFC 4412 §2](https://www.rfc-editor.org/rfc/rfc4412#section-2) | Accept-Resource-Priority 417 amdr o - o o o o o Header field where proxy SUB NOT UPD MSG REF INF PUB ---------------------------------------------------------------- Resource-Priority R amdr o o o o o o o Accept-Resource-Priority 200 amdr o o o o o o o Accept-Resource-Priority 417 amdr o o o o o o o Schulzrinne & Polk Standards Track [Page 8] Other request methods MAY define their own handling rules; unless otherwise specified, recipients MAY ignore these header fields. |
+| `420` | Bad Extension | [RFC 3261 §21.4.15](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.15) | The server did not understand the protocol extension specified in a Proxy-Require (Section 20.29) or Require (Section 20.32) header field. The server MUST include a list of the unsupported extensions in an Unsupported header field in the response. |
+| `421` | Extension Required | [RFC 3261 §21.4.16](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.16) | The UAS needs a particular extension to process the request, but this extension is not listed in a Supported header field in the request. Responses with this status code MUST contain a Require header field listing the required extensions. |
+| `422` | Session Interval Too Small | [RFC 4028 §6](https://www.rfc-editor.org/rfc/rfc4028#section-6) | 6. 422 Response Code Definition . |
+| `423` | Interval Too Brief | [RFC 3261 §21.4.17](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.17) | The server is rejecting the request because the expiration time of the resource refreshed by the request is too short. This response can be used by a registrar to reject a registration whose Contact header field expiration time was too small. |
+| `424` | Bad Location Information | [RFC 6442 §3261](https://www.rfc-editor.org/rfc/rfc6442#section-3261) | 424 (Bad Location Information) SIP response it receives about this location addition and MUST NOT pass on (upstream) the 424 response. A SIP intermediary that adds a locationValue MUST position the new locationValue as the last locationValue within the Geolocation header field of the SIP request. |
+| `425` | Bad Alert Message | [RFC 8876 §5](https://www.rfc-editor.org/rfc/rfc8876#section-5) | 5.1. 425 (Bad Alert Message) Response Code 5.2. |
+| `428` | Use Identity Header | [RFC 8224 §6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2) | then a 428 "Use Identity Header" response MUST be sent in the backwards direction. For more on this and other verifier responses, see Section 6.2.2. |
+| `429` | Provide Referrer Identity | [RFC 3892 §2.1](https://www.rfc-editor.org/rfc/rfc3892#section-2.1) | 5. The 429 Provide Referrer Identity Error Response . |
+| `430` | Flow Failed | [RFC 5626 §5.3.1](https://www.rfc-editor.org/rfc/rfc5626#section-5.3.1) | 11.5. 430 (Flow Failed) Response Code . |
+| `433` | Anonymity Disallowed | [RFC 5079 §1](https://www.rfc-editor.org/rfc/rfc5079#section-1) | 5. 433 (Anonymity Disallowed) Definition . |
+| `436` | Bad Identity Info | [RFC 8224 §6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | The 436 "Bad Identity Info" response code indicates an inability to acquire the credentials needed by the verification service for validating the signature in an Identity header field. |
+| `437` | Unsupported Credential | [RFC 8224 §6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | The 437 "Unsupported Credential" response (previously "Unsupported Certificate"; see Section 13.2) is sent when a verification service can acquire, or already holds, the credential represented by the "info" parameter of at least one Identity header field in the request but does not support said credential(s), for reasons such as failing to trust the issuing certification authority (CA) or failing to support the algorithm with which the credential was signed. |
+| `438` | Invalid Identity Header | [RFC 8224 §6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) | the backwards direction, such as a 438 ("Invalid Identity Header") response indicating a verification failure. |
+| `439` | First Hop Lacks Outbound Support | [RFC 5626 §4.2.1](https://www.rfc-editor.org/rfc/rfc5626#section-4.2.1) | 11.6. 439 (First Hop Lacks Outbound Support) Response Code . |
+| `440` | Max-Breadth Exceeded | [RFC 5393 §5.1](https://www.rfc-editor.org/rfc/rfc5393#section-5.1) | out a desired parallel fork, a proxy can return the 440 (Max-Breadth Exceeded) response defined in this document. This mechanism operates independently from Max-Forwards. |
+| `469` | Bad Info Package | [RFC 6086 §5.2.2](https://www.rfc-editor.org/rfc/rfc6086#section-5.2.2) | If a UA receives a 469 (Bad Info Package) response to an INFO request, based on RFC 5057 [RFC5057], the response represents a Transaction Only failure, and the UA MUST NOT terminate the invite dialog usage. |
+| `470` | Consent Needed | [RFC 5360 §5.9.2](https://www.rfc-editor.org/rfc/rfc5360#section-5.9.2) | which the relay has no permissions SHOULD return a 470 (Consent Needed) response. The relay SHOULD add a Permission-Missing header field with the URIs for which the relay has no permissions. |
+| `480` | Temporarily Unavailable | [RFC 3261 §21.4.18](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.18) | The callee's end system was contacted successfully but the callee is currently unavailable (for example, is not logged in, logged in but in a state that precludes communication with the callee, or has activated the "do not disturb" feature). The response MAY indicate a better time to call in the Retry-After header field. |
+| `481` | Call/Transaction Does Not Exist | [RFC 3261 §21.4.19](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.19) | This status indicates that the UAS received a request that does not match any existing dialog or transaction. |
+| `482` | Loop Detected | [RFC 3261 §21.4.20](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.20) | The server has detected a loop (Section 16.3 Item 4). |
+| `483` | Too Many Hops | [RFC 3261 §21.4.21](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.21) | The server received a request that contains a Max-Forwards (Section 20.22) header field with the value zero. |
+| `484` | Address Incomplete | [RFC 3261 §21.4.22](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.22) | The server received a request with a Request-URI that was incomplete. Additional information SHOULD be provided in the reason phrase. |
+| `485` | Ambiguous | [RFC 3261 §21.4.23](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.23) | The Request-URI was ambiguous. The response MAY contain a listing of possible unambiguous addresses in Contact header fields. |
+| `488` | Not Acceptable Here | [RFC 3261 §21.4.26](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.26) | The response has the same meaning as 606 (Not Acceptable), but only applies to the specific resource addressed by the Request-URI and the request may succeed elsewhere. |
+| `489` | Bad Event | [RFC 6665 §8.3.2](https://www.rfc-editor.org/rfc/rfc6665#section-8.3.2) | 8.3.2. 489 (Bad Event) Response Code . |
+| `491` | Request Pending | [RFC 3261 §21.4.27](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.27) | The request was received by a UAS that had a pending request within the same dialog. Section 14.2 describes how such "glare" situations are resolved. |
+| `493` | Undecipherable | [RFC 3261 §21.4.28](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.28) | The request was received by a UAS that contained an encrypted MIME body for which the recipient does not possess or will not provide an appropriate decryption key. This response MAY have a single body containing an appropriate public key that should be used to encrypt MIME bodies sent to this UA. |
+| `500` | Server Internal Error | [RFC 3261 §21.5.1](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.1) | The server encountered an unexpected condition that prevented it from fulfilling the request. The client MAY display the specific error condition and MAY retry the request after several seconds. |
+| `501` | Not Implemented | [RFC 3261 §21.5.2](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.2) | The server does not support the functionality required to fulfill the request. This is the appropriate response when a UAS does not recognize the request method and is not capable of supporting it for any user. |
+| `502` | Bad Gateway | [RFC 3261 §21.5.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.3) | The server, while acting as a gateway or proxy, received an invalid response from the downstream server it accessed in attempting to fulfill the request. |
+| `503` | Service Unavailable | [RFC 3261 §21.5.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.4) | The server is temporarily unable to process the request due to a temporary overloading or maintenance of the server. The server MAY indicate when the client should retry the request in a Retry-After header field. |
+| `504` | Server Time-out | [RFC 3261 §21.5.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.5) | The server did not receive a timely response from an external server it accessed in attempting to process the request. 408 (Request Timeout) should be used instead if there was no response within the period specified in the Expires header field from the upstream server. |
+| `505` | Version Not Supported | [RFC 3261 §21.5.6](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.6) | The server does not support, or refuses to support, the SIP protocol version that was used in the request. The server is indicating that it is unable or unwilling to complete the request using the same major version as the client, other than with this error message. |
+| `513` | Message Too Large | [RFC 3261 §21.5.7](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.7) | The server was unable to process the request since the message length exceeded its capabilities. 21.6 Global Failures 6xx 6xx responses indicate that a server has definitive information about a particular user, not just the particular instance indicated in the Request-URI. |
+| `555` | Push Notification Service Not Supported | [RFC 8599 §4.1.5](https://www.rfc-editor.org/rfc/rfc8599#section-4.1.5) | 8.1. 555 (Push Notification Service Not Supported) Response Code . |
+| `580` | Precondition Failure | [RFC 3312 §8](https://www.rfc-editor.org/rfc/rfc3312#section-8) | Server-Error = "580" ;Precondition Failure When a UAS, acting as an answerer, cannot or is not willing to meet the preconditions in the offer, it SHOULD reject the offer by returning a 580 (Precondition-Failure) response. |
+| `604` | Does Not Exist Anywhere | [RFC 3261 §21.6.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.3) | The server has authoritative information that the user indicated in the Request-URI does not exist anywhere. |
+| `606` | Not Acceptable | [RFC 3261 §21.6.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.6.4) | The user's agent was contacted successfully but some aspects of the session description such as the requested media, bandwidth, or addressing style were not acceptable. A 606 (Not Acceptable) response means that the user wishes to communicate, but cannot adequately support the session described. |
+
+<!-- vale on -->

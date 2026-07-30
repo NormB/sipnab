@@ -33,7 +33,10 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #   hel          the expected value in truncate_str("hello", 3) tests
 #   nd           IPv6 Neighbor Discovery, beside ARP in kill_packet.rs
 #   caf          from the escaped literal "caf\u{e9}" in a CSP-hashing test
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf
+#   requestor    RFC 3261's own spelling, quoted verbatim in
+#                docs/sip-response-codes.md. "Correcting" a normative quotation
+#                would misreport what the RFC says.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is
