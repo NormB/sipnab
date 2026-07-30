@@ -1,8 +1,8 @@
 # SIP problem diagnosis
 
 **Status:** detections 1–3 implemented in [`src/sip/diagnosis.rs`](../../src/sip/diagnosis.rs)
-and rendered in the dialog JSON as `signaling_diagnosis`; detections 4–7 remain
-specified and unbuilt, per the build order at the end of this document.
+and rendered on every surface in the table below; detections 4–7 remain specified
+and unbuilt, per the build order at the end of this document.
 **Complements:** [`src/rtp/diagnosis.rs`](../../src/rtp/diagnosis.rs), which does
 the same job for the media side.
 
@@ -128,12 +128,12 @@ detected-as-absent.
 
 | Surface | Rendering |
 |---|---|
-| `--json` / NDJSON | `signaling_diagnosis` object beside the existing media one; omitted when every field is `None` |
-| REST API | same object on the dialog resource |
-| MCP | exposed through the existing dialog tool, not a new one |
-| Call report | a section listing each detection with its evidence |
-| TUI call list | a badge on the row, in the style of the existing media badge |
-| TUI call flow | annotation on the specific messages named as evidence |
+| `--json` / NDJSON | **Done** — `signaling_diagnosis` object beside the existing media one, omitted entirely when every field is `None` |
+| REST API | **Done** — the same object, via `dialog_to_json`; no separate code path |
+| MCP | **Done** — through `get_dialog_report`: the JSON format inherits the object, and the text and Markdown formats get the report section below |
+| Call report | **Done** — a Signalling section in both text and Markdown, each detection with its evidence labelled by message rather than by index |
+| TUI call list | **Done** — a `⚠` in the State cell. Note the spec said "in the style of the existing media badge"; there was no existing media badge, though the module documentation claimed one |
+| TUI call flow | **Done** — a `[FAILURE]`/`[AUTH]`/`[NO-RSP]` tag on the arrow of each cited message. On the arrow, not in the annotation zone right of the ladder, which clips to roughly one column at 80 wide |
 
 ## What this must not do
 
