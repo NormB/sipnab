@@ -4,8 +4,13 @@
 //!
 //! Displays all tracked SIP dialogs in a table with columns for index,
 //! method, from/to users, source/destination addresses, state, message
-//! count, duration, and PDD. Rows are color-coded by dialog state and
-//! show diagnosis warning indicators.
+//! count, duration, and PDD. Rows are color-coded by dialog state, and the
+//! State cell carries a `⚠` marker when the dialog has a signalling
+//! diagnosis — a final failure, an authentication loop, or an unanswered
+//! retransmission.
+//!
+//! That last sentence used to read "show diagnosis warning indicators" and
+//! nothing in this file implemented one. It is true now.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -702,10 +707,40 @@ pub fn render_call_list(
                             .resolver
                             .label_ip(dialog.dst_addr, display.name_mode),
                     )),
-                    6 => Cell::from(Span::styled(
-                        state_display_str(dialog.state()),
-                        state_style(dialog.state(), theme),
-                    )),
+                    // State, plus a signalling-diagnosis marker when one fired.
+                    //
+                    // The marker shares the State cell rather than taking a
+                    // twelfth column: a new column would mean widening
+                    // COLUMN_LABELS, visible_columns, the column selector and the
+                    // width table at three breakpoints, and would move most of
+                    // the 51 TUI snapshots — a lot of moving parts for one glyph.
+                    //
+                    // It is deliberately just a marker. The call list is a dense
+                    // scan view; which detection fired and the messages behind it
+                    // belong in the call flow, where there is room to name them.
+                    // What a badge on a row owes the reader is "this one is worth
+                    // opening", and the marker says that in two columns.
+                    //
+                    // Width: State is 12, and the badge costs 2. Every state
+                    // except `Transferring` (exactly 12) leaves room; a
+                    // transferring dialog that also has a signalling finding is
+                    // the one combination where ratatui will clip the marker.
+                    // Accepted over widening every layout for a case that needs a
+                    // transfer in flight and a failed transaction at once.
+                    6 => {
+                        let state = dialog.state();
+                        let mut spans = vec![Span::styled(
+                            state_display_str(state),
+                            state_style(state, theme),
+                        )];
+                        if signaling_marker(dialog) {
+                            spans.push(Span::styled(
+                                " \u{26a0}",
+                                Style::default().fg(theme.warning),
+                            ));
+                        }
+                        Cell::from(ratatui::text::Line::from(spans))
+                    }
                     7 => Cell::from(Span::raw(dialog.messages.len().to_string())),
                     8 => Cell::from(Span::raw(date_str())),
                     9 => Cell::from(Span::raw(
@@ -780,6 +815,17 @@ pub fn render_call_list(
 /// One `Constraint::Length` per column in `ALL_COLUMNS` order (always 11
 /// entries, regardless of visibility); wider layouts kick in at >= 120
 /// columns.
+/// Whether a dialog has any signalling finding worth marking on its row.
+///
+/// Separate from the diagnosis itself so the render path asks one boolean
+/// question and nothing in the hot loop formats a string it will not use. The
+/// call list redraws on every frame over every visible dialog, so this runs
+/// often; the detections are all linear scans of a dialog's own message list,
+/// which is the same order of work the row already does to count messages.
+fn signaling_marker(dialog: &crate::sip::dialog::SipDialog) -> bool {
+    !crate::sip::diagnosis::diagnose_signaling(&dialog.messages).is_empty()
+}
+
 fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
     // Compute explicit column widths to guarantee no truncation of key fields.
     //
@@ -1672,5 +1718,79 @@ mod tests {
         let mut reloaded = CallListState::new();
         reloaded.apply_visible_columns(&names);
         assert_eq!(reloaded.visible_columns, state.visible_columns);
+    }
+
+    /// The row marker fires on a signalling finding and stays off otherwise.
+    ///
+    /// Tested through `signaling_marker` rather than by rendering a frame: what
+    /// this owes verifying is the predicate driving the glyph. The snapshot suite
+    /// covers the drawing.
+    #[test]
+    fn signaling_marker_tracks_the_diagnosis() {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+        let msg = |raw: &str| {
+            parse_sip(
+                raw.replace('\n', "\r\n").as_bytes(),
+                ts,
+                ip,
+                ip,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("fixture parses")
+        };
+
+        let invite = msg("INVITE sip:b@example.com SIP/2.0\n\
+             Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK1\n\
+             From: <sip:a@example.com>;tag=1\n\
+             To: <sip:b@example.com>\n\
+             Call-ID: marker@example.com\n\
+             CSeq: 1 INVITE\n\
+             Content-Length: 0\n\n");
+        let mut dialog = crate::sip::dialog::SipDialog::new(&invite).expect("should create");
+
+        // A lone INVITE has nothing wrong with it.
+        assert!(
+            !signaling_marker(&dialog),
+            "an unanswered single INVITE must not raise the marker"
+        );
+
+        dialog.messages.push(msg("SIP/2.0 503 Service Unavailable\n\
+             Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK1\n\
+             From: <sip:a@example.com>;tag=1\n\
+             To: <sip:b@example.com>;tag=2\n\
+             Call-ID: marker@example.com\n\
+             CSeq: 1 INVITE\n\
+             Content-Length: 0\n\n"));
+        assert!(
+            signaling_marker(&dialog),
+            "a 503 outcome must raise the marker"
+        );
+    }
+
+    /// The State column must hold its longest label plus the marker, so the
+    /// common case never clips. `Transferring` is the documented exception.
+    #[test]
+    fn state_column_fits_its_labels_plus_the_marker() {
+        // " ⚠" costs 2 display columns.
+        const MARKER: u16 = 2;
+        for width in [80u16, 98, 119, 120, 160] {
+            let widths = compute_column_widths(width);
+            let Constraint::Length(state_w) = widths[6] else {
+                panic!("State column should be a fixed Length, got {:?}", widths[6]);
+            };
+            // FAILED(6) is the state a final-failure diagnosis actually pairs
+            // with, and it is the case that must never clip.
+            assert!(
+                state_w >= 6 + MARKER,
+                "at {width} cols State is {state_w}, too narrow for FAILED plus the marker"
+            );
+        }
     }
 }

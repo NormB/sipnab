@@ -49,6 +49,15 @@ entry that carries them.
   outside the message list is reported as out-of-range rather than silently
   dropped, since a quiet drop would make the report claim less evidence than the
   diagnosis found.
+- **The TUI call list marks diagnosed dialogs.** A `⚠` in the State cell when a
+  dialog has any signalling finding. The spec asked for this "in the style of the
+  existing media badge" — there was no existing media badge, though
+  `src/tui/call_list.rs` had claimed in its module documentation to show
+  "diagnosis warning indicators" for some time. The marker shares the State cell
+  rather than claiming a twelfth column, which would have meant widening the label
+  list, the visibility array, the column selector and the width table at three
+  breakpoints. It is deliberately only a marker: the call list is a dense scan
+  view, and what a badge on a row owes the reader is "this one is worth opening".
 
 ## [0.5.65] - 2026-07-30
 
