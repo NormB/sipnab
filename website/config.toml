@@ -56,10 +56,11 @@ release_date = "2026-07-30"
 glibc_floor = "2.36"
 glibc_floor_distros = "Debian 12+, Ubuntu 23.04+"
 # Minimum macOS of the released darwin tarballs, per architecture. Like the
-# glibc floor these are NOT a free choice: release.yml never sets
-# MACOSX_DEPLOYMENT_TARGET, so the floor is whatever the pinned rustc defaults
-# to for each target, and the two targets do not agree. Read them straight from
-# the toolchain:
+# glibc floor these are NOT a free choice: release.yml pins
+# MACOSX_DEPLOYMENT_TARGET per target in its "Pin macOS deployment target" step,
+# and these must equal what it pins. The two targets deliberately differ.
+#
+# The pin landed at the values rustc already defaulted to, so no binary changed:
 #
 #   rustc --print deployment-target --target aarch64-apple-darwin  -> 11.0
 #   rustc --print deployment-target --target x86_64-apple-darwin   -> 10.12
@@ -68,8 +69,12 @@ glibc_floor_distros = "Debian 12+, Ubuntu 23.04+"
 # no workflow step, no constant, no doc -- it existed only on the page a reader
 # acts on, which is the same shape as the glibc floor bug above. It was wrong
 # for both arches and hid the fact that they differ.
-# `published_macos_floors_match_the_toolchain` pins these to rustc now, so
-# setting an explicit deployment target in release.yml has to update them.
+#
+# `published_macos_floors_match_the_toolchain` holds these to the workflow's pin
+# AND refuses a pin below the compiler's own default. To move real support,
+# change the two `floor=` lines in release.yml and let the gate walk these to
+# match. This comment claimed release.yml "never sets MACOSX_DEPLOYMENT_TARGET"
+# for two releases after the pin landed in 0.5.65.
 macos_floor_arm = "11.0"
 macos_floor_intel = "10.12"
 # Ceiling for the released stripped musl binary, in MB. Quoted on the homepage
