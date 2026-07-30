@@ -1015,6 +1015,65 @@ fn benchmark_tables_match_between_docs_and_website() {
     );
 }
 
+/// `response_class()` agrees with the classification in the reference page.
+///
+/// `docs/sip-response-codes.md` groups all 75 registry codes under seven class
+/// headings, and `sipnab::sip::response_codes::response_class` decides the same
+/// question in code. Two statements of one fact is the bug class this repository
+/// keeps finding: the dialog state machine restated it a third way, as inline
+/// ranges across four handlers, and two defects lived in the gaps.
+///
+/// Reads the page rather than a copy of it, so adding a code to the doc without
+/// teaching the classifier fails here.
+#[test]
+fn response_class_matches_the_documented_table() {
+    use sipnab::sip::response_codes::{ResponseClass, response_class};
+
+    let doc = include_str!("../docs/sip-response-codes.md");
+    // Section heading -> class. The page titles them for a reader; map back.
+    let heading_class = |h: &str| -> Option<ResponseClass> {
+        match h {
+            "1xx provisional" => Some(ResponseClass::Provisional),
+            "2xx success" => Some(ResponseClass::Success),
+            "3xx redirect" => Some(ResponseClass::Redirect),
+            "Challenge" => Some(ResponseClass::Challenge),
+            "Cancelled" => Some(ResponseClass::Cancelled),
+            "Declined" => Some(ResponseClass::Declined),
+            "Failure" => Some(ResponseClass::Failure),
+            _ => None,
+        }
+    };
+    let row = regex::Regex::new(r"(?m)^\| `(\d{3})` \|").unwrap();
+    let head = regex::Regex::new(r"(?m)^## (.+)$").unwrap();
+
+    let mut current: Option<ResponseClass> = None;
+    let mut checked = 0usize;
+    for line in doc.lines() {
+        if let Some(c) = head.captures(line) {
+            current = heading_class(c[1].trim());
+            continue;
+        }
+        let Some(c) = row.captures(line) else {
+            continue;
+        };
+        let Some(expected) = current else { continue };
+        let code: u16 = c[1].parse().expect("three digits");
+        assert_eq!(
+            response_class(code),
+            expected,
+            "docs/sip-response-codes.md files {code} under {expected:?}, but \
+             response_class() says {:?}",
+            response_class(code)
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, 75,
+        "checked {checked} codes against the page, expected all 75 — the table \
+         shape changed and this gate is reading less than it claims"
+    );
+}
+
 /// Docs that state the fuzz-target count as current must match the tree.
 ///
 /// `docs/fault-model.md` also names every target, so a new one added without

@@ -11,6 +11,30 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **`response_class()` — one classifier, replacing inline ranges in four
+  handlers.** `provisional`, `success`, `redirect`, `challenge`, `cancelled`,
+  `declined`, `failure`. The dialog state machine answered this with `400..=699`
+  in one arm, `401 | 407` in another and a bare `487` in a third, restated per
+  handler, and two defects lived in the gaps: a 487 could not move a dialog at
+  all, and 3xx was handled nowhere. `response_class_matches_the_documented_table`
+  reads `docs/sip-response-codes.md` and holds the two together, so adding a code
+  to the page without teaching the classifier fails.
+
+### Fixed
+- **`explain_response_code()` had drifted from the registry in both
+  directions.** It explained **409 Conflict**, an RFC 2543 code that RFC 3261
+  removed and that appears in no registry — the same phantom Wikipedia lists — and
+  had no explanation at all for **424 Bad Location Information**, **425 Bad Alert
+  Message** or **430 Flow Failed**, all registered. The three are written now,
+  and 409 stays with its obsolescence stated, because a capture from an old
+  implementation can still carry one and a reader deserves to be told it is dead
+  rather than shown nothing.
+- **Nine descriptions on the response-code page were table-of-contents
+  fragments** — "8.3.1. 202 (Accepted) Response Code ." and similar — from an
+  extractor that matched a heading in the TOC instead of the body. Re-extracted
+  with the rule that body headings sit at column 0. Only 402 still reads short,
+  and "Reserved for future use." is RFC 3261's complete text for it.
+
 - **`docs/sip-header-fields.md` — every header field, and the nineteen compact
   forms pinned to the registry.** All 134 fields from the IANA *Header Fields*
   registry, each with its compact alias where one exists and the RFC that defines
