@@ -35,7 +35,7 @@ layers:
   pcap-reader, dtls, tcp-reassembly, siprec. Run weekly (and on demand)
   via `.github/workflows/fuzz.yml`; crash reproducers upload as artifacts.
 - **Always-on smoke fuzz**: `tests/smoke_fuzz_test.rs` runs in
-  `cargo test` (no nightly needed) — ~40k random + structurally-mutated
+  `cargo test` (no nightly needed) — ~40k random + structurally mutated
   inputs per entry point under `catch_unwind`, covering the same parser
   set **plus** the full link-layer decap chain (`parse_packet` across
   several link types) and the pcap file reader. A caught panic fails the

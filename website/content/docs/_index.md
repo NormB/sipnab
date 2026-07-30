@@ -34,7 +34,7 @@ agents — no daemon, no database, no runtime to install.
 
 - **VoIP engineers** debugging call setup failures, one-way audio, and codec
   or NAT problems.
-- **SRE and on-call teams** who need a fast answer from a pcap at 3am, or a
+- **SRE and on-call teams** who need a fast answer from a pcap at 3 AM, or a
   headless run that exits non-zero when the Call-ID they asked about is not in
   the capture.
 - **Security teams** auditing SIP-facing infrastructure for scanners,

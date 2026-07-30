@@ -245,7 +245,7 @@ about 4.29 billion.
 
 RTCP receiver reports carry a jitter field too, but **in RTP timestamp units**.
 [`stream_store.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs) converts with the stream's
-clock rate before storing it, so the RTCP-reported and locally-measured numbers
+clock rate before storing it, so the RTCP-reported and locally measured numbers
 are comparable and MOS is fed a millisecond value either way.
 
 The report block is where two of this codebase's historical bugs lived, and

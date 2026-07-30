@@ -229,7 +229,7 @@ def _xlate(target: str, anchor: str) -> str:
 # Links into the code tree; a relative `packaging/deb/build-deb.sh` would
 # otherwise survive verbatim onto a site page and resolve to nothing.
 CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|benches|contrib|harness|scripts|website"
+    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|\.vale|benches|contrib|harness|scripts|website"
     r"|\.cargo|crates|docker|bench|demos|tests|fuzz|man|ops|src)(?:/[^)\s]*)?)\s*\)"
 )
 

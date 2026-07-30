@@ -1,0 +1,43 @@
+[codespell]
+# Typo detection across code, tests, docs and the harness.
+#
+# Scope first: the initial run reported 2,880 findings, of which 2,504 came from
+# one vendored minified bundle (website/static/js/mermaid.min.js) and the rest
+# largely from build artifacts under fuzz/target. Minified and generated files
+# have no prose to check and will never be edited by hand, so the signal only
+# appears once they are out.
+#
+# skip = build output, vendored/minified assets, binary fixtures, and the two
+# kinds of file whose content is deliberately truncated:
+#   tests/snapshots/  insta snapshots of TUI frames, clipped to terminal width,
+#                     so "FAILE" and "fo" are the rendered output, not typos
+#   tests/cli/out/    trycmd transcripts, same reason ("Fro" from a cut hexdump)
+#   THIRD-PARTY-NOTICES.md  vendored licence text; not ours to correct
+#
+# Patterns are written WITHOUT a leading `./`. codespell matches each skip entry
+# against the path as it walks it, so `./tests/snapshots` matches only when the
+# scan was started as `codespell .` -- passing `tests` on the command line, as
+# the CI step does, yields `tests/snapshots/...` and the entry silently misses.
+# Globbed fragments match either way. website/public is Zola's build output and
+# gitignored; it is skipped so a stale local build cannot fail the check with
+# prose that has already been fixed at the source.
+skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.min.js,*.min.css,*.pcap,*.pcapng,*.svg,*.png,*.woff,*.woff2,*.ico,*/snapshots/*,*/cli/out/*,THIRD-PARTY-NOTICES.md,*/superpowers/*
+#
+# ignore-words-list = real vocabulary codespell mistakes for typos. Each one was
+# checked in context rather than waved through:
+#   ratatui      the TUI crate; codespell suggests "ratatouille"
+#   unparseable  used consistently in 12 places across src/ and the docs; a valid
+#                variant, and changing it would be a rename, not a fix
+#   statics      Rust nouns -- "`Cow::Borrowed` statics", not "statistics"
+#   ans          a binding for an answer timestamp: `.map(|ans| bye - ans)`
+#   hel          the expected value in truncate_str("hello", 3) tests
+#   nd           IPv6 Neighbor Discovery, beside ARP in kill_packet.rs
+#   caf          from the escaped literal "caf\u{e9}" in a CSP-hashing test
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf
+#
+# Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
+# It appeared in "both are small, and both are cappable", where the meaning is
+# that the costs can be capped -- codespell's suggestion would have inverted the
+# sentence. It was reworded to "both can be capped" instead, which is what the
+# rule should push you toward.
+check-hidden = true

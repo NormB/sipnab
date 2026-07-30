@@ -243,3 +243,100 @@ jobs:
         with:
           sarif_file: clippy.sarif
           category: clippy
+
+  # ---------------------------------------------------------------------------
+  # Documentation gates: prose style, spelling, and dead links.
+  #
+  # These check the things the Rust suite structurally cannot. tests/ compares
+  # documented values against the code that produces them -- versions, floors,
+  # flag names -- and it is thorough at that. It says nothing about whether a
+  # sentence is readable, whether a word is misspelled, or whether a URL still
+  # resolves, and a download page full of correct-but-dead links fails a reader
+  # exactly as hard as a wrong version number.
+  #
+  # Pinned by digest like every other action here. Each tool's configuration
+  # lives at the repo root (.vale.ini, lychee.toml, .codespellrc) with the
+  # reasoning for every exclusion recorded next to it, including the alert count
+  # it produced on first run.
+  # ---------------------------------------------------------------------------
+  docs:
+    name: Docs (prose, spelling, links)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Vale's Google package is fetched by `vale sync` from the config's
+      # `Packages =` line, so the styles are not vendored here. The project's own
+      # rules and vocabulary ARE committed, under .vale/styles/sipnab and
+      # .vale/styles/config.
+      - name: Install Vale
+        env:
+          VALE_VERSION: '3.16.0'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o vale.tar.gz \
+            "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          tar xzf vale.tar.gz vale
+          sudo install -m 0755 vale /usr/local/bin/vale
+          vale --version
+
+      - name: Sync Vale styles
+        run: vale sync
+
+      # Published docs only; docs/design, docs/research and docs/superpowers are
+      # exempted by glob sections in .vale.ini because they are working
+      # documents. Curation brought this from 13,892 alerts to zero.
+      - name: Prose style (Vale + Google)
+        run: vale docs/ website/content/ README.md
+
+      - name: Spelling (codespell)
+        uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 # v2.2
+        with:
+          # Reads .codespellrc for skips and the ignore list. The action needs
+          # the paths passed explicitly rather than inheriting them from config.
+          path: src tests docs website benches harness scripts README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md
+
+      # Pass one: Markdown that resolves on the filesystem. 257 unique links.
+      - name: Dead links (docs Markdown)
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --no-progress --config lychee.toml
+            'docs/**/*.md' 'README.md' 'CONTRIBUTING.md' 'SECURITY.md'
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pass two: the built site, where site-absolute links like /docs/install/
+      # can actually be resolved. lychee reports those as unresolvable during
+      # link resolution rather than as a URI, so no exclude pattern can silence
+      # them in a Markdown pass -- the built output is the only place the check
+      # is real. This is also the pass that covers the download page's own links,
+      # since it is a template rather than Markdown and nothing else reads it.
+      - name: Install Zola
+        env:
+          ZOLA_VERSION: '0.19.2'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o zola.tar.gz \
+            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          tar xzf zola.tar.gz
+          sudo install -m 0755 zola /usr/local/bin/zola
+          zola --version
+
+      - name: Build site
+        working-directory: website
+        run: zola build
+
+      - name: Dead links (built site)
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --no-progress --config lychee.toml
+            --root-dir "$GITHUB_WORKSPACE/website/public"
+            'website/public/**/*.html'
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

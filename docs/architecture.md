@@ -125,7 +125,7 @@ harness/                  # docker-compose e2e (opensips + rtpengine + sipp)
 ## Threading model
 
 See `docs/internals/threading.md` for the full topology and lock discipline.
-Short version: capture thread(s) → bounded channel → one processing thread
+Short version: capture threads → bounded channel → one processing thread
 that owns all store writes; TUI/API/MCP are readers. Batch `--cores N` shards
 packets by host pair to worker threads with thread-local stores, merged at
 EOF.

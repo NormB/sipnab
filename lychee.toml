@@ -1,0 +1,54 @@
+# Dead-link checking for the documentation and the built site.
+#
+# Two link dialects live in this repo and neither is a plain filesystem path, so
+# both are excluded here and checked by the pass that can actually resolve them:
+#
+#   @/docs/config.md   Zola's internal-link syntax. Resolved by Zola at build
+#                      time against content/, and Zola FAILS THE BUILD on a
+#                      broken one -- so these are already gated, by the tool that
+#                      defines them. lychee reads them as relative paths and
+#                      looks for `website/content/docs/@/docs/config.md`, which
+#                      produced 107 phantom errors on the first run.
+#
+#   /docs/install/     Site-absolute URLs, in website/content/ only. They resolve
+#                      against the built output rather than the Markdown tree, so
+#                      the second CI pass checks them over website/public with
+#                      --root-dir set. They CANNOT be handled with an `exclude`
+#                      pattern: lychee reports "Cannot resolve root-relative
+#                      link" during resolution, before there is a URI for a
+#                      pattern to match, so an exclude entry for them is inert.
+#                      That is why pass one takes docs/ and the repo-root
+#                      Markdown and leaves website/content/ to pass two.
+#
+# Working documents are skipped for the same reason Vale skips them: internal
+# audience, and they cite scratch paths and future work that was never meant to
+# resolve.
+
+max_concurrency = 8
+timeout = 20
+max_retries = 2
+retry_wait_time = 2
+
+# 429 is rate limiting, not a dead link -- GitHub and crates.io both do it under
+# CI concurrency. 206 is partial content, which some CDNs answer HEAD with.
+accept = [200, 206, 429]
+
+exclude = [
+  # Zola internal links -- see above. Matched on the resolved path because
+  # lychee turns them into file:// URIs before exclusions apply, so a pattern
+  # anchored with ^@/ never matches.
+  '/@/',
+]
+
+exclude_path = [
+  "docs/superpowers",
+  "docs/research",
+  "target",
+  "website/public/mermaid.min.js",
+]
+
+# Mail addresses in the security policy and config docs are illustrative or
+# already correct; there is nothing to reach over the network to confirm.
+# (The key is `include_mail`, defaulting off -- `exclude_mail` is not a field,
+# and lychee rejects the whole config rather than ignoring an unknown one.)
+include_mail = false

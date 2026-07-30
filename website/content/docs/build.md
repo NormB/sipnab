@@ -64,7 +64,7 @@ SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 
 ## Feature Flags
 
-sipnab uses Cargo feature flags to control optional functionality. The default build includes `native`, `tui`, and `audio`.
+sipnab uses Cargo feature flags to control optional capability. The default build includes `native`, `tui`, and `audio`.
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
