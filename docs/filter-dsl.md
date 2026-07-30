@@ -2,7 +2,7 @@
 
 > **Quick start:** `sipnab --filter "state == 'Failed'"` to find all failed calls, or `sipnab --problems` for a one-flag diagnostic sweep.
 
-sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. Expressions are passed via the [`--filter` CLI flag](cli-reference.md#matching) or the `expression` key in the [`[filter]` config section](config-reference.md#filter). The [Diagnostic Aliases](cli-reference.md#diagnostic-aliases) CLI flags (`--problems`, `--slow-setup`, ...) expand to the named aliases documented below.
+sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. You pass expressions through the [`--filter` CLI flag](cli-reference.md#matching) or the `expression` key in the [`[filter]` config section](config-reference.md#filter). The [Diagnostic Aliases](cli-reference.md#diagnostic-aliases) CLI flags (`--problems`, `--slow-setup`, ...) expand to the named aliases documented below.
 
 ## Grammar
 
@@ -106,12 +106,12 @@ Notes:
 
 Inside a quoted string a backslash escapes the next character, so the
 delimiter itself is expressible: `\'` and `\"` yield a literal quote
-(`'it\'s'`, `"say \"hi\""`). Every other `\x` sequence — including `\\` — is
-kept verbatim (the backslash is preserved), so regex metacharacters and
+(`'it\'s'`, `"say \"hi\""`). Every other `\x` sequence — including `\\` — stays
+verbatim, backslash and all, so regex metacharacters and
 classes still reach the engine unchanged (`from.user =~ '\d\d\d\d'`,
 `payload =~ 'example\.com'`, and `'\\'` for a literal backslash in a regex).
 
-> **Tip:** Regex patterns are compiled once and reused across all messages. Avoid unbounded quantifiers on large captures (e.g., prefer `from.user =~ '^100[0-9]$'` over `from.user =~ '.*100[0-9].*'`).
+> **Tip:** sipnab compiles each regex once and reuses it across all messages. Avoid unbounded quantifiers on large captures (e.g., prefer `from.user =~ '^100[0-9]$'` over `from.user =~ '.*100[0-9].*'`).
 
 ## Boolean Combinators
 
@@ -196,7 +196,7 @@ these are catalogs to pick a line from, not blocks to copy whole.
 
 ### Real-world diagnostic queries
 
-The DSL has no comment syntax, so each query is labelled in prose here — a `#`
+The DSL has no comment syntax, so this page labels each query in prose — a `#`
 line handed to `--filter` is a parse error, not a note.
 
 - Find calls with poor quality from a specific extension: `from.user =~ '^1001' AND rtp.mos < 3.0`
@@ -205,7 +205,7 @@ line handed to `--filter` is a parse error, not a note.
 - Find calls with audio issues: `one_way == true OR no_media == true OR rtp.jitter > 100.0`
 - Find scanner activity by User-Agent: `ua =~ 'sipvicious|friendly-scanner|sipcli'`
 
-> **Note:** The filter DSL evaluates against dialogs, not individual messages. A filter like `method == 'INVITE'` matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
+> **Note:** The filter DSL evaluates against dialogs, not individual messages. A filter like `method == 'INVITE'` matches dialogs that opened with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
 
 ## Operational Recipes
 
@@ -244,7 +244,7 @@ NAT mismatch means the Contact header IP/port doesn't match the actual packet so
 sipnab -N -I capture.pcap --filter "rtp.jitter > 50.0 OR rtp.loss > 1.0" --json
 ```
 
-Jitter is reported in milliseconds (RFC 3550 interarrival jitter algorithm); high values indicate network congestion. Loss is a percentage (0.0-100.0); acceptable thresholds are codec-dependent.
+Jitter arrives in milliseconds (RFC 3550 interarrival jitter algorithm); high values indicate network congestion. Loss is a percentage (0.0-100.0); acceptable thresholds are codec-dependent.
 
 ### Failed international calls
 

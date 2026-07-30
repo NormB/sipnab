@@ -11,8 +11,8 @@ This page documents the machine-readable formats.
 
 > **Prerequisites:** `--json` requires non-interactive mode (`-N` /
 > `--no-tui`) — sipnab refuses to start otherwise (exception:
-> `--call-report` implies non-interactive output). No extra build feature
-> is needed: NDJSON output is part of the default build. Full flag
+> `--call-report` implies non-interactive output). NDJSON needs no extra build
+> feature: it is part of the default build. Full flag
 > reference: [CLI reference](@/docs/cli.md#output).
 
 ## NDJSON (`--json`)
@@ -24,7 +24,7 @@ each line is independently parseable and the stream is pipe-friendly:
 sipnab -N -I capture.pcap --json | jq .
 ```
 
-Message record (fields with no value are omitted, not null):
+Message record (fields with no value drop out rather than reading null):
 
 ```json
 {
@@ -75,9 +75,9 @@ name, URI and tags included — not the bare user part. (The aggregated
 dialog object below is the one that carries the user part.) Match them
 with a regex or a substring test, not with equality.
 
-`cseq` (the parsed `CSeq` header — `{ number, method }`) is emitted on **every**
+`cseq` (the parsed `CSeq` header — `{ number, method }`) appears on **every**
 message, requests included, so re-requests within a dialog (e.g. two REGISTERs
-with `CSeq` 1 and 2) stay distinguishable. It is omitted only when the `CSeq`
+with `CSeq` 1 and 2) stay distinguishable. It drops out only when the `CSeq`
 header is absent or unparseable.
 
 `contact` is the `Contact` header value when present (routing-critical, omitted
@@ -91,7 +91,7 @@ answers) is a deprecated alias of `cseq`, retained for backward compatibility
 under `schema_version` 1. Prefer `cseq`.
 
 `malformed` is a list of structural-defect diagnostics, present **only** when a
-message is malformed (a well-formed message omits the field). It surfaces crafted
+message arrives malformed; a well-formed message omits the field. It surfaces crafted
 or broken input rather than silently accepting it: missing mandatory headers
 (`Call-ID`/`CSeq`/`From`/`To`/`Via`), an unparseable `CSeq`, a `Content-Length`
 larger than the body actually present (truncated/lying length), and control/NUL
@@ -118,7 +118,7 @@ test it for a substring rather than comparing it for equality:
 sipnab -N -I capture.pcap --json | jq 'select(.from // "" | test("sip:1001@"))'
 ```
 
-Count the messages per method, to see what a capture is made of before reading
+Count the messages per method, to see what a capture holds before reading
 any of it:
 
 ```bash
@@ -175,14 +175,14 @@ The richer aggregated dialog object — `state`, `timing` (PDD / setup /
 ring / teardown milliseconds, retransmit counts), `sdp_timeline`,
 `streams` with jitter and loss, and the `diagnosis` flags (`one_way_audio`,
 `nat_mismatch`, `no_media`) plus `hints` — is one shape produced by a single
-serializer. It is documented once, with a full worked example, under
+serializer. One place documents it, with a full worked example, under
 [`GET /v1/dialogs/{call_id}` in the REST API reference](@/docs/api.md#get-v1-dialogs-1).
 
 A `signaling_diagnosis` object sits beside `diagnosis` when something is wrong
-with the signalling rather than the media, and is **omitted entirely** when
-nothing was detected — so a healthy dialog serializes exactly as it did before
+with the signalling rather than the media, and **drops out entirely** when
+the detections found nothing — so a healthy dialog serializes exactly as before
 the field existed. It carries up to three findings, each naming the messages it
-was drawn from as indices into the dialog's own message list:
+drew on, as indices into the dialog's own message list:
 
 | Field | Meaning |
 |---|---|
@@ -215,7 +215,7 @@ under its own variable name — `SIPNAB_STREAM_JSON`, **not** `SIPNAB_JSON`.
 
 `-O <file>` writes captured packets; `--pcapng` selects PCAP-NG. With TLS
 decryption, `--pcap-export-mode` controls whether decryption secrets
-(DSBs) are embedded for Wireshark. Rotation: `--split filesize:N` /
+(DSBs) travel with the file for Wireshark. Rotation: `--split filesize:N` /
 `--split duration:N`, or SIGUSR1 on demand.
 
 pcapng timestamps are nanosecond-resolution, declared via `if_tsresol=9`

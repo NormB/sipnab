@@ -44,21 +44,20 @@ agents — no daemon, no database, no runtime to install.
 
 **Capture and decode.** Live interfaces, pcap/pcapng files, or a
 [HEP/EEP](/docs/cookbook/) listener fed by Kamailio, OpenSIPS, or FreeSWITCH.
-SIP is parsed over UDP, TCP, TLS, SCTP, and WebSocket, including IP
+sipnab parses SIP over UDP, TCP, TLS, SCTP, and WebSocket, including IP
 fragmentation and TCP stream reassembly. All 19 RFC 3261 and IANA compact
-header forms are recognized, so a message using `f:`/`t:`/`i:` is not a blind
+header forms all resolve, so a message using `f:`/`t:`/`i:` is not a blind
 spot.
 
-**Correlate calls.** Dialogs are tracked across their lifetime and linked to
+**Correlate calls.** sipnab follows dialogs across their lifetime and links them to
 their media through SDP, then rendered as a call list, a ladder-style call
 flow, and per-message detail.
 
-**Analyze media.** RTP streams are discovered from the packets themselves, so
+**Analyze media.** sipnab finds RTP streams in the packets themselves, so
 media is still analyzed when the signaling was never captured. sipnab computes
 interarrival jitter (the RFC 3550 algorithm), loss, MOS estimates, and a
 sequence-space loss map that distinguishes bursty loss from diffuse loss.
-RFC 4733 DTMF is decoded, and G.711 (PCMU/PCMA) and Opus streams can be
-exported as audio.
+It decodes RFC 4733 DTMF, and exports G.711 (PCMU/PCMA) and Opus streams as audio.
 
 **Decrypt.** With a TLS key log, sipnab decrypts TLS-carried SIP and SRTP
 in place, so encrypted captures stay readable without terminating the session
@@ -104,12 +103,12 @@ sipnab -N -I capture.pcap --problems --json
 ## What is in your build
 
 sipnab's optional subsystems are Cargo features, so what a given binary
-supports depends on how it was built:
+supports depends on how someone built it:
 
 | Build | Included |
 |---|---|
 | Official Linux (glibc) and macOS releases | Everything: TUI, TLS/SRTP decryption, HEP, REST API, MCP (stdio + HTTP), Prometheus metrics, audio playback |
-| Static musl binaries and the `-noaudio` `.deb` / `.rpm` | The same, **minus** audio playback. Everything else, WAV export included, is unchanged |
+| Static musl binaries and the `-noaudio` `.deb` / `.rpm` | The same, **minus** audio playback. Everything else, WAV export included, stays the same |
 | `cargo build` from source with no flags | TUI, audio, and metrics only — **no** TLS decryption, HEP, REST API, or MCP. Use `--features full` for everything |
 
 `sipnab --version` prints the feature list compiled into your binary.
@@ -122,5 +121,5 @@ supports depends on how it was built:
   [keybindings](/docs/keybindings/).
 - Scripting it: the [CLI reference](/docs/cli/),
   [filter DSL](/docs/filter-dsl/), and [output formats](/docs/output-formats/).
-- Something is broken: [Troubleshooting](/docs/troubleshooting/).
+- Something misbehaves: [Troubleshooting](/docs/troubleshooting/).
 - Automating it: the [REST API](/docs/api/) and [MCP server](/docs/mcp/).

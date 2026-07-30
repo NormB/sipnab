@@ -50,10 +50,10 @@ The Prometheus listener is **not** a task on the shared tokio runtime, and the
 distinction matters when reasoning about blocking: it is a raw
 [`TcpListener`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) accept loop on its own
 thread, deliberately independent of tokio and axum so metrics stay scrapable
-when the async servers are not compiled in at all. Each accepted scrape is
-handled by a short-lived `metrics-conn` thread, and a `ConnGate` bounds those
+when the async servers are not compiled in at all. Each accepted scrape runs
+ by a short-lived `metrics-conn` thread, and a `ConnGate` bounds those
 to 16 in flight — beyond that new connections get an immediate `503` rather
-than a thread (SN-02, CWE-770). It is started by
+than a thread (SN-02, CWE-770). It starts from
 [`start_metrics_server()`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs).
 
 ## Named threads
@@ -65,7 +65,7 @@ straight back to a row here.
 |---|---|---|
 | `capture-<device>` | [`capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs) | One per live device: pcap loop producing `Packet`s. |
 | `capture-file` | [`capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs) | Offline pcap reader feeding the same channel as live capture. |
-| `capture-hep` | [`capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs) | HEP/EEP UDP receiver; packets carry asserted addresses and are flagged HEP-origin. |
+| `capture-hep` | [`capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs) | HEP/EEP UDP receiver; packets carry asserted addresses and carry a flag HEP-origin. |
 | `capture-multi` | [`capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs) | Supervisor for a multi-device capture set. |
 | `tui-processor` | [`app/tui_mode.rs`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs) | The single store writer in TUI mode: drains the channel and runs the pipeline. |
 | (unnamed workers) | [`parallel.rs`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) | `--cores N` reconstruction workers, spawned with bare `thread::spawn` — they own thread-local stores, so they show as unnamed in a backtrace. |
@@ -76,7 +76,7 @@ straight back to a row here.
 | `scanner-kill` | [`process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs) | Isolated worker that transmits kill responses; the only thread allowed to send. |
 | `pcap-load` | [`tui/controllers/file_open.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs) | Loads a pcap chosen from inside the TUI, writing the live stores. |
 | `clipboard` | [`tui/clipboard.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/clipboard.rs) | Holds the X11/Wayland selection alive after a copy without stalling the UI. |
-| `crash-probe` | [`crash.rs`](https://github.com/NormB/sipnab/blob/main/src/crash.rs) | Startup probe that classifies the crash-report directory before any report is written. |
+| `crash-probe` | [`crash.rs`](https://github.com/NormB/sipnab/blob/main/src/crash.rs) | Startup probe that classifies the crash-report directory before writing any report. |
 
 ## How the capture thread ends
 
@@ -96,10 +96,10 @@ source. `std::process::exit` joins nothing and runs no destructors, so exiting
 directly abandons it.
 
 `stop_and_join` sets the global shutdown flag, drops the packet receiver, and
-joins. Both signals are needed and neither is redundant: dropping the receiver
+joins. Both signals matter and neither is redundant: dropping the receiver
 ends a thread blocked on a send, and the flag ends one blocked elsewhere in its
 loop — a live capture waiting out its read timeout reaches the flag check first.
-The join is unbounded, matching the one the batch receive loop already performs
+The join has no timeout, matching the one the batch receive loop already performs
 at end of capture; a HEP listener blocked on its socket returns in milliseconds
 rather than hanging it.
 
@@ -109,7 +109,7 @@ paths return a `PlanError` instead of exiting, and `batch::run` — which holds
 both the handle and the receiver — does the teardown. A function that cannot
 clean up must hand the failure to one that can.
 
-**How this is enforced.** ThreadSanitizer treats `thread leak` as a fatal
+**How a gate holds this.** ThreadSanitizer treats `thread leak` as a fatal
 finding, not a warning, and `cli_flag_behavior_test` exercises both shapes (a
 source that never opens, and a failure after it opened) so a regression fails
 there rather than waiting for the weekly sanitizer run. Before this rule,
@@ -150,14 +150,14 @@ flow's packets share a host pair and therefore a worker.
 ## Lock discipline
 
 - **Parse outside the lock.** SIP/RTP/SDP parsing happens before any store
-  lock is taken; each store is write-locked once per packet, briefly
+  lock appears; each store takes one write lock per packet, briefly
   ([`classify_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs) touches no store at all).
-- **Lock ordering:** when both stores are needed, dialog store first, then
+- **Lock ordering:** when a path needs both stores, dialog store first, then
   stream store; never hold both write locks at once. Two appliers take locks
   and both follow it — see the doc comment on
   [`process_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs) for the live path and
   [`run_pcap_load()`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs) for the
-  file-open worker above — and it is stated as an invariant in
+  file-open worker above — and it stands as an invariant in
   [Invariants](@/docs/internals/invariants.md).
 - **The TUI never blocks:** all render-side store access is `try_read()`.
   On contention the frame renders with the previous data (counts may be one

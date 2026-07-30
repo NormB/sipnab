@@ -9,7 +9,7 @@ Your first analysis in the interactive TUI, step by step — open a capture, rea
 the ladder, measure a delay, and inspect RTP.
 
 > New to sipnab? Start here. This is a guided first run through the interactive
-> TUI. Every key you press is called out, and the full reference lives in
+> TUI. It names every key you press, and the full reference lives in
 > [Keybindings](@/docs/keybindings.md). If you prefer the command line, see the
 > [Cookbook](@/docs/cookbook.md) instead.
 
@@ -22,7 +22,7 @@ sipnab -I capture.pcap
 ```
 
 No file handy? Capture live on an interface instead — this needs `sudo`,
-because opening a capture device is privileged:
+because opening a capture device needs privilege:
 
 ```bash
 sudo sipnab -d eth0
@@ -55,7 +55,7 @@ Land on the call you care about, then press `Enter`.
 host it touched (UAC → proxy → UAS), with a detail panel beside it.
 
 - `j` / `k` walk message-to-message; the detail panel updates to show the parsed message under the cursor.
-- `d` cycles how SDP is shown in the detail panel (none / summary / full).
+- `d` cycles how the detail panel shows SDP (none / summary / full).
 - `w` toggles line wrapping in the detail panel; with wrap off, long lines truncate and a horizontal scrollbar appears (`Left` / `Right` scroll it).
 - `Enter` on a message opens the full-screen **Raw Message** view (`/` searches within it, `n` / `N` jump between matches, `Esc` returns).
 - `c` recolors the ladder by method, Call-ID, or CSeq; `t` shares the timestamp mode with the Call List.
@@ -107,7 +107,7 @@ so you can follow the call end-to-end through the middle boxes.
 Select the dialogs you want with `Space` in the Call List (they show a `▸`),
 then press `F2`. In the Save dialog, `Tab` cycles the format -- PCAP, PCAP-NG,
 TXT, JSON, NDJSON, CSV, **Mermaid** (a sequence diagram for your ticket/wiki),
-Markdown, WAV, SIPp XML, RTP JSON -- and `Enter` writes the file. If nothing is
+Markdown, WAV, SIPp XML, RTP JSON -- and `Enter` writes the file. With nothing
 selected, it saves everything.
 
 ## Where to go next

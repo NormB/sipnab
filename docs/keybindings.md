@@ -2,7 +2,7 @@
 
 Complete keyboard shortcut reference for sipnab's interactive TUI.
 
-Keys marked with **(configurable)** can be remapped via the `[keybindings]` config section. See [config-reference.md](config-reference.md) for details. All other keys are hardcoded.
+You can remap keys marked **(configurable)** in the `[keybindings]` config section. See [config-reference.md](config-reference.md) for details. All other keys are hardcoded.
 
 Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at the bottom of this page.
 
@@ -35,7 +35,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | F12 | Toggle mouse capture — off enables the terminal's native drag-to-select (wheel scrolling pauses until re-enabled) |
 | Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
 
-`v`, `n`, and `F12` are built-in fallbacks: a key you explicitly rebind in
+`v`, `n`, and `F12` ship as fallbacks: a key you explicitly rebind in
 `[keybindings]` always wins over them. In the Raw Message view with an active
 search, `n`/`N` are match navigation instead.
 
@@ -46,8 +46,8 @@ Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view) use
 travels in-band over the pty, so it works across SSH with no X11 forwarding —
 your terminal must support it, and most modern ones (kitty, WezTerm, iTerm2,
 Windows Terminal, foot, recent xterm) do. On top of OSC 52, sipnab also feeds
-`pbcopy`/`xclip` silently when one is available. Copies are capped at 72 KiB
-(terminals limit OSC 52 payloads); the status line reports what was copied.
+`pbcopy`/`xclip` silently when one is available. Copies stop at 72 KiB
+(terminals limit OSC 52 payloads); the status line reports how much it copied.
 
 To select arbitrary screen text with the mouse, press `F12` to turn mouse
 capture off and drag as usual, then `F12` again to get wheel scrolling back.
@@ -88,12 +88,12 @@ without toggling anything.
 | F2 | Save capture **(configurable: `save`)** |
 | F3 | Search (same as `/`) — matches Call-ID, method, From/To user, addresses, dialog state, and the full raw message text (headers and bodies, including SDP and multipart payloads) |
 | F4 | Open extended multi-leg flow for the selected dialog **(configurable: `extended_flow`)** |
-| F5 | Clear calls **(configurable: `clear_calls`)** — the starred dialogs when any are starred, otherwise all of them |
+| F5 | Clear calls **(configurable: `clear_calls`)** — the starred dialogs when any carry a star, otherwise all of them |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear active filter **and** persisted search |
 | F10 | Column selector **(configurable: `column_selector`)** — a popup to show/hide any of the eleven Call List columns (#, Method, From, To, Source, Destination, State, Msgs, Date, PDD, Duration) |
 
-A search committed with Enter keeps narrowing the list and is shown on the
+A search committed with Enter keeps narrowing the list and appears on the
 status line as `Search: /query (F9 clears)`; F9 clears it together with any
 active filter.
 
@@ -104,13 +104,13 @@ active filter.
 | Key | Action |
 |-----|--------|
 | Tab | Switch focus between the ladder (left) and detail (right) panes |
-| Up / k | Previous message or RTP bar — or scroll detail up when the detail pane is focused |
-| Down / j | Next message or RTP bar — or scroll detail down when the detail pane is focused |
+| Up / k | Previous message or RTP bar — or scroll detail up when the detail pane has focus |
+| Down / j | Next message or RTP bar — or scroll detail down when the detail pane has focus |
 | PgUp | Page up (ladder, or detail when focused) |
 | PgDn | Page down (ladder, or detail when focused) |
 | Home | Jump to first message (or top of detail when focused) |
 | End | Jump to last message (or bottom of detail when focused) |
-| Enter | Open full-screen raw message view — or, when an RTP bar is selected, the Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
+| Enter | Open full-screen raw message view — or, with the cursor on an RTP bar, the Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
 | Space | Select message for diff (press on two messages to compare) |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (none / summary / full) |
@@ -121,14 +121,14 @@ active filter.
 | + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the split off, shows a hint instead) |
 | - / 9 / Right | Narrow the detail pane, widening the ladder (with the split off, shows a hint instead) |
 | w | Toggle line wrapping in the detail pane (off = long lines truncate and a scrollbar appears along the bottom edge) |
-| ← / → | Scroll the detail pane horizontally when it is focused with wrap off |
+| ← / → | Scroll the detail pane horizontally when it has focus with wrap off |
 | \[ | Scroll detail panel up |
 | \] | Scroll detail panel down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |
 | f | Filter the ladder to the selected message's transaction (toggle) |
 | a | Open combined detail for the selected message's transaction |
 | A | Open combined detail for the whole dialog |
-| m | Set mark at current message — navigate to another message and the **delta** between the mark and the cursor is shown, for measuring the delay between two specific SIP messages |
+| m | Set mark at current message — navigate to another message and sipnab shows the **delta** between the mark and the cursor, for measuring the delay between two specific SIP messages |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** — shows related B2BUA/SBC call legs together, for tracing a call through proxies and back-to-back user agents |
@@ -142,7 +142,7 @@ active filter.
 | F9 | Clear active filter **and** persisted search |
 
 In the split view, `Tab` moves keyboard focus between the two panes; the
-focused pane is shown in the status line (`Focus: Ladder` / `Focus: Detail`)
+status line names the focused pane (`Focus: Ladder` / `Focus: Detail`)
 and gets a highlighted border. When either pane has more rows than fit, a
 vertical scrollbar appears on its right edge. `[` and `]` always scroll the
 detail pane regardless of focus.
@@ -164,7 +164,7 @@ detail pane regardless of focus.
 | y | Copy the displayed message's raw text to the clipboard (OSC 52, works over SSH — see [Copying text](#copying-text)) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
-| Esc | Back to the view it was opened from (call flow or call list) |
+| Esc | Back to the view you came from (call flow or call list) |
 
 ## Message Diff
 
@@ -223,7 +223,7 @@ message of the selection rendered as one scrollable document.
 | L | Open the packet loss map (RTP loss pattern) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
-| Esc | Back to the view it was opened from (RTP Streams, Call Flow, or Quality Dashboard) |
+| Esc | Back to the view you came from (RTP Streams, Call Flow, or Quality Dashboard) |
 
 The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis (RFC 3611), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
 
@@ -316,7 +316,7 @@ Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display
 
 The browser lists `.pcap`, `.pcapng`, and `.cap` files, plus their
 gzip-compressed forms (`*.pcap.gz`, …), which sipnab decompresses on the fly.
-If the directory can't be read — most often because sipnab was started with
+If sipnab cannot read the directory — most often because it started with
 `sudo` and dropped privileges to an unprivileged user that can't read your
 home directory — the dialog shows the reason instead of a blank list. Run
 sipnab **without** `sudo` (see [install.md](install.md) for capabilities) to
@@ -334,7 +334,7 @@ browse your own files.
 
 ## Timestamp Modes
 
-Press `t` in the Call List or Call Flow to cycle through the timestamp modes (the mode is shared across both views):
+Press `t` in the Call List or Call Flow to cycle through the timestamp modes (both views share the mode):
 
 1. **Absolute** (default) -- `HH:MM:SS.mmm` wall-clock time
 2. **Delta-prev** -- `+N.NNNs` time since previous entry. Color-coded in call flow:
@@ -377,28 +377,28 @@ briefly in the status line):
 
 Names come from three sources, highest priority first: operator-entered
 mappings, then `/etc/hosts` (or a `--names` / `[names] hosts_file`), then
-reverse DNS. Only the IP is substituted; the `:port` is preserved
+reverse DNS. Substitution touches only the IP; the `:port` stays
 (`sbc-edge:5060`).
 
 To name an address **in context**, select a call-list row, stream row, or
 call-flow message and press **`N`**. A popup opens pre-filled with that IP;
 type a host/FQDN and press Enter (an empty name clears the mapping). Naming an
-address turns resolution on automatically, and the mapping is saved to
+address turns resolution on automatically, and sipnab saves the mapping to
 `$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
 across runs.
 
-Mappings can also be persisted into your **sipnabrc**: set
-`[names] persist_to_config = true` and `N`-dialog edits are written into the
-`[names.manual]` table of `~/.config/sipnab/sipnab.toml` (comments and other
-sections are preserved). You can also pre-declare mappings there by hand:
+Mappings can also persist into your **sipnabrc**: set
+`[names] persist_to_config = true` and `N`-dialog edits land in the
+`[names.manual]` table of `~/.config/sipnab/sipnab.toml`, leaving comments and
+other sections intact. You can also pre-declare mappings there by hand:
 
 ```toml
 [names.manual]
 "192.0.2.1" = "sbc-edge"
 ```
 
-When saving a capture as **PCAP-NG** with resolution active, the mappings are
-embedded as a Name Resolution Block (and read back when the file is reopened).
+When saving a capture as **PCAP-NG** with resolution active, sipnab embeds the
+mappings as a Name Resolution Block, and reads them back when you reopen the file.
 
 Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
 PTR lookups; implies `--resolve`), `--names <FILE>` (preload an
@@ -576,7 +576,7 @@ Save captured data in multiple formats. Use `Tab` to cycle through formats.
  <span class="t-muted">Tab: cycle format  Enter: save  Esc: cancel</span></pre>
 </div>
 
-> **Tip:** Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog will show how many are selected and save only those. **Mermaid** format exports a sequence diagram you can paste into documentation.
+> **Tip:** Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog shows the count and saves only those. **Mermaid** format exports a sequence diagram you can paste into documentation.
 
 ### Settings Dialog (F8)
 

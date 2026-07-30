@@ -2,7 +2,7 @@
 
 Fifty integration-test binaries under [`tests/`](../../tests), plus unit tests
 inside `src/`, plus doctests. The exact total is not repeated here on purpose —
-it is carried by the homepage stat card and enforced by a pre-commit gate, so
+the homepage stat card carries it and a pre-commit gate holds it, so
 any number written on this page would be wrong within a week.
 
 What follows is the map: what each tier asserts, how to regenerate its
@@ -15,7 +15,7 @@ for reasons that have nothing to do with the code you were writing.
 |---|---|---|
 | **CLI surface** | [`cli_test`](../../tests/cli_test.rs), [`cli_options_test`](../../tests/cli_options_test.rs), [`cli_help_test`](../../tests/cli_help_test.rs), [`cli_defaults_test`](../../tests/cli_defaults_test.rs), [`cli_flag_behavior_test`](../../tests/cli_flag_behavior_test.rs) | Parsing, the default value of every parameter, `--help` grouping across ~140 flags, and behavior for flags that were once untested. |
 | **CLI golden** | [`cli_goldens`](../../tests/cli_goldens.rs) | `trycmd` goldens under [`tests/cli/`](../../tests/cli) — exact stdout/stderr for a command line. |
-| **Integration** | [`integration_test`](../../tests/integration_test.rs), [`capture_test`](../../tests/capture_test.rs), [`rtp_integration_test`](../../tests/rtp_integration_test.rs), [`pipeline_test`](../../tests/pipeline_test.rs), [`parse_path_test`](../../tests/parse_path_test.rs), [`bootstrap_test`](../../tests/bootstrap_test.rs), [`app_servers_test`](../../tests/app_servers_test.rs), [`config_test`](../../tests/config_test.rs) | Capture-to-output pipeline, and the library facades WS2 extracted from `main.rs` — bootstrap planning is a pure `Cli + Config → RunPlan` function precisely so it can be tested here. `config_test` covers the step before planning: config discovery (`-f`, `SIPNAB_CONFIG`, `--no-config`, unknown-key warnings, the missing-file error) driven through the real binary's `--dump-config`. |
+| **Integration** | [`integration_test`](../../tests/integration_test.rs), [`capture_test`](../../tests/capture_test.rs), [`rtp_integration_test`](../../tests/rtp_integration_test.rs), [`pipeline_test`](../../tests/pipeline_test.rs), [`parse_path_test`](../../tests/parse_path_test.rs), [`bootstrap_test`](../../tests/bootstrap_test.rs), [`app_servers_test`](../../tests/app_servers_test.rs), [`config_test`](../../tests/config_test.rs) | Capture-to-output pipeline, and the library facades WS2 extracted from `main.rs` — bootstrap planning is a pure `Cli + Config → RunPlan` function precisely so these tests can reach it. `config_test` covers the step before planning: config discovery (`-f`, `SIPNAB_CONFIG`, `--no-config`, unknown-key warnings, the missing-file error) driven through the real binary's `--dump-config`. |
 | **TUI** | [`tui_snapshot_test`](../../tests/tui_snapshot_test.rs), [`tui_state_test`](../../tests/tui_state_test.rs), [`tui_e2e_test`](../../tests/tui_e2e_test.rs) | Rendered buffers via ratatui's `TestBackend` + `insta`; state-machine transitions; and end-to-end drives of the real binary inside `tmux`. See [TUI testing](tui-testing.md). |
 | **Servers** | [`api_test`](../../tests/api_test.rs), [`api_token_test`](../../tests/api_token_test.rs), [`mcp_stdio_test`](../../tests/mcp_stdio_test.rs), [`mcp_http_test`](../../tests/mcp_http_test.rs), [`mcp_token_test`](../../tests/mcp_token_test.rs), [`mcp_token_rotation_test`](../../tests/mcp_token_rotation_test.rs), [`metrics_test`](../../tests/metrics_test.rs), [`hep_test`](../../tests/hep_test.rs) | REST, MCP (stdio and HTTP), signed-token auth and rotation, Prometheus scrapes, HEP ingestion — all end to end against a spawned process. |
 | **Security** | [`security_test`](../../tests/security_test.rs), [`privilege_drop_test`](../../tests/privilege_drop_test.rs), [`resource_bounds_test`](../../tests/resource_bounds_test.rs), [`crash_test`](../../tests/crash_test.rs) | Audit regressions, the never-continue-as-root guarantee, attacker-keyed map caps, and crash-report handling with the real binary. |
@@ -28,7 +28,7 @@ for reasons that have nothing to do with the code you were writing.
 ## `tests/support/`
 
 Files in a subdirectory of `tests/` are **not** compiled as their own test
-binaries, so shared helpers are pulled in with an explicit path attribute:
+binaries, so an explicit path attribute pulls shared helpers in:
 
 ```rust
 #[path = "support/run.rs"]
@@ -50,7 +50,7 @@ with no `mod.rs` chain — each test binary compiles its own copy.
 
 ## Fixtures and corpora
 
-Every command below was run against the current tree and left it unchanged —
+Every command below ran against the current tree and left it unchanged —
 that is the point of documenting them: if one produces a diff, something has
 drifted.
 
@@ -69,17 +69,17 @@ the diff first: these files are the record of what the tool promised its users.
 
 ## The gate-test roster
 
-These fail on changes you did not think were related. Each one exists because
+These fail on changes you thought had nothing to do with them. Each one exists because
 the thing it guards silently rotted at least once.
 
 | Gate | Trips when |
 |---|---|
-| [`docs_drift_test`](../../tests/docs_drift_test.rs) | A `--flag` named in `README.md`, `../architecture.md` or the website does not exist in the CLI; a version marker in the docs or man page disagrees with `Cargo.toml`; the README feature table misses a Cargo feature; a `[theme]` slot in `ThemeConfig` is undocumented, or the slot count quoted in either config reference is wrong. Also the benchmark reproducibility contract: the `bench/` harness the benchmarks page tells readers to run must exist and be executable, `bench/carrier.py` must still produce the corpus composition the page quotes (checked at 1/100 scale), and both doc trees must name the same measured artifact and date. |
+| [`docs_drift_test`](../../tests/docs_drift_test.rs) | A `--flag` named in `README.md`, `../architecture.md` or the website does not exist in the CLI; a version marker in the docs or man page disagrees with `Cargo.toml`; the README feature table misses a Cargo feature; a `[theme]` slot in `ThemeConfig` has no documentation, or the slot count quoted in either config reference is wrong. Also the benchmark reproducibility contract: the `bench/` harness the benchmarks page tells readers to run must exist and be executable, `bench/carrier.py` must still produce the corpus composition the page quotes (checked at 1/100 scale), and both doc trees must name the same measured artifact and date. |
 | [`dev_docs_drift_test`](../../tests/dev_docs_drift_test.rs) | A page under `docs/internals/` links to a path that no longer exists, names a `fn` that no longer exists, uses an absolute GitHub URL instead of a relative one, is not registered in `build-wiki.py`, or breaks a mermaid convention. It also builds the wiki and fails if any relative link survives into the output — the wiki is flat and has no repo tree, so such a link publishes dead. That check runs the generator rather than reading it: the version that only asserted `CODE_LINK_RE` appeared in the script passed while `](../bench/)` was shipping broken. |
 | [`link_integrity_test`](../../tests/link_integrity_test.rs) | Any relative link or heading anchor in either doc tree does not resolve; Zola content uses a plain relative `.md` link that would render as a dead URL. On the wiki-source side the scan is the top-level `docs/*.md` plus `docs/internals/` — `docs/design/`, `docs/research/` and `docs/superpowers/` are planning material outside the published journey and are deliberately not walked, though a link *into* them from a scanned page still has to resolve. |
 | [`doc_example_coverage_test`](../../tests/doc_example_coverage_test.rs) | A user-facing CLI flag appears in fewer than two documented examples. A ratchet — the exemption list may only shrink. |
 | [`flag_coverage_test`](../../tests/flag_coverage_test.rs) | A new long flag ships with no test referencing it. Also a ratchet: adding a test for a grandfathered flag fails until you remove it from the baseline list. |
-| [`keybinding_drift_test`](../../tests/keybinding_drift_test.rs) | A key is handled in a controller but not documented in the F1 help. |
+| [`keybinding_drift_test`](../../tests/keybinding_drift_test.rs) | A controller handles a key that the F1 help never mentions. |
 | [`config_wiring_test`](../../tests/config_wiring_test.rs) | A config key exists but is never read, or a CLI flag has no config fallback where its peers do. |
 | [`feature_gate_test`](../../tests/feature_gate_test.rs) | A flag whose subsystem is not compiled in fails late or silently instead of fast and clearly. |
 | [`api_guidelines_test`](../../tests/api_guidelines_test.rs) | A growth-prone public enum loses `#[non_exhaustive]`, or a shared store stops being `Debug`. |
@@ -92,19 +92,19 @@ the thing it guards silently rotted at least once.
 The rule for all of them: **the gate is not the problem**. If
 `flag_coverage_test` fails, the flag needs a test; if `dev_docs_drift_test`
 fails, a page now lies. Adding an exemption is the last resort, and every
-exemption list in this repo is written as a ratchet so it cannot quietly grow.
+exemption list in this repo works as a ratchet so it cannot quietly grow.
 
 ## The development loop
 
 **Logging.** `SIPNAB_LOG` is a `tracing` `EnvFilter`, so it takes levels and
 per-module directives (`SIPNAB_LOG=debug`, `SIPNAB_LOG=sipnab::rtp=trace`).
-In TUI mode logging is suppressed unless `SIPNAB_LOG` is set explicitly — the
+In TUI mode sipnab suppresses logging unless `SIPNAB_LOG` says otherwise — the
 alternative is log lines painting over the interface. `-q` lowers the default
 in CLI mode. Configured by [`init_logging()`](../../src/app/bootstrap.rs).
 
 **Benches.** `cargo bench --profile profiling`. Plain `cargo bench` *cannot
 build*: the `cdylib` crate type needed for the WASM build forces
-`panic = "abort"` into the lib unit while bench units are compiled with
+`panic = "abort"` into the lib unit while bench units build with
 unwind, so shared dependencies get built twice with incompatible panic
 strategies and fail to unify. The `profiling` profile is release codegen with
 `panic = "unwind"` and debug symbols kept, which is also what callgrind wants.
@@ -114,7 +114,7 @@ Baselines live in [`benches/BASELINES.md`](../../benches/BASELINES.md).
 fail-fast, immediate-final output) and `e2e` (2 retries, 60s timeout) for the
 timing-sensitive tmux tests. Worth knowing: **no workflow currently invokes
 nextest** — CI runs plain `cargo test`. The config is there for local use and
-for the day the e2e shim is removed.
+for the day the e2e shim goes away.
 
 **The docker lab.** [`harness/`](../../harness) is a docker-compose stack —
 OpenSIPS, rtpengine, SIPp — for generating real traffic. `make up` in that

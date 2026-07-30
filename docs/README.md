@@ -4,7 +4,7 @@
 into one static binary — an interactive TUI, a scriptable CLI, JSON/NDJSON and
 report output, a REST API, and an MCP server. One dependency (libpcap).
 
-Documentation is grouped by what you are trying to do, following
+This tree groups documentation by what you are trying to do, following
 [Diátaxis](https://diataxis.fr/). The four groups answer four different
 questions, and mixing them is what makes docs hard to use:
 
@@ -71,7 +71,7 @@ Understanding-oriented. Read these when you want to know *why*, not *how*.
 - [Fault model](fault-model.md) — what sipnab does when things go wrong, and
   what it deliberately does not do.
 - [Benchmarks](benchmarks.md) — measured throughput and memory, how the
-  numbers were produced, and how to reproduce them.
+  numbers came from, and how to reproduce them.
 
 ## Contributing
 

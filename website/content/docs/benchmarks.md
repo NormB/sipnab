@@ -19,18 +19,18 @@ reproduces every one of them exactly (535,000 packets, 35,000 SIP messages,
 
 **Measured on the released 0.5.47 artifact, checksum-verified, 2026-07-27, on
 an idle host.** Numbers on this page are not comparable to the pre-0.5.47
-figures: those were measured on the old unpublished corpus, and while the new
+figures: they came from the old unpublished corpus, and while the new
 one matches its documented composition exactly it is not byte-identical. Where
 the two differ, the corpus differs — see the A/B below, which separates the two
 causes rather than guessing between them.
 
 > **Read this first.** These tools do *different amounts of work*, so a raw
-> throughput number only means something next to *what was reconstructed*.
+> throughput number only means something next to *what came back out*.
 > `sipgrep` is a grep-style line matcher; `sngrep` builds an interactive SIP
 > ladder; voipmonitor produces full CDRs plus media spooling; sipnab does full
 > SIP dialog **and** RTP-stream reconstruction with per-stream codec / jitter /
 > loss. sipnab is generally doing *more* reconstruction than the tool it is
-> being compared against here, which strengthens rather than weakens the result.
+> this comparison uses, which strengthens rather than weakens the result.
 
 ## Test host & method
 
@@ -64,9 +64,9 @@ the hand-off removed the regression.
 
 This page used to assert that the numbers carried forward because "the current
 release changes no packet-path code versus 0.5.18". Nobody ever checked it, and
-the version number in the sentence was advanced release after release.
+the version number in the sentence moved release after release.
 
-It has now been checked. Both release artifacts, both checksum-verified, run
+Someone has now checked. Both release artifacts, both checksum-verified, run
 against the identical corpus on the same idle host in the same session:
 
 | cores | 0.5.18 | 0.5.47 | delta |
@@ -80,7 +80,7 @@ Three interleaved replicates at 2 and 8 cores put that delta inside the noise
 floor: 0.5.47 measured 2.32 / 2.33 / 2.36M at 2 cores against 0.5.18's 2.37 /
 2.42 / 2.34M, so the between-version gap (~2%) is smaller than the
 within-version spread (~3.4%), and one replicate has 0.5.47 ahead. **Twenty-nine
-releases on, throughput is unchanged within measurement noise.** The judgement
+releases on, throughput holds within measurement noise.** The judgement
 this page carried for a year happens to have been correct — but it is now a
 measurement, and re-checking it is three commands.
 
@@ -116,8 +116,8 @@ Read it in three buckets:
   0.245 s) *while also reconstructing all 200 RTP streams*. There is no
   configuration where sipnab is the slowest at comparable work.
 
-> **How voipmonitor was run.** It is not packaged for the reference host, so it
-> is built from source in a container
+> **How voipmonitor ran.** No package exists for the reference host, so it
+> builds from source in a container
 > ([`bench/voipmonitor.Dockerfile`](https://github.com/NormB/sipnab/blob/main/bench/voipmonitor.Dockerfile))
 > rather than installed onto the machine. Two things make that fair. Its timing
 > loop runs *inside* a single container, because timing `docker run` would
@@ -126,7 +126,7 @@ Read it in three buckets:
 > win out of nothing. And the config disables spooling, not analysis: re-running
 > with `savesip`/`savertp` on confirms voipmonitor emits one SIP and one RTP
 > capture per call, each containing both directions of the stream, so it really
-> is doing the RTP association it is credited with here.
+> is doing the RTP association this table credits it with.
 >
 > The remaining asymmetry is that voipmonitor runs containerised while the other
 > three run natively. On Linux that is namespaces rather than virtualisation, so
@@ -183,12 +183,12 @@ voipmonitor 2026.07.1 it is **~3.2×**, and remarkably steady across the whole
 sweep. voipmonitor's own footprint is far below what this page used to report
 for it (1.46 GiB at 20k calls against a published 4.7 GiB). The old figure came
 from an older voipmonitor on a corpus nobody can rebuild, so the two are not
-strictly comparable — but a 9.2× advantage was being published, it is 3.2× when
+strictly comparable — but the published figure claimed a 9.2× advantage, and it is 3.2× when
 measured, and the smaller number is the one with a recipe attached.
 
 Getting this measurement right requires the unbounded pools. Run the sweep with
 the default bounded pools and RSS tops out around 123 MiB at 20k calls, because
-state is capped at 100 dialogs regardless of call count — that measures buffer
+state stops at 100 dialogs regardless of call count — that measures buffer
 memory and mislabels it as state growth.
 
 ## A note on the `-N --json` export path
@@ -196,7 +196,7 @@ memory and mislabels it as state growth.
 0.5.20 rewrote the `-N --json` export sink — buffered batch writes plus direct
 JSON serialization, measured at ~29% less wall-clock and 98.5% fewer `write()`
 syscalls on that path in a same-toolchain A/B with byte-identical output. That
-figure was measured on a development branch, not on a released artifact, and
+figure came from a development branch, not from a released artifact, and
 has not been re-measured since. [`--group-by`](@/docs/cli.md#output) (added in
 0.5.44) buffers messages to end-of-capture when passed, and that measurement
 predates it. The tables above do not exercise the JSON sink.

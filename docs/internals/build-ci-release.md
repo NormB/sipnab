@@ -19,7 +19,7 @@ features below, plus `default` — which is `native, tui, audio, metrics`.
 | `audio` | — | The `sipnab-audio` plugin loader for TUI playback. **Does not imply `native`**; it is a `dlopen` of a separate cdylib. |
 | `api` | `native` | The axum REST API. |
 | `mcp` | `native` | The MCP server over stdio. |
-| `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so the axum stack is shared rather than duplicated. |
+| `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so both share one axum stack rather than duplicating it. |
 | `wasm` | — | The browser analyzer bindings. Lib-only: its test and bin targets are meaningless on the host. |
 | `full` | everything but `wasm` | What the pre-commit hook and most local testing use. |
 
@@ -47,8 +47,8 @@ compiles, which is exactly why CI has a feature matrix.
 
 `sanitizers.yml` runs the threaded integration suites under
 `-Zsanitizer=thread`, weekly. It exists because nothing else in the suite can
-see a data race: the capture thread, the channel and the processing thread are
-exercised by the tests, but a test that passes and a test that raced are
+see a data race: the tests exercise the capture thread, the channel and the
+processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`. The borrow checker does not help here either
 — it stops at `unsafe`, and 41 of this crate's 49 `unsafe` blocks are libc FFI
 for privilege dropping and capture setup.
@@ -60,23 +60,23 @@ is `cargo-fuzz`; both run in their own workflow while the release build stays on
 the pinned stable version. Moving the build to nightly would break the toolchain
 pin, the MSRV promise, and the reproducibility of a released binary.
 
-**`-Zbuild-std` is required, not optional.** Without rebuilding the standard
+**`-Zbuild-std` is mandatory, not optional.** Without rebuilding the standard
 library with instrumentation, TSan sees `std`'s synchronisation as opaque and
 reports the channel itself as a race — the noise that gets a race detector
 switched off.
 
 **The scope is a sample, and the workflow says so.** Five suites run: the REST
-API and its token path, HEP, MCP stdio, and the CLI behaviour tests. A race in a
-path outside that list will not be found. Add the suite rather than assuming
+API and its token path, HEP, MCP stdio, and the CLI behaviour tests. Nothing
+finds a race in a path outside that list. Add the suite rather than assuming
 coverage.
 
 `ops/tsan/suppressions.txt` silences libpcap, libasound and the dynamic loader,
 which TSan cannot instrument. Each entry carries the reason it is not a real
 race; an unexplained suppression turns a race detector into a race ignorer.
 
-**mimalloc is dropped under the sanitizer.** `RUSTFLAGS` carries
-`--cfg sipnab_tsan`, and `src/main.rs` skips its `#[global_allocator]` when that
-cfg is set. mimalloc is C compiled by the `cc` crate, so `-Zsanitizer=thread`
+**The sanitizer build drops mimalloc.** `RUSTFLAGS` carries
+`--cfg sipnab_tsan`, and `src/main.rs` skips its `#[global_allocator]` under that
+cfg. mimalloc is C compiled by the `cc` crate, so `-Zsanitizer=thread`
 does not instrument it, and TSan sees neither its alloc/free (no shadow reset on
 a recycled block) nor its internal cross-thread synchronisation: every block
 handed from one thread to another reads as a data race. The 2026-07-29 run
@@ -91,7 +91,7 @@ passes), but two things make that grep mean something. `log_path` gives each
 process its own `tsan.<pid>`: the suites spawn the `sipnab` binary and consume
 its stderr, so before that, a report from a child reached the log only if some
 test happened to print the child's stderr into an assertion message — the first
-run's "0 races" meant "nothing was printed". And the verdict names the finding
+run's "0 races" meant "nothing printed". And the verdict names the finding
 it actually matched instead of calling everything a data race — an earlier draft
 would have reported a thread leak as one.
 
@@ -111,14 +111,14 @@ forever.
 
 All of that lives in `ops/tsan/verdict.sh`, not inline in the workflow, with
 `ops/tsan/test-verdict.sh` beside it and a `tsan-verdict` job in `ci.yml`
-running it on every push. The inline version had to be moved because it was
+running it on every push. The inline version had to move because it was
 wrong in the direction nobody checks: `run:` blocks execute under
 `bash -e -o pipefail`, so its bare `grep … | while read` warning loop exited 1
 on a tree with **no** findings and killed the step before it could report — the
 job failed silently when clean and passed while a thread leak was present. The
 instrumentation guard had the mirror of it, `grep -q` closing the pipe on a
-still-writing `nm` and reading SIGPIPE as "not instrumented". Neither could have
-been caught without running the logic against a fixture, which is the whole
+still-writing `nm` and reading SIGPIPE as "not instrumented". Nothing could have
+caught either without running the logic against a fixture, which is the whole
 argument for it being a script.
 
 ### What actually gates a merge
@@ -193,14 +193,14 @@ happened again on the 0.5.61 release commit, where a test reflecting over `Cli`
 (behind `native`) took a whole test target out of every build without it. Three
 combinations, not eleven: `tls` and `api` are the ones that *exclude* `native`,
 where the breakage lives, and `wasm` is the most distant target. The full matrix
-stays in CI. A combination the crate does not define is skipped, the way the
+stays in CI. CI skips a combination the crate does not define, the way the
 fuzz gate skips a missing `fuzz/`.
 
 Both hooks have their own test scripts —
 [`test-pre-commit.sh`](../../scripts/test-pre-commit.sh) and
 [`test-pre-push.sh`](../../scripts/test-pre-push.sh).
 
-[`install-from-source.sh`](../../scripts/install-from-source.sh) is unrelated to
+[`install-from-source.sh`](../../scripts/install-from-source.sh) has nothing to do with
 the hooks: it is the developer-facing source install (`cargo install --path .
 --bin sipnab`, then `--setup-caps` on Linux). It passes `--bin` deliberately —
 without it, `gen_fixture` also satisfies its `required-features` and lands in
@@ -217,7 +217,7 @@ locally:
 | `Cargo.toml`, `crates/sipnab-audio/Cargo.toml` | `rust-version = "1.97"` (MSRV) |
 | `Dockerfile`, `harness/sipnab/Dockerfile` | `FROM rust:1.97-slim-trixie@sha256:<digest>` |
 
-The action is pinned by commit SHA, so the **version lives in the trailing
+A commit SHA pins the action, so the **version lives in the trailing
 comment** — which makes that comment load-bearing rather than decorative.
 `rust_toolchain_pins_agree` reads it, and also asserts the ref really is a
 40-hex SHA: an edit dropping back to `@1.98.0` would otherwise contribute
@@ -236,18 +236,18 @@ above in the same change.
 **The site advertises the last PUBLISHED release, not the crate version.**
 `website/config.toml` carries both: `version`, which the Pages step overwrites
 from `Cargo.toml` on every build, and `published_version`, which every download
-link and version badge is built from. They are different facts, and conflating
+link and version badge draws from. They are different facts, and conflating
 them broke the download page in production — the release *commit* bumped the
 crate version, Pages redeployed, and the whole of `/download` pointed at a tag
 nobody had pushed yet. Every link 404ed, including `SHA256SUMS.txt` and the
 checksum column. On 0.5.61 that window was not minutes: its release commit went
 red and was never tagged.
 
-So `published_version` is bumped **after** a release finishes publishing, as its
+So `published_version` moves **after** a release finishes publishing, in its
 own commit — never while cutting one. The same split applies to the docs:
 `docs/install.md`'s `SIPNAB_VERSION=`, `e.g. <version>` and `rpm -i sipnab-<v>`
 lines are download instructions, so they track `published_version` too and must
-NOT be swept along when the crate version is bumped. A blanket
+NOT move when the crate version does. A blanket
 `sed s/<old>/<new>/g` over `docs/install.md` at a release commit is exactly the
 mistake — `docs_current_version_markers_match_cargo` splits its list on this and
 fails the commit rather than shipping a documented `curl` that 404s. The
@@ -264,7 +264,7 @@ attestation, a GHCR image and a Homebrew formula — twenty-three release assets
 all. The order is therefore: push the release commit, wait for CI, then tag the
 commit that passed.
 
-This is enforced, not merely advised. [`pre-push`](../../.githooks/pre-push)
+A hook enforces this rather than merely advising it. [`pre-push`](../../.githooks/pre-push)
 refuses a `v*` tag whose commit has a failed run, has runs still in flight, or
 has no runs at all. It skips with a warning when `gh` is unavailable rather than
 blocking — forcing `SKIP_FMT_HOOK=1` would switch off every other gate too, which
@@ -284,9 +284,9 @@ Eight builds, six tarballs — the number of builds is not the number of artifac
 This page previously described a release as publishing "eight artifacts", and
 called the `noaudio` variants `.deb`-only. Neither had drifted: the `noaudio`
 variants landed on 2026-07-07 and gained `.rpm` on 2026-07-09, while the
-`.deb`-only sentence was written on 2026-07-25 and the "eight artifacts" count on
-2026-07-29. Both were wrong on the day they were written, by someone reading the
-matrix and counting its rows. That is the failure mode a re-stated number has when
+`.deb`-only sentence dates from 2026-07-25 and the "eight artifacts" count from
+2026-07-29. Both were wrong the day they landed, written by reading the matrix
+and counting its rows. That is the failure mode a re-stated number has when
 nothing produces it, so `release_artifact_counts_match_the_build_matrix` now
 derives every count here from the matrix itself.
 
@@ -313,8 +313,8 @@ own default: the config and the workflow would agree, and the published number
 would still be an OS the binary cannot run on. To move real support, change the
 two `floor=` lines and let the gate walk the published numbers to match.
 
-Two CycloneDX SBOMs ship with each release and are covered by both the
-checksum file and the attestation: `sipnab-<version>.cdx.json` for the binary
+Two CycloneDX SBOMs ship with each release, and both the checksum file and the
+attestation cover them: `sipnab-<version>.cdx.json` for the binary
 and `sipnab-audio-<version>.cdx.json` for the playback plugin. Two, not one,
 because the plugin is a separate workspace crate loaded with `dlopen` and it
 pulls in seven dependencies the main crate's graph does not contain at all —
@@ -322,7 +322,7 @@ pulls in seven dependencies the main crate's graph does not contain at all —
 `rodio`. A single main-crate SBOM would omit precisely the C-library-adjacent
 dependencies a vulnerability scan is looking for, while looking complete.
 
-The binary SBOM is generated with `--features full` on purpose. The `noaudio`
+The binary SBOM uses `--features full` on purpose. The `noaudio`
 artifacts resolve a strict subset of that graph — measured on 0.5.54 the two
 differ by exactly one component, `libloading` — so one full-feature document
 over-covers rather than under-covers every binary published, which is the safe
@@ -359,8 +359,7 @@ sequenceDiagram
 
 Version strings live in `Cargo.toml`, `website/config.toml`, `man/sipnab.1`,
 `fuzz/Cargo.lock` and several docs, and committing with any of them out of step
-fails — so bumping a version is one edit plus the ones you will be reminded
-about.
+fails — so bumping a version is one edit plus the ones the gates point you at.
 
 That enforcement lives in **one** place: `docs_current_version_markers_match_cargo`
 and `man_page_version_and_license_match_cargo` in
@@ -375,15 +374,15 @@ something was **measured** on — the benchmarks pages — must not track the cr
 version. A marker forcing them to is what kept a stale benchmark claim looking
 freshly checked for twenty-nine releases.
 
-The test count in `website/templates/index.html` is gated the same way, by
+The same mechanism gates the test count in `website/templates/index.html`, by
 `ci.yml` against the real suite total. That check is Linux-only: platform-gated
 tests mean the macOS leg runs a handful fewer, so one advertised number cannot
 be true of both, and the figure describes the Linux run.
 
 ### The changelog
 
-`CHANGELOG.md` is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-and says so in its header. Entries are grouped under `Added` / `Changed` /
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and says so in its header. Entries sit under `Added` / `Changed` /
 `Fixed` / `Removed`, and the project uses a few extra headings where those four
 do not fit what a release actually did.
 
@@ -399,13 +398,12 @@ requires every `###` section to sit under some `## [...]`, so entries added
 without one are orphans and fail. The gate accepts `Unreleased` precisely so
 work can accumulate between releases without doing that.
 
-It was written after the heading was destroyed by an edit whose anchor included
-it, leaving two sections under the file header. That survived a commit, a push
+It exists because an edit whose anchor included the heading destroyed it, leaving two sections under the file header. That survived a commit, a push
 and a full CI run, because the sibling gate searches for the heading naming the
 *current site version* — which was still present further down.
 
-Nothing gates the changelog's contents, which is deliberate — a gate on prose
-would be satisfied by prose. What *is* gated is the release date: it must match
+Nothing gates the changelog's contents, which is deliberate — prose would satisfy
+a gate on prose. What *is* gated is the release date: it must match
 `website/config.toml`, asserted by `site_release_date_matches_changelog`.
 
 ### Re-measuring the benchmarks
@@ -433,8 +431,8 @@ bench/scaling.sh ./sipnab-*/sipnab corpus.pcap 535000 --cores 1,2,4,8 --runs 5
 Run it on an otherwise idle machine. If the numbers moved, A/B the previous
 release artifact against the same corpus in the same session before concluding
 anything — a corpus or session difference looks exactly like a regression, and
-[the benchmarks page](../benchmarks.md) records one occasion where it was
-mistaken for one. Update both benchmark doc trees and the homepage tiles
+[the benchmarks page](../benchmarks.md) records one occasion that fooled
+a reader into calling it one. Update both benchmark doc trees and the homepage tiles
 together; gates enforce that they agree.
 
 Everything a change passes through, in the order you meet it:

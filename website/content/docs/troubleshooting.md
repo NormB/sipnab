@@ -97,7 +97,7 @@ The call report shows the full SIP message timeline plus per-stream RTP stats (i
 
 ## 488 Not Acceptable Here (codec mismatch)
 
-An INVITE is rejected with `488 Not Acceptable Here`: the callee (or an SBC in the path) found no common codec between the SDP offer and what it supports.
+An INVITE comes back `488 Not Acceptable Here`: the callee (or an SBC in the path) found no common codec between the SDP offer and what it supports.
 
 Find every 488 rejection in the capture:
 
@@ -233,7 +233,7 @@ sipnab -N -I capture.pcap --slow-setup --report
 
 **What to look for:**
 
-- High `retransmits` alongside high PDD -- the INVITE is being retransmitted because the first one was lost or the remote side is slow to respond.
+- High `retransmits` alongside high PDD -- the caller keeps retransmitting the INVITE because the first one never landed, or the remote side is slow to respond.
 - DNS resolution delays (common when the proxy does NAPTR/SRV lookups for every call).
 - Deep proxy chains adding latency at each hop.
 
@@ -271,7 +271,7 @@ sipnab -N -I capture.pcap --nat-issues
 
 Scanners probe for open registrations and try credential stuffing. Detect them early and feed the IPs to fail2ban.
 
-Detect scanners on a live interface and append fail2ban-compatible lines to a log file fail2ban can watch. `--kill-scanner` also sends the kill response back to the scanner, so run it only where that is intended:
+Detect scanners on a live interface and append fail2ban-compatible lines to a log file fail2ban can watch. `--kill-scanner` additionally sends the kill response back to the scanner, so run it only where you mean to:
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
@@ -342,7 +342,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
 
 No install, no upload, no data leaves your machine.
 
-Drop a pcap file at [sipnab.com/analyze/](https://sipnab.com/analyze/) -- the file is processed entirely in your browser via WebAssembly. The analyzer provides two tabs: **Dialogs** (SIP call list with flow diagrams) and **Streams** (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can't install the CLI, or for sharing a link with a colleague who doesn't have sipnab.
+Drop a pcap file at [sipnab.com/analyze/](https://sipnab.com/analyze/) -- your browser does all the work via WebAssembly. The analyzer provides two tabs: **Dialogs** (SIP call list with flow diagrams) and **Streams** (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can't install the CLI, or for sharing a link with a colleague who doesn't have sipnab.
 
 ---
 

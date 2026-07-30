@@ -12,13 +12,13 @@ End-to-end examples in five languages. Each one covers: bearer-token auth, listi
 
 > **Filter parameters:** the REST API accepts `state` (e.g. `Failed`, `Completed`, `InCall`) and `from` (regex on the From header) as query parameters on `/v1/dialogs`, plus `orphaned` and `mos_below` on `/v1/streams`. Full DSL filtering — anything more complex than a single state/from match — is **not** available over REST. For arbitrary DSL queries, use the [MCP server](@/docs/mcp.md)'s `list_dialogs` tool, which accepts a `filter` argument that runs through the same evaluator as `sipnab --filter`.
 
-> **Status codes:** the REST API returns **503 Service Unavailable** when a request is rejected by the rate limiter or the connection cap (not 429). 401 on bad/missing token, 404 on unknown call_id.
+> **Status codes:** the REST API returns **503 Service Unavailable** when the rate limiter turns a request away or the connection cap (not 429). 401 on bad/missing token, 404 on unknown call_id.
 
 > **Per-call response code / per-message data is not on REST.** The REST API aggregates each dialog into a summary (`call_id`, `state`, `from`, `to`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`) — individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`. To work with per-message data programmatically, use either: (a) the CLI `sipnab -N --json ...` mode, which emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc. (field reference: [Output Formats](@/docs/output-formats.md); see also [cookbook Recipe 3](@/docs/cookbook.md#3-find-every-failed-call-grouped-by-response-code)), or (b) the MCP `get_dialog` tool, which returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).
 
 ### curl + jq one-liners
 
-`$API`, `$KEY` and `$H` are set at the top and used by every call below, so this
+The snippet sets `$API`, `$KEY` and `$H` at the top and every call below uses them, so this
 block is one paste into one shell. Lifting a single line out of the middle gives
 you a curl with unset variables, which requests `/v1/dialogs` on no host with no
 bearer token. Every call here is a read; running the block start to finish
@@ -80,7 +80,7 @@ case "$http_code" in
 esac
 ```
 
-> The per-message NDJSON records referenced above (`is_request`, `status_code`, `reason`, `cseq`, ...) are documented in [Output Formats](@/docs/output-formats.md).
+> The per-message NDJSON records referenced above (`is_request`, `status_code`, `reason`, `cseq`, ...) appear in [Output Formats](@/docs/output-formats.md).
 
 ---
 
@@ -447,7 +447,7 @@ fn main() -> Result<()> {
 }
 ```
 
-> The per-message `sipnab -N --json` records mentioned in `get_dialog`'s doc comment are documented in [Output Formats](@/docs/output-formats.md).
+> The per-message `sipnab -N --json` records mentioned in `get_dialog`'s doc comment appear in [Output Formats](@/docs/output-formats.md).
 
 ---
 
@@ -674,7 +674,7 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-> **Tip:** The metrics endpoint is lightweight and suitable for 5-15 second scrape intervals. A sample Grafana dashboard JSON is included in the repository at `contrib/grafana/sipnab-dashboard.json`.
+> **Tip:** The metrics endpoint is lightweight and suitable for 5-15 second scrape intervals. The repo ships a sample Grafana dashboard JSON, included in the repository at `contrib/grafana/sipnab-dashboard.json`.
 
 ### Paginate through all dialogs (Python)
 

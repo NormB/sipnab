@@ -23,12 +23,12 @@ cargo build --release --no-default-features --features native,hep,api,mcp,mcp-ht
 
 The default build does not include `mcp` — operators who'll never expose
 the MCP surface pay zero binary size for it. Run `sipnab --version` to
-see the features a binary was compiled with.
+see the features in a binary.
 
 ## Quick start (stdio)
 
 The simplest way to drive sipnab from a local agent is to replay a pcap.
-Stdio is the default transport, so no `--mcp-transport` is needed:
+Stdio is the default transport, so `--mcp-transport` can stay off:
 
 ```bash
 sipnab --mcp -N -I capture.pcap
@@ -42,9 +42,9 @@ sudo sipnab --mcp -N -d eth0
 ```
 
 `--mcp` requires `-N`/`--no-tui`: **stdout is the JSON-RPC wire**, so the
-TUI and stdout-writing flags (`--json`, `--report`, …) are rejected. This
+sipnab refuses TUI and stdout-writing flags (`--json`, `--report`, …). This
 is the one invariant to remember; every example below carries `-N` for
-that reason. No token is needed for stdio — it is a private pipe between
+that reason. Stdio needs no token — it is a private pipe between
 client and server.
 
 Add this server to your MCP client. For Claude Desktop / Claude Code, the
@@ -80,7 +80,7 @@ The agent then connects to `https://your-host/mcp` with a `Bearer
   `SIPNAB_MCP_TOKEN`) or a signing key for self-describing signed bearer
   tokens (`--mcp-signing-key` / `--mcp-signing-key-file` /
   `SIPNAB_MCP_SIGNING_KEY`); otherwise sipnab refuses to start (D18).
-- `--mcp-token-file` is preferred over `--mcp-token`/`SIPNAB_MCP_TOKEN`
+- Prefer `--mcp-token-file` to `--mcp-token`/`SIPNAB_MCP_TOKEN`
   (no token in `ps` output or unit files).
 - For TLS, terminate it in nginx in front of sipnab. Bind sipnab to
   `127.0.0.1:8731` and let nginx handle the public 443 endpoint.
@@ -172,8 +172,8 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 
 ## Tool reference
 
-The v0.5 sipnab MCP tool surface. All tools are read-only; all responses
-are bounded by default (HARD_LIMIT = 1000).
+The v0.5 sipnab MCP tool surface. No tool mutates anything, and every response
+carries a default ceiling (HARD_LIMIT = 1000).
 
 | Tool | Parameters | Returns |
 |---|---|---|
@@ -232,7 +232,7 @@ Per-call diagnostic report for one Call-ID. Backed by
 | `call_id` | string | Required. |
 | `format` | "json" \| "markdown" \| "text" | Default `"json"`. |
 
-JSON output is a structured object; Markdown/text are returned as a
+JSON output is a structured object; Markdown and text come back as a
 single text content. Unknown `call_id` returns invalid_params (-32602).
 
 ### `find_problems`
@@ -306,8 +306,7 @@ User-Agent, and body across all dialogs.
 | `query` | string | Required, non-empty. |
 | `limit` | u32? | Default 50, max 1000. |
 
-Returns array of `{ call_id, message_index, snippet }`. Snippets are
-capped at 4 KB.
+Returns array of `{ call_id, message_index, snippet }`. Snippets stop at 4 KB.
 
 ### `tail_dialogs`
 
@@ -323,7 +322,7 @@ Returns `{ dialogs, next_cursor, source_exhausted }`.
 `next_cursor` is compound — `<RFC 3339>|<Call-ID>` — not a bare
 timestamp. Dialogs can share an `updated_at`, so resuming from the
 `(updated_at, Call-ID)` pair is what keeps a tie group split across a
-page boundary from being dropped or returned twice. Pass it back
+page boundary from vanishing or arriving twice. Pass it back
 unmodified. A client that rebuilds a bare timestamp from a dialog's
 `updated_at` instead falls back to the pre-compound strictly after
 filter and loses or repeats the tied dialogs — that bare-timestamp
@@ -383,10 +382,10 @@ An unknown alias returns a JSON-RPC *invalid params* error naming the
 bad alias. The same names work as the `list_dialogs` `filter` aliases
 (and as `sipnab --filter` aliases on the CLI).
 
-**`security_findings.kinds`** — matches the rule names findings are
-recorded under: `scanner`, `fraud`, `digest`, `reg_flood` (note the
+**`security_findings.kinds`** — matches the rule names sipnab records
+findings under: `scanner`, `fraud`, `digest`, `reg_flood` (note the
 underscore — the `--alert` rule grammar spells it `reg-flood`, but
-findings are recorded and filtered as `reg_flood`). Omitted or empty
+sipnab records and filters findings as `reg_flood`). Omitted or empty
 `kinds` returns findings of every kind.
 
 ### Error model
@@ -417,7 +416,7 @@ agents. Override via the per-call `limit` parameter where supported.
 ## Security model
 
 - **Read-only by design.** No tool mutates the dialog/stream/alert
-  stores or sends SIP. Capture lifecycle is owned by systemd / the
+  stores or sends SIP. systemd owns the capture lifecycle, or the
   CLI flags, not by the LLM.
 - **Localhost-default.** HTTP transport binds `127.0.0.1:8731` unless
   explicitly overridden.
@@ -426,7 +425,7 @@ agents. Override via the per-call `limit` parameter where supported.
   `auth::TokenVerifier`), sharing the same code path as the REST API.
   Signed tokens with expiry / rotation / revocation are also supported —
   see [auth.md](auth.md).
-- **Host header allowlist.** rmcp's DNS-rebind protection is enabled by
+- **Host header allowlist.** rmcp's DNS-rebind protection runs by
   default (`localhost`/`127.0.0.1`/`::1`); extend with
   `--mcp-allowed-host` for non-loopback clients.
 - **No prompt-injection cooperation.** Tool descriptions never
@@ -510,8 +509,8 @@ Restart Claude Desktop. The agent will list `sipnab` under "Connected" — ask i
 ### Claude Code
 
 Run these from your project directory. For stdio against a fixed pcap, the
-`--` ends the `claude mcp add` flags so the trailing `sipnab -N --mcp ...` is
-treated as the command to launch:
+`--` ends the `claude mcp add` flags so `claude` reads the trailing `sipnab -N --mcp ...`
+ as the command to launch:
 
 ```bash
 claude mcp add sipnab -- sipnab -N --mcp -I "$PWD/capture.pcap" --quiet

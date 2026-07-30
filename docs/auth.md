@@ -2,13 +2,13 @@
 
 The REST API (`--api`) and HTTP MCP server (`--mcp --mcp-transport http`, see
 [mcp.md](mcp.md)) authenticate clients with
-`Authorization: Bearer <token>`. All related flags are listed in
-[cli-reference.md](cli-reference.md#network-listeners). sipnab supports two
-token kinds, checked with a constant-time comparison:
+`Authorization: Bearer <token>`.
+[cli-reference.md](cli-reference.md#network-listeners) lists every related flag.
+sipnab supports two token kinds, checked with a constant-time comparison:
 
 1. **Static secrets** — `--api-key` / `--mcp-token` (or `--mcp-token-file`,
    `$SIPNAB_API_KEY` / `$SIPNAB_MCP_TOKEN` env). A fixed shared secret with
-   **no expiry**. Simple, but cannot be expired or revoked without restarting.
+   **no expiry**. Simple, but nothing expires or revokes it short of a restart.
 2. **Signed self-describing tokens** — HMAC-signed tokens that carry their own
    expiry and id, enabling **expiry, rotation, and revocation** without a
    server-side session store. This page documents those.
@@ -30,22 +30,22 @@ s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 
 Verification is **stateless**: the server recomputes the HMAC, compares it in
 constant time against every configured signing key, then checks the audience,
-`exp > now`, and that `id` is not revoked. Any malformed token is rejected
+`exp > now`, and that `id` is not revoked. A malformed token loses
 (fail-closed).
 
 ## Audience binding
 
-`aud` names the surface a token was minted for. A token minted from
-`--api-signing-key` is rejected by the HTTP MCP endpoint, and one minted from
-`--mcp-signing-key` is rejected by the REST API — **even when both surfaces are
-configured with the same signing key**. Since the two surfaces read separate
+`aud` names the surface a token belongs to. The HTTP MCP endpoint turns away a
+token minted from `--api-signing-key`, and the REST API turns away one minted
+from `--mcp-signing-key` — **even when both surfaces carry the same signing
+key**. Since the two surfaces read separate
 flags and separate environment variables, reusing one secret across them is an
 easy mistake; before audience binding it silently granted cross-surface access.
 
 The version prefix is part of the signed input, so an `s2` token cannot be
 rewritten as `s1` to shed its binding — the signature no longer matches.
 
-### Legacy `s1` tokens are rejected
+### Why the server refuses legacy `s1` tokens
 
 The pre-`aud` `s1` format is **no longer accepted**. It carried no audience, so
 an `s1` token authenticated against both surfaces — honoring it would have left
@@ -68,14 +68,14 @@ sipnab -N -I capture.pcap --api 127.0.0.1:8080 \
 ```
 
 The HTTP MCP server takes `--mcp-signing-key`. Running both of these mints two
-unrelated keys — deliberate, since a token is bound to one audience anyway:
+unrelated keys — deliberate, since a token binds to one audience anyway:
 
 ```bash
 sipnab -N -I capture.pcap --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
   --mcp-signing-key "$(openssl rand -hex 32)"
 ```
 
-Keys may also be supplied via `--api-signing-key-file` / `--mcp-signing-key-file`
+You can also pass keys through `--api-signing-key-file` / `--mcp-signing-key-file`
 (file contents, trimmed) or the `$SIPNAB_API_SIGNING_KEY` /
 `$SIPNAB_MCP_SIGNING_KEY` environment variables. `--api-signing-key` /
 `--mcp-signing-key` are **repeatable** (see *Rotation*).
@@ -92,7 +92,7 @@ sipnab --mint-token --api-signing-key "$KEY"
 ```
 
 An MCP token for a CI runner gets a 24-hour life and an explicit id, so that it
-can be named on a denylist later:
+a denylist can name later:
 
 ```bash
 sipnab --mint-token --mcp-signing-key "$KEY" --mcp-token-ttl 86400 --token-id ci-runner-1
@@ -113,7 +113,7 @@ A valid, unexpired, non-revoked token returns `200`; anything else returns
 
 ## 4. Expiry
 
-A token is rejected (`401`) once `exp <= now` — no server action needed. Mint
+A token stops verifying (`401`) once `exp <= now` — no server action needed. Mint
 short-lived tokens for CI/automation and longer-lived ones sparingly.
 
 ## 5. Rotation
@@ -131,7 +131,7 @@ Two independent mechanisms:
 ## 6. Revocation
 
 To kill a still-valid token before its `exp`, add its `id` to a denylist file
-and point the server at it. Both steps are needed — an id in a file no server
+and point the server at it. Both steps matter — an id in a file no server
 reads revokes nothing:
 
 ```bash
@@ -150,9 +150,9 @@ stateless model.)
 
 - Signing keys and tokens are secrets — prefer `*-signing-key-file` or env over
   argv (argv is visible in `ps`).
-- Signatures and static secrets are compared in **constant time**.
+- Signature and static-secret comparison runs in **constant time**.
 - Do not choose a static `--api-key`/`--mcp-token` shaped like `s2.x.y` — it
-  would be parsed as a (failing) signed token rather than matched as a static
+  would parse as a (failing) signed token rather than matching a static
   secret. (An `s1.x.y` shape is no longer a recognized version, so it is
   treated as an ordinary opaque secret.)
 - Static secrets carry no audience. If you set the same static

@@ -45,7 +45,7 @@ store writes, and where each of the four paths diverges — see
 
 ## Module map
 
-Only load-bearing files are annotated; siblings follow the same pattern.
+Annotations cover only the load-bearing files; siblings follow the same pattern.
 
 ```text
 src/
@@ -141,12 +141,12 @@ EOF.
   WS4.1) — 3→1 allocations per header on the hot path.
 - **D10 — Feature gates keep the binary small.** `native`, `tui`, `tls`,
   `hep`, `api`, `mcp`, `mcp-http`, `audio`, `wasm`. Check `Cargo.toml`
-  before assuming a module is compiled in.
+  before assuming a build includes a module.
 - **D11 — Key material is toxic waste.** `zeroize` on key types, redacting
   `Debug` impls, `--tls-key`/keylog material never logged.
-- **D13 — RTP is first-class.** Streams are discovered heuristically even
+- **D13 — RTP is first-class.** sipnab discovers streams heuristically even
   without SIP/SDP; `rtp/` never depends on a dialog existing.
-- **D15/D16 — Privilege drop + process isolation.** Root is shed right
+- **D15/D16 — Privilege drop + process isolation.** sipnab drops root right
   after socket open; active responses run in an isolated child.
 - **D17 — Warn and continue.** Malformed input must never crash the
   process; parsers set `parse_error` and keep going (`docs/fault-model.md`).

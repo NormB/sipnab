@@ -25,13 +25,14 @@ run: `tui-processor` in TUI mode, the main thread in batch mode, thread-local
 stores in `--cores` mode. Everything else reads.
 
 **Why.** Single-writer discipline is what makes `try_read()` on the render path
-safe and cheap. It also means a data race cannot be introduced by adding a
-reader, only by adding a writer.
+safe and cheap. It also means adding a reader cannot introduce a data race; only adding a
+writer can.
 
-**Enforced by.** Structure rather than a lint: the stores are moved into the
-processing thread's closure at spawn.
+**Enforced by.** Structure rather than a lint: the spawn moves the stores into
+the processing thread's closure.
 
-**The one exception**, and the reason it is documented rather than forbidden:
+**The one exception**, and the reason this page documents it rather than
+forbidding it:
 opening a pcap from inside the TUI spawns `pcap-load`, a second writer against
 the live stores. Its whole design — progress via `async_messages`, never a
 blocking read on the render side — exists to make that safe. See
@@ -55,7 +56,7 @@ file-open path (rule 1's documented exception). Each locks a store once,
 briefly, and releases it before touching the other. The batch and `--cores`
 appliers hold their stores by `&mut` and so have no ordering to get wrong.
 Nothing rejects a third lock-taking applier that gets it backwards, which is
-exactly why the rule is written down here.
+exactly why this page writes the rule down.
 
 **Fails as.** A hang, not a crash: the TUI stops repainting with no error
 anywhere.
@@ -87,9 +88,9 @@ sequenceDiagram
 [`classify_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs). Appliers apply a `PacketAction`;
 they do not decide what a packet means.
 
-**Why.** Before the pipeline was unified the four paths had drifted — heuristic
+**Why.** Before the unification the four paths had drifted — heuristic
 RTP discovery and WebSocket-SIP unwrap worked on some and not others, so the
-same capture gave different answers depending on how it was read.
+same capture gave different answers depending on which path read it.
 
 **Enforced by.** The `PacketAction` enum (an applier that ignores a new variant
 fails to compile) plus
@@ -99,7 +100,7 @@ fails to compile) plus
 **Fails as.** Silent divergence: `--cores 4` and `--cores 1` report different
 stream counts for the same file, and neither is obviously wrong.
 
-## 4. Every attacker-keyed map is bounded, with a stated eviction policy
+## 4. Every attacker-keyed map has a bound and a stated eviction policy
 
 **Rule.** Any collection keyed by something a remote party controls — Call-ID,
 SSRC, IP, reassembly key — has a cap and a defined behavior at that cap.
@@ -129,8 +130,8 @@ serialized to any output surface.
 on disk and in a core dump.
 
 **Enforced by.** `zeroize` on the keylog material in
-[`capture/tls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/tls.rs) (the crate is pulled in by the
-`tls` feature), a hand-rolled `Drop` zeroization in
+[`capture/tls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/tls.rs) (the `tls` feature pulls the crate
+in), a hand-rolled `Drop` zeroization in
 [`rtp/srtp.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/srtp.rs) so non-`tls` builds do not leak session
 keys to freed heap, and redaction on the output paths.
 
@@ -139,12 +140,12 @@ exposure with no error message attached to it.
 
 ## 6. A bearer token is valid on exactly one surface, and only as far as its scope
 
-**Rule.** A signed token is bound on two axes, and both are checked.
+**Rule.** A signed token binds on two axes, and verification checks both.
 
-*Which surface* (`aud`): the token names the surface it was minted for, and each
+*Which surface* (`aud`): the token names the surface it belongs to, and each
 verifier accepts only its own audience. A token minted from
 `--api-signing-key` must never authenticate against HTTP MCP, and vice versa —
-including when both surfaces are configured with the same signing key.
+including when both surfaces share one signing key.
 
 *How much of it* (`scope`): `full` reaches everything on that surface,
 `metrics` reaches `GET /metrics` and nothing else. A `full` token satisfies
@@ -158,18 +159,18 @@ valid MCP token, with no warning and nothing in the logs.
 
 For `scope`: sipnab decrypts TLS, so `/v1/dialogs` and `/v1/streams` return
 message bodies — the call content itself. Without a scope split, a monitoring
-system that needs one counter has to be trusted with all of it. That is the one
+system that needs one counter must hold the keys to all of it. That is the one
 division of the surface worth having; the rest of it is a single trust domain.
 
 **Enforced by.** The `aud` check in
 [`verify_signed()`](https://github.com/NormB/sipnab/blob/main/src/auth.rs), which requires an `s2` token's audience
-to equal the verifier's own; the audience is set once per surface in
+to equal the verifier's own; each surface sets its audience once in
 [`resolve_api_verifier_config()`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) and
 [`resolve_mcp_verifier_config()`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs), and at mint time in
 [`mint_token()`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs). The version prefix is part of the
 signed input, so an `s2` token cannot be rewritten as `s1` to shed the binding.
 An empty configured audience matches nothing, so a verifier built without one
-fails closed. Cross-surface rejection is pinned in both directions by tests in
+fails closed. Tests pin cross-surface rejection in both directions in
 [`auth.rs`](https://github.com/NormB/sipnab/blob/main/src/auth.rs) and
 [`cli_flag_behavior_test`](https://github.com/NormB/sipnab/blob/main/tests/cli_flag_behavior_test.rs).
 
@@ -180,7 +181,7 @@ token by editing it. Routes demand a scope through
 which is the RESTRICTIVE default: demanding `full` admits only full tokens,
 while demanding `metrics` admits both. A route added later and wired to the
 plain guard therefore inherits "full tokens only" rather than silently accepting
-a scrape-only credential. Enforcement is pinned at all three layers —
+a scrape-only credential. Tests pin enforcement at all three layers —
 the verifier in [`auth.rs`](https://github.com/NormB/sipnab/blob/main/src/auth.rs), the CLI flag in
 [`cli_flag_behavior_test`](https://github.com/NormB/sipnab/blob/main/tests/cli_flag_behavior_test.rs), and the real
 routes in [`api_token_test`](https://github.com/NormB/sipnab/blob/main/tests/api_token_test.rs) — because a route
@@ -199,16 +200,16 @@ audience. The scope check is deliberately *not* symmetric with it — an absent
 format bump that stopped accepting the old tokens outright; tokens minted
 before `scope` existed are still valid `s2` tokens in the field, and denying
 them would revoke live credentials on upgrade. Static `--api-key` /
-`--mcp-token` secrets remain audience-less and `full` by design — they are
+`--mcp-token` secrets remain audience-less and `full` by design — they name
 shared secrets, not tokens, and an operator who sets the same static secret on
 both surfaces has deliberately shared one credential.
 
-## 7. MCP tools are read-only and bounded
+## 7. MCP tools never mutate, and every response has a ceiling
 
-**Rule.** No MCP tool mutates a store, and every response is size-bounded
-before it is serialized.
+**Rule.** No MCP tool mutates a store, and every response hits a size ceiling
+before serialization.
 
-**Why.** The MCP surface is driven by an LLM agent: it must not be able to
+**Why.** An LLM agent drives the MCP surface: it must not be able to
 change what an operator is looking at, and an unbounded response is a
 denial-of-service against the agent's context window as much as against
 sipnab.
@@ -224,7 +225,7 @@ cannot tell which.
 
 ## 8. No lock across `.await`
 
-**Rule.** A `parking_lot` guard must not be held across an await point.
+**Rule.** Never hold a `parking_lot` guard across an await point.
 
 **Why.** `parking_lot` guards are not async-aware; holding one across a yield
 parks the runtime thread with the lock still taken. In a current-thread runtime
@@ -263,7 +264,7 @@ sequenceDiagram
 [`output/model.rs`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs). No surface builds its own JSON
 object for these.
 
-**Why.** It was implemented five times and had already drifted: MCP said
+**Why.** Five call sites implemented it, and they had already drifted: MCP said
 `message_count` where CLI and REST said `msg_count`, and MCP emitted
 Debug-formatted `Invite` where the API emitted `INVITE`. Consumers wrote
 per-surface parsers to compensate.
@@ -275,7 +276,7 @@ per-surface parsers to compensate.
 **Fails as.** A field name that means one thing in `--json` and another over
 MCP, discovered by a user's broken script rather than by CI.
 
-## 10. The render pass is read-only and never blocks
+## 10. The render pass never mutates and never blocks
 
 **Rule.** Every store access on the render path is `try_read()`. The render
 pass computes, it does not mutate.
@@ -294,11 +295,11 @@ a flood.
 ## 11. Warn and continue on malformed input
 
 **Rule.** No parser reachable from packet bytes may panic, `unwrap()`, or exit.
-Malformed input is logged (at most, and rate-limited) and skipped.
+sipnab logs malformed input, at most once and rate-limited, then skips it.
 
 **Why.** D17. Every byte sipnab parses is attacker-controlled, so a panic in a
-parser is a remote denial of service against a capture process — often one that
-was left running unattended.
+parser is a remote denial of service against a capture process — often one
+nobody is watching.
 
 **Enforced by.** Three layers: the pre-commit gate that rejects
 `unwrap()`/`expect()` in production code, the always-on
@@ -338,11 +339,11 @@ sanitizer run.
 
 **Fails as.** A process that exits while a thread still holds an open capture
 device, mid-read. Benign on most exits and invisible without a sanitizer, which
-is why it survived until one was pointed at it.
+is why it survived until a sanitizer ran over it.
 
 ## Two cultural norms
 
-They are not enforced by a test, which is precisely why they are written down.
+No test enforces them, which is precisely why this page writes them down.
 
 **Cite the standard.** A new analysis claim names the RFC or ITU
 recommendation it implements. The
@@ -354,10 +355,10 @@ Saying which one you implemented is the difference between a tool an engineer
 can trust and one they have to re-derive.
 
 **Refute your own claims in place.** When a performance claim turns out to be
-wrong, the page that made it is corrected to say so, in the same page, rather
-than quietly deleted. [Zero-copy payloads](@/docs/internals/zero-copy-payloads.md) does exactly
+wrong, the page that made it says so, on the same page, rather
+than quietly dropping it. [Zero-copy payloads](@/docs/internals/zero-copy-payloads.md) does exactly
 this: it documents the zero-copy spine and then records that the predicted
-20–30% hot-path win *is refuted* and the change is cost-neutral on the measured
-workload. The architecture is still right for other reasons, and the reader
+20–30% hot-path win *did not hold*, and the change costs nothing measurable on
+the workload. The architecture is still right for other reasons, and the reader
 gets to see both. A doc tree that only ever records wins is a doc tree nobody
 can use to make a decision.

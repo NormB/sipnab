@@ -1,6 +1,6 @@
 # TUI Testing Guide
 
-sipnab's TUI is tested at three levels.
+sipnab tests its TUI at three levels.
 
 ## 1. Snapshot Tests (tests/tui_snapshot_test.rs)
 
@@ -37,7 +37,7 @@ cargo test --features tui --test tui_state_test
 
 ## 3. PTY End-to-End Tests (tests/tui_e2e_test.rs)
 
-Drives the real binary inside a detached `tmux` session — not a bare PTY. sipnab's TUI queries the terminal at startup (crossterm emits `ESC[6n` to read the cursor position), and a bare pseudo-terminal has no emulator behind it to answer, so the TUI aborts with "cursor position could not be read". tmux *is* a terminal emulator: it answers the query, provides a real window size, and lets the test send keys and snapshot the screen with `capture-pane`. These are `#[ignore]` by default and need `tmux` on `PATH`.
+Drives the real binary inside a detached `tmux` session — not a bare PTY. sipnab's TUI queries the terminal at startup (crossterm emits `ESC[6n` to read the cursor position), and a bare pseudo-terminal has no emulator behind it to answer, so the TUI aborts with `cursor position could not be read`. tmux *is* a terminal emulator: it answers the query, provides a real window size, and lets the test send keys and snapshot the screen with `capture-pane`. These are `#[ignore]` by default and need `tmux` on `PATH`.
 
 ```bash
 cargo test --features tui --test tui_e2e_test -- --ignored

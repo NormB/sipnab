@@ -27,7 +27,7 @@ sipnab's TUI uses 11 semantic color slots (plus `highlight`, a legacy alias for 
 | `highlight` | -- | Legacy alias for `selected` (backward compatibility only) |
 
 `status_bg` is configurable like every other color above; its dark blue-gray
-default is chosen to stay readable on both dark and light terminals.
+default stays readable on both dark and light terminals.
 
 ## Supported Color Syntax
 
@@ -272,8 +272,8 @@ border = "white"
 
 - Use `reset` for `background` to inherit your terminal's background color. This is usually the best choice.
 - Hex colors require true-color terminal support (most modern terminals: iTerm2, Alacritty, kitty, WezTerm, Windows Terminal).
-- Use `sipnab --dump-config` to verify your theme is being loaded.
-- The `highlight` key is a legacy alias for `selected`. If both are set, `selected` takes precedence.
+- Use `sipnab --dump-config` to confirm sipnab picked up your theme.
+- The `highlight` key is a legacy alias for `selected`. If a config carries both, `selected` wins.
 
 See the [Configuration Reference](@/docs/config.md) for the full `[theme]`
 key table and every other config section.

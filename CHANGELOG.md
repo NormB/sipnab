@@ -10,7 +10,46 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+- **Active voice across the published documentation, and `Google.Passive`
+  enforced so it stays that way.** The Vale config had carried this rule
+  disabled with a note: "866 alerts. Worth fixing, unlike the four above —
+  passive voice in a how-to genuinely hides who does what. It is a real editing
+  pass, not a config change." Both halves held up. The 866 was measured over the
+  whole tree, counting the exempt `docs/design`, `docs/research` and
+  `docs/superpowers` subtrees and the generated `website/content` mirrors; the
+  authored, enforced scope was **353 alerts across 29 files**, plus 33 in
+  hand-authored site-only pages. All of them are now rewritten to name the actor,
+  and `Google.Passive = error` holds the result.
+
+  Not forked with an exception list, unlike `Google.LyHyphens`. About a fifth of
+  the alerts were adjectives rather than passives — "is unsigned", "is
+  unchanged", "is malformed", "is unbounded" — caught by the rule's `[\w]+ed`
+  catch-all. Excepting those needs either negative lookahead, which Go's RE2 does
+  not have, or swapping the catch-all for an allowlist of participles, which would
+  quietly stop catching every verb nobody thought to list. Rewording won on both
+  counts: "the token is unsigned" became "the token carries no signature".
+
+  Two places kept their passive because changing it would have been a lie. A
+  quoted error string (`cursor position could not be read`) is what the binary
+  actually prints, so it became inline code rather than prose. And in
+  `domain-primer.md`'s table of wrong assumptions, "`cumulative_lost` is
+  unsigned" *is* the mistaken belief being catalogued; it reads "has no sign bit"
+  now, which preserves the claim instead of inverting it.
+
+  The promotion needed a matching `Google.Passive = NO` in each of the three
+  exempt glob sections. Emptying `BasedOnStyles` drops a section's styles, but a
+  rule named explicitly in `[*.md]` is added back on top of that — so the
+  promotion linted all three working-document subtrees (506 alerts) until each
+  one switched it off again. Any future promotion needs the same three lines.
+
 ### Fixed
+- **`docs/install.md` claimed the release does not set
+  `MACOSX_DEPLOYMENT_TARGET`.** It has set it since 0.5.65, when the pin landed
+  in `release.yml` alongside `published_macos_floors_match_the_toolchain`. The
+  workflow step and the sentence describing its absence shipped in the same
+  release, and the page went on telling readers the floors were incidental
+  compiler defaults that nothing in the repository pinned.
 - **The release-artifact counts in `docs/internals/build-ci-release.md` were
   wrong, and now come from the build matrix.** The page said a tag publishes
   "eight artifacts" and called the `noaudio` builds a `.deb`-only variant. A
