@@ -172,9 +172,12 @@ CANCEL asks to abandon an INVITE with no final response yet. If the callee's
 ("last response wins") gives the wrong outcome.
 
 The state machine in [`dialog.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) resolves this by
-CSeq method: a CANCEL request moves the dialog to `Cancelled`, and the 487 that
-confirms it is the reported outcome — the 200 that merely acknowledged the
-CANCEL transaction drops out, because it belongs to a different CSeq.
+CSeq method: a CANCEL request moves the dialog to `Cancelled`, and so does the
+487 on its own. Either is sufficient, because a CANCEL can travel a different
+path from the response and a capture can begin mid-dialog — requiring both once
+left a cancelled call sitting in `Ringing` forever. The 487 is the reported
+outcome. The 200 that merely acknowledged the CANCEL transaction drops out,
+because it belongs to a different CSeq.
 
 <pre class="mermaid">
 sequenceDiagram

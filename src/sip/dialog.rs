@@ -28,7 +28,9 @@ pub enum DialogState {
     InCall,
     /// BYE completed; dialog terminated normally.
     Completed,
-    /// CANCEL sent and confirmed (487 received).
+    /// The INVITE transaction was terminated: a CANCEL was seen, a 487 came
+    /// back, or both. Either alone is enough — the CANCEL can take a different
+    /// path from the response, and a capture can begin mid-dialog.
     Cancelled,
     /// Final error response received (4xx, 5xx, or 6xx).
     Failed,
@@ -293,7 +295,7 @@ impl SipDialog {
 ///
 /// Applies the state machine rules for the dialog's initial method:
 /// - **INVITE**: 100→Trying, 180/183→Ringing, 2xx→InCall,
-///   4xx/5xx/6xx→Failed, CANCEL→Cancelled, BYE→Completed
+///   4xx/5xx/6xx→Failed, CANCEL or 487→Cancelled, BYE→Completed
 /// - **REGISTER**: 2xx→Registered, 4xx/5xx/6xx→Failed
 /// - **SUBSCRIBE**: 2xx→Active, NOTIFY→Active, 4xx/5xx/6xx→Terminated
 /// - **all other methods**: 2xx→Completed, 4xx/5xx/6xx→Failed
@@ -337,8 +339,9 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
 /// other in-dialog requests (re-INVITE, UPDATE, …) leave the state
 /// unchanged. Responses: 180/183 while Trying/Ringing→Ringing; 2xx whose
 /// CSeq method is INVITE while Trying/Ringing→InCall; 4xx–6xx whose CSeq
-/// method is INVITE while Trying/Ringing→Failed; 100 and 487 confirm the
-/// current state without changing it.
+/// method is INVITE while Trying/Ringing→Failed; 487 whose CSeq method is
+/// INVITE while Trying/Ringing/Cancelled→Cancelled; 100 confirms the current
+/// state without changing it.
 ///
 /// # Side effects
 ///
@@ -405,9 +408,23 @@ fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
                 // 200 OK to BYE doesn't further change state (already Completed)
             }
             487 => {
-                // 487 Request Terminated (response to CANCEL)
-                if dialog.state == DialogState::Cancelled {
-                    // Stay cancelled; this confirms the cancellation
+                // 487 Request Terminated: the INVITE transaction was ended by a
+                // CANCEL or BYE (RFC 3261 §21.4.25). The 487 is itself the
+                // proof, so having seen the CANCEL is NOT a precondition — it
+                // can take a different path from the response, and a capture can
+                // start mid-dialog or drop it under sampling.
+                //
+                // Guarded on the pre-answer states for the same reason the 2xx
+                // arm is: once a final 2xx has established the call the CANCEL
+                // has no effect (§9, §15), so a late 487 must not un-answer it.
+                let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
+                if cseq_method == "INVITE"
+                    && matches!(
+                        dialog.state,
+                        DialogState::Trying | DialogState::Ringing | DialogState::Cancelled
+                    )
+                {
+                    dialog.state = DialogState::Cancelled;
                 }
             }
             400..=699 => {
@@ -660,6 +677,63 @@ mod tests {
         let terminated = make_response(487, "Request Terminated", "INVITE");
         update_state(&mut dialog, &terminated);
         assert_eq!(dialog.state, DialogState::Cancelled);
+    }
+
+    /// A 487 with no CANCEL in the capture still marks the dialog Cancelled.
+    ///
+    /// RFC 3261 §21.4.25: a 487 means the request "was terminated by a BYE or
+    /// CANCEL request". The 487 alone is the proof; seeing the CANCEL is not a
+    /// precondition for believing it. A CANCEL can take a different path from
+    /// the response, a capture can start mid-dialog, and sampling can drop it.
+    ///
+    /// This arm previously did nothing at all unless the dialog was ALREADY
+    /// Cancelled, and because `487` matches before the `400..=699` arm the
+    /// response did not fall through to Failed either. A cancelled call whose
+    /// CANCEL went uncaptured therefore sat in Ringing forever — reported as a
+    /// call still waiting for an answer, which is a different diagnosis from
+    /// the one the wire actually carried.
+    #[test]
+    fn invite_487_without_a_captured_cancel_is_cancelled() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+
+        let ringing = make_response(180, "Ringing", "INVITE");
+        update_state(&mut dialog, &ringing);
+        assert_eq!(dialog.state, DialogState::Ringing);
+
+        // No CANCEL is fed in: the 487 is the only evidence of termination.
+        let terminated = make_response(487, "Request Terminated", "INVITE");
+        update_state(&mut dialog, &terminated);
+        assert_eq!(
+            dialog.state,
+            DialogState::Cancelled,
+            "a 487 is proof the INVITE transaction was terminated, with or \
+             without the CANCEL in the capture"
+        );
+    }
+
+    /// A 487 arriving after the call was answered does NOT cancel it.
+    ///
+    /// The 2xx wins the race (RFC 3261 §9, §15): once a final 2xx is sent the
+    /// CANCEL has no effect. Guarding the transition on Trying/Ringing/Cancelled
+    /// is what keeps a late or duplicated 487 from rewriting an established
+    /// call, and mirrors the guard the 2xx arm uses.
+    #[test]
+    fn invite_487_after_answer_does_not_cancel() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+
+        let ok = make_response(200, "OK", "INVITE");
+        update_state(&mut dialog, &ok);
+        assert_eq!(dialog.state, DialogState::InCall);
+
+        let terminated = make_response(487, "Request Terminated", "INVITE");
+        update_state(&mut dialog, &terminated);
+        assert_eq!(
+            dialog.state,
+            DialogState::InCall,
+            "a 487 after a 2xx must not un-answer an established call"
+        );
     }
 
     /// A 503 error response to the initial INVITE moves the dialog to Failed.
