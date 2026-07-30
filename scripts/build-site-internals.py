@@ -154,6 +154,7 @@ DOCS_TO_SITE = {
     "keybindings.md": "keybindings.md",
     "theme-guide.md": "theme.md",
     "cli-reference.md": "cli.md",
+    "sip-response-codes.md": "sip-response-codes.md",
     "filter-dsl.md": "filter-dsl.md",
     "output-formats.md": "output-formats.md",
     "config-reference.md": "config.md",

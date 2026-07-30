@@ -57,6 +57,8 @@ through.
 - [Filter DSL](filter-dsl.md) — grammar, fields, operators, aliases.
 - [Keybindings](keybindings.md) — every TUI key, per view.
 - [Output Formats](output-formats.md) — JSON/NDJSON schemas, pcapng, jq.
+- [SIP response codes](sip-response-codes.md) — every code in the IANA
+  registry, the RFC section defining it, and whether it means the call failed.
 - [REST API & Metrics](rest-api.md) — every endpoint and its response shape,
   status codes, Prometheus, curl recipes.
 - [MCP server](mcp.md) — every tool, both transports, client configuration.

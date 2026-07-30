@@ -10,6 +10,37 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **`docs/sip-response-codes.md` — every SIP response code, from the registry
+  rather than a summary of it.** All 75 codes in the IANA *Response Codes*
+  registry, each with its canonical reason phrase, a deep link to the RFC
+  section that defines it, the RFC's own words describing it, and how sipnab
+  classifies it.
+
+  Sourced from
+  <https://www.iana.org/assignments/sip-parameters/sip-parameters-7.csv>, not
+  Wikipedia, which disagrees with the registry in five phrases and lists two
+  codes no registry has. 437 is *Unsupported Credential*, not *Unsupported
+  Certificate* — RFC 8224 §6.2.2 names the latter as the previous name. 500 is
+  *Server Internal Error*, not *Internal Server Error*. 202 reads *Accepted
+  (Deprecated)*. 409 and 411 come from RFC 2543, which RFC 3261 obsoleted.
+
+  IANA leaves `Reference` blank for the 50 codes RFC 3261 defines and cites an
+  RFC for the other 25. Those 50 line up exactly with the 50 per-code
+  subsections in RFC 3261 §21, which is how the convention was confirmed rather
+  than assumed.
+
+  The classification is the part sipnab needs: `provisional`, `success`,
+  `redirect`, `challenge`, `cancelled`, `declined`, `failure`. Only the last is
+  a failed call. Folding the others into "failed" loses what an operator acts
+  on — a call that drew a `challenge` and never authenticated is a provisioning
+  problem, one that ended `cancelled` is a caller who hung up, and one that came
+  back `declined` reached a human who said no.
+
+  The tables sit inside `<!-- vale off -->`: the descriptions quote normative
+  text, which is not ours to reword for a house style guide. `requestor` joins
+  the codespell ignore list for the same reason — it is RFC 3261's spelling.
+
 ### Changed
 - **The Vale style package is pinned to a release, and a gate holds it there.**
   `Packages = Google` resolved through the registry to a `releases/latest`

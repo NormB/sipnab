@@ -145,6 +145,15 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "streams.",
     ),
     (
+        "docs/sip-response-codes.md",
+        "sip-response-codes.md",
+        "SIP response codes",
+        "Response Codes",
+        18,
+        "Every SIP response code in the IANA registry, the RFC section that "
+        "defines it, and whether it means the call failed.",
+    ),
+    (
         "docs/output-formats.md",
         "output-formats.md",
         "Output formats",
