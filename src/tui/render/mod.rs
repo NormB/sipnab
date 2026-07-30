@@ -561,6 +561,7 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
             DialogState::Completed => "Completed",
             DialogState::Cancelled => "Cancelled",
             DialogState::Failed => "Failed",
+            DialogState::Redirected => "Redirected",
             DialogState::Registered => "Registered",
             DialogState::Expired => "Expired",
             DialogState::Pending => "Pending",

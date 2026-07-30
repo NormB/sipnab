@@ -35,6 +35,14 @@ pub enum DialogState {
     Cancelled,
     /// Final error response received (4xx, 5xx, or 6xx).
     Failed,
+    /// A 3xx redirected the request elsewhere.
+    ///
+    /// The dialog ended here and did not fail: the UAC is expected to retry at
+    /// the Contact the redirect named, which is a *new* dialog with a new
+    /// Call-ID. Reporting this as `Failed` would blame the callee for a routing
+    /// decision, and leaving it in `Trying` — which is what sipnab did before
+    /// this variant existed — reads as a call nobody ever answered.
+    Redirected,
     /// REGISTER 200 OK received; registration active.
     Registered,
     /// Registration expired or de-registered.
@@ -60,6 +68,7 @@ impl std::fmt::Display for DialogState {
             Self::Completed => "Completed",
             Self::Cancelled => "Cancelled",
             Self::Failed => "Failed",
+            Self::Redirected => "Redirected",
             Self::Registered => "Registered",
             Self::Expired => "Expired",
             Self::Pending => "Pending",
@@ -302,8 +311,7 @@ impl SipDialog {
 /// - **all other methods**: 2xx→Completed, declined/failed→Failed
 ///
 /// Every handler classifies through [`response_class`]. An auth challenge is
-/// intermediate everywhere, and a 3xx redirect changes no state — a known gap,
-/// pinned by `every_method_and_class_has_a_declared_transition`.
+/// intermediate everywhere, and a 3xx moves the dialog to `Redirected`.
 ///
 /// ACK messages are recorded but do not cause state transitions.
 ///
@@ -442,14 +450,20 @@ fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
                 // intermediate rule, and `update_register_state` implemented
                 // it; this arm did not.
                 ResponseClass::Challenge => {}
-                // KNOWN GAP: a 3xx ends this dialog and sends the UAC to a new
-                // target, which is neither a failure nor an answer. sipnab has
-                // no state for it, so the dialog keeps its pre-answer state.
-                // Modelling it properly needs a `Redirected` variant, which
-                // changes the JSON schema, the filter DSL and the TUI column.
-                // `every_method_and_class_has_a_declared_transition` pins the
-                // current behaviour so the gap is visible rather than implicit.
-                ResponseClass::Redirect => {}
+                // A 3xx ends this dialog and sends the UAC to the Contact it
+                // names, which is a new dialog with a new Call-ID. Neither a
+                // failure nor an answer. Guarded on the pre-answer states like
+                // the other final-response arms, so a late redirect cannot
+                // un-answer a live call.
+                ResponseClass::Redirect => {
+                    let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
+                    if cseq_method == "INVITE"
+                        && (dialog.state == DialogState::Trying
+                            || dialog.state == DialogState::Ringing)
+                    {
+                        dialog.state = DialogState::Redirected;
+                    }
+                }
                 ResponseClass::Declined | ResponseClass::Failure => {
                     let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
                     if cseq_method == "INVITE"
@@ -488,9 +502,9 @@ fn update_register_state(dialog: &mut SipDialog, msg: &SipMessage) {
             ResponseClass::Declined | ResponseClass::Failure => {
                 dialog.state = DialogState::Failed;
             }
-            // A 3xx redirects the registration elsewhere; see the INVITE
-            // handler for why there is no state for it yet.
-            ResponseClass::Provisional | ResponseClass::Redirect | ResponseClass::Cancelled => {}
+            // A 3xx redirects the registration to another registrar.
+            ResponseClass::Redirect => dialog.state = DialogState::Redirected,
+            ResponseClass::Provisional | ResponseClass::Cancelled => {}
         }
     }
 }
@@ -516,7 +530,8 @@ fn update_subscribe_state(dialog: &mut SipDialog, msg: &SipMessage) {
             ResponseClass::Declined | ResponseClass::Failure => {
                 dialog.state = DialogState::Terminated;
             }
-            ResponseClass::Provisional | ResponseClass::Redirect | ResponseClass::Cancelled => {}
+            ResponseClass::Redirect => dialog.state = DialogState::Redirected,
+            ResponseClass::Provisional | ResponseClass::Cancelled => {}
         }
     }
 }
@@ -539,7 +554,8 @@ fn update_generic_state(dialog: &mut SipDialog, msg: &SipMessage) {
             ResponseClass::Declined | ResponseClass::Failure => {
                 dialog.state = DialogState::Failed;
             }
-            ResponseClass::Provisional | ResponseClass::Redirect | ResponseClass::Cancelled => {}
+            ResponseClass::Redirect => dialog.state = DialogState::Redirected,
+            ResponseClass::Provisional | ResponseClass::Cancelled => {}
         }
     }
 }
@@ -861,10 +877,10 @@ mod tests {
     /// that could not move a dialog, and 3xx handled nowhere — were both in the
     /// spaces between those arms. A pairwise sweep has no spaces.
     ///
-    /// The 3xx rows pin a KNOWN GAP: a redirect leaves the dialog in its
-    /// pre-answer state because sipnab has no `Redirected` variant. Pinning it
-    /// means the gap is a decision on the record, and closing it will fail here
-    /// first.
+    /// The 3xx rows were a known gap when this test was written — a redirect
+    /// left the dialog in its pre-answer state, indistinguishable from a call
+    /// nobody answered. Closing it failed here first, which is what the pinned
+    /// rows were for.
     #[test]
     fn every_method_and_class_has_a_declared_transition() {
         use crate::sip::response_codes::{ResponseClass, response_class};
@@ -907,22 +923,26 @@ mod tests {
                     ResponseClass::Success => DialogState::InCall,
                     ResponseClass::Cancelled => DialogState::Cancelled,
                     ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
-                    // Challenge is intermediate; Redirect is the known gap.
-                    ResponseClass::Challenge | ResponseClass::Redirect => start,
+                    ResponseClass::Redirect => DialogState::Redirected,
+                    // A challenge is intermediate: the client retries.
+                    ResponseClass::Challenge => start,
                 },
                 "REGISTER" => match class {
                     ResponseClass::Success => DialogState::Registered,
                     ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
+                    ResponseClass::Redirect => DialogState::Redirected,
                     _ => start,
                 },
                 "SUBSCRIBE" => match class {
                     ResponseClass::Success => DialogState::Active,
                     ResponseClass::Declined | ResponseClass::Failure => DialogState::Terminated,
+                    ResponseClass::Redirect => DialogState::Redirected,
                     _ => start,
                 },
                 _ => match class {
                     ResponseClass::Success => DialogState::Completed,
                     ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
+                    ResponseClass::Redirect => DialogState::Redirected,
                     _ => start,
                 },
             }
@@ -959,6 +979,56 @@ mod tests {
              dialog and its whole row went unchecked",
             METHODS.len() * CODES.len()
         );
+    }
+
+    /// A 3xx moves the dialog to `Redirected`, not `Failed` and not `Trying`.
+    ///
+    /// RFC 3261 §21.3: a redirect names a Contact the UAC should try instead.
+    /// The dialog ended, the call did not fail, and the retry is a new dialog
+    /// with a new Call-ID. Before `Redirected` existed, no handler matched 3xx
+    /// at all and the dialog kept its pre-answer state — a redirected call was
+    /// indistinguishable from one nobody answered.
+    #[test]
+    fn invite_redirect_is_redirected() {
+        for code in [300u16, 301, 302, 305, 380] {
+            let invite = make_invite();
+            let mut d = SipDialog::new(&invite).expect("dialog");
+            update_state(&mut d, &make_response(180, "Ringing", "INVITE"));
+            update_state(&mut d, &make_response(code, "Redirect", "INVITE"));
+            assert_eq!(
+                d.state,
+                DialogState::Redirected,
+                "{code} should redirect the dialog, not fail or stall it"
+            );
+        }
+    }
+
+    /// A 3xx after the call is answered changes nothing.
+    ///
+    /// Guarded on the pre-answer states like every other final-response
+    /// transition: a late or spurious redirect must not un-answer a live call.
+    #[test]
+    fn invite_redirect_after_answer_does_not_redirect() {
+        let invite = make_invite();
+        let mut d = SipDialog::new(&invite).expect("dialog");
+        update_state(&mut d, &make_response(200, "OK", "INVITE"));
+        update_state(&mut d, &make_response(302, "Moved Temporarily", "INVITE"));
+        assert_eq!(d.state, DialogState::InCall);
+    }
+
+    /// REGISTER, SUBSCRIBE and the generic machine redirect too.
+    #[test]
+    fn other_machines_redirect() {
+        for (method, _) in [("REGISTER", ()), ("SUBSCRIBE", ()), ("OPTIONS", ())] {
+            let req = make_request(method);
+            let mut d = SipDialog::new(&req).expect("dialog");
+            update_state(&mut d, &make_response(302, "Moved Temporarily", method));
+            assert_eq!(
+                d.state,
+                DialogState::Redirected,
+                "{method} should redirect on a 3xx"
+            );
+        }
     }
 
     /// A 503 error response to the initial INVITE moves the dialog to Failed.

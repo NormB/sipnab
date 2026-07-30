@@ -927,6 +927,7 @@ pub(in crate::tui) fn state_display_labeled(
         DialogState::Completed => "Completed",
         DialogState::Cancelled => "Cancelled",
         DialogState::Failed => failed_label,
+        DialogState::Redirected => "Redirected",
         DialogState::Registered => "Registered",
         DialogState::Expired => "Expired",
         DialogState::Pending => "Pending",
