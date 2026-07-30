@@ -1914,8 +1914,8 @@ fn no_documentation_table_repeats_a_row() {
     // the duplicates it exists to find simply stop being looked for.
     assert_eq!(
         files.len(),
-        96,
-        "found {} tracked markdown files, expected 96. More is fine — bump \
+        98,
+        "found {} tracked markdown files, expected 98. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -1963,8 +1963,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 313,
-        "walked {tables} tables, expected 297. More is fine — bump this. FEWER \
+        tables, 317,
+        "walked {tables} tables, expected 317. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
