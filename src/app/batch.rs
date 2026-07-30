@@ -2069,6 +2069,33 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
         }
     }
 
+    // --json-dialogs: one NDJSON object per dialog
+    if cli.json_dialogs && cli.no_tui {
+        let mut out = String::new();
+        for dialog in dialog_store.iter() {
+            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+                stream_store.streams_for(&dialog.call_id).collect();
+            let mut diagnosis = crate::rtp::diagnosis::diagnose_media(&dialog_streams, None);
+            crate::rtp::diagnosis::diagnose_asymmetry(
+                &mut diagnosis,
+                Some(dialog),
+                &dialog_streams,
+                &crate::rtp::diagnosis::AsymmetryThresholds::default(),
+            );
+            out.push_str(&output::dialog_to_ndjson(
+                dialog,
+                &dialog_streams,
+                &diagnosis,
+            ));
+        }
+        // Same write discipline as --report: a real write error means the
+        // output is incomplete, which is a failed run, while a closed pipe
+        // (`| head`) stays fine.
+        if !write_stdout(&out) {
+            return false;
+        }
+    }
+
     // --call-report <call-id>: detailed single-call report
     if let Some(ref call_id) = cli.call_report {
         if let Some(dialog) = dialog_store.get(call_id) {

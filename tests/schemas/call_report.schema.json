@@ -25,6 +25,8 @@
     "from_display": { "type": "string" },
     "to_display": { "type": "string" },
     "state": { "type": "string" },
+    "final_status_code": { "type": "integer" },
+    "final_status_reason": { "type": "string" },
     "method": { "type": "string" },
     "msg_count": { "type": "integer", "minimum": 0 },
     "duration_sec": { "type": "number" },

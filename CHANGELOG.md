@@ -11,6 +11,26 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **`--json-dialogs` — one JSON object per call, from the CLI.** `--json` has
+  always been a per-message stream, and the aggregated per-dialog document
+  existed only over REST and MCP. So the documented way to ask "which calls
+  failed and why" was `--json` piped through jq, joining `status_code` back to
+  `call_id` by hand across a stream that also carries every provisional
+  response — which is why a bare `100 Trying` turned up under a
+  `state == 'Failed'` filter. The filter selects *dialogs*; the output was
+  *messages*.
+
+  Same document the REST API returns, one compact line per call, emitted after
+  capture. Pair with `--no-cli-print` to get only the objects.
+
+- **The dialog document now carries `final_status_code` and
+  `final_status_reason`.** Without them `state` said `Failed` and the reader
+  still had to go back to the message stream to learn whether that was a 486, a
+  503 or a 404 — the exact workaround the new flag exists to remove. Auth
+  challenges are excluded, so a call challenged and then answered reports 200,
+  not the 401. The reason phrase is verbatim from the wire and RFC 3261 §7.2
+  leaves it free text, so match on the code.
+
 - **`DialogState::Redirected` — a 3xx is no longer indistinguishable from an
   unanswered call.** RFC 3261 §21.3: a redirect names a Contact the UAC should
   try instead. The dialog ended, the call did not fail, and the retry is a new

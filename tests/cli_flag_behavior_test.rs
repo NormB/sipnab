@@ -1145,6 +1145,50 @@ fn token_scope_flag_mints_a_scope_the_verifier_honours() {
 /// MCP has no `/metrics`, so a scrape-only MCP token could never authenticate
 /// anything. Failing at mint beats handing the operator a token that silently
 /// works nowhere.
+/// `--json-dialogs` emits one JSON object per dialog, not per message.
+///
+/// The distinction is the point of the flag. `--json` is a per-message stream,
+/// so a dialog-level filter like `state == 'Failed'` selects dialogs and then
+/// emits every message of them — provisional responses included, which is what
+/// made a bare `100 Trying` show up under a failure query. One line per call is
+/// the shape an operator triaging failures actually wants.
+#[test]
+fn json_dialogs_emits_one_object_per_dialog() {
+    let out = run(&[
+        "-N",
+        "-I",
+        "tests/pcap-samples/sip-488-codec-reject.pcapng",
+        "--json-dialogs",
+        "--no-cli-print",
+        "--quiet",
+    ]);
+    let lines: Vec<&str> = out.trim().lines().filter(|l| l.starts_with('{')).collect();
+    assert!(
+        !lines.is_empty(),
+        "expected at least one dialog object, got:\n{out}"
+    );
+    let mut failed_with_a_code = 0;
+    for line in &lines {
+        let v: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("line is not JSON: {e}\n{line}"));
+        assert!(v.get("call_id").is_some(), "every record names its dialog");
+        assert!(v.get("state").is_some(), "every record carries its state");
+        if v.get("state").and_then(serde_json::Value::as_str) == Some("Failed") {
+            assert!(
+                v.get("final_status_code").is_some(),
+                "a failed dialog must say WHICH code failed it, or the reader is \
+                 back to grepping the message stream: {line}"
+            );
+            failed_with_a_code += 1;
+        }
+    }
+    assert!(
+        failed_with_a_code > 0,
+        "this capture contains a 488-rejected call; if none is Failed the \
+         fixture or the state machine changed"
+    );
+}
+
 #[test]
 fn token_scope_metrics_is_refused_for_the_mcp_surface() {
     let dir = tempfile::tempdir().expect("tempdir");

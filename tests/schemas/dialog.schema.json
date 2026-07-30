@@ -20,6 +20,8 @@
     "from_user": { "type": ["string", "null"] },
     "to_user": { "type": ["string", "null"] },
     "state": { "type": "string" },
+    "final_status_code": { "type": "integer" },
+    "final_status_reason": { "type": "string" },
     "method": { "type": "string" },
     "duration_sec": { "type": "number" },
     "msg_count": { "type": "integer", "minimum": 0 },

@@ -476,6 +476,17 @@ pub struct Cli {
     #[arg(help_heading = "Output", long)]
     pub json_pretty: bool,
 
+    /// Output NDJSON: one JSON object per DIALOG, emitted after capture.
+    ///
+    /// `--json` is per message; this is per call. Use it when the question is
+    /// "which calls failed and why" rather than "what did the wire carry" —
+    /// the per-message stream makes you join `status_code` back to `call_id`
+    /// yourself, and a filter like `state == 'Failed'` selects dialogs while
+    /// `--json` then emits every message of them, provisional responses
+    /// included. Same object the REST API returns per dialog, one line each.
+    #[arg(help_heading = "Output", long)]
+    pub json_dialogs: bool,
+
     /// Generate a summary report after capture completes.
     #[arg(help_heading = "Output", long)]
     pub report: bool,
@@ -1279,6 +1290,7 @@ impl Cli {
     pub fn validate(&self) -> Result<(), crate::Error> {
         let output_flags_used: Vec<&str> = [
             (self.json, "--json"),
+            (self.json_dialogs, "--json-dialogs"),
             (self.json_pretty, "--json-pretty"),
             (self.report, "--report"),
             (self.hexdump, "--hexdump"),

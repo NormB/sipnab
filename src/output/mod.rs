@@ -48,7 +48,7 @@ pub use dialog_report::print_dialog_report;
 pub use event_exec::EventExecEngine;
 pub use fail2ban::{format_reg_flood_event, format_scanner_event, render_absent};
 pub use hexdump::hexdump;
-pub use json::{dialog_to_json, message_to_json, stream_to_json};
+pub use json::{dialog_to_json, dialog_to_ndjson, message_to_json, stream_to_json};
 pub use sink::BatchSink;
 
 /// Parse a CLI listen-address string into a `SocketAddr`, shared by the two
