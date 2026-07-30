@@ -63,6 +63,14 @@ a healthy carrier's traffic as failed.
 response, and the challenge only becomes the answer for a call that drew a
 challenge and **never** authenticated.
 
+That rule now holds for the dialog *state* as well, not only the reported code.
+It did not for a long time: only the REGISTER handler skipped challenges, so a
+challenged INVITE went to `Failed` and the 2xx that followed could not lift it
+back out, because that transition only admits the pre-answer states. A captured
+BYE hid the result by forcing `Completed`, which is why it survived — the calls
+it misreported were the ones still up, or the ones whose BYE never made it into
+the capture.
+
 The exchange, with what each hop tells the analyzer.
 
 ```mermaid
