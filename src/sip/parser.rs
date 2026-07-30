@@ -673,6 +673,72 @@ mod find_crlf_tests {
 /// security caps on header size/count.
 #[cfg(test)]
 mod tests {
+    /// `COMPACT_HEADERS` matches the IANA registry exactly.
+    ///
+    /// Nineteen header fields have a registered single-letter alias, and RFC
+    /// 3261 §7.3.3 makes the two forms exactly equivalent. A parser that knows
+    /// only the long form does not merely miss a header — it can be walked past
+    /// deliberately, which is the `y:` STIR/SHAKEN evasion this project already
+    /// documents in `docs/design/compact-headers-spec.md`.
+    ///
+    /// The table is hand-maintained with RFC numbers in trailing comments, and
+    /// nothing tied it to the registry. It happens to be right; this keeps it
+    /// right. The expected set is the `compact` column of
+    /// <https://www.iana.org/assignments/sip-parameters/sip-parameters-2.csv>,
+    /// mirrored in `docs/sip-header-fields.md`.
+    #[test]
+    fn compact_headers_match_the_iana_registry() {
+        const REGISTRY: [(u8, &str); 19] = [
+            (b'a', "Accept-Contact"),
+            (b'b', "Referred-By"),
+            (b'c', "Content-Type"),
+            (b'd', "Request-Disposition"),
+            (b'e', "Content-Encoding"),
+            (b'f', "From"),
+            (b'i', "Call-ID"),
+            (b'j', "Reject-Contact"),
+            (b'k', "Supported"),
+            (b'l', "Content-Length"),
+            (b'm', "Contact"),
+            (b'o', "Event"),
+            (b'r', "Refer-To"),
+            (b's', "Subject"),
+            (b't', "To"),
+            (b'u', "Allow-Events"),
+            (b'v', "Via"),
+            (b'x', "Session-Expires"),
+            (b'y', "Identity"),
+        ];
+        let mut ours: Vec<(u8, &str)> = COMPACT_HEADERS.to_vec();
+        let mut want: Vec<(u8, &str)> = REGISTRY.to_vec();
+        ours.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(
+            ours,
+            want,
+            "COMPACT_HEADERS disagrees with the IANA registry. Missing: {:?}; \
+             not registered: {:?}",
+            want.iter()
+                .filter(|e| !ours.contains(e))
+                .collect::<Vec<_>>(),
+            ours.iter()
+                .filter(|e| !want.contains(e))
+                .collect::<Vec<_>>(),
+        );
+
+        // And every one of them actually expands through the parser, which is
+        // the property the table exists for — a correct table wired to nothing
+        // would pass the comparison above.
+        for (c, long) in REGISTRY {
+            assert_eq!(
+                expand_compact_header(&(c as char).to_string()),
+                long,
+                "compact `{}` does not expand to {long}",
+                c as char
+            );
+        }
+    }
+
     use super::*;
     use std::net::Ipv4Addr;
 
