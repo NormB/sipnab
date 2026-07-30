@@ -147,6 +147,68 @@ impl Ord for SipMethod {
 /// Tests for `SipMethod` parsing, display, equality, and ordering.
 #[cfg(test)]
 mod tests {
+    /// The enum covers the IANA SIP methods registry exactly — no gaps, no
+    /// inventions.
+    ///
+    /// The registry is the list of record
+    /// (<https://www.iana.org/assignments/sip-parameters/sip-parameters-6.csv>,
+    /// retrieved 2026-07-30). RFC 3261 defines six of these and later RFCs
+    /// register the rest, so no single RFC carries the whole set — the same
+    /// arrangement as the response codes in `docs/sip-response-codes.md`.
+    ///
+    /// This matters for the dialog state machine, which dispatches on the
+    /// method: a method the enum does not name becomes `Custom` and falls to
+    /// the generic handler, which is right for a private extension and wrong
+    /// for a registered one nobody noticed. Pinning the set means a new
+    /// registration is a decision rather than a silent default.
+    #[test]
+    fn covers_the_iana_methods_registry() {
+        // sip-parameters-6.csv, "Methods" column, verbatim.
+        const REGISTRY: [&str; 14] = [
+            "ACK",
+            "BYE",
+            "CANCEL",
+            "INFO",
+            "INVITE",
+            "MESSAGE",
+            "NOTIFY",
+            "OPTIONS",
+            "PRACK",
+            "PUBLISH",
+            "REFER",
+            "REGISTER",
+            "SUBSCRIBE",
+            "UPDATE",
+        ];
+        let named: Vec<&str> = REGISTRY
+            .iter()
+            .copied()
+            .filter(|m| !matches!(SipMethod::parse(m), SipMethod::Custom(_)))
+            .collect();
+        assert_eq!(
+            named.len(),
+            REGISTRY.len(),
+            "these registered methods parse as Custom and would fall to the \
+             generic dialog handler: {:?}",
+            REGISTRY
+                .iter()
+                .filter(|m| matches!(SipMethod::parse(m), SipMethod::Custom(_)))
+                .collect::<Vec<_>>()
+        );
+
+        // And nothing beyond the registry: every named variant round-trips to a
+        // registered token. A variant with no registry entry is either a typo or
+        // an extension that needs saying so out loud.
+        for token in REGISTRY {
+            let m = SipMethod::parse(token);
+            assert_eq!(
+                m.as_str(),
+                token,
+                "{token} does not round-trip through SipMethod"
+            );
+        }
+    }
+
     use super::*;
 
     /// Every standard method string parses to its dedicated variant.
