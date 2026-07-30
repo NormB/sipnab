@@ -10,6 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+- **`js/xss-through-dom` in the hero image swap (CodeQL, high).** The swap
+  shipped in 0.5.68 stored the animated demo's URL in a `data-animated`
+  attribute and assigned it to `hero.src`. An image `src` is a script-URL
+  sink, so a DOM-sourced string reaching it is an XSS flow no matter what the
+  value happens to be — "it is a constant I control" describes the current
+  template, not the code, and the next edit is under no obligation to keep
+  that promise. The URL now comes from Zola via
+  `get_url(...) | json_encode | safe`, the same idiom `base.html` already uses
+  for config values, which removes the source rather than arguing with the
+  sink. The template gate now rejects the data-attribute shape outright.
+
 ## [0.5.68] - 2026-07-30
 
 ### Added

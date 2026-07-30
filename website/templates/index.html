@@ -20,7 +20,7 @@
 
   <!-- Hero — static screenshot of the TUI -->
   <div class="terminal-wrap">
-    <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=1" data-animated="{{ get_url(path='demos/01-intro.webp') }}?v=9" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete SIP lifecycle: REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE (hold), and BYE, with the decoded INVITE in the detail pane" class="hero-screenshot">
+    <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=1" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete SIP lifecycle: REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE (hold), and BYE, with the decoded INVITE in the detail pane" class="hero-screenshot">
   </div>
 </section>
 
@@ -277,8 +277,19 @@ document.querySelectorAll('.copy-btn').forEach(function(btn) {
 (function () {
   var hero = document.getElementById('hero-shot');
   if (!hero) return;
-  var animated = hero.getAttribute('data-animated');
-  if (!animated) return;
+
+  // Resolved by Zola at build time, NOT read back out of the DOM.
+  //
+  // The first version of this stored the URL in a data-attribute and did
+  // `hero.src = hero.getAttribute('data-animated')`. CodeQL flagged it
+  // js/xss-through-dom (high) and was right to: an image `src` is a
+  // script-URL sink, so a DOM-sourced string reaching it is an XSS flow
+  // regardless of what the value happens to be today. "It is a constant I
+  // control" is an argument about the current template, not about the code —
+  // and the whole point of the alert is that the next edit does not have to
+  // keep that promise. Taking the value from the template removes the source
+  // rather than arguing with the sink.
+  var animated = {{ get_url(path='demos/01-intro.webp') | json_encode | safe }} + '?v=9';
 
   // Honour the OS setting. The animation loops forever, which is precisely
   // what someone who set this asked not to be given.

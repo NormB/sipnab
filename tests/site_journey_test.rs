@@ -2500,12 +2500,22 @@ fn inline_script_edits_require_csp_hash_refresh() {
             "sha256-rFx04kn3jGSGf1MKxuWCk8HI8WZnRlpR9OD2RDUMHPI=",
         ),
         (
-            // Re-pinned in 0.5.68: the hero now swaps its static screenshot
-            // for the animated demo on `load`, so the inline script grew a
-            // block. The static frame stays the LCP element and the swap is
-            // gated on prefers-reduced-motion.
+            // Re-pinned twice in 0.5.68. First for the hero swap — the static
+            // screenshot is replaced by the animated demo on `load`, gated on
+            // prefers-reduced-motion. Then again when CodeQL flagged that
+            // version js/xss-through-dom (high): it read the animated URL out
+            // of a data-attribute and assigned it to `hero.src`, and an image
+            // src is a script-URL sink. The URL now comes from Zola.
+            //
+            // Note that pulls index.html into base.html's situation: its
+            // script now contains a Tera expression, so THIS hash (over the
+            // template) no longer equals the one production serves (over the
+            // rendered page). That is fine and already the norm — the csp job
+            // in pages.yml runs refresh_csp_hashes.py against the deployed
+            // artifact, so Cloudflare gets the rendered hash. This pin is only
+            // an acknowledgement gate for template edits.
             "index.html",
-            "sha256-Q+4br/fhk2omBptuVKkv3Cb5jRi9UFaPfZgxQHFxrV8=",
+            "sha256-du3YYx2OY3UxQaGAjCIEIChqOcWygleJKR+ySMRn/WA=",
         ),
         (
             "page.html",
@@ -2587,10 +2597,20 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() {
         "the STATIC frame must be the src with fetchpriority=\"high\"; putting \
          either on the animated file makes a 350 KiB asset the LCP element:\n{hero_line}"
     );
+    // The animated URL must NOT ride on the element. Storing it in a
+    // data-attribute and assigning it to `hero.src` is js/xss-through-dom
+    // (CodeQL, high): an image src is a script-URL sink, so a DOM-sourced
+    // string reaching it is an XSS flow whatever today's value happens to be.
+    // The URL comes from the template instead, which deletes the source.
     assert!(
-        hero_line.contains("data-animated=") && hero_line.contains("demos/01-intro.webp"),
-        "the animated URL belongs in data-animated so Zola resolves it, not \
-         hardcoded in the script:\n{hero_line}"
+        !hero_line.contains("data-animated"),
+        "the animated URL must not be stored on the element and read back — \
+         DOM text into an image src is a script-URL sink:\n{hero_line}"
+    );
+    assert!(
+        html.contains("get_url(path='demos/01-intro.webp') | json_encode | safe"),
+        "the animated URL must be resolved by Zola into the script and escaped \
+         with json_encode, matching how base.html injects config values"
     );
     assert!(
         hero_line.contains("width=\"1200\"") && hero_line.contains("height=\"700\""),
