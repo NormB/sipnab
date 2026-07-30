@@ -53,7 +53,7 @@ total either way, within environment noise on a loaded host).
 What the design actually buys:
 
 - Large payloads stop costing linear copies (a TCP-reassembled 64 KB
-  SIP message or max-size HEP packet is a ~1-2 us copy; the slice
+  SIP message or max-size HEP packet is a ~1-2 microsecond copy; the slice
   stays ~15 ns).
 - No per-packet allocate/free pair crossing the capture -> processing
   thread boundary (cross-thread free is the allocator's worst case;

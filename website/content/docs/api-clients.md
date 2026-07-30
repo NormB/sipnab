@@ -80,7 +80,7 @@ case "$http_code" in
 esac
 ```
 
-> The per-message NDJSON records referenced above (`is_request`, `status_code`, `reason`, `cseq`, ...) appear in [Output Formats](@/docs/output-formats.md).
+> The per-message NDJSON records referenced above (`is_request`, `status_code`, `reason`, `cseq`, and so on) appear in [Output Formats](@/docs/output-formats.md).
 
 ---
 

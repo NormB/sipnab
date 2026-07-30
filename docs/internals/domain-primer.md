@@ -38,7 +38,7 @@ and never corrected. A response derives it from CSeq, so a malformed response �
 Call-ID present, CSeq absent — used to create a dialog under that Call-ID
 labelled with an invented method, and the genuine INVITE arriving afterwards
 matched that entry instead of creating its own. The label then outlived the
-capture. Such a message now creates no dialog. It is still captured, counted and
+capture. Such a message now creates no dialog. It is still captured, counted, and
 searchable, and the INVITE that follows creates the dialog correctly.
 
 ### CSeq pins the transaction
@@ -262,7 +262,7 @@ sequenceDiagram
 ### MOS is an estimate, not a measurement
 
 [`estimate_mos()`](../../src/rtp/quality.rs) is an E-model computation from
-jitter, loss and codec — a model output on the 1.0–4.5 scale, not an opinion
+jitter, loss, and codec — a model output on the 1.0–4.5 scale, not an opinion
 score from a listener. Say "estimated MOS" in anything user-facing. The
 distinction is the difference between a tool an engineer trusts and one they
 re-derive.

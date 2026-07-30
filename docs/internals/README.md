@@ -84,7 +84,7 @@ toxic waste — [`crypto.rs`](../../src/crypto.rs) zeroizes), D13 (RTP is
 first-class: [`stream_store.rs`](../../src/rtp/stream_store.rs) discovers
 streams with no SIP at all), D15/D16 (privilege drop and process isolation),
 D17 (warn and continue on malformed input), D18 (localhost default for every
-listener). Beware the numbering collision noted above. **D22, D23 and D24**
+listener). Beware the numbering collision noted above. **D22, D23, and D24**
 also exist, but only in
 [`../design/implementation-plan-phases-8-10.md`](../design/implementation-plan-phases-8-10.md)
 — v6's catalog stops at D21. D22 is competitive-feature-borrowing discipline,
@@ -208,4 +208,4 @@ process, so the floor is not optional.
   The wiki renders from `docs/`, so it showed whichever copy was thinner as
   though it were the whole page. Register a page there. Never copy the script. The site mirror exists because GitHub's wiki mermaid viewer
   pins its controls over the diagram with no way to move them. The site
-  renders the same diagrams with a viewer we control.
+  renders the same diagrams with a viewer this repo controls.

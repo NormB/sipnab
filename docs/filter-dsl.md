@@ -2,7 +2,7 @@
 
 > **Quick start:** `sipnab --filter "state == 'Failed'"` to find all failed calls, or `sipnab --problems` for a one-flag diagnostic sweep.
 
-sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. You pass expressions through the [`--filter` CLI flag](cli-reference.md#matching) or the `expression` key in the [`[filter]` config section](config-reference.md#filter). The [Diagnostic Aliases](cli-reference.md#diagnostic-aliases) CLI flags (`--problems`, `--slow-setup`, ...) expand to the named aliases documented below.
+sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. You pass expressions through the [`--filter` CLI flag](cli-reference.md#matching) or the `expression` key in the [`[filter]` config section](config-reference.md#filter). The [Diagnostic Aliases](cli-reference.md#diagnostic-aliases) CLI flags (`--problems`, `--slow-setup`, and so on) expand to the named aliases documented below.
 
 ## Grammar
 

@@ -11,6 +11,33 @@ entry that carries them.
 ## [Unreleased]
 
 ### Changed
+- **The last five backlog rules worked: two enforced, three rejected.** 14
+  authored alerts, 28 counting the generated mirrors, and they split four ways.
+
+  Enforced after a small pass: **`Google.OxfordComma`** (six missing serial
+  commas — "D22, D23 and D24", "captured, counted and searchable") and
+  **`Google.Ellipses`** (three ellipses standing in for "and so on" in a
+  parenthetical list).
+
+  Rejected, with the reason recorded in `.vale.ini`:
+
+  - **`Google.We` and `Google.FirstPerson`** — every authored alert sits inside
+    quoted user speech. The cookbook opens each recipe with the complaint that
+    sends someone looking: **Problem:** *"We had a spike in failures around
+    14:00"*, *"I can hear them but they can't hear me."* The pronoun is the
+    user's, not the project's, and it is the point of the sentence. The one real
+    first-person plural, "a viewer we control", is fixed.
+  - **`Google.Ranges`** — all four alerts are the same false positive. The token
+    is `(?:from|between)\s\d+\s?-\s?\d+`, so any ISO date after "from" reads
+    as a range: "the sentence dates from 2026-07-25" is parsed as "from 2026 to
+    07". A repository that writes dates cannot enforce this.
+
+  Two things were misjudged on the first pass and corrected. An apparent
+  `OxfordComma` false positive was real — the match started at an odd offset, and
+  the list it pointed into genuinely read "two SBOMs, a provenance attestation, a
+  GHCR image and a Homebrew formula". And `~1-2 us copy` was flagged as the
+  pronoun "us" when it meant *microseconds*; it now says so.
+
 - **Present tense where the docs said "will", and `Google.Will` is enforced.**
   20 authored alerts across 12 files, 38 counting the generated mirrors, and
   every one was real: "the gates that will reject it" became "the gates that

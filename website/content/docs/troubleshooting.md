@@ -289,7 +289,7 @@ After the fact, match the known scanner User-Agents in a capture -- this only re
 sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 ```
 
-**What to look for:** known scanner fingerprints (`friendly-scanner`, `sipvicious`, `sipcli`), high REGISTER rates from a single source, sequential extension enumeration (INVITE to 100, 101, 102...).
+**What to look for:** known scanner fingerprints (`friendly-scanner`, `sipvicious`, `sipcli`), high REGISTER rates from a single source, sequential extension enumeration (INVITE to 100, 101, 102, and upward).
 
 **Next steps:**
 
