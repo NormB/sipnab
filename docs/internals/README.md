@@ -72,7 +72,7 @@ reading the wrong one as current is the main trap here.
 
 ## Glossary
 
-Identifiers that appear in commit messages, code comments and the backlog
+Identifiers that appear in commit messages, code comments, and the backlog
 without expansion.
 
 **D1–D21 — design decisions.** The catalog in

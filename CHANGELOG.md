@@ -14,10 +14,24 @@ entry that carries them.
 - **The last five backlog rules worked: two enforced, three rejected.** 14
   authored alerts, 28 counting the generated mirrors, and they split four ways.
 
-  Enforced after a small pass: **`Google.OxfordComma`** (six missing serial
-  commas — "D22, D23 and D24", "captured, counted and searchable") and
-  **`Google.Ellipses`** (three ellipses standing in for "and so on" in a
-  parenthetical list).
+  Enforced after a small pass: **`Google.Ellipses`** (three ellipses standing in
+  for "and so on" in a parenthetical list).
+
+  **`Google.OxfordComma` was enforced and reverted the same day**, and the reason
+  matters more than the rule. It was measured, mutation-tested and shipped
+  against a local styles tree that was hours stale: `.vale/styles/Google/` is
+  gitignored and CI runs `vale sync` on every job, so CI always has whatever the
+  registry published last. Between that local sync and the push, Google rewrote
+  the rule from a pattern allowing one word before the conjunction to a
+  lookahead-based one allowing five. Local reported zero; CI failed with 35.
+  Eleven missing serial commas are fixed across both passes. The rest of the new
+  rule's alerts do not distinguish a three-item list from a pair — "found and
+  fixed", "not by packet or by call" — so enforcing it would mean suppressing
+  twelve correct sentences.
+
+  Nothing pins that package. Every enforced rule can change under CI without a
+  commit here, and a green local run proves nothing until `vale sync` has run.
+  `.vale.ini` now says so.
 
   Rejected, with the reason recorded in `.vale.ini`:
 
