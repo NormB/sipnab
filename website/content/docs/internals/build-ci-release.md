@@ -293,6 +293,19 @@ environment, not on the code. Artifacts are checksummed into `SHA256SUMS.txt`
 and attested with `actions/attest-build-provenance`, so a downloader can run
 `gh attestation verify <file> --repo NormB/sipnab`.
 
+The macOS builds carry the same kind of floor, arrived at the other way round.
+Nothing set `MACOSX_DEPLOYMENT_TARGET` for a long time, so each darwin tarball
+floored wherever the pinned rustc defaulted to — 11.0 for `aarch64-apple-darwin`
+and 10.12 for `x86_64-apple-darwin`, a real constraint that no file in the
+repository named. `/download` filled the gap with "macOS 12+" for both, which was
+wrong for each and concealed that they differ. `release.yml` now pins the target
+per build, at those same two values so no binary changed, and
+`published_macos_floors_match_the_toolchain` holds `website/config.toml` to what
+the workflow pins. That gate also refuses a floor pinned *below* the compiler's
+own default: the config and the workflow would agree, and the published number
+would still be an OS the binary cannot run on. To move real support, change the
+two `floor=` lines and let the gate walk the published numbers to match.
+
 Two CycloneDX SBOMs ship with each release and are covered by both the
 checksum file and the attestation: `sipnab-<version>.cdx.json` for the binary
 and `sipnab-audio-<version>.cdx.json` for the playback plugin. Two, not one,
