@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.68] - 2026-07-30
+
 ### Added
 - **`--json-dialogs` — one JSON object per call, from the CLI.** `--json` has
   always been a per-message stream, and the aggregated per-dialog document
