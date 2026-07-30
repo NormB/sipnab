@@ -27,6 +27,25 @@ entry that carries them.
   quotes exact protocol literals (47).
 
 ### Changed
+- **The macOS floor is now a decision, not an inherited default.** `release.yml`
+  pins `MACOSX_DEPLOYMENT_TARGET` per darwin target instead of letting each one
+  take whatever the pinned rustc happens to default to. The values are the current
+  defaults, so no binary changes; what changes is that a toolchain bump can no
+  longer move the published floor silently.
+  `published_macos_floors_match_the_toolchain` now compares `website/config.toml`
+  against `release.yml` and additionally refuses a pinned floor *below* the
+  compiler's own default — that combination would satisfy a naive
+  config-matches-workflow check while still promising an OS the binary cannot run
+  on.
+- **The Vale config overstated what it was doing.** Five of the eight disabled
+  rules sit at `suggestion` or `warning` severity, below the enforced
+  `MinAlertLevel = error`, so they reported nothing whether on or off — but their
+  comments cited counts from a probe run at `suggestion`, which read as though
+  each was suppressing thousands of live alerts. The counts are now measured at
+  the enforced level, the pre-emptive disables are labelled as such, the 670-alert
+  backlog that a threshold change would surface is written down, and the rules
+  that actually fire are listed by name and verified by mutation.
+
 - **The release-artifact reference has one home instead of two.** `/download` held
   a 19-row artifact table that `docs/install.md` restated in full, and that
   duplication is what produced this release's version drift: the download markers

@@ -889,6 +889,8 @@ fn published_repo_slugs_agree() {
 fn published_macos_floors_match_the_toolchain() {
     let cfg = read("website/config.toml");
 
+    let release = read(".github/workflows/release.yml");
+
     for (key, target) in [
         ("macos_floor_arm", "aarch64-apple-darwin"),
         ("macos_floor_intel", "x86_64-apple-darwin"),
@@ -899,6 +901,32 @@ fn published_macos_floors_match_the_toolchain() {
             .unwrap_or_else(|| panic!("website/config.toml has no {key}"))[1]
             .to_string();
 
+        // What the release actually builds against. `release.yml` now pins this
+        // per target in the "Pin macOS deployment target" step, so the floor is a
+        // decision recorded in the repository rather than a compiler default
+        // nothing names.
+        let enforced = regex::Regex::new(&format!(r#"{target}\) *floor="([0-9.]+)""#))
+            .unwrap()
+            .captures(&release)
+            .unwrap_or_else(|| {
+                panic!(
+                    "release.yml has no `{target}) floor=\"X.Y\"` case — did the \
+                     'Pin macOS deployment target' step move or change shape?"
+                )
+            })[1]
+            .to_string();
+
+        assert_eq!(
+            published, enforced,
+            "website/config.toml {key} is {published} but release.yml builds \
+             {target} against macOS {enforced} — /download would state a minimum \
+             the binaries do not have"
+        );
+
+        // A pinned floor BELOW the compiler's own default would be a claim the
+        // binary cannot honour: rustc will not emit code for an older OS than it
+        // targets, so the tarball would not run where the page says it does.
+        // Above the default is legitimate (deliberately dropping old releases).
         let out = std::process::Command::new("rustc")
             .args(["--print", "deployment-target", "--target", target])
             .output()
@@ -910,7 +938,7 @@ fn published_macos_floors_match_the_toolchain() {
         );
         // Shaped `MACOSX_DEPLOYMENT_TARGET=11.0`.
         let stdout = String::from_utf8_lossy(&out.stdout);
-        let actual = stdout
+        let default = stdout
             .trim()
             .rsplit('=')
             .next()
@@ -918,16 +946,24 @@ fn published_macos_floors_match_the_toolchain() {
             .trim()
             .to_string();
         assert!(
-            !actual.is_empty(),
+            !default.is_empty(),
             "rustc reported an empty deployment target for {target} — did the \
              `--print` output shape change? raw: {stdout:?}"
         );
 
-        assert_eq!(
-            published, actual,
-            "website/config.toml {key} is {published} but the pinned rustc \
-             targets macOS {actual} for {target} — /download would state a \
-             minimum the binaries do not have"
+        let parts = |v: &str| -> (u32, u32) {
+            let mut it = v.split('.');
+            (
+                it.next().unwrap_or("0").parse().unwrap_or(0),
+                it.next().unwrap_or("0").parse().unwrap_or(0),
+            )
+        };
+        assert!(
+            parts(&enforced) >= parts(&default),
+            "release.yml pins {target} to macOS {enforced}, below the pinned \
+             rustc's own default of {default} — rustc will not emit code for an \
+             older OS than it targets, so the published floor would be a promise \
+             the binary cannot keep"
         );
     }
 
@@ -3168,8 +3204,8 @@ fn packaging_scripts_reference_existing_paths() {
     // packaging references stop being checked without the gate noticing, and a
     // reference to a nonexistent path is precisely what this exists to catch.
     assert_eq!(
-        checked, 55,
-        "packaging path scan saw {checked} references, expected 55. More is \
+        checked, 56,
+        "packaging path scan saw {checked} references, expected 56. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );
