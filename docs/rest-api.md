@@ -781,7 +781,7 @@ const stream = await resp.json();
 console.log(`Codec: ${stream.codec}, Packets: ${stream.packets}`);
 ```
 
-**Response:** Full RTP stream JSON including codec, packet counts, jitter, loss, MOS estimate, and associated dialog. Returns `400` for invalid SSRC format, `404` if not found.
+**Response:** full RTP stream JSON including codec, packet counts, jitter, loss, MOS estimate, and associated dialog. Returns `400` for invalid SSRC format, `404` if not found.
 
 ---
 
