@@ -45,8 +45,8 @@
   <div class="dl-term">
     <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">any Linux or macOS &middot; detects OS, CPU, and glibc</span></div>
     <div class="dl-term-body">
-      <code><span class="dl-prompt">$</span>curl -fsSL https://www.sipnab.com/install.sh | sh</code>
-      <button type="button" class="dl-copy" data-copy="curl -fsSL https://www.sipnab.com/install.sh | sh" aria-label="Copy install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      <code><span class="dl-prompt">$</span>curl -fsSL {{ config.base_url }}/install.sh | sh</code>
+      <button type="button" class="dl-copy" data-copy="curl -fsSL {{ config.base_url }}/install.sh | sh" aria-label="Copy install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     </div>
   </div>
   {# Deliberately GitHub's blob view, not get_url(path='install.sh'). That URL
@@ -60,7 +60,12 @@
   <p class="dl-note">Detects your CPU, checks your glibc version, downloads the matching build, verifies its <code>sha256</code>, and installs to <code>/usr/local/bin</code>. Prefer to read it first? <a href="{{ config.extra.github_url }}/blob/main/website/static/install.sh">Read install.sh on GitHub</a>.</p>
 
   <div class="dl-namemap-wrap">
-    <p class="dl-namemap-lead">Same chip, different names &mdash; these are equivalent. Tarballs use the left name, <code>.deb</code> packages the middle one. Not sure? Run <code>uname -m</code>.</p>
+    {# Was: "Tarballs use the left name, .deb packages the middle one." Two
+       problems. It never said which name .rpm files use -- they use x86_64 and
+       aarch64, so every RHEL reader was left to guess -- and "left"/"middle"
+       describes where the words sit, which stops being true the moment these
+       flex chips wrap onto two lines on a phone. Name the file kind instead. #}
+    <p class="dl-namemap-lead">Same chip, different names &mdash; these are equivalent. Tarballs and <code>.rpm</code> packages use the <code>x86_64</code>/<code>aarch64</code> spelling; <code>.deb</code> packages use <code>amd64</code>/<code>arm64</code>. Not sure which you have? Run <code>uname -m</code>.</p>
     <div class="dl-namemap">
       <div class="dl-chip"><code>x86_64</code><span class="dl-eq">=</span><code>amd64</code><span class="dl-eq">=</span><span class="dl-who">Intel &amp; AMD &mdash; most servers and PCs</span></div>
       <div class="dl-chip"><code>aarch64</code><span class="dl-eq">=</span><code>arm64</code><span class="dl-eq">=</span><span class="dl-who">ARM &mdash; Apple Silicon, Graviton, RPi&nbsp;4/5</span></div>
@@ -248,9 +253,9 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">pin the version tag; <code>latest</code> tracks releases</span></div>
         <div class="dl-term-body dl-term-body--multi">
-          <code><span class="dl-prompt">$</span>docker pull ghcr.io/normb/sipnab:{{ v }}
-<span class="dl-prompt">$</span>docker run --rm -v "$PWD:/data" ghcr.io/normb/sipnab:{{ v }} -N -I /data/capture.pcap --report</code>
-          <button type="button" class="dl-copy" data-copy="docker pull ghcr.io/normb/sipnab:{{ v }}&#10;docker run --rm -v &quot;$PWD:/data&quot; ghcr.io/normb/sipnab:{{ v }} -N -I /data/capture.pcap --report" aria-label="Copy docker commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+          <code><span class="dl-prompt">$</span>docker pull {{ config.extra.ghcr_image }}:{{ v }}
+<span class="dl-prompt">$</span>docker run --rm -v "$PWD:/data" {{ config.extra.ghcr_image }}:{{ v }} -N -I /data/capture.pcap --report</code>
+          <button type="button" class="dl-copy" data-copy="docker pull {{ config.extra.ghcr_image }}:{{ v }}&#10;docker run --rm -v &quot;$PWD:/data&quot; {{ config.extra.ghcr_image }}:{{ v }} -N -I /data/capture.pcap --report" aria-label="Copy docker commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
       <p class="dl-note">Offline pcap analysis needs nothing extra. Live capture inside the container needs <code>--cap-add NET_RAW --net host</code>.</p>
@@ -261,8 +266,8 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">same installer the Quick-install path uses</span></div>
         <div class="dl-term-body">
-          <code><span class="dl-prompt">$</span>curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION={{ v }} sh</code>
-          <button type="button" class="dl-copy" data-copy="curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION={{ v }} sh" aria-label="Copy pinned install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+          <code><span class="dl-prompt">$</span>curl -fsSL {{ config.base_url }}/install.sh | SIPNAB_VERSION={{ v }} sh</code>
+          <button type="button" class="dl-copy" data-copy="curl -fsSL {{ config.base_url }}/install.sh | SIPNAB_VERSION={{ v }} sh" aria-label="Copy pinned install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
       <p class="dl-note">Omit <code>SIPNAB_VERSION</code> to track the latest release; <code>SIPNAB_INSTALL_DIR</code> overrides the <code>/usr/local/bin</code> destination. The script picks the CPU and glibc-appropriate build and verifies its <code>sha256</code> before installing.</p>
@@ -283,8 +288,8 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">latest release tag</span></div>
         <div class="dl-term-body">
-          <code><span class="dl-prompt">$</span>curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest | jq -r .tag_name</code>
-          <button type="button" class="dl-copy" data-copy="curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest | jq -r .tag_name" aria-label="Copy latest-version command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+          <code><span class="dl-prompt">$</span>curl -fsSL https://api.github.com/repos/{{ config.extra.github_repo }}/releases/latest | jq -r .tag_name</code>
+          <button type="button" class="dl-copy" data-copy="curl -fsSL https://api.github.com/repos/{{ config.extra.github_repo }}/releases/latest | jq -r .tag_name" aria-label="Copy latest-version command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
     </div>
@@ -309,9 +314,19 @@
           <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz"><code>&hellip;aarch64-unknown-linux-musl.tar.gz</code></a></td><td>aarch64 / arm64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz.sha256">.sha256</a></td></tr>
           <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz"><code>&hellip;x86_64-unknown-linux-gnu.tar.gz</code></a></td><td>x86_64 / amd64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz.sha256">.sha256</a></td></tr>
           <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz"><code>&hellip;aarch64-unknown-linux-gnu.tar.gz</code></a></td><td>aarch64 / arm64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz.sha256">.sha256</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz"><code>&hellip;aarch64-apple-darwin.tar.gz</code></a></td><td>Apple Silicon</td><td>macOS 12+</td><td>M-series Macs</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz.sha256">.sha256</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz"><code>&hellip;x86_64-apple-darwin.tar.gz</code></a></td><td>Intel</td><td>macOS 12+</td><td>Intel Macs</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz.sha256">.sha256</a></td></tr>
-          <tr><td><a href="{{ rel }}/SHA256SUMS.txt"><code>SHA256SUMS.txt</code></a></td><td>&mdash;</td><td>&mdash;</td><td>checksums for every artifact above</td><td>&mdash;</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz"><code>&hellip;aarch64-apple-darwin.tar.gz</code></a></td><td>Apple Silicon</td><td>macOS {{ config.extra.macos_floor_arm }}+</td><td>M-series Macs</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz.sha256">.sha256</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz"><code>&hellip;x86_64-apple-darwin.tar.gz</code></a></td><td>Intel</td><td>macOS {{ config.extra.macos_floor_intel }}+</td><td>Intel Macs</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz.sha256">.sha256</a></td></tr>
+          {# "every artifact above" was a claim about row order, and adding the
+             SBOM rows under it silently made it false. Say what the file covers
+             instead: the 16 packages and SBOMs, not the .sha256 sidecars (which
+             are checksums) and not itself. #}
+          <tr><td><a href="{{ rel }}/SHA256SUMS.txt"><code>SHA256SUMS.txt</code></a></td><td>&mdash;</td><td>&mdash;</td><td>checksums for every package, tarball, and SBOM in this release</td><td>&mdash;</td></tr>
+          {# The SBOMs are release assets like any other. Leaving them out while
+             the heading says "Every file" and the caption says "Every release
+             artifact" made both false -- and they are the two files an auditor
+             comes to this table for. #}
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}.cdx.json"><code>sipnab-{{ v }}.cdx.json</code></a></td><td>&mdash;</td><td>&mdash;</td><td>CycloneDX SBOM &mdash; full dependency tree</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-audio-{{ v }}.cdx.json"><code>sipnab-audio-{{ v }}.cdx.json</code></a></td><td>&mdash;</td><td>&mdash;</td><td>CycloneDX SBOM &mdash; audio feature subtree</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
           <tr><td><a href="{{ config.extra.github_url }}/archive/refs/tags/v{{ v }}.tar.gz"><code>v{{ v }}.tar.gz</code> (source)</a></td><td>&mdash;</td><td>anywhere Rust 1.97+ builds</td><td>tagged source tree</td><td>&mdash;</td></tr>
           <tr><td><a href="{{ config.extra.github_url }}/archive/refs/tags/v{{ v }}.zip"><code>v{{ v }}.zip</code> (source)</a></td><td>&mdash;</td><td>anywhere Rust 1.97+ builds</td><td>tagged source tree</td><td>&mdash;</td></tr>
         </tbody>
@@ -346,8 +361,24 @@
         <button type="button" class="dl-copy" data-copy="sha256sum -c SHA256SUMS.txt --ignore-missing" aria-label="Copy Linux verify command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
-    <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. An <code>OK</code> line means it&rsquo;s authentic. Each tarball also ships an individual <code>.sha256</code>; <code>.deb</code> and <code>.rpm</code> checksums live only in <code>SHA256SUMS.txt</code>.</p>
-    <p class="dl-note">Beyond checksums, releases carry sigstore build provenance &mdash; cryptographic proof an artifact was built by this repository&rsquo;s CI from a specific commit, so a rehosted or tampered copy can&rsquo;t impersonate a real one: <code>gh attestation verify sipnab-&lt;file&gt; --repo NormB/sipnab</code> (or <code>oci://ghcr.io/normb/sipnab:&lt;tag&gt;</code> for the container image).</p>
+    {# "An OK line means it's authentic" was wrong, and wrong in the direction
+       that matters: a checksum compares the file to a list, so it proves
+       integrity and says nothing about who wrote the list. An attacker serving
+       both the artifact and SHA256SUMS.txt passes it. The paragraph below --
+       and docs/install.md -- already drew that distinction correctly, so the
+       page contradicted itself on a security claim. Authenticity is the
+       attestation's job, which is why it is no longer a footnote here. #}
+    <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. An <code>OK</code> line means the file arrived intact &mdash; it matches the checksum list. Each tarball also ships an individual <code>.sha256</code>; <code>.deb</code>, <code>.rpm</code>, and SBOM checksums live only in <code>SHA256SUMS.txt</code>.</p>
+    <h3 class="dl-verify-sub">Then check who built it</h3>
+    <p class="dl-note">A checksum only proves the file matches the list. It says nothing about who produced the list, so anyone serving you both files passes that check. Build provenance is the part that proves origin: a sigstore attestation that this artifact was built by this repository&rsquo;s CI from a specific commit, which a rehosted or tampered copy cannot forge.</p>
+    <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">provenance &middot; needs the <a href="https://cli.github.com/">GitHub CLI</a></span></div>
+      <div class="dl-term-body">
+        <code><span class="dl-prompt">$</span>gh attestation verify sipnab-&lt;file&gt; --repo {{ config.extra.github_repo }}</code>
+        <button type="button" class="dl-copy" data-copy="gh attestation verify sipnab-<file> --repo {{ config.extra.github_repo }}" aria-label="Copy provenance verify command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
+    <p class="dl-note">Replace <code>&lt;file&gt;</code> with the artifact you downloaded. For the container image, verify <code>oci://{{ config.extra.ghcr_image }}:{{ v }}</code> instead.</p>
   </section>
 
   <footer class="dl-meta">
@@ -448,7 +479,15 @@
   else if (/Ubuntu|Debian/.test(ua)) { os = 'debian'; osName = 'Debian/Ubuntu'; }
   else if (/Fedora|Red Hat|CentOS|AlmaLinux|Rocky/.test(ua)) { os = 'debian'; osName = 'RHEL/Fedora'; }
   else if (/Linux/.test(ua)) { os = 'linux'; osName = 'Linux'; }
-  else if (/Windows/.test(ua)) { os = 'source'; osName = 'Windows — use WSL or build from source'; }
+  // Advice belongs in osNote, not osName. Stuffing it into the name rendered
+  // "Detected: Windows — use WSL or build from source · Intel/AMD (x86_64 /
+  // amd64) — the highlighted choice below is the one you want", which reads as
+  // one run-on sentence and buries the actual instruction. The iOS branch above
+  // already had the right shape.
+  else if (/Windows/.test(ua)) {
+    os = 'source'; osName = 'Windows';
+    osNote = 'There is no native Windows build — run sipnab under WSL, or build from source.';
+  }
   var arch = /aarch64|arm64/i.test(ua) ? 'ARM (aarch64 / arm64)'
            : (/x86_64|x64|amd64|Win64|Intel Mac/i.test(ua) ? 'Intel/AMD (x86_64 / amd64)' : null);
 
@@ -480,18 +519,47 @@
     applyDetect();
   }
 
+  // Copy buttons. Two things this used to get wrong:
+  //
+  // 1. `.replace(/&amp;/g, '&')` — getAttribute returns the *decoded* attribute
+  //    value, so `&amp;&amp;` is already `&&` by the time we read it. The
+  //    replace was a no-op that would have corrupted any command legitimately
+  //    containing the literal text "&amp;".
+  // 2. No rejection handler. writeText rejects on an insecure origin, when the
+  //    permission is denied, or when the document is not focused — and the
+  //    button then did nothing at all, with no way to tell that from a
+  //    successful copy. Failing visibly is the point: the visitor still needs
+  //    the command, so select it for them and say so.
+  function selectCommand(btn) {
+    var code = btn.parentNode.querySelector('code');
+    if (!code || !window.getSelection || !document.createRange) { return false; }
+    var range = document.createRange();
+    range.selectNodeContents(code);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  }
   document.querySelectorAll('.dl-copy').forEach(function (btn) {
     var label = btn.getAttribute('aria-label');
+    function flash(cls, announce, ms) {
+      btn.classList.add(cls);
+      btn.setAttribute('aria-label', announce);
+      setTimeout(function () {
+        btn.classList.remove(cls);
+        btn.setAttribute('aria-label', label);
+      }, ms);
+    }
     btn.addEventListener('click', function () {
-      var text = (btn.getAttribute('data-copy') || '').replace(/&amp;/g, '&');
+      var text = btn.getAttribute('data-copy') || '';
+      function failed() {
+        // Selected-not-copied is a different outcome from copied; say which.
+        flash('failed', selectCommand(btn) ? 'Copy blocked — command selected, press Ctrl/Cmd+C' : 'Copy blocked by your browser', 3200);
+      }
+      if (!navigator.clipboard || !navigator.clipboard.writeText) { failed(); return; }
       navigator.clipboard.writeText(text).then(function () {
-        btn.classList.add('copied');
-        btn.setAttribute('aria-label', 'Copied');
-        setTimeout(function () {
-          btn.classList.remove('copied');
-          btn.setAttribute('aria-label', label);
-        }, 1600);
-      });
+        flash('copied', 'Copied', 1600);
+      }, failed);
     });
   });
 })();

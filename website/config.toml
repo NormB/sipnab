@@ -55,12 +55,40 @@ release_date = "2026-07-29"
 # the two. `published_glibc_floor_matches_release_gate` does now.
 glibc_floor = "2.36"
 glibc_floor_distros = "Debian 12+, Ubuntu 23.04+"
+# Minimum macOS of the released darwin tarballs, per architecture. Like the
+# glibc floor these are NOT a free choice: release.yml never sets
+# MACOSX_DEPLOYMENT_TARGET, so the floor is whatever the pinned rustc defaults
+# to for each target, and the two targets do not agree. Read them straight from
+# the toolchain:
+#
+#   rustc --print deployment-target --target aarch64-apple-darwin  -> 11.0
+#   rustc --print deployment-target --target x86_64-apple-darwin   -> 10.12
+#
+# /download said "macOS 12+" for both for months. Nothing produced that number:
+# no workflow step, no constant, no doc -- it existed only on the page a reader
+# acts on, which is the same shape as the glibc floor bug above. It was wrong
+# for both arches and hid the fact that they differ.
+# `published_macos_floors_match_the_toolchain` pins these to rustc now, so
+# setting an explicit deployment target in release.yml has to update them.
+macos_floor_arm = "11.0"
+macos_floor_intel = "10.12"
 # Ceiling for the released stripped musl binary, in MB. Quoted on the homepage
 # and in the build docs, and enforced against the real artifact by the "Enforce
 # published binary size" step in release.yml. A ceiling rather than the exact
 # size so it does not need editing every time the binary moves by a hundred KB.
 binary_size_ceiling_mb = "10"
 github_url = "https://github.com/NormB/sipnab"
+# `owner/repo`, for the places a bare slug is what the command wants rather than
+# a URL: `gh attestation verify --repo`, the releases API path. These were
+# hand-written as "NormB/sipnab" in three spots on /download while github_url sat
+# in this file, so a rename would have left copy-pasteable commands pointing at a
+# repository that no longer exists. `published_repo_slugs_agree` keeps this equal
+# to the tail of github_url.
+github_repo = "NormB/sipnab"
+# The container image docker.yml publishes, lowercased because GHCR requires it.
+# Also previously hand-written on /download. Pinned to the workflow by
+# `published_ghcr_image_matches_docker_workflow`.
+ghcr_image = "ghcr.io/normb/sipnab"
 author = "Norm Brandinger"
 linkedin_url = "https://www.linkedin.com/in/nbrandinger"
 patreon_url = "https://www.patreon.com/c/NormB975"
