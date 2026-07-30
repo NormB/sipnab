@@ -11,6 +11,24 @@ entry that carries them.
 ## [Unreleased]
 
 ### Changed
+- **The Vale style package is pinned to a release, and a gate holds it there.**
+  `Packages = Google` resolved through the registry to a `releases/latest`
+  download URL, and CI runs `vale sync` on every job — so every prose gate
+  depended on whatever upstream published most recently, with no commit in this
+  repository. A local styles tree is only as fresh as the last manual sync, which
+  means a green local run was not evidence about CI.
+
+  Google v0.7.0 shipped 2026-07-30 13:43 UTC, mid-session, and rewrote
+  `Google.OxfordComma`'s regex. A rule measured, mutation-tested and enabled
+  against the previous package reported 0 alerts locally and 35 in CI, and main
+  went red. Every GitHub Action and container base image here is pinned by digest
+  for exactly this reason; the style package was the one dependency that floated.
+
+  `vale_style_package_is_pinned_to_a_release` now fails on a bare registry name,
+  on a `latest` URL, and on a URL carrying no `vX.Y.Z`. `build-ci-release.md`
+  gains a section on the prose gates, which it had never documented — its
+  workflow table described `quality.yml` as coverage and clippy only.
+
 - **The last five backlog rules worked: two enforced, three rejected.** 14
   authored alerts, 28 counting the generated mirrors, and they split four ways.
 
