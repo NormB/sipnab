@@ -1,6 +1,6 @@
 # REST API & metrics
 
-sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline — read-only; it never mutates capture state.
+sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline — read-only, and it never mutates capture state.
 
 [CLI Reference](cli-reference.md#network-listeners) catalogues every API flag.
 
@@ -74,7 +74,7 @@ signing-key rotation, and revocation denylists — see
 
 ### Method 1 — static API key
 
-A shared secret with **no expiry**. Simplest to set up; you revoke it by
+A shared secret with **no expiry**. Simplest to set up, and you revoke it by
 restarting with a different key.
 
 Both lines below are one procedure — the server reads the variable the first
@@ -116,7 +116,7 @@ MCP endpoint turns away a token minted from `--api-signing-key`, and vice versa 
 version prefix is part of the signed input, so an `s2` token cannot be rewritten
 as `s1` to shed its binding. The pre-`aud` `s1` format is **no longer
 accepted** — it carried no audience, so honoring it would have left this
-binding best-effort. An `s1` token now returns `401`; re-mint with
+binding best-effort. An `s1` token now returns `401`. Re-mint with
 `--mint-token`. Note that **static** `--api-key` secrets carry no audience —
 the binding applies to signed tokens only.
 
@@ -131,7 +131,7 @@ the binding applies to signed tokens only.
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
 
 **Scope.** `--token-scope metrics` mints a token that reaches `GET /metrics`
-and nothing else; every other route returns `401`. Mint one for a scrape job.
+and nothing else. Every other route returns `401`. Mint one for a scrape job.
 
 The reason to bother: this is a TLS-decrypting capture tool, so `/v1/dialogs`
 and `/v1/streams` return message bodies — the call content itself. Without a
@@ -153,8 +153,8 @@ Three properties worth knowing:
 - **The signature covers the claim.** Stripping or editing `scope` invalidates
   the signature, so a holder cannot widen their own token.
 
-Static `--api-key` secrets carry no claims at all and are therefore `full`;
-scoping requires a signed token. The scope applies to the REST API — the MCP
+Static `--api-key` secrets carry no claims at all and are therefore `full`.
+Scoping requires a signed token. The scope applies to the REST API — the MCP
 surface has no `/metrics`, so `--token-scope metrics` with `--mcp-signing-key`
 fails at mint time rather than producing a token that can never
 authenticate.
@@ -190,7 +190,7 @@ sipnab --api 127.0.0.1:8080 --api-signing-key "$KEY" \
 **Expiry** needs no server action — a token stops verifying once `exp <= now`.
 
 **Rotation** comes in two independent forms. Rotate *tokens* by minting a new
-one before the old lapses and migrating clients; several tokens are valid at
+one before the old lapses and migrating clients. Several tokens are valid at
 once. Rotate *signing keys* by passing `--api-signing-key` more than once: add
 the new key alongside the old, mint with the new one, migrate clients, then
 drop the old key on the next restart.
@@ -252,7 +252,7 @@ sipnab -d eth0 --api 127.0.0.1:8080 --api-key "secret"
 
 ## Bind address & connection limits
 
-The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). All network listeners bind to loopback by default; bind a routable address (e.g. `0.0.0.0:8080`) only behind a token and a reverse proxy. Data endpoints use a `/v1/` prefix; utility endpoints (`/health`, `/metrics`) have no prefix.
+The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). All network listeners bind to loopback by default. Bind a routable address (e.g. `0.0.0.0:8080`) only behind a token and a reverse proxy. Data endpoints use a `/v1/` prefix, and utility endpoints (`/health`, `/metrics`) have none.
 
 `--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
@@ -991,7 +991,7 @@ curl -fsS "$API/v1/streams?mos_below=3.0" $H \
   | jq -r '.streams[] | "LOW MOS: SSRC=\(.ssrc) MOS=\(.mos) call=\(.associated_dialog)"'
 ```
 
-For per-call response-code histograms (not exposed over REST), use the CLI NDJSON mode — `sipnab -N --json` emits one record per message; see [Output Formats](output-formats.md).
+For per-call response-code histograms (not exposed over REST), use the CLI NDJSON mode — `sipnab -N --json` emits one record per message. See [Output Formats](output-formats.md).
 
 ### Prometheus scrape config
 

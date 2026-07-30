@@ -47,7 +47,7 @@ sipnab -d eth0 --on-quality-exec "/usr/local/bin/quality-alert.sh" \
   --quality-threshold 3.0
 ```
 
-Rate-limit exec invocations; the default is 10 per second:
+Rate-limit exec invocations. The default is 10 per second:
 
 ```bash
 sipnab -d eth0 --on-dialog-exec "logger" --exec-rate-limit 5

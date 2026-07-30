@@ -500,7 +500,7 @@ plain UDP socket: **no capture privileges, no setcap, fully unprivileged.**
    ```
 
    Kamailio — the `siptrace` module with `duplicate_uri` pointed at
-   `sip:capture01.example.net:9063` and HEP mode enabled; see the
+   `sip:capture01.example.net:9063` and HEP mode enabled. See the
    [siptrace docs](https://kamailio.org/docs/modules/stable/modules/siptrace.html)
    for the handful of modparams.
 
@@ -539,7 +539,7 @@ plumbing from the proxies already exists. Two things to arrange:
   headroom.
 
 Anything else on the host — an OpenTelemetry collector, Prometheus, etc. —
-is simply a neighbor process; sipnab neither speaks OTLP nor conflicts
+is simply a neighbor process. sipnab neither speaks OTLP nor conflicts
 with it.
 
 ---
@@ -685,7 +685,7 @@ when the count is nonzero).
 Every scenario above is client-agnostic on the server side: stdio wirings
 (1, 2A) hand the client a command to launch, HTTP wirings (2B, 2C, 4) hand
 it a URL plus a bearer token. Only the registration step differs per
-agent. The table maps it; snippets follow.
+agent. The table maps it, and snippets follow.
 
 | Client | Config lives in | stdio | Streamable HTTP |
 |---|---|---|---|
@@ -824,7 +824,7 @@ rules as scenarios 2B and 4.
 
 ## Load on a busy server
 
-Two distinct costs; both are small, and you can cap both.
+Two distinct costs. Both are small, and you can cap both.
 
 **The capture path** dwarfs the MCP path and is the one to size. Reference
 numbers ([benchmarks](benchmarks.md), modest 14-core aarch64 host):
@@ -847,7 +847,7 @@ one core's budget. What actually costs:
 **The MCP query path** is noise by comparison: read-only lookups against
 in-memory stores, every response bounded (`limit` ≤ 1000, snippets ≤ 4 KB,
 ≤ 1000 messages per page). An agent conversation makes a handful of tool
-calls; there is no polling loop unless you build one. If you want *zero*
+calls. There is no polling loop unless you build one. If you want *zero*
 load on the SIP server itself, that's scenario 3: the proxy pays only for
 HEP mirroring and sipnab lives elsewhere.
 
@@ -886,7 +886,7 @@ What remains **your** call:
 
 ## Troubleshooting ladder
 
-Work outward from the server; each layer has a definitive test.
+Work outward from the server. Each layer has a definitive test.
 
 | Layer | Test | Good sign |
 |---|---|---|
@@ -899,6 +899,6 @@ Work outward from the server; each layer has a definitive test.
 HTTP status decoder: `401` wrong/missing bearer token · `403` `Host:` not
 in the allowlist (`--mcp-allowed-host`) · `404` path isn't exactly `/mcp` ·
 `406` missing `Accept: application/json, text/event-stream`. More in
-[mcp.md § Troubleshooting](mcp.md#troubleshooting); the
+[mcp.md § Troubleshooting](mcp.md#troubleshooting). The
 [raw HTTP test](mcp.md#raw-http-test) there is a working curl carrying every
 required header.

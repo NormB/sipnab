@@ -17,7 +17,7 @@ questions, and mixing them is what makes docs hard to use:
 
 ## Tutorials
 
-Learning-oriented. Follow these in order on your first day; they assume
+Learning-oriented. Follow these in order on your first day. They assume
 nothing and they tell you what you should see at each step.
 
 1. **[Install sipnab](install.md)** — one-line installer, prebuilt binaries,
@@ -49,7 +49,7 @@ you want.
 
 ## Reference
 
-Information-oriented. Complete and dry; consult them, do not read them
+Information-oriented. Complete and dry. Consult them, do not read them
 through.
 
 - [CLI Reference](cli-reference.md) — every flag, grouped, with examples.
@@ -78,7 +78,7 @@ Understanding-oriented. Read these when you want to know *why*, not *how*.
 Start with the **[Developer index](internals/README.md)** — a reading order
 through the domain model, the subsystem walk, the invariants, the test tiers,
 the change checklists, and the build/CI/release machinery. The one-screen map
-of the tree is [Architecture](architecture.md); the narrower pages cover
+of the tree is [Architecture](architecture.md). The narrower pages cover
 [threading](internals/threading.md),
 [zero-copy payloads](internals/zero-copy-payloads.md) and
 [TUI testing](internals/tui-testing.md).

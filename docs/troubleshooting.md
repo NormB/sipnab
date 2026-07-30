@@ -37,7 +37,7 @@ You should see one line per response message of each failed call (minimal exampl
 {"call_id":"def456@host","status_code":408,"reason":"Request Timeout"}
 ```
 
-Once one of those Call-IDs is worth escalating, write the detailed Markdown report for that single call and attach it to a ticket. Substitute the Call-ID you picked; the redirect overwrites `report.md` in the current directory:
+Once one of those Call-IDs is worth escalating, write the detailed Markdown report for that single call and attach it to a ticket. Substitute the Call-ID you picked. The redirect overwrites `report.md` in the current directory:
 
 ```bash
 sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
@@ -185,7 +185,7 @@ You should see the SIP messages of every matching call as NDJSON (abridged):
 {"is_request":true,"method":"INVITE","call_id":"bad-audio@pbx1", "...":"..."}
 ```
 
-The per-message records identify *which* calls are bad; pull the per-stream numbers (`jitter_ms`, `loss_pct`, quality intervals) with `--call-report <call-id>`.
+The per-message records identify *which* calls are bad. Pull the per-stream numbers (`jitter_ms`, `loss_pct`, quality intervals) with `--call-report <call-id>`.
 
 To watch a live interface instead, widen the same filter to jitter spikes and let it run -- each matching call prints as it happens. Live capture needs raw-socket access, hence `sudo`:
 
@@ -226,7 +226,7 @@ Find the calls whose post-dial delay crossed the 3-second perceptibility line:
 sipnab -N -I capture.pcap --filter "pdd > 3.0" --json
 ```
 
-The `--slow-setup` alias carries that same threshold; pair it with `--report` for a summary instead of per-message records:
+The `--slow-setup` alias carries that same threshold. Pair it with `--report` for a summary instead of per-message records:
 
 ```bash
 sipnab -N -I capture.pcap --slow-setup --report

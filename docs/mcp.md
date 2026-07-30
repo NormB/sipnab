@@ -43,7 +43,7 @@ sudo sipnab --mcp -N -d eth0
 
 `--mcp` requires `-N`/`--no-tui`: **stdout is the JSON-RPC wire**, so the
 sipnab refuses TUI and stdout-writing flags (`--json`, `--report`, …). This
-is the one invariant to remember; every example below carries `-N` for
+is the one invariant to remember, and every example below carries `-N` for
 that reason. Stdio needs no token — it is a private pipe between
 client and server.
 
@@ -111,7 +111,7 @@ and configure it as a bearer token for `http://capture01.example.net:8731`.
 The HTTP transport refuses requests whose `Host` header isn't in its
 allowlist. The default set is `localhost`, `127.0.0.1`, `::1`. When
 clients reach sipnab via a hostname or non-loopback IP, add it to the
-allowlist (repeatable); otherwise rmcp returns
+allowlist (repeatable). Otherwise rmcp returns
 `403 Forbidden: Host header is not allowed`:
 
 ```bash
@@ -232,7 +232,7 @@ Per-call diagnostic report for one Call-ID. Backed by
 | `call_id` | string | Required. |
 | `format` | "json" \| "markdown" \| "text" | Default `"json"`. |
 
-JSON output is a structured object; Markdown and text come back as a
+JSON output is a structured object. Markdown and text come back as a
 single text content. Unknown `call_id` returns invalid_params (-32602).
 
 ### `find_problems`
@@ -398,7 +398,7 @@ sipnab uses:
 | -32602 (`invalid_params`) | Unknown Call-ID, out-of-range index, malformed filter, unknown format, unknown alias, etc. |
 | -32603 (`internal_error`) | Reserved; sipnab treats internal errors as bugs and never silently swallows them. |
 
-Tools never panic; an unknown Call-ID always produces a structured error
+Tools never panic. An unknown Call-ID always produces a structured error
 rather than an empty result.
 
 ### Response bounding
@@ -438,7 +438,7 @@ agents. Override via the per-call `limit` parameter where supported.
 ## stdio invariant
 
 In stdio mode, **stdout is the JSON-RPC wire**. sipnab routes all
-logging through `tracing-subscriber` to stderr (Phase 8.0b); a regression
+logging through `tracing-subscriber` to stderr (Phase 8.0b), and a regression
 test (`tests/parse_path_test.rs`) verifies that no log line ever leaks
 to stdout. If you see "Parse error" from your MCP client after a
 sipnab log line, that's a regression — please file an issue with the
@@ -612,7 +612,7 @@ the actual array:
 
 Each array element is a dialog summary (`call_id`, `state`, `method`,
 `from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
-`updated_at`, `timing`) — the compact projection; the full aggregated
+`updated_at`, `timing`) — the compact projection. The full aggregated
 dialog document is what `get_dialog_report` returns (the
 [REST API](rest-api.md) returns the same shape).
 

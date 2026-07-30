@@ -13,8 +13,8 @@ enforces it, and how it fails when broken. If you are about to violate one, the
 enforcement will usually catch you — but knowing *why* is faster than reading a
 CI failure.
 
-Threading detail belongs to [Threading](@/docs/internals/threading.md); failure semantics — what
-sipnab does when something goes wrong — to
+Threading detail belongs to [Threading](@/docs/internals/threading.md). Failure semantics — what
+sipnab does when something goes wrong — belong to
 [the fault model](https://github.com/NormB/sipnab/blob/main/docs/fault-model.md). This page links out rather than
 restating.
 
@@ -25,7 +25,7 @@ run: `tui-processor` in TUI mode, the main thread in batch mode, thread-local
 stores in `--cores` mode. Everything else reads.
 
 **Why.** Single-writer discipline is what makes `try_read()` on the render path
-safe and cheap. It also means adding a reader cannot introduce a data race; only adding a
+safe and cheap. It also means adding a reader cannot introduce a data race. Only adding a
 writer can.
 
 **Enforced by.** Structure rather than a lint: the spawn moves the stores into
@@ -47,7 +47,7 @@ dropped frame, and the UI appears to stall under load rather than degrade.
 then lock the stream store. Never hold both write locks simultaneously.
 
 **Why.** Two locks acquired in opposite orders on two threads is the textbook
-deadlock; keeping them disjoint makes the ordering question moot.
+deadlock. Keeping them disjoint makes the ordering question moot.
 
 **Enforced by.** Convention in the two appliers that take locks at all:
 [`process_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs) on the live path and
@@ -85,8 +85,8 @@ sequenceDiagram
 ## 3. All four paths classify through one function
 
 **Rule.** Protocol behavior lives in
-[`classify_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs). Appliers apply a `PacketAction`;
-they do not decide what a packet means.
+[`classify_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs). Appliers apply a `PacketAction`.
+They do not decide what a packet means.
 
 **Why.** Before the unification the four paths had drifted — heuristic
 RTP discovery and WebSocket-SIP unwrap worked on some and not others, so the
@@ -114,7 +114,7 @@ each map with unique keys and asserts the cap holds. The dialog store offers
 both policies explicitly: `rotate=true` evicts LRU (in batches, because
 one-at-a-time removal from the index is O(n) under sustained pressure) and
 `rotate=false` drops new arrivals once full. The stream store evicts
-oldest-out at `max_streams`; TCP/IP reassembly caps entries, per-datagram size
+oldest-out at `max_streams`. TCP/IP reassembly caps entries, per-datagram size
 and per-stream buffered bytes in [`reassembly.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/reassembly.rs).
 
 **Fails as.** Memory growth under a scan that looks like a leak, on a process
@@ -149,7 +149,7 @@ including when both surfaces share one signing key.
 
 *How much of it* (`scope`): `full` reaches everything on that surface,
 `metrics` reaches `GET /metrics` and nothing else. A `full` token satisfies
-every requirement; a narrower one satisfies only its own.
+every requirement. A narrower one satisfies only its own.
 
 **Why.** The REST API and HTTP MCP read separate flags and separate
 environment variables, so an operator putting one secret in both
@@ -160,11 +160,11 @@ valid MCP token, with no warning and nothing in the logs.
 For `scope`: sipnab decrypts TLS, so `/v1/dialogs` and `/v1/streams` return
 message bodies — the call content itself. Without a scope split, a monitoring
 system that needs one counter must hold the keys to all of it. That is the one
-division of the surface worth having; the rest of it is a single trust domain.
+division of the surface worth having. The rest of it is a single trust domain.
 
 **Enforced by.** The `aud` check in
 [`verify_signed()`](https://github.com/NormB/sipnab/blob/main/src/auth.rs), which requires an `s2` token's audience
-to equal the verifier's own; each surface sets its audience once in
+to equal the verifier's own. Each surface sets its audience once in
 [`resolve_api_verifier_config()`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) and
 [`resolve_mcp_verifier_config()`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs), and at mint time in
 [`mint_token()`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs). The version prefix is part of the
@@ -177,7 +177,7 @@ fails closed. Tests pin cross-surface rejection in both directions in
 The `scope` check sits in the same function, immediately before the expiry test,
 and the claim is part of the signed payload — so a holder cannot widen their own
 token by editing it. Routes demand a scope through
-[`guard_scoped()`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs); the plain `guard()` demands `full`,
+[`guard_scoped()`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs). The plain `guard()` demands `full`,
 which is the RESTRICTIVE default: demanding `full` admits only full tokens,
 while demanding `metrics` admits both. A route added later and wired to the
 plain guard therefore inherits "full tokens only" rather than silently accepting
@@ -197,7 +197,7 @@ audience check is unconditional: the pre-`aud` `s1` format is no longer
 accepted, so there is no token version that reaches a surface without an
 audience. The scope check is deliberately *not* symmetric with it — an absent
 `scope` means `full`, where an absent `aud` fails closed. `aud` arrived with a
-format bump that stopped accepting the old tokens outright; tokens minted
+format bump that stopped accepting the old tokens outright. Tokens minted
 before `scope` existed are still valid `s2` tokens in the field, and denying
 them would revoke live credentials on upgrade. Static `--api-key` /
 `--mcp-token` secrets remain audience-less and `full` by design — they name
@@ -227,7 +227,7 @@ cannot tell which.
 
 **Rule.** Never hold a `parking_lot` guard across an await point.
 
-**Why.** `parking_lot` guards are not async-aware; holding one across a yield
+**Why.** `parking_lot` guards are not async-aware. Holding one across a yield
 parks the runtime thread with the lock still taken. In a current-thread runtime
 — which is what [`servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) builds — that is an
 immediate deadlock.
@@ -286,7 +286,7 @@ capture throughput. Skipping a frame is always better than freezing one.
 
 **Enforced by.** [`sync_caches()`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs) and
 [`draw_frame()`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs), which fall back to the previous
-snapshot on contention; `draw_frame()` forces a blocking frame after a bounded
+snapshot on contention. `draw_frame()` forces a blocking frame after a bounded
 number of skips so the display cannot freeze permanently.
 
 **Fails as.** A UI that stutters exactly when the operator most needs it — under
@@ -331,7 +331,7 @@ in `launch` and four more in
 was not exotic: `sipnab -I /nonexistent.pcap`, a mistyped filename, was enough.
 
 **Enforced by.** ThreadSanitizer, which classes `thread leak` as fatal rather
-than warning about it, over the five suites `sanitizers.yml` runs; and
+than warning about it, over the five suites `sanitizers.yml` runs. Also
 [`cli_flag_behavior_test`](https://github.com/NormB/sipnab/blob/main/tests/cli_flag_behavior_test.rs), which
 exercises both shapes — a source that never opens, and a failure after it opened
 — so a regression fails on every push instead of waiting for the weekly
@@ -350,7 +350,7 @@ recommendation it implements. The
 [pull-request template](https://github.com/NormB/sipnab/blob/main/.github/PULL_REQUEST_TEMPLATE.md) asks for it
 directly: *"Any new analysis claim is honest and backed by the implementation
 (cite the RFC/ITU standard where relevant)."* Jitter is RFC 3550 §6.4.1 signed
-transit deltas, not a variance; MOS is an E-model estimate, not a measurement.
+transit deltas, not a variance. MOS is an E-model estimate, not a measurement.
 Saying which one you implemented is the difference between a tool an engineer
 can trust and one they have to re-derive.
 

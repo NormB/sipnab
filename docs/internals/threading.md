@@ -1,7 +1,7 @@
 # Threading model
 
 The topology below is the reality on `main` today. The core principle
-(design decision D2): the packet path is synchronous threads + channels;
+(design decision D2): the packet path is synchronous threads + channels.
 tokio exists only inside the optional servers.
 
 ## Topology
@@ -92,7 +92,7 @@ joins. Both signals matter and neither is redundant: dropping the receiver
 ends a thread blocked on a send, and the flag ends one blocked elsewhere in its
 loop — a live capture waiting out its read timeout reaches the flag check first.
 The join has no timeout, matching the one the batch receive loop already performs
-at end of capture; a HEP listener blocked on its socket returns in milliseconds
+at end of capture. A HEP listener blocked on its socket returns in milliseconds
 rather than hanging it.
 
 One consequence for callers that cannot reach the handle:
@@ -134,7 +134,7 @@ sequenceDiagram
 
 `--cores N` offline mode replaces the single processing thread with a
 dispatcher + N workers: the dispatcher does a cheap host-pair peek and shards
-raw packets over bounded channels; each worker owns a private
+raw packets over bounded channels. Each worker owns a private
 `PacketProcessor` + thread-local `DialogStore`/`StreamStore` (no locks on the
 hot path), and the stores merge at EOF. Flow correctness holds because a
 flow's packets share a host pair and therefore a worker.

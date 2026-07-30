@@ -38,7 +38,7 @@ curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/
 On Linux the installer chooses between two build variants: the dynamically
 linked **`-gnu`** build (requires glibc >= 2.36 — Debian 12+, Ubuntu 23.04+ —
 and libpcap installed via your package manager) and the static **musl** build
-(no glibc/libpcap requirement; TUI audio playback unavailable, everything else
+(no glibc or libpcap requirement, and no TUI audio playback — everything else
 identical). The 2.36 figure is the floor the release workflow actually
 enforces on every gnu binary, and the installer now uses that same cutover —
 it serves musl only to hosts below **glibc 2.36**, or with no glibc at all. It
@@ -49,14 +49,14 @@ though the gnu build ran there fine.
 ## Pre-built binaries
 
 Every [GitHub release](https://github.com/NormB/sipnab/releases) ships the
-artifacts below. This table is the reference; the
+artifacts below. This table is the reference. The
 [download page](https://www.sipnab.com/download) carries the same files as
 ready-made links for the current release.
 
 ### Release artifacts
 
 Substitute the release version for `<version>` throughout. `SHA256SUMS.txt`
-covers every file; the tarballs additionally ship an individual
+covers every file, and the tarballs additionally ship an individual
 `.sha256` sidecar.
 
 | File | CPU | Runs on | Notes |
@@ -99,7 +99,7 @@ rustc --print deployment-target --target aarch64-apple-darwin
 ### Architecture naming
 
 `x86_64` = `amd64` (Intel/AMD) and `aarch64` = `arm64` (ARM) are the same chips
-under two spellings. Tarballs and `.rpm` packages use `x86_64`/`aarch64`; `.deb`
+under two spellings. Tarballs and `.rpm` packages use `x86_64`/`aarch64`, and `.deb`
 packages use `amd64`/`arm64`. `uname -m` reports which one you have.
 
 The `unknown` in `x86_64-unknown-linux-gnu` is the **vendor** field of the Rust
@@ -198,7 +198,7 @@ The standard package ships the audio playback plugin and therefore
 *Recommends* `libasound2`, which apt installs by default — pulling the ALSA
 stack (~500 kB) onto the system. For headless servers, each release also
 publishes a **`-noaudio`** package with no plugin and no ALSA dependency
-(everything else — WAV export included — works the same; only live playback
+(everything else — WAV export included — works the same, and only live playback
 in the TUI is unavailable).
 
 The headless amd64 (x86_64) package:
@@ -301,7 +301,7 @@ SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 
 Every release artifact is checksummed, signed with sigstore build provenance,
 and accompanied by a CycloneDX SBOM. The installer script verifies the sha256
-for you; these steps are for manual downloads, mirrors, and anything that
+for you. These steps are for manual downloads, mirrors, and anything that
 reached you by a route you did not choose.
 
 **Checksum.** `SHA256SUMS.txt` covers every tarball, `.deb`, `.rpm`, and SBOM
@@ -311,7 +311,7 @@ in the release:
 sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 
-**Provenance.** A checksum only proves the file matches the list; it says
+**Provenance.** A checksum only proves the file matches the list. It says
 nothing about who produced the list. The attestation is cryptographic proof the
 artifact came from sipnab's own release workflow, at a specific commit:
 
@@ -423,7 +423,7 @@ by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary
 `dlopen`s this plugin only when you actually play a stream, so an audio-enabled
 binary starts fine on a host without libasound. If libasound (or the plugin) is
 missing, playback returns a clear error and you can still export the stream to a
-WAV file (F2). On Debian/Ubuntu the package carries `libasound2` as a `Recommends`; install it for live playback. Only `libpcap0.8` is a hard dependency.
+WAV file (F2). On Debian/Ubuntu the package carries `libasound2` as a `Recommends`. Install it for live playback. Only `libpcap0.8` is a hard dependency.
 For a fully audio-free build, drop the `audio` feature and the plugin is not
 built.
 

@@ -56,7 +56,7 @@ for privilege dropping and capture setup.
 Three things about it are deliberate.
 
 **Nightly is a tool, not the toolchain.** `-Zsanitizer` is nightly-only, and so
-is `cargo-fuzz`; both run in their own workflow while the release build stays on
+is `cargo-fuzz`. Both run in their own workflow while the release build stays on
 the pinned stable version. Moving the build to nightly would break the toolchain
 pin, the MSRV promise, and the reproducibility of a released binary.
 
@@ -72,7 +72,7 @@ coverage.
 
 `ops/tsan/suppressions.txt` silences libpcap, libasound and the dynamic loader,
 which TSan cannot instrument. Each entry carries the reason it is not a real
-race; an unexplained suppression turns a race detector into a race ignorer.
+race. An unexplained suppression turns a race detector into a race ignorer.
 
 **The sanitizer build drops mimalloc.** `RUSTFLAGS` carries
 `--cfg sipnab_tsan`, and `src/main.rs` skips its `#[global_allocator]` under that
@@ -83,7 +83,7 @@ handed from one thread to another reads as a data race. The 2026-07-29 run
 reported exactly that, and its stacks named `read` and
 `Vec::append_elements_unreserved` with no allocator frame anywhere — so a
 suppression could not have matched it. `docs/design/backlog.md` records the
-bisect. The shipped binary keeps mimalloc; only the sanitizer build differs.
+bisect. The shipped binary keeps mimalloc. Only the sanitizer build differs.
 
 **The verdict reads every process, and classifies.** The step greps rather than
 trusting the exit code (TSan can report a finding and still exit 0 when the test
@@ -102,7 +102,7 @@ capture thread *before* the readiness hand-shake, the chroot and the privilege
 drop, so every failure from there on abandoned a thread still holding an open
 capture source — and `sipnab -I /nonexistent.pcap`, a mistyped filename, was
 enough to do it. Those paths now go through `capture::stop_and_join`, which sets
-the shutdown flag, drops the receiver and joins; the suites report zero leaks,
+the shutdown flag, drops the receiver and joins. The suites report zero leaks,
 and the fatal classification is what keeps it that way.
 
 A missing `__tsan_init` in the built binary fails the job outright, since a
@@ -143,18 +143,25 @@ argument for it being a script.
 — the installer test suite plus shellcheck, and the `.deb` build for both the
 full and `noaudio` variants — but a failure in either does **not** block a
 merge. If you touch `website/static/install.sh` or `packaging/deb/`, read their
-logs yourself; nothing else will make you.
+logs yourself. Nothing else will make you.
 
 ## Hooks
 
 Activate once per clone: `git config core.hooksPath .githooks`.
 
 [`pre-commit`](../../.githooks/pre-commit) runs eight numbered gates, in order:
+<!-- The eight pre-commit gates as one list. Several items carry their own commas
+and parentheses ("clippy (`--features full`, `-D warnings`)"), so semicolons are
+the separator; periods would make eight sentences out of one enumeration. -->
+<!-- vale Google.Semicolons = NO -->
+
 clippy (`--features full`, `-D warnings`); the full test suite; no
 `unwrap()`/`expect()` in production code; WASM exports in sync with the site's
 JS; the homepage test count matching the run it just did — plus the site and
 man-page version strings matching `Cargo.toml`; no TODO stubs; a refusal to
 commit a staged `src/wasm.rs` without a rebuilt bundle beside it; and an
+<!-- vale Google.Semicolons = YES -->
+
 advisory notice when a commit touches a file `docs/internals/` cites without
 touching `docs/internals/` itself.
 
@@ -169,7 +176,7 @@ in the workspace, an absolute GitHub URL where a relative path belongs, a page
 missing from `build-wiki.py` (which would silently never publish), and three
 mermaid conventions — `sequenceDiagram` only, no markdown links inside a fence,
 and a prose line above every one. What it cannot catch is prose that has
-quietly become false; that is still a human's job.
+quietly become false. That is still a human's job.
 
 That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
@@ -181,7 +188,7 @@ does not cover: `cargo fmt --check`, `cargo clippy --all-features --all-targets
 cargo check`, and a check of the reduced feature combinations `tls`, `api` and
 `wasm`. Rustdoc lints and the separate fuzz workspace compile independently of
 the test build, so these are exactly the failures that otherwise appear ten
-minutes later in CI. `SKIP_FMT_HOOK=1` bypasses all of them; if you use it,
+minutes later in CI. `SKIP_FMT_HOOK=1` bypasses all of them. If you use it,
 expect CI to notice.
 
 The reduced-combination gate is the newest and the least obvious. Every other
@@ -291,8 +298,8 @@ nothing produces it, so `release_artifact_counts_match_the_build_matrix` now
 derives every count here from the matrix itself.
 
 The gnu targets build inside a `rust:1-bookworm` container so
-their glibc floor is 2.36; aarch64 gnu cross-compiles inside that same
-container via Debian multiarch rather than cross-rs, for the same reason.
+their glibc floor is 2.36. The aarch64 gnu target cross-compiles inside that
+same container via Debian multiarch rather than cross-rs, for the same reason.
 
 Every gnu binary then passes a `readelf -V` gate that fails the build if it
 links a `GLIBC_` symbol newer than 2.36 — a regression guard on the build
@@ -365,7 +372,7 @@ That enforcement lives in **one** place: `docs_current_version_markers_match_car
 and `man_page_version_and_license_match_cargo` in
 [`tests/docs_drift_test.rs`](../../tests/docs_drift_test.rs), which the hook
 runs via `cargo test` and CI runs again. The hook used to carry its own shell
-re-implementation with a separate file list; the two diverged and it rejected a
+re-implementation with a separate file list. The two diverged and it rejected a
 correct release commit over a deliberately historical version reference. If you
 need to change which docs carry a marker, change the Rust list.
 
@@ -433,7 +440,7 @@ release artifact against the same corpus in the same session before concluding
 anything — a corpus or session difference looks exactly like a regression, and
 [the benchmarks page](../benchmarks.md) records one occasion that fooled
 a reader into calling it one. Update both benchmark doc trees and the homepage tiles
-together; gates enforce that they agree.
+together. Gates enforce that they agree.
 
 Everything a change passes through, in the order you meet it:
 

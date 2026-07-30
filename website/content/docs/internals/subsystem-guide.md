@@ -10,7 +10,7 @@ has_diagrams = true
 
 One packet's journey, from the wire to the screen. Read
 [`../architecture.md`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md) first for the one-screen map of the
-tree; this page is the function-level trace through it.
+tree. This page is the function-level trace through it.
 
 ## The program spine
 
@@ -75,7 +75,7 @@ sequenceDiagram
 
 ## The six hops
 
-Every mode is the same six hops; only who performs hop 5 differs.
+Every mode is the same six hops. Only who performs hop 5 differs.
 
 1. **Source.** [`capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs),
    [`capture/file.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs) or
@@ -210,7 +210,7 @@ same worker, which rebuilds its bidirectional RTP without any
 cross-thread coordination.
 
 Each worker owns a private `PacketProcessor` and thread-local stores, so the
-hot path takes no locks at all; the stores merge only at EOF.
+hot path takes no locks at all, and the stores merge only at EOF.
 
 <pre class="mermaid">
 sequenceDiagram
@@ -233,7 +233,7 @@ sequenceDiagram
 </pre>
 
 Two dispatch shapes exist. [`run_offline_parallel()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs)
-consumes a `PacketRx` one packet at a time;
+consumes a `PacketRx` one packet at a time, while
 [`run_offline_parallel_file()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) reads the file itself
 and sends packets in batches of 128, because the per-packet channel hop —
 not the reconstruction work — was what capped throughput past two cores.
@@ -256,7 +256,7 @@ emitted Debug-formatted `Invite` where the API emitted `INVITE`. One
 REST, MCP, TUI save and reports alike, and
 [`summary_consistency_test`](https://github.com/NormB/sipnab/blob/main/tests/summary_consistency_test.rs) pins it.
 
-These are the *compact* projections; the full-fidelity forms — every header,
+These are the *compact* projections. The full-fidelity forms — every header,
 SDP timelines, quality intervals — live in
 [`output/json.rs`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs). Adding a field to one surface
 only means adding it to the model, which is the point.

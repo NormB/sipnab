@@ -21,7 +21,7 @@ End-to-end examples in five languages. Each one covers: bearer-token auth, listi
 The snippet sets `$API`, `$KEY` and `$H` at the top and every call below uses them, so this
 block is one paste into one shell. Lifting a single line out of the middle gives
 you a curl with unset variables, which requests `/v1/dialogs` on no host with no
-bearer token. Every call here is a read; running the block start to finish
+bearer token. Every call here is a read, and running the block start to finish
 changes nothing on the server.
 
 ```bash

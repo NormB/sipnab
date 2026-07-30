@@ -40,7 +40,7 @@ token minted from `--api-signing-key`, and the REST API turns away one minted
 from `--mcp-signing-key` — **even when both surfaces carry the same signing
 key**. Since the two surfaces read separate
 flags and separate environment variables, reusing one secret across them is an
-easy mistake; before audience binding it silently granted cross-surface access.
+easy mistake. Before audience binding it silently granted cross-surface access.
 
 The version prefix is part of the signed input, so an `s2` token cannot be
 rewritten as `s1` to shed its binding — the signature no longer matches.
@@ -53,7 +53,7 @@ the binding above best-effort rather than absolute.
 
 If you are still holding an `s1` token, it now returns `401`. Re-mint with
 `--mint-token`. Since the default TTL is one hour, most callers will have
-rotated naturally; long-TTL tokens are the ones to check.
+rotated naturally. Long-TTL tokens are the ones to check.
 
 ## 1. Configure a signing key
 
@@ -91,14 +91,14 @@ An API token at the default one-hour TTL needs nothing but the signing key:
 sipnab --mint-token --api-signing-key "$KEY"
 ```
 
-An MCP token for a CI runner gets a 24-hour life and an explicit id, so that it
-a denylist can name later:
+An MCP token for a CI runner gets a 24-hour life and an explicit id that a
+denylist can name later:
 
 ```bash
 sipnab --mint-token --mcp-signing-key "$KEY" --mcp-token-ttl 86400 --token-id ci-runner-1
 ```
 
-`--api-token-ttl` / `--mcp-token-ttl` (default `3600`) set the lifetime;
+`--api-token-ttl` / `--mcp-token-ttl` (default `3600`) set the lifetime, and
 `--token-id` sets the `jti` (defaults to a generated id). Distribute the printed
 token to clients.
 
@@ -108,7 +108,7 @@ token to clients.
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
 ```
 
-A valid, unexpired, non-revoked token returns `200`; anything else returns
+A valid, unexpired, non-revoked token returns `200`. Anything else returns
 `401`.
 
 ## 4. Expiry
@@ -156,7 +156,7 @@ stateless model.)
   secret. (An `s1.x.y` shape is no longer a recognized version, so it is
   treated as an ordinary opaque secret.)
 - Static secrets carry no audience. If you set the same static
-  `--api-key` and `--mcp-token`, that one secret opens both surfaces; audience
+  `--api-key` and `--mcp-token`, that one secret opens both surfaces. Audience
   binding applies to signed tokens only.
 - TLS for the REST API is **not yet built in**; terminate TLS at a reverse proxy
   for non-loopback deployments.

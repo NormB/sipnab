@@ -95,7 +95,7 @@ the thing it guards silently rotted at least once.
 | [`support_selftest`](https://github.com/NormB/sipnab/blob/main/tests/support_selftest.rs) | The shared normalization helper changes behavior under the tests that depend on it. |
 
 The rule for all of them: **the gate is not the problem**. If
-`flag_coverage_test` fails, the flag needs a test; if `dev_docs_drift_test`
+`flag_coverage_test` fails, the flag needs a test. If `dev_docs_drift_test`
 fails, a page now lies. Adding an exemption is the last resort, and every
 exemption list in this repo works as a ratchet so it cannot quietly grow.
 
@@ -123,7 +123,7 @@ for the day the e2e shim goes away.
 
 **The docker lab.** [`harness/`](https://github.com/NormB/sipnab/blob/main/harness) is a docker-compose stack —
 OpenSIPS, rtpengine, SIPp — for generating real traffic. `make up` in that
-directory builds and starts it; `make down` tears it down.
+directory builds and starts it, and `make down` tears it down.
 
 **WASM.** Two pre-commit gates cover the browser analyzer: one checks that
 `website/static/wasm/sipnab.js` still exports

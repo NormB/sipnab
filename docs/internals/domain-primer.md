@@ -38,7 +38,7 @@ and never corrected. A response derives it from CSeq, so a malformed response �
 Call-ID present, CSeq absent — used to create a dialog under that Call-ID
 labelled with an invented method, and the genuine INVITE arriving afterwards
 matched that entry instead of creating its own. The label then outlived the
-capture. Such a message now creates no dialog; it is still captured, counted and
+capture. Such a message now creates no dialog. It is still captured, counted and
 searchable, and the INVITE that follows creates the dialog correctly.
 
 ### CSeq pins the transaction
@@ -133,7 +133,7 @@ sequenceDiagram
 
 ### Hold and resume are direction attributes
 
-A re-INVITE with `a=sendonly` puts the far end on hold; `a=sendrecv` resumes.
+A re-INVITE with `a=sendonly` puts the far end on hold, and `a=sendrecv` resumes.
 [`sdp.rs`](../../src/sip/sdp.rs) parses `sendonly`/`recvonly`/`inactive` into a
 direction on the media description. The older RFC 2543 convention of holding by
 setting the connection address to `c=0.0.0.0` is **not** recognized as hold
@@ -191,7 +191,7 @@ human call is two Call-IDs with no shared identifier by default.
 [`dialog_store.rs`](../../src/sip/dialog_store.rs) correlates legs three ways,
 each with a confidence score: `XCallId` (a configured header, `X-Call-ID` by
 default), `ViaBranch` (a shared branch parameter), and `TimingHeuristic`
-(endpoint overlap plus timing). The header is the reliable one; the heuristic
+(endpoint overlap plus timing). The header is the reliable one. The heuristic
 exists because most deployments do not set it.
 
 ## RTP
@@ -212,7 +212,7 @@ different workers.
 
 The 16-bit sequence number wraps roughly every 20 minutes of voice. Loss
 detection compares `wrapping_add(1)` against the received sequence
-([`stream.rs`](../../src/rtp/stream.rs)); a plain `>` comparison reports one
+([`stream.rs`](../../src/rtp/stream.rs)). A plain `>` comparison reports one
 enormous loss burst per wrap on every long call.
 
 ### Timestamps are not wall-clock
@@ -263,13 +263,13 @@ sequenceDiagram
 
 [`estimate_mos()`](../../src/rtp/quality.rs) is an E-model computation from
 jitter, loss and codec — a model output on the 1.0–4.5 scale, not an opinion
-score from a listener. Say "estimated MOS" in anything user-facing; the
+score from a listener. Say "estimated MOS" in anything user-facing. The
 distinction is the difference between a tool an engineer trusts and one they
 re-derive.
 
 ### Bursty loss and diffuse loss are not the same impairment
 
-Ten percent loss in one clump is a dropped word; ten percent scattered is a
+Ten percent loss in one clump is a dropped word. Ten percent scattered is a
 faint crackle a codec's concealment mostly hides.
 [`analyze_burst_gap()`](../../src/rtp/quality.rs) classifies which it is, and
 the loss map view renders it in sequence space.

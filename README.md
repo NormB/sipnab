@@ -56,7 +56,7 @@ The `audio` feature **no longer links libasound into the `sipnab` binary**.
 Device output lives in a separate plugin, `libsipnab_audio.so`
 (`/usr/lib/sipnab/` from the `.deb`, or next to the binary in dev builds),
 which sipnab `dlopen`s only the moment you press play. So an audio-enabled
-binary starts fine on a host without libasound; if libasound (or the plugin)
+binary starts fine on a host without libasound. If libasound (or the plugin)
 is missing, playback returns a clear error and WAV export (F2) still works.
 Install `libasound2` for live playback — it is a Debian `Recommends`, not a
 hard dependency. For headless servers, each release also ships a `-noaudio`
@@ -185,7 +185,7 @@ TUI and no audio:
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 
-Note: `audio` is in the default feature set, but it does **not** add a load-time `libasound2` dependency to the `sipnab` binary. The rodio/ALSA code lives in the separate `sipnab-audio` cdylib plugin (`libsipnab_audio.so`), which the binary `dlopen`s lazily only when you actually play a stream. So the binary starts fine without libasound; install `libasound2` only if you want live playback (otherwise WAV export still works). For a fully audio-free build, drop `audio` (e.g. `--no-default-features --features native,tui` or the headless recipe above) and the plugin is simply not built.
+Note: `audio` is in the default feature set, but it does **not** add a load-time `libasound2` dependency to the `sipnab` binary. The rodio/ALSA code lives in the separate `sipnab-audio` cdylib plugin (`libsipnab_audio.so`), which the binary `dlopen`s lazily only when you actually play a stream. So the binary starts fine without libasound. Install `libasound2` only if you want live playback (otherwise WAV export still works). For a fully audio-free build, drop `audio` (e.g. `--no-default-features --features native,tui` or the headless recipe above) and the plugin is simply not built.
 
 ## Documentation
 
