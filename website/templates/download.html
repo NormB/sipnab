@@ -49,7 +49,15 @@
       <button type="button" class="dl-copy" data-copy="curl -fsSL https://www.sipnab.com/install.sh | sh" aria-label="Copy install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     </div>
   </div>
-  <p class="dl-note">Detects your CPU, checks your glibc version, downloads the matching build, verifies its <code>sha256</code>, and installs to <code>/usr/local/bin</code>. Prefer to read it first? <a href="{{ get_url(path='install.sh') }}">View install.sh</a>.</p>
+  {# Deliberately GitHub's blob view, not get_url(path='install.sh'). That URL
+     is the one the curl above pipes to sh, and Pages serves it as an x-sh
+     attachment -- so "View install.sh" saved a shell script to the visitor's
+     disk instead of showing it. A link inviting someone to READ the code before
+     trusting it must not hand them the file to run. Content-Type is the
+     server's to set and no attribute here overrides it, so the read-it link
+     points where the source renders as text. website/static/install.sh is the
+     same file Pages publishes and the gates above read. #}
+  <p class="dl-note">Detects your CPU, checks your glibc version, downloads the matching build, verifies its <code>sha256</code>, and installs to <code>/usr/local/bin</code>. Prefer to read it first? <a href="{{ config.extra.github_url }}/blob/main/website/static/install.sh">Read install.sh on GitHub</a>.</p>
 
   <div class="dl-namemap-wrap">
     <p class="dl-namemap-lead">Same chip, different names &mdash; these are equivalent. Tarballs use the left name, <code>.deb</code> packages the middle one. Not sure? Run <code>uname -m</code>.</p>
@@ -229,7 +237,7 @@
     </div>
   </div>
 
-  <p class="dl-verify-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg><span>Grabbed a file above? <a href="#verify">Verify its checksum &darr;</a> &mdash; sipnab is a security tool.</span></p>
+  <p class="dl-verify-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg><span>Grabbed a file above? <a href="#verify">Verify its checksum &darr;</a> before you run it.</span></p>
 
   <section class="dl-automation" id="automation">
     <div class="dl-method-head"><h2>Docker &amp; automation</h2><span class="dl-rec dl-rec--blue">for CI &amp; fleets</span></div>
@@ -316,17 +324,26 @@
       <span class="dl-verify-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg></span>
       <div>
         <h2>Verify your download</h2>
-        <p>sipnab is a security tool &mdash; always confirm integrity before running. Every artifact is checksummed by CI.</p>
+        <p>You are about to run a binary you downloaded over the network, and installing it puts it in <code>/usr/local/bin</code> under <code>sudo</code>. A checksum is how you know you got the file CI built and not something substituted in transit or on a mirror. Every artifact is checksummed by CI.</p>
+      </div>
+    </div>
+    {# One terminal per OS, not one block holding both. As a single --multi
+       block a drag-select or the one copy button took BOTH lines, so whichever
+       command was wrong for your machine came along with the right one --
+       paste that into a shell and the second line runs a binary you did not
+       mean to invoke. Each command is now its own selectable block. #}
+    <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">macOS &middot; sha256 &middot; run in your download folder</span></div>
+      <div class="dl-term-body">
+        <code><span class="dl-prompt">$</span>shasum -a 256 -c SHA256SUMS.txt --ignore-missing</code>
+        <button type="button" class="dl-copy" data-copy="shasum -a 256 -c SHA256SUMS.txt --ignore-missing" aria-label="Copy macOS verify command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
     <div class="dl-term">
-      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">sha256 &middot; run in your download folder</span></div>
-      <div class="dl-term-body dl-term-body--multi">
-        <code><span class="dl-cmt"># macOS</span>
-<span class="dl-prompt">$</span>shasum -a 256 -c SHA256SUMS.txt --ignore-missing
-<span class="dl-cmt"># Linux</span>
-<span class="dl-prompt">$</span>sha256sum -c SHA256SUMS.txt --ignore-missing</code>
-        <button type="button" class="dl-copy" data-copy="shasum -a 256 -c SHA256SUMS.txt --ignore-missing&#10;sha256sum -c SHA256SUMS.txt --ignore-missing" aria-label="Copy verify commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">Linux &middot; sha256 &middot; run in your download folder</span></div>
+      <div class="dl-term-body">
+        <code><span class="dl-prompt">$</span>sha256sum -c SHA256SUMS.txt --ignore-missing</code>
+        <button type="button" class="dl-copy" data-copy="sha256sum -c SHA256SUMS.txt --ignore-missing" aria-label="Copy Linux verify command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
     <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. An <code>OK</code> line means it&rsquo;s authentic. Each tarball also ships an individual <code>.sha256</code>; <code>.deb</code> and <code>.rpm</code> checksums live only in <code>SHA256SUMS.txt</code>.</p>

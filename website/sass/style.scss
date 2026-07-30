@@ -2243,6 +2243,11 @@ input:focus-visible,
   background: $bg; border: 1px solid $border; border-radius: 11px; overflow: hidden;
   box-shadow: 0 16px 40px -18px rgba(0, 0, 0, 0.7);
 }
+// Stacked terminals (the per-OS verify pair) would otherwise share an edge and
+// read as one block -- the very thing splitting them was meant to fix. Adjacent
+// only: every other sibling pair on the page has a .dl-note between them, which
+// carries its own margin and does not match this selector.
+.dl-term + .dl-term { margin-top: 0.85rem; }
 .dl-term-head {
   display: flex; align-items: center; gap: 0.65rem; padding: 0.6rem 0.95rem;
   border-bottom: 1px solid $border; background: rgba(255, 255, 255, 0.02);
@@ -2322,7 +2327,6 @@ input:focus-visible,
 .dl-verify-ico svg { width: 20px; height: 20px; }
 .dl-verify-head h2 { font-size: 1.1rem; margin: 0; }
 .dl-verify-head p { color: $text-dim; font-size: 0.88rem; margin: 0.3rem 0 0; line-height: 1.55; max-width: 40rem; }
-.dl-cmt { color: $text-dim; user-select: none; }
 
 // Detection banner: tells rookies which of the files below is theirs.
 .dl-detect {
