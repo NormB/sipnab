@@ -53,15 +53,55 @@ though the gnu build ran there fine.
 
 ## Pre-built Binaries
 
-Every [GitHub release](https://github.com/NormB/sipnab/releases) ships
-versioned tarballs per target triple, each with a matching `.sha256` checksum
-file:
+Every [GitHub release](https://github.com/NormB/sipnab/releases) ships the
+artifacts below. This table is the reference; the
+[download page](https://www.sipnab.com/download) carries the same files as
+ready-made links for the current release.
 
-- `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` — dynamic, needs glibc >= 2.36 + libpcap
-- `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` — same, for arm64
-- `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` — static, runs on any glibc (no TUI audio)
-- `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` — same, for arm64
-- `sipnab-<version>-x86_64-apple-darwin.tar.gz` / `sipnab-<version>-aarch64-apple-darwin.tar.gz` — macOS
+### Release artifacts
+
+Substitute the release version for `<version>` throughout. Every file is
+covered by `SHA256SUMS.txt`; the tarballs additionally ship an individual
+`.sha256` sidecar.
+
+| File | CPU | Runs on | Notes |
+|---|---|---|---|
+| `sipnab_<version>_amd64.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
+| `sipnab_<version>_arm64.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
+| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers |
+| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers |
+| `sipnab-<version>-1.x86_64.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
+| `sipnab-<version>-1.aarch64.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
+| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
+| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
+| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback |
+| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback |
+| `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features including audio |
+| `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features including audio |
+| `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
+| `sipnab-<version>-aarch64-apple-darwin.tar.gz` | Apple Silicon | macOS 11.0+ | M-series Macs |
+| `SHA256SUMS.txt` | — | — | checksums for every package, tarball, and SBOM |
+| `sipnab-<version>.cdx.json` | — | — | CycloneDX SBOM — full dependency tree |
+| `sipnab-audio-<version>.cdx.json` | — | — | CycloneDX SBOM — audio feature subtree |
+| `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.97+ builds | tagged source tree |
+
+The two macOS floors differ because the release does not set
+`MACOSX_DEPLOYMENT_TARGET`, so each target keeps the compiler's own default.
+Read them from the pinned toolchain rather than trusting a copy of the number:
+
+```bash
+rustc --print deployment-target --target x86_64-apple-darwin
+```
+
+```bash
+rustc --print deployment-target --target aarch64-apple-darwin
+```
+
+### Architecture naming
+
+`x86_64` = `amd64` (Intel/AMD) and `aarch64` = `arm64` (ARM) are the same chips
+under two spellings. Tarballs and `.rpm` packages use `x86_64`/`aarch64`; `.deb`
+packages use `amd64`/`arm64`. `uname -m` reports which one you have.
 
 The `unknown` in `x86_64-unknown-linux-gnu` is the **vendor** field of the Rust
 target triple (`arch-vendor-os-abi`) — the canonical value meaning "no specific
@@ -70,10 +110,6 @@ of the platform name, not a failed detection or a broken build. Names are kept
 as the canonical triple deliberately: they match `rustc -vV`, they are what
 `SHA256SUMS.txt` and the build-provenance attestation cover, and the install
 script constructs them.
-
-Architecture naming: `x86_64` = `amd64` (Intel/AMD), `aarch64` = `arm64`
-(ARM); tarballs use the former, `.deb` packages the latter. `uname -m` tells
-you which one you are.
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
 Alpine included. Replace `<version>` with the latest, e.g. 0.5.64:

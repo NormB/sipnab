@@ -2282,6 +2282,10 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+// The two pointers that replaced the inlined artifact table.
+.dl-allfiles-links { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-top: 1.1rem; }
+.dl-allfiles-links .dl-tile { flex: 1 1 15rem; }
+
 .dl-note { color: $text-dim; font-size: 0.85rem; margin: 1rem 0 0; }
 .dl-note code, .dl-lead code {
   font-family: $font-mono; font-size: 0.8rem; background: $surface;

@@ -295,42 +295,22 @@
     </div>
   </section>
 
+  {# Diataxis: a how-to should "refer to the x reference guide for a full list
+     of options" rather than inline it. This section held a 19-row artifact
+     table that docs/install.md restated in full -- and that duplication is
+     what produced the 0.5.63/0.5.64 version drift and the two ungated `rpm -i`
+     recipes. The reference now has exactly one home; this page links to it and
+     keeps the concrete per-platform links above, which are the how-to. #}
   <section class="dl-allfiles" id="all-files">
-    <div class="dl-method-head"><h2>Every file, one table</h2><span class="dl-rec dl-rec--dim">for the seasoned</span></div>
-    <div class="dl-table-wrap" tabindex="0" role="region" aria-label="Release artifacts table">
-      <table class="dl-table">
-        <caption class="dl-table-cap">Every sipnab v{{ v }} release artifact &mdash; filename, CPU architecture, what it runs on, notes, and its checksum.</caption>
-        <thead><tr><th scope="col">File</th><th scope="col">CPU</th><th scope="col">Runs on</th><th scope="col">Notes</th><th scope="col">sha256</th></tr></thead>
-        <tbody>
-          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64.deb"><code>sipnab_{{ v }}_amd64.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64.deb"><code>sipnab_{{ v }}_arm64.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64-noaudio.deb"><code>sipnab_{{ v }}_amd64-noaudio.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>no ALSA dependency &mdash; headless servers</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64-noaudio.deb"><code>sipnab_{{ v }}_arm64-noaudio.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>no ALSA dependency &mdash; headless servers</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.x86_64.rpm"><code>sipnab-{{ v }}-1.x86_64.rpm</code></a></td><td>x86_64 / amd64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>dnf/rpm-managed, full features</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.aarch64.rpm"><code>sipnab-{{ v }}-1.aarch64.rpm</code></a></td><td>aarch64 / arm64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>dnf/rpm-managed, full features</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.x86_64-noaudio.rpm"><code>sipnab-{{ v }}-1.x86_64-noaudio.rpm</code></a></td><td>x86_64 / amd64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>no ALSA weak dep &mdash; headless servers</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.aarch64-noaudio.rpm"><code>sipnab-{{ v }}-1.aarch64-noaudio.rpm</code></a></td><td>aarch64 / arm64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>no ALSA weak dep &mdash; headless servers</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz"><code>&hellip;x86_64-unknown-linux-musl.tar.gz</code></a></td><td>x86_64 / amd64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256">.sha256</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz"><code>&hellip;aarch64-unknown-linux-musl.tar.gz</code></a></td><td>aarch64 / arm64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz.sha256">.sha256</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz"><code>&hellip;x86_64-unknown-linux-gnu.tar.gz</code></a></td><td>x86_64 / amd64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz.sha256">.sha256</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz"><code>&hellip;aarch64-unknown-linux-gnu.tar.gz</code></a></td><td>aarch64 / arm64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz.sha256">.sha256</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz"><code>&hellip;aarch64-apple-darwin.tar.gz</code></a></td><td>Apple Silicon</td><td>macOS {{ config.extra.macos_floor_arm }}+</td><td>M-series Macs</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz.sha256">.sha256</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz"><code>&hellip;x86_64-apple-darwin.tar.gz</code></a></td><td>Intel</td><td>macOS {{ config.extra.macos_floor_intel }}+</td><td>Intel Macs</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz.sha256">.sha256</a></td></tr>
-          {# "every artifact above" was a claim about row order, and adding the
-             SBOM rows under it silently made it false. Say what the file covers
-             instead: the 16 packages and SBOMs, not the .sha256 sidecars (which
-             are checksums) and not itself. #}
-          <tr><td><a href="{{ rel }}/SHA256SUMS.txt"><code>SHA256SUMS.txt</code></a></td><td>&mdash;</td><td>&mdash;</td><td>checksums for every package, tarball, and SBOM in this release</td><td>&mdash;</td></tr>
-          {# The SBOMs are release assets like any other. Leaving them out while
-             the heading says "Every file" and the caption says "Every release
-             artifact" made both false -- and they are the two files an auditor
-             comes to this table for. #}
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}.cdx.json"><code>sipnab-{{ v }}.cdx.json</code></a></td><td>&mdash;</td><td>&mdash;</td><td>CycloneDX SBOM &mdash; full dependency tree</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-audio-{{ v }}.cdx.json"><code>sipnab-audio-{{ v }}.cdx.json</code></a></td><td>&mdash;</td><td>&mdash;</td><td>CycloneDX SBOM &mdash; audio feature subtree</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
-          <tr><td><a href="{{ config.extra.github_url }}/archive/refs/tags/v{{ v }}.tar.gz"><code>v{{ v }}.tar.gz</code> (source)</a></td><td>&mdash;</td><td>anywhere Rust 1.97+ builds</td><td>tagged source tree</td><td>&mdash;</td></tr>
-          <tr><td><a href="{{ config.extra.github_url }}/archive/refs/tags/v{{ v }}.zip"><code>v{{ v }}.zip</code> (source)</a></td><td>&mdash;</td><td>anywhere Rust 1.97+ builds</td><td>tagged source tree</td><td>&mdash;</td></tr>
-        </tbody>
-      </table>
+    <div class="dl-method-head"><h2>Every file in a release</h2><span class="dl-rec dl-rec--dim">for the seasoned</span></div>
+    <p class="dl-lead">Four <code>.deb</code> and four <code>.rpm</code> packages, six tarballs, two CycloneDX SBOMs, <code>SHA256SUMS.txt</code>, and the tagged source archives &mdash; 23 files in all. The <a href="{{ get_url(path='@/docs/install.md') }}#release-artifacts">artifact reference</a> describes what each one is, which CPU it targets, and what it needs to run.</p>
+    <div class="dl-allfiles-links">
+      <a class="dl-tile dl-tile--sm" href="{{ get_url(path='@/docs/install.md') }}#release-artifacts">
+        <span class="dl-tile-txt"><span class="dl-tile-name">Artifact reference</span><span class="dl-tile-sub">every file, and what it is for</span></span>
+      </a>
+      <a class="dl-tile dl-tile--sm" href="{{ config.extra.github_url }}/releases/tag/v{{ v }}">
+        <span class="dl-tile-txt"><span class="dl-tile-name">Browse v{{ v }}</span><span class="dl-tile-sub">download any file directly</span></span>
+      </a>
     </div>
   </section>
 
