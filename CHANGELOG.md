@@ -42,7 +42,7 @@ entry that carries them.
   `MinAlertLevel = error`, so they reported nothing whether on or off — but their
   comments cited counts from a probe run at `suggestion`, which read as though
   each was suppressing thousands of live alerts. The counts are now measured at
-  the enforced level, the pre-emptive disables are labelled as such, the 670-alert
+  the enforced level, the preemptive disables are labelled as such, the 670-alert
   backlog that a threshold change would surface is written down, and the rules
   that actually fire are listed by name and verified by mutation.
 
