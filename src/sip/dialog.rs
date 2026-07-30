@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 
 use super::SipMessage;
 use super::method::SipMethod;
+use super::response_codes::{ResponseClass, response_class};
 use super::sdp_timeline::SdpExchange;
 use super::timing::DialogTiming;
 
@@ -295,10 +296,14 @@ impl SipDialog {
 ///
 /// Applies the state machine rules for the dialog's initial method:
 /// - **INVITE**: 100→Trying, 180/183→Ringing, 2xx→InCall,
-///   4xx/5xx/6xx→Failed, CANCEL or 487→Cancelled, BYE→Completed
-/// - **REGISTER**: 2xx→Registered, 4xx/5xx/6xx→Failed
-/// - **SUBSCRIBE**: 2xx→Active, NOTIFY→Active, 4xx/5xx/6xx→Terminated
-/// - **all other methods**: 2xx→Completed, 4xx/5xx/6xx→Failed
+///   declined/failed→Failed, CANCEL or 487→Cancelled, BYE→Completed
+/// - **REGISTER**: 2xx→Registered, declined/failed→Failed
+/// - **SUBSCRIBE**: 2xx→Active, NOTIFY→Active, declined/failed→Terminated
+/// - **all other methods**: 2xx→Completed, declined/failed→Failed
+///
+/// Every handler classifies through [`response_class`]. An auth challenge is
+/// intermediate everywhere, and a 3xx redirect changes no state — a known gap,
+/// pinned by `every_method_and_class_has_a_declared_transition`.
 ///
 /// ACK messages are recorded but do not cause state transitions.
 ///
@@ -427,24 +432,46 @@ fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
                     dialog.state = DialogState::Cancelled;
                 }
             }
-            400..=699 => {
-                // Error responses to the initial INVITE
-                let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
-                if cseq_method == "INVITE"
-                    && (dialog.state == DialogState::Trying || dialog.state == DialogState::Ringing)
-                {
-                    dialog.state = DialogState::Failed;
+            _ => match response_class(code) {
+                // A challenge is intermediate: the client retries with
+                // credentials. Marking Failed here made the 2xx that followed
+                // unable to recover, because its guard only admits the
+                // pre-answer states -- so a challenged call that authenticated
+                // and connected reported Failed unless a BYE happened to be
+                // captured. `domain-primer.md` has always documented the
+                // intermediate rule, and `update_register_state` implemented
+                // it; this arm did not.
+                ResponseClass::Challenge => {}
+                // KNOWN GAP: a 3xx ends this dialog and sends the UAC to a new
+                // target, which is neither a failure nor an answer. sipnab has
+                // no state for it, so the dialog keeps its pre-answer state.
+                // Modelling it properly needs a `Redirected` variant, which
+                // changes the JSON schema, the filter DSL and the TUI column.
+                // `every_method_and_class_has_a_declared_transition` pins the
+                // current behaviour so the gap is visible rather than implicit.
+                ResponseClass::Redirect => {}
+                ResponseClass::Declined | ResponseClass::Failure => {
+                    let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
+                    if cseq_method == "INVITE"
+                        && (dialog.state == DialogState::Trying
+                            || dialog.state == DialogState::Ringing)
+                    {
+                        dialog.state = DialogState::Failed;
+                    }
                 }
-            }
-            _ => {}
+                // Provisional, Success and Cancelled are handled by the arms
+                // above, which match specific codes before reaching here.
+                ResponseClass::Provisional | ResponseClass::Success | ResponseClass::Cancelled => {}
+            },
         }
     }
 }
 
-/// State transitions for REGISTER dialogs: a 2xx response moves the
-/// dialog to `Registered`, a 4xx–6xx response (including 401/407 auth
-/// challenges) to `Failed`; requests and provisional responses are
-/// ignored.
+/// State transitions for REGISTER dialogs: a 2xx response moves the dialog to
+/// `Registered` and a declined or failed response to `Failed`. Auth challenges
+/// are intermediate, and requests and provisional responses are ignored.
+/// Classification comes from [`response_class`], shared with the other three
+/// handlers.
 ///
 /// # Side effects
 ///
@@ -453,19 +480,17 @@ fn update_register_state(dialog: &mut SipDialog, msg: &SipMessage) {
     if !msg.is_request
         && let Some(code) = msg.status_code
     {
-        match code {
-            200..=299 => {
-                dialog.state = DialogState::Registered;
-            }
-            // 401/407 are auth challenges: the client re-registers with
-            // credentials, so a challenge is intermediate, not a failure.
-            // Leave the state unchanged (auth pending); a genuine 4xx-6xx
-            // below marks Failed, and a later 2xx marks Registered.
-            401 | 407 => {}
-            400..=699 => {
+        match response_class(code) {
+            ResponseClass::Success => dialog.state = DialogState::Registered,
+            // A challenge is intermediate: the client re-registers with
+            // credentials. A later 2xx marks Registered.
+            ResponseClass::Challenge => {}
+            ResponseClass::Declined | ResponseClass::Failure => {
                 dialog.state = DialogState::Failed;
             }
-            _ => {}
+            // A 3xx redirects the registration elsewhere; see the INVITE
+            // handler for why there is no state for it yet.
+            ResponseClass::Provisional | ResponseClass::Redirect | ResponseClass::Cancelled => {}
         }
     }
 }
@@ -483,14 +508,15 @@ fn update_subscribe_state(dialog: &mut SipDialog, msg: &SipMessage) {
             dialog.state = DialogState::Active;
         }
     } else if let Some(code) = msg.status_code {
-        match code {
-            200..=299 => {
-                dialog.state = DialogState::Active;
-            }
-            400..=699 => {
+        match response_class(code) {
+            ResponseClass::Success => dialog.state = DialogState::Active,
+            // Same rule as REGISTER and INVITE: the client re-subscribes
+            // with credentials, so a challenge ends nothing.
+            ResponseClass::Challenge => {}
+            ResponseClass::Declined | ResponseClass::Failure => {
                 dialog.state = DialogState::Terminated;
             }
-            _ => {}
+            ResponseClass::Provisional | ResponseClass::Redirect | ResponseClass::Cancelled => {}
         }
     }
 }
@@ -507,14 +533,13 @@ fn update_generic_state(dialog: &mut SipDialog, msg: &SipMessage) {
     if !msg.is_request
         && let Some(code) = msg.status_code
     {
-        match code {
-            200..=299 => {
-                dialog.state = DialogState::Completed;
-            }
-            400..=699 => {
+        match response_class(code) {
+            ResponseClass::Success => dialog.state = DialogState::Completed,
+            ResponseClass::Challenge => {}
+            ResponseClass::Declined | ResponseClass::Failure => {
                 dialog.state = DialogState::Failed;
             }
-            _ => {}
+            ResponseClass::Provisional | ResponseClass::Redirect | ResponseClass::Cancelled => {}
         }
     }
 }
@@ -733,6 +758,206 @@ mod tests {
             dialog.state,
             DialogState::InCall,
             "a 487 after a 2xx must not un-answer an established call"
+        );
+    }
+
+    /// A challenged INVITE that then authenticates reaches `InCall`.
+    ///
+    /// `domain-primer.md` has always said 401/407 are *intermediate*, and
+    /// `update_register_state` implemented that. `update_invite_state` did not:
+    /// a challenge fell into its `400..=699` arm and set `Failed`, and because
+    /// the 2xx arm only transitions from Trying/Ringing/Cancelled, the call
+    /// could never recover. `outcome_code()` reported 200 while `state` said
+    /// Failed.
+    ///
+    /// A captured BYE hid it, since BYE sets Completed unconditionally — which
+    /// is why the sample captures read correctly and this survived. It bit a
+    /// call still up, or one whose BYE was not captured. That is live capture.
+    #[test]
+    fn invite_challenged_then_answered_is_in_call() {
+        let invite = make_invite();
+        let mut d = SipDialog::new(&invite).expect("dialog");
+
+        update_state(&mut d, &make_response(100, "Trying", "INVITE"));
+        update_state(&mut d, &make_response(401, "Unauthorized", "INVITE"));
+        assert_ne!(
+            d.state,
+            DialogState::Failed,
+            "an auth challenge is intermediate, not an outcome"
+        );
+
+        update_state(&mut d, &make_invite());
+        update_state(&mut d, &make_response(180, "Ringing", "INVITE"));
+        assert_eq!(d.state, DialogState::Ringing);
+
+        update_state(&mut d, &make_response(200, "OK", "INVITE"));
+        assert_eq!(
+            d.state,
+            DialogState::InCall,
+            "a challenged call that authenticates and answers is in call"
+        );
+    }
+
+    /// A 407 proxy challenge behaves the same as a 401.
+    #[test]
+    fn invite_proxy_challenged_then_answered_is_in_call() {
+        let invite = make_invite();
+        let mut d = SipDialog::new(&invite).expect("dialog");
+        update_state(
+            &mut d,
+            &make_response(407, "Proxy Authentication Required", "INVITE"),
+        );
+        update_state(&mut d, &make_response(200, "OK", "INVITE"));
+        assert_eq!(d.state, DialogState::InCall);
+    }
+
+    /// A SUBSCRIBE challenge does not terminate the subscription.
+    ///
+    /// Same rule, same reason: the client re-subscribes with credentials.
+    #[test]
+    fn subscribe_auth_challenge_is_not_terminal() {
+        let sub = make_request("SUBSCRIBE");
+        let mut d = SipDialog::new(&sub).expect("dialog");
+        for code in [401u16, 407] {
+            d.state = DialogState::Trying;
+            update_state(&mut d, &make_response(code, "Challenge", "SUBSCRIBE"));
+            assert_ne!(
+                d.state,
+                DialogState::Terminated,
+                "{code} challenge must not terminate a SUBSCRIBE dialog"
+            );
+        }
+        update_state(&mut d, &make_response(200, "OK", "SUBSCRIBE"));
+        assert_eq!(d.state, DialogState::Active);
+    }
+
+    /// A challenge a client never answers leaves no success behind.
+    ///
+    /// The dialog stays pre-answer rather than reporting Failed. `outcome_code`
+    /// still reports the challenge, which is the documented rule: the challenge
+    /// becomes the answer only for a call that drew one and never authenticated.
+    #[test]
+    fn invite_challenged_and_never_authenticated_does_not_reach_in_call() {
+        let invite = make_invite();
+        let mut d = SipDialog::new(&invite).expect("dialog");
+        update_state(&mut d, &make_response(407, "Proxy Auth Required", "INVITE"));
+        assert!(
+            matches!(d.state, DialogState::Trying | DialogState::Ringing),
+            "expected a pre-answer state, got {:?}",
+            d.state
+        );
+        assert_ne!(d.state, DialogState::InCall);
+    }
+
+    /// Every method crossed with every registered response code.
+    ///
+    /// 14 methods from the IANA registry × 75 response codes = 1050 pairs, each
+    /// driven through `update_state` from a fresh dialog and checked against a
+    /// declared expectation. The expectation is written per (family, class), not
+    /// per pair, so it states a rule rather than a transcript.
+    ///
+    /// This exists because the transitions used to be inline ranges restated
+    /// across four handlers, and the two defects that survived longest — a 487
+    /// that could not move a dialog, and 3xx handled nowhere — were both in the
+    /// spaces between those arms. A pairwise sweep has no spaces.
+    ///
+    /// The 3xx rows pin a KNOWN GAP: a redirect leaves the dialog in its
+    /// pre-answer state because sipnab has no `Redirected` variant. Pinning it
+    /// means the gap is a decision on the record, and closing it will fail here
+    /// first.
+    #[test]
+    fn every_method_and_class_has_a_declared_transition() {
+        use crate::sip::response_codes::{ResponseClass, response_class};
+
+        const METHODS: [&str; 14] = [
+            "ACK",
+            "BYE",
+            "CANCEL",
+            "INFO",
+            "INVITE",
+            "MESSAGE",
+            "NOTIFY",
+            "OPTIONS",
+            "PRACK",
+            "PUBLISH",
+            "REFER",
+            "REGISTER",
+            "SUBSCRIBE",
+            "UPDATE",
+        ];
+        // Every code in the IANA registry, mirrored from docs/sip-response-codes.md.
+        const CODES: [u16; 75] = [
+            100, 180, 181, 182, 183, 199, 200, 202, 204, 300, 301, 302, 305, 380, 400, 401, 402,
+            403, 404, 405, 406, 407, 408, 410, 412, 413, 414, 415, 416, 417, 420, 421, 422, 423,
+            424, 425, 428, 429, 430, 433, 436, 437, 438, 439, 440, 469, 470, 480, 481, 482, 483,
+            484, 485, 486, 487, 488, 489, 491, 493, 494, 500, 501, 502, 503, 504, 505, 513, 555,
+            580, 600, 603, 604, 606, 607, 608,
+        ];
+
+        /// What a dialog opened with `method` should look like after `code`,
+        /// starting from the state a fresh dialog carries.
+        fn expected(method: &str, code: u16, start: DialogState) -> DialogState {
+            let class = response_class(code);
+            match method {
+                "INVITE" => match class {
+                    ResponseClass::Provisional => match code {
+                        180 | 183 => DialogState::Ringing,
+                        _ => start,
+                    },
+                    ResponseClass::Success => DialogState::InCall,
+                    ResponseClass::Cancelled => DialogState::Cancelled,
+                    ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
+                    // Challenge is intermediate; Redirect is the known gap.
+                    ResponseClass::Challenge | ResponseClass::Redirect => start,
+                },
+                "REGISTER" => match class {
+                    ResponseClass::Success => DialogState::Registered,
+                    ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
+                    _ => start,
+                },
+                "SUBSCRIBE" => match class {
+                    ResponseClass::Success => DialogState::Active,
+                    ResponseClass::Declined | ResponseClass::Failure => DialogState::Terminated,
+                    _ => start,
+                },
+                _ => match class {
+                    ResponseClass::Success => DialogState::Completed,
+                    ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
+                    _ => start,
+                },
+            }
+        }
+
+        let mut pairs = 0usize;
+        for method in METHODS {
+            for code in CODES {
+                let req = if method == "INVITE" {
+                    make_invite()
+                } else {
+                    make_request(method)
+                };
+                let Some(mut dialog) = SipDialog::new(&req) else {
+                    continue;
+                };
+                let start = dialog.state.clone();
+                update_state(&mut dialog, &make_response(code, "x", method));
+                assert_eq!(
+                    dialog.state,
+                    expected(method, code, start.clone()),
+                    "{method} dialog in {start:?} received {code} \
+                     ({:?}) and became {:?}",
+                    response_class(code),
+                    dialog.state
+                );
+                pairs += 1;
+            }
+        }
+        assert_eq!(
+            pairs,
+            METHODS.len() * CODES.len(),
+            "swept {pairs} pairs, expected {} — a method stopped constructing a \
+             dialog and its whole row went unchecked",
+            METHODS.len() * CODES.len()
         );
     }
 

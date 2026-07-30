@@ -11,6 +11,32 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **An auth challenge no longer fails an INVITE dialog, and every
+  method-by-response pair is now checked.** All four dialog handlers classify
+  through `response_class()` instead of carrying their own ranges, and
+  `every_method_and_class_has_a_declared_transition` drives 14 methods × 75
+  registered response codes — 1050 pairs — against a rule stated per
+  (family, class) rather than a transcript.
+
+  The bug that found: a 401 or 407 on an INVITE set `Failed`, and the 2xx that
+  followed could not lift it back out, because that transition only admits the
+  pre-answer states. So a challenged call that authenticated and connected
+  reported **Failed** — while `outcome_code()` correctly reported 200.
+  `domain-primer.md` had documented the intermediate rule all along and
+  `update_register_state` implemented it; the INVITE handler never did. A
+  captured `BYE` hid it by forcing `Completed`, which is why the sample captures
+  read correctly. The calls it misreported were the ones still up, or the ones
+  whose BYE never made the capture — live capture, in other words.
+
+  `SUBSCRIBE` gets the same rule: a challenge no longer terminates a
+  subscription.
+
+  **3xx remains a known gap, now pinned.** A redirect leaves the dialog in its
+  pre-answer state, because sipnab has no `Redirected` variant and adding one
+  changes the JSON schema, the filter DSL and the TUI column. The matrix records
+  the current behaviour so the gap is a decision on the record, and closing it
+  fails there first.
+
 - **`response_class()` — one classifier, replacing inline ranges in four
   handlers.** `provisional`, `success`, `redirect`, `challenge`, `cancelled`,
   `declined`, `failure`. The dialog state machine answered this with `400..=699`
