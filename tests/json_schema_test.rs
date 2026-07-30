@@ -157,6 +157,48 @@ fn call_report_schema_validates_output() {
     assert_valid(&v, &inst, "call_report (diagnosed failure)");
 }
 
+/// `--json-dialogs` emits the same per-dialog document the call report does,
+/// one compact line per call, so it answers to the same schema.
+///
+/// Worth its own case because the flag is the newest way into that document
+/// and the only one that emits many of them unattended: a shape that only
+/// appears on the tenth call of a capture is exactly what a single
+/// `--call-report` invocation cannot reach.
+#[test]
+fn json_dialogs_lines_validate_against_the_call_report_schema() {
+    let v = load_validator("call_report.schema.json");
+    let out = run_sipnab(&[
+        "-N",
+        "-I",
+        "tests/pcap-samples/sip-auth-failure.pcapng",
+        "--json-dialogs",
+        "--no-cli-print",
+    ]);
+
+    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(
+        !lines.is_empty(),
+        "fixture produced no dialogs, so this test proves nothing"
+    );
+    let mut diagnosed = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let inst: Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("line {i} parses: {e}"));
+        if inst
+            .get("signaling_diagnosis")
+            .is_some_and(|d| !d.is_null())
+        {
+            diagnosed += 1;
+        }
+        assert_valid(&v, &inst, &format!("json-dialogs line {i}"));
+    }
+    assert!(
+        diagnosed > 0,
+        "this fixture is chosen for carrying diagnoses; without one the \
+         signaling_diagnosis shape goes unvalidated again"
+    );
+}
+
 /// Negative test: removing `diagnosis`, mistyping `timing.retransmits`, or
 /// adding an unknown top-level field makes the call-report schema reject.
 #[test]
