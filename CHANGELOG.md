@@ -10,6 +10,44 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **Seven MCP tools, three of them shaped by how VoIP is actually diagnosed.**
+
+  Research on SIP troubleshooting gives one steer above all others: *almost
+  every issue that stops a call connecting is a SIP problem, while one-way
+  audio and quality are RTP problems*. That split is the **first** triage
+  decision and no tool made it, so an agent had to infer it from a pile of
+  fields.
+
+  - **`triage_call`** — signalling, media, both, or none, with the evidence for
+    each. Start here; the two halves have different causes and different fixes.
+  - **`check_codec_negotiation`** — codecs offered against codecs answered, for
+    488 Not Acceptable Here, which usually means the far end was offered nothing
+    it accepts.
+  - **`diagnose_registration`** — registered, rejected, looping on auth, or
+    granted a short expiry. "Is this phone online?" is a different question from
+    "why did this call fail?".
+
+  Plus four from the roadmap: `explain_response_code` (the IANA registry rather
+  than an agent's memory), `compare_dialogs` (two calls, with the differences
+  named), `get_sdp_timeline` (codec negotiation over the life of a call) and
+  `search_by_time`.
+
+### Fixed
+- **`check_codec_negotiation` conflated "no SDP" with "no answer".** A call can
+  legitimately carry no SDP — hold with inactive media, a reject before any
+  offer — and reporting `no_answer` for it sends an operator hunting a reply
+  that was never expected. During an outage that is time spent on a question the
+  capture cannot answer. Now four outcomes, with `sdp_exchange_count` so the
+  reader can tell absent SDP from SDP carrying no codecs.
+
+  Found by checking a demonstration instead of trusting it: the tool returned
+  empty lists on `sip-488-codec-reject.pcapng`, which was *correct* — that
+  capture has no `m=audio` line at all — but identical to what a broken
+  extractor produces. `mcp_diagnostic_tools_test` now runs the real binary over
+  real captures and asserts specific expected values verified from the packets,
+  because a plausible-looking result is not evidence.
+
 ### Changed
 - **Documented what omitting `-d` actually does, which is platform-dependent.**
   The CLI reference said "auto-detects the default interface", which reads as

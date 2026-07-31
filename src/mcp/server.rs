@@ -270,6 +270,52 @@ pub struct TailDialogsResponse {
     pub source_exhausted: bool,
 }
 
+/// Parameters for `explain_response_code`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ExplainCodeParams {
+    /// SIP response status code, e.g. 488.
+    pub code: u16,
+}
+
+/// Parameters for `compare_dialogs`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CompareDialogsParams {
+    /// Call-ID of the first dialog.
+    pub call_id_a: String,
+    /// Call-ID of the second dialog.
+    pub call_id_b: String,
+}
+
+/// Parameters for the per-call diagnostic tools.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CallIdParams {
+    /// Call-ID to diagnose.
+    pub call_id: String,
+}
+
+/// Parameters for `get_sdp_timeline`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SdpTimelineParams {
+    /// Call-ID to report on.
+    pub call_id: String,
+}
+
+/// Parameters for `search_by_time`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SearchByTimeParams {
+    /// Inclusive RFC 3339 start, e.g. "2026-07-31T10:00:00Z".
+    pub start: String,
+    /// Exclusive RFC 3339 end. Omit for "everything since `start`".
+    pub end: Option<String>,
+    /// Maximum dialogs to return.
+    pub limit: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 /// What this server is attached to, returned by `capture_status`.
@@ -1161,6 +1207,433 @@ impl SipnabMcp {
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
+
+    /// Explain a SIP response code from the IANA registry.
+    #[tool(
+        name = "explain_response_code",
+        description = "Explains a SIP response status code from the IANA \
+                       registry: its reason phrase, class (provisional, \
+                       success, redirect, challenge, cancelled, declined, \
+                       failure) and what it means operationally. Use this \
+                       instead of recalling codes from memory."
+    )]
+    pub async fn explain_response_code(
+        &self,
+        Parameters(params): Parameters<ExplainCodeParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        use crate::sip::response_codes::{ResponseClass, explain_response_code, response_class};
+        let code = params.code;
+        if !(100..700).contains(&code) {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("{code} is not a SIP response code (100-699)"),
+                None,
+            ));
+        }
+        let class = match response_class(code) {
+            ResponseClass::Provisional => "provisional",
+            ResponseClass::Success => "success",
+            ResponseClass::Redirect => "redirect",
+            ResponseClass::Challenge => "challenge",
+            ResponseClass::Cancelled => "cancelled",
+            ResponseClass::Declined => "declined",
+            ResponseClass::Failure => "failure",
+        };
+        // `registered: false` is deliberate signal, not an omission: a code
+        // outside the registry is usually a vendor extension, and saying so is
+        // more useful than inventing a meaning for it.
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "code": code,
+            "class": class,
+            "explanation": explain_response_code(code),
+            "registered": explain_response_code(code).is_some(),
+        });
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Compare two dialogs side by side.
+    #[tool(
+        name = "compare_dialogs",
+        description = "Compares two calls side by side — state, outcome code, \
+                       duration, message count, methods seen, and their \
+                       diagnoses — and lists what differs. Use it for \
+                       'why did this call work and that one not?'."
+    )]
+    pub async fn compare_dialogs(
+        &self,
+        Parameters(params): Parameters<CompareDialogsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = {
+            let ds = self.dialog_store.read();
+            let a = ds.get(&params.call_id_a).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id_a '{}' not found", params.call_id_a),
+                    None,
+                )
+            })?;
+            let b = ds.get(&params.call_id_b).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id_b '{}' not found", params.call_id_b),
+                    None,
+                )
+            })?;
+
+            let side = |d: &crate::sip::dialog::SipDialog| {
+                let mut methods: Vec<String> = d
+                    .messages
+                    .iter()
+                    .filter(|m| m.is_request)
+                    .filter_map(|m| m.method.as_ref().map(|x| x.as_str().to_string()))
+                    .collect();
+                methods.sort();
+                methods.dedup();
+                let diag = crate::sip::diagnosis::diagnose_signaling(&d.messages);
+                serde_json::json!({
+                    "call_id": d.call_id,
+                    "state": format!("{:?}", d.state()),
+                    "final_status_code": d.final_status_code(),
+                    "msg_count": d.messages.len(),
+                    "methods": methods,
+                    "hints": diag.hints,
+                })
+            };
+            let (ja, jb) = (side(a), side(b));
+
+            // Name the differences rather than leaving the caller to diff two
+            // objects. The whole point of the tool is the comparison, and an
+            // agent asked to spot it itself will sometimes report a difference
+            // that is not there.
+            let mut differences = Vec::new();
+            for key in ["state", "final_status_code", "msg_count", "methods"] {
+                if ja[key] != jb[key] {
+                    differences.push(key.to_string());
+                }
+            }
+            serde_json::json!({
+                "schema_version": 1,
+                "a": ja,
+                "b": jb,
+                "differences": differences,
+            })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// SDP offer/answer timeline for one dialog.
+    #[tool(
+        name = "get_sdp_timeline",
+        description = "Returns the SDP offer/answer exchanges for a call in \
+                       order — codecs, ptime and direction per negotiation, \
+                       including re-INVITEs. Use it when audio changed mid-call \
+                       or the two ends disagree about the codec."
+    )]
+    pub async fn get_sdp_timeline(
+        &self,
+        Parameters(params): Parameters<SdpTimelineParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+            // Built here rather than reaching into dialog_to_json, whose
+            // output is a whole call report — an agent asking about codec
+            // negotiation should not have to receive every message to get it.
+            let exchanges: Vec<serde_json::Value> = dialog
+                .sdp_timeline
+                .iter()
+                .map(|ex| {
+                    serde_json::json!({
+                        "timestamp": ex.timestamp.to_rfc3339(),
+                        "direction": match ex.direction {
+                            crate::sip::sdp_timeline::OfferAnswer::Offer => "offer",
+                            crate::sip::sdp_timeline::OfferAnswer::Answer => "answer",
+                        },
+                        "codecs": ex.codecs,
+                        "media_addr": ex.media_addr,
+                        "media_port": ex.media_port,
+                        "mode": ex.mode,
+                        "event": ex.event.as_ref().map(|e| format!("{e:?}")),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "schema_version": 1,
+                "call_id": dialog.call_id,
+                "exchanges": exchanges,
+            })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Dialogs that started inside a time window.
+    #[tool(
+        name = "search_by_time",
+        description = "Returns dialogs whose first message falls in an RFC 3339 \
+                       time window. Use it to scope an investigation to when a \
+                       user says the problem happened."
+    )]
+    pub async fn search_by_time(
+        &self,
+        Parameters(params): Parameters<SearchByTimeParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        use chrono::{DateTime, Utc};
+        let parse = |s: &str, which: &str| -> Result<DateTime<Utc>, rmcp::ErrorData> {
+            DateTime::parse_from_rfc3339(s)
+                .map(|d| d.with_timezone(&Utc))
+                .map_err(|e| {
+                    rmcp::ErrorData::invalid_params(
+                        format!("{which} '{s}' is not RFC 3339: {e}"),
+                        None,
+                    )
+                })
+        };
+        let start = parse(&params.start, "start")?;
+        let end = match &params.end {
+            Some(e) => Some(parse(e, "end")?),
+            None => None,
+        };
+        if let Some(e) = end
+            && e <= start
+        {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("end {e} is not after start {start}"),
+                None,
+            ));
+        }
+        let limit = crate::mcp::shape::resolve_limit(params.limit);
+
+        let payload = {
+            let ds = self.dialog_store.read();
+            let mut hits: Vec<serde_json::Value> = ds
+                .iter()
+                .filter(|d| {
+                    let t = d.created_at;
+                    t >= start && end.is_none_or(|e| t < e)
+                })
+                .map(|d| {
+                    serde_json::json!({
+                        "call_id": d.call_id,
+                        "created_at": d.created_at.to_rfc3339(),
+                        "state": format!("{:?}", d.state()),
+                        "final_status_code": d.final_status_code(),
+                    })
+                })
+                .collect();
+            // Oldest first: an investigation reads forward from when the
+            // problem started.
+            hits.sort_by(|a, b| a["created_at"].as_str().cmp(&b["created_at"].as_str()));
+            let total = hits.len();
+            hits.truncate(limit);
+            serde_json::json!({
+                "schema_version": 1,
+                "dialogs": hits,
+                "total_matched": total,
+                "truncated": total > limit,
+            })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// First-pass triage: signalling problem, media problem, or neither.
+    #[tool(
+        name = "triage_call",
+        description = "First-pass triage for one call: classifies the problem as \
+                       signalling, media, both or none, with the evidence for \
+                       each. Start here — the signalling/media split decides \
+                       which half of the stack to investigate, and they have \
+                       different causes and different fixes."
+    )]
+    pub async fn triage_call(
+        &self,
+        Parameters(params): Parameters<CallIdParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+            let sig = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
+
+            let ss = self.stream_store.read();
+            let streams: Vec<&crate::rtp::stream::RtpStream> =
+                ss.streams_for(&dialog.call_id).collect();
+            let mut media = crate::rtp::diagnosis::diagnose_media(&streams, None);
+            crate::rtp::diagnosis::diagnose_asymmetry(
+                &mut media,
+                Some(dialog),
+                &streams,
+                &crate::rtp::diagnosis::AsymmetryThresholds::default(),
+            );
+
+            // The split that matters. Signalling decides whether the call
+            // connects; media decides whether you can hear it. They have
+            // different causes and different fixes, and conflating them is the
+            // most common wrong turn in VoIP triage — so name which half is
+            // implicated before saying anything else.
+            let sig_bad = !sig.is_empty();
+            let media_bad = media.one_way_audio || media.nat_mismatch || media.no_media;
+            let verdict = match (sig_bad, media_bad) {
+                (true, true) => "both",
+                (true, false) => "signalling",
+                (false, true) => "media",
+                (false, false) => "none",
+            };
+
+            serde_json::json!({
+                "schema_version": 1,
+                "call_id": dialog.call_id,
+                "verdict": verdict,
+                "state": format!("{:?}", dialog.state()),
+                "final_status_code": dialog.final_status_code(),
+                "signalling": {
+                    "problem": sig_bad,
+                    "hints": sig.hints,
+                },
+                "media": {
+                    "problem": media_bad,
+                    "one_way_audio": media.one_way_audio,
+                    "nat_mismatch": media.nat_mismatch,
+                    "no_media": media.no_media,
+                    "stream_count": streams.len(),
+                    "hints": media.hints,
+                },
+            })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Codec negotiation for one call — what was offered against what was answered.
+    #[tool(
+        name = "check_codec_negotiation",
+        description = "Lists the codecs offered and answered for a call and \
+                       whether they intersect. Use it for 488 Not Acceptable \
+                       Here, which usually means the far end was offered no \
+                       codec it accepts."
+    )]
+    pub async fn check_codec_negotiation(
+        &self,
+        Parameters(params): Parameters<CallIdParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+
+            let mut offered: Vec<String> = Vec::new();
+            let mut answered: Vec<String> = Vec::new();
+            for ex in &dialog.sdp_timeline {
+                let bucket = match ex.direction {
+                    crate::sip::sdp_timeline::OfferAnswer::Offer => &mut offered,
+                    crate::sip::sdp_timeline::OfferAnswer::Answer => &mut answered,
+                };
+                for c in &ex.codecs {
+                    if !bucket.contains(c) {
+                        bucket.push(c.clone());
+                    }
+                }
+            }
+            let common: Vec<String> = offered
+                .iter()
+                .filter(|c| answered.contains(c))
+                .cloned()
+                .collect();
+
+            // Four outcomes, not three. "no SDP at all" is a different
+            // finding from "the far end did not answer", and reporting the
+            // second for the first sends an operator hunting a reply that was
+            // never expected — during an outage that is time spent on a
+            // question the capture cannot answer. A call can legitimately
+            // carry no SDP (hold with inactive media, a reject before any
+            // offer), and the tool has to say so.
+            let negotiated = if dialog.sdp_timeline.is_empty() {
+                "no_sdp_in_capture"
+            } else if offered.is_empty() && answered.is_empty() {
+                "sdp_present_but_no_codecs"
+            } else if answered.is_empty() {
+                "no_answer"
+            } else if common.is_empty() {
+                "no_common_codec"
+            } else {
+                "ok"
+            };
+
+            serde_json::json!({
+                "schema_version": 1,
+                "call_id": dialog.call_id,
+                "offered": offered,
+                "answered": answered,
+                "common": common,
+                "result": negotiated,
+                "sdp_exchange_count": dialog.sdp_timeline.len(),
+                "final_status_code": dialog.final_status_code(),
+            })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Registration health for one endpoint.
+    #[tool(
+        name = "diagnose_registration",
+        description = "Diagnoses REGISTER traffic for a call: whether the \
+                       endpoint registered, was rejected, is looping on auth, \
+                       or was granted a shorter expiry than it asked for. \
+                       Answers 'is this phone online?', which is a different \
+                       question from 'why did this call fail?'."
+    )]
+    pub async fn diagnose_registration(
+        &self,
+        Parameters(params): Parameters<CallIdParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+
+            let is_register = dialog
+                .messages
+                .iter()
+                .any(|m| m.is_request && m.method == Some(crate::sip::method::SipMethod::Register));
+            // Say so rather than reporting a healthy registration for a call
+            // that contains none.
+            if !is_register {
+                return Ok(CallToolResult::success(vec![ContentBlock::json(
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "call_id": dialog.call_id,
+                        "applicable": false,
+                        "reason": "this dialog carries no REGISTER request",
+                    }),
+                )?]));
+            }
+
+            let diag = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
+            serde_json::json!({
+                "schema_version": 1,
+                "call_id": dialog.call_id,
+                "applicable": true,
+                "registration_failure": diag.registration_failure,
+                "auth_loop": diag.auth_loop,
+                "final_status_code": dialog.final_status_code(),
+                "hints": diag.hints,
+            })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1990,6 +2463,117 @@ mod tests {
             .expect("security_findings should succeed");
         // Only "scanner" recorded; filtering on "fraud" yields none.
         assert!(text_of(&result).contains("[]"));
+    }
+
+    // ── diagnostic + analysis tools ──────────────────────────────────
+
+    /// The registry lookup answers with a class, not a guess.
+    #[tokio::test]
+    async fn explain_response_code_uses_the_registry() {
+        let server = empty_server();
+        let r = server
+            .explain_response_code(Parameters(ExplainCodeParams { code: 488 }))
+            .await
+            .expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(v["code"], 488);
+        assert_eq!(v["class"], "failure");
+        assert_eq!(v["registered"], true);
+        assert!(v["explanation"].as_str().unwrap().contains("Codec"));
+    }
+
+    /// 401 is a challenge, not a failure — the distinction the dialog state
+    /// machine was fixed for, and an agent must get it too.
+    #[tokio::test]
+    async fn explain_response_code_calls_401_a_challenge() {
+        let r = empty_server()
+            .explain_response_code(Parameters(ExplainCodeParams { code: 401 }))
+            .await
+            .expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(v["class"], "challenge");
+    }
+
+    /// An unregistered code is reported as unregistered rather than invented.
+    #[tokio::test]
+    async fn explain_response_code_admits_an_unknown_code() {
+        let r = empty_server()
+            .explain_response_code(Parameters(ExplainCodeParams { code: 699 }))
+            .await
+            .expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(v["registered"], false);
+        assert!(v["explanation"].is_null());
+    }
+
+    /// Out of range is an error, not a shrug.
+    #[tokio::test]
+    async fn explain_response_code_rejects_a_non_sip_code() {
+        assert!(
+            empty_server()
+                .explain_response_code(Parameters(ExplainCodeParams { code: 42 }))
+                .await
+                .is_err()
+        );
+    }
+
+    /// An unknown Call-ID is invalid_params, not an empty result that reads
+    /// like a healthy call.
+    #[tokio::test]
+    async fn triage_call_rejects_an_unknown_call_id() {
+        assert!(
+            empty_server()
+                .triage_call(Parameters(CallIdParams {
+                    call_id: "nope@example.com".into()
+                }))
+                .await
+                .is_err()
+        );
+    }
+
+    /// A dialog with no REGISTER says so rather than reporting healthy
+    /// registration for a call that never attempted one.
+    #[tokio::test]
+    async fn diagnose_registration_declines_a_non_register_dialog() {
+        let server = server_with_dialog("reg@x");
+        let r = server
+            .diagnose_registration(Parameters(CallIdParams {
+                call_id: "reg@x".into(),
+            }))
+            .await
+            .expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(v["applicable"], false);
+    }
+
+    /// A malformed window is rejected before any scanning happens.
+    #[tokio::test]
+    async fn search_by_time_rejects_a_bad_timestamp() {
+        assert!(
+            empty_server()
+                .search_by_time(Parameters(SearchByTimeParams {
+                    start: "yesterday".into(),
+                    end: None,
+                    limit: None,
+                }))
+                .await
+                .is_err()
+        );
+    }
+
+    /// An end at or before the start is an error, not silently empty.
+    #[tokio::test]
+    async fn search_by_time_rejects_an_inverted_window() {
+        assert!(
+            empty_server()
+                .search_by_time(Parameters(SearchByTimeParams {
+                    start: "2026-01-02T00:00:00Z".into(),
+                    end: Some("2026-01-01T00:00:00Z".into()),
+                    limit: None,
+                }))
+                .await
+                .is_err()
+        );
     }
 
     // ── capture_status / server_capabilities ─────────────────────────

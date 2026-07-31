@@ -314,6 +314,13 @@ carries a default ceiling (HARD_LIMIT = 1000).
 | `security_findings` | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
 | `stats` | -- | Aggregate counters (dialog_count, stream_count, etc.) |
 | `capture_status` | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
+| `triage_call` | `call_id` | First-pass verdict: signalling problem, media problem, both, or none, with evidence |
+| `check_codec_negotiation` | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
+| `diagnose_registration` | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
+| `explain_response_code` | `code` | IANA registry meaning and class for a SIP status code |
+| `compare_dialogs` | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
+| `get_sdp_timeline` | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
+| `search_by_time` | `start`, `end?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
 | `server_capabilities` | -- | sipnab version and the optional features this binary carries |
 
 ### `list_dialogs`
