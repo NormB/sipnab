@@ -11,6 +11,16 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **The plugin example tests raced each other.** All five call the same
+  `build_example()`, libtest runs them in parallel, so five concurrent
+  `cargo build`s hit one target directory. They serialise on cargo's
+  package-cache lock but the artifact check does not, so a test could stat the
+  path while another build was still writing it — "build reported success but
+  produced no artifact". It passed on Linux and failed on macOS, which is what
+  a race looks like when you only run it twice. The build now happens once per
+  test binary behind a `OnceLock`. Confirmed over six clean-slate runs, and it
+  is faster: one build rather than five.
+
 - **The plugin example test failed under coverage.** It shells out to
   `cargo build --target wasm32-unknown-unknown`, and that nested build cannot
   carry `cargo llvm-cov`'s instrumentation — wasm32 ships no
