@@ -382,7 +382,7 @@ Tiers:
   project ID the README badge URL needs. Two criteria (`report_responses`,
   `vulnerability_report_response`) have no history to cite because no issue or
   vulnerability report has ever been filed — say so rather than claim a number.
-- [x] **WASM plugin API** — **Done in 0.5.69-dev:** specced at
+- [x] **WASM plugin API** — **Done in 0.5.69:** specced at
   [`wasm-plugin-api.md`](./wasm-plugin-api.md), implemented behind the
   non-default `plugins` feature, with a worked example at
   `crates/sipnab-plugin-example`. D7's three objections were answered

@@ -10,6 +10,21 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.69] - 2026-07-31
+
+### Fixed
+- **`site_release_date_matches_changelog` enforced the bug it was written to
+  prevent.** It compared `release_date` against the CHANGELOG date for
+  `version` — the *crate* version — while `download.html` does
+  `{% set v = config.extra.published_version %}` and renders that version
+  beside `release_date` in a single sentence. So at every release cut the gate
+  demanded the date of a release that did not exist yet, and satisfying it
+  would have made /download read "v0.5.68 — released <the day 0.5.69 was
+  cut>". That is the exact version/published-version conflation the split
+  exists to prevent, enforced by the gate meant to catch it. Now reads
+  `published_version`, and mutation-tested against the date the old gate asked
+  for.
+
 ### Added
 - **WASM plugin API — third-party dialog detections.** `--plugin <path.wasm>`
   loads a sandboxed module that contributes its own findings, which appear
