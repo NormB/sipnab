@@ -13,6 +13,56 @@ entry that carries them.
 ## [0.5.70] - 2026-07-31
 
 ### Added
+- **`-I` reads a directory, a glob, or several files — and reads them in the
+  order the packets were captured.** It took a single path; a directory errored
+  "Is a directory", a glob errored "No such file or directory" (the shell does
+  not expand a quoted one, and over SSH or in an MCP config there is no shell),
+  and a second `-I` errored "cannot be used multiple times".
+
+  **The ordering is the part that matters.** `tcpdump -C 100 -W 10` writes a
+  ring buffer and then *wraps*, overwriting the oldest file in place. A real
+  10-file set measured for this ran `tg.pcap7`, `tg.pcap8`, `tg.pcap9`,
+  `tg.pcap0` … `tg.pcap6` in time order — the numeric suffix records where
+  tcpdump was in its cycle, not when the packets arrived. Neither lexicographic
+  nor natural-numeric filename order reconstructs it, so sipnab sorts by each
+  file's **first packet timestamp**. Every timing derivation assumes monotonic
+  timestamps: post-dial delay, setup time, retransmission detection, and the
+  RFC 3261 Timer B/C/H bounds in the signalling diagnosis.
+
+  **What it buys:** the files feed one dialog store, so a call whose INVITE
+  lands in one file and whose BYE lands in the next is reconstructed instead of
+  fragmented. On that 921 MB set, reading the files individually reported 20512
+  dialogs and reading them together reported 18241 — **2271 calls, 11% of the
+  capture, crossed a boundary.** Read one at a time each of those appears as a
+  call that never ends plus a stray BYE, and neither half is the truth.
+
+  A file is recognised as a capture by **opening it**, not by its extension:
+  `tg.pcap0` has the extension `pcap0`, and `SIP_CALL_RTP_G711` has none.
+  Since the first packet must be read anyway to order the set, the open doubles
+  as the test and accepts exactly what libpcap accepts. gzip members are
+  decompressed transparently, so a directory mixing `.pcap` and `.pcap.gz`
+  needs nothing special.
+
+  A file named directly with `-I` that cannot be read is an error; one
+  *discovered* by expanding a directory or glob is skipped with a warning,
+  because directories hold README files, partial captures, and — in this
+  repository's own sample directory — a NetMon capture libpcap cannot open.
+
+  `--recursive` descends into subdirectories, off by default: recursing
+  silently can analyse several times the traffic you pointed at and nothing in
+  the output would say so. `--input-name` filters by filename glob at every
+  depth.
+
+  Packet count, duration and the replay timeline are shared across the set, so
+  `--count 100` over four files means a hundred packets, not four hundred.
+
+  Single-file behaviour is unchanged, and a test asserts the long-standing
+  2-dialog result for the G.711 fixture to keep it that way. One behaviour did
+  change: `-I` now validates during planning, so a mistyped path fails before
+  any thread starts rather than inside the capture reader.
+
+
+### Added
 - **The MCP walkthrough now teaches the tools, not just the wiring.** Every
   deployment scenario was documented in detail and the page stopped at
   *connected* — a reader finished it knowing how to reach sipnab from a laptop

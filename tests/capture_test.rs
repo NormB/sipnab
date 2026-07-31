@@ -323,7 +323,7 @@ fn start_capture_file_source() {
 
     let (tx, rx) = packet_channel(1 << 20);
     let source = CaptureSource::File {
-        path: fixture_path(),
+        paths: vec![fixture_path()],
     };
     let handle = start_capture(source, CaptureConfig::default(), tx, None).expect("start_capture");
 

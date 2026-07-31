@@ -22,6 +22,8 @@ pub mod file;
 #[cfg(feature = "hep")]
 pub mod hep;
 #[cfg(feature = "native")]
+pub mod input_set;
+#[cfg(feature = "native")]
 pub mod live;
 pub mod packet;
 pub mod parse;

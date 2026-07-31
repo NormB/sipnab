@@ -25,7 +25,15 @@
 # resolve.
 
 max_concurrency = 8
-timeout = 20
+# 30s, raised from 20 after kamailio.org timed out a release commit's Quality
+# job with ZERO dead links -- one timeout was enough to fail the run.
+#
+# Not tuned away: the page is alive and merely slow. Measured three times in a
+# row from here, back to back: 18.5s, 9.2s, 9.0s, all HTTP 200. A first hit
+# landing at 18.5s against a 20s ceiling is not a transient blip, it is a
+# margin of 1.5s on a link the docs legitimately cite, and a retry does not
+# help when the SLOW path is the one being retried.
+timeout = 30
 max_retries = 2
 retry_wait_time = 2
 

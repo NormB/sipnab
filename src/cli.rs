@@ -231,14 +231,40 @@ pub struct Cli {
     )]
     pub device: Option<String>,
 
-    /// Read packets from a pcap file instead of live capture.
+    /// Read packets from a capture file, directory, or glob instead of live
+    /// capture. Repeatable.
+    ///
+    /// Files are read in the order their packets were captured, never by
+    /// filename — `tcpdump -C -W` writes a ring buffer that wraps, so
+    /// `tg.pcap7` can hold older traffic than `tg.pcap0`.
     #[arg(
         help_heading = "Capture",
         short = 'I',
         long = "input",
-        value_name = "FILE"
+        value_name = "FILE|DIR|GLOB",
+        action = clap::ArgAction::Append
     )]
-    pub input: Option<String>,
+    pub input: Vec<String>,
+
+    /// Descend into subdirectories when `-I` names a directory.
+    ///
+    /// Off by default: recursing silently can analyse several times the
+    /// traffic you pointed at, and nothing in the output would say so.
+    #[arg(help_heading = "Capture", long = "recursive")]
+    pub recursive: bool,
+
+    /// Read only files whose name matches this pattern when `-I` names a
+    /// directory, e.g. `--input-name 'tg.pcap[0-4]'`.
+    ///
+    /// Matched against the filename alone, so it behaves the same at every
+    /// depth under `--recursive`.
+    #[arg(
+        help_heading = "Capture",
+        long = "input-name",
+        value_name = "GLOB",
+        requires = "input"
+    )]
+    pub input_name: Option<String>,
 
     /// Write captured packets to a pcap file.
     #[arg(
@@ -1271,6 +1297,39 @@ impl FromToModeArg {
 }
 
 impl Cli {
+    /// Whether any `-I` was given.
+    #[must_use]
+    pub fn has_input(&self) -> bool {
+        !self.input.is_empty()
+    }
+
+    /// The first `-I` argument, for labelling and for the single-file paths
+    /// that predate multi-file input.
+    ///
+    /// This is the *spec* as typed, which may be a directory or a glob rather
+    /// than a file. Callers that need actual files must resolve them through
+    /// [`crate::capture::input_set::resolve`]; the features still using this
+    /// (Wireshark hand-off, embedded-secret loading, `--strip-secrets`) act on
+    /// one concrete file by nature.
+    #[must_use]
+    pub fn primary_input(&self) -> Option<&str> {
+        self.input.first().map(String::as_str)
+    }
+
+    /// How `-I` arguments should be expanded.
+    ///
+    /// `native`-only: resolution opens each candidate through libpcap to
+    /// order the set and to tell a capture from a README, so it cannot
+    /// exist in a build with no capture backend.
+    #[cfg(feature = "native")]
+    #[must_use]
+    pub fn input_resolve_options(&self) -> crate::capture::input_set::ResolveOptions {
+        crate::capture::input_set::ResolveOptions {
+            recursive: self.recursive,
+            name_glob: self.input_name.clone(),
+        }
+    }
+
     /// Parse CLI arguments from the real process arguments.
     ///
     /// # Side effects
@@ -1993,7 +2052,7 @@ mod tests {
             "--multi-device",
         ]);
         assert_eq!(cli.device.as_deref(), Some("eth0"));
-        assert_eq!(cli.input.as_deref(), Some("in.pcap"));
+        assert_eq!(cli.primary_input(), Some("in.pcap"));
         assert_eq!(cli.output.as_deref(), Some("out.pcap"));
         assert!(cli.no_rtp);
         assert!(cli.multi_device);

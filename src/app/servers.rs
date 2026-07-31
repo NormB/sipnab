@@ -222,9 +222,9 @@ pub fn start_servers(
         // than "unknown". Derived from the same flags the capture path uses,
         // not restated — `-I` beats `-d`, exactly as bootstrap resolves it.
         let capture_ctx = {
-            let (live, name) = match (cli.input.as_ref(), cli.device.as_ref()) {
-                (Some(path), _) => (false, path.clone()),
-                (None, Some(dev)) => (true, dev.clone()),
+            let (live, name) = match (cli.primary_input(), cli.device.as_deref()) {
+                (Some(path), _) => (false, path.to_string()),
+                (None, Some(dev)) => (true, dev.to_string()),
                 // No -d and no -I: the capture layer picks a default. On
                 // Linux that is the "any" pseudo-device — ALL interfaces at
                 // once, loopback included — and on macOS/BSD a single device

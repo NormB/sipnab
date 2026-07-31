@@ -1124,8 +1124,8 @@ fn missing_input_file_errors() {
     let (_, stderr, code) = run(&["-N", "-I", "/nonexistent/file.pcap"]);
     assert_ne!(code, 0);
     assert!(
-        stderr.contains("No such file") || stderr.contains("error") || stderr.contains("not found"),
-        "should report missing file error, got: {stderr}"
+        stderr.contains("does not exist"),
+        "should name the missing path, got: {stderr}"
     );
 }
 

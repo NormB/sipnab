@@ -256,7 +256,7 @@ pub fn run_tui_mode(
                 {
                     // Record the capture source as the pcapng interface name
                     // (SNB-0001): the capture device for live, input for replay.
-                    let capture_source = cli_clone.device.as_deref().or(cli_clone.input.as_deref());
+                    let capture_source = cli_clone.device.as_deref().or(cli_clone.primary_input());
                     match PcapWriter::with_interface(
                         &PathBuf::from(output_path),
                         packet.link_type,

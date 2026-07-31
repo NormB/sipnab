@@ -36,7 +36,7 @@ fn default_device_is_none() {
 #[test]
 fn default_input_is_none() {
     let cli = defaults();
-    assert!(cli.input.is_none(), "input should be None by default");
+    assert!(!cli.has_input(), "input should be None by default");
 }
 
 /// `output` (pcap write path) defaults to `None`.

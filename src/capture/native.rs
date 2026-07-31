@@ -26,10 +26,16 @@ pub enum CaptureSource {
         /// Device name (e.g., "eth0", "en0").
         device: String,
     },
-    /// Read packets from a pcap file.
+    /// Read packets from one or more capture files.
+    ///
+    /// A list rather than a single path because `tcpdump -C -W` splits a
+    /// capture across a ring buffer, and a call whose INVITE lands in one file
+    /// and BYE in the next is only reconstructable by feeding both into the
+    /// same dialog store. Ordered by first-packet timestamp — see
+    /// [`crate::capture::input_set`] for why filename order is wrong.
     File {
-        /// Path to the pcap file.
-        path: std::path::PathBuf,
+        /// Capture files, in the order they are to be read.
+        paths: Vec<std::path::PathBuf>,
     },
     /// Receive packets via HEP (Homer Encapsulation Protocol).
     Hep {
@@ -204,11 +210,11 @@ pub fn start_capture(
                 .spawn(move || live::capture_live(&device, &config, tx, ready_tx))
                 .context("Failed to spawn live capture thread")?
         }
-        CaptureSource::File { path } => {
-            let path = path.clone();
+        CaptureSource::File { paths } => {
+            let paths = paths.clone();
             thread::Builder::new()
                 .name("capture-file".to_string())
-                .spawn(move || file::capture_file(&path, &config, tx, ready_tx))
+                .spawn(move || file::capture_files(&paths, &config, tx, ready_tx))
                 .context("Failed to spawn file reader thread")?
         }
         #[cfg(feature = "hep")]
@@ -521,7 +527,7 @@ mod tests {
             device: "eth0".to_string(),
         };
         let file = CaptureSource::File {
-            path: PathBuf::from("/tmp/test.pcap"),
+            paths: vec![PathBuf::from("/tmp/test.pcap")],
         };
         assert!(format!("{live:?}").contains("eth0"));
         assert!(format!("{file:?}").contains("test.pcap"));
@@ -546,7 +552,9 @@ mod tests {
         let config = CaptureConfig::default();
 
         let handle = start_capture(
-            CaptureSource::File { path: fixture },
+            CaptureSource::File {
+                paths: vec![fixture],
+            },
             config,
             pkt_tx,
             Some(ready_tx),

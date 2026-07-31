@@ -217,7 +217,7 @@ pub fn run_cores_file(
     capture_config: &CaptureConfig,
     portrange: (u16, u16),
 ) {
-    let Some(input) = cli.input.as_ref() else {
+    let Some(input) = cli.primary_input() else {
         return;
     };
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
@@ -295,7 +295,7 @@ pub fn run(
     // Advanced features (live, per-message output ordering, security detectors,
     // SRTP) use the single-threaded path below; this branch only triggers for an
     // offline input file.
-    if cli.cores > 1 && cli.input.is_some() {
+    if cli.cores > 1 && cli.has_input() {
         let pcfg = parallel_config(&cli, config, portrange, no_rtp);
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
@@ -687,7 +687,7 @@ impl BatchRunner {
         // the decryptor, so a self-contained capture decrypts without an external
         // --keylog. Creates a decryptor on demand when the file carries secrets.
         #[cfg(feature = "tls")]
-        if let Some(ref input) = cli.input {
+        if let Some(input) = cli.primary_input() {
             let path = std::path::Path::new(input);
             if let Some(ref mut dec) = tls_decryptor {
                 let added = crate::capture::decrypt::feed_embedded_secrets(path, dec);
@@ -994,7 +994,7 @@ impl BatchRunner {
             {
                 // Record the capture source as the pcapng interface name (SNB-0001):
                 // the capture device for live, the input file for replay.
-                let capture_source = cli.device.as_deref().or(cli.input.as_deref());
+                let capture_source = cli.device.as_deref().or(cli.primary_input());
                 match PcapWriter::with_interface(
                     &PathBuf::from(output_path),
                     packet.link_type,
@@ -1263,8 +1263,8 @@ impl BatchRunner {
         // exists: the input file (`-I`), or the file the live capture was
         // saved to (`-O`). A live capture with neither has no pcap for tshark
         // to read, so emit a clear error instead of a bogus `capture.pcap`.
-        if cli.tshark_filter.is_some() || (cli.wireshark && cli.input.is_some()) {
-            let input_file = tshark_input_file(cli.input.as_deref(), cli.output.as_deref());
+        if cli.tshark_filter.is_some() || (cli.wireshark && cli.has_input()) {
+            let input_file = tshark_input_file(cli.primary_input(), cli.output.as_deref());
             if let Some(ref tshark_expr) = cli.tshark_filter {
                 // User provided a custom tshark filter expression.
                 match &input_file {
