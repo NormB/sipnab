@@ -982,6 +982,27 @@ fn docs_current_version_markers_match_cargo() {
             include_str!("../website/content/docs/api.md"),
             r"as of (\d+\.\d+\.\d+)",
         ),
+        // The `server_capabilities` sample in the diagnostic cookbook. It is
+        // real captured output, so it names the build that produced it — which
+        // is exactly why it needs gating rather than trusting: the recipes are
+        // there to be recognised mid-incident, and a reader comparing their own
+        // output against a version three releases stale has to work out whether
+        // the difference matters.
+        //
+        // Distinct from the `sipnab X.Y.Z (` pattern above because this is a
+        // JSON field rather than a `--version` line. It went in ungated and is
+        // listed here rather than left to rot the way the bare
+        // `sipnab 0.5.20 features:` sample did for 23 releases.
+        (
+            "docs/mcp-walkthrough.md",
+            include_str!("../docs/mcp-walkthrough.md"),
+            r#""version": "(\d+\.\d+\.\d+)""#,
+        ),
+        (
+            "website/content/docs/mcp-walkthrough.md",
+            include_str!("../website/content/docs/mcp-walkthrough.md"),
+            r#""version": "(\d+\.\d+\.\d+)""#,
+        ),
     ];
     for (path, text, pattern) in sources {
         let re = regex::Regex::new(pattern).unwrap();
