@@ -1397,8 +1397,8 @@ fn readme_feature_table_covers_every_cargo_feature() {
     }
 
     assert_eq!(
-        seen, 11,
-        "feature extraction found {seen} features, expected 11. Bump when a \
+        seen, 12,
+        "feature extraction found {seen} features, expected 12. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );
@@ -2019,8 +2019,8 @@ fn no_documentation_table_repeats_a_row() {
     // the duplicates it exists to find simply stop being looked for.
     assert_eq!(
         files.len(),
-        103,
-        "found {} tracked markdown files, expected 103. More is fine — bump \
+        104,
+        "found {} tracked markdown files, expected 104. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2068,8 +2068,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 347,
-        "walked {tables} tables, expected 347. More is fine — bump this. FEWER \
+        tables, 350,
+        "walked {tables} tables, expected 350. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

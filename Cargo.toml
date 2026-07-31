@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/sipnab-audio"]
+members = [".", "crates/sipnab-audio", "crates/sipnab-plugin-example"]
 # `fuzz/` is a standalone cargo-fuzz package (its own build via `cargo fuzz`);
 # it depends on this crate by path and must NOT be pulled into the workspace.
 exclude = ["fuzz"]
@@ -123,6 +123,10 @@ rsa = { version = "0.9", default-features = false, features = ["std", "pem"], op
 # `sipnab-audio` cdylib plugin (crates/sipnab-audio); the main binary only
 # dlopen's it lazily via libloading so there is no load-time libasound NEEDED.
 libloading = { version = "0.9", optional = true }
+# WASM plugin host (feature `plugins`). wasmi is a pure-safe-Rust interpreter:
+# no JIT, so no W^X pages, which is most of why WASM answers D7 where Lua did
+# not. See docs/design/wasm-plugin-api.md.
+wasmi = { version = "0.51", optional = true }
 
 # Opus codec (pure Rust, no FFI — always available for WAV export)
 opus-decoder = "0.1"
@@ -163,6 +167,9 @@ console_error_panic_hook = { version = "0.1", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
+# Assembles WAT fixtures for the WASM plugin host's own tests, so they do
+# not need a wasm32 toolchain to run.
+wat = "1"
 base64 = "0.23"
 sha2 = "0.11"
 bytes = "1"
@@ -215,7 +222,12 @@ api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp = ["native", "dep:tokio", "dep:rmcp", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
-full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics"]
+# WASM plugin host. NON-DEFAULT on purpose: someone who does not want an
+# interpreter inside their capture tool does not get one, and the default
+# binary is unchanged (see docs/design/wasm-plugin-api.md, which measures the
+# cost at +1.56 MB and 15 crates before deciding anything).
+plugins = ["native", "dep:wasmi"]
+full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins"]
 
 [lib]
 name = "sipnab"

@@ -37,7 +37,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (373)
+## Rust crates (386)
 
 | Crate | Version | Licence |
 |---|---|---|
@@ -145,6 +145,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | fixedbitset | 0.4.2 | MIT/Apache-2.0 |
 | flate2 | 1.1.9 | MIT OR Apache-2.0 |
 | fnv | 1.0.7 | Apache-2.0 / MIT |
+| foldhash | 0.1.5 | Zlib |
 | foldhash | 0.2.0 | Zlib |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
 | fs_extra | 1.3.0 | MIT |
@@ -162,6 +163,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | h2 | 0.4.14 | MIT |
+| hashbrown | 0.15.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.0 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
@@ -193,6 +195,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | kasuari | 0.4.12 | MIT OR Apache-2.0 |
 | lab | 0.11.0 | MIT |
 | lazy_static | 1.5.0 | MIT OR Apache-2.0 |
+| leb128fmt | 0.1.0 | MIT OR Apache-2.0 |
 | libc | 0.2.189 | MIT OR Apache-2.0 |
 | libloading | 0.8.9 | ISC |
 | libloading | 0.9.0 | ISC |
@@ -318,6 +321,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | spki | 0.7.3 | Apache-2.0 OR MIT |
 | sse-stream | 0.2.3 | MIT/Apache-2.0 |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |
+| string-interner | 0.19.0 | MIT/Apache-2.0 |
 | strsim | 0.11.1 | MIT |
 | strum | 0.28.0 | MIT |
 | strum_macros | 0.28.0 | MIT |
@@ -375,6 +379,15 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
+| wasm-encoder | 0.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmi | 0.51.5 | MIT/Apache-2.0 |
+| wasmi_collections | 0.51.5 | MIT/Apache-2.0 |
+| wasmi_core | 0.51.5 | MIT/Apache-2.0 |
+| wasmi_ir | 0.51.5 | MIT/Apache-2.0 |
+| wasmparser | 0.228.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmparser | 0.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wast | 255.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wat | 1.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wezterm-bidi | 0.2.3 | MIT AND Unicode-DFS-2016 |
 | wezterm-blob-leases | 0.1.1 | MIT |
 | wezterm-color-types | 0.3.0 | MIT |

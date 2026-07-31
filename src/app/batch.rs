@@ -2069,6 +2069,26 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
         }
     }
 
+    // --plugin: load once, before the emit loop. A plugin that cannot load is
+    // reported and skipped rather than failing the run — the capture already
+    // happened, and throwing it away because an optional extension was
+    // misconfigured would lose real data over a configuration error.
+    #[cfg(feature = "plugins")]
+    let plugins: Vec<crate::plugin::Plugin> = cli
+        .plugin
+        .iter()
+        .filter_map(|path| match crate::plugin::Plugin::load(path) {
+            Ok(p) => {
+                tracing::info!("loaded plugin {}", p.name());
+                Some(p)
+            }
+            Err(e) => {
+                tracing::error!("plugin {}: {e}", path.display());
+                None
+            }
+        })
+        .collect();
+
     // --json-dialogs: one NDJSON object per dialog
     if cli.json_dialogs && cli.no_tui {
         let mut out = String::new();
@@ -2082,11 +2102,12 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
                 &dialog_streams,
                 &crate::rtp::diagnosis::AsymmetryThresholds::default(),
             );
-            out.push_str(&output::dialog_to_ndjson(
-                dialog,
-                &dialog_streams,
-                &diagnosis,
-            ));
+            let line = output::dialog_to_ndjson(dialog, &dialog_streams, &diagnosis);
+
+            #[cfg(feature = "plugins")]
+            let line = apply_plugins(&plugins, dialog, &line);
+
+            out.push_str(&line);
         }
         // Same write discipline as --report: a real write error means the
         // output is incomplete, which is a failed run, while a closed pipe
@@ -2130,6 +2151,54 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
 // ── Unit tests for the batch runner's pure helpers ──────────────────────
 /// Unit tests for the batch runner's pure helpers: output dispatch, report
 /// generation, packet processing, targeted kills, and emit selection.
+/// Run every loaded plugin over one dialog and fold their findings into the
+/// emitted JSON line.
+///
+/// Findings land under a top-level `plugin_findings` array rather than inside
+/// `signaling_diagnosis`. Keeping them separate means a reader can always tell
+/// which findings sipnab stands behind and which came from third-party code —
+/// and it keeps `signaling_diagnosis` matching its schema, which is
+/// `additionalProperties: false`.
+///
+/// A plugin error is logged against that dialog and the line is emitted
+/// unchanged. Losing one plugin's opinion must not cost the dialog.
+#[cfg(feature = "plugins")]
+fn apply_plugins(
+    plugins: &[crate::plugin::Plugin],
+    dialog: &crate::sip::dialog::SipDialog,
+    line: &str,
+) -> String {
+    if plugins.is_empty() {
+        return line.to_string();
+    }
+    let trimmed = line.trim_end();
+    let input = crate::plugin::plugin_input_json(dialog, trimmed);
+
+    let mut findings = Vec::new();
+    for p in plugins {
+        match p.analyze(&input) {
+            Ok(fs) => findings.extend(fs),
+            Err(e) => tracing::error!("plugin {} on {}: {e}", p.name(), dialog.call_id),
+        }
+    }
+    if findings.is_empty() {
+        return line.to_string();
+    }
+
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return line.to_string();
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "plugin_findings".to_string(),
+            serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    let mut out = value.to_string();
+    out.push('\n');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

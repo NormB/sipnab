@@ -164,6 +164,7 @@ sipnab honours every sngrep keybinding. Press `F1` for the full shortcut referen
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Implies `mcp` + `api`.       | no      |
 | `metrics`  | Standalone Prometheus metrics server (raw TCP, no tokio)             | yes     |
 | `wasm`     | WebAssembly target for in-browser pcap analysis                      | no      |
+| `plugins`  | WASM plugin host (`--plugin`): sandboxed third-party dialog detections  | no      |
 | `full`     | `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` | no      |
 
 Build with specific features. Adding TLS decryption and HEP to the default set:
