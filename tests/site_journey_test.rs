@@ -559,10 +559,20 @@ fn site_version_matches_crate_version() {
 #[test]
 fn site_release_date_matches_changelog() {
     let cfg = read("website/config.toml");
-    let site_v = regex::Regex::new(r#"(?m)^version = "([^"]+)""#)
+    // `published_version`, NOT `version`.
+    //
+    // `download.html` does `{% set v = config.extra.published_version %}` and
+    // renders that version beside `release_date` in one sentence, so the date
+    // belongs to the PUBLISHED release. Reading `version` here meant that at
+    // every release cut this gate demanded the date of a release that did not
+    // exist yet, while the page still showed the previous version — rendering
+    // "v0.5.68 - released <the day 0.5.69 was cut>". That is the same
+    // conflation the published_version split exists to prevent, enforced by
+    // the gate meant to catch it.
+    let site_v = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
         .unwrap()
         .captures(&cfg)
-        .expect("config.toml version")[1]
+        .expect("config.toml published_version")[1]
         .to_string();
     let site_date = regex::Regex::new(r#"(?m)^release_date = "([^"]+)""#)
         .unwrap()

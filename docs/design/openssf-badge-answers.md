@@ -50,7 +50,7 @@ met: MIT and Apache-2.0 are both OSI-approved, and everything is in English.
 | `repo_public` | Met | `https://github.com/NormB/sipnab` |
 | `repo_track` | Met | Git |
 | `repo_interim` | Met | Work lands on `main` continuously between releases |
-| `version_unique` | Met | Crate version, currently 0.5.68 |
+| `version_unique` | Met | Crate version, currently 0.5.69 |
 | `release_notes` | Met | `CHANGELOG.md`, Keep a Changelog format |
 | `release_notes_vulns` | Met | The changelog calls out security-relevant fixes in the entry carrying them |
 
