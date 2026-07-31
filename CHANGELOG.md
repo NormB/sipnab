@@ -11,6 +11,23 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **The MCP walkthrough now teaches the tools, not just the wiring.** Every
+  deployment scenario was documented in detail and the page stopped at
+  *connected* — a reader finished it knowing how to reach sipnab from a laptop
+  and nothing about what to ask it. Twenty-four tools, zero worked examples.
+
+  "Diagnose a real problem with the tools" adds six task-first recipes, each a
+  question an operator actually arrives with: why one call failed, whether
+  codecs caused a 488, why a phone will not register, why audio was bad on a
+  call that connected, what you are connected to, and how to save a live
+  capture before stopping it. A flowchart puts `triage_call` first, because its
+  signalling/media verdict decides which half of the stack to search and
+  getting it wrong costs an hour.
+
+  **Every output block was produced by running the tool against a capture in
+  `tests/pcap-samples/`**, not written to look plausible. Gathering them is how
+  the two codec bugs below were found.
+
 - **The AMR-WB impairment values, from the ITU-T tables that publish them.**
   Follow-up to the MOS placeholder below, which left open what the number
   *should* be for cellular codecs. `src/rtp/emodel_wb.rs` implements the
@@ -60,6 +77,14 @@ entry that carries them.
   impairment by 22.5%) and Eq (7-9)'s `K = 0.08·T + 10`.
 
 ### Fixed
+- **`rtp_stats` reported `mos_grounded` beside no MOS at all.** The grounding
+  flag was added to the tool that publishes stream quality, but that tool
+  builds on the NDJSON stream shape, which carries no `mos` field — MOS lives
+  on the dialog there. So the flag described a number absent from the payload,
+  which is worse than saying nothing: it implies a MOS is present. `rtp_stats`
+  now carries the score itself, and the test asserts a real value in the G.107
+  range rather than merely that the flag exists.
+
 - **`check_codec_negotiation` reported `no_common_codec` for a call that
   connected.** `SIP_CALL_RTP_G711` offers `PCMA`/`PCMU` and answers
   `pcma`/`pcmu` — each vendor's own spelling — and the comparison was an exact

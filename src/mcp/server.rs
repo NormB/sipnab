@@ -928,6 +928,25 @@ impl SipnabMcp {
                     // measurement to something that will then reason about it
                     // is how a confident wrong answer reaches an operator.
                     if let Some(obj) = v.as_object_mut() {
+                        // The MOS itself, because the NDJSON stream shape this
+                        // builds on does not carry one — that is the CLI's
+                        // per-stream line, where MOS lives on the dialog
+                        // instead. Without this the grounding flag below
+                        // described a number absent from the payload, which is
+                        // worse than saying nothing: it implies a MOS is there.
+                        let loss_pct = {
+                            let total = s.packet_count + s.lost_packets;
+                            if total > 0 {
+                                (s.lost_packets as f64 / total as f64) * 100.0
+                            } else {
+                                0.0
+                            }
+                        };
+                        let mos =
+                            crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref());
+                        if let Some(n) = serde_json::Number::from_f64(mos) {
+                            obj.insert("mos".into(), serde_json::Value::Number(n));
+                        }
                         let grounded = matches!(
                             crate::rtp::quality::mos_grounding(s.codec.as_deref()),
                             crate::rtp::quality::MosGrounding::Published
