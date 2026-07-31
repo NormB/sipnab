@@ -1003,6 +1003,20 @@ fn docs_current_version_markers_match_cargo() {
             include_str!("../website/content/docs/mcp-walkthrough.md"),
             r#""version": "(\d+\.\d+\.\d+)""#,
         ),
+        // The same server_capabilities sample appears in the MCP reference.
+        // Gating only the walkthrough left this one drifting: it still named
+        // 0.5.69 after the crate moved to 0.5.70, in the same release that
+        // added the gate. Two copies of one sample, one of them watched.
+        (
+            "docs/mcp.md",
+            include_str!("../docs/mcp.md"),
+            r#""version": "(\d+\.\d+\.\d+)""#,
+        ),
+        (
+            "website/content/docs/mcp.md",
+            include_str!("../website/content/docs/mcp.md"),
+            r#""version": "(\d+\.\d+\.\d+)""#,
+        ),
     ];
     for (path, text, pattern) in sources {
         let re = regex::Regex::new(pattern).unwrap();
