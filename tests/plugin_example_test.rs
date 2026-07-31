@@ -27,8 +27,28 @@ use sipnab::plugin::{ABI_VERSION, Plugin};
 /// to, and return the artifact path.
 fn build_example() -> PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let out = Command::new(env!("CARGO"))
-        .current_dir(manifest)
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.current_dir(manifest);
+
+    // Do not inherit the parent run's instrumentation.
+    //
+    // Under `cargo llvm-cov` the coverage flags arrive through the
+    // environment, and a nested build picks them up — but
+    // `wasm32-unknown-unknown` ships no `profiler_builtins`, so the build dies
+    // with "can't find crate for `profiler_builtins`". The wasm artifact is a
+    // plugin under test, not part of the coverage measurement, so it wants a
+    // clean build environment rather than the harness's.
+    for var in [
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+        "RUSTDOCFLAGS",
+        "LLVM_PROFILE_FILE",
+    ] {
+        cmd.env_remove(var);
+    }
+
+    let out = cmd
         .args([
             "build",
             "--release",
