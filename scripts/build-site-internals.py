@@ -155,6 +155,7 @@ DOCS_TO_SITE = {
     "theme-guide.md": "theme.md",
     "cli-reference.md": "cli.md",
     "sip-response-codes.md": "sip-response-codes.md",
+    "sip-parameters.md": "sip-parameters.md",
     "sip-methods.md": "sip-methods.md",
     "sip-header-fields.md": "sip-header-fields.md",
     "filter-dsl.md": "filter-dsl.md",

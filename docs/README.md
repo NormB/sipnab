@@ -63,6 +63,8 @@ through.
   and the dialog state machine it drives.
 - [SIP response codes](sip-response-codes.md) — every code in the IANA
   registry, the RFC section defining it, and whether it means the call failed.
+- [SIP parameters](sip-parameters.md) — every URI parameter, header-field
+  parameter and option tag in the IANA registry, and which sipnab parses.
 - [REST API & Metrics](rest-api.md) — every endpoint and its response shape,
   status codes, Prometheus, curl recipes.
 - [MCP server](mcp.md) — every tool, both transports, client configuration.

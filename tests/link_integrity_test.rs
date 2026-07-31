@@ -389,8 +389,8 @@ fn wiki_intra_docs_links_resolve() {
     // that nobody can name is the regex breaking, which is exactly what this
     // pin is here to catch, and editing the number is how it gets missed.
     assert_eq!(
-        seen, 214,
-        "extractor found {seen} wiki links, expected 214. More is fine — bump \
+        seen, 217,
+        "extractor found {seen} wiki links, expected 217. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
@@ -818,8 +818,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // matters here, and matches how `linked_code_targets_exist` pins its link
     // count. Adding a docs page fails this once, deliberately: bump the number.
     assert_eq!(
-        checked, 31,
-        "docs-page walk saw {checked} pages, expected 31. More is fine — bump \
+        checked, 32,
+        "docs-page walk saw {checked} pages, expected 32. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );

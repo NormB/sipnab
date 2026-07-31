@@ -11,6 +11,28 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **`docs/sip-parameters.md` — the IANA SIP parameter registries.** 35 URI
+  parameters, 201 header-field parameters and 36 option tags, each with the RFC
+  that defines it, built from IANA directly the way `sip-response-codes.md` and
+  `sip-methods.md` were. Option tags get a note that a `420 Bad Extension` is
+  usually one end requiring a tag the other does not support.
+
+  The "sipnab parses" column claims **three** parameters — `branch`, `tag`,
+  `expires` — and says why it is conservative. An earlier draft computed it by
+  grepping the source for each name and reported 41 of 204, which was wrong and
+  flattering: `m`, `code`, `alg` and `count` all appear in unrelated code, and a
+  substring match is not evidence of parsing. The column now names only what
+  traces to a real extraction site.
+
+  The page is explicit that unparsed does **not** mean discarded: sipnab keeps
+  the full header, so every parameter here is visible in `get_message`, the TUI
+  detail pane and any export.
+
+  `sip_parameter_claims_match_the_parser` ties each claim to the accessor
+  justifying it, keeps the note that stops the grep being reinstated, and floors
+  the registry sizes so a failed fetch cannot ship a short table.
+
+### Added
 - **The remaining MCP tools: `list_captures`, `export_capture`, `export_audio`
   and `shutdown_server`.** 20 → 24 tools.
 
