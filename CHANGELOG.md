@@ -11,6 +11,28 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **`--alert syslog` did nothing.** The flag is declared *"Alert channels
+  (repeatable: syslog, json, exec)"* and every documented example passes a
+  channel name — but it was fed to `AlertRule::parse`, whose grammar is
+  `<name>:<threshold>/<window>`. So `--alert syslog` warned *"Skipping invalid
+  alert rule"* and enabled nothing, while `docs/examples.md` told the reader it
+  was writing to `LOCAL0`.
+
+  For a security path this is the worst available shape: not a crash, not a
+  wrong answer, but an operator who believes alerting is on. Nothing fires and
+  nothing says so. It affected `README.md`, three cookbook recipes, two CLI
+  reference examples and the website mirrors.
+
+  A bare word is now a channel, as advertised. A value containing `:` is still
+  parsed as a rule, so anyone who found the old grammar in the source keeps
+  working, and an unrecognised word draws a warning naming the valid channels
+  instead of vanishing.
+
+  Found by the synthesis step of an adversarial spec review — none of the five
+  specs that reviewed this area caught it; it surfaced from reading the flag's
+  declaration against its consumer.
+
+### Fixed
 - **MCP tool documentation was thinner than the table suggested.** Five tools —
   `triage_call`, `search_by_time`, `list_captures`, `export_capture`,
   `export_audio` — had a row in the tool table and no section of their own. Ten

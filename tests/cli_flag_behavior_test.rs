@@ -1249,3 +1249,95 @@ fn passing_both_input_and_device_warns_that_the_file_wins() {
         "the warning must say how to fix it, not merely that it happened:\n{stderr}"
     );
 }
+
+/// `--alert syslog` must enable syslog, not warn and do nothing.
+///
+/// This flag is declared "Alert channels (repeatable: syslog, json, exec)" and
+/// every documented example passes a channel name, but it was fed to
+/// `AlertRule::parse`, whose grammar is `<name>:<threshold>/<window>`. So the
+/// documented invocation warned "Skipping invalid alert rule 'syslog'" and
+/// enabled nothing — while `docs/examples.md` told the reader it was writing to
+/// LOCAL0.
+///
+/// For a security path that is the worst shape of bug available: not a crash,
+/// not a wrong answer, but an operator who believes alerting is on. Nothing
+/// fires and nothing says so.
+#[test]
+fn alert_channel_names_are_accepted_not_parsed_as_rules() {
+    for channel in ["syslog", "json"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args([
+                "-N",
+                "-I",
+                "tests/fixtures/sip_call.pcap",
+                "--alert",
+                channel,
+                "--no-cli-print",
+            ])
+            .output()
+            .expect("spawn sipnab");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("Skipping invalid alert rule"),
+            "--alert {channel} must be accepted as a channel; got:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("Unknown alert channel"),
+            "--alert {channel} is a documented channel and must not be rejected:\n{stderr}"
+        );
+    }
+}
+
+/// An unrecognised channel says what the valid ones are.
+///
+/// Silently ignoring it would reproduce the original bug in a new place.
+#[test]
+fn an_unknown_alert_channel_names_the_valid_ones() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "-I",
+            "tests/fixtures/sip_call.pcap",
+            "--alert",
+            "definitely-not-a-channel",
+            "--no-cli-print",
+        ])
+        .output()
+        .expect("spawn sipnab");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Unknown alert channel") && stderr.contains("syslog"),
+        "an unknown channel must be reported AND the valid ones listed:\n{stderr}"
+    );
+}
+
+/// The old rule grammar still parses, so anyone who found it in the source
+/// keeps working. A value containing ':' is a rule; a bare word is a channel.
+#[test]
+fn alert_rule_syntax_still_parses() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "-I",
+            "tests/fixtures/sip_call.pcap",
+            "--alert",
+            // Window needs a unit suffix (s/m/h) — the grammar is
+            // <name>:<threshold>/<window>[:<cooldown>].
+            "scanner:10/60s",
+            "--no-cli-print",
+        ])
+        .output()
+        .expect("spawn sipnab");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("Skipping invalid alert rule"),
+        "a well-formed rule must still parse:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Unknown alert channel"),
+        "a value with ':' is a rule, not a channel:\n{stderr}"
+    );
+}

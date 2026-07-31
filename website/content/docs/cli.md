@@ -428,6 +428,14 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line) |
 | `--stir-shaken` | -- | off | Validate STIR/SHAKEN identity headers |
 
+> **`--alert` takes a channel name, not a rule.** `syslog`, `json` or `exec`.
+> `--syslog` and `--alert-json` are the equivalent boolean forms; naming the
+> channel here does the same thing. A value containing `:` is instead parsed as
+> an alert rule (`<name>:<threshold>/<window>[:<cooldown>]`, window needs an
+> `s`/`m`/`h` suffix). An unrecognised bare word draws a warning naming the
+> valid channels. It used to fail silently, so a documented `--alert syslog`
+> enabled nothing at all.
+
 **Examples**
 
 - `sudo sipnab -d eth0 --kill-scanner --kill-ua 'friendly-scanner' --kill-response 486 --kill-spoof auto` — detect SIP scanners (plus a custom UA pattern) and reply 486 with the victim's spoofed source
