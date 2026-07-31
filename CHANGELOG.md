@@ -12,6 +12,27 @@ entry that carries them.
 
 ## [0.5.70] - 2026-07-31
 
+### Fixed
+- **DNS traffic was reported as RTP streams.** Found by running the new
+  multi-file input over 921 MB of real traffic: four one-packet "streams" with
+  SSRC `0x00000000` between a host and `1.1.1.1:53`, out of 1217 streams total.
+
+  `is_rtp_packet` inspects the payload only — 12+ bytes, version bits `10`,
+  payload type outside the RTCP range — which accepts roughly a quarter of
+  arbitrary bytes on the version check alone, and a DNS transaction ID supplies
+  the pattern. The strict heuristic (even destination port, three consecutive
+  packets agreeing on SSRC, payload type and sequence) would have rejected
+  every one, but it never ran: the payload-only branch returns first.
+
+  Below port 1024 the payload now has to be corroborated by that heuristic
+  instead of taken on its own word. Real media is untouched — RFC 3550 §11
+  places RTP in the dynamic range, and nothing legitimately carries it on a
+  system port. Re-run on the same corpus: 1213 streams, the four phantoms gone,
+  every real stream and all 18241 dialogs unchanged.
+
+  A phantom stream is not harmless. It is one more row an operator reads past
+  during an outage, attached to an endpoint that never carried media.
+
 ### Added
 - **`-I` reads a directory, a glob, or several files — and reads them in the
   order the packets were captured.** It took a single path; a directory errored

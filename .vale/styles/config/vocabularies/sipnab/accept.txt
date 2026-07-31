@@ -662,3 +662,4 @@ zsh
 [Bb]itrate
 [Bb]itrates
 monaural
+gzip
