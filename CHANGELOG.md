@@ -12,6 +12,24 @@ entry that carries them.
 
 ## [0.5.69] - 2026-07-31
 
+### Fixed
+- **CI went red on the plugin work in two ways, both from adding a
+  feature-gated flag and a test that builds a real wasm32 artifact.**
+  `plugin_example_test` runs `cargo build --target wasm32-unknown-unknown`
+  exactly as the docs instruct, which passes locally and fails on a runner
+  without that target (`can't find crate for std`) — so the `Check` and
+  `Coverage` jobs now install it. The test is not weakened: building the
+  artifact is the whole point of it.
+
+  Separately, `readme_long_flags_exist_in_cli` enumerates flags from the clap
+  command *as built*, so `--plugin` is invisible under a reduced feature set
+  while the docs still describe it. The gate now carries an explicit
+  `FEATURE_GATED` list, so a `#[cfg(feature)]` flag is a deliberate entry
+  rather than something a reader discovers from a red matrix job.
+
+  Local verification now covers what CI actually runs: all eleven feature
+  combinations in the matrix, not just `--all-features`.
+
 ### Security
 - **A hostile plugin could exhaust host memory before the cap was checked.**
   The WASM host validated `mem.size()` *after* `instantiate_and_start`, but

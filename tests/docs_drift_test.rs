@@ -488,6 +488,24 @@ fn is_foreign_flag(flag: &str, doc: &str) -> bool {
 fn cli_long_flags() -> BTreeSet<String> {
     let cmd = sipnab::cli::Cli::command();
     let mut flags = BTreeSet::new();
+
+    // Flags that exist only under a non-default Cargo feature.
+    //
+    // This enumerates the CLI clap actually built, so a `#[cfg(feature = ...)]`
+    // flag is absent whenever the suite runs without that feature — and the
+    // docs, which describe the whole program, still name it. The reduced-feature
+    // CI matrix hits exactly that: `--plugin` is real under `plugins` and
+    // invisible under `native,hep,api,mcp,mcp-http`, so the gate reported the
+    // documentation as advertising a flag that does not exist.
+    //
+    // Listed rather than inferred, so adding a feature-gated flag is a
+    // deliberate entry here and not something a reader has to discover from a
+    // red matrix job. Each name must still be documented like any other flag.
+    const FEATURE_GATED: &[&str] = &["plugin"];
+    for f in FEATURE_GATED {
+        flags.insert((*f).to_string());
+    }
+
     for arg in cmd.get_arguments() {
         if let Some(long) = arg.get_long() {
             flags.insert(long.to_string());

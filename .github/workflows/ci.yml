@@ -62,6 +62,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
           components: clippy, rustfmt
+          # `cargo test --all-features` includes `plugins`, and
+          # plugin_example_test builds crates/sipnab-plugin-example for wasm32
+          # exactly as the docs instruct. Without the target it fails with
+          # "can't find crate for `std`" — the test doing its job, so CI gets
+          # the target rather than the test getting weakened.
+          targets: wasm32-unknown-unknown
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
