@@ -56,6 +56,8 @@ through.
 - [Config Reference](config-reference.md) — every `[section]` and key.
 - [Filter DSL](filter-dsl.md) — grammar, fields, operators, aliases.
 - [Keybindings](keybindings.md) — every TUI key, per view.
+- [MOS and codecs](mos-and-codecs.md) — where the quality score comes from,
+  which codecs have a published basis, and which report a placeholder.
 - [Output Formats](output-formats.md) — JSON/NDJSON schemas, pcapng, jq.
 - [SIP header fields](sip-header-fields.md) — every field in the IANA
   registry, with the nineteen compact forms.

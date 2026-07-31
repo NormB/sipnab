@@ -10,7 +10,82 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **The AMR-WB impairment values, from the ITU-T tables that publish them.**
+  Follow-up to the MOS placeholder below, which left open what the number
+  *should* be for cellular codecs. `src/rtp/emodel_wb.rs` implements the
+  wideband E-model — ITU-T G.107.1 (06/2019) as amended by **Corrigendum 1
+  (01/2020)** — with the `Ie,WB` values from G.113 (09/2024) Tables IV.1
+  (monotic, nine modes) and IV.3 (diotic, six), and the `Bpl,wb` loss factors
+  from Table IV.4.
+
+  Deliberately a separate model rather than new rows in `estimate_mos`. Those
+  are wideband values anchored at `Ro,WB = 129`; `estimate_mos` is narrowband
+  G.107 anchored at 93.2, and mixing them is a 35.8-point scale error, not an
+  approximation. A `MOS_CQEW` and a `MOS_CQE` must not be averaged or held to
+  one threshold, so the scale is reported with the number.
+
+  Every function returns `Option` and returns `None` wherever nothing is
+  published, which is more often than expected:
+  - **AMR narrowband has no published value at all.** G.113 has no AMR-NB row.
+    GSM-EFR (12.2 kbit/s, `Ie = 5`) and TIA IS-641 (7.4 kbit/s, `Ie = 10`) are
+    close relatives at coincident bitrates and are **not** substituted.
+  - **EVS is published on the fullband scale only**, SWB mode, diotic. There is
+    no EVS `Ie,WB`. G.113's `Ie,fb ≈ Σ Ie,wb + 19` bridge is one-directional.
+  - **AMR-WB under loss on a handset is not computable** — `Bpl,wb` exists for
+    three modes, diotic only. Borrowing the diotic figure would mix listening
+    contexts inside one equation.
+  - Three modes have no diotic value and are not interpolated.
+
+  Scoring also needs the **mode**, which the codec name does not carry: the nine
+  modes span `Ie,WB` 1 to 41, about 4.49 down to 3.51 MOS. `amr_wb_kbps_from_fmtp`
+  pins it from an SDP `mode-set` naming exactly one mode (RFC 4867 §8.1); a
+  multi-mode set says what the stream may do, not what it did.
+
+  Two published oddities are preserved rather than smoothed: 23.85 kbit/s scores
+  *worse* than the slower 23.05 (`Ie,WB` 8 against 1), an inversion recurring
+  across three tables; and listening context is worth up to 15 R-points, so it
+  is a required input with no default.
+
+  New reference page [MOS and codecs](docs/mos-and-codecs.md). Its tables are
+  gated against the model by `the_published_amr_wb_tables_match_the_model` —
+  added because five of the fifteen MOS figures were hand-computed and rounded
+  wrong on the first pass, an error small enough to read as plausible.
+
+  Sourced by three independent extractions of the ITU-T PDFs plus an
+  adjudicating pass that re-fetched every document and read the equation pages
+  as rendered images, the text layer having dropped the Symbol-font operators.
+  That pass caught six disagreements, two of which would have shipped wrong on
+  a majority vote: Eq (7-13)'s `25 × 1.29` delay factor (understating delay
+  impairment by 22.5%) and Eq (7-9)'s `K = 0.08·T + 10`.
+
 ### Fixed
+- **`check_codec_negotiation` reported `no_common_codec` for a call that
+  connected.** `SIP_CALL_RTP_G711` offers `PCMA`/`PCMU` and answers
+  `pcma`/`pcmu` — each vendor's own spelling — and the comparison was an exact
+  string match. A call that answered **200 OK** and carried real G.711 audio
+  was reported as a codec mismatch. RFC 4855 §1 makes the encoding name
+  case-insensitive; the comparison now folds case while `offered` and
+  `answered` keep each side's wire spelling, which is the evidence.
+
+  Not an error but a confident wrong answer, which is worse: mid-outage it
+  sends an operator to reconfigure a codec list that was already working.
+
+- **Codecs went unnamed whenever SDP carried no `a=rtpmap`.** Codec names were
+  read only from `a=rtpmap`, but RFC 3551 assigns payload types 0-34
+  permanently and an rtpmap is required only for the dynamic range (96-127). A
+  plain `m=audio 8000 RTP/AVP 0 8` — what most SBCs and hardware phones send
+  for G.711 — yielded an empty codec list, which reaches an operator as "the
+  far end offered nothing". `static_payload_name` supplies the RFC 3551 Table
+  4/5 names; an explicit rtpmap still wins, and dynamic types with no rtpmap
+  stay unnamed rather than guessed at. Codec order now follows the `m=` line,
+  which is the offerer's stated preference.
+
+- **A link-checker exclusion for LinkedIn.** It answers non-browser user agents
+  with HTTP 999 and rejects `HEAD` with 405 even from a browser UA, while
+  serving the page normally to a browser `GET` — verified all three ways. The
+  link is in the site footer, so one denial failed every built page at once.
+
 - **MOS was a guess wearing the shape of a measurement for every codec except
   three.** `estimate_mos` has a `_ => 5.0` arm commented "Unknown codec,
   moderate impairment", so AMR, AMR-WB, EVS and G.722 all score **4.216** at

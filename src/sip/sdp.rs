@@ -219,6 +219,60 @@ pub fn effective_address(media: &SdpMedia, session: &SdpSession) -> Option<Strin
         .map(|c| c.addr.clone())
 }
 
+/// Encoding name for a payload type statically assigned by RFC 3551, or
+/// `None` for the dynamic and unassigned range.
+///
+/// An `a=rtpmap` is only *required* for the dynamic types (96-127). RFC 3551
+/// §6 binds the numbers below permanently, so `m=audio 8000 RTP/AVP 0 8` is a
+/// complete offer of G.711 µ-law and A-law with nothing further to state —
+/// which is exactly what most SBCs and hardware phones send for plain G.711.
+///
+/// Reading codecs from `a=rtpmap` alone therefore reports *no codecs* for a
+/// large share of real traffic, and an empty codec list is not a neutral
+/// answer: it reaches an operator as "the far end offered nothing".
+///
+/// Table 4 (audio) and Table 5 (video) are transcribed in full, including the
+/// entries marked reserved. 1 and 2 were assigned to 1016 and G721/G726-32 in
+/// RFC 1890 and reserved when RFC 3551 obsoleted it; captures predating that
+/// still carry them, so they are named as reserved rather than silently
+/// dropped — a payload type that decodes to nothing is a finding, not a blank.
+///
+/// Types 19-24, 27, 29, 30 and 35-95 are unassigned and yield `None`.
+#[must_use]
+pub fn static_payload_name(payload_type: u8) -> Option<&'static str> {
+    Some(match payload_type {
+        // Table 4 — audio.
+        0 => "PCMU",
+        3 => "GSM",
+        4 => "G723",
+        5 => "DVI4", // 8 kHz
+        6 => "DVI4", // 16 kHz
+        7 => "LPC",
+        8 => "PCMA",
+        9 => "G722",
+        10 => "L16", // stereo
+        11 => "L16", // mono
+        12 => "QCELP",
+        13 => "CN",
+        14 => "MPA",
+        15 => "G728",
+        16 => "DVI4", // 11.025 kHz
+        17 => "DVI4", // 22.05 kHz
+        18 => "G729",
+        // Table 5 — video, and one audio/video multiplex.
+        25 => "CelB",
+        26 => "JPEG",
+        28 => "nv",
+        31 => "H261",
+        32 => "MPV",
+        33 => "MP2T",
+        34 => "H263",
+        // Reserved by RFC 3551 §6, previously assigned by RFC 1890.
+        1 | 2 => "reserved",
+        _ => return None,
+    })
+}
+
 /// Parse a `c=` line value (e.g., `"IN IP4 10.0.0.1"`) into an [`SdpConnection`].
 /// Returns `None` when fewer than three whitespace-separated fields are present.
 fn parse_connection(value: &str) -> Option<SdpConnection> {

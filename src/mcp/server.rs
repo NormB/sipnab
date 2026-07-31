@@ -1662,9 +1662,22 @@ impl SipnabMcp {
                     }
                 }
             }
+            // Case-insensitive, because RFC 4855 §1 makes the encoding name
+            // case-insensitive and vendors genuinely disagree on spelling: in
+            // SIP_CALL_RTP_G711 the offer says PCMA/PCMU and the answer says
+            // pcma/pcmu. An exact match reported "no_common_codec" for a call
+            // that answered 200 OK and carried real G.711 audio — not an
+            // error, but a confident wrong answer sending an operator to
+            // reconfigure a codec list that was already working.
+            //
+            // `offered` and `answered` keep each side's own spelling: that is
+            // what was on the wire, and normalising it would destroy the
+            // evidence for the mismatch an operator may be chasing. Only the
+            // comparison is case-folded, and `common` reports the offer's
+            // spelling because the offer is what the answer is matched against.
             let common: Vec<String> = offered
                 .iter()
-                .filter(|c| answered.contains(c))
+                .filter(|c| answered.iter().any(|a| a.eq_ignore_ascii_case(c)))
                 .cloned()
                 .collect();
 

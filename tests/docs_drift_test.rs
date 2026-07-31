@@ -2037,8 +2037,8 @@ fn no_documentation_table_repeats_a_row() {
     // the duplicates it exists to find simply stop being looked for.
     assert_eq!(
         files.len(),
-        109,
-        "found {} tracked markdown files, expected 109. More is fine — bump \
+        111,
+        "found {} tracked markdown files, expected 111. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2086,7 +2086,7 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 376,
+        tables, 386,
         "walked {tables} tables, expected 376. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
@@ -2417,5 +2417,70 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
         "these MCP tools have a section but no fenced example: {missing_example:?}. \
          Show real output — an operator reaching for a tool mid-incident needs to \
          recognise the answer, not infer its shape."
+    );
+}
+
+/// Every AMR-WB number printed in `docs/mos-and-codecs.md` must match the model.
+///
+/// Both columns are checked against `emodel_wb`, because both were wrong when
+/// first written. The `Ie,WB` values were transcribed correctly from G.113, and
+/// then five of the fifteen MOS figures beside them were computed by hand and
+/// rounded wrong — 19.85, 18.25 and 8.85 monotic, 15.85 and 12.65 diotic. The
+/// error was small enough to read as plausible and is exactly what this page
+/// exists to warn against, so the page is now derived-checked rather than
+/// trusted.
+#[test]
+fn the_published_amr_wb_tables_match_the_model() {
+    use sipnab::rtp::emodel_wb::{ListeningContext, amr_wb_ie, amr_wb_mos};
+
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let page = std::fs::read_to_string(repo.join("docs/mos-and-codecs.md"))
+        .expect("read docs/mos-and-codecs.md");
+
+    // Rows look like: | 12.65 | 13 | 4.34 |
+    let row = regex::Regex::new(r"(?m)^\| ([0-9.]+) \| ([0-9]+) \| ([0-9.]+) \|$").unwrap();
+
+    // The monotic table is the first of the two; split on its heading so a row
+    // is attributed to the right listening context.
+    let split = page
+        .find("### Diotic")
+        .expect("the diotic heading anchors the split");
+    let sections = [
+        (&page[..split], ListeningContext::Monotic),
+        (&page[split..], ListeningContext::Diotic),
+    ];
+
+    let mut checked = 0;
+    for (text, context) in sections {
+        for c in row.captures_iter(text) {
+            let kbps: f64 = c[1].parse().expect("kbit/s");
+            let ie: f64 = c[2].parse().expect("Ie,WB");
+            let mos: f64 = c[3].parse().expect("MOS");
+
+            let real_ie = amr_wb_ie(kbps, context).unwrap_or_else(|| {
+                panic!("docs list {kbps} kbit/s for {context:?}, the model has no such row")
+            });
+            assert!(
+                (real_ie - ie).abs() < f64::EPSILON,
+                "{kbps} kbit/s {context:?}: docs say Ie,WB={ie}, model says {real_ie}"
+            );
+
+            let real_mos = amr_wb_mos(kbps, context, 0.0).expect("scorable at zero loss");
+            assert!(
+                (real_mos - mos).abs() < 5e-3,
+                "{kbps} kbit/s {context:?}: docs say MOS={mos}, model says \
+                 {real_mos:.6} (rounds to {real_mos:.2})"
+            );
+            checked += 1;
+        }
+    }
+
+    // Nine monotic rows plus six diotic. Fewer means the regex stopped matching
+    // the table and this gate silently checked nothing.
+    assert_eq!(
+        checked, 15,
+        "expected 15 AMR-WB rows in docs/mos-and-codecs.md, matched {checked}. \
+         More is fine — bump this. FEWER means the table shape changed and the \
+         gate is no longer reading it."
     );
 }

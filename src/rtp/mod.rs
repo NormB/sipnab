@@ -23,6 +23,7 @@
 pub mod audio_export;
 pub mod diagnosis;
 pub mod dtmf;
+pub mod emodel_wb;
 pub mod g711;
 pub mod heuristic;
 pub mod loss_map;
