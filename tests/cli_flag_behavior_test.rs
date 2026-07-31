@@ -1053,7 +1053,15 @@ fn call_report_resolves_by_call_id_in_branch_mode() {
 /// it earns a test rather than being left to the exotic ones.
 #[test]
 fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
-    // Readiness hand-shake failure: the source never opens.
+    // A missing file is now rejected during planning, BEFORE any thread is
+    // spawned — `-I` resolves directories and globs into a file list, and that
+    // resolution validates what it is handed. Still exit 1, and the message is
+    // more direct than the old "failed to open" from inside the reader.
+    //
+    // Note what this costs: this probe no longer reaches the post-hand-shake
+    // path, so the thread-leak contract described above now rests ENTIRELY on
+    // the chroot case below. Do not delete that one as redundant — it is the
+    // only remaining probe that gets past the hand-shake.
     let (_out, err, code) = run_support::run(&["-N", "-I", "/nonexistent.pcap"], Some("error"));
     assert_eq!(
         code,
@@ -1061,8 +1069,8 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
         "a missing capture file must exit 1, not {code:?}:\n{err}"
     );
     assert!(
-        err.contains("failed to open"),
-        "the failure must say the source could not be opened:\n{err}"
+        err.contains("does not exist"),
+        "the failure must name the missing path:\n{err}"
     );
 
     // Post-hand-shake failure: the file opens, the capture thread is running,

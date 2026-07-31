@@ -24,6 +24,14 @@ fn cli(args: &[&str]) -> Cli {
     Cli::parse_from_args(full)
 }
 
+/// A real capture, because `plan()` now resolves `-I` before returning.
+///
+/// It used to accept any string: `-I x.pcap` planned happily against a file
+/// that did not exist, and the error surfaced later inside the capture thread.
+/// Resolving up front is what lets a directory or a glob become a file list at
+/// all, and it means a typo fails before any thread starts.
+const FIXTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
+
 /// Source selection precedence: `-I file` beats `-d device` beats the
 /// config-file device; with none set the plan defers to auto-detection.
 #[test]
@@ -31,7 +39,7 @@ fn source_selection_precedence() {
     let mut config = Config::default();
     config.capture.device = Some("cfg0".into());
 
-    let p = bootstrap::plan(&cli(&["-I", "x.pcap", "-d", "eth9"]), &config).expect("plan");
+    let p = bootstrap::plan(&cli(&["-I", FIXTURE, "-d", "eth9"]), &config).expect("plan");
     assert!(
         matches!(p.source, Some(CaptureSource::File { .. })),
         "input file must win"
@@ -120,7 +128,7 @@ fn bpf_autogeneration_rules() {
         "an explicit filter is never overridden"
     );
 
-    let p = bootstrap::plan(&cli(&["-I", "x.pcap"]), &Config::default()).expect("plan");
+    let p = bootstrap::plan(&cli(&["-I", FIXTURE]), &Config::default()).expect("plan");
     assert!(
         p.capture_config.bpf_filter.is_none(),
         "offline input gets no auto BPF"
@@ -132,21 +140,21 @@ fn bpf_autogeneration_rules() {
 #[test]
 fn run_mode_precedence() {
     let p =
-        bootstrap::plan(&cli(&["--cores", "4", "-I", "x.pcap"]), &Config::default()).expect("plan");
+        bootstrap::plan(&cli(&["--cores", "4", "-I", FIXTURE]), &Config::default()).expect("plan");
     assert!(matches!(p.mode, RunMode::CoresFile));
 
-    let p = bootstrap::plan(&cli(&["-I", "x.pcap", "-N"]), &Config::default()).expect("plan");
+    let p = bootstrap::plan(&cli(&["-I", FIXTURE, "-N"]), &Config::default()).expect("plan");
     assert!(matches!(p.mode, RunMode::Batch));
 
     #[cfg(feature = "tui")]
     {
-        let p = bootstrap::plan(&cli(&["-I", "x.pcap"]), &Config::default()).expect("plan");
+        let p = bootstrap::plan(&cli(&["-I", FIXTURE]), &Config::default()).expect("plan");
         assert!(matches!(p.mode, RunMode::Tui), "default is the TUI");
     }
 
     // --cores 1 is the ordinary single-threaded path, not CoresFile.
     let p = bootstrap::plan(
-        &cli(&["--cores", "1", "-I", "x.pcap", "-N"]),
+        &cli(&["--cores", "1", "-I", FIXTURE, "-N"]),
         &Config::default(),
     )
     .expect("plan");
@@ -157,7 +165,7 @@ fn run_mode_precedence() {
 #[cfg(feature = "mcp")]
 #[test]
 fn mcp_forces_batch_mode() {
-    let p = bootstrap::plan(&cli(&["--mcp", "-I", "x.pcap"]), &Config::default()).expect("plan");
+    let p = bootstrap::plan(&cli(&["--mcp", "-I", FIXTURE]), &Config::default()).expect("plan");
     assert!(matches!(p.mode, RunMode::Batch));
 }
 
@@ -178,7 +186,7 @@ fn mcp_forces_batch_mode() {
 #[test]
 fn call_report_forces_batch_mode() {
     let p = bootstrap::plan(
-        &cli(&["-I", "x.pcap", "--call-report", "abc123@host"]),
+        &cli(&["-I", FIXTURE, "--call-report", "abc123@host"]),
         &Config::default(),
     )
     .expect("plan");
@@ -191,8 +199,8 @@ fn call_report_forces_batch_mode() {
     // Still batch with the format flag the docs pair it with, and still batch
     // when -N is given explicitly (the two must not disagree).
     for args in [
-        &["-I", "x.pcap", "--call-report", "abc123@host", "--markdown"][..],
-        &["-I", "x.pcap", "--call-report", "abc123@host", "-N"][..],
+        &["-I", FIXTURE, "--call-report", "abc123@host", "--markdown"][..],
+        &["-I", FIXTURE, "--call-report", "abc123@host", "-N"][..],
     ] {
         let p = bootstrap::plan(&cli(args), &Config::default()).expect("plan");
         assert!(matches!(p.mode, RunMode::Batch), "{args:?} must be batch");
@@ -202,7 +210,7 @@ fn call_report_forces_batch_mode() {
     // not turn every offline run into batch.
     #[cfg(feature = "tui")]
     {
-        let p = bootstrap::plan(&cli(&["-I", "x.pcap"]), &Config::default()).expect("plan");
+        let p = bootstrap::plan(&cli(&["-I", FIXTURE]), &Config::default()).expect("plan");
         assert!(matches!(p.mode, RunMode::Tui));
     }
 }
@@ -212,7 +220,7 @@ fn call_report_forces_batch_mode() {
 #[test]
 fn policy_autostop_and_split() {
     let p = bootstrap::plan(
-        &cli(&["-N", "--autostop", "duration:30", "-I", "x.pcap"]),
+        &cli(&["-N", "--autostop", "duration:30", "-I", FIXTURE]),
         &Config::default(),
     )
     .expect("plan");
@@ -223,7 +231,7 @@ fn policy_autostop_and_split() {
     assert_eq!(p.policy.autostop_filesize_mb, None);
 
     let err = match bootstrap::plan(
-        &cli(&["-N", "--autostop", "bogus:1", "-I", "x.pcap"]),
+        &cli(&["-N", "--autostop", "bogus:1", "-I", FIXTURE]),
         &Config::default(),
     ) {
         Err(e) => e,

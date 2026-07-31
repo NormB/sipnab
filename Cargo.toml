@@ -62,6 +62,14 @@ pcap = { version = "2", optional = true }
 # (and thus the WASM browser analyzer) gunzips too, and the default
 # `rust_backend` compiles fine on wasm32.
 flate2 = "1"
+# Filename globbing and directory walking for multi-file capture input. Both
+# were already in the dependency tree transitively, so promoting them to direct
+# dependencies adds no new supply chain -- and neither is worth hand-rolling:
+# glob's bracket-expression and `**` semantics are fiddly enough to get subtly
+# wrong, and walkdir carries the symlink-loop protection a naive recursive
+# read_dir does not.
+glob = "0.3"
+walkdir = "2"
 tempfile = { version = "3", optional = true }
 etherparse = "0.21"
 clap = { version = "4", features = ["derive", "env", "string"], optional = true }

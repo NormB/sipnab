@@ -151,11 +151,175 @@ pub fn capture_file(
         let _ = ready.send(Ok(()));
     }
 
-    let link_type = cap.get_datalink().0;
+    let mut count: u64 = 0;
+    let mut prev_ts: Option<DateTime<Utc>> = None;
+    read_opened(
+        &mut cap,
+        path,
+        config,
+        &tx,
+        std::time::Instant::now(),
+        &mut count,
+        &mut prev_ts,
+    )
+}
+
+/// Read a set of capture files, in order, into one packet stream.
+///
+/// The files feed a single channel and therefore a single dialog store, which
+/// is the whole point: `tcpdump -C -W` splits a busy capture across a ring
+/// buffer, and a call whose INVITE lands in `tg.pcap3` and whose BYE lands in
+/// `tg.pcap4` is only reconstructable if both are read without resetting state
+/// in between. Analysed separately, one file shows a call that never ends and
+/// the other a stray BYE, and neither reports the truth.
+///
+/// `paths` must already be in read order — [`crate::capture::input_set`]
+/// orders them by first-packet timestamp, which is not filename order.
+///
+/// The packet count, the duration clock and the replay timeline are shared
+/// across the whole set. A `--count 100` over four files means a hundred
+/// packets in total, not four hundred, and replay reproduces the gap *between*
+/// files as well as within them.
+///
+/// # Arguments
+///
+/// * `paths` - capture files, in read order.
+/// * `config` - BPF filter, count/duration limits, and the `replay` flag.
+/// * `tx` - channel the decoded `Packet`s are sent into.
+/// * `ready_tx` - optional one-shot, signalled once the FIRST file is open and
+///   filtered. Later files cannot report readiness — the consumer is already
+///   running by then — so a failure to open one of them is logged and skipped.
+///
+/// # Errors
+///
+/// Fails when the first file cannot be opened or its BPF filter does not
+/// compile, or when libpcap reports a read error mid-file.
+///
+/// # Side effects
+///
+/// Reads each file, sends packets on `tx`, signals `ready_tx`, sleeps between
+/// packets in replay mode, checks the global shutdown flag, and logs progress.
+pub fn capture_files(
+    paths: &[std::path::PathBuf],
+    config: &CaptureConfig,
+    tx: PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    let Some((first, rest)) = paths.split_first() else {
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Err("no capture files to read".to_string()));
+        }
+        anyhow::bail!("no capture files to read");
+    };
+
+    // The first file owns readiness: opening it is what proves the whole set
+    // is usable, and the consumer starts as soon as it is signalled.
+    let (mut cap, _gz_guard) = match open_offline(first) {
+        Ok(opened) => opened,
+        Err(e) => {
+            if let Some(ready) = ready_tx {
+                let _ = ready.send(Err(format!("{e:#}")));
+            }
+            return Err(e);
+        }
+    };
+    if let Some(ref bpf) = config.bpf_filter
+        && let Err(e) = cap.filter(bpf, true)
+    {
+        let err = anyhow::Error::new(e).context(format!("Failed to compile BPF filter: {bpf}"));
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Err(format!("{err:#}")));
+        }
+        return Err(err);
+    }
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Ok(()));
+    }
+
     let start = std::time::Instant::now();
     let mut count: u64 = 0;
-    let replay = config.replay;
     let mut prev_ts: Option<DateTime<Utc>> = None;
+
+    if !read_opened_inner(
+        &mut cap,
+        first,
+        config,
+        &tx,
+        start,
+        &mut count,
+        &mut prev_ts,
+    )? {
+        return Ok(());
+    }
+    drop(cap);
+    drop(_gz_guard);
+
+    for path in rest {
+        // A file that fails here is logged and skipped rather than aborting.
+        // The set was already probed during resolution, so reaching this means
+        // something changed underneath us mid-read — a rotating capture
+        // directory being cleaned up while it is analysed. Losing one file of
+        // a set is bad; losing the analysis of the other nine is worse.
+        let (mut cap, _gz_guard) = match open_offline(path) {
+            Ok(opened) => opened,
+            Err(e) => {
+                tracing::error!("Skipping '{}': {e:#}", path.display());
+                continue;
+            }
+        };
+        if let Some(ref bpf) = config.bpf_filter
+            && let Err(e) = cap.filter(bpf, true)
+        {
+            tracing::error!("Skipping '{}': bad BPF filter: {e}", path.display());
+            continue;
+        }
+        if !read_opened_inner(&mut cap, path, config, &tx, start, &mut count, &mut prev_ts)? {
+            break;
+        }
+    }
+
+    tracing::info!("Read {count} packets from {} file(s)", paths.len());
+    Ok(())
+}
+
+/// Read every packet from an already-opened capture into `tx`.
+///
+/// Split out of [`capture_file`] so a multi-file set shares one packet count,
+/// one duration clock, and one replay timeline across its members —
+/// see [`capture_files`]. Returns `Ok(false)` when the whole read should stop
+/// (shutdown, a limit reached, or the receiver gone) rather than merely this
+/// file ending.
+fn read_opened(
+    cap: &mut pcap::Capture<pcap::Offline>,
+    path: &Path,
+    config: &CaptureConfig,
+    tx: &PacketTx,
+    start: std::time::Instant,
+    count: &mut u64,
+    prev_ts: &mut Option<DateTime<Utc>>,
+) -> Result<()> {
+    let _ = read_opened_inner(cap, path, config, tx, start, count, prev_ts)?;
+    Ok(())
+}
+
+/// The read loop itself, returning whether the caller should continue to the
+/// next file.
+///
+/// Separate from [`read_opened`] only so the "stop the whole set" signal has a
+/// return value: a count limit reached inside file three must not be mistaken
+/// for file three simply ending.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn read_opened_inner(
+    cap: &mut pcap::Capture<pcap::Offline>,
+    path: &Path,
+    config: &CaptureConfig,
+    tx: &PacketTx,
+    start: std::time::Instant,
+    count: &mut u64,
+    prev_ts: &mut Option<DateTime<Utc>>,
+) -> Result<bool> {
+    let link_type = cap.get_datalink().0;
+    let replay = config.replay;
 
     if replay {
         tracing::info!("Replaying from '{}' with original timing", path.display());
@@ -166,21 +330,21 @@ pub fn capture_file(
     loop {
         if signals::shutdown_requested() {
             tracing::debug!("Shutdown requested, stopping file reader");
-            break;
+            return Ok(false);
         }
 
         if let Some(max_count) = config.count
-            && count >= max_count
+            && *count >= max_count
         {
             tracing::debug!("Reached packet count limit ({max_count})");
-            break;
+            return Ok(false);
         }
 
         if let Some(duration) = config.duration
             && start.elapsed() >= duration
         {
             tracing::debug!("Reached duration limit ({duration:?})");
-            break;
+            return Ok(false);
         }
 
         match cap.next_packet() {
@@ -191,7 +355,7 @@ pub fn capture_file(
                 // bounded slices that poll the shutdown flag between them, so a
                 // large delta cannot delay shutdown by more than one slice.
                 if replay {
-                    if let Some(prev) = prev_ts {
+                    if let Some(prev) = *prev_ts {
                         let delta = ts.signed_duration_since(prev);
                         if let Ok(dur) = delta.to_std()
                             && !dur.is_zero()
@@ -200,11 +364,11 @@ pub fn capture_file(
                             tracing::debug!(
                                 "Shutdown requested during replay delay, stopping file reader"
                             );
-                            break;
+                            return Ok(false);
                         }
                         // Negative deltas (out-of-order timestamps) are skipped
                     }
-                    prev_ts = Some(ts);
+                    *prev_ts = Some(ts);
                 }
 
                 let packet = Packet::new(
@@ -218,10 +382,10 @@ pub fn capture_file(
 
                 if tx.send(packet).is_err() {
                     tracing::debug!("Receiver dropped, stopping file reader");
-                    break;
+                    return Ok(false);
                 }
 
-                count += 1;
+                *count += 1;
             }
             Err(pcap::Error::NoMorePackets) => {
                 tracing::debug!("End of file reached");
@@ -235,10 +399,10 @@ pub fn capture_file(
     }
 
     tracing::info!(
-        "File reader finished: {count} packets from '{}'",
+        "File reader finished: {count} packets total, through '{}'",
         path.display()
     );
-    Ok(())
+    Ok(true)
 }
 
 /// Sleep for `total`, waking at least every 200 ms to poll `should_stop`.

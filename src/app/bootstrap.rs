@@ -12,8 +12,6 @@
 //! then performs the side-effectful part: channel creation, capture start,
 //! readiness hand-shake, chroot, and privilege drop.
 
-use std::path::PathBuf;
-
 use crate::capture::{self, CaptureConfig, CaptureSource};
 use crate::cli::{self, Cli};
 use crate::config::{Config, LoadedConfig};
@@ -149,7 +147,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     //
     // A warning rather than an error, because the precedence is long-standing
     // and someone may be relying on it deliberately.
-    if cli.input.is_some() && cli.device.is_some() {
+    if cli.has_input() && cli.device.is_some() {
         tracing::warn!(
             "both --input/-I and --device/-d given: reading the FILE and ignoring the \
              interface. Drop -I to capture live traffic."
@@ -157,9 +155,31 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     }
 
     #[allow(clippy::manual_map)]
-    let source = if let Some(ref input) = cli.input {
+    let source = if cli.has_input() {
+        // Expand directories, globs and repeated -I into the exact files to
+        // read, ordered by when their packets were captured. Resolution
+        // happens here rather than in the reader so a bad path fails before
+        // any thread starts and the operator sees the count they are about to
+        // analyse.
+        let resolved =
+            match crate::capture::input_set::resolve(&cli.input, &cli.input_resolve_options()) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(PlanError {
+                        exit_code: 1,
+                        message: format!("{e:#}"),
+                    });
+                }
+            };
+        if resolved.len() > 1 {
+            tracing::info!(
+                "Reading {} capture files in timestamp order (first: '{}')",
+                resolved.len(),
+                resolved[0].path.display()
+            );
+        }
         Some(CaptureSource::File {
-            path: PathBuf::from(input),
+            paths: resolved.into_iter().map(|r| r.path).collect(),
         })
     } else if let Some(ref device) = cli.device {
         Some(CaptureSource::Live {
@@ -304,7 +324,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // once at the parse boundary rather than re-derived here. Deriving it
     // here instead would fix only this decision and leave the three output
     // gates in `app::batch` still reading `no_tui` as a proxy for "batch".
-    let mode = if cli.cores > 1 && cli.input.is_some() && !cli.multi_device {
+    let mode = if cli.cores > 1 && cli.has_input() && !cli.multi_device {
         RunMode::CoresFile
     } else {
         #[cfg(feature = "mcp")]
@@ -757,7 +777,7 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // --strip-secrets: write a DSB-free copy of the input pcapng. The input
     // is never modified; the output is written atomically.
     if let Some(ref out) = cli.strip_secrets {
-        let Some(ref input) = cli.input else {
+        let Some(input) = cli.primary_input() else {
             tracing::error!("--strip-secrets requires an input file (-I <file>)");
             return Some(1);
         };

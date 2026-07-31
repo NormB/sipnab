@@ -166,7 +166,9 @@ sipnab -d any --multi-device --delta-time
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `-d`, `--device` | `<IFACE>` | platform default | Network interface to capture on. With no `-d`, no `-I` file and no `-L` HEP listener, sipnab picks a default that differs by platform — see the note below |
-| `-I`, `--input` | `<FILE>` | -- | Read packets from a pcap file instead of live capture |
+| `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | Read packets from a capture file, a directory of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below |
+| `--recursive` | -- | off | Descend into subdirectories when `-I` names a directory |
+| `--input-name` | `<GLOB>` | -- | Read only files whose *name* matches this pattern when `-I` names a directory. Applies at every depth under `--recursive` |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
 | `-B`, `--buffer` | `<MIB>` | `2` | Kernel capture buffer size in MiB |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
@@ -204,6 +206,34 @@ sipnab -d any --multi-device --delta-time
 > picked, you see nothing and the capture looks merely quiet — name `-d`
 > explicitly.
 
+> **Reading a set of files: order comes from the packets, not the names.**
+> `tcpdump -C 100 -W 10` writes a ring buffer — `tg.pcap0` through `tg.pcap9` —
+> and then **wraps**, overwriting the oldest file in place. A real set measured
+> for this feature ran `tg.pcap7`, `tg.pcap8`, `tg.pcap9`, `tg.pcap0` …
+> `tg.pcap6` in time order: the numeric suffix records where tcpdump was in its
+> cycle, not when the packets arrived.
+>
+> So sipnab sorts by each file's **first packet timestamp**. Neither
+> lexicographic nor natural-numeric filename order reconstructs that capture,
+> and replaying it out of order corrupts every timing derivation — post-dial
+> delay, setup time, retransmission detection, and the RFC 3261 Timer B/C/H
+> bounds all assume timestamps only move forward.
+>
+> sipnab recognises a capture by **opening it**, not by its extension —
+> `tg.pcap0` has the extension `pcap0`, and plenty of captures have none at
+> all. It decompresses gzip members transparently, so a directory holding both
+> `.pcap` and `.pcap.gz` needs nothing special.
+>
+> A file you name directly with `-I` that sipnab cannot read is an error. One
+> it *discovers* by expanding a directory or glob it skips with a warning,
+> because directories hold other things.
+>
+> **Why it matters beyond tidiness:** reading a split capture as a set is the
+> only way to see a call whose INVITE lands in one file and whose BYE lands in
+> the next. Analysed one file at a time, that call appears as one that never
+> ends plus a stray BYE, and neither half is the truth. On the 10-file, 921 MB
+> set above, 2271 of 20512 calls — **11%** — spanned a boundary.
+
 > **`-I` and `-d` are alternatives, not companions.** sipnab accepts both, and the FILE wins: sipnab reads it, never opens the interface, and the output looks like a normal run. sipnab warns on stderr when you do this. To switch a file command to live capture, **remove `-I`** rather than adding `-d` beside it.
 
 **Examples**
@@ -212,6 +242,11 @@ sipnab -d any --multi-device --delta-time
 - `sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse` — live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (sipgrep -x)
 - `sudo sipnab -N --multi-device --output capture.pcap --autostop filesize:100` — capture on all available interfaces headlessly, stopping once the output file reaches 100 MiB
 - `sipnab -N --input capture.pcap --replay --no-rtp` — replay a pcap at its original timing with RTP capture and analysis disabled
+- `sipnab -N --input /var/captures/ --json-dialogs` — read every capture in a directory as one timeline, so a call split across the ring buffer resolves to one dialog instead of two fragments
+- `sipnab -N --input /var/captures/ --recursive --input-name '*.pcap.gz' --json-dialogs` — descend into per-day subdirectories and read only the compressed archives
+- `sipnab -N --input 'captures/tg.pcap[0-4]' --report` — analyse the first five members of a ring buffer with a glob sipnab expands itself, no shell needed
+- `sipnab -N --input a.pcap --input b.pcap --json-dialogs` — read two named captures as a single set, ordered by their packets
+- `sipnab -N --input /var/captures/ --input-name 'edge1-*' --recursive --json` — pick one host's captures out of a tree holding several
 - `sipnab -N --input capture.pcap --limitlen 512 --no-reassembly --quiet-bad-parse` — scan a pcap sipgrep-style: parse only the first 512 bytes of each packet, every packet standalone (no reassembly), without parse-error noise
 - `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --duration 5m` — capture for 5 minutes using a BPF filter read from sip.bpf, without putting the interface into promiscuous mode (sipgrep -p)
 - `sudo sipnab --device eth0 --portrange 5060-5090 --buffer 8 --buffer-budget 256 --duration 1h` — monitor an hour of traffic across a wide SIP port range with enlarged capture buffers

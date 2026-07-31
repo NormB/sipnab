@@ -37,7 +37,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (386)
+## Rust crates (390)
 
 | Crate | Version | Licence |
 |---|---|---|
@@ -162,6 +162,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | getrandom | 0.2.17 | MIT OR Apache-2.0 |
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
+| glob | 0.3.3 | MIT OR Apache-2.0 |
 | h2 | 0.4.14 | MIT |
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 |
@@ -292,6 +293,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | rustls-webpki | 0.103.13 | ISC |
 | rustversion | 1.0.22 | MIT OR Apache-2.0 |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 |
+| same-file | 1.0.6 | Unlicense/MIT |
 | schemars | 1.2.1 | MIT |
 | schemars_derive | 1.2.1 | MIT |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 |
@@ -372,6 +374,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | valuable | 0.1.1 | MIT |
 | version_check | 0.9.5 | MIT/Apache-2.0 |
 | vtparse | 0.6.2 | MIT |
+| walkdir | 2.5.0 | Unlicense/MIT |
 | want | 0.3.1 | MIT |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasip2 | 1.0.2+wasi-0.2.9 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -396,6 +399,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | wezterm-input-types | 0.1.0 | MIT |
 | winapi | 0.3.9 | MIT/Apache-2.0 |
 | winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 |
+| winapi-util | 0.1.11 | Unlicense OR MIT |
 | winapi-x86_64-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 |
 | windows-core | 0.62.2 | MIT OR Apache-2.0 |
 | windows-implement | 0.60.2 | MIT OR Apache-2.0 |
