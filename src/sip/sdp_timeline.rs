@@ -247,8 +247,44 @@ fn extract_media_info(
         None => return (Vec::new(), None, None, MediaMode::SendRecv, false),
     };
 
+    // Codec names come from a=rtpmap where one exists, and from the RFC 3551
+    // static assignments where it does not. Both are needed: rtpmap is only
+    // mandatory for the dynamic types (96-127), so an SDP offering plain G.711
+    // as `m=audio 8000 RTP/AVP 0 8` carries no rtpmap at all and is complete
+    // without one.
+    //
+    // Order follows the m= line, because that is the offerer's stated
+    // preference and an operator comparing two offers is usually reading for
+    // which codec came first. rtpmap wins over the static table for the same
+    // payload number: RFC 3551 §3 allows a static type to be re-bound, and
+    // what the wire said is the evidence.
     let mut codecs: Vec<String> = Vec::new();
     for media in &sdp.media {
+        for fmt in &media.formats {
+            let Ok(pt) = fmt.parse::<u8>() else {
+                // Non-numeric format token: `m=image ... udptl t38` and friends
+                // carry a format name rather than a payload number, and those
+                // are described by the media type, not the codec list.
+                continue;
+            };
+            let name = media
+                .rtpmap
+                .iter()
+                .find(|r| r.payload_type == pt)
+                .map(|r| r.encoding.clone())
+                .or_else(|| sdp::static_payload_name(pt).map(str::to_owned));
+            // A dynamic type with no rtpmap is genuinely unnameable — 96-127
+            // mean nothing without the map — so it is omitted rather than
+            // guessed at.
+            if let Some(name) = name
+                && !codecs.contains(&name)
+            {
+                codecs.push(name);
+            }
+        }
+        // An rtpmap for a payload type absent from the m= line is malformed but
+        // observed in the wild; keep it rather than lose a codec the far end
+        // clearly named.
         for r in &media.rtpmap {
             if !codecs.contains(&r.encoding) {
                 codecs.push(r.encoding.clone());
@@ -471,6 +507,85 @@ mod tests {
              a=sendrecv\r\n"
         )
         .into_bytes()
+    }
+
+    /// Build an audio SDP body carrying only static payload numbers, with no
+    /// `a=rtpmap` at all. RFC 3551 assigns these numbers permanently, so this
+    /// is a complete and legal offer — it is what Cisco, Avaya and most SBCs
+    /// emit for plain G.711.
+    fn static_pt_sdp(formats: &str, addr: &str, port: u16) -> Vec<u8> {
+        format!(
+            "v=0\r\n\
+             o=- 0 0 IN IP4 {addr}\r\n\
+             s=-\r\n\
+             c=IN IP4 {addr}\r\n\
+             t=0 0\r\n\
+             m=audio {port} RTP/AVP {formats}\r\n\
+             a=sendrecv\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// An SDP with no `a=rtpmap` still names its codecs. RFC 3551 Table 4
+    /// assigns 0, 8 and 18 permanently, so an offer carrying only payload
+    /// numbers is complete — the rtpmap is what DYNAMIC types (96-127) need,
+    /// not static ones.
+    ///
+    /// Reading codecs from `a=rtpmap` alone reported no codecs for these, and
+    /// an empty list is not a neutral answer: `check_codec_negotiation` turns
+    /// it into "sdp_present_but_no_codecs", which tells an operator the far end
+    /// offered nothing when it offered G.711 both ways.
+    #[test]
+    fn static_payload_types_are_named_without_an_rtpmap() {
+        let mut timeline = Vec::new();
+        let sdp = static_pt_sdp("0 8 18", "10.0.0.1", 20000);
+        let invite = make_invite_with_sdp(&sdp, base_ts());
+        track_sdp(&mut timeline, &invite);
+
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(
+            timeline[0].codecs,
+            vec!["PCMU", "PCMA", "G729"],
+            "RFC 3551 static payload types must be named from the m= line when \
+             no a=rtpmap is present; got {:?}",
+            timeline[0].codecs
+        );
+    }
+
+    /// A dynamic payload type with no `a=rtpmap` is genuinely unnameable —
+    /// 96-127 mean nothing without the map. It must not be guessed at, and it
+    /// must not suppress the static entries beside it.
+    #[test]
+    fn dynamic_payload_types_without_an_rtpmap_are_not_invented() {
+        let mut timeline = Vec::new();
+        let sdp = static_pt_sdp("0 96 97", "10.0.0.1", 20000);
+        let invite = make_invite_with_sdp(&sdp, base_ts());
+        track_sdp(&mut timeline, &invite);
+
+        assert_eq!(
+            timeline[0].codecs,
+            vec!["PCMU"],
+            "dynamic types carry no registry meaning without a=rtpmap and must \
+             be omitted, not named; got {:?}",
+            timeline[0].codecs
+        );
+    }
+
+    /// An explicit `a=rtpmap` wins over the static table. RFC 3551 permits
+    /// re-binding a static number, and the wire spelling is the evidence.
+    #[test]
+    fn an_explicit_rtpmap_overrides_the_static_table() {
+        let mut timeline = Vec::new();
+        let sdp = sendrecv_sdp("SomethingElse", "10.0.0.1", 20000);
+        let invite = make_invite_with_sdp(&sdp, base_ts());
+        track_sdp(&mut timeline, &invite);
+
+        assert_eq!(
+            timeline[0].codecs,
+            vec!["SomethingElse"],
+            "payload type 0 was explicitly mapped; the static default must not \
+             override what the wire said"
+        );
     }
 
     /// Build an audio SDP body with an explicit direction attribute

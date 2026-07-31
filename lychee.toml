@@ -47,6 +47,24 @@ exclude = [
   # of one sponsor link. This is the failure mode that gets link checkers
   # deleted, so it is written down instead of tuned away.
   'patreon\.com',
+  # LinkedIn answers non-browser user agents with HTTP 999 "Request Denied",
+  # their long-standing anti-scraping response, and rejects HEAD with 405 even
+  # from a browser UA. Verified three ways against the footer profile URL inside
+  # one minute: default UA HEAD -> 999, browser UA HEAD -> 405, browser UA GET
+  # -> 200. The page is live; only the automated request shapes are refused.
+  #
+  # This link is in the site FOOTER, so one denial fails every built page at
+  # once -- the run that caught it reported the same URL dead in 30-odd files.
+  # Neither status belongs in `accept`: 999 is not a real HTTP status and would
+  # be meaningless anywhere else, and accepting 405 site-wide would hide
+  # genuinely misrouted links to rescue a single footer credit.
+  #
+  # Worth knowing: this passed for weeks before failing, and the failing log
+  # line reads "Error (cached)". That looks like a stale cache and is the
+  # opposite -- a fresh failure being written to it. lychee-action caches
+  # results between runs and the old entry aged out, which is why this surfaced
+  # now rather than when the link landed in 2092d3a.
+  'linkedin\.com',
 ]
 
 exclude_path = [

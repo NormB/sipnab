@@ -172,6 +172,15 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "IANA registry, with the RFC that defines it.",
     ),
     (
+        "docs/mos-and-codecs.md",
+        "mos-and-codecs.md",
+        "MOS and codecs",
+        "MOS & Codecs",
+        22,
+        "Where the quality score comes from, which codecs have a published "
+        "impairment factor behind it, and which report a placeholder.",
+    ),
+    (
         "docs/sip-response-codes.md",
         "sip-response-codes.md",
         "SIP response codes",

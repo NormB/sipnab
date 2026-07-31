@@ -53,6 +53,14 @@ exceptions:
   - DTMF
   - HEP
   - MOS
+  # Codec names and the ITU-T Recommendations that specify them. "Amr-wb" is a
+  # renamed codec, not a styled heading, and G.113 is a document number.
+  - AMR
+  - AMR-WB
+  - EVS
+  - ITU-T
+  - G.113
+  - G.722.2
   - NAT
   - PCAP
   - RTCP

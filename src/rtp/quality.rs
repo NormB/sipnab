@@ -85,11 +85,24 @@ pub fn estimate_mos(jitter_ms: f64, loss_pct: f64, codec: Option<&str>) -> f64 {
         // Some("AMR-WB"))` and `estimate_mos(10.0, 0.0, None)` both return
         // 4.216.
         //
-        // For AMR-WB that is wrong by roughly a full MOS point in either
-        // direction, since its nine modes genuinely span about 4.49 down to
-        // 3.51. Callers that present this number to a human or an agent must
-        // consult `mos_grounding` and say so, rather than letting a guess wear
-        // the shape of a measurement.
+        // AMR-WB cannot be rescued here even though G.113 publishes values for
+        // it, and the reason is worth knowing. Those values are `Ie,WB`, on the
+        // wideband G.107.1 scale that anchors at 129; this function is the
+        // narrowband G.107, anchored at 93.2. Dropping a wideband Ie into it is
+        // not an approximation but a 35.8-point scale error. AMR-WB is scored
+        // in `crate::rtp::emodel_wb` instead, which also needs something this
+        // signature does not carry: the *mode*. Its nine modes span `Ie,WB` 1
+        // to 41 — about 4.49 down to 3.51 MOS — so "AMR-WB" alone leaves a full
+        // MOS point of ambiguity, and only an SDP `mode-set` pinning one mode,
+        // or the RTP payload header, resolves it.
+        //
+        // AMR narrowband and EVS stay here permanently. G.113 has no AMR-NB row
+        // at all, and publishes EVS only as a fullband `Ie,fb` for SWB mode on
+        // the third scale (G.107.2, anchored at 148).
+        //
+        // Callers that present this number to a human or an agent must consult
+        // `mos_grounding` and say so, rather than letting a guess wear the
+        // shape of a measurement.
         _ => 5.0,
     };
 
@@ -723,8 +736,14 @@ pub enum MosGrounding {
     /// ITU-T G.113 publishes an equipment impairment factor for this codec, so
     /// the MOS is a genuine estimate.
     Published,
-    /// No published impairment value. The MOS is a placeholder and means
-    /// "unknown", not "about 4.2".
+    /// No published impairment value **on this scale**. The MOS is a
+    /// placeholder and means "unknown", not "about 4.2".
+    ///
+    /// Not always the same as "nothing is published". AMR-WB reports
+    /// `Unpublished` here because [`estimate_mos`] is the narrowband model and
+    /// takes no mode argument, while G.113 does publish wideband values for
+    /// all nine of its modes — see [`crate::rtp::emodel_wb`], which scores it
+    /// on the scale those values belong to.
     Unpublished,
 }
 

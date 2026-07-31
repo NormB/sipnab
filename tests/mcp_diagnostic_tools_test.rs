@@ -97,23 +97,103 @@ fn codec_negotiation_reports_the_real_codecs() {
     assert!(v["sdp_exchange_count"].as_u64().unwrap_or(0) >= 2);
 }
 
-/// A capture with no SDP must say so, not claim the far end failed to answer.
+/// A dialog with no SDP must say so, not claim the far end failed to answer.
 ///
-/// `sip-488-codec-reject.pcapng` carries no `m=audio` line at all. Reporting
+/// The dialog under test is the OPTIONS keepalive at the head of
+/// `sip-488-codec-reject.pcapng`, which genuinely carries no body. Reporting
 /// "no_answer" would send an operator hunting a reply that was never expected.
+///
+/// The Call-ID is named rather than taken from [`first_call_id`]. This test
+/// previously relied on that helper and on a comment asserting the whole
+/// capture "carries no m=audio line at all" — both wrong. The helper returns
+/// the first dialog, which is this OPTIONS exchange, while the comment
+/// described the INVITE, which offers `m=audio 0 RTP/AVP 0`. The test passed
+/// for a reason unrelated to what it claimed to check, so an extractor change
+/// would not have been caught here.
 #[test]
 fn codec_negotiation_distinguishes_absent_sdp_from_an_unanswered_offer() {
-    const NO_SDP: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
-    let call_id = first_call_id(NO_SDP);
+    const CAPTURE: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
     let v = call_tool(
-        NO_SDP,
+        CAPTURE,
         "check_codec_negotiation",
-        serde_json::json!({"call_id": call_id}),
+        serde_json::json!({"call_id": "0076da05-6f74-4bd0-8351-179edaca8596"}),
     );
-    let result = v["result"].as_str().unwrap_or_default();
+    assert_eq!(
+        v["result"], "no_sdp_in_capture",
+        "an OPTIONS exchange with no body must report absent SDP, not a \
+         missing answer; got {}",
+        v["result"]
+    );
+}
+
+/// The 488 INVITE in the same capture offers a codec, and it must be named.
+///
+/// `m=audio 0 RTP/AVP 0` carries no `a=rtpmap`, because RFC 3551 does not
+/// require one for a static payload type. Payload 0 is permanently PCMU. This
+/// reported `offered: []` until the static table landed, which reaches an
+/// operator as "the caller offered nothing" — a different and wrong diagnosis
+/// for a call rejected with 488.
+#[test]
+fn codec_negotiation_names_a_static_payload_type_with_no_rtpmap() {
+    const CAPTURE: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
+    let v = call_tool(
+        CAPTURE,
+        "check_codec_negotiation",
+        serde_json::json!({"call_id": "NA4y5nr9Jk"}),
+    );
+    let offered: Vec<String> = serde_json::from_value(v["offered"].clone()).expect("offered");
+    assert_eq!(
+        offered,
+        vec!["PCMU".to_string()],
+        "payload type 0 is PCMU by RFC 3551 Table 4 with or without an rtpmap; \
+         got {offered:?}"
+    );
+    assert_eq!(v["final_status_code"], 488);
+}
+
+/// Codec names differing only in case are the SAME codec.
+///
+/// `SIP_CALL_RTP_G711` offers `PCMA`/`PCMU` and answers `pcma`/`pcmu` — the
+/// spelling each vendor chose, and RFC 4855 §1 makes the encoding name
+/// case-insensitive. Comparing with an exact string match reported
+/// `no_common_codec` on a call that answered **200 OK** and carried real G.711
+/// audio.
+///
+/// That is the worst failure this tool has: not an error, but a confident
+/// wrong answer pointing at a codec mismatch that does not exist. An operator
+/// mid-outage would go reconfigure a working codec list.
+#[test]
+fn codec_comparison_ignores_case_because_rfc_4855_does() {
+    const MIXED_CASE: &str = "tests/pcap-samples/SIP_CALL_RTP_G711";
+    let v = call_tool(
+        MIXED_CASE,
+        "check_codec_negotiation",
+        serde_json::json!({"call_id": "12013223@200.57.7.195"}),
+    );
+
+    let offered: Vec<String> = serde_json::from_value(v["offered"].clone()).expect("offered");
+    let answered: Vec<String> = serde_json::from_value(v["answered"].clone()).expect("answered");
+    let common: Vec<String> = serde_json::from_value(v["common"].clone()).expect("common");
+
+    // The wire spelling is evidence and must survive into the report.
     assert!(
-        result == "no_sdp_in_capture" || result == "sdp_present_but_no_codecs",
-        "a capture with no m=audio must not report 'no_answer'; got {result:?}"
+        offered.iter().any(|c| c == "PCMA"),
+        "the offer's own spelling must be preserved; got {offered:?}"
+    );
+    assert!(
+        answered.iter().any(|c| c == "pcma"),
+        "the answer's own spelling must be preserved; got {answered:?}"
+    );
+
+    let lower: Vec<String> = common.iter().map(|c| c.to_lowercase()).collect();
+    assert!(
+        lower.iter().any(|c| c == "pcma") && lower.iter().any(|c| c == "pcmu"),
+        "PCMA and PCMU appear on both sides and must be common; got {common:?}"
+    );
+    assert_eq!(
+        v["result"], "ok",
+        "this call answered 200 OK and carried G.711; reporting \
+         no_common_codec sends an operator after a mismatch that is not there"
     );
 }
 
