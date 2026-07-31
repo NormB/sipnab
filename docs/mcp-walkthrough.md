@@ -37,6 +37,12 @@ above it.
 | Run diagnostics on a schedule, no human involved | [Run diagnostics on a schedule, with no agent attached](#run-diagnostics-on-a-schedule-with-no-agent-attached) |
 | Use Codex, Cursor, VS Code, Gemini CLI or Windsurf instead | [Use an agent other than Claude Code](#use-an-agent-other-than-claude-code) |
 | Work out why it does not connect | [Fix it when it does not connect](#fix-it-when-it-does-not-connect) |
+| **Actually diagnose something now that it is connected** | [Diagnose a real problem with the tools](#diagnose-a-real-problem-with-the-tools) |
+| Find out why one call failed | [Find out why a single call failed](#find-out-why-a-single-call-failed) |
+| Work out whether codecs caused a 488 | [Confirm whether a codec mismatch caused a 488](#confirm-whether-a-codec-mismatch-caused-a-488) |
+| Work out why a phone will not register | [Find out why an endpoint will not register](#find-out-why-an-endpoint-will-not-register) |
+| Explain bad audio on a call that connected | [Explain bad audio on a call that connected](#explain-bad-audio-on-a-call-that-connected) |
+| Save a live capture before shutting it down | [Save a live capture before stopping it](#save-a-live-capture-before-stopping-it) |
 
 ### The three shapes, at a glance
 
@@ -912,6 +918,277 @@ plaintext-HTTP registrations belong on trusted networks only — the same
 rules as scenarios 2B and 4.
 
 ---
+
+## Diagnose a real problem with the tools
+
+Everything above gets sipnab *connected*. This section is what to do next.
+
+Each recipe is a question an operator actually arrives with, the tool calls
+that answer it, and **real output** — every block below was produced by running
+the tool against a capture in `tests/pcap-samples/`, not written to look
+plausible. You can reproduce any of them.
+
+You do not type these calls. You ask your agent the question in the heading and
+it selects the tools; the calls are shown so you can tell whether it picked
+well, and so you can recognise the answer when it comes back. The full
+per-tool reference is in [MCP server](mcp.md).
+
+```mermaid
+flowchart TD
+    Q["A call is bad"] --> T["triage_call"]
+    T -->|verdict: signalling| S["The failure is in SIP"]
+    T -->|verdict: media| M["The failure is in RTP"]
+    S --> S1["explain_response_code<br/>check_codec_negotiation<br/>diagnose_registration"]
+    M --> M1["rtp_stats<br/>get_sdp_timeline"]
+    S1 --> L["render_ladder — see the exchange"]
+    M1 --> L
+```
+
+`triage_call` first, always. It answers the one question that decides which
+half of the stack to look at, and getting it wrong costs an hour.
+
+### Find out why a single call failed
+
+You have a Call-ID from a complaint or a billing record. Start with the split:
+
+```json
+{"name": "triage_call", "arguments": {"call_id": "1-1966@10.0.2.20"}}
+```
+
+```json
+{
+  "call_id": "1-1966@10.0.2.20",
+  "final_status_code": 200,
+  "state": "Completed",
+  "verdict": "media",
+  "signalling": { "problem": false, "hints": [] },
+  "media": {
+    "problem": true,
+    "one_way_audio": true,
+    "stream_count": 1,
+    "hints": ["RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."]
+  }
+}
+```
+
+Read the `verdict` before anything else. This call **answered 200 OK** — the
+signalling is clean and a SIP-side investigation would find nothing. The
+problem is one-way audio, and the hint names the direction that is missing.
+
+### Confirm whether a codec mismatch caused a 488
+
+`488 Not Acceptable Here` is usually blamed on codecs. Check rather than assume:
+
+```json
+{"name": "check_codec_negotiation", "arguments": {"call_id": "NA4y5nr9Jk"}}
+```
+
+```json
+{
+  "call_id": "NA4y5nr9Jk",
+  "final_status_code": 488,
+  "offered": ["PCMU"],
+  "answered": [],
+  "common": [],
+  "result": "no_answer",
+  "sdp_exchange_count": 2
+}
+```
+
+`result` distinguishes four outcomes, and they lead different places:
+
+| `result` | What it means |
+|---|---|
+| `ok` | A codec was agreed. The 488 came from something else |
+| `no_common_codec` | A genuine mismatch — compare the two lists |
+| `no_answer` | The offer was never answered with SDP |
+| `no_sdp_in_capture` | No SDP at all; nothing to negotiate |
+
+Here it is `no_answer`: the far end rejected the call without returning SDP, so
+there is no mismatch to fix. Note that `offered` lists PCMU even though the
+INVITE carries no `a=rtpmap` — payload type 0 is PCMU permanently under
+RFC 3551, and an rtpmap is only required for the dynamic range.
+
+Pair it with the registry text rather than an agent's recollection:
+
+```json
+{"name": "explain_response_code", "arguments": {"code": 488}}
+```
+
+```json
+{
+  "code": 488,
+  "class": "failure",
+  "registered": true,
+  "explanation": "488 Not Acceptable Here — Codec negotiation failed. Compare the SDP offer against the callee's supported codecs and ptime values."
+}
+```
+
+### Find out why an endpoint will not register
+
+Start from the whole capture — you may not know which Call-ID to ask about:
+
+```json
+{"name": "find_problems", "arguments": {}}
+```
+
+```json
+[
+  {
+    "call_id": "YzAwMDllYjUyNmVlZWFhZjE0NDViMWRkNDUyNzJmZDU.",
+    "state": "Failed",
+    "method": "REGISTER",
+    "from_user": "telephone1",
+    "msg_count": 4
+  }
+]
+```
+
+Then ask the registration-specific tool, which knows what a REGISTER exchange
+is supposed to look like:
+
+```json
+{"name": "diagnose_registration",
+ "arguments": {"call_id": "YzAwMDllYjUyNmVlZWFhZjE0NDViMWRkNDUyNzJmZDU."}}
+```
+
+```json
+{
+  "applicable": true,
+  "auth_loop": null,
+  "hints": [
+    "Call failed: 403 Forbidden.",
+    "Registration rejected: 403 Forbidden. The endpoint is offline."
+  ],
+  "registration_failure": {
+    "kind": "rejected",
+    "code": 403,
+    "requested_expiry_sec": 3600,
+    "granted_expiry_sec": null,
+    "evidence": [0, 3]
+  }
+}
+```
+
+Three fields carry the diagnosis. `kind` separates a **rejection** from an
+**auth loop** — a phone retrying forever against a bad password looks nothing
+like a 403 and is fixed somewhere else. `evidence` gives message indices you
+can pull with `get_message`. And `requested_expiry_sec` against
+`granted_expiry_sec` catches the case where registration *succeeds* but the
+server grants a shorter lifetime than the phone asked for, so it silently drops
+off between refreshes.
+
+`auth_loop` being `null` here matters: this failed once and stopped.
+
+### Explain bad audio on a call that connected
+
+When `triage_call` returns `verdict: media`, go to the streams:
+
+```json
+{"name": "rtp_stats", "arguments": {"call_id": "1-1966@10.0.2.20"}}
+```
+
+```json
+{
+  "streams": [{
+    "ssrc": "0x343da99b",
+    "codec": "PCMU",
+    "payload_type": 0,
+    "src": "10.0.2.15:27942",
+    "dst": "10.0.2.20:6000",
+    "packets": 425,
+    "jitter_ms": 0.454,
+    "loss_pct": 0.0,
+    "mos": 4.357850103492538,
+    "mos_grounded": true
+  }],
+  "diagnosis": {
+    "one_way_audio": true,
+    "nat_mismatch": false,
+    "hints": ["RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."]
+  }
+}
+```
+
+**Check `mos_grounded` before you act on `mos`.** `true` means ITU-T G.113
+publishes an impairment factor for this codec and the score is a real estimate.
+`false` means it is a placeholder meaning *unknown* — and the number still
+looks like 4.2, so nothing about the value itself gives it away. A `mos_note`
+is attached whenever it is false. See [MOS and codecs](mos-and-codecs.md) for
+which codecs have a published basis.
+
+Here jitter is sub-millisecond and loss is zero: the audio path that *exists*
+is clean, which confirms the problem is the missing return direction rather
+than degradation. One stream where you expect two is the finding.
+
+### Check what you are connected to before trusting an answer
+
+Worth doing first when you join a session someone else started, and it is the
+only way to tell a live capture from a replayed file:
+
+```json
+{"name": "capture_status", "arguments": {}}
+```
+
+```json
+{
+  "source": "file",
+  "name": "tests/pcap-samples/sip-rtp-g711.pcap",
+  "uptime_sec": 1,
+  "dialog_count": 2,
+  "stream_count": 2,
+  "source_exhausted": true,
+  "writing_to": null,
+  "unsaved": false
+}
+```
+
+`source_exhausted: true` says the file has been read to the end, so counts are
+final. On a **live** capture it is `false` and the numbers are still moving —
+an empty result may just mean *not yet*. `unsaved: true` warns that a live
+capture has no write target and its packets exist only in memory.
+
+Then confirm the build can do what you are about to ask of it:
+
+```json
+{"name": "server_capabilities", "arguments": {}}
+```
+
+```json
+{
+  "version": "0.5.69",
+  "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
+               "native", "plugins", "tls", "tui"],
+  "can_decrypt": true,
+  "can_hep": true,
+  "can_plugins": true
+}
+```
+
+Asking for TLS decryption on a build without `tls` otherwise fails in a way
+that reads like a key problem.
+
+### Save a live capture before stopping it
+
+A live capture is not replayable — once the process ends, packets that were
+never written are gone. Write them out first:
+
+```json
+{"name": "export_capture", "arguments": {"path": "incident-4471.pcap"}}
+```
+
+Then stop the server. `shutdown_server` needs `--mcp-allow-shutdown` on the
+server, which is **off by default**, and its first call is always a dry run:
+
+```json
+{"name": "shutdown_server", "arguments": {}}
+```
+
+It reports what would happen and changes nothing. Stopping takes a second,
+explicit call with `dry_run: false`, and it refuses to discard unsaved live
+data unless you either name a `save_to` target or pass `discard: true`. An
+agent that misreads "we can stop looking at this now" as an instruction should
+not be able to end an afternoon of capture.
 
 ## Understand the load on a busy server
 

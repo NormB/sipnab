@@ -659,6 +659,17 @@ fn rtp_stats_declares_whether_the_mos_is_grounded() {
             "every stream must declare mos_grounded, or a placeholder MOS is \
              indistinguishable from a measurement: {s}"
         );
+        // The flag has to be attached to something. `rtp_stats` builds on the
+        // NDJSON stream shape, which carries no `mos` field — so the grounding
+        // flag shipped first describing a number that was not in the payload,
+        // which is worse than silence: it implies a MOS is present.
+        let mos = s["mos"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("every stream must carry the mos itself: {s}"));
+        assert!(
+            (1.0..=4.5).contains(&mos),
+            "a MOS outside 1.0..=4.5 is not on the G.107 scale: {mos}"
+        );
     }
     // PCMU has a published ITU-T G.113 impairment value.
     assert!(
