@@ -33,6 +33,21 @@ use sipnab::plugin::{ABI_VERSION, Plugin};
 /// Build the example plugin the way the spec's "Writing a plugin" section says
 /// to, and return the artifact path.
 fn build_example() -> PathBuf {
+    // Build exactly once per test binary.
+    //
+    // Every test here needs the artifact, and libtest runs them in parallel —
+    // so the first version fired five concurrent `cargo build`s at the same
+    // target directory. They serialise on cargo's package-cache lock, but the
+    // artifact check does not: one test can stat the path while another
+    // build is still putting it there, which fails as "build reported success
+    // but produced no artifact". It passed on Linux and failed on macOS, which
+    // is what a race looks like when you only run it twice.
+    static ARTIFACT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ARTIFACT.get_or_init(build_example_once).clone()
+}
+
+/// The actual build. Called once, behind [`build_example`]'s `OnceLock`.
+fn build_example_once() -> PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut cmd = Command::new(env!("CARGO"));
     cmd.current_dir(manifest);
