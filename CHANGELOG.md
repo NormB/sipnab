@@ -11,6 +11,23 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **MCP tool documentation was thinner than the table suggested.** Five tools —
+  `triage_call`, `search_by_time`, `list_captures`, `export_capture`,
+  `export_audio` — had a row in the tool table and no section of their own. Ten
+  more, all predating this release, had a section and a parameter table but no
+  worked example.
+
+  The cause was the gate: `mcp_tool_table_lists_every_registered_tool` checks
+  the **index**, and an index is not documentation. It was green throughout, so
+  nothing signalled the gap.
+
+  Every one of the 24 tools now has its own heading and a real captured example.
+  `every_mcp_tool_has_a_documented_section_with_an_example` attributes each
+  example to the heading it sits under, so a fenced block elsewhere on the page
+  cannot satisfy it, and it is mutation-tested both ways — removing a section
+  and removing an example each fail it.
+
+### Fixed
 - **The MCP diagnostic tests raced the pcap reader and passed on Linux by
   luck.** They sent a tool call as soon as the server initialised, before
   sipnab had finished reading the capture into the store. Linux won that race

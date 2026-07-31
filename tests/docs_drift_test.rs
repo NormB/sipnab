@@ -2346,3 +2346,76 @@ fn sip_parameter_claims_match_the_parser() {
         );
     }
 }
+
+/// Every registered MCP tool needs its own documented section with an example.
+///
+/// A sibling test already checks the tool TABLE lists every tool. That is an
+/// index, not documentation, and the gap it left was real: `triage_call`,
+/// `search_by_time`, `list_captures`, `export_capture` and `export_audio` all
+/// shipped with a table row and no section. The table gate was green
+/// throughout, which is why nobody noticed — a reader could see that a tool
+/// existed and nothing about how to call it or how to read its answer.
+///
+/// So this gate asks for the two things a row cannot give: a heading naming the
+/// tool, and a concrete example under it.
+#[test]
+fn every_mcp_tool_has_a_documented_section_with_an_example() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let server =
+        std::fs::read_to_string(repo.join("src/mcp/server.rs")).expect("read src/mcp/server.rs");
+    let page = std::fs::read_to_string(repo.join("docs/mcp.md")).expect("read docs/mcp.md");
+
+    let name_re = regex::Regex::new(r#"name\s*=\s*"([a-z_]+)""#).unwrap();
+    let tools: std::collections::BTreeSet<String> = name_re
+        .captures_iter(&server)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        tools.len() >= 20,
+        "found only {} registered tools — the attribute shape changed and this \
+         gate is no longer reading the registry",
+        tools.len()
+    );
+
+    // Split the page into h3 sections so an example can be attributed to the
+    // tool whose heading it sits under, rather than merely existing somewhere.
+    let heads: Vec<(usize, String)> = page
+        .match_indices("\n### ")
+        .map(|(i, _)| {
+            let start = i + 1;
+            let end = page[start..].find('\n').map_or(page.len(), |n| start + n);
+            (start, page[start..end].to_string())
+        })
+        .collect();
+
+    let mut missing_section = Vec::new();
+    let mut missing_example = Vec::new();
+
+    for tool in &tools {
+        let needle = format!("`{tool}`");
+        let Some(idx) = heads.iter().position(|(_, h)| h.contains(&needle)) else {
+            missing_section.push(tool.clone());
+            continue;
+        };
+        let body_start = heads[idx].0;
+        let body_end = heads.get(idx + 1).map_or(page.len(), |(next, _)| *next);
+        let body = &page[body_start..body_end];
+        // A fenced block under the heading: the call, its response, or both.
+        if !body.contains("```") {
+            missing_example.push(tool.clone());
+        }
+    }
+
+    assert!(
+        missing_section.is_empty(),
+        "these MCP tools have no `### ` section in docs/mcp.md: {missing_section:?}. \
+         A table row says a tool exists; it does not say how to call it or how to \
+         read the answer. Give each one a heading naming it."
+    );
+    assert!(
+        missing_example.is_empty(),
+        "these MCP tools have a section but no fenced example: {missing_example:?}. \
+         Show real output — an operator reaching for a tool mid-incident needs to \
+         recognise the answer, not infer its shape."
+    );
+}
