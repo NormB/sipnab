@@ -40,10 +40,10 @@ version = "0.5.69"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.68"
+published_version = "0.5.69"
 # Release date of the current `version` above. Shown on /download next to the
 # version. Update alongside Cargo.toml/version when cutting a release.
-release_date = "2026-07-30"
+release_date = "2026-07-31"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
