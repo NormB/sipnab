@@ -168,7 +168,10 @@ fn a_truncated_file_does_not_hide_the_files_after_it() {
     std::fs::write(&broken, &whole[..truncated]).expect("write truncated");
 
     let after_alone = dialog_ids(&["-I", &after.to_string_lossy()]);
-    assert!(!after_alone.is_empty(), "the trailing fixture must hold dialogs");
+    assert!(
+        !after_alone.is_empty(),
+        "the trailing fixture must hold dialogs"
+    );
 
     let together = dialog_ids(&[
         "-I",
