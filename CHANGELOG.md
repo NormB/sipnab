@@ -11,14 +11,22 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
-- **The plugin example test failed under coverage.** `cargo llvm-cov` passes
-  `-C instrument-coverage` through the environment, and the test's nested
-  `cargo build --target wasm32-unknown-unknown` inherited it — but wasm32 ships
-  no `profiler_builtins`, so the build died there. The wasm artifact is a
-  plugin under test, not part of the coverage measurement, so the nested build
-  now scrubs `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`,
-  `RUSTDOCFLAGS` and `LLVM_PROFILE_FILE`. Verified by reproducing the exact CI
-  error locally with the scrubbing removed.
+- **The plugin example test failed under coverage.** It shells out to
+  `cargo build --target wasm32-unknown-unknown`, and that nested build cannot
+  carry `cargo llvm-cov`'s instrumentation — wasm32 ships no
+  `profiler_builtins`, so it fails with `E0463`. Scrubbing the coverage
+  variables from the child environment fixed the reproduction I could build
+  locally and *did not* fix CI, so the flags reach the child by a route that
+  simulation did not cover.
+
+  Rather than keep guessing at plumbing that cannot be reproduced here
+  (`cargo-llvm-cov` is not installed locally), the coverage job now skips these
+  tests by name — the same treatment `cli_goldens` already gets, and for the
+  same reason. They run in full in the CI workflow's plain `cargo test`; only
+  their coverage contribution is dropped, and the wasm artifact was never
+  instrumented anyway. The tests share a `wasm_plugin_` prefix *because* it is
+  the skip filter, which the module comment says so a rename cannot silently
+  put them back in the coverage run.
 
 ### Changed
 - **The MCP docs sent remote users down the wrong path.** `docs/mcp.md` said
