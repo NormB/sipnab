@@ -106,6 +106,93 @@ fn a_call_split_across_two_files_is_stitched_back_together() {
     );
 }
 
+/// A truncated file in the MIDDLE of a set must not hide the files after it.
+///
+/// Truncation is the normal state of a ring buffer, not an exotic corruption:
+/// the newest file is being written when the capture stops, and `tcpdump`
+/// leaves it short. libpcap reports `truncated dump file` on the final partial
+/// record.
+///
+/// This was a real regression. `capture_files` propagated the read error with
+/// `?`, which abandoned every remaining file — observed on a 15-file directory
+/// where 15 started and 14 finished. It only escaped notice because the
+/// truncated member happened to sort last by timestamp; one position earlier
+/// and the rest of the capture would have vanished behind a single WARN, with
+/// the run still exiting 0 and printing a confident summary.
+///
+/// Open failures were already handled this way. Read failures were not, and
+/// the reasoning is identical: losing one file of a set is bad, losing the
+/// analysis of the others is worse.
+#[test]
+fn a_truncated_file_does_not_hide_the_files_after_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Chosen by their real first-packet timestamps so the truncated file lands
+    // in the MIDDLE once resolve() orders the set: sip-register (1312180642)
+    // < sip-proxy (1312180650) < sip-rtp-g711 (1480171979). `-I` order does
+    // not decide this — resolution sorts by packet time regardless — so the
+    // fixtures have to be picked for it.
+    let first = dir.path().join("read-first.pcap");
+    let broken = dir.path().join("truncated-in-the-middle.pcap");
+    let after = dir.path().join("read-after-the-break.pcap");
+
+    std::fs::copy(samples().join("sip-register.pcap"), &first).expect("copy");
+    std::fs::copy(samples().join("sip-rtp-g711.pcap"), &after).expect("copy");
+
+    // Cut INSIDE a packet's data, not at a record boundary. libpcap tolerates a
+    // file that simply ends between records — it only reports `truncated dump
+    // file` when a packet header promises more bytes than the file holds, which
+    // is what an interrupted writer actually leaves behind. Cutting at an
+    // arbitrary offset produced a file libpcap read happily, and the test
+    // passed against the unfixed code.
+    //
+    // pcap layout: 24-byte global header, then per record a 16-byte header
+    // (ts_sec, ts_usec, incl_len, orig_len) followed by incl_len bytes.
+    let whole = std::fs::read(samples().join("sip-proxy.pcap")).expect("read");
+    let truncated = {
+        let mut off = 24usize;
+        let mut cut = None;
+        // Walk to the third record, then keep its header and half its data.
+        for _ in 0..3 {
+            if off + 16 > whole.len() {
+                break;
+            }
+            let incl = u32::from_le_bytes(whole[off + 8..off + 12].try_into().unwrap()) as usize;
+            if off + 16 + incl > whole.len() {
+                break;
+            }
+            cut = Some(off + 16 + incl / 2);
+            off += 16 + incl;
+        }
+        cut.expect("fixture must hold at least one full record")
+    };
+    std::fs::write(&broken, &whole[..truncated]).expect("write truncated");
+
+    let after_alone = dialog_ids(&["-I", &after.to_string_lossy()]);
+    assert!(!after_alone.is_empty(), "the trailing fixture must hold dialogs");
+
+    let together = dialog_ids(&[
+        "-I",
+        &first.to_string_lossy(),
+        "-I",
+        &broken.to_string_lossy(),
+        "-I",
+        &after.to_string_lossy(),
+    ]);
+
+    // Assert on the file read AFTER the break. Checking the leading file would
+    // pass whether or not the abort happens, since it is already read by then
+    // — which is exactly how the first version of this test passed against the
+    // unfixed code.
+    for id in after_alone.iter() {
+        assert!(
+            together.contains(id),
+            "dialog {id} comes from the file read AFTER the truncated one and \
+             must still be reported; a read error must not abandon the rest of \
+             the set.\n  got: {together:?}"
+        );
+    }
+}
+
 /// A directory reads every capture inside it.
 #[test]
 fn a_directory_reads_every_capture_in_it() {

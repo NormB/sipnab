@@ -10,6 +10,29 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+- **A truncated capture file aborted the whole set, and truncation is the
+  normal state of a ring buffer.** Shipped in 0.5.70 with multi-file input.
+  `capture_files` propagated a libpcap read error with `?`, abandoning every
+  remaining file.
+
+  Found by pointing `--recursive` at a directory whose oldest member was a
+  partial capture. That file sorts **first**, so the run stopped at file 1 of
+  27 and reported **1 dialog instead of 19358** — while exiting 0 and printing
+  a summary. The only visible sign was a single `WARN` line.
+
+  It nearly escaped notice twice. In the first directory the truncated member
+  happened to sort *last*, so 15 files started and 14 finished with nothing
+  lost; and the test written to catch it passed against the unfixed code twice
+  — once because the fixture was cut at a record boundary, which libpcap reads
+  happily, and once because it asserted on the file read *before* the break.
+  A read error now stops that file and the set continues, matching how open
+  failures were already handled.
+
+  `tcpdump` leaves the newest ring-buffer member short whenever a capture is
+  still running, so this is the common case, not a corrupt-file edge case.
+
+
 ## [0.5.70] - 2026-07-31
 
 ### Fixed
