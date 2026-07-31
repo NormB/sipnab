@@ -163,6 +163,15 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "which dialog state machine sipnab runs it through.",
     ),
     (
+        "docs/sip-parameters.md",
+        "sip-parameters.md",
+        "SIP parameters",
+        "Parameters",
+        21,
+        "Every SIP URI parameter, header-field parameter and option tag in the "
+        "IANA registry, with the RFC that defines it.",
+    ),
+    (
         "docs/sip-response-codes.md",
         "sip-response-codes.md",
         "SIP response codes",

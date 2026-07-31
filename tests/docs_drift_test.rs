@@ -2037,8 +2037,8 @@ fn no_documentation_table_repeats_a_row() {
     // the duplicates it exists to find simply stop being looked for.
     assert_eq!(
         files.len(),
-        107,
-        "found {} tracked markdown files, expected 107. More is fine — bump \
+        109,
+        "found {} tracked markdown files, expected 109. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2086,8 +2086,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 370,
-        "walked {tables} tables, expected 370. More is fine — bump this. FEWER \
+        tables, 376,
+        "walked {tables} tables, expected 376. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
@@ -2276,4 +2276,73 @@ fn device_default_is_documented_per_platform() {
         cli.contains("ALL interfaces at once"),
         "src/cli.rs: -d help must state the Linux default captures all interfaces"
     );
+}
+
+/// The SIP parameter tables must stay consistent with what sipnab claims.
+///
+/// `docs/sip-parameters.md` is built from three IANA registries and carries a
+/// "sipnab parses" column. Two ways that page can lie, and this covers both.
+///
+/// The first draft computed the column by grepping the source for each
+/// parameter name and reported 41 of 204 — wrong and flattering, because `m`,
+/// `code`, `alg` and `count` all occur in unrelated code. A substring match is
+/// not evidence of parsing. The page now claims only what could be traced to a
+/// real extraction site, and this test holds those three to their accessors:
+/// if `top_via_branch` or `from_tag` were removed, the claim becomes false and
+/// the build fails rather than the docs quietly overstating.
+#[test]
+fn sip_parameter_claims_match_the_parser() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let page = std::fs::read_to_string(repo.join("docs/sip-parameters.md"))
+        .expect("read docs/sip-parameters.md");
+    let msg = std::fs::read_to_string(repo.join("src/sip/message.rs")).expect("read message.rs");
+    let diag =
+        std::fs::read_to_string(repo.join("src/sip/diagnosis.rs")).expect("read diagnosis.rs");
+
+    // (parameter, the accessor that justifies the claim, where it lives)
+    for (param, accessor, source) in [
+        ("branch", "fn top_via_branch", &msg),
+        ("tag", "fn from_tag", &msg),
+        ("expires", "fn expiry_of", &diag),
+    ] {
+        assert!(
+            source.contains(accessor),
+            "docs/sip-parameters.md claims sipnab parses `{param}`, but \
+             `{accessor}` is gone. Either restore it or drop the claim — an \
+             overstated support table sends someone looking for a field that \
+             is not there."
+        );
+    }
+
+    // The conservative-by-construction note must survive, because the number
+    // is the part a future editor is most likely to "improve" back into a grep.
+    assert!(
+        page.contains("substring match is not evidence of parsing"),
+        "the page must keep explaining why the support column is hand-verified; \
+         without it, someone recomputes it by grep and reinflates it"
+    );
+
+    // Registry sizes, pinned. A drop means the build script stopped reading a
+    // registry and the page silently shrank.
+    for (heading, min) in [
+        ("## SIP/SIPS URI parameters (", 30),
+        ("## Header field parameters (", 190),
+        ("## Option tags (", 30),
+    ] {
+        let at = page
+            .find(heading)
+            .unwrap_or_else(|| panic!("missing section: {heading}"));
+        let rest = &page[at + heading.len()..];
+        let n: usize = rest
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0);
+        assert!(
+            n >= min,
+            "{heading}{n}) is below {min} — a registry probably failed to load \
+             and the table shipped short"
+        );
+    }
 }
