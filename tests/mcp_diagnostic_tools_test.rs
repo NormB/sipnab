@@ -284,3 +284,229 @@ fn capture_status_names_the_real_source() {
     );
     assert_eq!(v["unsaved"], false, "a file replay is already on disk");
 }
+
+// ── file tools and shutdown ──────────────────────────────────────────
+//
+// These write to disk and stop processes, so "it returned something" is not
+// evidence. Each test asserts the artefact exists and is right, or that the
+// refusal actually refused.
+
+/// Call a tool with extra CLI args (for --mcp-file-root / --mcp-allow-shutdown).
+fn call_tool_with_args(
+    pcap: &str,
+    extra: &[&str],
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let mut argv: Vec<&str> = vec!["--mcp", "-N", "-I", pcap, "--quiet"];
+    argv.extend_from_slice(extra);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(manifest)
+        .args(&argv)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sipnab --mcp");
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        for line in [
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}),
+            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":tool,"arguments":args}}),
+        ] {
+            writeln!(stdin, "{line}").expect("write");
+        }
+        stdin.flush().expect("flush");
+    }
+    let stdout = child.stdout.take().expect("stdout");
+    let mut out = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = line.expect("read");
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if msg["id"] == 2 {
+            out = Some(msg);
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    out.unwrap_or_else(|| panic!("tool {tool} produced no response"))
+}
+
+/// Unwrap a successful tool result to its parsed JSON payload.
+fn ok_payload(msg: &serde_json::Value) -> serde_json::Value {
+    let text = msg["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected success, got {msg}"));
+    serde_json::from_str(text).expect("payload is JSON")
+}
+
+fn tmp_root(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("sipnab-mcp-{name}"));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).expect("create temp root");
+    d
+}
+
+/// `export_capture` must produce a real, non-empty pcap.
+#[test]
+fn export_capture_writes_a_real_pcap() {
+    let root = tmp_root("export");
+    let msg = call_tool_with_args(
+        G711,
+        &["--mcp-file-root", root.to_str().unwrap()],
+        "export_capture",
+        serde_json::json!({"filename": "out.pcap"}),
+    );
+    let v = ok_payload(&msg);
+    assert!(
+        v["messages"].as_u64().unwrap_or(0) > 0,
+        "exported nothing: {v}"
+    );
+
+    let written = root.join("out.pcap");
+    assert!(written.is_file(), "no file at {}", written.display());
+    let bytes = std::fs::metadata(&written).expect("stat").len();
+    assert!(
+        bytes > 24,
+        "pcap is only {bytes} bytes — header but no packets"
+    );
+
+    // Prove the artefact is usable, not merely present: sipnab must read back
+    // the dialogs it just wrote. A file that only *looks* like a pcap is the
+    // failure this catches.
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "-I",
+            written.to_str().unwrap(),
+            "--json-dialogs",
+            "--no-cli-print",
+            "--quiet",
+        ])
+        .output()
+        .expect("re-read the export");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let dialogs = stdout
+        .lines()
+        .filter(|l| l.trim_start().starts_with('{'))
+        .count();
+    assert!(dialogs > 0, "the exported pcap parsed back to zero dialogs");
+}
+
+/// The file tools must refuse a path, not just a `..` sequence.
+#[test]
+fn file_tools_refuse_anything_that_is_not_a_bare_filename() {
+    let root = tmp_root("traversal");
+    for bad in [
+        "../escape.pcap",
+        "/etc/passwd",
+        "sub/dir.pcap",
+        "..",
+        "a/../../b.pcap",
+    ] {
+        let msg = call_tool_with_args(
+            G711,
+            &["--mcp-file-root", root.to_str().unwrap()],
+            "export_capture",
+            serde_json::json!({"filename": bad}),
+        );
+        let err = msg["error"]["message"].as_str().unwrap_or_default();
+        // Assert WHY it was refused, not merely that it was.
+        //
+        // The first version checked only that an error came back, and passed
+        // against a deliberately weakened validator: "/etc/passwd" and
+        // "sub/dir.pcap" still errored, but from the filesystem — permission
+        // denied, no such directory — after the code had already accepted them
+        // and tried the write. On a server running as root, or with a
+        // writable subdirectory, the same input would have succeeded. A
+        // security test that cannot tell "refused" from "attempted and failed"
+        // is not testing the guard.
+        assert!(
+            err.contains("bare filename"),
+            "filename {bad:?} must be refused BY VALIDATION, not by the \
+             filesystem happening to reject it; got {err:?}"
+        );
+    }
+    // And nothing escaped onto disk.
+    assert!(!std::path::Path::new("/tmp/escape.pcap").exists());
+}
+
+/// Without `--mcp-file-root` the file tools refuse rather than guessing a path.
+#[test]
+fn file_tools_are_disabled_without_a_configured_root() {
+    let msg = call_tool_with_args(
+        G711,
+        &[],
+        "export_capture",
+        serde_json::json!({"filename": "x.pcap"}),
+    );
+    let err = msg["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("--mcp-file-root"),
+        "the refusal must name the flag that enables it; got {err:?}"
+    );
+}
+
+/// `shutdown_server` is refused unless the operator opted in.
+#[test]
+fn shutdown_is_refused_without_the_opt_in_flag() {
+    let msg = call_tool_with_args(G711, &[], "shutdown_server", serde_json::json!({}));
+    let err = msg["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("--mcp-allow-shutdown"),
+        "refusal must name the flag; got {err:?}"
+    );
+}
+
+/// Even when permitted, the default call is a dry run that stops nothing.
+#[test]
+fn shutdown_defaults_to_a_dry_run() {
+    let msg = call_tool_with_args(
+        G711,
+        &["--mcp-allow-shutdown"],
+        "shutdown_server",
+        serde_json::json!({}),
+    );
+    let v = ok_payload(&msg);
+    assert_eq!(
+        v["dry_run"], true,
+        "omitting dry_run must NOT stop the server"
+    );
+    assert_eq!(v["would_stop"], false);
+}
+
+/// `list_captures` finds a capture in the root and ignores other files.
+#[test]
+fn list_captures_lists_only_captures() {
+    let root = tmp_root("list");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(G711),
+        root.join("sample.pcap"),
+    )
+    .expect("copy fixture");
+    std::fs::write(root.join("notes.txt"), b"not a capture").expect("write decoy");
+
+    let v = ok_payload(&call_tool_with_args(
+        G711,
+        &["--mcp-file-root", root.to_str().unwrap()],
+        "list_captures",
+        serde_json::json!({}),
+    ));
+    let names: Vec<String> = v["captures"]
+        .as_array()
+        .expect("captures array")
+        .iter()
+        .map(|c| c["filename"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(names.contains(&"sample.pcap".to_string()), "got {names:?}");
+    assert!(
+        !names.contains(&"notes.txt".to_string()),
+        "listed a non-capture"
+    );
+}

@@ -1616,7 +1616,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
         .collect();
     assert_eq!(
         registered.len(),
-        20,
+        24,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",

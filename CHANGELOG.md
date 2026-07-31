@@ -11,6 +11,32 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **The remaining MCP tools: `list_captures`, `export_capture`, `export_audio`
+  and `shutdown_server`.** 20 → 24 tools.
+
+  All three file tools are confined to `--mcp-file-root` and take a **bare
+  filename, never a path**. That is the whole security model and it is
+  deliberate: `export_capture(path="/etc/cron.d/x")` is a remote code execution
+  primitive, not an export. Anything with a separator, a `..`, or a root prefix
+  is refused before any filesystem call. Without the flag the tools refuse to
+  run rather than guessing a directory.
+
+  `shutdown_server` needs `--mcp-allow-shutdown` (off by default), dry-runs
+  unless told otherwise, refuses to discard an unsaved live capture unless the
+  caller names the discard, and requests the same graceful stop SIGTERM does
+  rather than inventing a second path.
+
+### Fixed
+- **The path-traversal test passed against a deliberately broken validator.**
+  It asserted only that an error came back — and `/etc/passwd` and
+  `sub/dir.pcap` *did* error, from the filesystem, after the code had already
+  accepted them and attempted the write. On a root-running server the same
+  input would have succeeded. The test now asserts the refusal came from
+  validation, and mutation-testing confirms it: the weakened validator's error
+  is `writing /etc/passwd: Failed to create output file`, which is the code
+  trying, not refusing.
+
+### Added
 - **Seven MCP tools, three of them shaped by how VoIP is actually diagnosed.**
 
   Research on SIP troubleshooting gives one steer above all others: *almost
