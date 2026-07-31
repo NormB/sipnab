@@ -15,9 +15,7 @@ crate-type = ["cdylib"]
 # machinery would pull in. Anything larger should reach for serde-json-core or
 # serde with `default-features = false`.
 
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
+# No [profile.release] here on purpose: cargo ignores profiles in non-root
+# workspace members, and setting one only produces a warning on every build.
+# The workspace root's release profile applies, which is what produced the
+# 54.8 KiB artifact.

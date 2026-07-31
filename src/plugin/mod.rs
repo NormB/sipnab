@@ -27,7 +27,8 @@
 //! # Failure is never fatal
 //!
 //! A plugin that traps, runs out of fuel, exceeds its memory cap, or returns
-//! nonsense produces a [`PluginError`] against *that dialog* and nothing more.
+//! nonsense produces a [`PluginError`](crate::plugin::PluginError) against
+//! *that dialog* and nothing more.
 //! The capture continues, the built-in diagnosis for that dialog is unaffected,
 //! and every other plugin still runs. This matches how a malformed packet is
 //! handled: recorded and skipped, never fatal, because a capture process that
