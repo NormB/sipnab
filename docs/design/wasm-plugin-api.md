@@ -100,7 +100,7 @@ kind of artifact people copy off the internet.
 | Risk | Control |
 |---|---|
 | Infinite loop | `wasmi` fuel metering. Exhausted fuel = plugin error, capture continues |
-| Memory exhaustion | Explicit memory cap per instance |
+| Memory exhaustion | `wasmi` `StoreLimits` installed on the store **before** instantiation |
 | Escaping the sandbox | No imports whatsoever — nothing to call |
 | Reading the host's data | Linear memory is the plugin's own; the host copies the dialog in |
 | Crashing sipnab | Every trap is caught and reported as a plugin error against that dialog |
@@ -109,6 +109,24 @@ kind of artifact people copy off the internet.
 **A plugin failure never fails the capture.** It is reported and the dialog is
 otherwise analysed normally, for the same reason a malformed packet is logged
 and skipped rather than fatal.
+
+### The memory cap has to be a limiter, not an audit
+
+The first implementation read `mem.size()` *after* `instantiate_and_start` and
+refused anything over the cap. That is too late by construction: WASM allocates
+a module's declared **minimum** linear memory at instantiation, so a module
+declaring `(memory 32768)` was handed 2 GiB and only then rejected.
+
+The regression test caught it by passing — in 25 seconds. A check that reliably
+reports a problem after causing it is the shape worth naming, because it looks
+exactly like a working control from the outside: the error message is right,
+the test is green, and the host has already been made to allocate two
+gigabytes. The cap is now a `StoreLimits` on the store, refused by the engine
+during instantiation; the same test completes in 0.00s.
+
+Loading a plugin is a deliberate act, so this is not a remote hole. It is still
+a denial of service reachable by talking someone into a file, which is the
+normal way plugins arrive.
 
 ## Feature gating
 
