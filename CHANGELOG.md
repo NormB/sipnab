@@ -10,6 +10,33 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **`capture_status` and `server_capabilities` MCP tools.** Tier 1 of
+  `docs/design/mcp-tool-roadmap.md`, which came out of "how do I shut down the
+  remote sipnab?" — and found that an agent could not answer a more basic
+  question first.
+
+  Every one of the previous eleven tools queried *what was captured*. None said
+  **what the server is attached to**. An agent could not tell a live interface
+  from a file replay, how long it had run, or whether stopping would lose
+  anything, which is precisely why it could not reason about stopping. That gap
+  is worth closing on its own, and it is also the prerequisite for a safe
+  shutdown tool.
+
+  `capture_status` reports source, name, uptime, counts, exhaustion, and
+  `unsaved` — true only for a live capture with no output file, packets held in
+  memory and nowhere else. With no capture context attached it reports
+  `"unknown"` rather than guessing, because a wrong `"live"` is worse than an
+  admission of ignorance when it is the field consulted before destroying
+  something.
+
+  `server_capabilities` reports the version and compiled-in features, read from
+  `cfg!` so it cannot claim a feature the binary lacks. An agent asking for
+  decryption on a build without `tls` previously got a confusing failure rather
+  than a clear one.
+
+  Both are read-only, preserving the invariant that no MCP tool mutates a store.
+
 ### Fixed
 - **Passing both `-I` and `-d` silently read the file.** They parse together
   and `-I` wins: sipnab reads the capture, never opens the interface, and the

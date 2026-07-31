@@ -218,9 +218,26 @@ pub fn start_servers(
     if selection.mcp && cli.mcp {
         let exhausted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         source_exhausted = Some(Arc::clone(&exhausted));
+        // Describe the capture source so `capture_status` reports fact rather
+        // than "unknown". Derived from the same flags the capture path uses,
+        // not restated — `-I` beats `-d`, exactly as bootstrap resolves it.
+        let capture_ctx = {
+            let (live, name) = match (cli.input.as_ref(), cli.device.as_ref()) {
+                (Some(path), _) => (false, path.clone()),
+                (None, Some(dev)) => (true, dev.clone()),
+                (None, None) => (true, "auto".to_string()),
+            };
+            crate::mcp::CaptureContext {
+                live,
+                name,
+                started: std::time::Instant::now(),
+                writing_to: cli.output.clone(),
+            }
+        };
         let new_server = || {
             let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
-                .with_source_exhausted(Arc::clone(&exhausted));
+                .with_source_exhausted(Arc::clone(&exhausted))
+                .with_capture_context(capture_ctx.clone());
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),
                 None => s,

@@ -51,8 +51,32 @@ pub struct SipnabMcp {
     /// `source_exhausted` so pollers know no more updates will come. When
     /// None (no capture owner attached), it reads as not exhausted.
     source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// What this server is attached to, and when it started.
+    ///
+    /// An agent had no way to ask whether it was reading a live interface or
+    /// replaying a file — so it could not tell whether "stop the capture"
+    /// would lose anything, nor whether a quiet capture meant a quiet network
+    /// or a finished file. Every downstream misjudgement traced back to that.
+    capture: Option<CaptureContext>,
     /// rmcp router mapping tool names to the handler methods below.
     tool_router: ToolRouter<Self>,
+}
+
+/// Where this server's packets come from, for `capture_status`.
+#[derive(Debug, Clone)]
+pub struct CaptureContext {
+    /// `true` for a live interface, `false` for a file replay.
+    pub live: bool,
+    /// Interface name when live, file path when replaying.
+    pub name: String,
+    /// When capture began, for uptime.
+    pub started: std::time::Instant,
+    /// Path packets are being written to, when one was configured.
+    ///
+    /// `None` on a live capture means the packets exist only in memory: stop
+    /// the process and they are gone. That is the fact `shutdown_server` has
+    /// to consult before it agrees to stop anything.
+    pub writing_to: Option<String>,
 }
 
 impl SipnabMcp {
@@ -66,6 +90,7 @@ impl SipnabMcp {
             stream_store,
             alert_engine: None,
             source_exhausted: None,
+            capture: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -82,6 +107,14 @@ impl SipnabMcp {
     /// stores `true` once the packet source drains (pcap EOF).
     pub fn with_source_exhausted(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.source_exhausted = Some(flag);
+        self
+    }
+
+    /// Describe what this server is attached to, so `capture_status` can
+    /// answer. Without it the tool reports `source: "unknown"` rather than
+    /// guessing.
+    pub fn with_capture_context(mut self, ctx: CaptureContext) -> Self {
+        self.capture = Some(ctx);
         self
     }
 }
@@ -235,6 +268,51 @@ pub struct TailDialogsResponse {
     /// (e.g., pcap EOF). Subsequent calls will keep returning empty
     /// dialogs arrays unless a new capture starts.
     pub source_exhausted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// What this server is attached to, returned by `capture_status`.
+pub struct CaptureStatusResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// `"live"`, `"file"`, or `"unknown"` when no context was attached.
+    pub source: String,
+    /// Interface name when live, file path when replaying.
+    pub name: Option<String>,
+    /// Seconds since capture began.
+    pub uptime_sec: Option<u64>,
+    /// Dialogs held right now.
+    pub dialog_count: usize,
+    /// RTP streams held right now.
+    pub stream_count: usize,
+    /// True once a file source has been read to the end.
+    pub source_exhausted: bool,
+    /// Where packets are being written, if anywhere.
+    pub writing_to: Option<String>,
+    /// True when stopping now would lose packets that exist only in memory.
+    ///
+    /// The most useful field here: the difference between "restart this
+    /// whenever you like" and "an afternoon of capture ends with this process".
+    pub unsaved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// Compiled-in features, returned by `server_capabilities`.
+pub struct CapabilitiesResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// Crate version.
+    pub version: String,
+    /// Compiled-in feature names, sorted.
+    pub features: Vec<String>,
+    /// True when this build can decrypt TLS/SRTP.
+    pub can_decrypt: bool,
+    /// True when this build can receive HEP.
+    pub can_hep: bool,
+    /// True when this build can load WASM plugins.
+    pub can_plugins: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -986,6 +1064,100 @@ impl SipnabMcp {
             drop(ss);
             drop(ds);
             resp
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// What this server is attached to: live interface or file, for how long,
+    /// how much it holds, and whether stopping would lose anything.
+    #[tool(
+        name = "capture_status",
+        description = "Returns what this server is capturing: live interface or \
+                       replayed file, its name, uptime, how many dialogs and \
+                       streams are held, whether a file source is exhausted, and \
+                       whether stopping now would lose unsaved packets. Call this \
+                       before reasoning about stopping or restarting a capture."
+    )]
+    pub async fn capture_status(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        let exhausted = self
+            .source_exhausted
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
+
+        let (source, name, uptime_sec, writing_to, live) = match &self.capture {
+            Some(c) => (
+                if c.live { "live" } else { "file" }.to_string(),
+                Some(c.name.clone()),
+                Some(c.started.elapsed().as_secs()),
+                c.writing_to.clone(),
+                c.live,
+            ),
+            // Reported honestly rather than guessed. A wrong "live" here would
+            // be worse than an admission of ignorance: it is the field an agent
+            // consults before deciding whether stopping is destructive.
+            None => ("unknown".to_string(), None, None, None, false),
+        };
+
+        let payload = {
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let resp = CaptureStatusResponse {
+                schema_version: 1,
+                source,
+                name,
+                uptime_sec,
+                dialog_count: ds.len(),
+                stream_count: ss.len(),
+                source_exhausted: exhausted,
+                writing_to: writing_to.clone(),
+                // Only a live capture can hold packets that exist nowhere else.
+                // A file replay is by definition already on disk.
+                unsaved: live && writing_to.is_none(),
+            };
+            drop(ss);
+            drop(ds);
+            resp
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Which optional features this binary was built with.
+    #[tool(
+        name = "server_capabilities",
+        description = "Returns the sipnab version and which optional features \
+                       this binary was compiled with (tls, hep, plugins, ...). \
+                       Call this before asking for decryption or HEP: a build \
+                       without the feature fails confusingly otherwise."
+    )]
+    pub async fn server_capabilities(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Read from cfg! rather than a hand-kept list, so this cannot claim a
+        // feature the binary does not actually have.
+        let mut features: Vec<String> = Vec::new();
+        for (name, on) in [
+            ("native", cfg!(feature = "native")),
+            ("tui", cfg!(feature = "tui")),
+            ("tls", cfg!(feature = "tls")),
+            ("hep", cfg!(feature = "hep")),
+            ("api", cfg!(feature = "api")),
+            ("mcp", cfg!(feature = "mcp")),
+            ("mcp-http", cfg!(feature = "mcp-http")),
+            ("metrics", cfg!(feature = "metrics")),
+            ("audio", cfg!(feature = "audio")),
+            ("plugins", cfg!(feature = "plugins")),
+        ] {
+            if on {
+                features.push(name.to_string());
+            }
+        }
+        features.sort();
+
+        let payload = CapabilitiesResponse {
+            schema_version: 1,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            can_decrypt: cfg!(feature = "tls"),
+            can_hep: cfg!(feature = "hep"),
+            can_plugins: cfg!(feature = "plugins"),
+            features,
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
@@ -1818,6 +1990,92 @@ mod tests {
             .expect("security_findings should succeed");
         // Only "scanner" recorded; filtering on "fraud" yields none.
         assert!(text_of(&result).contains("[]"));
+    }
+
+    // ── capture_status / server_capabilities ─────────────────────────
+
+    /// A live capture with no output file must report `unsaved: true`.
+    ///
+    /// This is the field `shutdown_server` consults before agreeing to stop
+    /// anything, and the one that separates "restart whenever" from "an
+    /// afternoon of capture ends here". Getting it backwards would make the
+    /// destructive tool confidently safe.
+    #[tokio::test]
+    async fn capture_status_live_without_output_is_unsaved() {
+        let server = empty_server().with_capture_context(CaptureContext {
+            live: true,
+            name: "eth0".into(),
+            started: std::time::Instant::now(),
+            writing_to: None,
+        });
+        let result = server.capture_status().await.expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["source"], "live");
+        assert_eq!(v["name"], "eth0");
+        assert_eq!(
+            v["unsaved"], true,
+            "live packets held only in memory are unsaved"
+        );
+    }
+
+    /// The same capture, writing to a file, is not unsaved.
+    #[tokio::test]
+    async fn capture_status_live_with_output_is_saved() {
+        let server = empty_server().with_capture_context(CaptureContext {
+            live: true,
+            name: "eth0".into(),
+            started: std::time::Instant::now(),
+            writing_to: Some("/tmp/out.pcap".into()),
+        });
+        let result = server.capture_status().await.expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["unsaved"], false);
+        assert_eq!(v["writing_to"], "/tmp/out.pcap");
+    }
+
+    /// A file replay is on disk by definition, so never unsaved.
+    #[tokio::test]
+    async fn capture_status_file_replay_is_never_unsaved() {
+        let server = empty_server().with_capture_context(CaptureContext {
+            live: false,
+            name: "/caps/a.pcap".into(),
+            started: std::time::Instant::now(),
+            writing_to: None,
+        });
+        let result = server.capture_status().await.expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["source"], "file");
+        assert_eq!(v["unsaved"], false);
+    }
+
+    /// With no context attached the tool says "unknown" rather than guessing.
+    ///
+    /// A wrong "live" here is worse than an admission of ignorance: it is what
+    /// an agent consults to decide whether stopping destroys anything.
+    #[tokio::test]
+    async fn capture_status_without_context_reports_unknown() {
+        let result = empty_server().capture_status().await.expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["source"], "unknown");
+        assert_eq!(v["unsaved"], false);
+        assert!(v["name"].is_null());
+    }
+
+    /// Capabilities are read from `cfg!`, so they cannot claim a feature the
+    /// binary does not have. Under `--all-features` mcp is necessarily on,
+    /// since this test only compiles when it is.
+    #[tokio::test]
+    async fn server_capabilities_reports_compiled_features() {
+        let result = empty_server()
+            .server_capabilities()
+            .await
+            .expect("succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        let feats: Vec<String> = serde_json::from_value(v["features"].clone()).unwrap();
+        assert!(feats.contains(&"mcp".to_string()), "got {feats:?}");
+        assert_eq!(v["can_decrypt"], cfg!(feature = "tls"));
+        assert_eq!(v["can_plugins"], cfg!(feature = "plugins"));
     }
 
     // ── stats ────────────────────────────────────────────────────────

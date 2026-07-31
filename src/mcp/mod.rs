@@ -27,4 +27,4 @@ pub mod server;
 pub mod shape;
 pub mod transport;
 
-pub use server::SipnabMcp;
+pub use server::{CaptureContext, SipnabMcp};
