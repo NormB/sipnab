@@ -946,6 +946,40 @@ pub struct Cli {
     )]
     pub mcp_allowed_host: Vec<String>,
 
+    /// Directory the MCP file tools may read from and write to.
+    ///
+    /// `export_capture`, `export_audio` and `list_captures` are all confined to
+    /// this directory and refuse to run without it. They take a FILENAME, never
+    /// a path: anything containing a separator, a `..`, or an absolute prefix
+    /// is rejected before touching the filesystem.
+    ///
+    /// That is the whole security model, and it is deliberately not
+    /// negotiable. An agent-supplied path is an arbitrary file write wearing a
+    /// feature's clothes — `export_capture(path="/etc/cron.d/x")` is a remote
+    /// code execution primitive, not an export. Naming one directory means the
+    /// worst an agent can do is fill it.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-file-root",
+        value_name = "DIR"
+    )]
+    pub mcp_file_root: Option<String>,
+
+    /// Allow the `shutdown_server` MCP tool to stop this process.
+    ///
+    /// Off by default, so a stock server cannot be stopped by an agent. Even
+    /// when on, the tool defaults to a dry run and refuses to discard an
+    /// unsaved live capture unless the caller asks for that explicitly.
+    ///
+    /// An LLM drives this surface. It should not be able to end a capture an
+    /// operator is depending on because it read "we can stop looking at this
+    /// now" as an instruction.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-allow-shutdown"
+    )]
+    pub mcp_allow_shutdown: bool,
+
     // ── HEP (Homer Encapsulation Protocol) ───────────────────────────
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
     #[arg(

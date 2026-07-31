@@ -51,6 +51,10 @@ pub struct SipnabMcp {
     /// `source_exhausted` so pollers know no more updates will come. When
     /// None (no capture owner attached), it reads as not exhausted.
     source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Directory the file tools are confined to. `None` disables them.
+    file_root: Option<std::path::PathBuf>,
+    /// Whether `shutdown_server` may stop this process.
+    allow_shutdown: bool,
     /// What this server is attached to, and when it started.
     ///
     /// An agent had no way to ask whether it was reading a live interface or
@@ -90,6 +94,8 @@ impl SipnabMcp {
             stream_store,
             alert_engine: None,
             source_exhausted: None,
+            file_root: None,
+            allow_shutdown: false,
             capture: None,
             tool_router: Self::tool_router(),
         }
@@ -116,6 +122,62 @@ impl SipnabMcp {
     pub fn with_capture_context(mut self, ctx: CaptureContext) -> Self {
         self.capture = Some(ctx);
         self
+    }
+
+    /// Confine the file tools to `dir`. Without this they refuse to run.
+    pub fn with_file_root(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.file_root = Some(dir.into());
+        self
+    }
+
+    /// Permit `shutdown_server` to stop this process.
+    pub fn with_shutdown(mut self) -> Self {
+        self.allow_shutdown = true;
+        self
+    }
+
+    /// Resolve a caller-supplied FILENAME inside the configured root.
+    ///
+    /// The only accepted input is a bare filename. Anything with a separator,
+    /// a `..`, a root prefix, or a Windows drive letter is refused before any
+    /// filesystem call — this is a rejection list applied to a value that must
+    /// already be a single component, not an attempt to sanitise a path.
+    ///
+    /// Sanitising paths is where this class of bug lives: every clever
+    /// normaliser eventually meets a symlink, a unicode separator, or a
+    /// `..%2f`. Requiring one component and rejecting everything else has no
+    /// such middle ground.
+    fn resolve_in_root(&self, name: &str) -> Result<std::path::PathBuf, rmcp::ErrorData> {
+        let root = self.file_root.as_ref().ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                "file tools are disabled: start sipnab with --mcp-file-root <DIR> \
+                 to enable them"
+                    .to_string(),
+                None,
+            )
+        })?;
+
+        if name.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                "filename must not be empty".to_string(),
+                None,
+            ));
+        }
+        // One path component, and it must be a plain name.
+        let mut parts = std::path::Path::new(name).components();
+        let only = parts.next();
+        let extra = parts.next();
+        let ok = matches!(only, Some(std::path::Component::Normal(_))) && extra.is_none();
+        if !ok || name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "'{name}' is not a bare filename. These tools take a name, not \
+                     a path, and write only inside the configured --mcp-file-root."
+                ),
+                None,
+            ));
+        }
+        Ok(root.join(name))
     }
 }
 
@@ -286,6 +348,37 @@ pub struct CompareDialogsParams {
     pub call_id_a: String,
     /// Call-ID of the second dialog.
     pub call_id_b: String,
+}
+
+/// Parameters for `export_capture`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ExportCaptureParams {
+    /// Bare filename inside `--mcp-file-root`, e.g. "outage.pcap".
+    pub filename: String,
+}
+
+/// Parameters for `export_audio`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ExportAudioParams {
+    /// Call whose audio to export.
+    pub call_id: String,
+    /// Bare filename inside `--mcp-file-root`, e.g. "call.wav".
+    pub filename: String,
+}
+
+/// Parameters for `shutdown_server`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ShutdownParams {
+    /// Report what would happen without doing it. Defaults to TRUE — stopping
+    /// requires a deliberate second call.
+    pub dry_run: Option<bool>,
+    /// Save the capture to this filename (inside `--mcp-file-root`) first.
+    pub save_to: Option<String>,
+    /// Required to stop a live capture whose packets are unsaved.
+    pub discard_unsaved: Option<bool>,
 }
 
 /// Parameters for the per-call diagnostic tools.
@@ -1634,6 +1727,227 @@ impl SipnabMcp {
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
+
+    /// List capture files in the configured root.
+    #[tool(
+        name = "list_captures",
+        description = "Lists capture files (.pcap/.pcapng) in the server's \
+                       configured file root, with sizes. Requires \
+                       --mcp-file-root."
+    )]
+    pub async fn list_captures(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        let root = self.file_root.as_ref().ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                "file tools are disabled: start sipnab with --mcp-file-root <DIR>".to_string(),
+                None,
+            )
+        })?;
+        let mut files: Vec<serde_json::Value> = Vec::new();
+        let entries = std::fs::read_dir(root).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("cannot read {}: {e}", root.display()), None)
+        })?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_capture = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                e.eq_ignore_ascii_case("pcap") || e.eq_ignore_ascii_case("pcapng")
+            });
+            // Files only: a directory here would tempt a caller into a path.
+            if !is_capture || !path.is_file() {
+                continue;
+            }
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            files.push(serde_json::json!({
+                "filename": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+                "bytes": size,
+            }));
+        }
+        files.sort_by(|a, b| a["filename"].as_str().cmp(&b["filename"].as_str()));
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            serde_json::json!({ "schema_version": 1, "captures": files }),
+        )?]))
+    }
+
+    /// Write the retained packets to a capture file.
+    #[tool(
+        name = "export_capture",
+        description = "Writes the packets sipnab is holding to a pcap file in \
+                       the configured file root and returns the path. Use it to \
+                       preserve a live capture before stopping it — otherwise \
+                       the packets end with the process."
+    )]
+    pub async fn export_capture(
+        &self,
+        Parameters(params): Parameters<ExportCaptureParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let path = self.resolve_in_root(&params.filename)?;
+        let messages: Vec<crate::sip::SipMessage> = {
+            let ds = self.dialog_store.read();
+            ds.iter().flat_map(|d| d.messages.iter().cloned()).collect()
+        };
+        if messages.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                "nothing to export: no messages are held".to_string(),
+                None,
+            ));
+        }
+        let count = messages.len();
+        write_messages_to_pcap(&messages, &path).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("writing {}: {e}", path.display()), None)
+        })?;
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        tracing::info!(
+            "MCP export_capture wrote {count} messages to {}",
+            path.display()
+        );
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            serde_json::json!({
+                "schema_version": 1,
+                "path": path.display().to_string(),
+                "messages": count,
+                "bytes": bytes,
+            }),
+        )?]))
+    }
+
+    /// Export one call's audio as a WAV file.
+    #[tool(
+        name = "export_audio",
+        description = "Exports a call's RTP audio to a WAV file in the \
+                       configured file root. Fails when the call has no \
+                       decodable audio."
+    )]
+    pub async fn export_audio(
+        &self,
+        Parameters(params): Parameters<ExportAudioParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let path = self.resolve_in_root(&params.filename)?;
+        let summary = {
+            let ds = self.dialog_store.read();
+            ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+            let ss = self.stream_store.read();
+            let streams: Vec<&crate::rtp::stream::RtpStream> =
+                ss.streams_for(&params.call_id).collect();
+            if streams.is_empty() {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("call '{}' has no RTP streams to export", params.call_id),
+                    None,
+                ));
+            }
+            crate::rtp::audio_export::export_dialog_to_wav(&streams, &path).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("writing {}: {e}", path.display()), None)
+            })?
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            serde_json::json!({
+                "schema_version": 1,
+                "path": path.display().to_string(),
+                "summary": summary,
+            }),
+        )?]))
+    }
+
+    /// Stop this sipnab process. Opt-in, dry-run by default.
+    #[tool(
+        name = "shutdown_server",
+        description = "Stops this sipnab process. DESTRUCTIVE. Requires \
+                       --mcp-allow-shutdown on the server. Defaults to a DRY \
+                       RUN that only reports what would happen; pass \
+                       dry_run=false to actually stop. Refuses to discard an \
+                       unsaved live capture unless save_to is given or \
+                       discard_unsaved=true."
+    )]
+    pub async fn shutdown_server(
+        &self,
+        Parameters(params): Parameters<ShutdownParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if !self.allow_shutdown {
+            return Err(rmcp::ErrorData::invalid_params(
+                "shutdown is disabled: start sipnab with --mcp-allow-shutdown to \
+                 permit it. A stock server cannot be stopped by an agent."
+                    .to_string(),
+                None,
+            ));
+        }
+        // Dry run unless the caller explicitly says otherwise. The default has
+        // to be the safe one: an agent that omits the argument gets a report,
+        // not a stopped capture.
+        let dry_run = params.dry_run.unwrap_or(true);
+
+        let (live, writing_to) = match &self.capture {
+            Some(c) => (c.live, c.writing_to.clone()),
+            None => (false, None),
+        };
+        let unsaved = live && writing_to.is_none();
+        let (dialogs, streams) = {
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            (ds.len(), ss.len())
+        };
+
+        let mut saved_to = None;
+        if let Some(name) = &params.save_to {
+            let path = self.resolve_in_root(name)?;
+            if !dry_run {
+                let messages: Vec<crate::sip::SipMessage> = {
+                    let ds = self.dialog_store.read();
+                    ds.iter().flat_map(|d| d.messages.iter().cloned()).collect()
+                };
+                write_messages_to_pcap(&messages, &path).map_err(|e| {
+                    rmcp::ErrorData::internal_error(format!("save failed, NOT stopping: {e}"), None)
+                })?;
+            }
+            saved_to = Some(path.display().to_string());
+        }
+
+        // Losing a live capture to a misread sentence is the failure that
+        // matters, so the destructive path must be named rather than defaulted
+        // into.
+        if !dry_run && unsaved && saved_to.is_none() && !params.discard_unsaved.unwrap_or(false) {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "refusing to stop: this is a LIVE capture holding {dialogs} dialogs \
+                     that are not written anywhere. Pass save_to=\"<filename>\" to keep \
+                     them, or discard_unsaved=true to accept losing them."
+                ),
+                None,
+            ));
+        }
+
+        if !dry_run {
+            tracing::warn!(
+                "MCP shutdown_server: stopping (dialogs={dialogs}, streams={streams}, \
+                 unsaved={unsaved}, saved_to={saved_to:?})"
+            );
+            // The same path SIGTERM takes. Reusing it means the shutdown is
+            // the graceful one the process already knows how to perform —
+            // writers flushed, files closed — rather than a second mechanism
+            // that has to relearn all of that.
+            crate::signals::request_shutdown();
+        }
+
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            serde_json::json!({
+                "schema_version": 1,
+                "dry_run": dry_run,
+                "would_stop": !dry_run,
+                "live": live,
+                "unsaved": unsaved,
+                "dialogs": dialogs,
+                "streams": streams,
+                "saved_to": saved_to,
+                "note": if dry_run {
+                    "dry run — nothing stopped. Call again with dry_run=false to stop."
+                } else {
+                    "shutdown requested"
+                },
+            }),
+        )?]))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1649,6 +1963,46 @@ impl ServerHandler for SipnabMcp {
         );
         info
     }
+}
+
+/// Write held SIP messages to a pcap by re-synthesising a frame per message.
+///
+/// The dialog store keeps parsed messages, not the original frames, so an
+/// export rebuilds an Ethernet/IP/UDP packet around each message's raw bytes —
+/// the same `build_synthetic_packet` the TUI's save path uses, rather than a
+/// second implementation that could drift from it.
+///
+/// The result is faithful to the SIP layer and honest about the rest: link and
+/// IP headers are reconstructed from the addresses and ports sipnab recorded,
+/// not the bytes originally on the wire.
+#[cfg(feature = "mcp")]
+fn write_messages_to_pcap(
+    messages: &[crate::sip::SipMessage],
+    path: &std::path::Path,
+) -> anyhow::Result<usize> {
+    use crate::capture::{PcapExportMode, PcapWriter};
+    let pcapng = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("pcapng"));
+    let mut writer = PcapWriter::with_format(
+        path,
+        // DLT_EN10MB: the synthetic frames carry an Ethernet header.
+        1,
+        None,
+        None,
+        pcapng,
+        // Raw: no key material embedded. An agent-triggered export must not
+        // write decryption secrets into a file it just named.
+        PcapExportMode::Raw,
+    )?;
+    let mut written = 0;
+    for msg in messages {
+        writer.write(&crate::output::synthetic::build_synthetic_packet(msg))?;
+        written += 1;
+    }
+    writer.finish()?;
+    Ok(written)
 }
 
 /// Unit tests for every MCP tool handler: success paths, error codes, and

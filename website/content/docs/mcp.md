@@ -321,6 +321,10 @@ carries a default ceiling (HARD_LIMIT = 1000).
 | `compare_dialogs` | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
 | `get_sdp_timeline` | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
 | `search_by_time` | `start`, `end?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
+| `list_captures` | -- | Capture files in `--mcp-file-root`, with sizes |
+| `export_capture` | `filename` | Writes held packets to a pcap in `--mcp-file-root` |
+| `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root` |
+| `shutdown_server` | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | `server_capabilities` | -- | sipnab version and the optional features this binary carries |
 
 ### `list_dialogs`

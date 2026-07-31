@@ -516,6 +516,8 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--mcp-revoked-file` | `<FILE>` | -- | MCP revocation denylist (one token `id` per line; reloaded on mtime change). Feature: `mcp-http` |
 | `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token`. Feature: `mcp-http` |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
+| `--mcp-file-root` | `<DIR>` | -- | Directory the MCP file tools (`export_capture`, `export_audio`, `list_captures`) may read and write. Without it those tools refuse to run. They take a bare FILENAME, never a path — an agent cannot escape this directory. Feature: `mcp` |
+| `--mcp-allow-shutdown` | -- | off | Permit the `shutdown_server` MCP tool to stop this process. Off by default, so an agent cannot stop a stock server. Even enabled, the tool dry-runs unless told otherwise and refuses to discard an unsaved live capture. Feature: `mcp` |
 
 ## TLS / decryption
 
@@ -531,6 +533,9 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 
 **Examples**
 
+- `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab-exports` — let an agent save captures and audio, confined to one directory
+- `sudo sipnab -N -d eth0 --mcp --mcp-file-root /var/spool/sipnab-exports --mcp-allow-shutdown` — a live capture an agent may export from and, deliberately, stop
+- `sipnab -N -I capture.pcap --mcp --mcp-allow-shutdown` — a replay session an agent may end when it has finished; nothing to lose, since the file is already on disk
 - `sipnab -N -I capture.pcap --tls-key /etc/sipnab/tls-rsa.key --keylog /etc/sipnab/keys.log --allow-coredump` — decrypt TLS 1.2 RSA-key-exchange SIP from a pcap using an RSA private key, with core dumps left enabled
 - `sipnab -N -I capture.pcap --srtp-keys /etc/sipnab/srtp.keys --dtls-keylog /etc/sipnab/dtls.log` — decrypt SRTP media in an offline pcap from an SRTP master-keys file plus DTLS-SRTP handshake keys
 - `sudo sipnab -d eth0 --tls-key /etc/sipnab/tls-rsa.key --srtp-keys /etc/sipnab/srtp.keys --keylog /etc/sipnab/keys.log --keylog-watch --allow-coredump` — live decrypt both SIP (RSA key) and SRTP media, watching the key log for new PFS session keys

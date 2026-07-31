@@ -251,6 +251,15 @@ pub fn start_servers(
             let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
                 .with_source_exhausted(Arc::clone(&exhausted))
                 .with_capture_context(capture_ctx.clone());
+            let s = match cli.mcp_file_root.as_ref() {
+                Some(dir) => s.with_file_root(dir),
+                None => s,
+            };
+            let s = if cli.mcp_allow_shutdown {
+                s.with_shutdown()
+            } else {
+                s
+            };
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),
                 None => s,
