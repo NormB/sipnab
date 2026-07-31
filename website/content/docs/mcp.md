@@ -373,6 +373,23 @@ Per-call diagnostic report for one Call-ID. Backed by
 JSON output is a structured object. Markdown and text come back as a
 single text content. Unknown `call_id` returns invalid_params (-32602).
 
+```jsonc
+// get_dialog_report { call_id }
+{
+  "call_id": "1-1966@10.0.2.20",
+  "state": "Completed",
+  "final_status_code": 200,
+  "diagnosis": {
+    "hints": [
+      "RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."
+    ],
+    "nat_mismatch": false,
+    "no_media": false,
+    "one_way_audio": true
+  }
+}
+```
+
 ### `find_problems`
 
 Convenience wrapper over `list_dialogs` that ORs each named alias.
@@ -383,6 +400,20 @@ Convenience wrapper over `list_dialogs` that ORs each named alias.
 | `limit` | u32? | Default 50, max 1000. |
 
 Unknown aliases return invalid_params (-32602) with the offending name.
+
+```jsonc
+// find_problems {} — defaults to the 'problems' alias
+[
+  {
+    "call_id": "1-1966@10.0.2.20",
+    "state": "InCall",
+    "method": "INVITE",
+    "from_user": "sipp",
+    "to_user": "test",
+    "msg_count": 4
+  }
+]
+```
 
 ### `get_dialog`
 
@@ -396,6 +427,15 @@ Paginated dialog with full SIP messages.
 
 Returns `{ dialog, messages, total_messages, next_cursor, complete }`.
 
+```jsonc
+// get_dialog { call_id, max_messages: 2 } — messages[] elided
+{
+  "complete": false,
+  "total_messages": 5,
+  "next_cursor": 2
+}
+```
+
 ### `get_message`
 
 Single SIP message at a given zero-based index.
@@ -406,6 +446,21 @@ Single SIP message at a given zero-based index.
 | `index` | u32 | Required. |
 
 Out-of-range indexes return invalid_params (-32602).
+
+```jsonc
+// get_message { call_id, index: 0 }
+{
+  "call_id": "1-1966@10.0.2.20",
+  "method": "INVITE",
+  "is_request": true,
+  "cseq": {
+    "method": "INVITE",
+    "number": 1
+  },
+  "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+  "to": "test <sip:test@10.0.2.15:5060>"
+}
+```
 
 ### `render_ladder`
 
@@ -418,6 +473,34 @@ Call-flow ladder for one Call-ID.
 
 Output is byte-identical to `sipnab --call-report <id> --markdown` /
 `--call-report <id>` for the same dialog.
+
+```text
+# Call Report: 1-1966@10.0.2.20
+
+## Summary
+
+| Field | Value |
+|-------|-------|
+| Time | 2016-11-26 14:52:59 -> 14:53:08 (8s) |
+| From | sipp |
+| To | test |
+| State | Completed |
+
+## Timing
+
+| Metric | Value |
+|--------|-------|
+| PDD | - |
+| Setup | 0.00s |
+| Ring | - |
+| Teardown | 0.00s |
+| Retransmits | 0 |
+
+## Media Streams
+
+| SSRC | Codec | Source | Destination | Packets | Jitter | Loss |
+
+```
 
 ### `rtp_stats`
 
@@ -434,6 +517,23 @@ NAT-mismatch flags plus the Phase 8.7 asymmetry signals
 (`codec_asymmetry`, `ptime_asymmetry`, `payload_type_asymmetry`,
 `duration_asymmetry`, `late_media`).
 
+```jsonc
+// rtp_stats { call_id }
+{
+  "call_id": "1-1966@10.0.2.20",
+  "diagnosis": {
+    "actual_media": null,
+    "hints": [
+      "RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."
+    ],
+    "nat_mismatch": false,
+    "no_media": false,
+    "one_way_audio": true,
+    "sdp_media": null
+  }
+}
+```
+
 ### `search_messages`
 
 Case-insensitive substring search over method, status, From, To,
@@ -445,6 +545,16 @@ User-Agent, and body across all dialogs.
 | `limit` | u32? | Default 50, max 1000. |
 
 Returns array of `{ call_id, message_index, snippet }`. Snippets stop at 4 KB.
+
+```jsonc
+// search_messages { query: 'INVITE', limit: 2 }
+[
+  {
+    "call_id": "1-1966@10.0.2.20",
+    "message_index": 0
+  }
+]
+```
 
 ### `tail_dialogs`
 
@@ -475,6 +585,39 @@ an `-I` pcap replay, or a live capture that has hit its
 serving MCP after that, so this is the flag to poll to learn a replay
 has finished: stop when it turns `true` instead of polling forever.
 
+```jsonc
+// tail_dialogs { limit: 2 }
+{
+  "dialogs": [
+    {
+      "call_id": "1-1966@10.0.2.20",
+      "state": "Completed",
+      "method": "INVITE",
+      "from_user": "sipp",
+      "to_user": "test",
+      "msg_count": 6,
+      "duration_sec": 8.504,
+      "created_at": "2016-11-26T14:52:59.666393+00:00",
+      "updated_at": "2016-11-26T14:53:08.170676+00:00",
+      "timing": {
+        "pdd_ms": null,
+        "setup_ms": 4,
+        "retransmits": 0,
+        "duration_ms": 8499
+      }
+    },
+    {
+      "call_id": "1-1968@10.0.2.20",
+      "state": "InCall",
+      "method": "INVITE",
+      "from_user": "sipp",
+      "to_user": "test",
+      "msg_count": 4,
+      "duration_sec": 0.004,
+  ...
+}
+```
+
 ### `security_findings`
 
 Recent findings from active detection rules (scanner, fraud, digest,
@@ -491,7 +634,12 @@ Returns array of `{ rule_name, src_ip, detail, timestamp }`. When the
 AlertEngine isn't attached (no detection rules configured), returns an
 empty array rather than erroring.
 
-### Diagnosing a problem: start with `triage_call`
+```jsonc
+// security_findings {} — empty when nothing tripped
+[]
+```
+
+### `triage_call` — start here
 
 The first question in VoIP triage is which half of the stack failed.
 Signalling decides whether a call *connects*. RTP decides whether you can
@@ -611,33 +759,101 @@ extension. The tool says so rather than inventing a meaning.
 `differences` names the fields that differ, so you are not diffing two objects
 by eye.
 
-### `get_sdp_timeline` and `search_by_time`
+### `get_sdp_timeline`
 
-`get_sdp_timeline` returns the offer/answer exchanges in order — codecs, media
-address, port and mode per negotiation, including re-INVITEs. Use it when audio
-changed mid-call.
+The offer/answer exchanges in order — codecs, media address, port and mode per
+negotiation, including re-INVITEs. Use it when audio changed mid-call, or when
+the two ends disagree about the codec.
 
-`search_by_time` takes an RFC 3339 `start`, an optional `end`, and returns
-dialogs whose first message falls in the window, oldest first — for scoping an
-investigation to when a user says the problem happened.
+```jsonc
+// get_sdp_timeline { call_id }
+{
+  "call_id": "1-1966@10.0.2.20",
+  "exchanges": [
+    {
+      "codecs": [
+        "PCMU"
+      ],
+      "direction": "offer",
+      "event": null,
+      "media_addr": "10.0.2.20",
+      "media_port": 6000,
+      "mode": "recvonly",
+      "timestamp": "2016-11-26T14:52:59.666393+00:00"
+    },
+    {
+      "codecs": [
+        "PCMU",
+        "telephone-event"
+      ],
+      "direction": "answer",
+      "event": "MediaAnchorChange",
+      "media_addr": "10.0.2.15",
+      "media_port": 27942,
+      "mode": "sendonly",
+      "timestamp": "2016-11-26T14:52:59.670743+00:00"
+    }
+  ]
+}
+```
 
-### File tools: `list_captures`, `export_capture`, `export_audio`
+### `search_by_time`
 
-All three require `--mcp-file-root <DIR>` and refuse to run without it. They
-take a **bare filename, never a path**:
+Takes an RFC 3339 `start`, an optional `end`, and returns dialogs whose first
+message falls in the window, oldest first.
+
+```jsonc
+// search_by_time { "start": "2026-07-31T14:00:00Z", "end": "2026-07-31T14:05:00Z" }
+{ "dialogs": [ { "call_id": "...", "created_at": "...", "state": "Failed",
+                 "final_status_code": 503 } ],
+  "total_matched": 12, "truncated": false }
+```
+
+`total_matched` is the count before the limit, so you can tell a narrow window
+from a truncated answer.
+
+### File tools — the shared rule
+
+`list_captures`, `export_capture` and `export_audio` all require
+`--mcp-file-root <DIR>` and refuse to run without it. They take a **bare
+filename, never a path**.
+
+sipnab refuses `../x`, `/etc/passwd` and `sub/dir.pcap` before any filesystem
+call. That is the whole security model and it is deliberately absolute: a tool
+accepting an agent-supplied path is an arbitrary file write, not an export.
+
+### `list_captures`
+
+Capture files in the configured root, with sizes. It skips anything that is
+not a capture.
+
+```jsonc
+{ "captures": [ { "filename": "outage-0722.pcap", "bytes": 184320 } ] }
+```
+
+### `export_capture`
+
+Writes the packets sipnab is holding to a pcap. Use it to preserve a live
+capture **before** stopping it — otherwise the packets end with the process.
 
 ```jsonc
 // export_capture { "filename": "demo.pcap" }
 { "path": "/var/spool/sipnab-exports/demo.pcap", "messages": 4, "bytes": 2373 }
 ```
 
-`../x`, `/etc/passwd` and `sub/dir.pcap` are all refused before any filesystem
-call. That is the whole security model, and it is deliberately absolute: a tool
-that accepts an agent-supplied path is an arbitrary file write, not an export.
+It re-synthesises a frame per held message, so the SIP layer is faithful while
+the link and IP headers come from the addresses sipnab recorded — not from the
+bytes originally on the wire.
 
-`export_capture` re-synthesises a frame per held message, so the SIP layer is
-faithful while the link and IP headers come from the addresses sipnab
-recorded — not from the bytes originally on the wire.
+### `export_audio`
+
+Writes one call's RTP audio to a WAV in the configured root. Fails when the
+call carries no audio it can decode, rather than writing an empty file.
+
+```jsonc
+// export_audio { "call_id": "1-1966@10.0.2.20", "filename": "call.wav" }
+{ "path": "/var/spool/sipnab-exports/call.wav", "summary": "..." }
+```
 
 ### `shutdown_server`
 
