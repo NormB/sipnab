@@ -187,6 +187,8 @@ sipnab -d any --multi-device --delta-time
 | `--pcapng` | -- | off | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
 | `<BPF_FILTER>...` | positional | -- | BPF display filter expression (trailing positional args) |
 
+> **`-I` and `-d` are alternatives, not companions.** sipnab accepts both, and the FILE wins: sipnab reads it, never opens the interface, and the output looks like a normal run. sipnab warns on stderr when you do this. To switch a file command to live capture, **remove `-I`** rather than adding `-d` beside it.
+
 **Examples**
 
 - `sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000` — record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range

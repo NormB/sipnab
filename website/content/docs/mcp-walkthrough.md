@@ -288,16 +288,41 @@ key is the authentication; when the session ends, nothing keeps running.
    claude
    ```
 
-Live capture over SSH works too, if the remote binary has the capability
-(`sudo setcap cap_net_raw+ep /usr/local/bin/sipnab` on the server, once):
+#### Live traffic instead of a capture file
+
+The steps above analyse a **pcap that already exists**. To watch **live
+traffic** on the server instead, swap the input flag:
+
+| You want | Flag | Meaning |
+|---|---|---|
+| Read a capture file | `-I /path/to.pcap` | Read packets from a file *instead of* live capture |
+| Watch live traffic | `-d eth0` | Capture from a network interface |
+
+So the live version of step 3 drops `-I` entirely:
 
 ```bash
 claude mcp add sipnab-prod-live -- \
-  ssh prod01.example.net /usr/local/bin/sipnab --mcp -N -d eth0 --quiet
+  ssh prod01.example.net /usr/local/bin/sipnab --mcp -N \
+      -d eth0 --quiet
 ```
 
-Each agent session spawns a fresh sipnab: perfect for pcap post-mortems,
-wrong for accumulating live state — that's 2B/2C.
+One extra server step: live capture needs the packet-capture capability, once:
+
+```bash
+sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
+```
+
+> **Do not pass both `-I` and `-d`.** `-I` silently wins. sipnab reads the file
+> and never touches the interface — no warning, no error, and the output looks
+> exactly like a successful run. An agent then answers questions about a stale
+> capture with complete confidence. If you are adapting the pcap command
+> above, **delete the `-I` line**; do not just add `-d` beside it.
+
+Each agent session spawns a fresh sipnab, so capture starts when the session
+starts and stops when it ends. That is right for a post-mortem and wrong for
+accumulating live state — for a capture that must keep running between
+sessions, see [Keep a capture running between agent
+sessions](#keep-a-capture-running-between-agent-sessions).
 
 ### Keep a capture running between agent sessions
 

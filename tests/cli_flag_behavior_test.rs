@@ -1215,3 +1215,37 @@ fn token_scope_metrics_is_refused_for_the_mcp_surface() {
         "the error must say why — MCP has no metrics endpoint:\n{err}"
     );
 }
+
+/// `-I` silently beats `-d`, so sipnab must say so.
+///
+/// Both flags parse together and the file wins: sipnab reads it, never touches
+/// the interface, and the output is byte-identical to a correct run. Someone
+/// adapting a documented pcap command to watch live traffic adds `-d` and
+/// leaves `-I` in place, and an agent then answers questions about a stale
+/// capture with total confidence. For a diagnostic tool a confident wrong
+/// answer is worse than a crash — nobody has reason to doubt it.
+#[test]
+fn passing_both_input_and_device_warns_that_the_file_wins() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "-d",
+            "eth0",
+            "-I",
+            "tests/fixtures/sip_call.pcap",
+            "--no-cli-print",
+        ])
+        .output()
+        .expect("spawn sipnab");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--input") && stderr.contains("--device"),
+        "expected a warning naming both flags, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Drop -I"),
+        "the warning must say how to fix it, not merely that it happened:\n{stderr}"
+    );
+}
