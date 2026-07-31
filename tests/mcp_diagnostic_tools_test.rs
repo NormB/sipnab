@@ -556,3 +556,33 @@ fn list_captures_lists_only_captures() {
         "listed a non-capture"
     );
 }
+
+/// `rtp_stats` must say whether its MOS is grounded.
+///
+/// `estimate_mos` returns 4.216 for AMR, AMR-WB, EVS, G.722 *and* for a stream
+/// whose codec was never identified — the placeholder arm and the unknown arm
+/// are the same number. An agent reading a bare `mos: 4.2` cannot tell a real
+/// G.711 estimate from a guess, and will reason about it either way.
+///
+/// The G.711 fixture must therefore report grounded, and the field must be
+/// present at all — its absence is what let the guess pass as a measurement.
+#[test]
+fn rtp_stats_declares_whether_the_mos_is_grounded() {
+    let call_id = first_call_id(G711);
+    let v = call_tool(G711, "rtp_stats", serde_json::json!({"call_id": call_id}));
+    let streams = v["streams"].as_array().expect("streams array");
+    assert!(!streams.is_empty(), "the G.711 fixture has RTP: {v}");
+
+    for s in streams {
+        assert!(
+            s.get("mos_grounded").is_some(),
+            "every stream must declare mos_grounded, or a placeholder MOS is \
+             indistinguishable from a measurement: {s}"
+        );
+    }
+    // PCMU has a published ITU-T G.113 impairment value.
+    assert!(
+        streams.iter().any(|s| s["mos_grounded"] == true),
+        "the PCMU stream must report a GROUNDED mos: {streams:?}"
+    );
+}

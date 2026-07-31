@@ -917,7 +917,33 @@ impl SipnabMcp {
                 .iter()
                 .map(|s| {
                     let line = crate::output::json::stream_to_json(s);
-                    serde_json::from_str(&line).unwrap_or(serde_json::Value::Null)
+                    let mut v: serde_json::Value =
+                        serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
+                    // Say whether the MOS is a real estimate or a placeholder.
+                    //
+                    // An agent reading `mos: 4.2` cannot otherwise tell a
+                    // grounded G.711 score from the identical number sipnab
+                    // returns for AMR-WB, EVS or an unidentified stream — they
+                    // are byte-identical today. Reporting a guess as a
+                    // measurement to something that will then reason about it
+                    // is how a confident wrong answer reaches an operator.
+                    if let Some(obj) = v.as_object_mut() {
+                        let grounded = matches!(
+                            crate::rtp::quality::mos_grounding(s.codec.as_deref()),
+                            crate::rtp::quality::MosGrounding::Published
+                        );
+                        obj.insert("mos_grounded".into(), serde_json::Value::Bool(grounded));
+                        if !grounded {
+                            obj.insert(
+                                "mos_note".into(),
+                                serde_json::Value::String(
+                                    "No published ITU-T G.113 impairment value for this codec.                                      The MOS is a placeholder meaning 'unknown', not an estimate."
+                                        .into(),
+                                ),
+                            );
+                        }
+                    }
+                    v
                 })
                 .collect();
             let mut diag = diagnose_media(&dialog_streams, None);
