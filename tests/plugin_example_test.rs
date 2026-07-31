@@ -17,6 +17,13 @@
 //! documented workflow as verified on runs where nothing was verified.
 
 #![cfg(feature = "plugins")]
+//
+// Every test here is named `wasm_plugin_*` on purpose. The coverage job skips
+// them by that prefix: they shell out to `cargo build --target
+// wasm32-unknown-unknown`, and a nested build cannot carry the coverage
+// harness's instrumentation (wasm32 has no `profiler_builtins`). The prefix is
+// the filter, so renaming one out of it silently drops it back into the
+// coverage run — keep it.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -114,7 +121,7 @@ fn normal_call_input() -> String {
 }
 
 #[test]
-fn the_documented_build_produces_a_plugin_this_host_accepts() {
+fn wasm_plugin_documented_build_produces_a_plugin_this_host_accepts() {
     let path = build_example();
     let plugin = Plugin::load(&path).unwrap_or_else(|e| {
         panic!("the example plugin must load in a stock host (ABI v{ABI_VERSION}): {e}")
@@ -123,7 +130,7 @@ fn the_documented_build_produces_a_plugin_this_host_accepts() {
 }
 
 #[test]
-fn the_example_detects_a_short_answered_call_and_cites_its_evidence() {
+fn wasm_plugin_detects_a_short_answered_call_and_cites_its_evidence() {
     let plugin = Plugin::load(build_example()).expect("loads");
     let findings = plugin.analyze(&short_call_input()).expect("analyses");
 
@@ -142,7 +149,7 @@ fn the_example_detects_a_short_answered_call_and_cites_its_evidence() {
 }
 
 #[test]
-fn the_example_stays_quiet_on_a_normal_length_call() {
+fn wasm_plugin_stays_quiet_on_a_normal_length_call() {
     let plugin = Plugin::load(build_example()).expect("loads");
     let findings = plugin
         .analyze(&normal_call_input())
@@ -157,7 +164,7 @@ fn the_example_stays_quiet_on_a_normal_length_call() {
 /// The example must survive input it did not expect, because a plugin that
 /// traps on an odd dialog takes its findings out for every dialog like it.
 #[test]
-fn the_example_survives_unexpected_input() {
+fn wasm_plugin_survives_unexpected_input() {
     let plugin = Plugin::load(build_example()).expect("loads");
     for weird in [
         "{}",
@@ -183,7 +190,7 @@ fn the_example_survives_unexpected_input() {
 /// `sip-over-tcp.pcap` holds a call answered and torn down in 2.2s, which is
 /// what the example detects.
 #[test]
-fn the_plugin_flag_puts_findings_in_json_dialogs_output() {
+fn wasm_plugin_flag_puts_findings_in_json_dialogs_output() {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let wasm = build_example();
 

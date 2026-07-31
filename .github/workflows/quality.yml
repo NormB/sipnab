@@ -137,7 +137,16 @@ jobs:
         # exists") and fail the run. The goldens are still validated by the CI
         # workflow's plain `cargo test`; only their coverage contribution is
         # dropped here.
-        run: cargo llvm-cov --all-features --workspace --no-report -- --skip cli_goldens
+        #
+        # Skip the wasm_plugin_* tests for a related reason: they shell out to
+        # `cargo build --target wasm32-unknown-unknown`, and that nested build
+        # cannot carry this harness's instrumentation — wasm32 ships no
+        # `profiler_builtins`, so it fails with E0463. Scrubbing the coverage
+        # variables from the child environment was not enough, which is why
+        # this is a skip rather than more env plumbing. They run in full in the
+        # CI workflow's plain `cargo test`; only their coverage contribution is
+        # dropped, and the wasm artifact was never instrumented anyway.
+        run: cargo llvm-cov --all-features --workspace --no-report -- --skip cli_goldens --skip wasm_plugin_
 
       - name: Coverage summary
         # Exclude the dev-only src/bin/gen_fixture.rs [[bin]] from every report
