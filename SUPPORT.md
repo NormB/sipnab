@@ -31,10 +31,14 @@ attaching it.
 
 ## I found a security vulnerability
 
-**Do not open a public issue.** Report it privately through
-[a GitHub security advisory](https://github.com/NormB/sipnab/security/advisories/new).
-[SECURITY.md](SECURITY.md) has the details, including what counts as in scope and
-what the response looks like.
+**Do not open a public issue.** [SECURITY.md](SECURITY.md) carries the reporting
+address, what counts as in scope, and what the response looks like. GitHub also
+offers [a private advisory form](https://github.com/NormB/sipnab/security/advisories/new),
+which the issue chooser links to. Both routes are private.
+
+This page deliberately does not name one of them as *the* channel — `SECURITY.md`
+does that, and a second copy of the answer here is a second thing to keep in
+agreement.
 
 sipnab parses attacker-controlled bytes for a living, so a parser panic reachable
 from a capture file is a security issue, not a stability one.

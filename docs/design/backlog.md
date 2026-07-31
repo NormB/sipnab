@@ -401,16 +401,22 @@ Tiers:
   scrape-only one. Verified end to end against the real server, not just the
   verifier — a route wired to the wrong guard passes every unit test and still
   hands a scrape job the call content.
-- [ ] **SIP problem diagnosis** — the signalling-side complement to
-  `rtp/diagnosis.rs`. **Specced 2026-07-29:**
-  [`sip-problem-diagnosis.md`](./sip-problem-diagnosis.md) scopes seven
-  detections in build order (final failure with cause, auth loop,
-  retransmission storm, ACK-never-received, abandoned/cancelled, high PDD,
-  registration failure), the `SignalingDiagnosis` shape, and where each surface
-  renders it. Detections 1–3 carry most of the value and need no new plumbing.
-  The spec's two load-bearing rules: every detection names the messages it is
-  drawn from, and a truncated capture is reported as unknown rather than as
-  failure. Implementation not started.
+- [x] **SIP problem diagnosis** — the signalling-side complement to
+  `rtp/diagnosis.rs`. **Done in 0.5.68:** all seven detections ship (final
+  failure with cause, auth loop, retransmission storm, ACK-never-received,
+  abandoned/cancelled, high PDD, registration failure), rendered on every
+  surface from one `SignalingDiagnosis`. The spec's two load-bearing rules
+  held: every detection names the messages it is drawn from, and a truncated
+  capture reports as unknown rather than as failure.
+
+  Three thresholds are quoted from numbered clauses rather than chosen — PDD
+  11.0s from Table 2/E.721, the ACK window 32s from Timer H, the
+  no-final-response window 180s from Timer C. Two guards exist only because
+  the naive versions fired on healthy traffic: a `BYE` suppresses the
+  missing-ACK finding (RFC 3261 §15 means a hangup proves the ACK arrived),
+  and Timer C bounds the no-final-response case so calls in flight when the
+  capture stopped stay quiet. Verified across 1398 real dialogs in the sample
+  captures: 2 findings, both genuine.
 - [x] **Developer documentation** — **Done:** `docs/internals/` now carries a
   developer index (reading order, the live-vs-archaeological map of the
   root-level design corpus, and a glossary for D1–D21/D22, WS0–WS8, P0–P5,

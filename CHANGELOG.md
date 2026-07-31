@@ -10,7 +10,26 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **The OpenSSF badge answer sheet is now gated.** A badge submission is a
+  self-certification that nobody audits, which is exactly why its claims need
+  something holding them up. `openssf_badge_test` checks the mechanically
+  checkable subset: cited files exist, the quoted `test_policy` line is still
+  in `CONTRIBUTING.md`, clippy is still deny-on-warning, the named crypto
+  crates are real dependencies, and — the one that would have caught the
+  original error — the fuzz-target count and every target name match the
+  directory. The sheet first claimed 10 targets against a real 15.
+
 ### Fixed
+- **`SUPPORT.md` and `SECURITY.md` disagreed about where to report a
+  vulnerability.** `ISSUE_TEMPLATE/config.yml` routes reporters to a GitHub
+  private advisory, `SECURITY.md` asks for email, and `SUPPORT.md` asserted the
+  advisory route without checking. Both channels are private so nothing leaked,
+  but which inbox a report landed in depended on which page the reporter read.
+  `SUPPORT.md` now defers to `SECURITY.md` instead of keeping a second copy of
+  the answer, and the gate fails if it starts naming a channel `SECURITY.md`
+  does not. **Which route is canonical is still an open question for the
+  maintainer** — the docs merely stopped contradicting each other.
 - **`js/xss-through-dom` in the hero image swap (CodeQL, high).** The swap
   shipped in 0.5.68 stored the animated demo's URL in a `data-animated`
   attribute and assigned it to `hero.src`. An image `src` is a script-URL
