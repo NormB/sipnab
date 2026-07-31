@@ -654,3 +654,11 @@ zeroized
 zeroizes
 zeroizing
 zsh
+[Nn]arrowband
+[Ww]ideband
+[Ff]ullband
+[Mm]onotic
+[Dd]iotic
+[Bb]itrate
+[Bb]itrates
+monaural

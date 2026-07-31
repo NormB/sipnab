@@ -58,6 +58,10 @@ exceptions:
   - AMR
   - AMR-WB
   - EVS
+  # Listening contexts from G.113 Appendix IV. They open the two table
+  # headings and are terms of art, not sentences starting with a stray capital.
+  - Monotic
+  - Diotic
   - ITU-T
   - G.113
   - G.722.2
