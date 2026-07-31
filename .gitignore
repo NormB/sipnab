@@ -29,3 +29,11 @@ build/
 # committed is this project's own rules and vocabulary under
 # .vale/styles/sipnab and .vale/styles/config.
 .vale/styles/Google/
+
+# LLVM coverage profile data. `cargo llvm-cov` and any RUSTFLAGS carrying
+# -Cinstrument-coverage drop these in the working directory, and 45 of them
+# (38 MB) reached the repository because nothing here excluded them and
+# `git add -A` is indiscriminate. They are build output, regenerated on every
+# coverage run, and useless to anyone cloning.
+*.profraw
+*.profdata
