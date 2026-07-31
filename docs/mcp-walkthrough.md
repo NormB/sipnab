@@ -37,12 +37,13 @@ above it.
 | Run diagnostics on a schedule, no human involved | [Run diagnostics on a schedule, with no agent attached](#run-diagnostics-on-a-schedule-with-no-agent-attached) |
 | Use Codex, Cursor, VS Code, Gemini CLI or Windsurf instead | [Use an agent other than Claude Code](#use-an-agent-other-than-claude-code) |
 | Work out why it does not connect | [Fix it when it does not connect](#fix-it-when-it-does-not-connect) |
-| **Actually diagnose something now that it is connected** | [Diagnose a real problem with the tools](#diagnose-a-real-problem-with-the-tools) |
+| **Actually diagnose something, now that sipnab answers** | [Diagnose a real problem with the tools](#diagnose-a-real-problem-with-the-tools) |
 | Find out why one call failed | [Find out why a single call failed](#find-out-why-a-single-call-failed) |
 | Work out whether codecs caused a 488 | [Confirm whether a codec mismatch caused a 488](#confirm-whether-a-codec-mismatch-caused-a-488) |
-| Work out why a phone will not register | [Find out why an endpoint will not register](#find-out-why-an-endpoint-will-not-register) |
+| Work out why a phone cannot register | [Find out why an endpoint cannot register](#find-out-why-an-endpoint-cannot-register) |
 | Explain bad audio on a call that connected | [Explain bad audio on a call that connected](#explain-bad-audio-on-a-call-that-connected) |
 | Save a live capture before shutting it down | [Save a live capture before stopping it](#save-a-live-capture-before-stopping-it) |
+| Check what sipnab currently holds | [Check what sipnab holds before trusting an answer](#check-what-sipnab-holds-before-trusting-an-answer) |
 
 ### The three shapes, at a glance
 
@@ -924,12 +925,12 @@ rules as scenarios 2B and 4.
 Everything above gets sipnab *connected*. This section is what to do next.
 
 Each recipe is a question an operator actually arrives with, the tool calls
-that answer it, and **real output** — every block below was produced by running
-the tool against a capture in `tests/pcap-samples/`, not written to look
-plausible. You can reproduce any of them.
+that answer it, and **real output** — every block below comes from running the
+tool against a capture in `tests/pcap-samples/`, not from writing plausible
+JSON. You can reproduce any of them.
 
 You do not type these calls. You ask your agent the question in the heading and
-it selects the tools; the calls are shown so you can tell whether it picked
+it selects the tools. The calls appear here so you can tell whether it picked
 well, and so you can recognise the answer when it comes back. The full
 per-tool reference is in [MCP server](mcp.md).
 
@@ -999,7 +1000,7 @@ problem is one-way audio, and the hint names the direction that is missing.
 
 | `result` | What it means |
 |---|---|
-| `ok` | A codec was agreed. The 488 came from something else |
+| `ok` | Both sides agreed a codec. The 488 came from something else |
 | `no_common_codec` | A genuine mismatch — compare the two lists |
 | `no_answer` | The offer was never answered with SDP |
 | `no_sdp_in_capture` | No SDP at all; nothing to negotiate |
@@ -1024,7 +1025,7 @@ Pair it with the registry text rather than an agent's recollection:
 }
 ```
 
-### Find out why an endpoint will not register
+### Find out why an endpoint cannot register
 
 Start from the whole capture — you may not know which Call-ID to ask about:
 
@@ -1044,8 +1045,8 @@ Start from the whole capture — you may not know which Call-ID to ask about:
 ]
 ```
 
-Then ask the registration-specific tool, which knows what a REGISTER exchange
-is supposed to look like:
+Then ask the registration-specific tool, which knows the shape of a healthy
+REGISTER exchange:
 
 ```json
 {"name": "diagnose_registration",
@@ -1072,7 +1073,7 @@ is supposed to look like:
 
 Three fields carry the diagnosis. `kind` separates a **rejection** from an
 **auth loop** — a phone retrying forever against a bad password looks nothing
-like a 403 and is fixed somewhere else. `evidence` gives message indices you
+like a 403 and needs a different fix. `evidence` gives message indices you
 can pull with `get_message`. And `requested_expiry_sec` against
 `granted_expiry_sec` catches the case where registration *succeeds* but the
 server grants a shorter lifetime than the phone asked for, so it silently drops
@@ -1114,14 +1115,14 @@ When `triage_call` returns `verdict: media`, go to the streams:
 publishes an impairment factor for this codec and the score is a real estimate.
 `false` means it is a placeholder meaning *unknown* — and the number still
 looks like 4.2, so nothing about the value itself gives it away. A `mos_note`
-is attached whenever it is false. See [MOS and codecs](mos-and-codecs.md) for
+accompanies every false value. See [MOS and codecs](mos-and-codecs.md) for
 which codecs have a published basis.
 
 Here jitter is sub-millisecond and loss is zero: the audio path that *exists*
 is clean, which confirms the problem is the missing return direction rather
 than degradation. One stream where you expect two is the finding.
 
-### Check what you are connected to before trusting an answer
+### Check what sipnab holds before trusting an answer
 
 Worth doing first when you join a session someone else started, and it is the
 only way to tell a live capture from a replayed file:
@@ -1143,7 +1144,7 @@ only way to tell a live capture from a replayed file:
 }
 ```
 
-`source_exhausted: true` says the file has been read to the end, so counts are
+`source_exhausted: true` says sipnab read the file to the end, so counts are
 final. On a **live** capture it is `false` and the numbers are still moving —
 an empty result may just mean *not yet*. `unsaved: true` warns that a live
 capture has no write target and its packets exist only in memory.
@@ -1170,8 +1171,8 @@ that reads like a key problem.
 
 ### Save a live capture before stopping it
 
-A live capture is not replayable — once the process ends, packets that were
-never written are gone. Write them out first:
+A live capture does not replay. Once the process ends, only what sipnab wrote
+to disk survives. Write it out first:
 
 ```json
 {"name": "export_capture", "arguments": {"path": "incident-4471.pcap"}}
