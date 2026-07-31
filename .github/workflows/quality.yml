@@ -108,6 +108,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
           components: llvm-tools-preview
+          # Coverage runs the full suite, which includes plugin_example_test —
+          # it builds crates/sipnab-plugin-example for wasm32 exactly as the
+          # docs instruct. Without the target it fails with "can't find crate
+          # for `std`".
+          targets: wasm32-unknown-unknown
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
