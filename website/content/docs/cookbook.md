@@ -681,7 +681,7 @@ sudo sipnab -N -d eth0 \
             --json
 ```
 
-`--kill-scanner` actively responds to known scanner User-Agents (uses the isolated kill-child process). The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog`.
+`--kill-scanner` actively responds to known scanner User-Agents (uses the isolated kill-child process). The response code defaults to **200**. Pass `--kill-response 403` (or any 100–699 code) to change it. `--alert syslog` writes alerts to `LOCAL0` so you can pick them up from `/var/log/syslog` (`--syslog` is the equivalent boolean form).
 
 ### 10b. Wire to fail2ban
 

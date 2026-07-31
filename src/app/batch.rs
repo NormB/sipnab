@@ -572,25 +572,57 @@ impl BatchRunner {
         } else {
             &cli.alert
         };
-        let alert_rules: Vec<AlertRule> = effective_alert_sources
-            .iter()
-            .filter_map(|s| match AlertRule::parse(s) {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    tracing::warn!("Skipping invalid alert rule '{}': {}", s, e);
-                    None
+        // `--alert` is declared as a CHANNEL flag — "syslog", "json", "exec" —
+        // and every documented example passes a channel name. It used to be fed
+        // straight to `AlertRule::parse`, whose grammar is
+        // `<name>:<threshold>/<window>`, so `--alert syslog` failed to parse,
+        // warned, and enabled nothing. The docs taught it anyway, including a
+        // line claiming it wrote to LOCAL0. For a security path that is the
+        // worst shape of bug: the operator believes alerting is on.
+        //
+        // A bare word is now a channel, as advertised. A value containing ':'
+        // is still parsed as a rule, so anyone who discovered the old grammar
+        // from the source keeps working.
+        let mut alert_channel_syslog = false;
+        let mut alert_channel_json = false;
+        let mut alert_rules: Vec<AlertRule> = Vec::new();
+        for spec in effective_alert_sources.iter() {
+            let value = spec.trim();
+            if value.contains(':') {
+                match AlertRule::parse(value) {
+                    Ok(r) => alert_rules.push(r),
+                    Err(e) => tracing::warn!("Skipping invalid alert rule '{}': {}", value, e),
                 }
-            })
-            .collect();
+                continue;
+            }
+            match value.to_ascii_lowercase().as_str() {
+                "syslog" => alert_channel_syslog = true,
+                "json" => alert_channel_json = true,
+                // The exec channel is the presence of --alert-exec; naming it
+                // here is accepted so the documented triple all work, but it
+                // cannot invent a command.
+                "exec" => {
+                    if cli.alert_exec.is_none() && config.security.alert_exec.is_none() {
+                        tracing::warn!(
+                            "--alert exec given without --alert-exec <CMD>; no command to run"
+                        );
+                    }
+                }
+                other => tracing::warn!(
+                    "Unknown alert channel '{other}'. Valid channels: syslog, json, exec. \
+                     (A value containing ':' is treated as an alert rule.)"
+                ),
+            }
+        }
         let effective_alert_exec = cli
             .alert_exec
             .clone()
             .or(config.security.alert_exec.clone());
         let mut alert_engine = AlertEngine::new(alert_rules, effective_alert_exec);
-        if cli.syslog {
+        if cli.syslog || alert_channel_syslog {
             alert_engine.set_syslog(true);
         }
-        if cli.alert_json {
+        if cli.alert_json || alert_channel_json {
             alert_engine.set_json_output(true);
         }
         let alert_engine = Arc::new(RwLock::new(alert_engine));
