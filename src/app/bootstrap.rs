@@ -137,6 +137,25 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // manual_map: without the `hep` feature the --hep-listen arm cfg-shrinks
     // to a bare Some(..) that clippy wants as .map(), but the full arm uses
     // `?` (CIDR parsing), which a map closure cannot.
+    // `-I` beating `-d` is a silent wrong answer, so say so.
+    //
+    // Both flags parse happily together and `-I` simply wins: sipnab reads the
+    // file, never touches the interface, and the output is byte-identical to a
+    // correct run. Someone adapting a documented pcap command to watch live
+    // traffic naturally adds `-d` and leaves `-I` in place — and then an agent
+    // answers questions about a stale capture with total confidence. For a
+    // diagnostic tool that is the worst failure mode there is: not a crash, but
+    // a confident wrong answer nobody has reason to doubt.
+    //
+    // A warning rather than an error, because the precedence is long-standing
+    // and someone may be relying on it deliberately.
+    if cli.input.is_some() && cli.device.is_some() {
+        tracing::warn!(
+            "both --input/-I and --device/-d given: reading the FILE and ignoring the \
+             interface. Drop -I to capture live traffic."
+        );
+    }
+
     #[allow(clippy::manual_map)]
     let source = if let Some(ref input) = cli.input {
         Some(CaptureSource::File {

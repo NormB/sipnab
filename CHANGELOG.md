@@ -10,6 +10,25 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+- **Passing both `-I` and `-d` silently read the file.** They parse together
+  and `-I` wins: sipnab reads the capture, never opens the interface, and the
+  output is byte-identical to a correct run — no warning, no error, no
+  indication anything was ignored. Someone adapting a documented pcap command
+  to watch live traffic naturally adds `-d` and leaves `-I` in place, and an
+  agent then answers questions about a stale capture with total confidence.
+  For a diagnostic tool a confident wrong answer is worse than a crash, because
+  nobody has cause to doubt it. sipnab now warns on stderr, naming both flags
+  and saying which one to remove. A warning rather than an error, since the
+  precedence is long-standing and someone may rely on it.
+
+### Changed
+- **Live capture is now a first-class step in the MCP walkthrough**, not a
+  footnote after the pcap recipe. Reported by a user who had the SSH setup
+  working against a file and could not tell whether `-I` was still required for
+  real-time capture. The section now shows the `-I` / `-d` choice as a table,
+  gives the live command in full, and warns about passing both.
+
 ### Changed
 - **How-to headings now name the reader's goal, not the mechanism.** Someone
   looking for "sipnab on a remote server, Claude Code on my laptop" could not
