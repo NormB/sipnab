@@ -403,8 +403,15 @@ pub fn do_chroot(dir: &std::path::Path) -> Result<()> {
 
 /// Verify that the process is now running with the expected UID and GID.
 fn verify_dropped(expected_uid: u32, expected_gid: u32) -> Result<()> {
-    // SAFETY: getuid/getgid are always safe read-only syscalls.
-    let (actual_uid, actual_gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    // SAFETY: getuid/getgid/geteuid/getegid are always safe read-only syscalls.
+    let (actual_uid, actual_gid, euid, egid) = unsafe {
+        (
+            libc::getuid(),
+            libc::getgid(),
+            libc::geteuid(),
+            libc::getegid(),
+        )
+    };
 
     if actual_uid != expected_uid || actual_gid != expected_gid {
         bail!(
@@ -413,6 +420,29 @@ fn verify_dropped(expected_uid: u32, expected_gid: u32) -> Result<()> {
             expected_gid,
             actual_uid,
             actual_gid
+        );
+    }
+
+    // The EFFECTIVE ids decide what the kernel permits, and they are what an
+    // attacker who gets code execution inherits.
+    //
+    // `setuid()` called by root sets real, effective and saved together, so
+    // with the current sequence this cannot diverge — which is exactly why it
+    // is worth asserting rather than assuming. The check costs two syscalls
+    // once per process, and it is the line that would catch a future edit
+    // switching to `setresuid`, adding a `seteuid` step, or reordering the
+    // drop. A privilege drop that silently half-happened would leave every
+    // parser in this program running with more authority than it was ever
+    // meant to have.
+    if euid != expected_uid || egid != expected_gid {
+        bail!(
+            "Privilege drop verification failed: real ids are correct but \
+             EFFECTIVE ids are not — expected euid={}/egid={}, got euid={}/egid={}. \
+             The process still holds privileges it was asked to give up.",
+            expected_uid,
+            expected_gid,
+            euid,
+            egid
         );
     }
     Ok(())

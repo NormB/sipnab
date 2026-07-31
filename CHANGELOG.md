@@ -10,6 +10,26 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Security
+- **A hostile plugin could exhaust host memory before the cap was checked.**
+  The WASM host validated `mem.size()` *after* `instantiate_and_start`, but
+  WASM allocates a module's declared minimum linear memory at instantiation —
+  so a module declaring 2 GiB was handed 2 GiB and only then refused. The test
+  that caught it passed, taking 25 seconds to do so, which is what a check that
+  reports a problem after causing it looks like. The cap is now a `wasmi`
+  `StoreLimits` installed on the store before instantiation, so the engine
+  refuses in 0.00s without allocating. Found by adversarial review of the code
+  added earlier in this release.
+
+- **Privilege-drop verification now checks EFFECTIVE uid/gid, not only real.**
+  The effective ids are what the kernel enforces against and what an attacker
+  with code execution inherits. `setuid()` called by root sets real, effective
+  and saved together, so the current sequence cannot diverge — which is why
+  asserting it costs two syscalls once per process and is worth doing: it is
+  the line that catches a future edit switching to `setresuid`, inserting a
+  `seteuid`, or reordering the drop. A half-completed drop would leave every
+  parser in the program running with authority it was never meant to have.
+
 ## [0.5.69] - 2026-07-31
 
 ### Fixed

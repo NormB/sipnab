@@ -60,6 +60,19 @@ const FUEL_PER_DIALOG: u64 = 50_000_000;
 /// 16 MiB, ample for a JSON document and a few findings.
 const MAX_MEMORY_PAGES: u32 = 256;
 
+/// Bytes in a WASM linear-memory page, fixed by the specification.
+const WASM_PAGE_BYTES: usize = 64 * 1024;
+
+/// Per-store state, existing only to hold the resource limiter.
+///
+/// `wasmi` applies limits through the store's data, so enforcing a memory cap
+/// at instantiation time requires the store to carry the limiter rather than
+/// the host checking sizes afterwards.
+struct StoreState {
+    /// Caps linear memory, memories and tables during instantiation and growth.
+    limits: wasmi::StoreLimits,
+}
+
 /// Largest JSON document a plugin may return, in bytes.
 ///
 /// Bounded because the length comes from the plugin, and an unbounded read of
@@ -196,8 +209,25 @@ impl Plugin {
     }
 
     /// Instantiate with no imports at all, applying the fuel and memory caps.
-    fn instantiate(&self) -> Result<(wasmi::Store<()>, wasmi::Instance), PluginError> {
-        let mut store = wasmi::Store::new(&self.engine, ());
+    fn instantiate(&self) -> Result<(wasmi::Store<StoreState>, wasmi::Instance), PluginError> {
+        let limits = wasmi::StoreLimitsBuilder::new()
+            .memory_size(MAX_MEMORY_PAGES as usize * WASM_PAGE_BYTES)
+            .memories(1)
+            .tables(4)
+            .build();
+        let mut store = wasmi::Store::new(&self.engine, StoreState { limits });
+        // The limiter must be installed BEFORE instantiation, not audited
+        // after it.
+        //
+        // WASM allocates a module's declared *minimum* linear memory at
+        // instantiation. The first version of this checked `mem.size()` once
+        // the instance existed, by which point a module declaring 2 GiB had
+        // already been given 2 GiB — a check that reliably reported the
+        // problem after causing it. Loading a plugin is a deliberate act, but
+        // "the file you downloaded OOMs your capture host on load" is still a
+        // denial of service, and the engine is the only thing positioned to
+        // refuse it in time.
+        store.limiter(|state| &mut state.limits);
         store
             .set_fuel(FUEL_PER_DIALOG)
             .map_err(|e| PluginError::Trap(e.to_string()))?;
@@ -205,7 +235,7 @@ impl Plugin {
         // No Linker imports are registered, so a module that imports ANYTHING
         // fails here. That is the sandbox: not a filtered set of host calls, an
         // empty one.
-        let linker = wasmi::Linker::<()>::new(&self.engine);
+        let linker = wasmi::Linker::<StoreState>::new(&self.engine);
         let instance = linker
             .instantiate_and_start(&mut store, &self.module)
             .map_err(|e| {
@@ -214,14 +244,6 @@ impl Plugin {
                 ))
             })?;
 
-        if let Some(mem) = instance.get_memory(&store, "memory") {
-            let pages = mem.size(&store);
-            if pages > u64::from(MAX_MEMORY_PAGES) {
-                return Err(PluginError::Trap(format!(
-                    "plugin memory {pages} pages exceeds the {MAX_MEMORY_PAGES}-page cap"
-                )));
-            }
-        }
         Ok((store, instance))
     }
 
@@ -502,6 +524,37 @@ mod tests {
         match plugin.analyze("{}") {
             Err(PluginError::Trap(_)) => {}
             other => panic!("expected fuel exhaustion, got {other:?}"),
+        }
+    }
+
+    /// A plugin declaring a huge linear memory must be refused **before** the
+    /// allocation happens.
+    ///
+    /// The first version of `instantiate` checked `mem.size()` after
+    /// `instantiate_and_start`, which is too late: WASM allocates a module's
+    /// declared minimum memory at instantiation, so a module declaring 2 GiB
+    /// got 2 GiB before the check could object. On a capture host that is a
+    /// remote-ish OOM triggered by loading a file someone was talked into
+    /// downloading — the cap has to be enforced by the engine, not audited
+    /// afterwards.
+    #[test]
+    fn a_plugin_declaring_huge_memory_is_refused_before_allocating() {
+        // 32768 pages = 2 GiB, well over the 256-page (16 MiB) cap.
+        let wat = r#"(module
+            (memory (export "memory") 32768)
+            (func (export "sipnab_plugin_abi_version") (result i32) (i32.const 1))
+            (func (export "sipnab_alloc") (param i32) (result i32) (i32.const 0))
+            (func (export "sipnab_dealloc") (param i32 i32))
+            (func (export "sipnab_analyze") (param i32 i32) (result i64) (i64.const 0)))"#;
+        let p = write_plugin("fatmem", &wat::parse_str(wat).expect("assembles"));
+        match Plugin::load(&p) {
+            Err(PluginError::Trap(m)) | Err(PluginError::Abi(m)) => {
+                assert!(
+                    m.to_lowercase().contains("memory") || m.to_lowercase().contains("limit"),
+                    "expected a memory-limit refusal, got: {m}"
+                );
+            }
+            other => panic!("a 2 GiB plugin must not instantiate, got {other:?}"),
         }
     }
 
