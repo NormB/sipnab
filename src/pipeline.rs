@@ -320,7 +320,22 @@ pub fn classify_packet(
         return PacketAction::Rtcp(rtcp_packets);
     }
 
-    if rtp::is_rtp_packet(&pp.payload)
+    // `is_rtp_packet` looks at the payload only: 12+ bytes, version bits `10`,
+    // payload type outside the RTCP range. That admits about a quarter of
+    // arbitrary bytes on the version check alone, so on a well-known service
+    // port it is not enough on its own — a DNS response from `1.1.1.1:53`
+    // supplied the pattern from its transaction ID and became a one-packet
+    // stream with SSRC `0x00000000`. Four such streams appeared in a
+    // 1217-stream corpus of real traffic.
+    //
+    // Below 1024 the payload therefore has to be corroborated by the strict
+    // heuristic (even destination port, three consecutive packets agreeing on
+    // SSRC, payload type and sequence), which no single stray packet survives.
+    // Real media is untouched: RFC 3550 §11 places RTP in the dynamic range,
+    // and nothing legitimately carries it on a system port.
+    let on_system_port = pp.src_port < 1024 || pp.dst_port < 1024;
+    if !on_system_port
+        && rtp::is_rtp_packet(&pp.payload)
         && let Ok(rtp_hdr) = rtp::parser::parse_rtp_header(&pp.payload)
     {
         // SRTP: substitute a decrypted payload when a key authenticates it.
@@ -501,6 +516,80 @@ mod quiet_bad_parse_tests {
         let mut heur = crate::rtp::heuristic::RtpHeuristic::new();
         let mut decrypt = MediaDecrypt::default();
         classify_packet(pp, &mut heur, opts, &mut decrypt)
+    }
+
+    /// A DNS exchange must not be reported as an RTP stream.
+    ///
+    /// `is_rtp_packet` is payload-only: any UDP payload of 12+ bytes whose top
+    /// two bits are `10` and whose payload type is outside 72..=76 passes. The
+    /// version check alone admits roughly a quarter of arbitrary bytes, and a
+    /// DNS transaction ID supplies them — a response from `1.1.1.1:53` landed
+    /// in a real capture as a one-packet stream with SSRC `0x00000000`. Four
+    /// of them appeared in a 1217-stream corpus.
+    ///
+    /// The strict multi-packet heuristic would have rejected every one, but it
+    /// never ran: the payload-only branch returns first. So a system port
+    /// (below 1024) now has to satisfy the heuristic instead of being taken on
+    /// the payload's word. Real RTP is unaffected — RFC 3550 §11 puts it in
+    /// the dynamic range, and nothing legitimately carries media on port 53.
+    #[test]
+    fn a_dns_response_is_not_an_rtp_stream() {
+        // A DNS response whose transaction ID starts 0x80: two high bits set
+        // to `10`, exactly what the RTP version check looks for.
+        let mut dns = vec![0x80u8, 0x81, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00];
+        dns.extend_from_slice(&[0x03, b'w', b'w', b'w', 0x00, 0x00, 0x01, 0x00, 0x01]);
+        assert!(
+            crate::rtp::is_rtp_packet(&dns),
+            "precondition: this payload does fool the payload-only check,              which is the whole reason the port guard exists"
+        );
+
+        let mut pp = packet(&dns);
+        pp.src_port = 53;
+        pp.dst_port = 44326; // even, so port parity alone does not save us
+        assert!(
+            matches!(
+                classify(&pp, &PipelineOptions::default()),
+                PacketAction::None
+            ),
+            "a single DNS packet must not become an RTP stream"
+        );
+
+        // The other direction, to the DNS port.
+        let mut pp = packet(&dns);
+        pp.src_port = 44326;
+        pp.dst_port = 53;
+        assert!(
+            matches!(
+                classify(&pp, &PipelineOptions::default()),
+                PacketAction::None
+            ),
+            "a query to port 53 must not become an RTP stream either"
+        );
+    }
+
+    /// Real RTP on a dynamic port is still recognised from the payload alone.
+    ///
+    /// The guard must not cost the common case a single packet of latency:
+    /// media on an ephemeral port is admitted immediately, without waiting for
+    /// the three-packet heuristic to corroborate it.
+    #[test]
+    fn rtp_on_a_dynamic_port_is_still_recognised_immediately() {
+        let mut rtp = vec![0x80u8, 0x00]; // V=2, PT=0 (PCMU)
+        rtp.extend_from_slice(&[0x00, 0x01]); // sequence
+        rtp.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // timestamp
+        rtp.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // SSRC
+        rtp.extend_from_slice(&[0u8; 160]);
+
+        let mut pp = packet(&rtp);
+        pp.src_port = 20000;
+        pp.dst_port = 20002;
+        assert!(
+            matches!(
+                classify(&pp, &PipelineOptions::default()),
+                PacketAction::Rtp { .. }
+            ),
+            "media on a dynamic port must still be recognised from one packet"
+        );
     }
 
     /// RFC 5761 RTP/RTCP multiplexing: a well-formed RTCP packet arriving on an
