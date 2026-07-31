@@ -382,9 +382,22 @@ Tiers:
   project ID the README badge URL needs. Two criteria (`report_responses`,
   `vulnerability_report_response`) have no history to cite because no issue or
   vulnerability report has ever been filed — say so rather than claim a number.
-- [ ] WASM plugin API (design decision D7 rules out Lua; WASM is the path if
-  plugins are ever needed).
-- [ ] Machine-learning anomaly detection over SIP/RTP patterns.
+- [x] **WASM plugin API** — **Done in 0.5.69-dev:** specced at
+  [`wasm-plugin-api.md`](./wasm-plugin-api.md), implemented behind the
+  non-default `plugins` feature, with a worked example at
+  `crates/sipnab-plugin-example`. D7's three objections were answered
+  individually and the supply-chain one measured (+1.56 MB, 15 crates) rather
+  than argued. A plugin has no imports at all, so the sandbox is an empty
+  import table rather than an allowlist.
+- [ ] **Machine-learning anomaly detection over SIP/RTP patterns** —
+  **researched and specced 2026-07-30**, see
+  [`ml-anomaly-detection.md`](./ml-anomaly-detection.md). Recommendation: do
+  not build the obvious version. A scoring model breaks the evidence rule every
+  other detection follows, cannot be reproduced from a pcap, has no ground
+  truth to train on, and costs more supply chain than D7 rejected Lua over. The
+  real gap is *population* questions — "is this hour unlike the last hundred" —
+  answered by statistical baselining with named evidence, not by a model.
+  Blocked regardless on persistence across runs, which sipnab has none of.
 - [ ] Distributed capture cluster management.
 - [ ] Interactive pcap annotation and sharing.
 - [ ] YANG/NETCONF machine-readable diagnosis export.
