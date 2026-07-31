@@ -76,7 +76,21 @@ pub fn estimate_mos(jitter_ms: f64, loss_pct: f64, codec: Option<&str>) -> f64 {
         Some("PCMU") | Some("PCMA") => 0.0,   // G.711 baseline
         Some("G729") | Some("G.729") => 10.0, // G.729 compression impairment
         Some("opus") | Some("Opus") => 0.0,   // Opus comparable to G.711
-        _ => 5.0,                             // Unknown codec, moderate impairment
+        // PLACEHOLDER, not a measurement. See `mos_grounding`.
+        //
+        // ITU-T G.113 Table I.1 publishes Ie for a specific list of codecs and
+        // sipnab knows three of them. Everything else — AMR, AMR-WB, EVS,
+        // G.722, G.726, iLBC — lands here and scores identically to a stream
+        // whose codec was never identified at all: `estimate_mos(10.0, 0.0,
+        // Some("AMR-WB"))` and `estimate_mos(10.0, 0.0, None)` both return
+        // 4.216.
+        //
+        // For AMR-WB that is wrong by roughly a full MOS point in either
+        // direction, since its nine modes genuinely span about 4.49 down to
+        // 3.51. Callers that present this number to a human or an agent must
+        // consult `mos_grounding` and say so, rather than letting a guess wear
+        // the shape of a measurement.
+        _ => 5.0,
     };
 
     // Effective equipment impairment with packet loss (Ie-eff)
@@ -283,6 +297,68 @@ pub fn analyze_burst_gap(received: &[bool], ptime_ms: f64) -> BurstGapAnalysis {
 
 /// Unit tests for E-model MOS estimation (codec impairments, clamping,
 /// monotonic degradation) and burst/gap loss-pattern analysis.
+#[cfg(test)]
+mod grounding_tests {
+    use super::*;
+
+    /// The cellular codecs sipnab cannot ground must say so.
+    ///
+    /// This is the whole point: they currently score identically to an
+    /// unidentified stream, so without this signal a caller cannot tell a
+    /// measurement from a placeholder.
+    #[test]
+    fn cellular_codecs_are_reported_as_ungrounded() {
+        for c in ["AMR", "AMR-WB", "EVS", "G722", "G726", "iLBC"] {
+            assert_eq!(
+                mos_grounding(Some(c)),
+                MosGrounding::Unpublished,
+                "{c} has no published ITU-T G.113 Ie in sipnab and must not \
+                 claim a grounded MOS"
+            );
+        }
+    }
+
+    /// The three sipnab does know are grounded.
+    #[test]
+    fn known_codecs_are_reported_as_grounded() {
+        for c in ["PCMU", "PCMA", "G729", "opus"] {
+            assert_eq!(mos_grounding(Some(c)), MosGrounding::Published, "{c}");
+        }
+    }
+
+    /// An unidentified stream is ungrounded, matching what the score means.
+    #[test]
+    fn an_unidentified_codec_is_ungrounded() {
+        assert_eq!(mos_grounding(None), MosGrounding::Unpublished);
+    }
+
+    /// The grounding signal must agree with the scorer.
+    ///
+    /// If a codec reported Published while falling to the placeholder arm, the
+    /// signal would launder the guess instead of exposing it — worse than
+    /// having no signal.
+    #[test]
+    fn grounding_agrees_with_the_score() {
+        let placeholder = estimate_mos(10.0, 0.0, None);
+        for c in ["PCMU", "PCMA", "G729", "opus"] {
+            assert_ne!(
+                estimate_mos(10.0, 0.0, Some(c)),
+                placeholder,
+                "{c} claims Published grounding, so it must not score the same \
+                 as an unidentified stream"
+            );
+        }
+        for c in ["AMR", "AMR-WB", "EVS"] {
+            assert_eq!(
+                estimate_mos(10.0, 0.0, Some(c)),
+                placeholder,
+                "{c} is Unpublished, so it does score as the placeholder — if \
+                 this changes, the grounding table must change with it"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +704,40 @@ mod tests {
             analysis_30ms.burst_duration_ms,
             analysis_20ms.burst_duration_ms
         );
+    }
+}
+
+/// Whether sipnab has a published impairment value for a codec, or is guessing.
+///
+/// [`estimate_mos`] always returns a number, because every surface that shows
+/// MOS predates this distinction and a sudden `Option` would break the REST
+/// schema, the filter DSL's `rtp.mos`, the Prometheus series and the WASM
+/// exports at once. So the number stays and the *confidence* is published
+/// beside it.
+///
+/// The distinction is not academic. A caller that renders 4.2 for an AMR-WB
+/// stream is showing a placeholder, and an operator reading it during an
+/// incident has no way to tell that apart from a real estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MosGrounding {
+    /// ITU-T G.113 publishes an equipment impairment factor for this codec, so
+    /// the MOS is a genuine estimate.
+    Published,
+    /// No published impairment value. The MOS is a placeholder and means
+    /// "unknown", not "about 4.2".
+    Unpublished,
+}
+
+/// Whether [`estimate_mos`] can ground its answer for `codec`.
+///
+/// Deliberately keyed on the same names the `match` in [`estimate_mos`] uses,
+/// so the two cannot disagree — a codec that scores as known here but falls to
+/// the placeholder arm there would be the worst of both.
+#[must_use]
+pub fn mos_grounding(codec: Option<&str>) -> MosGrounding {
+    match codec {
+        Some("PCMU") | Some("PCMA") | Some("G729") | Some("G.729") | Some("opus")
+        | Some("Opus") => MosGrounding::Published,
+        _ => MosGrounding::Unpublished,
     }
 }

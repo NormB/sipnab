@@ -534,6 +534,16 @@ NAT-mismatch flags plus the Phase 8.7 asymmetry signals
 }
 ```
 
+Each stream carries **`mos_grounded`**. `estimate_mos` returns the same number
+— 4.216 at 10 ms jitter — for AMR, AMR-WB, EVS, G.722 *and* for a stream whose
+codec was never identified, because sipnab only has published ITU-T G.113
+impairment values for G.711, G.729 and Opus. When `mos_grounded` is `false` the
+MOS means **unknown**, not "about 4.2", and a `mos_note` says so.
+
+For AMR-WB specifically the placeholder is wrong by roughly a full MOS point in
+either direction: its nine modes genuinely span about 4.49 down to 3.51. Do not
+report a MOS to a human without checking this field.
+
 ### `search_messages`
 
 Case-insensitive substring search over method, status, From, To,

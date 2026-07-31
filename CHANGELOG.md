@@ -11,6 +11,34 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **MOS was a guess wearing the shape of a measurement for every codec except
+  three.** `estimate_mos` has a `_ => 5.0` arm commented "Unknown codec,
+  moderate impairment", so AMR, AMR-WB, EVS and G.722 all score **4.216** at
+  10 ms jitter — byte-identical to a stream whose codec was never identified.
+  Verified by calling the function directly.
+
+  For AMR-WB that is wrong by roughly a full MOS point in either direction: its
+  nine modes genuinely span about 4.49 down to 3.51. The number reached JSON,
+  REST, MCP, both TUI views, Prometheus, the filter DSL's `rtp.mos` and the
+  WASM exports, with no caveat anywhere.
+
+  `estimate_mos` still returns a number — an abrupt `Option` would break the
+  REST schema, `rtp.mos`, the Prometheus series and the WASM exports at once —
+  but the confidence is now published beside it. `mos_grounding()` reports
+  `Published` or `Unpublished`, and the `rtp_stats` MCP tool carries
+  `mos_grounded` plus a note when false, because an agent reading a bare
+  `mos: 4.2` will reason about it either way.
+
+  A test asserts the two cannot disagree: a codec claiming `Published` must not
+  score the same as an unidentified stream. Mutation-tested by marking AMR-WB
+  grounded, which fails.
+
+  Found by an adversarially-verified spec review. **The deeper question — what
+  the number should BE for cellular codecs — is unresolved and needs a
+  decision**: ITU-T G.113 publishes wideband values for AMR-WB on a different
+  R-scale, but has no AMR-NB row at all and covers EVS only in SWB mode.
+
+### Fixed
 - **`--alert syslog` did nothing.** The flag is declared *"Alert channels
   (repeatable: syslog, json, exec)"* and every documented example passes a
   channel name — but it was fed to `AlertRule::parse`, whose grammar is
