@@ -497,16 +497,48 @@ function hideLoading() {
   if (overlay) overlay.remove();
 }
 
+// Identify a capture by its leading bytes, not by its name.
+//
+// Extensions do not survive contact with real capture tooling. `tcpdump -C -W`
+// names its ring buffer `tg.pcap0` .. `tg.pcap9`, so the extension is `pcap0`;
+// plenty of captures carry no extension at all. A suffix allowlist rejected
+// every one of those while happily accepting any junk renamed to `.pcap` —
+// wrong in both directions.
+//
+// This is NOT a security control, and dropping it costs nothing defensively:
+// the file never leaves the browser, the WASM parser validates the bytes
+// itself, and any name check is defeated by renaming. The real limits are the
+// sandbox and the size cap below.
+function captureKind(b) {
+  if (b.length < 4) return null;
+  var is = function (w, x, y, z) {
+    return b[0] === w && b[1] === x && b[2] === y && b[3] === z;
+  };
+  // libpcap, both byte orders, microsecond and nanosecond variants.
+  if (is(0xd4, 0xc3, 0xb2, 0xa1) || is(0xa1, 0xb2, 0xc3, 0xd4)) return "pcap";
+  if (is(0x4d, 0x3c, 0xb2, 0xa1) || is(0xa1, 0xb2, 0x3c, 0x4d)) return "pcap";
+  // pcapng Section Header Block.
+  if (is(0x0a, 0x0d, 0x0d, 0x0a)) return "pcapng";
+  // gzip: the analyzer decompresses transparently, and what is inside is the
+  // parser's business to accept or reject.
+  if (b[0] === 0x1f && b[1] === 0x8b) return "gzip";
+  return null;
+}
+
 async function handleFile(file) {
-  var validExts = [".pcap", ".pcapng", ".cap"];
-  // A trailing .gz is fine — the analyzer gunzips transparently — but the
-  // name underneath must still be a capture (foo.pcap.gz, not archive.gz).
-  var name = file.name.toLowerCase();
-  var stem = name.endsWith(".gz") ? name.slice(0, -3) : name;
-  var dot = stem.lastIndexOf(".");
-  var ext = dot >= 0 ? stem.substring(dot) : "";
-  if (validExts.indexOf(ext) === -1) {
-    showError("“" + file.name + "” is not a capture file. sipnab reads .pcap, .pcapng, and .cap, optionally gzip-compressed (.pcap.gz).");
+  var head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  if (!captureKind(head)) {
+    var hex = Array.prototype.map
+      .call(head, function (x) {
+        return ("0" + x.toString(16)).slice(-2);
+      })
+      .join(" ");
+    showError(
+      "\u201c" + file.name + "\u201d does not look like a capture file. It starts with " +
+        (hex || "no bytes") +
+        ", and sipnab expects pcap, pcapng, or a gzip of either. The name does not " +
+        "matter \u2014 tg.pcap0, or a file with no extension at all, is fine."
+    );
     return;
   }
   // The whole file is decoded in browser memory; past ~250 MB the tab freezes.

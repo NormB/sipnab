@@ -3688,3 +3688,104 @@ fn workflow_path_filters_cover_their_inputs() {
         problems.join("\n  ")
     );
 }
+
+/// The analyze page must accept every capture the CLI can read, and it must
+/// not decide by filename.
+///
+/// The page used to gate on a suffix allowlist (`.pcap`, `.pcapng`, `.cap`),
+/// which is wrong in both directions on real files. `tcpdump -C -W` writes
+/// `tg.pcap0` .. `tg.pcap9`, so the extension is `pcap0` and every member of a
+/// ring buffer was refused; `SIP_CALL_RTP_G711` in this repository has no
+/// extension at all; and one capture in a real directory is named `.pcap`
+/// while its bytes are pcapng, which the old check accepted under the wrong
+/// label. Meanwhile any junk renamed to `.pcap` sailed through.
+///
+/// So the page sniffs the leading bytes. This test holds that logic to the
+/// fixtures the CLI is tested against: if sipnab can read it here, the browser
+/// must not turn it away.
+#[test]
+fn the_analyze_page_accepts_every_capture_the_cli_reads() {
+    let js = read("website/static/js/analyze.js");
+
+    assert!(
+        !js.contains("validExts"),
+        "analyze.js is gating on a filename suffix again. Real captures are \
+         named tg.pcap0 or carry no extension; identify them by content."
+    );
+    assert!(
+        js.contains("function captureKind"),
+        "the content sniffer is gone from analyze.js"
+    );
+
+    // Magic numbers the page claims to accept, read out of the source so this
+    // cannot drift into asserting against itself.
+    let listed: Vec<[u8; 4]> = regex::Regex::new(
+        r"is\(0x([0-9a-f]{2}), 0x([0-9a-f]{2}), 0x([0-9a-f]{2}), 0x([0-9a-f]{2})\)",
+    )
+    .unwrap()
+    .captures_iter(&js)
+    .map(|c| {
+        let b = |i: usize| u8::from_str_radix(&c[i], 16).unwrap();
+        [b(1), b(2), b(3), b(4)]
+    })
+    .collect();
+    assert!(
+        listed.len() >= 5,
+        "expected the four libpcap variants plus pcapng, found {} magic \
+         numbers in analyze.js — the sniffer shape changed and this gate is \
+         no longer reading it",
+        listed.len()
+    );
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
+    let mut checked = 0;
+    let mut refused = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read pcap-samples") {
+        let path = entry.expect("dir entry").path();
+        if !path.is_file() {
+            continue;
+        }
+        let mut head = [0u8; 4];
+        {
+            use std::io::Read;
+            let mut f = std::fs::File::open(&path).expect("open sample");
+            if f.read(&mut head).unwrap_or(0) < 4 {
+                continue;
+            }
+        }
+        // Microsoft NetMon 2.0 ("GMBU"). Two such samples are kept as
+        // deliberate negative fixtures — libpcap cannot open them either, and
+        // pcap_reader.rs asserts sipnab says so clearly. The browser refusing
+        // them is the CLI's behaviour, not a gap.
+        //
+        // Skipped by magic rather than by filename so a third NetMon sample
+        // does not silently fail this, and without going through `input_set`,
+        // which is `native`-gated — this gate is about the website and must
+        // keep running in builds with no capture backend.
+        if head == [0x47, 0x4d, 0x42, 0x55] {
+            continue;
+        }
+        checked += 1;
+        let gzip = head[0] == 0x1f && head[1] == 0x8b;
+        if !gzip && !listed.contains(&head) {
+            refused.push(format!(
+                "{} (starts {:02x} {:02x} {:02x} {:02x})",
+                path.file_name().unwrap().to_string_lossy(),
+                head[0],
+                head[1],
+                head[2],
+                head[3]
+            ));
+        }
+    }
+
+    assert!(
+        refused.is_empty(),
+        "the analyze page would refuse captures the CLI reads: {refused:?}"
+    );
+    assert!(
+        checked >= 20,
+        "only {checked} sample captures examined — the walk stopped reading \
+         tests/pcap-samples and this gate checked almost nothing"
+    );
+}
