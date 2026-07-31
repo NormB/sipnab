@@ -240,7 +240,10 @@ pub fn capture_files(
     let mut count: u64 = 0;
     let mut prev_ts: Option<DateTime<Utc>> = None;
 
-    if !read_opened_inner(
+    // The first file gets the same treatment as the rest: a read error stops
+    // it and the set continues. Being first is not a reason to abandon nine
+    // other files, and a ring buffer's truncated member can sort anywhere.
+    match read_opened_inner(
         &mut cap,
         first,
         config,
@@ -248,8 +251,15 @@ pub fn capture_files(
         start,
         &mut count,
         &mut prev_ts,
-    )? {
-        return Ok(());
+    ) {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(e) => {
+            tracing::error!(
+                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
+                first.display()
+            );
+        }
     }
     drop(cap);
     drop(_gz_guard);
@@ -273,8 +283,25 @@ pub fn capture_files(
             tracing::error!("Skipping '{}': bad BPF filter: {e}", path.display());
             continue;
         }
-        if !read_opened_inner(&mut cap, path, config, &tx, start, &mut count, &mut prev_ts)? {
-            break;
+        // A read error stops THIS file, not the set. Truncation is the normal
+        // state of a ring buffer -- the newest member is still being written
+        // when the capture stops, and libpcap reports `truncated dump file` on
+        // the trailing partial record. Propagating that with `?` abandoned
+        // every remaining file: observed on a 15-file directory where 15
+        // started and 14 finished, and it escaped notice only because the
+        // truncated member happened to sort last.
+        //
+        // Same reasoning as the open failure above. Whatever was read before
+        // the break is already in the store and stays there.
+        match read_opened_inner(&mut cap, path, config, &tx, start, &mut count, &mut prev_ts) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                tracing::error!(
+                    "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
+                    path.display()
+                );
+            }
         }
     }
 
