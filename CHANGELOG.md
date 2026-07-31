@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.69] - 2026-07-31
+
 ### Security
 - **A hostile plugin could exhaust host memory before the cap was checked.**
   The WASM host validated `mem.size()` *after* `instantiate_and_start`, but
@@ -29,8 +31,6 @@ entry that carries them.
   the line that catches a future edit switching to `setresuid`, inserting a
   `seteuid`, or reordering the drop. A half-completed drop would leave every
   parser in the program running with authority it was never meant to have.
-
-## [0.5.69] - 2026-07-31
 
 ### Fixed
 - **`site_release_date_matches_changelog` enforced the bug it was written to
