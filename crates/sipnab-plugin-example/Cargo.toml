@@ -1,0 +1,23 @@
+[package]
+name = "sipnab-plugin-example"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Worked example of a sipnab WASM plugin: short-answered-call detection."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# No serde. A plugin is a sandboxed leaf that must stay small and auditable, and
+# hand-rolling the two field reads it needs is less code than the derive
+# machinery would pull in. Anything larger should reach for serde-json-core or
+# serde with `default-features = false`.
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -11,6 +11,42 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **WASM plugin API — third-party dialog detections.** `--plugin <path.wasm>`
+  loads a sandboxed module that contributes its own findings, which appear
+  under `plugin_findings` in `--json-dialogs`. Behind the **non-default**
+  `plugins` feature: the stock build gains no interpreter, no dependency, and
+  no flag.
+
+  The backlog said "D7 rules out Lua; WASM is the path if plugins are ever
+  needed", which is a conditional nobody had tested. So the spec at
+  `docs/design/wasm-plugin-api.md` answers D7's three objections one at a time
+  and measures the third rather than arguing it: wasmi costs **+1.56 MB and 15
+  transitive crates** (4% on 352), against a 5.0 MB binary and a public "under
+  10 MB" claim. It also names the gap the existing three mechanisms leave —
+  the filter DSL selects, the NDJSON pipe reshapes, exec hooks react, and none
+  of them lets a site-specific *detection* report through sipnab's own
+  surfaces.
+
+  A plugin has **no imports at all** — no WASI, filesystem, network or clock —
+  so the sandbox is an empty import table rather than an allowlist, and
+  `a_plugin_that_imports_anything_cannot_instantiate` holds it. Fuel metering
+  cuts off an infinite loop; a fresh instance per dialog stops a plugin
+  carrying state between calls, keeping findings a pure function of their
+  dialog. Every failure is reported against that dialog and never fails the
+  capture.
+
+  Findings must cite evidence indices, exactly as the built-ins must — which
+  forced a correction while writing it: the input was specified as the
+  `--json-dialogs` document, and that document has no message list, so a plugin
+  would have had to produce indices it could not compute. The input now carries
+  the messages.
+
+  `crates/sipnab-plugin-example` is a worked example detecting short answered
+  calls, built for `wasm32-unknown-unknown` and exercised end to end: the test
+  runs the documented build command, loads the artifact, and asserts the
+  finding reaches real CLI output. Across the sample captures it fires on five
+  and stays quiet on the 60-second call.
+
 - **The OpenSSF badge answer sheet is now gated.** A badge submission is a
   self-certification that nobody audits, which is exactly why its claims need
   something holding them up. `openssf_badge_test` checks the mechanically

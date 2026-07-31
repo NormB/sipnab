@@ -56,6 +56,12 @@ pub mod names;
 pub mod net;
 #[cfg(feature = "native")]
 pub mod pipeline;
+
+/// WASM plugin host — third-party dialog detections.
+///
+/// Non-default feature: the stock build carries no interpreter at all.
+#[cfg(feature = "plugins")]
+pub mod plugin;
 pub use error::{CaptureError, Error, ParseError};
 #[cfg(feature = "mcp")]
 pub mod mcp;

@@ -487,6 +487,22 @@ pub struct Cli {
     #[arg(help_heading = "Output", long)]
     pub json_dialogs: bool,
 
+    /// Load a WASM plugin that adds its own dialog detections. Repeatable.
+    ///
+    /// A plugin is a sandboxed pure function from one dialog to zero or more
+    /// findings, which then render beside the built-in ones. It runs with no
+    /// imports at all — no filesystem, no network, no clock — so it cannot
+    /// reach anything outside the bytes it is handed.
+    ///
+    /// Loading a plugin is still a trust decision: it sees the dialog's
+    /// headers, credentials included, and can copy them into a finding that
+    /// prints. Treat a `.wasm` the way you would treat a patch.
+    ///
+    /// See `docs/design/wasm-plugin-api.md` for the ABI and a worked example.
+    #[cfg(feature = "plugins")]
+    #[arg(help_heading = "Output", long, value_name = "PATH")]
+    pub plugin: Vec<std::path::PathBuf>,
+
     /// Generate a summary report after capture completes.
     #[arg(help_heading = "Output", long)]
     pub report: bool,
