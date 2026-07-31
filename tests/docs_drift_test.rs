@@ -2098,3 +2098,133 @@ fn no_documentation_table_repeats_a_row() {
         offenders.join("\n  ")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task-first headings (spec: docs/design/task-first-docs.md)
+// ---------------------------------------------------------------------------
+
+/// How-to headings must name the reader's goal, and the ratio may not fall.
+///
+/// A user looking for "sipnab on a remote server, Claude Code on my laptop"
+/// could not find it, because the section was called "Scenario 2A —
+/// SSH-launched stdio: ad-hoc, zero server configuration". Accurate, and
+/// useless to anyone who did not already know that "SSH-launched stdio" was the
+/// thing they wanted. Measured across the three how-to pages, task-first
+/// headings ran 90% / 62% / 8% — so the repo knew how to do this everywhere
+/// except the newest surface, whose docs were written from the implementation
+/// outward.
+///
+/// A **ratchet, not a threshold**, and deliberately so. Some headings are
+/// legitimately nouns — "Codex CLI", "Cursor", "VS Code" are a list of clients,
+/// not tasks — so no honest fixed percentage exists. What must not happen is
+/// backsliding, and that is exactly what a floor per page catches.
+///
+/// Raising a floor after improving a page is the intended workflow. Lowering
+/// one is the thing to argue about in review.
+#[test]
+fn how_to_headings_stay_task_first() {
+    /// Verbs a reader would use for their own goal. Extend freely — a missing
+    /// verb only ever understates the score, which the ratchet tolerates.
+    const GOAL_VERBS: &[&str] = &[
+        "alert",
+        "analyse",
+        "analyze",
+        "block",
+        "browse",
+        "check",
+        "choose",
+        "collect",
+        "compare",
+        "configure",
+        "connect",
+        "decrypt",
+        "detect",
+        "diagnose",
+        "drive",
+        "export",
+        "feed",
+        "find",
+        "fix",
+        "generate",
+        "graph",
+        "inspect",
+        "install",
+        "keep",
+        "live",
+        "measure",
+        "narrow",
+        "open",
+        "query",
+        "reach",
+        "read",
+        "record",
+        "register",
+        "run",
+        "save",
+        "search",
+        "send",
+        "set",
+        "stream",
+        "trace",
+        "triage",
+        "understand",
+        "use",
+        "verify",
+        "watch",
+        "wire",
+    ];
+
+    // (page, floor) — the measured ratio at the time of writing, as a percent.
+    const PAGES: &[(&str, usize)] = &[
+        ("docs/tui-walkthrough.md", 90),
+        ("docs/mcp-walkthrough.md", 64),
+        ("docs/examples.md", 62),
+    ];
+
+    let strip = regex::Regex::new(
+        r"(?i)^(\d+[a-z]?\.\s*|Scenario\s+\d+[A-Z]?\s*[—-]\s*|Step\s+\d+\s*[—-]\s*)",
+    )
+    .unwrap();
+    let heading = regex::Regex::new(r"(?m)^#{2,3}[ \t]+(.+?)[ \t#]*$").unwrap();
+
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (page, floor) in PAGES {
+        let text =
+            std::fs::read_to_string(repo.join(page)).unwrap_or_else(|e| panic!("read {page}: {e}"));
+        let heads: Vec<String> = heading
+            .captures_iter(&markdown::prose(&text))
+            .map(|c| c[1].to_string())
+            .collect();
+        assert!(
+            !heads.is_empty(),
+            "{page}: no headings found — did the page move?"
+        );
+
+        let task_first = heads
+            .iter()
+            .filter(|h| {
+                let core = strip.replace(h, "");
+                core.split_whitespace()
+                    .next()
+                    .map(|w| {
+                        let w = w.to_lowercase();
+                        let w = w.trim_end_matches([':', ',']);
+                        GOAL_VERBS.contains(&w)
+                    })
+                    .unwrap_or(false)
+            })
+            .count();
+        let pct = task_first * 100 / heads.len();
+
+        assert!(
+            pct >= *floor,
+            "{page}: {task_first}/{} headings are task-first ({pct}%), below the \
+             {floor}% floor. A how-to heading names the reader's GOAL, not the \
+             mechanism — \"Connect Claude Code on your laptop to sipnab on a \
+             server\", not \"SSH-launched stdio\". Put the mechanism in a \
+             subtitle underneath. If you genuinely improved the page, raise the \
+             floor; lowering it needs an argument.",
+            heads.len()
+        );
+    }
+}

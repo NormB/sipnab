@@ -389,8 +389,8 @@ fn wiki_intra_docs_links_resolve() {
     // that nobody can name is the regex breaking, which is exactly what this
     // pin is here to catch, and editing the number is how it gets missed.
     assert_eq!(
-        seen, 191,
-        "extractor found {seen} wiki links, expected 191. More is fine — bump \
+        seen, 194,
+        "extractor found {seen} wiki links, expected 194. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
