@@ -32,14 +32,18 @@
         </div>
         <p class="dropzone-sub">or <span class="dropzone-browse">click to browse</span></p>
         <div class="dropzone-formats">
-          <span class="dropzone-fmt">.pcap</span>
-          <span class="dropzone-fmt">.pcapng</span>
-          <span class="dropzone-fmt">.cap</span>
-          <span class="dropzone-fmt">.pcap.gz</span>
+          <span class="dropzone-fmt">pcap</span>
+          <span class="dropzone-fmt">pcapng</span>
+          <span class="dropzone-fmt">gzip of either</span>
         </div>
-        <p class="dropzone-hint">Up to ~250&nbsp;MB &middot; parsed locally in your browser</p>
+        <p class="dropzone-hint">Any filename &middot; up to ~250&nbsp;MB &middot; parsed locally in your browser</p>
       </div>
-      <input type="file" id="file-input" accept=".pcap,.pcapng,.cap,.gz" hidden>
+      <!-- No `accept` filter: it hides real capture names from the OS picker.
+           tcpdump ring buffers are tg.pcap0..9 and many captures have no
+           extension, so an allowlist here would grey out exactly the files
+           people are trying to open. The page checks the leading bytes
+           instead — see captureKind() in analyze.js. -->
+      <input type="file" id="file-input" hidden>
       <button class="dropzone-sample" id="load-sample" type="button">No capture handy? Load a sample call &rarr;</button>
       <div class="dropzone-outcome" aria-label="What you get from an analysis">
         <span class="dropzone-outcome-label">You'll get</span>

@@ -13,6 +13,30 @@ entry that carries them.
 ## [0.5.71] - 2026-07-31
 
 ### Fixed
+- **The analyze page refused real capture filenames.** `sipnab.com/analyze/`
+  gated on a suffix allowlist (`.pcap`, `.pcapng`, `.cap`), which is wrong in
+  both directions on files that come out of actual capture tooling.
+  `tcpdump -C -W` writes `tg.pcap0` .. `tg.pcap9`, so every member of a ring
+  buffer was turned away; captures with no extension were too; one file named
+  `.pcap` in a real directory is pcapng inside, which the check accepted under
+  the wrong label; and any junk renamed to `.pcap` passed.
+
+  The page now identifies a capture by its leading bytes — the four libpcap
+  magic variants, the pcapng Section Header Block, and gzip — and the OS file
+  picker no longer filters by suffix either, since that greyed out exactly the
+  files people were trying to open. Verified against a real directory: 27
+  captures accepted, 15 non-captures (`.sh`, `.log`, `-stamp`) rejected,
+  matching the CLI's own resolution file for file.
+
+  **This is not a weakening of security.** The analyze page is client-side
+  WASM: the file never leaves the browser, so there is no server to attack, and
+  a filename check is defeated by renaming — it never was a control. The real
+  boundaries are the WASM sandbox, the parser's own validation, and the
+  existing ~250 MB size cap, all unchanged. Rejecting by content is strictly
+  more accurate than rejecting by name.
+
+
+### Fixed
 - **A truncated capture file aborted the whole set, and truncation is the
   normal state of a ring buffer.** Shipped in 0.5.70 with multi-file input.
   `capture_files` propagated a libpcap read error with `?`, abandoning every
