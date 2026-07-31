@@ -165,7 +165,7 @@ sipnab -d any --multi-device --delta-time
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `-d`, `--device` | `<IFACE>` | auto-detect | Network interface to capture on. Auto-detects the default interface when you name no `-I` file and no `-L` HEP listener |
+| `-d`, `--device` | `<IFACE>` | platform default | Network interface to capture on. With no `-d`, no `-I` file and no `-L` HEP listener, sipnab picks a default that differs by platform — see the note below |
 | `-I`, `--input` | `<FILE>` | -- | Read packets from a pcap file instead of live capture |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
 | `-B`, `--buffer` | `<MIB>` | `2` | Kernel capture buffer size in MiB |
@@ -186,6 +186,23 @@ sipnab -d any --multi-device --delta-time
 | `--replay` | -- | off | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
 | `<BPF_FILTER>...` | positional | -- | BPF display filter expression (trailing positional args) |
+
+> **What you get when you omit `-d`.** The default is not the same everywhere,
+> and the difference decides whether you see loopback traffic:
+>
+> | Platform | Default | Scope |
+> |---|---|---|
+> | Linux | the `any` pseudo-device | **every interface at once**, loopback included |
+> | macOS / BSD | libpcap's default device, from the routing table; otherwise the first non-loopback interface | **one interface** |
+>
+> On Linux this is deliberate and matches sngrep: a SIP proxy often talks to
+> itself over loopback, so capturing only `eth0` silently misses it. Pass
+> `-d any` to say so explicitly. Promiscuous mode does not apply to `any`, so
+> `--no-promisc` changes nothing there.
+>
+> On macOS you get a *single* interface. If SIP is not on the one libpcap
+> picked, you see nothing and the capture looks merely quiet — name `-d`
+> explicitly.
 
 > **`-I` and `-d` are alternatives, not companions.** sipnab accepts both, and the FILE wins: sipnab reads it, never opens the interface, and the output looks like a normal run. sipnab warns on stderr when you do this. To switch a file command to live capture, **remove `-I`** rather than adding `-d` beside it.
 
