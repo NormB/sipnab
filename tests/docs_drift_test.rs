@@ -2086,8 +2086,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 359,
-        "walked {tables} tables, expected 359. More is fine — bump this. FEWER \
+        tables, 361,
+        "walked {tables} tables, expected 361. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
@@ -2141,8 +2141,10 @@ fn how_to_headings_stay_task_first() {
         "detect",
         "diagnose",
         "drive",
+        "exchange",
         "export",
         "feed",
+        "filter",
         "find",
         "fix",
         "generate",
@@ -2150,7 +2152,9 @@ fn how_to_headings_stay_task_first() {
         "inspect",
         "install",
         "keep",
+        "listen",
         "live",
+        "look",
         "measure",
         "narrow",
         "open",
@@ -2165,6 +2169,7 @@ fn how_to_headings_stay_task_first() {
         "send",
         "set",
         "stream",
+        "test",
         "trace",
         "triage",
         "understand",
@@ -2178,7 +2183,7 @@ fn how_to_headings_stay_task_first() {
     const PAGES: &[(&str, usize)] = &[
         ("docs/tui-walkthrough.md", 90),
         ("docs/mcp-walkthrough.md", 64),
-        ("docs/examples.md", 62),
+        ("docs/examples.md", 93),
     ];
 
     let strip = regex::Regex::new(

@@ -2,7 +2,47 @@
 
 Recipe-style walkthroughs for the things people actually want to do. Each recipe states the problem, gives exact commands, tells you what to look for in the output, and flags common pitfalls.
 
-If you're new, start with **Recipe 1**. If you have a specific symptom, jump to the matching one.
+Each recipe stands alone — nothing here depends on anything above it. If you
+are new, recipe 1 is the broadest starting point.
+
+## What do you want to do?
+
+| I want to… | Recipe |
+|---|---|
+| Work out whether anything is wrong with a capture | [1. Triage a pcap fast](#1-triage-a-pcap-fast) |
+| Watch one user's traffic live | [2. Live capture, narrow to a single user](#2-live-capture-narrow-to-a-single-user) |
+| See which calls failed, and why | [3. Find every failed call, grouped by response code](#3-find-every-failed-call-grouped-by-response-code) |
+| Chase a "no audio" or "one-way audio" complaint | [4. Diagnose a one-way audio complaint](#4-diagnose-a-one-way-audio-complaint) |
+| Work out why a call sounds bad in one direction | [11. Find why a call sounds bad in one direction only](#11-find-why-a-call-sounds-bad-in-one-direction-only) |
+| Write a filter for common triage | [5. Filter for the five things you look for most](#5-filter-for-the-five-things-you-look-for-most) |
+| Collect traffic from proxies I cannot install on | [6. Wire HEP from your SIP stack to a central sipnab](#6-wire-hep-from-your-sip-stack-to-a-central-sipnab) |
+| Read encrypted SIP or SRTP | [7. Decrypt SIP/TLS via SSLKEYLOGFILE](#7-decrypt-siptls-via-sslkeylogfile) |
+| Drive sipnab from an AI agent | [8. Run sipnab as an MCP server](#8-run-sipnab-as-an-mcp-server) |
+| Graph traffic over time | [9. Graph call rate, response codes and PDD over time](#9-graph-call-rate-response-codes-and-pdd-over-time) |
+| Detect and block scanners or fraud | [10. Detect SIP scanners and auto-block via fail2ban](#10-detect-sip-scanners-and-auto-block-via-fail2ban) |
+| Hand someone a written summary of a call | [12. Generate a call report (text / Markdown / JSON)](#12-generate-a-call-report-text--markdown--json) |
+| Listen to the audio | [13. Export RTP audio as WAV](#13-export-rtp-audio-as-wav) |
+| Look at a pcap with nothing installed | [14. Analyse a pcap without installing anything](#14-analyse-a-pcap-without-installing-anything) |
+| Just find a command to copy | [Look up a one-liner by task](#look-up-a-one-liner-by-task) |
+
+### Where a recipe fits
+
+Most recipes are one of three shapes. Knowing which you are in tells you what
+the commands are doing:
+
+```mermaid
+flowchart LR
+    P[pcap file] --> A[sipnab]
+    L[live interface] --> A
+    H[HEP from proxies] --> A
+    A --> T[TUI: look at it]
+    A --> J[JSON / report: pipe it]
+    A --> M[metrics / alerts: watch it]
+```
+
+- **Look at it** — the TUI, for a human working a ticket.
+- **Pipe it** — JSON, reports, WAV, Wireshark filters, for tooling.
+- **Watch it** — metrics, scanner detection, alerts, for something long-running.
 
 ## 1. Triage a pcap fast
 
@@ -200,7 +240,7 @@ The first command should print a diagnosis object like:
 
 ---
 
-## 5. Five Filter-DSL queries that pay rent
+## 5. Filter for the five things you look for most
 
 The filter DSL has 31 fields and 7 operators. These five cover most operational triage:
 
@@ -369,7 +409,7 @@ sudo sipnab -N -d eth0 \
             --keylog /tmp/sipua.keylog --keylog-watch
 ```
 
-### 7b. Offline decryption (capture once, decrypt later)
+### 7b. Decrypt a capture you already recorded
 
 Capture the encrypted pcap normally:
 
@@ -401,7 +441,7 @@ sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
 
 Accepted values for `--pcap-export-mode`: `decrypted` (default), `encrypted+dsb`, `raw`.
 
-### 7d. SRTP via DTLS-SRTP keylog
+### 7d. Decrypt SRTP from a DTLS keylog
 
 ```bash
 sipnab -I capture.pcap --dtls-keylog /tmp/dtls.keylog
@@ -425,7 +465,7 @@ the first word and wants everything after it lowercased. Purely numeric markers
 ("13.") it skips correctly; only the alphanumeric ones misfire. -->
 <!-- vale sipnab.Headings = NO -->
 
-### 8a. Stdio (local agent)
+### 8a. Drive sipnab from an agent on the same machine
 
 One-shot: the agent reads a pcap you already have.
 
@@ -458,7 +498,7 @@ sudo sipnab -N --mcp -d eth0 --quiet
 claude mcp add sipnab -- sipnab -N --mcp -I "$PWD/capture.pcap" --quiet
 ```
 
-### 8b. HTTP (remote agent, single user)
+### 8b. Drive sipnab from an agent on another machine
 
 Generate the bearer token once, when you first set the host up. `openssl rand` overwrites `/etc/sipnab/mcp-token` — run it against a live server and it starts serving a secret none of the configured agents hold, with no way to recover the old one.
 
@@ -544,7 +584,7 @@ The 11 read-only tools you should see listed: `list_dialogs`, `get_dialog_report
 
 ---
 
-## 9. Prometheus + Grafana end-to-end
+## 9. Graph call rate, response codes and PDD over time
 
 **Problem:** You want a dashboard tracking call rate, response codes, and PDD over time.
 
@@ -597,7 +637,7 @@ Then spot-check a metric value:
 curl -s 'http://localhost:9090/api/v1/query?query=rate(sipnab_messages_total[1m])' | jq
 ```
 
-### 9d. Useful PromQL queries
+### 9d. Query the metrics with PromQL
 
 ```promql
 # Call rate (per method)
@@ -683,7 +723,7 @@ bantime = 86400
 action = iptables-allports
 ```
 
-### 10c. Toll-fraud detection
+### 10c. Detect toll fraud and wangiri call-back bait
 
 **Symptom:** an unexpected spike of international or premium-rate calls, bursts of short calls to one number prefix (wangiri call-back bait), or sequential dialing through a number range.
 
@@ -704,7 +744,7 @@ You should see alert lines like:
 
 **What to look for:** a `Wangiri` alert on a premium-rate prefix (`+44 9xx`, `+2xx` IRSF ranges) is the classic revenue-fraud signature — block the destination prefix at the trunk, not just the source IP. `SequentialScanning` from an external source usually precedes a toll-fraud attempt: feed the source IP to fail2ban (10b) and review outbound dial permissions.
 
-### 10d. Custom alert handler
+### 10d. Run your own script when an alert fires
 
 For exec hooks instead of syslog/fail2ban:
 
@@ -726,7 +766,7 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 <!-- vale sipnab.Headings = YES -->
 
-## 11. Per-call asymmetry diagnosis
+## 11. Find why a call sounds bad in one direction only
 
 **Problem:** A call sounds bad in one direction. The codec/ptime might differ between legs.
 
@@ -825,7 +865,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json 2>/dev/null \
 
 **Problem:** A call sounds bad. You want the actual audio to listen to or share.
 
-### From the TUI
+### Export a WAV from the TUI
 
 ```bash
 sipnab -I capture.pcap
@@ -851,7 +891,7 @@ If you've built with the `audio` feature (in default), `P` in the RTP stream vie
 
 ---
 
-## 14. Browser pcap analysis (no install)
+## 14. Analyse a pcap without installing anything
 
 **Problem:** You don't want to install anything. The pcap is on your laptop. You want to look at it.
 
@@ -866,7 +906,7 @@ The analyze page supports `.pcap`, `.pcapng`, `.cap` (pcap format), and their gz
 
 ---
 
-## Quick reference: one-liners by task
+## Look up a one-liner by task
 
 The recipes above walk through a problem end to end. This section is the
 other shape: dense one-line commands to copy when you already know what
