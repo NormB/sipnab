@@ -292,16 +292,29 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
         lambda m: f"]({_xlate(rel, m.group(1))})", body
     )
     body = sub_outside_code(CODE_LINK_RE, rewrite_code_link, body)
-    head = "\n".join(
-        [
-            "+++",
-            f"title = {_INT.toml_str(title)}",
-            f"weight = {weight}",
-            f"description = {_INT.toml_str(description)}",
-            "+++",
-            "",
-        ]
-    )
+
+    # Mermaid, converted with the SAME function the internals generator uses.
+    #
+    # This page tree had no mermaid handling at all, so a diagram in a
+    # user-facing doc shipped to the site as literal fence text — the feature
+    # silently did not exist here while working fine one directory over.
+    # Reusing `_INT.convert_mermaid` rather than copying it keeps one
+    # definition of what a diagram is; the internals generator's own comment
+    # explains why the fence is found by the CommonMark lexer instead of by
+    # string comparison.
+    body, has_diagrams = _INT.convert_mermaid(body)
+
+    lines = [
+        "+++",
+        f"title = {_INT.toml_str(title)}",
+        f"weight = {weight}",
+        f"description = {_INT.toml_str(description)}",
+    ]
+    if has_diagrams:
+        # Gates the 3.4 MB mermaid bundle: page.html loads it only when a page
+        # declares this, so pages without diagrams pay nothing.
+        lines += ["", "[extra]", "has_diagrams = true"]
+    head = "\n".join(lines + ["+++", ""])
     return head + BANNER.format(src=src) + body
 
 

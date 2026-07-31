@@ -10,6 +10,45 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+- **How-to headings now name the reader's goal, not the mechanism.** Someone
+  looking for "sipnab on a remote server, Claude Code on my laptop" could not
+  find the instructions, because the section was called *"Scenario 2A —
+  SSH-launched stdio: ad-hoc, zero server configuration"*. Accurate, and
+  useless to anyone who did not already know that "SSH-launched stdio" was the
+  thing they wanted.
+
+  Measured before changing anything: task-first headings ran 90% in
+  `tui-walkthrough.md`, 62% in the cookbook and **8%** in `mcp-walkthrough.md`.
+  The repo knew how to do this everywhere except its newest surface, whose docs
+  were written from the implementation outward. Researched against
+  [Diátaxis](https://diataxis.fr/how-to-guides/) — "Choose titles that say
+  exactly what a how-to guide shows" — which also names the deeper fault:
+  `mcp-walkthrough.md` is a set of how-tos wearing a tutorial's name, which is
+  where a label like "2A" comes from.
+
+  16 headings renamed with the mechanism preserved as a subtitle, so nothing
+  accurate is lost. The page opens with an "I want to…" index and states that
+  it is a set of independent how-tos rather than a sequence.
+  `mcp-walkthrough.md` went 8% → 64%; the remainder are legitimately nouns
+  (`Codex CLI`, `Cursor`), which is why the new gate is a per-page ratchet
+  rather than a threshold. Anchors changed — acceptable pre-1.0, and
+  `link_integrity_test` proved no internal link was left dangling.
+
+### Added
+- **Diagrams in the user-facing docs.** `build-site-pages.py` had no mermaid
+  handling at all, so a diagram in a user doc would have shipped to the site as
+  literal fence text — the feature silently did not exist there while working
+  one directory over. It now reuses the internals generator's `convert_mermaid`
+  and sets `has_diagrams`, which gates the 3.4 MB bundle. `mcp-walkthrough.md`
+  gains a block diagram of the three deployment shapes and a sequence diagram
+  of the SSH-launched stdio flow.
+
+- **`how_to_headings_stay_task_first`** — a per-page ratchet on the task-first
+  ratio. Floors may rise; lowering one needs an argument. Mutation-tested by
+  restoring the original headings, which drops the walkthrough to 48% and fails
+  the gate.
+
 ### Fixed
 - **The plugin example tests raced each other.** All five call the same
   `build_example()`, libtest runs them in parallel, so five concurrent
