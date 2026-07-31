@@ -486,6 +486,176 @@ Returns array of `{ rule_name, src_ip, detail, timestamp }`. When the
 AlertEngine isn't attached (no detection rules configured), returns an
 empty array rather than erroring.
 
+### Diagnosing a problem: start with `triage_call`
+
+The first question in VoIP triage is which half of the stack failed.
+Signalling decides whether a call *connects*. RTP decides whether you can
+*hear* it. They have different causes and different fixes, and confusing them
+is the most common wrong turn — so ask this before anything else.
+
+```jsonc
+// triage_call { "call_id": "1-1966@10.0.2.20" }
+{
+  "verdict": "media",              // "signalling" | "media" | "both" | "none"
+  "state": "InCall",
+  "final_status_code": 200,
+  "signalling": { "problem": false, "hints": [] },
+  "media": {
+    "problem": true,
+    "one_way_audio": true,
+    "nat_mismatch": false,
+    "no_media": false,
+    "stream_count": 1,
+    "hints": ["RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."]
+  }
+}
+```
+
+A clean `200 OK` with one-way audio is a **media** problem. Nothing in the SIP
+exchange is wrong, and time spent reading it is time lost.
+
+Where to go next, by verdict:
+
+| Verdict | Next tool |
+|---|---|
+| `signalling` | [`explain_response_code`](#explain_response_code) on the final code, then [`get_dialog`](#get_dialog) |
+| `media` | [`rtp_stats`](#rtp_stats), and [`check_codec_negotiation`](#check_codec_negotiation) if the call failed |
+| `both` | Signalling first — media symptoms are often downstream of a failed negotiation |
+| `none` | The call is fine. Check you have the right Call-ID |
+
+### `check_codec_negotiation`
+
+For `488 Not Acceptable Here`, which usually means nobody offered the far end a
+codec it accepts.
+
+```jsonc
+// check_codec_negotiation { "call_id": "1-1966@10.0.2.20" }
+{
+  "offered": ["PCMU"],
+  "answered": ["PCMU", "telephone-event"],
+  "common": ["PCMU"],
+  "result": "ok",
+  "sdp_exchange_count": 2
+}
+```
+
+`result` has four values, and the distinction matters:
+
+| Result | Meaning | What to do |
+|---|---|---|
+| `ok` | The two sides agreed | Codecs are not your problem |
+| `no_common_codec` | Both offered codecs, none shared | A codec policy problem — compare the lists |
+| `no_answer` | An offer went out, nothing came back | The call did not get far enough to negotiate |
+| `no_sdp_in_capture` | No SDP at all | Not a codec problem. Hold with inactive media, or a reject before any offer |
+
+`no_answer` and `no_sdp_in_capture` are deliberately separate: reporting the
+first for the second sends you hunting a reply that was never expected.
+
+### `diagnose_registration`
+
+"Is this phone online?" — a different question from "why did this call fail?".
+
+```jsonc
+// diagnose_registration { "call_id": "reg-1@example.com" }
+{
+  "applicable": true,
+  "registration_failure": { "kind": "shortened_expiry",
+                            "requested_expiry_sec": 180, "granted_expiry_sec": 20 },
+  "auth_loop": null,
+  "hints": ["Registration granted 20s against 180s requested — ..."]
+}
+```
+
+`applicable: false` means the dialog carries no `REGISTER`. It says so rather
+than reporting a healthy registration for a call that never attempted one.
+
+### `explain_response_code`
+
+The IANA registry, not an agent's recollection.
+
+```jsonc
+// explain_response_code { "code": 488 }
+{
+  "code": 488,
+  "class": "failure",     // provisional|success|redirect|challenge|cancelled|declined|failure
+  "explanation": "488 Not Acceptable Here — Codec negotiation failed. ...",
+  "registered": true
+}
+```
+
+`class` distinguishes a challenge from a failure: `401` is `challenge`, not
+`failure`, because a challenged call has not failed — it is mid-handshake.
+`registered: false` means the code is outside the registry, usually a vendor
+extension. The tool says so rather than inventing a meaning.
+
+### `compare_dialogs`
+
+"Why did this one work and that one not?"
+
+```jsonc
+// compare_dialogs { "call_id_a": "...", "call_id_b": "..." }
+{
+  "a": { "state": "InCall", "final_status_code": 200, "msg_count": 4,
+         "methods": ["ACK", "INVITE"], "hints": [] },
+  "b": { "state": "Failed", "final_status_code": 488, "msg_count": 3,
+         "methods": ["INVITE"], "hints": ["Call failed: 488 Not Acceptable Here."] },
+  "differences": ["state", "final_status_code", "msg_count", "methods"]
+}
+```
+
+`differences` names the fields that differ, so you are not diffing two objects
+by eye.
+
+### `get_sdp_timeline` and `search_by_time`
+
+`get_sdp_timeline` returns the offer/answer exchanges in order — codecs, media
+address, port and mode per negotiation, including re-INVITEs. Use it when audio
+changed mid-call.
+
+`search_by_time` takes an RFC 3339 `start`, an optional `end`, and returns
+dialogs whose first message falls in the window, oldest first — for scoping an
+investigation to when a user says the problem happened.
+
+### File tools: `list_captures`, `export_capture`, `export_audio`
+
+All three require `--mcp-file-root <DIR>` and refuse to run without it. They
+take a **bare filename, never a path**:
+
+```jsonc
+// export_capture { "filename": "demo.pcap" }
+{ "path": "/var/spool/sipnab-exports/demo.pcap", "messages": 4, "bytes": 2373 }
+```
+
+`../x`, `/etc/passwd` and `sub/dir.pcap` are all refused before any filesystem
+call. That is the whole security model, and it is deliberately absolute: a tool
+that accepts an agent-supplied path is an arbitrary file write, not an export.
+
+`export_capture` re-synthesises a frame per held message, so the SIP layer is
+faithful while the link and IP headers come from the addresses sipnab
+recorded — not from the bytes originally on the wire.
+
+### `shutdown_server`
+
+**Destructive.** Requires `--mcp-allow-shutdown`, which is off by default.
+
+```jsonc
+// shutdown_server {}   — note: no arguments means DRY RUN
+{
+  "dry_run": true,
+  "would_stop": false,
+  "live": false,
+  "unsaved": false,
+  "dialogs": 1,
+  "streams": 1,
+  "note": "dry run — nothing stopped. Call again with dry_run=false to stop."
+}
+```
+
+Stopping takes a deliberate second call with `dry_run: false`. On a **live**
+capture holding packets written nowhere, it refuses outright unless you pass
+`save_to` or `discard_unsaved: true` — losing a capture to a misread sentence
+is the failure worth engineering against.
+
 ### `capture_status`
 
 **Ask this first.** It answers what the server is actually attached to — a live
