@@ -10,6 +10,16 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+- **The plugin example test failed under coverage.** `cargo llvm-cov` passes
+  `-C instrument-coverage` through the environment, and the test's nested
+  `cargo build --target wasm32-unknown-unknown` inherited it — but wasm32 ships
+  no `profiler_builtins`, so the build died there. The wasm artifact is a
+  plugin under test, not part of the coverage measurement, so the nested build
+  now scrubs `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`,
+  `RUSTDOCFLAGS` and `LLVM_PROFILE_FILE`. Verified by reproducing the exact CI
+  error locally with the scrubbing removed.
+
 ### Changed
 - **The MCP docs sent remote users down the wrong path.** `docs/mcp.md` said
   "When the agent runs on a different host, switch to the HTTP transport",
