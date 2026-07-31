@@ -32,8 +32,8 @@ see the features in a binary.
 
 ## Quick start (stdio)
 
-The simplest way to drive sipnab from a local agent is to replay a pcap.
-Stdio is the default transport, so `--mcp-transport` can stay off:
+The simplest way to drive sipnab is to replay a pcap. Stdio is the default
+transport, so `--mcp-transport` can stay off:
 
 ```bash
 sipnab --mcp -N -I capture.pcap
@@ -66,9 +66,129 @@ config block looks like:
 }
 ```
 
-## Quick start (HTTP — remote agent)
+## Choosing a transport
 
-When the agent runs on a different host, switch to the HTTP transport:
+Both quick starts below are about *where sipnab runs*, not where the agent
+runs. The distinction that matters is whether anything has to keep listening
+on the server:
+
+| Your situation | Use | Server setup |
+|---|---|---|
+| Agent and captures on the same machine | [stdio](#quick-start-stdio) | none |
+| **Agent on your laptop, sipnab on a remote server** | **[stdio over SSH](#quick-start-stdio-over-ssh-agent-local-sipnab-remote)** | **none — nothing listens** |
+| A capture that runs continuously and answers agents whenever they ask | [HTTP](#quick-start-http-a-persistent-listening-service) | a token, a port, usually a unit file |
+
+Remote does **not** imply HTTP. The most common setup — Claude Code on a
+laptop, captures on a server you can already SSH into — wants stdio over SSH,
+and needs nothing installed or opened on the server beyond sipnab itself.
+
+## Quick start (stdio over SSH — agent local, sipnab remote)
+
+**Use this when Claude Code runs on your laptop and the captures live on a
+server you can already SSH into.** The MCP "command" is just `ssh`. Nothing
+listens on the server, your SSH key is the authentication, and when the session
+ends nothing keeps running.
+
+Each step names the machine you type it on.
+
+### Step 1 — [server] install sipnab
+
+Only once per server. See [install.md](@/docs/install.md). Note the absolute path:
+
+```bash
+command -v sipnab
+```
+
+Expect something like `/usr/local/bin/sipnab`. Write it down — step 3 needs it.
+
+### Step 2 — [laptop] check non-interactive SSH
+
+Do not skip this. If SSH would prompt for anything, the MCP client hangs
+forever with no error, which is the single most common failure of this setup:
+
+```bash
+ssh -o BatchMode=yes prod01.example.net true && echo SSH OK
+```
+
+- Prints `SSH OK` → continue.
+- Prompts or fails → set up key auth first: `ssh-keygen`, then
+  `ssh-copy-id prod01.example.net`. Re-run until it prints `SSH OK`.
+
+### Step 3 — [laptop] register the server with Claude Code
+
+```bash
+claude mcp add sipnab-prod -- \
+  ssh prod01.example.net /usr/local/bin/sipnab --mcp -N \
+      -I /var/spool/captures/outage.pcap --quiet
+```
+
+Substituting: `prod01.example.net` is your server, `/usr/local/bin/sipnab` is
+the path from step 1, and `/var/spool/captures/outage.pcap` is a path **on the
+server** — not on your laptop.
+
+Everything after `--` is the command Claude Code runs to start the server, and
+it runs on your laptop. `ssh` is what carries it to the server.
+
+### Step 4 — [laptop] verify the connection
+
+```bash
+claude mcp list
+```
+
+Expect `sipnab-prod ✓ connected`. If it says failed, see step 6.
+
+### Step 5 — [laptop] use it
+
+```bash
+claude
+```
+
+Then ask in plain language, for example *"summarize the failed calls in this
+capture"* or *"which calls had one-way audio?"*. The agent calls sipnab's tools
+on the server, and the capture never leaves it.
+
+### Step 6 — when it does not connect
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Hangs, no error | SSH wanted a password or a host-key confirmation | Redo step 2 until `SSH OK` |
+| `command not found` | Non-interactive SSH gets a minimal `PATH` | Use the absolute path from step 1 |
+| Connects, then errors on every tool | pcap path is wrong, or unreadable by your SSH user | `ssh prod01.example.net ls -l /path/to.pcap` |
+| `Permission denied` on a live capture | Binary lacks `CAP_NET_RAW` | On the server: `sudo setcap cap_net_raw+ep /usr/local/bin/sipnab` |
+
+Run the underlying command by hand to see the real error — it prints to your
+terminal, where the MCP client hides it:
+
+```bash
+ssh prod01.example.net /usr/local/bin/sipnab --mcp -N -I /path/to.pcap --quiet
+```
+
+It should sit silently waiting for JSON-RPC on stdin. Anything else is the
+error the MCP client was swallowing. Press `Ctrl-C` to exit.
+
+### Live capture instead of a pcap
+
+Once the remote binary has the capability
+(`sudo setcap cap_net_raw+ep /usr/local/bin/sipnab`, once, on the server):
+
+```bash
+claude mcp add sipnab-prod-live -- \
+  ssh prod01.example.net /usr/local/bin/sipnab --mcp -N -d eth0 --quiet
+```
+
+Each agent session spawns a fresh sipnab, so it starts capturing when the
+session starts. That is right for post-mortems and wrong for accumulating live
+state — for a capture that must keep running between sessions, use HTTP below.
+
+[The MCP walkthrough](@/docs/mcp-walkthrough.md) covers this end to end, including an
+SSH-tunnel variant that keeps a persistent capture reachable with nothing
+exposed to the network.
+
+## Quick start (HTTP — a persistent listening service)
+
+Use HTTP when the capture must keep running between agent sessions, not merely
+because the agent is on another host — SSH covers that with less setup. This
+listens:
 
 ```bash
 sipnab --mcp -N --mcp-transport http \
