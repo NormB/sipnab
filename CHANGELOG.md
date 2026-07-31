@@ -10,6 +10,32 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+- **Documented what omitting `-d` actually does, which is platform-dependent.**
+  The CLI reference said "auto-detects the default interface", which reads as
+  *one* interface everywhere and is wrong on Linux in the direction that
+  matters. With no `-d`, no `-I` and no `-L`:
+
+  | Platform | Default | Scope |
+  |---|---|---|
+  | Linux | the `any` pseudo-device | **every interface at once**, loopback included |
+  | macOS / BSD | libpcap's default from the routing table, else the first non-loopback | **one interface** |
+
+  Both directions of the old wording misinform. A Linux reader concludes they
+  are missing loopback traffic when they are already capturing it; a macOS
+  reader assumes the Linux behaviour and sees nothing when SIP is not on the
+  interface libpcap happened to pick — a capture that looks merely quiet.
+
+  Corrected in `-d`'s CLI help and both CLI reference trees, with promiscuous
+  mode's non-application to `any` noted where it belongs.
+  `device_default_is_documented_per_platform` holds the wording, mutation-tested
+  against the phrasing it replaced.
+
+  `capture_status` now names the resolved default too — `"any (all
+  interfaces)"` rather than the `"auto"` it reported when first added, which
+  told an agent nothing about whether one interface or all of them were in
+  scope.
+
 ### Added
 - **`capture_status` and `server_capabilities` MCP tools.** Tier 1 of
   `docs/design/mcp-tool-roadmap.md`, which came out of "how do I shut down the

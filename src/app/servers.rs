@@ -225,7 +225,20 @@ pub fn start_servers(
             let (live, name) = match (cli.input.as_ref(), cli.device.as_ref()) {
                 (Some(path), _) => (false, path.clone()),
                 (None, Some(dev)) => (true, dev.clone()),
-                (None, None) => (true, "auto".to_string()),
+                // No -d and no -I: the capture layer picks a default. On
+                // Linux that is the "any" pseudo-device — ALL interfaces at
+                // once, loopback included — and on macOS/BSD a single device
+                // from the routing table. Name it as the capture layer will
+                // resolve it, so an agent is not told "auto" and left to guess
+                // whether that means one interface or every one.
+                (None, None) => (
+                    true,
+                    if cfg!(target_os = "linux") {
+                        "any (all interfaces)".to_string()
+                    } else {
+                        "default (one interface, chosen by libpcap)".to_string()
+                    },
+                ),
             };
             crate::mcp::CaptureContext {
                 live,

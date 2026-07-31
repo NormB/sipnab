@@ -209,6 +209,20 @@ fn compiled_features() -> Vec<&'static str> {
 pub struct Cli {
     // ── Capture ──────────────────────────────────────────────────────
     /// Network interface to capture on.
+    ///
+    /// Omit it and sipnab picks a default, which differs by platform.
+    ///
+    /// ON LINUX: the "any" pseudo-device, capturing on ALL interfaces at once,
+    /// loopback included. SIP proxies frequently talk to themselves over
+    /// loopback, so capturing only eth0 would miss that traffic. Promiscuous
+    /// mode does not apply to "any". Pass `-d any` to be explicit.
+    ///
+    /// ON MACOS/BSD: libpcap's default device, chosen from the routing table,
+    /// falling back to the first non-loopback interface. That is ONE
+    /// interface, not all of them, so name `-d` explicitly if you need another.
+    ///
+    /// Ignored when `-I` is given: `-I` reads a file and never opens an
+    /// interface.
     #[arg(
         help_heading = "Capture",
         short = 'd',

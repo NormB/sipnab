@@ -2086,8 +2086,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 365,
-        "walked {tables} tables, expected 365. More is fine — bump this. FEWER \
+        tables, 366,
+        "walked {tables} tables, expected 366. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
@@ -2232,4 +2232,48 @@ fn how_to_headings_stay_task_first() {
             heads.len()
         );
     }
+}
+
+/// Omitting `-d` must be documented as platform-dependent, not "auto-detect".
+///
+/// On Linux the default is the `any` pseudo-device — **every** interface at
+/// once, loopback included. On macOS/BSD it is libpcap's default: exactly
+/// **one** interface. The reference previously said "auto-detects the default
+/// interface", which reads as one interface everywhere and is wrong on Linux
+/// in the direction that matters: a reader concludes they are missing loopback
+/// when they are not, or on macOS that they are covered when they are not.
+///
+/// Both trees, because a reader lands on either.
+#[test]
+fn device_default_is_documented_per_platform() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for page in ["docs/cli-reference.md", "website/content/docs/cli.md"] {
+        let text =
+            std::fs::read_to_string(repo.join(page)).unwrap_or_else(|e| panic!("read {page}: {e}"));
+        assert!(
+            text.contains("`any` pseudo-device"),
+            "{page}: must name the Linux default as the `any` pseudo-device"
+        );
+        assert!(
+            text.contains("every interface at once"),
+            "{page}: must say the Linux default covers every interface — \
+             \"auto-detect\" reads as one"
+        );
+        assert!(
+            text.contains("one interface"),
+            "{page}: must say macOS/BSD gets a single interface, or a mac \
+             reader assumes the Linux behaviour"
+        );
+        assert!(
+            !text.contains("Auto-detects the default interface"),
+            "{page}: the old wording is back — it is wrong on Linux"
+        );
+    }
+
+    // The CLI help is where most people actually look.
+    let cli = std::fs::read_to_string(repo.join("src/cli.rs")).expect("read cli.rs");
+    assert!(
+        cli.contains("ALL interfaces at once"),
+        "src/cli.rs: -d help must state the Linux default captures all interfaces"
+    );
 }
