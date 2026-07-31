@@ -313,6 +313,8 @@ carries a default ceiling (HARD_LIMIT = 1000).
 | `tail_dialogs` | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
 | `security_findings` | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
 | `stats` | -- | Aggregate counters (dialog_count, stream_count, etc.) |
+| `capture_status` | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
+| `server_capabilities` | -- | sipnab version and the optional features this binary carries |
 
 ### `list_dialogs`
 
@@ -477,6 +479,56 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 Returns array of `{ rule_name, src_ip, detail, timestamp }`. When the
 AlertEngine isn't attached (no detection rules configured), returns an
 empty array rather than erroring.
+
+### `capture_status`
+
+**Ask this first.** It answers what the server is actually attached to — a live
+interface or a replayed file — which nothing else on this surface reveals.
+
+No parameters. Returns:
+
+```jsonc
+{
+  "schema_version": 1,
+  "source": "live",              // "live" | "file" | "unknown"
+  "name": "eth0",                // interface, or file path
+  "uptime_sec": 3612,
+  "dialog_count": 128,
+  "stream_count": 64,
+  "source_exhausted": false,     // true once a file is read to the end
+  "writing_to": null,            // path packets are being saved to, if any
+  "unsaved": true                // stopping now would lose packets
+}
+```
+
+`unsaved` is the field that matters. It is `true` only for a **live** capture
+with no output file — packets held in memory and nowhere else. A file replay is
+already on disk, so it is never unsaved.
+
+`source: "unknown"` means nobody gave the server capture context. It
+reports that rather than guessing, because a wrong `"live"` would be worse than
+an admission of ignorance.
+
+### `server_capabilities`
+
+The optional features this binary carries. Ask before requesting
+decryption or HEP: a build without the feature fails confusingly otherwise.
+
+No parameters. Returns:
+
+```jsonc
+{
+  "schema_version": 1,
+  "version": "0.5.69",
+  "features": ["api", "hep", "mcp", "native", "tls", "tui"],
+  "can_decrypt": true,           // tls
+  "can_hep": true,               // hep
+  "can_plugins": false           // plugins
+}
+```
+
+Read from `cfg!` at compile time, so it cannot claim a feature the binary does
+not have.
 
 ### `stats`
 

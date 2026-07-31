@@ -658,6 +658,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         .collect();
     names.sort();
     let mut expected = vec![
+        "capture_status",
         "find_problems",
         "get_dialog",
         "get_dialog_report",
@@ -667,12 +668,13 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "rtp_stats",
         "search_messages",
         "security_findings",
+        "server_capabilities",
         "stats",
         "tail_dialogs",
     ];
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 11, "expected exactly 11 MCP tools");
+    assert_eq!(names.len(), 13, "expected exactly 13 MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(
