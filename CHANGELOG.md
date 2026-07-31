@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.71] - 2026-07-31
+
 ### Fixed
 - **A truncated capture file aborted the whole set, and truncation is the
   normal state of a ring buffer.** Shipped in 0.5.70 with multi-file input.
