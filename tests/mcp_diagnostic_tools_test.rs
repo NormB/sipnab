@@ -26,54 +26,17 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 /// Call one MCP tool over stdio against a capture, returning its JSON result.
+///
+/// Thin wrapper over [`call_tool_with_args`] so both paths share the
+/// wait-for-capture logic. They were separate implementations and only one had
+/// the fix, which is how the same race would have come back through the other
+/// door.
 fn call_tool(pcap: &str, tool: &str, args: serde_json::Value) -> serde_json::Value {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .current_dir(manifest)
-        .args(["--mcp", "-N", "-I", pcap, "--quiet"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sipnab --mcp");
-
-    {
-        let stdin = child.stdin.as_mut().expect("stdin");
-        for line in [
-            serde_json::json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                           "clientInfo": {"name": "t", "version": "1"}}
-            }),
-            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-            serde_json::json!({
-                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": {"name": tool, "arguments": args}
-            }),
-        ] {
-            writeln!(stdin, "{line}").expect("write request");
-        }
-        stdin.flush().expect("flush");
-    }
-
-    let stdout = child.stdout.take().expect("stdout");
-    let mut result = None;
-    for line in BufReader::new(stdout).lines() {
-        let line = line.expect("read line");
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if msg["id"] == 2 {
-            let text = msg["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap_or_else(|| panic!("tool {tool} returned no text: {msg}"));
-            result = Some(serde_json::from_str(text).expect("tool result is JSON"));
-            break;
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    result.unwrap_or_else(|| panic!("tool {tool} produced no result"))
+    let msg = call_tool_with_args(pcap, &[], tool, args);
+    let text = msg["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tool {tool} returned no text: {msg}"));
+    serde_json::from_str(text).expect("tool result is JSON")
 }
 
 /// First Call-ID in a capture, so tests do not hardcode one that may change.
@@ -291,7 +254,17 @@ fn capture_status_names_the_real_source() {
 // evidence. Each test asserts the artefact exists and is right, or that the
 // refusal actually refused.
 
-/// Call a tool with extra CLI args (for --mcp-file-root / --mcp-allow-shutdown).
+/// Call a tool with extra CLI args, waiting for the capture to load first.
+///
+/// Returns the raw JSON-RPC message so callers can assert on errors as well as
+/// results.
+///
+/// The wait matters: without it these tests raced the pcap reader and passed on
+/// Linux by luck, while macOS saw an empty store and reported "no messages are
+/// held", "call_id not found" and an empty dialog list. A test that wins a race
+/// on one platform is an unobserved failure, not a pass. Polling
+/// `capture_status` until the file source drains is exactly what that tool is
+/// for.
 fn call_tool_with_args(
     pcap: &str,
     extra: &[&str],
@@ -309,22 +282,95 @@ fn call_tool_with_args(
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn sipnab --mcp");
+
     {
         let stdin = child.stdin.as_mut().expect("stdin");
-        for line in [
-            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}),
-            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":tool,"arguments":args}}),
-        ] {
-            writeln!(stdin, "{line}").expect("write");
-        }
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                           "clientInfo": {"name": "t", "version": "1"}}
+            })
+        )
+        .expect("write initialize");
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/initialized"
+            })
+        )
+        .expect("write initialized");
         stdin.flush().expect("flush");
     }
+
     let stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(stdout);
+
+    // Bounded, so a genuine hang fails the test rather than running forever.
+    const MAX_POLLS: usize = 200;
+    let mut loaded = false;
+    for poll in 0..MAX_POLLS {
+        {
+            let stdin = child.stdin.as_mut().expect("stdin");
+            writeln!(
+                stdin,
+                "{}",
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1000 + poll, "method": "tools/call",
+                    "params": {"name": "capture_status", "arguments": {}}
+                })
+            )
+            .expect("write capture_status");
+            stdin.flush().expect("flush");
+        }
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                panic!("sipnab closed stdout while waiting for capture_status");
+            }
+            let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            if msg["id"] == serde_json::json!(1000 + poll) {
+                let text = msg["result"]["content"][0]["text"].as_str().unwrap_or("{}");
+                let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+                loaded = v["source_exhausted"] == true;
+                break;
+            }
+        }
+        if loaded {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(loaded, "capture never finished loading for {pcap}");
+
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": tool, "arguments": args}
+            })
+        )
+        .expect("write tool call");
+        stdin.flush().expect("flush");
+    }
+
     let mut out = None;
-    for line in BufReader::new(stdout).lines() {
-        let line = line.expect("read");
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
             continue;
         };
         if msg["id"] == 2 {

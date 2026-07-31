@@ -10,6 +10,21 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+- **The MCP diagnostic tests raced the pcap reader and passed on Linux by
+  luck.** They sent a tool call as soon as the server initialised, before
+  sipnab had finished reading the capture into the store. Linux won that race
+  every time; macOS did not, and reported exactly what an empty store looks
+  like — "nothing to export: no messages are held", "call_id not found", and a
+  search window covering everything matching nothing.
+
+  A test that wins a race on one platform is an unobserved failure, not a pass.
+  The helper now polls `capture_status` until the file source reports
+  exhausted, which is what that tool exists to answer, and both call paths
+  share one implementation — they were separate, and fixing only one would have
+  let the same race back in through the other door. Verified over eight
+  consecutive runs and once under synthetic CPU load to widen the window.
+
 ### Added
 - **`docs/sip-parameters.md` — the IANA SIP parameter registries.** 35 URI
   parameters, 201 header-field parameters and 36 option tags, each with the RFC
