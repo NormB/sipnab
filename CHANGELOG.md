@@ -10,6 +10,23 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+- **The MCP docs sent remote users down the wrong path.** `docs/mcp.md` said
+  "When the agent runs on a different host, switch to the HTTP transport",
+  which points the most common setup — Claude Code on a laptop, captures on a
+  server you already SSH into — at ports, bearer tokens and a systemd unit it
+  does not need. That setup wants stdio over SSH, where nothing listens on the
+  server and the SSH key is the authentication. The recipe existed, in
+  `mcp-walkthrough.md` scenario 2A, and `mcp.md` linked to it nowhere.
+
+  `mcp.md` now opens with a transport-choice table keyed on *whether anything
+  must keep listening* rather than on where the agent runs, and carries a full
+  step-by-step SSH quick start: each step tagged `[laptop]` or `[server]`, the
+  non-interactive-SSH precheck that prevents the silent hang, a symptom/cause/
+  fix table, and the one-line manual invocation that surfaces the error the MCP
+  client swallows. The HTTP section now says what it is actually for — a
+  capture that must outlive the agent session — instead of "remote".
+
 ## [0.5.69] - 2026-07-31
 
 ### Fixed
