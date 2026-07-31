@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.70] - 2026-07-31
+
 ### Added
 - **The MCP walkthrough now teaches the tools, not just the wiring.** Every
   deployment scenario was documented in detail and the page stopped at
