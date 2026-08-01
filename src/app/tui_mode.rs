@@ -134,7 +134,7 @@ pub fn run_tui_mode(
 
     let dialog_store = Arc::new(RwLock::new(
         {
-            let mut ds = DialogStore::new(cli.limit as usize, cli.rotate_enabled());
+            let mut ds = DialogStore::new(cli.dialog_limit(&config), cli.rotate_enabled());
             // The wiring whose absence made the old --dialog-track a dead
             // flag: declared, parsed, and never handed to anything.
             ds.set_tracking(cli.dialog_track.unwrap_or_default());
@@ -143,7 +143,7 @@ pub fn run_tui_mode(
         .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
     ));
     let stream_store = {
-        let mut ss = StreamStore::new(cli.max_streams as usize);
+        let mut ss = StreamStore::new(cli.max_streams_limit(&config));
         if let Some(max_frames) = config.limits.max_audio_frames {
             ss.set_max_audio_frames(max_frames as usize);
         }
@@ -181,15 +181,17 @@ pub fn run_tui_mode(
     let ss = Arc::clone(&stream_store);
     let paused_for_thread = Arc::clone(&paused_flag);
     let cli_clone = cli.clone();
+    // Resolved before the move: the thread owns a Cli clone but not the
+    // Config, and the cap needs both.
+    let reassembly_cap = cli.max_reassembly_limit(&config);
 
     // Spawn packet processing thread
     let processing_thread = std::thread::Builder::new()
         .name("tui-processor".to_string())
         .spawn(move || {
-            let mut processor =
-                capture::PacketProcessor::with_max_sessions(cli_clone.max_reassembly as usize)
-                    .with_reassembly(!cli_clone.no_reassembly)
-                    .with_parse_limit(cli_clone.limitlen);
+            let mut processor = capture::PacketProcessor::with_max_sessions(reassembly_cap)
+                .with_reassembly(!cli_clone.no_reassembly)
+                .with_parse_limit(cli_clone.limitlen);
             let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
             // SRTP/DTLS-SRTP media-decryption state for the live pipeline.

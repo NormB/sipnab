@@ -11,14 +11,28 @@
 //! owning thread-local stores, merged at the end.
 //!
 //! Sharding is by the **direction-independent host pair**, so both directions of
-//! a flow — and a call's RTP both ways — route to one worker (RTP/RTCP carry no
-//! Call-ID, only a 5-tuple). A call's SIP between the same two hosts likewise
-//! stays together for correct dialog reconstruction. When SIP signaling and its
-//! media ride *different* host pairs (e.g. a proxy/SBC in the signaling path, or
-//! the carrier corpus where SDP advertises a separate media IP), the SDP lands
-//! on a different worker than the RTP — so dialog↔stream association is resolved
-//! globally at merge (`crate::rtp::stream_store::StreamStore::reassociate_all`),
-//! reproducing the single-threaded result.
+//! a flow — and a call's RTP both ways — route to one worker. That is what
+//! RTP/RTCP need, because they carry no Call-ID, only a 5-tuple: a stream that
+//! split across workers could not be reassembled at all.
+//!
+//! **A call's SIP does NOT stay on one worker, and nothing here assumes it
+//! does.** Signalling that traverses a proxy or SBC is captured on two host
+//! pairs — access side and trunk side — and shards to two workers, which
+//! reconstruct two fragments of one Call-ID. That is the common case on carrier
+//! traffic, not an exotic one: in one 100 MB file of the reference corpus 1173
+//! of 2311 dialogs were proxied. `crate::sip::dialog_store::DialogStore::merge`
+//! is what makes them whole again — it concatenates the fragments' message
+//! lists in capture-timestamp order and re-runs the state machine over the
+//! result, so the merged dialog is the one the single-threaded path would have
+//! built. (An earlier version of this doc claimed a call's SIP "stays together",
+//! and `merge` was written to that premise: it kept whichever fragment held more
+//! messages and dropped the other. Roughly half of every proxied call's
+//! signalling vanished, invisibly, because the dialog COUNT was unaffected.)
+//!
+//! Dialog↔stream association crosses workers for the same reason — plus the
+//! carrier case where SDP advertises a separate media IP, so the SDP lands on a
+//! different worker than the RTP — and is likewise resolved globally at merge
+//! (`crate::rtp::stream_store::StreamStore::reassociate_all`).
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -369,10 +383,10 @@ fn shard_opened(
 /// entire run. A call whose INVITE lands in `tg.pcap3` and whose BYE lands in
 /// `tg.pcap4` therefore reconstructs as one dialog exactly as it does on the
 /// single-threaded path ([`crate::capture::file::capture_files`]): sharding is
-/// by direction-independent host pair, so both files' halves of the call route
-/// to the same worker and land in the same `DialogStore`. Reading each file
-/// into a fresh pool would report two fragments instead — a call that never
-/// ends, and a stray BYE.
+/// by direction-independent host pair, so both files' halves of a leg route to
+/// the same worker, and legs that shard apart (a proxied call) are stitched by
+/// `DialogStore::merge` at the end. Reading each file into a fresh pool would
+/// report two fragments instead — a call that never ends, and a stray BYE.
 ///
 /// `paths` must already be in read order; the packet budget (`--count`) and the
 /// loss counter are shared across the set, so `--count 100` over four files

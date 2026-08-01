@@ -144,11 +144,22 @@ pub struct DialogStore {
     /// (DialogStore::compact_idle) — observability for long-run memory
     /// behaviour.
     idle_messages_evicted: u64,
-    /// Lifetime count of NEW dialogs dropped because the store was at
+    /// Lifetime count of NEW dialogs REJECTED because the store was at
     /// capacity with `rotate` disabled — the observability sibling of
-    /// `idle_messages_evicted`. In rotate mode nothing is dropped (the
-    /// oldest is evicted instead), so this stays zero there.
+    /// `idle_messages_evicted`. In rotate mode nothing is rejected (the
+    /// oldest is evicted instead), so this stays zero there and
+    /// `capacity_dialogs_evicted` moves instead.
     capacity_dialogs_dropped: u64,
+    /// Lifetime count of dialogs DISCARDED by drop-oldest rotation — the
+    /// default disposal policy, and until this field existed the only one
+    /// that counted nothing.
+    ///
+    /// Kept separate from `capacity_dialogs_dropped` because the two losses
+    /// are not interchangeable: rejecting the newest keeps a complete record
+    /// of the earliest calls, while evicting the oldest keeps a complete
+    /// record of the latest. An operator reading "5000 dialogs lost to
+    /// capacity" needs to know which end of the capture is missing.
+    capacity_dialogs_evicted: u64,
     /// Mutation counter for cache invalidation — see [`Self::generation`].
     generation: u64,
     /// Header names used for B2BUA leg correlation (sngrep `sip.xcid`). A
@@ -206,6 +217,7 @@ impl DialogStore {
             tracking: DialogTracking::default(),
             idle_messages_evicted: 0,
             capacity_dialogs_dropped: 0,
+            capacity_dialogs_evicted: 0,
             generation: 0,
             xcid_headers: vec!["X-Call-ID".to_string()],
         }
@@ -285,15 +297,29 @@ impl DialogStore {
         self.idle_messages_evicted
     }
 
-    /// Lifetime count of new dialogs dropped at capacity in no-rotate mode.
+    /// Lifetime count of new dialogs REJECTED at capacity in no-rotate mode.
     ///
     /// The counterpart to [`DialogStore::total_idle_messages_evicted`] for
-    /// the other way the store sheds data: when `rotate` is disabled and a
-    /// message for an unknown Call-ID arrives at capacity, the dialog is
-    /// dropped rather than created. Zero in rotate mode (the oldest is
-    /// evicted instead).
+    /// one of the two ways the store sheds dialogs: when `rotate` is disabled
+    /// and a message for an unknown Call-ID arrives at capacity, the dialog is
+    /// rejected rather than created, so the EARLIEST calls are the ones kept.
+    /// Zero in rotate mode — see
+    /// [`total_capacity_dialogs_evicted`](Self::total_capacity_dialogs_evicted)
+    /// for the default path.
     pub fn total_capacity_dialogs_dropped(&self) -> u64 {
         self.capacity_dialogs_dropped
+    }
+
+    /// Lifetime count of dialogs DISCARDED by drop-oldest rotation — the
+    /// default disposal policy (`--rotate`, on unless `--no-rotate`).
+    ///
+    /// The sibling of
+    /// [`total_capacity_dialogs_dropped`](Self::total_capacity_dialogs_dropped),
+    /// and the one that moves on the path almost every run takes. Both are
+    /// capacity loss; they differ in which end of the capture survives, so a
+    /// caller reporting either must say which it is.
+    pub fn total_capacity_dialogs_evicted(&self) -> u64 {
+        self.capacity_dialogs_evicted
     }
 
     /// Process an incoming SIP message.
@@ -524,52 +550,84 @@ impl DialogStore {
     }
 
     /// Fold another worker's dialogs into this one (multi-core merge, `--cores N`).
-    /// A call's SIP is sharded by host pair, so a Call-ID is reconstructed on a
-    /// single worker and merging is a union. In the rare case the same Call-ID
-    /// appears on two workers (signaling split across host pairs), keep the more
-    /// complete reconstruction (more messages seen).
+    ///
+    /// # Same-Call-ID collisions are the normal case, not the rare one
+    ///
+    /// `crate::parallel` shards packets by host pair, which keeps an RTP stream
+    /// and both directions of a flow on one worker. It does NOT keep a call's
+    /// SIP on one worker: a call through a proxy or SBC is captured on two host
+    /// pairs (access side and trunk side) and therefore reconstructs as two
+    /// fragments on two workers. On a carrier capture that is most of the
+    /// traffic, not an edge case — measured at 1173 of 2311 dialogs in one
+    /// 100 MB file.
+    ///
+    /// So a collision is not a contest to be won. The fragments are disjoint
+    /// observations of one call and the merged dialog is their SUM: the message
+    /// lists are concatenated in capture-timestamp order and the state machine
+    /// is re-run over the result, reproducing what the single-threaded path
+    /// built from the same packets. Picking the longer fragment as a "base" —
+    /// which is what this used to do — discarded the other leg's signalling
+    /// outright, and because `merge` is Call-ID-keyed the loss was invisible in
+    /// every dialog *count* the tool prints.
     ///
     /// # Arguments
     ///
     /// * `other` — The worker store to fold in (consumed).
     ///
-    /// On a same-Call-ID collision the reconstruction with more messages
-    /// becomes the message base, but the losing copy's non-message state is
-    /// *unioned* in rather than discarded (see `union_dialog_state`): the
-    /// two workers saw disjoint host-pair legs of the same call, so each
-    /// holds retransmit counts, seen-CSeq identities, and timing milestones
-    /// the other lacks.
-    ///
     /// # Side effects
     ///
-    /// Inserts `other`'s distinct-Call-ID dialogs into `self`; on a
-    /// collision keeps the more complete reconstruction's messages and folds
-    /// the loser's seen-CSeq set, retransmit counts, and timing milestones
-    /// into it; accumulates `other`'s lifetime idle-eviction and
-    /// capacity-drop counters; and bumps the generation counter.
+    /// Inserts `other`'s distinct-Call-ID dialogs into `self`, subject to
+    /// `self`'s capacity (see below); on a collision concatenates the message
+    /// lists, unions the seen-CSeq set, retransmit counts and timing milestones
+    /// (`union_dialog_state`), and recomputes the message-derived state
+    /// (`replay_message_derived_state`); accumulates `other`'s lifetime
+    /// idle-eviction, capacity-rejection and capacity-eviction counters; and
+    /// bumps the generation counter.
+    ///
+    /// # Capacity
+    ///
+    /// The cap is enforced here as it is in `process_message`, because each
+    /// worker enforces `--limit` only on its own shard: an unconditional insert
+    /// let `--cores N` hold up to N × the cap, silently multiplying by the core
+    /// count the one number an operator sets to bound memory. Rotating stores
+    /// evict the oldest to make room, non-rotating stores reject the incoming
+    /// Call-ID, and either way the loss is counted.
     pub fn merge(&mut self, other: DialogStore) {
         self.generation += 1;
-        for (cid, dialog) in other.dialogs {
+        for (cid, mut dialog) in other.dialogs {
             match self.dialogs.get_index_of(&cid) {
                 Some(idx) => {
-                    // Collision: union state, keeping the reconstruction with
-                    // more messages as the base.
                     let existing = &mut self.dialogs[idx];
-                    if existing.messages.len() >= dialog.messages.len() {
-                        union_dialog_state(existing, &dialog);
-                    } else {
-                        let mut winner = dialog;
-                        union_dialog_state(&mut winner, existing);
-                        *existing = winner;
+                    // The fragment that saw the call FIRST supplies the
+                    // identity the single-threaded path would have derived:
+                    // `SipDialog::new` mines From/To, the addresses and the
+                    // dialog `method` from the first message seen, and the
+                    // state machine dispatches on that method. Ordering by
+                    // message count instead would let a busier later leg
+                    // rename the call.
+                    if dialog.created_at < existing.created_at {
+                        std::mem::swap(existing, &mut dialog);
                     }
+                    union_dialog_state(existing, &dialog);
+                    absorb_messages(existing, dialog.messages);
+                    replay_message_derived_state(existing);
                 }
                 None => {
+                    if self.dialogs.len() >= self.max_dialogs {
+                        if self.rotate {
+                            self.evict_oldest();
+                        } else {
+                            self.capacity_dialogs_dropped += 1;
+                            continue;
+                        }
+                    }
                     self.dialogs.insert(cid, dialog);
                 }
             }
         }
         self.idle_messages_evicted += other.idle_messages_evicted;
         self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
+        self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
     }
 
     /// Return the total number of tracked dialogs.
@@ -774,19 +832,175 @@ impl DialogStore {
     /// # Side effects
     ///
     /// Removes up to `max_dialogs / 100` (at least 1) dialogs from the
-    /// front of the map, dropping their messages. Callers bump the
+    /// front of the map, dropping their messages, and adds them to the
+    /// lifetime `capacity_dialogs_evicted` counter. Callers bump the
     /// generation counter; this helper does not.
+    ///
+    /// The counting lives HERE rather than at the call sites so every path
+    /// that rotates is instrumented by construction. It previously lived in
+    /// the `--no-rotate` branch of `process_message` alone, which meant the
+    /// default policy — this one — discarded the oldest calls and counted
+    /// nothing at all.
     fn evict_oldest(&mut self) {
         let batch = (self.max_dialogs / 100).max(1).min(self.dialogs.len());
         self.dialogs.drain(0..batch);
+        self.capacity_dialogs_evicted += batch as u64;
     }
 }
 
-/// Fold the losing reconstruction's non-message state into the `winner`
-/// on a same-Call-ID merge collision.
+/// Identity of ONE captured observation of a SIP message.
 ///
-/// The two copies are disjoint host-pair observations of the same call, so
-/// their state is combined, never one dropped:
+/// Deliberately the whole capture event — when it was seen, between which two
+/// endpoints, and the exact bytes — and *not* the SIP-level identity
+/// (Call-ID + CSeq + branch). The distinction is the whole point of
+/// [`absorb_messages`]: when a message crosses a proxy the capture records it
+/// twice, once per host pair, and the single-threaded path stores both. Those
+/// two rows are the same *message* but different *observations*, and collapsing
+/// them would delete exactly the leg this merge exists to recover.
+///
+/// Cloning is cheap: `Bytes` is a refcounted view of the packet buffer, so the
+/// key never copies message bytes.
+#[derive(PartialEq, Eq, Hash)]
+struct CapturedObservation {
+    /// Capture timestamp of the packet that carried the message.
+    timestamp: chrono::DateTime<chrono::Utc>,
+    /// Network-layer source address.
+    src_addr: std::net::IpAddr,
+    /// Transport source port.
+    src_port: u16,
+    /// Network-layer destination address.
+    dst_addr: std::net::IpAddr,
+    /// Transport destination port.
+    dst_port: u16,
+    /// Raw message bytes exactly as captured.
+    raw: bytes::Bytes,
+}
+
+impl CapturedObservation {
+    /// The observation identity of `msg`.
+    fn of(msg: &SipMessage) -> Self {
+        Self {
+            timestamp: msg.timestamp,
+            src_addr: msg.src_addr,
+            src_port: msg.src_port,
+            dst_addr: msg.dst_addr,
+            dst_port: msg.dst_port,
+            raw: msg.raw.clone(),
+        }
+    }
+}
+
+/// Append another fragment's messages to `base`'s, in capture-timestamp order.
+///
+/// # Why concatenate
+///
+/// The two fragments are one call seen on two host pairs, so their message
+/// lists are disjoint halves of the same reconstruction. Keeping one and
+/// dropping the other loses real signalling.
+///
+/// # What counts as a duplicate
+///
+/// Only a message `base` has already observed *identically* — same timestamp,
+/// same 5-tuple, same bytes (see [`CapturedObservation`]). A proxy's forwarded
+/// copy differs in source and destination address and so is kept, which is what
+/// the single-threaded path does with the same packets.
+///
+/// Two properties make that narrow rule the right one:
+///
+/// * `crate::parallel` routes each packet to exactly ONE worker, so on the
+///   `--cores` path no observation can appear in two fragments and the filter
+///   never fires. It cannot therefore change `--cores` output — it is a
+///   correctness guard for any caller that merges overlapping stores.
+/// * Only `incoming` is filtered, never `base`'s existing messages. A capture
+///   can legitimately contain the identical packet twice (a SPAN port mirroring
+///   both directions), the single-threaded path stores both, and both land on
+///   the same worker — so they must survive here too.
+///
+/// # Side effects
+///
+/// Extends, sorts and truncates `base.messages` to `MAX_MESSAGES_PER_DIALOG`.
+/// The truncation keeps the EARLIEST messages, matching `process_message`,
+/// which pushes until the cap is reached and then drops what arrives after.
+fn absorb_messages(base: &mut SipDialog, incoming: Vec<SipMessage>) {
+    if incoming.is_empty() {
+        return;
+    }
+    let fresh: Vec<SipMessage> = {
+        let seen: std::collections::HashSet<CapturedObservation> =
+            base.messages.iter().map(CapturedObservation::of).collect();
+        incoming
+            .into_iter()
+            .filter(|m| !seen.contains(&CapturedObservation::of(m)))
+            .collect()
+    };
+    base.messages.extend(fresh);
+    // Stable, so equal timestamps keep base-then-incoming order.
+    base.messages.sort_by_key(|m| m.timestamp);
+    base.messages
+        .truncate(MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+/// Re-derive the per-message state of a merged dialog by replaying its whole
+/// message list, the way `process_message` derived it one message at a time.
+///
+/// Everything here is a pure function of the ordered message list, so after a
+/// merge it is stale by definition: the base fragment's state reflects only the
+/// base fragment's messages. The dialog `state` is the visible one — a worker
+/// that saw the INVITE and the ringing reports `Ringing` while the worker
+/// holding the 200 OK and the BYE saw the call complete — but the SDP timeline
+/// and the REFER/SIPREC fields have the same defect, and a merged dialog whose
+/// messages show an SDP exchange that its timeline does not is worse than
+/// either fragment alone.
+///
+/// State replay starts from the base fragment's current state rather than from
+/// scratch (`SipDialog::state` is private to the dialog module and only the
+/// state machine may write it). That is sound because the base is the fragment
+/// that saw the call FIRST, so it is the least advanced, and because every
+/// transition that could regress a call is guarded on the pre-answer states —
+/// a late 180 cannot un-answer a call, and a re-applied message is idempotent.
+///
+/// # Side effects
+///
+/// Rewrites `dialog.state`, `dialog.to_tag`, `dialog.sdp_timeline`,
+/// `dialog.refer_to` and `dialog.siprec_metadata` from `dialog.messages`.
+fn replay_message_derived_state(dialog: &mut SipDialog) {
+    let messages = std::mem::take(&mut dialog.messages);
+    dialog.sdp_timeline.clear();
+    dialog.refer_to = None;
+    dialog.siprec_metadata = None;
+    for msg in &messages {
+        update_state(dialog, msg);
+        track_sdp(&mut dialog.sdp_timeline, msg);
+        if msg.is_request && msg.method.as_ref() == Some(&SipMethod::Refer) {
+            if let Some(refer_to) = msg.header("Refer-To") {
+                dialog.refer_to = Some(refer_to.to_string());
+            }
+            track_transfer(&mut dialog.sdp_timeline, msg);
+        }
+        if let Some(ct) = msg.content_type()
+            && ct.contains("multipart/mixed")
+            && let Ok(metadata) = crate::sip::siprec::parse_siprec_body(ct, &msg.body)
+        {
+            dialog.siprec_metadata = Some(metadata);
+        }
+    }
+    dialog.messages = messages;
+}
+
+/// Fold the other fragment's COUNTED and MEASURED state into the `winner` on a
+/// same-Call-ID merge collision — the part that cannot simply be replayed.
+///
+/// The message-derived fields are rebuilt from the concatenated message list by
+/// [`replay_message_derived_state`]; what is left here is state a fragment
+/// accumulated but did not store: retransmit tallies whose messages were capped
+/// away, seen-CSeq identities that survive compaction, and milestones recorded
+/// on first sighting (`update_timing` writes each one only while it is `None`,
+/// so replaying cannot correct an out-of-order first observation — taking the
+/// earlier of the two can).
+///
+/// `winner` names the base fragment, not a contest result: the two copies are
+/// disjoint host-pair observations of the same call, so their state is
+/// combined, never one dropped:
 ///
 /// * **seen-CSeq set** — set union (deduped by the `HashSet`), bounded by
 ///   [`MAX_SEEN_CSEQ_PER_DIALOG`](crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG)
@@ -798,9 +1012,9 @@ impl DialogStore {
 ///   `transfer_completed_at`) — earliest non-`None` wins: each records the
 ///   *first* time that event was seen, so the true first is the earlier of
 ///   the two observations.
-/// * **`invite_cseq`** — keep the winner's if set, otherwise adopt the
-///   loser's (it pins responses to the initial INVITE; either copy's value
-///   identifies the same transaction).
+/// * **`invite_cseq`** — keep the base's if set, otherwise adopt the other's
+///   (it pins responses to the initial INVITE; either copy's value identifies
+///   the same transaction).
 /// * **`created_at`** — earliest (dialog began at the earlier sighting);
 ///   **`updated_at`** — latest (most recent activity across both legs).
 fn union_dialog_state(winner: &mut SipDialog, loser: &SipDialog) {
@@ -905,13 +1119,35 @@ mod tests {
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// An IPv4 `IpAddr` from four octets, for building proxy legs.
+    fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    /// Re-observe `msg` on a different host pair at `ts` — the second copy a
+    /// capture takes of one message when it crosses a proxy.
+    ///
+    /// The bytes are reused verbatim. A real proxy also rewrites Via and
+    /// Max-Forwards, so identical bytes is the *harder* case: only the
+    /// capture 5-tuple distinguishes the two observations, which is exactly
+    /// the distinction the merge de-duplication must respect.
+    fn observed_on_leg(
+        msg: &SipMessage,
+        src: IpAddr,
+        dst: IpAddr,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        parse_sip(&msg.raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+            .expect("re-parse on another leg")
+    }
+
     // Multi-core (--cores): each worker reconstructs the calls sharded to it; the
-    // merge unions distinct Call-IDs and, on the rare same-Call-ID collision,
-    // keeps the more complete reconstruction.
-    /// Merging two stores unions distinct Call-IDs; a same-Call-ID
-    /// collision keeps the dialog that saw more messages.
+    // merge unions distinct Call-IDs and CONCATENATES the message lists of a
+    // same-Call-ID collision, because a proxied call is sharded across workers.
+    /// Merging two stores unions distinct Call-IDs; a same-Call-ID collision
+    /// concatenates both fragments' messages in timestamp order.
     #[test]
-    fn merge_unions_dialogs_keeping_the_more_complete() {
+    fn merge_unions_dialogs_and_concatenates_colliding_message_lists() {
         let t0 = base_ts();
         let mut a = DialogStore::new(1000, true);
         a.process_message(make_invite_msg("call-a@h", t0));
@@ -921,17 +1157,248 @@ mod tests {
         assert_eq!(a.len(), 2, "distinct Call-IDs unioned");
         assert!(a.get("call-a@h").is_some() && a.get("call-b@h").is_some());
 
-        // collision: keep the dialog that saw more messages.
+        // Collision: the other fragment's messages are ADDED, not weighed
+        // against the base's and thrown away.
         let mut c = DialogStore::new(1000, true);
-        c.process_message(make_invite_msg("call-a@h", t0));
-        c.process_message(make_invite_msg("call-a@h", t0 + TimeDelta::seconds(1)));
-        let richer = c.get("call-a@h").unwrap().messages.len();
+        c.process_message(make_200_ok("call-a@h", t0 + TimeDelta::seconds(1)));
+        c.process_message(make_bye_msg("call-a@h", t0 + TimeDelta::seconds(2)));
         a.merge(c);
         assert_eq!(a.len(), 2, "collision is not double-counted");
+        let d = a.get("call-a@h").expect("collided dialog");
         assert_eq!(
-            a.get("call-a@h").unwrap().messages.len(),
-            richer,
-            "kept the more complete reconstruction"
+            d.messages.len(),
+            3,
+            "both fragments' messages survive the merge (1 + 2), rather than \
+             the shorter list being discarded"
+        );
+        let ts: Vec<_> = d.messages.iter().map(|m| m.timestamp).collect();
+        assert!(
+            ts.windows(2).all(|w| w[0] <= w[1]),
+            "merged messages are ordered by capture timestamp: {ts:?}"
+        );
+    }
+
+    /// A proxied call is sharded across workers by host pair, and the merge
+    /// must reconstruct it from EVERY leg.
+    ///
+    /// `src/parallel.rs` shards on the direction-independent host pair, which
+    /// keeps an RTP stream whole but says nothing about SIP: a call through a
+    /// proxy is captured on two host pairs and lands on two workers. The merge
+    /// used to keep whichever fragment had more messages, so the other leg's
+    /// signalling was discarded — on a 100 MB carrier capture that halved the
+    /// message count of 1173 of 2311 dialogs, with the Call-ID set unchanged.
+    #[test]
+    fn merge_reconstructs_a_proxied_call_from_both_legs() {
+        let (t0, t1) = (base_ts(), base_ts() + TimeDelta::seconds(1));
+        let (uac, proxy, uas) = (ip(10, 33, 6, 100), ip(10, 33, 6, 101), ip(10, 33, 6, 102));
+
+        // Leg 1 (uac ↔ proxy): the INVITE and its 200 OK as the capture saw
+        // them on the access side.
+        let invite = make_invite_msg("proxied@h", t0);
+        let ok = make_200_ok("proxied@h", t1);
+        let mut near = DialogStore::new(1000, true);
+        near.process_message(observed_on_leg(&invite, uac, proxy, t0));
+        near.process_message(observed_on_leg(&ok, proxy, uac, t1));
+
+        // Leg 2 (proxy ↔ uas): the same two messages forwarded — a different
+        // host pair, so a different worker.
+        let mut far = DialogStore::new(1000, true);
+        far.process_message(observed_on_leg(&invite, proxy, uas, t0));
+        far.process_message(observed_on_leg(&ok, uas, proxy, t1));
+
+        near.merge(far);
+        assert_eq!(near.len(), 1, "one Call-ID, one dialog");
+        assert_eq!(
+            near.get("proxied@h").expect("dialog").messages.len(),
+            4,
+            "all four captured observations survive: a proxy leg's copy of a \
+             message is a distinct observation, not a duplicate to discard"
+        );
+    }
+
+    /// The same captured observation appearing in both fragments is folded to
+    /// one — the guard against merging overlapping inputs.
+    ///
+    /// Sharding sends each packet to exactly one worker, so this cannot happen
+    /// on the `--cores` path; it is what makes the concatenation safe for any
+    /// other caller. The identity is the whole capture observation (timestamp,
+    /// both addresses, both ports and the raw bytes), which is why the proxy
+    /// copies in `merge_reconstructs_a_proxied_call_from_both_legs` survive
+    /// while a byte-for-byte re-merge of the same store adds nothing.
+    #[test]
+    fn merge_folds_an_identical_observation_but_keeps_a_proxy_copy() {
+        let t0 = base_ts();
+        let (uac, proxy) = (ip(10, 33, 6, 100), ip(10, 33, 6, 101));
+        let invite = make_invite_msg("dup@h", t0);
+
+        let mut a = DialogStore::new(1000, true);
+        a.process_message(observed_on_leg(&invite, uac, proxy, t0));
+
+        // Same bytes, same timestamp, same 5-tuple: the same observation.
+        let mut same = DialogStore::new(1000, true);
+        same.process_message(observed_on_leg(&invite, uac, proxy, t0));
+        a.merge(same);
+        assert_eq!(
+            a.get("dup@h").expect("dialog").messages.len(),
+            1,
+            "an identical observation is not stored twice"
+        );
+
+        // Same bytes and timestamp, different host pair: a second observation.
+        let mut other_leg = DialogStore::new(1000, true);
+        other_leg.process_message(observed_on_leg(&invite, proxy, ip(10, 33, 6, 102), t0));
+        a.merge(other_leg);
+        assert_eq!(
+            a.get("dup@h").expect("dialog").messages.len(),
+            2,
+            "the same message seen on another leg is a distinct observation"
+        );
+    }
+
+    /// The merged dialog's STATE is recomputed over the merged message list,
+    /// not inherited from whichever fragment happened to be the base.
+    ///
+    /// The base here is the fragment that saw the call first AND holds more
+    /// messages — the old merge kept it outright, reporting a call that was
+    /// still ringing when the other worker had watched it answer and hang up.
+    /// Measured on the carrier capture: 20 of 2311 dialogs reported the wrong
+    /// state for exactly this reason.
+    #[test]
+    fn merge_recomputes_state_over_the_merged_messages() {
+        let t0 = base_ts();
+        let (uac, proxy, uas) = (ip(10, 33, 6, 100), ip(10, 33, 6, 101), ip(10, 33, 6, 102));
+
+        // Base leg: INVITE + two retransmissions. Three messages, still Trying.
+        let invite = make_invite_msg("state@h", t0);
+        let mut near = DialogStore::new(1000, true);
+        for i in 0..3 {
+            let ts = t0 + TimeDelta::milliseconds(i * 10);
+            near.process_message(observed_on_leg(&invite, uac, proxy, ts));
+        }
+        assert_eq!(
+            near.get("state@h").expect("dialog").state(),
+            &DialogState::Trying
+        );
+        assert_eq!(near.get("state@h").expect("dialog").messages.len(), 3);
+
+        // Other leg: the answer and the hang-up. Fewer messages, later start.
+        let mut far = DialogStore::new(1000, true);
+        far.process_message(observed_on_leg(
+            &make_200_ok("state@h", t0),
+            uas,
+            proxy,
+            t0 + TimeDelta::seconds(1),
+        ));
+        far.process_message(observed_on_leg(
+            &make_bye_msg("state@h", t0),
+            uac,
+            proxy,
+            t0 + TimeDelta::seconds(2),
+        ));
+
+        near.merge(far);
+        let d = near.get("state@h").expect("dialog");
+        assert_eq!(d.messages.len(), 5, "every leg's messages are kept");
+        assert_eq!(
+            d.state(),
+            &DialogState::Completed,
+            "the state machine is re-run over the merged messages, so the \
+             answer and BYE the other worker saw take effect"
+        );
+    }
+
+    /// `merge` must respect the store's capacity, in both disposal modes.
+    ///
+    /// Each `--cores` worker enforces `--limit` on its own shard and the merge
+    /// target used to accept every survivor unconditionally, so `--cores N`
+    /// silently permitted up to N × the cap. The limit an operator sets to
+    /// bound memory must not be multiplied by the core count.
+    #[test]
+    fn merge_enforces_capacity_in_both_disposal_modes() {
+        let t0 = base_ts();
+        // Drop-oldest (the default): the cap holds and the newest survive.
+        let mut rotating = DialogStore::new(2, true);
+        rotating.process_message(make_invite_msg("keep-1", t0));
+        rotating.process_message(make_invite_msg("keep-2", t0));
+        let mut incoming = DialogStore::new(2, true);
+        incoming.process_message(make_invite_msg("new-1", t0));
+        incoming.process_message(make_invite_msg("new-2", t0));
+        rotating.merge(incoming);
+        assert!(
+            rotating.len() <= 2,
+            "merge must not exceed the store capacity: got {}",
+            rotating.len()
+        );
+        assert!(
+            rotating.total_capacity_dialogs_evicted() > 0,
+            "the dialogs the merge displaced are counted as drop-oldest evictions"
+        );
+
+        // Reject-newest (--no-rotate): the merged-in Call-ID is refused.
+        let mut fixed = DialogStore::new(2, false);
+        fixed.process_message(make_invite_msg("first-1", t0));
+        fixed.process_message(make_invite_msg("first-2", t0));
+        let mut late = DialogStore::new(2, false);
+        late.process_message(make_invite_msg("late-1", t0));
+        fixed.merge(late);
+        assert_eq!(fixed.len(), 2, "a full no-rotate store stays at capacity");
+        assert!(
+            fixed.get("late-1").is_none(),
+            "the newest Call-ID is the one rejected"
+        );
+        assert_eq!(
+            fixed.total_capacity_dialogs_dropped(),
+            1,
+            "the rejected merge insert is counted"
+        );
+    }
+
+    /// The DEFAULT disposal path — drop-oldest rotation — counts what it
+    /// discards.
+    ///
+    /// `capacity_dialogs_dropped` was incremented only in the `--no-rotate`
+    /// branch, so the policy nobody uses had a counter and the policy everybody
+    /// uses had none: the store discarded the earliest calls and reported
+    /// nothing. `evict_oldest` drains a batch of `max_dialogs / 100` (at least
+    /// one), so the count is of dialogs actually discarded, not of inserts.
+    #[test]
+    fn drop_oldest_evictions_are_counted_separately_from_rejections() {
+        let t0 = base_ts();
+        let mut store = DialogStore::new(3, true);
+        for i in 0..3 {
+            store.process_message(make_invite_msg(&format!("rot-{i}"), t0));
+        }
+        assert_eq!(
+            store.total_capacity_dialogs_evicted(),
+            0,
+            "nothing evicted yet"
+        );
+
+        for i in 3..6 {
+            store.process_message(make_invite_msg(&format!("rot-{i}"), t0));
+        }
+        assert!(store.len() <= 3, "the cap is a hard upper bound");
+        assert_eq!(
+            store.total_capacity_dialogs_evicted(),
+            3,
+            "each of the three oldest dialogs discarded to make room is counted"
+        );
+        assert_eq!(
+            store.total_capacity_dialogs_dropped(),
+            0,
+            "drop-oldest is not a rejection; the two counters stay distinct"
+        );
+
+        // The counter accumulates across a merge, like its siblings.
+        let mut other = DialogStore::new(1, true);
+        other.process_message(make_invite_msg("o-1", t0));
+        other.process_message(make_invite_msg("o-2", t0));
+        assert_eq!(other.total_capacity_dialogs_evicted(), 1);
+        let before = store.total_capacity_dialogs_evicted();
+        store.merge(other);
+        assert!(
+            store.total_capacity_dialogs_evicted() > before,
+            "merge folds in the other store's eviction count"
         );
     }
 
@@ -1074,16 +1541,20 @@ mod tests {
         store.process_message(make_200_ok("cap-1", base_ts()));
         assert_eq!(store.total_capacity_dialogs_dropped(), 2);
 
-        // Merge accumulates the counter, mirroring idle-eviction plumbing.
+        // Merge accumulates the counter, mirroring idle-eviction plumbing —
+        // and enforces the cap itself, so the surviving Call-ID it tries to
+        // bring in is rejected by the full store and counted as well.
         let mut other = DialogStore::new(1, false);
         other.process_message(make_invite_msg("m-1", base_ts()));
         other.process_message(make_invite_msg("m-2", base_ts())); // dropped
         assert_eq!(other.total_capacity_dialogs_dropped(), 1);
         store.merge(other);
+        assert_eq!(store.len(), 2, "merge respects the capacity of its target");
         assert_eq!(
             store.total_capacity_dialogs_dropped(),
-            3,
-            "merge folds in the other store's capacity-drop count"
+            4,
+            "merge folds in the other store's capacity-drop count (2 + 1) and \
+             counts the Call-ID its own capacity check rejected (+1)"
         );
     }
 

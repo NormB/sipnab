@@ -207,10 +207,10 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             bind_addr: hep_addr.clone(),
             #[cfg(feature = "hep")]
             allowlist,
-            rate_limit: cli.hep_rate_limit,
+            rate_limit: cli.hep_rate_limit_resolved(config),
             per_peer_rate_limit: cli
                 .hep_rate_limit_per_peer
-                .resolve(cli.hep_rate_limit, cli.hep_allow.len()),
+                .resolve(cli.hep_rate_limit_resolved(config), cli.hep_allow.len()),
             auth_key: hep_auth,
             #[cfg(feature = "hep")]
             auth_mode: cli.hep_auth_mode,

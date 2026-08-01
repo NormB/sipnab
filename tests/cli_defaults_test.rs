@@ -432,7 +432,15 @@ fn default_group_by_is_none() {
 #[test]
 fn default_limit() {
     let cli = defaults();
-    assert_eq!(cli.limit, 100_000, "default limit should be 100000");
+    assert_eq!(
+        cli.limit, None,
+        "--limit is an Option so [limits] dialog_limit can take effect; the \
+         default lives in Cli::dialog_limit"
+    );
+    assert_eq!(
+        cli.dialog_limit(&sipnab::config::Config::default()),
+        100_000
+    );
 }
 
 /// SNB-0004 regression pin: `rotate_enabled()` is true by default (LRU eviction at capacity) and `no_rotate` is off.
@@ -476,8 +484,13 @@ fn default_rtp_interval() {
 fn default_max_streams() {
     let cli = defaults();
     assert_eq!(
-        cli.max_streams, 50_000,
-        "default max_streams should be 50000"
+        cli.max_streams, None,
+        "--max-streams is an Option so [limits] max_streams can take effect"
+    );
+    assert_eq!(
+        cli.max_streams_limit(&sipnab::config::Config::default()),
+        50_000,
+        "the resolved default is still 50000"
     );
 }
 
@@ -700,8 +713,13 @@ fn default_hep_allow_is_empty() {
 fn default_hep_rate_limit() {
     let cli = defaults();
     assert_eq!(
-        cli.hep_rate_limit, 50_000,
-        "default hep_rate_limit should be 50000"
+        cli.hep_rate_limit, None,
+        "--hep-rate-limit is an Option so [limits] hep_rate_limit can take effect"
+    );
+    assert_eq!(
+        cli.hep_rate_limit_resolved(&sipnab::config::Config::default()),
+        50_000,
+        "the resolved default is still 50000"
     );
 }
 
@@ -811,8 +829,13 @@ fn default_chroot_is_none() {
 fn default_max_reassembly() {
     let cli = defaults();
     assert_eq!(
-        cli.max_reassembly, 10_000,
-        "default max_reassembly should be 10000"
+        cli.max_reassembly, None,
+        "--max-reassembly is an Option so [limits] max_reassembly can take effect"
+    );
+    assert_eq!(
+        cli.max_reassembly_limit(&sipnab::config::Config::default()),
+        10_000,
+        "the resolved default is still 10000"
     );
 }
 
