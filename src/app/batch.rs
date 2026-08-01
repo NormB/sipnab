@@ -177,10 +177,10 @@ fn parallel_config(
 ) -> crate::parallel::ParallelConfig {
     crate::parallel::ParallelConfig {
         cores: cli.cores,
-        max_streams: cli.max_streams as usize,
-        max_dialogs: cli.limit as usize,
+        max_streams: cli.max_streams_limit(config),
+        max_dialogs: cli.dialog_limit(config),
         rotate: cli.rotate_enabled(),
-        max_reassembly: cli.max_reassembly as usize,
+        max_reassembly: cli.max_reassembly_limit(config),
         portrange,
         no_dialog: cli.no_dialog,
         dialog_tracking: cli.dialog_track.unwrap_or_default(),
@@ -488,12 +488,13 @@ impl BatchRunner {
         // (when --api is set) reads from the SAME store the packet loop writes
         // to, eliminating the prior mirror-and-double-parse pattern. In the
         // common single-writer batch case the locks are uncontested.
-        let processor = capture::PacketProcessor::with_max_sessions(cli.max_reassembly as usize)
-            .with_reassembly(!cli.no_reassembly)
-            .with_parse_limit(cli.limitlen);
+        let processor =
+            capture::PacketProcessor::with_max_sessions(cli.max_reassembly_limit(config))
+                .with_reassembly(!cli.no_reassembly)
+                .with_parse_limit(cli.limitlen);
         let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(
             {
-                let mut ds = DialogStore::new(cli.limit as usize, cli.rotate_enabled());
+                let mut ds = DialogStore::new(cli.dialog_limit(config), cli.rotate_enabled());
                 // The wiring whose absence made the old --dialog-track a dead
                 // flag: declared, parsed, and never handed to anything.
                 ds.set_tracking(cli.dialog_track.unwrap_or_default());
@@ -503,7 +504,7 @@ impl BatchRunner {
         ));
         let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
         let stream_store: Arc<RwLock<StreamStore>> = {
-            let mut ss = StreamStore::new(cli.max_streams as usize);
+            let mut ss = StreamStore::new(cli.max_streams_limit(config));
             if let Some(max_frames) = config.limits.max_audio_frames {
                 ss.set_max_audio_frames(max_frames as usize);
             }

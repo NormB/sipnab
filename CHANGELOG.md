@@ -11,6 +11,49 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **`[limits]` config keys were parsed, validated, documented — and never
+  read.** A config saying `dialog_limit = 100` loaded cleanly, printed no
+  warning, and still returned 18948 dialogs. `max_streams`, `max_reassembly`
+  and `hep_rate_limit` were dead the same way.
+
+  Worse than an absent key, because `config.rs` *validates* them — rejecting 0
+  with a helpful message — so sipnab confirms the setting loaded and the
+  operator believes the cap is real. Someone capping dialogs on a shared host
+  to be a good tenant had no cap at all.
+
+  The cause was in the flags, not the config: each had a clap `default_value`,
+  so the field was filled whether or not the operator passed anything. "Not
+  given" and "given the default" were indistinguishable, leaving the config key
+  nothing to override. The four flags are now `Option`, with the defaults moved
+  to `Cli::DEFAULT_*` and resolvers establishing the precedence — explicit flag,
+  then `[limits]`, then the default. `--portrange` already worked this way and
+  its comment says why; the caps now match it.
+
+  Gated by `every_documented_limits_key_changes_observable_behaviour`, which
+  runs the binary with and without each key over a fixture that exceeds it and
+  fails if the output is identical. Parsing tests passed throughout — they
+  always would, which is exactly how four keys shipped dead.
+
+- **`--cores` lost about half the messages of proxied calls.** Verified on a
+  single file: 1173 of 2311 dialogs reported a different `msg_count` under
+  `--cores 4` than single-threaded — 4 against 2, 8 against 4. The dialog *set*
+  matched exactly, so anything checking Call-IDs saw nothing wrong.
+
+  `parallel.rs` shards by host pair and its module doc asserted that a call's
+  SIP between two hosts stays together. That is false through a proxy: the
+  messages shard to different workers, and `merge` kept whichever fragment had
+  more messages instead of combining them. Now 0 of 2311 differ.
+
+- **`merge` bypassed the dialog capacity cap**, so `--cores N` permitted up to
+  N times the configured limit — the setting an operator uses to bound memory,
+  silently multiplied by the core count.
+
+- **Dialog eviction was uncounted on the path actually taken.**
+  `capacity_dialogs_dropped` was incremented only in the `--no-rotate` branch;
+  on the default drop-oldest path nothing counted at all.
+
+
+### Fixed
 - **`--cores N` ignored multi-file input entirely.** `-I <dir> --cores 4`
   returned **0 dialogs** where the single-threaded path returned 18948.
   `run_cores_file` reached for `cli.primary_input()` — the first `-I`

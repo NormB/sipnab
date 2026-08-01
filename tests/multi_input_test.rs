@@ -186,6 +186,50 @@ fn a_call_split_across_two_files_is_stitched_back_together() {
     );
 }
 
+/// A call that traverses a PROXY must reconstruct identically under `--cores`.
+///
+/// This is a SINGLE file, so nothing about multi-file input is involved. The
+/// sharding in `src/parallel.rs` is by host pair, and its module doc used to
+/// assert that "a call's SIP between the same two hosts likewise stays
+/// together". A proxied call has no single host pair: `sip-proxy.pcap` carries
+/// ONE Call-ID across three of them (10.33.6.100↔.101, .100↔.102, .101↔.102),
+/// so its eleven messages shard to different workers. `DialogStore::merge` then
+/// kept whichever fragment held *more* messages and discarded the other's
+/// message list outright — measured 7 of 11 messages at cores 2, 3, 4 and 8.
+///
+/// The Call-ID set is identical either way, which is exactly why this asserts
+/// fingerprints: `merge` is Call-ID-keyed, so an ID-only assertion passes on a
+/// reconstruction missing a third of its signalling. On the 100 MB carrier
+/// corpus the same defect halved the message count of 1173 of 2311 dialogs.
+///
+/// The baseline is anchored to the literal message count so the test cannot be
+/// satisfied by both paths regressing to the same wrong answer.
+#[test]
+fn the_cores_path_reconstructs_every_leg_of_a_proxied_call() {
+    let src = samples().join("sip-proxy.pcap");
+    let file = src.to_string_lossy().into_owned();
+
+    let records = dialog_records(&["-I", &file]);
+    assert_eq!(records.len(), 1, "the fixture is one proxied call");
+    assert_eq!(
+        records[0]["msg_count"].as_u64(),
+        Some(11),
+        "the proxied call has eleven messages spread over three host pairs; \
+         the single-threaded path sees all of them"
+    );
+
+    let single = dialog_fingerprints(&["-I", &file]);
+    for cores in ["2", "3", "4", "8"] {
+        let cores_out = dialog_fingerprints(&["-I", &file, "--cores", cores]);
+        assert_eq!(
+            cores_out, single,
+            "--cores {cores} must reconstruct the proxied call from EVERY leg, \
+             not just the busiest host pair.\n  single: {single:?}\n  cores:  \
+             {cores_out:?}"
+        );
+    }
+}
+
 /// `--cores N` must read the whole `-I` set, and stitch a call across a file
 /// boundary exactly as the single-threaded path does.
 ///

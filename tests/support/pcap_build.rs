@@ -43,6 +43,117 @@ pub fn udp_frame(src: [u8; 4], dst: [u8; 4], sport: u16, dport: u16, payload: &[
     frame
 }
 
+/// Ethernet + IPv4 + TCP frame carrying `payload`.
+///
+/// `flags` is the raw TCP flag byte (`0x02` SYN, `0x10` ACK, `0x08` PSH,
+/// `0x01` FIN). A segment without PSH or FIN stays buffered in the
+/// reassembler, which is what the `max_reassembly` probe needs: several
+/// connections held open at once.
+pub fn tcp_frame(
+    src: [u8; 4],
+    dst: [u8; 4],
+    sport: u16,
+    dport: u16,
+    seq: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut tcp = Vec::with_capacity(20 + payload.len());
+    tcp.extend_from_slice(&sport.to_be_bytes());
+    tcp.extend_from_slice(&dport.to_be_bytes());
+    tcp.extend_from_slice(&seq.to_be_bytes());
+    tcp.extend_from_slice(&[0, 0, 0, 0]); // ack
+    tcp.extend_from_slice(&[0x50, flags]); // data offset 5 words + flags
+    tcp.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]); // window, csum 0, urgent
+    tcp.extend_from_slice(payload);
+
+    let total_len = 20 + tcp.len();
+    let mut ip = Vec::with_capacity(20);
+    ip.extend_from_slice(&[0x45, 0x00]);
+    ip.extend_from_slice(&(total_len as u16).to_be_bytes());
+    ip.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 64, 6, 0x00, 0x00]);
+    ip.extend_from_slice(&src);
+    ip.extend_from_slice(&dst);
+    let ck = checksum16(&ip);
+    ip[10..12].copy_from_slice(&ck.to_be_bytes());
+
+    let mut frame = Vec::with_capacity(14 + total_len);
+    frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 2, 0x02, 0, 0, 0, 0, 1, 0x08, 0x00]);
+    frame.extend_from_slice(&ip);
+    frame.extend_from_slice(&tcp);
+    frame
+}
+
+/// Frames for `flows` distinct TCP connections, each leaving one partial SIP
+/// message parked in the reassembler.
+///
+/// Every flow sends a SYN and then one un-pushed segment whose
+/// `Content-Length` promises a body it never delivers, so the reassembler
+/// holds all `flows` streams at once. Above the session cap it must evict.
+pub fn partial_tcp_sip_flows(flows: usize) -> Vec<Vec<u8>> {
+    let a = [10, 1, 0, 1];
+    let b = [10, 2, 0, 1];
+    let mut frames = Vec::with_capacity(flows * 2);
+    for i in 0..flows {
+        let sport = 40_000 + i as u16;
+        let partial = format!(
+            "INVITE sip:bob@10.2.0.1 SIP/2.0\r\n\
+             Via: SIP/2.0/TCP 10.1.0.1:{sport};branch=z9hG4bKtcp{i}\r\n\
+             From: <sip:alice@10.1.0.1>;tag=t{i}\r\n\
+             To: <sip:bob@10.2.0.1>\r\n\
+             Call-ID: tcp-flow-{i}\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Length: 500\r\n\r\npartial"
+        );
+        frames.push(tcp_frame(a, b, sport, 5060, 1000, 0x02, b""));
+        frames.push(tcp_frame(a, b, sport, 5060, 1001, 0x10, partial.as_bytes()));
+    }
+    frames
+}
+
+/// One INVITE whose `From` header line carries `pad` filler bytes.
+///
+/// `From` is the padded header on purpose: `--json` prints it, so a header
+/// line dropped for exceeding `max_header_line` is visible in the output
+/// rather than only in the parser's internals.
+pub fn invite_with_long_from(call_id: &str, pad: usize) -> Vec<u8> {
+    let filler = "X".repeat(pad);
+    let msg = format!(
+        "INVITE sip:bob@10.2.0.1 SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bK{call_id}\r\n\
+         Max-Forwards: 70\r\n\
+         From: <sip:alice@10.1.0.1>;tag=t1;pad={filler}\r\n\
+         To: <sip:bob@10.2.0.1>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 5060, 5060, msg.as_bytes())
+}
+
+/// One INVITE carrying `pad_headers` filler headers ahead of `From`.
+///
+/// Pushing `From` past the header count means a run that stops parsing at
+/// `max_headers_per_message` prints no `from` field, so the cap shows up in
+/// `--json` output.
+pub fn invite_with_padded_headers(call_id: &str, pad_headers: usize) -> Vec<u8> {
+    let mut filler = String::new();
+    for i in 0..pad_headers {
+        filler.push_str(&format!("X-Pad{i}: v{i}\r\n"));
+    }
+    let msg = format!(
+        "INVITE sip:bob@10.2.0.1 SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bK{call_id}\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         {filler}\
+         From: <sip:alice@10.1.0.1>;tag=t1\r\n\
+         To: <sip:bob@10.2.0.1>\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 5060, 5060, msg.as_bytes())
+}
+
 /// Write `frames` as a little-endian, Ethernet-linktype pcap.
 ///
 /// Timestamps advance 1 ms per frame so dialog durations and ordering are

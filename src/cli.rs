@@ -633,14 +633,8 @@ pub struct Cli {
 
     // ── Dialog ───────────────────────────────────────────────────────
     /// Maximum number of dialogs to track simultaneously.
-    #[arg(
-        help_heading = "Dialog",
-        short = 'l',
-        long = "limit",
-        value_name = "N",
-        default_value = "100000"
-    )]
-    pub limit: u64,
+    #[arg(help_heading = "Dialog", short = 'l', long = "limit", value_name = "N")]
+    pub limit: Option<u64>,
 
     /// Evict the oldest dialog when the `--limit` capacity is reached (LRU).
     /// This is the **default**; the flag is kept for back-compat / explicitness.
@@ -683,8 +677,8 @@ pub struct Cli {
     pub rtp_interval: u32,
 
     /// Maximum number of RTP streams to track simultaneously.
-    #[arg(help_heading = "RTP", long, value_name = "N", default_value = "50000")]
-    pub max_streams: u64,
+    #[arg(help_heading = "RTP", long, value_name = "N")]
+    pub max_streams: Option<u64>,
 
     /// MOS quality threshold for alerts (1.0-5.0 scale).
     #[arg(help_heading = "RTP", long, value_name = "MOS", default_value = "3.0")]
@@ -1074,8 +1068,8 @@ pub struct Cli {
     /// Maximum HEP packets per second (global ceiling across all senders).
     /// `0` disables the global ceiling (consistent with `off` on the
     /// per-peer knob); the per-peer cap, if set, still applies.
-    #[arg(help_heading = "HEP", long, value_name = "N", default_value = "50000")]
-    pub hep_rate_limit: u64,
+    #[arg(help_heading = "HEP", long, value_name = "N")]
+    pub hep_rate_limit: Option<u64>,
 
     /// Maximum HEP packets per second from any single source IP: a number,
     /// `off` (0, the default), or `auto`. Adds fairness in multi-sender
@@ -1171,13 +1165,8 @@ pub struct Cli {
 
     // ── Resource limits ──────────────────────────────────────────────
     /// Maximum concurrent TCP/TLS reassembly sessions.
-    #[arg(
-        help_heading = "Resource limits",
-        long,
-        value_name = "N",
-        default_value = "10000"
-    )]
-    pub max_reassembly: u64,
+    #[arg(help_heading = "Resource limits", long, value_name = "N")]
+    pub max_reassembly: Option<u64>,
 
     /// CPU cores for OFFLINE pcap reconstruction (`-I`). 1 = the standard
     /// single-threaded path. >1 shards packets by host pair across N worker
@@ -1297,6 +1286,65 @@ impl FromToModeArg {
 }
 
 impl Cli {
+    /// Built-in caps, used when neither the CLI nor `[limits]` names one.
+    ///
+    /// These were `default_value` attributes on the flags themselves, which is
+    /// why `[limits]` could never take effect: clap filled the field in
+    /// whether or not the operator passed anything, so "not given" and "given
+    /// the default" were indistinguishable and the config key had nothing to
+    /// override. The flags are now `Option`, and the default lives here.
+    pub const DEFAULT_DIALOG_LIMIT: u64 = 100_000;
+    /// Default RTP stream table cap — see [`Self::DEFAULT_DIALOG_LIMIT`].
+    pub const DEFAULT_MAX_STREAMS: u64 = 50_000;
+    /// Default TCP reassembly session cap — see [`Self::DEFAULT_DIALOG_LIMIT`].
+    pub const DEFAULT_MAX_REASSEMBLY: u64 = 10_000;
+    /// Default HEP global ingest ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].
+    pub const DEFAULT_HEP_RATE_LIMIT: u64 = 50_000;
+
+    /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
+    ///
+    /// The explicit flag wins because it is the more specific instruction —
+    /// the same precedence the boolean settings use (`cli.no_rtp ||
+    /// config.capture.no_rtp`), stated here because a numeric setting cannot
+    /// express it with an `||`.
+    #[must_use]
+    pub fn dialog_limit(&self, config: &crate::config::Config) -> usize {
+        self.limit
+            .or(config.limits.dialog_limit)
+            .unwrap_or(Self::DEFAULT_DIALOG_LIMIT) as usize
+    }
+
+    /// RTP stream cap: `--max-streams`, else `[limits] max_streams`, else the
+    /// default. See [`Self::dialog_limit`] for the precedence rule.
+    #[must_use]
+    pub fn max_streams_limit(&self, config: &crate::config::Config) -> usize {
+        self.max_streams
+            .or(config.limits.max_streams)
+            .unwrap_or(Self::DEFAULT_MAX_STREAMS) as usize
+    }
+
+    /// TCP reassembly cap: `--max-reassembly`, else `[limits] max_reassembly`,
+    /// else the default. See [`Self::dialog_limit`].
+    #[must_use]
+    pub fn max_reassembly_limit(&self, config: &crate::config::Config) -> usize {
+        self.max_reassembly
+            .or(config.limits.max_reassembly)
+            .unwrap_or(Self::DEFAULT_MAX_REASSEMBLY) as usize
+    }
+
+    /// HEP global ingest ceiling: `--hep-rate-limit`, else
+    /// `[limits] hep_rate_limit`, else the default. See [`Self::dialog_limit`].
+    ///
+    /// `0` disables the ceiling, and that is a real setting rather than
+    /// "unset" — which is exactly why this is an `Option` and not a `u64`
+    /// defaulted to 0.
+    #[must_use]
+    pub fn hep_rate_limit_resolved(&self, config: &crate::config::Config) -> u64 {
+        self.hep_rate_limit
+            .or(config.limits.hep_rate_limit)
+            .unwrap_or(Self::DEFAULT_HEP_RATE_LIMIT)
+    }
+
     /// Whether any `-I` was given.
     #[must_use]
     pub fn has_input(&self) -> bool {
@@ -1897,16 +1945,25 @@ mod tests {
             cli.portrange, None,
             "portrange is an Option so an explicit default beats config"
         );
-        assert_eq!(cli.limit, 100000);
+        // The three caps are Options for the same reason portrange is: with a
+        // clap `default_value` the field is filled whether or not the operator
+        // passed anything, so `[limits]` had nothing to override and was dead.
+        // Unset on the CLI; the default now comes from the resolver.
+        assert_eq!(cli.limit, None);
+        assert_eq!(cli.max_streams, None);
+        let cfg = crate::config::Config::default();
+        assert_eq!(cli.dialog_limit(&cfg), 100_000);
+        assert_eq!(cli.max_streams_limit(&cfg), 50_000);
         assert_eq!(cli.rtp_interval, 1);
-        assert_eq!(cli.max_streams, 50000);
         assert!((cli.quality_threshold - 3.0).abs() < f64::EPSILON);
         assert_eq!(cli.kill_response, 200);
         assert_eq!(cli.exec_rate_limit, 10);
         assert_eq!(cli.api_max_conn, 100);
-        assert_eq!(cli.hep_rate_limit, 50000);
+        assert_eq!(cli.hep_rate_limit, None);
+        assert_eq!(cli.hep_rate_limit_resolved(&cfg), 50_000);
         assert_eq!(cli.pcap_export_mode, "decrypted");
-        assert_eq!(cli.max_reassembly, 10000);
+        assert_eq!(cli.max_reassembly, None);
+        assert_eq!(cli.max_reassembly_limit(&cfg), 10_000);
         assert_eq!(cli.cores, 1, "single-threaded by default");
         assert_eq!(cli.color, "auto");
         assert!(!cli.no_tui);
