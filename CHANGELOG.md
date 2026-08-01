@@ -11,6 +11,37 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **`--filter` was ignored by every CLI output path, silently, exit 0.** The
+  expression compiled, and then `--report` and `--json-dialogs` rendered the
+  whole store anyway; the filter was only ever consulted per-packet in the
+  streaming path. `--cores N` never received it at all. On a 2311-dialog
+  capture, **every valid expression returned all 2311 rows** — an operator
+  narrowing to failed calls got the entire capture back and no indication.
+
+  Now `state == 'Failed'` selects 10, `state == 'Completed'` selects 1712, and
+  `--cores 4` agrees with the single-threaded path. `--call-report <ID>` is
+  deliberately not narrowed: a lookup by name is not a listing.
+
+- **The alias flags expanded to different expressions than the documentation
+  specified.** `--short-calls` was `duration < 10.0` with no state gate rather
+  than the documented `duration < 5.0 AND state == 'Completed'`, selecting
+  **2310 of 2311 dialogs**. `--slow-setup` tested `setup_time` where the alias
+  says `pdd`. `--problems` used a 2-term expression against a documented
+  13-term one, and neither was a superset of the other. The flags now route
+  through the same expansion the documentation describes.
+
+### Documented
+- **`rtp.*` fields read `0` for a dialog with no media, not "unknown"**, and a
+  scored stream never goes below `1.0`. So `rtp.mos < 3.5` selects 2292 of 2311
+  dialogs on a signalling-heavy capture — nearly everything — while
+  `AND rtp.packets > 0` selects 2. The documented low-MOS recipe now carries
+  that guard.
+- **`no_media`, `nat_mismatch` and `rtp.orphaned` can never be true.** Not
+  "absent from your capture" — structurally unsatisfiable. The first two only
+  become true when the media diagnosis receives the negotiated SDP, and every
+  caller (CLI, MCP, REST, and the DSL itself) passes none. `rtp.orphaned` asks
+  whether a stream belonging to the dialog belongs to no dialog. Documented
+  where the fields are defined, with the working alternatives.
 - **`--fail2ban` emitted a line for every SIP request, with no detector in the
   path at all.** The flag exists to hand detections to a tool whose entire job
   is to ban what it is given, and it was handing over the trunk. On an ordinary

@@ -4,6 +4,19 @@
 
 sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. You pass expressions through the [`--filter` CLI flag](cli-reference.md#matching) or the `expression` key in the [`[filter]` config section](config-reference.md#filter). The [Diagnostic Aliases](cli-reference.md#diagnostic-aliases) CLI flags (`--problems`, `--slow-setup`, and so on) expand to the named aliases documented below.
 
+## What a filter narrows
+
+A filter selects **dialogs**, and every output that lists dialogs honours it:
+
+- The per-message stream (the default output, `--json`, `-T`) emits only
+  messages belonging to matching dialogs.
+- `--json-dialogs` emits one line per matching dialog.
+- `--report` prints only matching dialogs, and the RTP tables beneath the dialog
+  table hold only the streams linked to them. With no filter it still lists
+  every stream the capture holds, orphans included.
+- `--call-report <CALL-ID>` is **not** narrowed: it names one call, and a lookup
+  by name is not a listing.
+
 ## Grammar
 
 ```text
@@ -57,24 +70,50 @@ All 31 addressable fields, organized by type.
 | `pdd` | Post-dial delay (time to first ringing/response) | seconds (float) |
 | `setup_time` | Call setup time (INVITE to 200 OK) | seconds (float) |
 | `retransmits` | Total retransmit count in dialog | count |
-| `rtp.mos` | Mean Opinion Score (worst across streams, E-model R-factor approximation) | 1.0 - 5.0 |
+| `rtp.mos` | Mean Opinion Score (worst across streams, E-model R-factor approximation) | 1.0 - 5.0, **0.0 with no RTP** |
 | `rtp.jitter` | Jitter (worst/highest across streams) | milliseconds |
 | `rtp.loss` | Packet loss (worst/highest across streams) | percentage (0-100) |
 | `rtp.packets` | Total RTP packets (sum across all streams) | count |
+
+> **A dialog with no RTP reads as zero, not as "unknown".** Every `rtp.*` field
+> falls back to `0` when the dialog has no stream, and a scored stream
+> never goes below `1.0` — so `rtp.mos < 3.0` selects every call that carries no
+> media at all, which on a signalling-heavy capture is nearly all of them
+> (2292 of 2311 dialogs on one real trunk capture; 2 with `AND rtp.packets > 0`).
+> **Pair any `rtp.*` threshold with `rtp.packets > 0`** to ask about calls that
+> actually had media.
 
 ### Boolean fields
 
 | Field | Description |
 |-------|-------------|
-| `rtp.orphaned` | True if any associated RTP stream has no matching SIP dialog |
+| `rtp.orphaned` | True if any associated RTP stream has no matching SIP dialog — see the note below |
 | `one_way` | True if one-way audio detected (via diagnosis engine) |
-| `nat_mismatch` | True if NAT mismatch detected (Contact/Via IP discrepancy) |
-| `no_media` | True if no media detected for established call |
+| `nat_mismatch` | True if NAT mismatch detected (Contact/Via IP discrepancy) — see the note below |
+| `no_media` | True if no media detected for established call — see the note below |
 | `codec_asymmetry` | True if A and B legs negotiated different RTP codecs |
 | `ptime_asymmetry` | True if the two legs use different `ptime` (packetization interval) |
 | `payload_asymmetry` | True if dynamic payload type numbers differ across legs (with the same codec) |
 | `duration_asymmetry` | True if one leg's media duration is materially shorter than the other's |
 | `late_media` | True if RTP starts noticeably later than the answering 200 OK |
+
+> **Three of these never fire today.** They parse, they evaluate, and they
+> always come out `false` — for structural reasons, not because your capture is
+> clean. Filtering on them selects nothing, and `NOT` on them selects
+> everything.
+>
+> * `no_media` and `nat_mismatch` only become true when the media diagnosis
+>   receives the dialog's negotiated SDP, and every caller — CLI, MCP, REST API,
+>   and this DSL — currently passes none. Measured across four real capture
+>   sets (5521 dialogs): zero matches.
+> * `rtp.orphaned` asks whether a stream *belonging to this dialog* has no
+>   dialog. A stream counts as orphaned only while it belongs to none, so the
+>   two conditions exclude each other. To find orphaned media, read the
+>   "Orphaned Streams" section of `--report`, or the REST API's
+>   `/streams?orphaned=true`, instead.
+>
+> `one_way` does work: it follows from the stream directions sipnab observed and
+> needs no SDP (10 matches in the same corpus).
 
 ## Operators
 
@@ -150,6 +189,17 @@ expression it expands to select the same dialogs, so
 `sipnab -N -I capture.pcap --filter "codec_asymmetry == true"` are equivalent —
 pick whichever reads better in the command you are writing.
 
+The dedicated flag, the `--filter <alias>` spelling and the MCP `kinds` entry
+are three names for one expression: `sipnab --short-calls`,
+`sipnab --filter short-calls` and
+`sipnab --filter "duration < 5.0 AND state == 'Completed'"` all select the same
+dialogs. Combining several flags ORs their expansions together.
+
+Because `nat_mismatch` never fires (see the boolean-field note above),
+`--nat-issues` / `--filter nat-issues` selects nothing today, and the
+`nat_mismatch` and `rtp.orphaned` terms inside `problems` contribute nothing to
+it.
+
 ## Examples
 
 Each entry below is one complete expression, and `--filter` takes exactly one:
@@ -217,10 +267,15 @@ traffic. For broader task recipes beyond the DSL, see the
 ### Poor audio quality (low MOS)
 
 ```bash
-sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND state == 'Completed'" --json
+sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND rtp.packets > 0 AND state == 'Completed'" --json
 ```
 
-Only completed calls -- in-progress calls may not have enough RTP data for an accurate MOS calculation. MOS values follow the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0 is noticeable degradation.
+`rtp.packets > 0` is not optional here: without it the `0.0` that a call with no
+RTP reports for `rtp.mos` satisfies the threshold, and the answer is every
+signalling-only dialog in the capture. Only completed calls -- in-progress calls
+may not have enough RTP data for an accurate MOS calculation. MOS values follow
+the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0
+is noticeable degradation.
 
 ### One-way audio
 

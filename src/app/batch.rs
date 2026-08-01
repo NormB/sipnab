@@ -350,6 +350,10 @@ fn parallel_config(
 ///   timestamp-ordered the set, and resolution opens every file to order it —
 ///   so re-resolving here would pay that cost twice and give the two paths a
 ///   second chance to disagree.
+/// * `filter` — the compiled `--filter` expression, or `None`. This path emits
+///   no per-message stream, so the reports are the only output there is: an
+///   unfiltered report here means `--filter` did nothing at all under
+///   `--cores`.
 ///
 /// # Side effects
 ///
@@ -362,6 +366,7 @@ pub fn run_cores_file(
     capture_config: &CaptureConfig,
     portrange: (u16, u16),
     paths: &[PathBuf],
+    filter: Option<&FilterExpr>,
 ) {
     if paths.is_empty() {
         // Unreachable through `main`: `RunMode::CoresFile` requires `-I`, and
@@ -378,7 +383,7 @@ pub fn run_cores_file(
             // The return value is the "report could not be produced" signal and
             // was dropped here, so an unknown --call-report id or an unwritable
             // stdout exited 0 on the --cores path while exiting 1 elsewhere.
-            let reports_ok = generate_reports(cli, &r.dialog_store, &r.stream_store);
+            let reports_ok = generate_reports(cli, &r.dialog_store, &r.stream_store, filter);
             if !cli.quiet {
                 tracing::info!(
                     "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
@@ -446,7 +451,12 @@ pub fn run(
         let pcfg = parallel_config(&cli, config, portrange, no_rtp);
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
-        let reports_ok = generate_reports(&cli, &result.dialog_store, &result.stream_store);
+        let reports_ok = generate_reports(
+            &cli,
+            &result.dialog_store,
+            &result.stream_store,
+            batch.filter_expr.as_ref(),
+        );
         if !cli.quiet {
             tracing::info!(
                 "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
@@ -1433,7 +1443,7 @@ impl BatchRunner {
         {
             let ds_guard = dialog_store.read();
             let ss_guard = stream_store.read();
-            if !generate_reports(&cli, &ds_guard, &ss_guard) {
+            if !generate_reports(&cli, &ds_guard, &ss_guard, filter_expr.as_ref()) {
                 std::process::exit(1);
             }
         }
@@ -2273,12 +2283,26 @@ fn write_stdout(text: &str) -> bool {
 /// be produced (unknown `--call-report` Call-ID) so the caller can exit
 /// non-zero — scripts must be able to trust the exit code.
 ///
+/// # Arguments
+///
+/// * `filter` — the compiled `--filter` expression, or `None` for no filter.
+///   These reports render the final stores rather than the packet stream, so
+///   they must apply it themselves: it used to be consulted only as packets
+///   streamed past, and every valid expression returned the whole capture
+///   here, silently, exit 0. `--call-report` names one Call-ID exactly and is
+///   deliberately not narrowed — a lookup by name is not a listing.
+///
 /// # Side effects
 ///
 /// Prints the requested reports to stdout, the not-found error (and the
 /// opt-in `SIPNAB_PERF_STATS=1` perf line) to stderr; reads the
 /// `SIPNAB_PERF_STATS` environment variable.
-pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &StreamStore) -> bool {
+pub fn generate_reports(
+    cli: &Cli,
+    dialog_store: &DialogStore,
+    stream_store: &StreamStore,
+    filter: Option<&FilterExpr>,
+) -> bool {
     // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
     // scales with call count. `endpoint_link_scan_visits` is the cost that was
     // O(calls²) before the endpoint index; it now grows ~linearly with streams.
@@ -2295,9 +2319,13 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
 
     // --report: dialog summary table
     if cli.report && cli.no_tui {
-        let dialogs: Vec<&crate::sip::dialog::SipDialog> = dialog_store.iter().collect();
-        let streams: Vec<&crate::rtp::stream::RtpStream> = stream_store.iter().collect();
-        let report = output::print_dialog_report(&dialogs, &streams);
+        // Filtered: the matching dialogs and the streams linked to them. With
+        // no filter this is every dialog and every stream, orphans included —
+        // an unfiltered report is unchanged.
+        let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
+        let dialogs: Vec<&crate::sip::dialog::SipDialog> =
+            selection.dialogs.iter().map(|(d, _)| *d).collect();
+        let report = output::print_dialog_report(&dialogs, &selection.streams);
         // `print!` PANICS if stdout cannot be written, so `--report > /full/disk`
         // died with exit 101 and a Rust backtrace instead of an error. A closed
         // pipe stays fine — `sipnab --report | head` must not fail — but a real
@@ -2329,18 +2357,19 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
 
     // --json-dialogs: one NDJSON object per dialog
     if cli.json_dialogs && cli.no_tui {
+        // Groups the streams by Call-ID once, where the loop below used to
+        // rescan the whole stream store per dialog.
+        let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
         let mut out = String::new();
-        for dialog in dialog_store.iter() {
-            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-                stream_store.streams_for(&dialog.call_id).collect();
-            let mut diagnosis = crate::rtp::diagnosis::diagnose_media(&dialog_streams, None);
+        for (dialog, dialog_streams) in &selection.dialogs {
+            let mut diagnosis = crate::rtp::diagnosis::diagnose_media(dialog_streams, None);
             crate::rtp::diagnosis::diagnose_asymmetry(
                 &mut diagnosis,
                 Some(dialog),
-                &dialog_streams,
+                dialog_streams,
                 &crate::rtp::diagnosis::AsymmetryThresholds::default(),
             );
-            let line = output::dialog_to_ndjson(dialog, &dialog_streams, &diagnosis);
+            let line = output::dialog_to_ndjson(dialog, dialog_streams, &diagnosis);
 
             #[cfg(feature = "plugins")]
             let line = apply_plugins(&plugins, dialog, &line);
@@ -2819,12 +2848,12 @@ mod tests {
         // Empty --report summary path.
         let mut cli = base_cli();
         cli.report = true;
-        generate_reports(&cli, &dialog_store, &stream_store);
+        generate_reports(&cli, &dialog_store, &stream_store, None);
 
         // --call-report for an unknown Call-ID hits the "not found" warn arm.
         let mut cli = base_cli();
         cli.call_report = Some("does-not-exist".to_string());
-        generate_reports(&cli, &dialog_store, &stream_store);
+        generate_reports(&cli, &dialog_store, &stream_store, None);
 
         // Insert a dialog, then --call-report finds it across all formats.
         let call_id = "report-1@example.com";
@@ -2847,7 +2876,7 @@ mod tests {
             let mut cli = base_cli();
             cli.call_report = Some(call_id.to_string());
             setup(&mut cli);
-            generate_reports(&cli, &dialog_store, &stream_store);
+            generate_reports(&cli, &dialog_store, &stream_store, None);
         }
     }
 
