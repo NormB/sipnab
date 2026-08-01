@@ -23,23 +23,24 @@ an unidentified stream gets.** That is a placeholder, not a measurement. Tools
 that publish it say so: the `rtp_stats` MCP tool carries `mos_grounded: false`
 and a note.
 
-## MOS is scored from what sipnab measured, never from what the far end claimed
+## MOS comes from what sipnab measured, never from what the far end claimed
 
 The jitter and loss behind the score come from sipnab's own observation of the
-captured media. RTCP reception reports are recorded separately — read them via
-`StreamStore::remote_report` — and never feed the score.
+captured media. sipnab keeps RTCP reception reports separately — read them via
+`StreamStore::remote_report` — and never feeds them to the score.
 
-Two reasons. RTCP is unauthenticated, so anything that can reach the port can
-assert a loss figure; if that figure moved the MOS, the quality number would be
-attacker-controlled. And a reception report describes the path *from the sender
-to that reporter*, which on a mid-path capture is a different segment from the
-one in front of sipnab — the report may be perfectly true and still not describe
-the traffic in the file.
+Two reasons. Nothing authenticates RTCP, so anything that can reach the port can
+assert a loss figure. If that figure moved the MOS, an attacker would control the
+quality number. And a reception report describes the path *from the sender to
+that reporter*, which on a mid-path capture is a different segment from the one
+in front of sipnab. The report may be perfectly true and still not describe the
+traffic in the file.
 
 So a stream's MOS may disagree with the far end's reported MOS. **That
-disagreement is information, not an error**: it localises the fault. Loss the
-reporter sees but sipnab does not is downstream of the capture point; loss
-sipnab measures but the reporter does not is upstream of it.
+disagreement is information, not an error** — it localises the fault. If the
+reporter sees loss and sipnab does not, the loss happened downstream of the
+capture point. If sipnab measures loss and the reporter does not, it happened
+upstream.
 
 ## Why there is more than one scale
 

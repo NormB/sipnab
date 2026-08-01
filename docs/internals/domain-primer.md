@@ -332,7 +332,7 @@ place where correct-looking code encoded a wrong protocol assumption.
 |---|---|---|
 | A 200 OK answers the INVITE | A re-INVITE's 200 overwrote `answered_at`; held calls reported absurd setup times | `invite_cseq` pinning in [`timing.rs`](../../src/sip/timing.rs) |
 | RTCP jitter is milliseconds | Reported jitter off by the clock-rate factor, and MOS fed the wrong units | Clock-rate conversion in [`stream_store.rs`](../../src/rtp/stream_store.rs) |
-| `cumulative_lost` has no sign bit | A 24-bit **signed** field zero-extended: net-duplicate streams reported ~16.7M lost packets | Sign extension in [`rtcp.rs`](../../src/rtp/rtcp.rs); the sign is preserved, so a net-duplicate stream reads as a small negative rather than "no loss" |
+| `cumulative_lost` has no sign bit | A 24-bit **signed** field zero-extended: net-duplicate streams reported ~16.7M lost packets | Sign extension in [`rtcp.rs`](../../src/rtp/rtcp.rs), keeping the sign, so a net-duplicate stream reads as a small negative rather than "no loss" |
 | Transit deltas never go negative | One reordered packet underflowed to a ~4.29e9 jitter spike | Signed `i32` delta in [`stream.rs`](../../src/rtp/stream.rs) |
 | Sequence numbers only increase | A "loss burst" of 65,000 packets once per wrap | `wrapping_add` comparison in [`stream.rs`](../../src/rtp/stream.rs) |
 | SDP role follows message type | Delayed-offer calls labeled backwards | [`determine_offer_answer()`](../../src/sip/sdp_timeline.rs) |
