@@ -395,7 +395,7 @@ impl DialogStore {
     /// This kept the last N messages until it was caught reporting a
     /// completed call as having no final response: on an `INVITE` dialog the
     /// `200 OK` arrives early, so position-based eviction took the OUTCOME
-    /// first and left the mid-call filler. See [`carries_dialog_outcome`] for
+    /// first and left the mid-call filler. See `carries_dialog_outcome` for
     /// what survives regardless of where it sits and why.
     ///
     /// Intended to be called from the existing periodic sweep. Idempotent: a

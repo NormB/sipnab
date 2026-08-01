@@ -491,7 +491,7 @@ impl StreamStore {
     ///   figures in the millions of milliseconds on captured video.
     /// - The clock rate was corrected *after* packets had been folded in at
     ///   the wrong one, and the estimator has not yet re-converged
-    ///   ([`JITTER_CONVERGENCE_PACKETS`] samples).
+    ///   (`JITTER_CONVERGENCE_PACKETS` samples).
     ///
     /// Callers that must print something can still read `RtpStream::jitter`;
     /// this is the accessor for callers that would rather say "unknown".
