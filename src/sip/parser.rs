@@ -44,6 +44,129 @@ const COMPACT_HEADERS: &[(u8, &str)] = &[
     (b'y', "Identity"),            // RFC 8224
 ];
 
+/// Longest request method this sniffer will consider.
+///
+/// RFC 3261 §7.1 puts no length bound on `extension-method = token`, but a
+/// bound is what keeps [`starts_sip_message`] from scanning far into a binary
+/// payload that happens to open with token-legal bytes. The longest method in
+/// the IANA registry is `SUBSCRIBE` (9); real extensions are shorter still
+/// (`KDMQ`, `SERVICE`, `QAUTH`). 32 leaves room for a vendor token nobody has
+/// registered while keeping the worst-case scan to 32 bytes.
+const MAX_METHOD_LEN: usize = 32;
+
+/// Whether `b` may appear in an RFC 3261 `token`, and so in a method name.
+///
+/// `token = 1*(alphanum / "-" / "." / "!" / "%" / "*" / "_" / "+" / "`" / "'"
+/// / "~")` (RFC 3261 §25.1). Nothing outside this set can begin a request
+/// line, which is what makes the check a cheap first-byte reject for binary
+/// payloads: an RTP packet starts `0x80`, and dies here.
+const fn is_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'-' | b'.' | b'!' | b'%' | b'*' | b'_' | b'+' | b'`' | b'\'' | b'~'
+        )
+}
+
+/// Whether `data` begins a SIP message, accepting **any** RFC 3261 method.
+///
+/// The superset of [`super::is_sip_message`], which sniffs the first line
+/// against a hard-coded list of the fourteen registered methods and so
+/// discarded every request using an extension method — `extension-method =
+/// token` is part of the `Method` production (RFC 3261 §7.1), not a deviation
+/// from it. Kamailio's `KDMQ` alone is 11,623 messages of the validation
+/// corpus (9% of one capture's SIP), and they were dropped before
+/// [`parse_sip_bytes`] — which handles them correctly, keeping the token in
+/// [`SipMethod::Custom`] — ever saw them.
+///
+/// Recognising a method is not the discriminator here and never was; the
+/// ` SIP/2.0` version token terminating the first line is. So this checks the
+/// shape RFC 3261 §7.1 actually specifies, `Method SP Request-URI SP
+/// SIP-Version`, and requires:
+///
+/// - a non-empty method of at most `MAX_METHOD_LEN` token bytes,
+/// - a non-empty request-URI between the two spaces,
+/// - a CRLF-terminated first line ending in ` SIP/2.0` (SP-anchored, so a
+///   glued `...ASIP/2.0` is rejected).
+///
+/// Responses take the earlier `SIP/2.0 ` prefix branch unchanged.
+///
+/// The strictness matters: this runs on every packet the pipeline classifies,
+/// including the out-of-`--portrange` ones it only counts, and there is no
+/// parser behind that second decision to catch a false positive. Measured
+/// against `tshark` over the corpus, widening the method set recovered 11,623
+/// messages and those were exactly the 11,623 extension-method requests
+/// `tshark` reports, file by file — nothing else moved. HTTP (`OPTIONS /
+/// HTTP/1.1`), RTSP, and binary media are all rejected: the first two by the
+/// version token, the third on its first byte.
+///
+/// # Arguments
+///
+/// * `data` — raw captured bytes (a UDP payload, or the head of a TCP stream).
+///
+/// # Returns
+///
+/// `true` when `data` opens a SIP request or response first line. Only the
+/// first line is inspected; the message is not validated. Inputs shorter than
+/// 8 bytes are always `false`.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::sip::parser::starts_sip_message;
+///
+/// // An extension method the registry does not name is still SIP.
+/// assert!(starts_sip_message(b"KDMQ sip:node@example.com SIP/2.0\r\n\r\n"));
+/// assert!(starts_sip_message(b"SIP/2.0 200 OK\r\n\r\n"));
+/// // HTTP borrows the OPTIONS token but not the version.
+/// assert!(!starts_sip_message(b"OPTIONS / HTTP/1.1\r\n\r\n"));
+/// ```
+pub fn starts_sip_message(data: &[u8]) -> bool {
+    // Shortest conceivable first line is longer than this; the check also
+    // makes the slicing below total.
+    if data.len() < 8 {
+        return false;
+    }
+
+    // Response: "SIP/2.0 200 OK".
+    if data.starts_with(b"SIP/2.0 ") {
+        return true;
+    }
+
+    // Request: METHOD SP Request-URI SP "SIP/2.0". Walk the method token
+    // first — a non-token byte ends the sniff immediately, which is how
+    // binary media (RTP opens `0x80`) is rejected without scanning for CRLF.
+    let scan_end = MAX_METHOD_LEN.min(data.len());
+    let mut method_len = 0;
+    while method_len < scan_end && is_token_byte(data[method_len]) {
+        method_len += 1;
+    }
+    // An empty method, or a method that ran past the cap without reaching a
+    // space, is not a request line.
+    if method_len == 0 || data.get(method_len) != Some(&b' ') {
+        return false;
+    }
+
+    let Some(line_end) = find_crlf(data) else {
+        return false;
+    };
+    let first_line = &data[..line_end];
+    // SP-anchored so `sip:aSIP/2.0` (no space) does not satisfy it.
+    if !first_line.ends_with(b" SIP/2.0") {
+        return false;
+    }
+    // A request-URI has to sit between the method's space and the version's,
+    // and be non-empty. Without this, `INFO SIP/2.0` — a first line that both
+    // ends in the version token and starts with a method, but carries no URI —
+    // reaches `parse_first_line`, which rejects it as `InvalidFirstLine` and
+    // logs a "SIP parse error" for what was never a message. The subtraction
+    // is also what keeps the slice below in bounds when the method's space and
+    // the version's are the same byte.
+    let uri_start = method_len + 1;
+    let uri_end = first_line.len() - b" SIP/2.0".len();
+    uri_start <= uri_end && !first_line[uri_start..uri_end].trim_ascii().is_empty()
+}
+
 /// Parse a raw byte slice into a [`SipMessage`].
 ///
 /// The caller supplies network-layer metadata (addresses, ports, transport)

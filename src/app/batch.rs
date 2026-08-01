@@ -685,6 +685,15 @@ impl BatchRunner {
         let kill_worker_active =
             (kill_scanner_active || !kill_targets.is_empty()) && transmit_permit.is_some();
 
+        // Deliberately NOT armed by `--fail2ban` alone. The obvious wiring —
+        // "the flag feeds a banning tool, so give it a detector" — was measured
+        // on a real carrier trunk and produces 7008 detections naming 180
+        // peers, because the behavioural signature counts OPTIONS and the
+        // busiest "scanners" are the carrier's own PBXes sending keepalives
+        // (2713 from one peer in 11 seconds). That is the same mass-ban as the
+        // blanket emission this replaced, only wearing the authority of a real
+        // detection. Arm it once the signature can tell a keepalive from an
+        // enumeration; until then `--fail2ban` warns rather than lying.
         let scanner_detector = if kill_scanner_active {
             let custom = cli
                 .kill_ua
@@ -695,6 +704,18 @@ impl BatchRunner {
         } else {
             None
         };
+
+        // An operator who asked for fail2ban output and gets an empty file will
+        // read it as "nothing attacked me", which is the most dangerous way for
+        // a security tool to be silent. Say so once, at the start.
+        if cli.fail2ban && scanner_detector.is_none() {
+            tracing::warn!(
+                "--fail2ban writes scanner detections, but no detector is running, so this \
+                 run will emit nothing. An empty jail log means 'nothing was detected', not \
+                 'nothing happened'. Add --kill-scanner to detect (offline it only reports; \
+                 it never transmits), or --kill-ua <substring> to match a specific agent."
+            );
+        }
 
         // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
         let scanner_kill_handle: Option<ScannerKillHandle> =
@@ -1469,6 +1490,25 @@ impl BatchRunner {
                 counters.rtp_count,
             );
 
+            // What `--portrange` discarded, beside the totals it reduced.
+            // Without this the counts above read as complete.
+            let skipped = crate::pipeline::portrange_skip_report();
+            if skipped.messages > 0 {
+                let top: Vec<String> = skipped
+                    .ports
+                    .iter()
+                    .take(5)
+                    .map(|p| format!("{} ({})", p.port, p.messages))
+                    .collect();
+                eprintln!(
+                    "NOT ANALYSED: {} further SIP message(s) were seen on ports outside \
+                     --portrange and are in none of the totals above. Busiest: {}. \
+                     Re-run with --portrange 1-65535 to include them.",
+                    skipped.messages,
+                    top.join(", ")
+                );
+            }
+
             // Helpful guidance when no SIP signalling was found. If RTP was
             // parsed, the capture was readable — just media-only — so soften
             // the message rather than implying a parse failure.
@@ -2153,14 +2193,12 @@ fn dispatch_sip_output<W: std::io::Write>(
         let r = output::json::write_message_json(msg, sink.writer());
         sink.record(r);
     } else if cli.fail2ban {
-        // Fail2ban output for scanner-like messages
-        if msg.is_request {
-            let ua = msg.user_agent();
-            let method = msg.method.as_ref().map(|m| m.as_str());
-            let event = output::format_scanner_event(&msg.src_addr.to_string(), ua, method);
-            sink.write_str(&event);
-            sink.write_str("\n");
-        }
+        // Detections only. The detector paths above write to this same sink;
+        // nothing is emitted per message here. This used to print a line for
+        // every SIP request, which on a real carrier trunk named 180 distinct
+        // peers — the trunk, the SBCs and the PBX — to a tool whose whole job
+        // is to ban what it is handed. The branch stays so `--fail2ban` still
+        // suppresses ordinary per-message output.
     } else if cli.text_dump {
         // Raw SIP message text dump
         let raw = String::from_utf8_lossy(&msg.raw);
@@ -2195,15 +2233,9 @@ fn render_sip_output(
         output::json::write_message_json(msg, &mut bytes).ok()?;
         Some(String::from_utf8_lossy(&bytes).into_owned())
     } else if cli.fail2ban {
-        if !msg.is_request {
-            return None;
-        }
-        let ua = msg.user_agent();
-        let method = msg.method.as_ref().map(|m| m.as_str());
-        Some(format!(
-            "{}\n",
-            output::format_scanner_event(&msg.src_addr.to_string(), ua, method)
-        ))
+        // Detections only — see `dispatch_sip_output`. A request is not a
+        // detection, and this is the `--group-by` twin of the same defect.
+        None
     } else if cli.text_dump {
         Some(format!("{}\n", String::from_utf8_lossy(&msg.raw)))
     } else {
@@ -2744,13 +2776,17 @@ mod tests {
             output::json::message_to_json_pretty(&msg),
         );
 
-        // fail2ban (request path): one event line.
+        // fail2ban: a plain request is NOT a detection, so nothing is written.
+        // This assertion used to require an event line for any request, which
+        // is the whole defect: fail2ban bans what it is handed, and every peer
+        // on a trunk sends requests. Detections reach the sink from the
+        // detector paths, not from here.
         let mut cli = base_cli();
         cli.fail2ban = true;
         let out = String::from_utf8(sink_bytes(&cli, None)).expect("utf8");
         assert!(
-            out.contains("10.0.0.1") && out.ends_with('\n'),
-            "fail2ban event line expected, got {out:?}"
+            out.is_empty(),
+            "an ordinary request must produce no fail2ban output, got {out:?}"
         );
 
         // raw text dump: raw message + newline.

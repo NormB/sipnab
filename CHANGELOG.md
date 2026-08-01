@@ -8,6 +8,81 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+- **`--fail2ban` emitted a line for every SIP request, with no detector in the
+  path at all.** The flag exists to hand detections to a tool whose entire job
+  is to ban what it is given, and it was handing over the trunk. On an ordinary
+  11-second carrier capture: **4611 lines naming 180 distinct peers** — the
+  carrier's SBCs, the PBX and the customer phones. It was pinned that way by a
+  golden test, which expected a `scanner_detected` line for a normal two-party
+  call's INVITE, ACK and BYE.
+
+  Per-message emission is gone from both the plain and `--group-by` paths.
+  Detections still reach the same sink from the detector paths. With a detector
+  armed the same capture now yields 2397 lines from 14 sources instead of 7153
+  from 180.
+
+  `--fail2ban` alone now produces nothing, and says so — an empty jail log reads
+  as "nothing attacked me", which is the most dangerous way for a security tool
+  to be silent.
+
+- **Scanner and fraud detection measured their windows in wall-clock time**, so
+  a capture replayed from disk had no window at all: nothing ever expired and
+  every counter was a lifetime total. Same defect class as the `SweepClock` fix
+  in 0.5.72. A source reported as "6 calls in 60s" had a true busiest minute of
+  **4**. Now driven by packet timestamps; on one capture, scanner sources fall
+  from 17 to 14 and detections unsupported by packet time from 2 to 0.
+
+- **Wangiri fraud detection counted every call as a short call.** The duration
+  was read at the INVITE, when the dialog had just been created from that very
+  message — so every call measured 0 seconds. The per-prefix tally then walked
+  *every* call in the window rather than the short ones, so the prefix it named
+  could be one where nothing short ever happened. The one alert on the sample
+  set claimed "3 short calls to prefix … in 60s" from a source that sent 3
+  INVITEs and got **no response at all** — no call ended, none was short.
+  Duration is now measured when a dialog reaches a terminal state, keyed by
+  Call-ID so a `200 OK` to a `BYE` cannot count it twice.
+
+- **The 60-second volume window was 61 seconds**, from `<=` on a truncated
+  `as_secs()`. Fixed to a strict comparison. Reported separately from the
+  over-count above, which had a different cause.
+
+- **`--kill-scanner` could wedge the entire MCP surface permanently.** The
+  worker published outcomes with a *blocking* send onto a 256-slot channel that
+  nothing in production ever drained, so it stalled on outcome 257, stopped
+  draining requests, and the request queue filled behind it. `send_kill` then
+  blocked forever — on the capture thread, while holding the dialog and stream
+  write locks, which every MCP tool needs to read. Reachable in seconds on a
+  live interface: one sample capture produces 7153 detections.
+
+  Neither direction can make a thread wait now. Outcomes are booked in a tally
+  before being offered, so a dropped stream event is never a dropped outcome,
+  and totals are logged at shutdown.
+
+- **SIP requests with an extension method were dropped from every output.**
+  11,623 messages across the sample corpus. The parser matched a 14-name list,
+  when RFC 3261 §7.1 makes the ` SIP/2.0` token the discriminator, not the
+  method. One capture had 1,215 dialogs holding only a `200 OK` whose request
+  had been deleted.
+
+- **`--portrange` discarded a third of the SIP and reported the remainder as
+  complete** — 31.2% of messages, 37.7% of dialogs on one capture. Widening the
+  default was rejected because it trades a silent 32% loss for a silent 15% one
+  and merely looks fixed: the traffic spans 1,198 distinct service ports. Out-of-range
+  SIP is now counted per service port and reported beside the totals it reduced,
+  so the numbers reconcile. Live capture cannot report this — `--portrange`
+  becomes the BPF filter, so the kernel drops the traffic first.
+
+### Security
+- The documented fail2ban jail in `docs/examples.md` used `maxretry = 1` and
+  `bantime = 86400` with no `ignoreip`, which on a real trunk is a day-long ban
+  of the carrier on first contact. Rewritten with `maxretry = 5`,
+  `bantime = 3600`, a commented `ignoreip` for trunk peers, a `fail2ban-regex`
+  dry run, and an offline step that counts who the jail would ban from a capture
+  of a normal hour before anything is enabled.
+
 ## [0.5.72] - 2026-08-01
 
 ### Security

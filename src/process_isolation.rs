@@ -8,14 +8,33 @@
 //! blast radius: a bug in the kill path cannot corrupt the main capture
 //! pipeline or dialog tracking state.
 //!
+//! # The capture thread never waits on this module
+//!
+//! Isolation is only isolation if the isolated thread cannot stall the one
+//! that feeds it. The capture loop offers kill requests *while holding the
+//! dialog and stream write locks*, so a wait here is a wait for packet
+//! processing and for every reader of those stores — the REST API, the TUI
+//! and every MCP tool. Both channels in this module are therefore offered to
+//! and never waited on, in both directions, and what would have been
+//! backpressure is a counted, logged drop instead ([`KillCounts`]).
+//!
+//! It used to be the other way round. The worker published each outcome with
+//! a blocking send onto a 256-slot channel that nothing in production drained;
+//! it stalled on outcome 257, stopped draining requests, the request queue
+//! filled behind it, and the capture thread blocked forever handing over the
+//! next one. `--kill-scanner` on busy traffic therefore froze the capture and
+//! the whole MCP surface, permanently, after about 512 detections.
+//!
 //! Future enhancement: replace threads with `fork()`/`Command` for true
 //! process-level isolation with separate address spaces.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, UdpSocket};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, TrySendError};
 use serde::{Deserialize, Serialize};
 
 use crate::security::transmit_guard::TransmitPermit;
@@ -325,41 +344,215 @@ pub enum KillResponse {
     },
 }
 
+/// What the scanner-kill defense actually did, as a snapshot.
+///
+/// This is the *ledger*: every request the worker took a decision on is
+/// counted here, and it is complete whether or not anybody is reading the
+/// per-event stream behind [`ScannerKillHandle::try_recv_response`]. Getting
+/// that the wrong way round is the whole of the defect this type exists to
+/// close — outcomes used to live only in a bounded channel nothing drained,
+/// so they were both invisible and, once 256 of them had piled up, fatal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KillCounts {
+    /// Responses the worker put on the wire.
+    pub sent: u64,
+    /// Requests suppressed by the global or per-destination rate limiter.
+    pub rate_limited: u64,
+    /// Requests refused on policy grounds: a broadcast/multicast destination
+    /// or an empty response body.
+    pub rejected: u64,
+    /// Requests that reached a socket and failed there.
+    pub errored: u64,
+    /// Kill requests the capture thread could not hand over because the
+    /// worker's queue was full, and which were therefore dropped.
+    ///
+    /// Dropping is deliberate: the capture thread holds the dialog and stream
+    /// write locks while it offers a request, so waiting there stops the
+    /// capture and every reader of those locks. A nonzero value means the
+    /// responder fell behind a flood, not that anything is broken — under a
+    /// flood almost every queued request would have been rate-limited anyway.
+    pub dropped_requests: u64,
+    /// Outcomes that did not fit on the observation channel because nothing
+    /// was draining it.
+    ///
+    /// They are still counted in the four class totals above; only the
+    /// per-event stream lost them.
+    pub unobserved_outcomes: u64,
+}
+
+impl KillCounts {
+    /// Total requests the worker took a decision on — sent, rate-limited,
+    /// rejected and errored together.
+    ///
+    /// Every request accepted by [`ScannerKillHandle::send_kill`] ends up in
+    /// exactly one of those four classes, so this is what an accepted request
+    /// count must eventually equal.
+    pub fn outcomes(&self) -> u64 {
+        self.sent + self.rate_limited + self.rejected + self.errored
+    }
+
+    /// Whether anything was dropped — either a request the capture thread
+    /// could not hand over, or an outcome that did not fit on the stream.
+    pub fn any_dropped(&self) -> bool {
+        self.dropped_requests > 0 || self.unobserved_outcomes > 0
+    }
+}
+
+/// The live counters behind [`KillCounts`], shared by the handle and the
+/// worker thread.
+///
+/// Every mutator is a relaxed atomic add: recording an outcome must never be
+/// able to block, because the thread doing the recording is the one answering
+/// scanners, and the thread reading the result is the one capturing packets.
+#[derive(Debug, Default)]
+struct KillTally {
+    /// See [`KillCounts::sent`].
+    sent: AtomicU64,
+    /// See [`KillCounts::rate_limited`].
+    rate_limited: AtomicU64,
+    /// See [`KillCounts::rejected`].
+    rejected: AtomicU64,
+    /// See [`KillCounts::errored`].
+    errored: AtomicU64,
+    /// See [`KillCounts::dropped_requests`].
+    dropped_requests: AtomicU64,
+    /// See [`KillCounts::unobserved_outcomes`].
+    unobserved_outcomes: AtomicU64,
+    /// Set the first time a request is dropped, so the operator is told once
+    /// rather than once per dropped packet.
+    drop_reported: AtomicBool,
+    /// Set the first time an outcome does not fit on the observation channel.
+    unobserved_reported: AtomicBool,
+}
+
+impl KillTally {
+    /// Record one worker decision. Called before the outcome is offered to
+    /// anyone, so an outcome is on the books even if nothing ever reads it.
+    fn record(&self, outcome: &KillResponse) {
+        let counter = match outcome {
+            KillResponse::Sent => &self.sent,
+            KillResponse::RateLimited => &self.rate_limited,
+            KillResponse::Rejected { .. } => &self.rejected,
+            KillResponse::Error { .. } => &self.errored,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a kill request that was dropped because the worker's queue was
+    /// full, and say so once.
+    fn note_dropped_request(&self) {
+        self.dropped_requests.fetch_add(1, Ordering::Relaxed);
+        if !self.drop_reported.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "scanner-kill: the worker's request queue is full \
+                 ({KILL_REQUEST_CAPACITY} pending) and kill responses are now \
+                 being DROPPED. They are dropped rather than queued because \
+                 the capture thread offers them while holding the dialog and \
+                 stream locks, and waiting there would stop the capture and \
+                 every reader of those locks. Detection, alerting and \
+                 reporting are unaffected; the running total is logged when \
+                 the worker shuts down."
+            );
+        }
+    }
+
+    /// Count an outcome that did not fit on the observation channel, and say
+    /// so once.
+    fn note_unobserved_outcome(&self) {
+        self.unobserved_outcomes.fetch_add(1, Ordering::Relaxed);
+        if !self.unobserved_reported.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "scanner-kill: nothing is draining the kill-outcome channel, \
+                 so individual outcomes are no longer observable through it. \
+                 They are still counted — see ScannerKillHandle::counts() and \
+                 the totals logged at shutdown."
+            );
+        }
+    }
+
+    /// Take a consistent-enough snapshot for reporting. The counters are read
+    /// one at a time, so a snapshot taken mid-flood may be a few events stale;
+    /// it is never wrong about what has already been counted.
+    fn snapshot(&self) -> KillCounts {
+        KillCounts {
+            sent: self.sent.load(Ordering::Relaxed),
+            rate_limited: self.rate_limited.load(Ordering::Relaxed),
+            rejected: self.rejected.load(Ordering::Relaxed),
+            errored: self.errored.load(Ordering::Relaxed),
+            dropped_requests: self.dropped_requests.load(Ordering::Relaxed),
+            unobserved_outcomes: self.unobserved_outcomes.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// Handle for the main thread to communicate with the scanner-kill worker.
 ///
-/// Sending a `KillRequest` queues it for the worker thread. Call
+/// Sending a `KillRequest` offers it to the worker thread. Call
 /// `shutdown` to cleanly stop the worker.
+///
+/// # Why nothing here blocks
+///
+/// The thread that calls [`Self::send_kill`] is the capture thread, and it
+/// calls it while holding the dialog and stream write locks. Anything that
+/// blocks it therefore stops packet processing *and* every consumer of those
+/// stores — the REST API, the TUI and the whole MCP surface, not just the
+/// kill path. So the request queue is offered to, never waited on, and the
+/// worker publishes outcomes the same way. What would have been backpressure
+/// is a counted drop instead: see [`KillCounts`].
 pub struct ScannerKillHandle {
-    /// Channel to queue kill requests for the worker thread.
-    tx: Sender<KillRequest>,
-    /// Channel of per-request outcomes sent back by the worker.
+    /// Channel to queue kill requests for the worker thread. `None` after
+    /// [`Self::shutdown`], which drops the sender so the worker's channel
+    /// disconnects and it is guaranteed to exit.
+    tx: Option<Sender<KillRequest>>,
+    /// Best-effort channel of per-request outcomes sent back by the worker.
     resp_rx: Receiver<KillResponse>,
     /// Join handle for the worker thread; taken on shutdown.
     thread: Option<std::thread::JoinHandle<()>>,
     /// Set on the first failed send so a dead worker is reported exactly
     /// once, loudly, instead of every kill attempt silently vanishing.
-    defense_disabled: std::sync::atomic::AtomicBool,
+    defense_disabled: AtomicBool,
+    /// The authoritative record of what the worker did, shared with it.
+    tally: Arc<KillTally>,
 }
 
 impl ScannerKillHandle {
-    /// Send a kill request to the worker thread.
+    /// Offer a kill request to the worker thread. Never blocks.
     ///
-    /// Returns `Ok(())` if the request was queued. The actual send result
-    /// can be retrieved via `recv_response`.
+    /// Returns `Ok(())` if the request was queued. The outcome is recorded in
+    /// [`Self::counts`] and, best-effort, published on the channel behind
+    /// [`Self::try_recv_response`].
     ///
-    /// If the worker thread has died (panic or unexpected exit), the send
-    /// fails, an error is logged once, and `defense_disabled` reports `true`
-    /// from then on — the kill defense is gone for the rest of the run.
-    pub fn send_kill(
-        &self,
-        request: KillRequest,
-    ) -> Result<(), crossbeam_channel::SendError<KillRequest>> {
-        let result = self.tx.send(request);
-        if result.is_err()
-            && !self
-                .defense_disabled
-                .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
+    /// # Errors
+    ///
+    /// * `TrySendError::Full` — the worker is behind and the request was
+    ///   dropped. Counted in [`KillCounts::dropped_requests`] and warned about
+    ///   once. The alternative, waiting, wedges the capture thread and
+    ///   everything reading the stores it has locked.
+    /// * `TrySendError::Disconnected` — the worker thread has died (panic or
+    ///   unexpected exit) or has already been shut down. An error is logged
+    ///   once and [`Self::defense_disabled`] reports `true` from then on: the
+    ///   kill defense is gone for the rest of the run.
+    pub fn send_kill(&self, request: KillRequest) -> Result<(), TrySendError<KillRequest>> {
+        let Some(tx) = self.tx.as_ref() else {
+            self.report_defense_disabled();
+            return Err(TrySendError::Disconnected(request));
+        };
+        match tx.try_send(request) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(request)) => {
+                self.tally.note_dropped_request();
+                Err(TrySendError::Full(request))
+            }
+            Err(TrySendError::Disconnected(request)) => {
+                self.report_defense_disabled();
+                Err(TrySendError::Disconnected(request))
+            }
+        }
+    }
+
+    /// Report, exactly once, that the kill defense is no longer armed.
+    fn report_defense_disabled(&self) {
+        if !self.defense_disabled.swap(true, Ordering::Relaxed) {
             tracing::error!(
                 "scanner-kill worker thread is dead (panicked or exited \
                  unexpectedly); the --kill-scanner defense is DISABLED for \
@@ -367,7 +560,6 @@ impl ScannerKillHandle {
                  longer answered"
             );
         }
-        result
     }
 
     /// Whether the worker thread is still running.
@@ -378,23 +570,77 @@ impl ScannerKillHandle {
     /// Whether the kill defense has been marked dead (a send failed because
     /// the worker exited). Once true, stays true.
     pub fn defense_disabled(&self) -> bool {
-        self.defense_disabled
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.defense_disabled.load(Ordering::Relaxed)
     }
 
-    /// Try to receive a response from the worker (non-blocking).
+    /// What this worker has done so far: sends, suppressions, refusals,
+    /// failures, and anything dropped.
+    ///
+    /// This is the reachable form of the kill outcome. It does not depend on
+    /// anybody polling [`Self::try_recv_response`], which is exactly why it
+    /// exists.
+    pub fn counts(&self) -> KillCounts {
+        self.tally.snapshot()
+    }
+
+    /// Try to receive one outcome from the worker (non-blocking).
+    ///
+    /// Best-effort: this is a stream of individual outcomes for a caller that
+    /// wants them as they happen, and outcomes that did not fit while nobody
+    /// was draining it are missing from it (counted in
+    /// [`KillCounts::unobserved_outcomes`]). [`Self::counts`] is the complete
+    /// record; use this only when the individual events matter.
     pub fn try_recv_response(&self) -> Option<KillResponse> {
         self.resp_rx.try_recv().ok()
     }
 
-    /// Shut down the worker thread and wait for it to exit.
+    /// Shut down the worker thread, wait for it to exit, and log what the
+    /// defense did.
     pub fn shutdown(&mut self) {
-        // Send shutdown request (ignore error if channel is already closed)
-        let _ = self.tx.send(KillRequest::Shutdown);
-        if let Some(handle) = self.thread.take()
-            && let Err(e) = handle.join()
-        {
-            tracing::error!("Scanner-kill worker thread panicked: {e:?}");
+        // Ask the worker to stop, then DROP the sender. The ask is
+        // best-effort — the queue may be full, and waiting for a slot is the
+        // blocking this type exists to avoid — so the sender being dropped is
+        // what actually guarantees an exit: the worker drains whatever is
+        // queued, sees a disconnected channel, and returns. Keeping the
+        // sender alive after a failed ask would leave the worker parked in
+        // `recv()` forever with this thread parked in `join()`.
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.try_send(KillRequest::Shutdown);
+        }
+        if let Some(handle) = self.thread.take() {
+            if let Err(e) = handle.join() {
+                tracing::error!("Scanner-kill worker thread panicked: {e:?}");
+            }
+            self.log_totals();
+        }
+    }
+
+    /// Log what the kill defense did over the run. Warns when anything was
+    /// dropped, so a flood that outran the responder is visible without
+    /// anyone having asked for counters.
+    fn log_totals(&self) {
+        let counts = self.counts();
+        if counts.any_dropped() {
+            tracing::warn!(
+                "Scanner-kill totals: {} sent, {} rate-limited, {} rejected, \
+                 {} failed; {} request(s) dropped because the worker was \
+                 behind, {} outcome(s) unobserved because nothing was reading \
+                 the outcome channel",
+                counts.sent,
+                counts.rate_limited,
+                counts.rejected,
+                counts.errored,
+                counts.dropped_requests,
+                counts.unobserved_outcomes,
+            );
+        } else {
+            tracing::info!(
+                "Scanner-kill totals: {} sent, {} rate-limited, {} rejected, {} failed",
+                counts.sent,
+                counts.rate_limited,
+                counts.rejected,
+                counts.errored,
+            );
         }
     }
 }
@@ -531,8 +777,11 @@ impl PerDstRateLimiter {
 struct ScannerKillWorker {
     /// Inbound channel of kill requests from the main thread.
     rx: Receiver<KillRequest>,
-    /// Outbound channel of per-request outcomes back to the main thread.
+    /// Best-effort outbound channel of per-request outcomes back to the main
+    /// thread. Offered to, never waited on — see [`ScannerKillHandle`].
     resp_tx: Sender<KillResponse>,
+    /// The authoritative record of outcomes, shared with the handle.
+    tally: Arc<KillTally>,
     /// Global responses-per-second limiter.
     rate_limiter: RateLimiter,
     /// Per-destination-IP limiter (amplification mitigation).
@@ -584,8 +833,21 @@ impl ScannerKillWorker {
                 } => {
                     let response =
                         self.process_send(dst_addr, dst_port, src_addr, src_port, &response_bytes);
-                    // Best-effort send of response; ignore if main thread dropped its end
-                    let _ = self.resp_tx.send(response);
+                    // Book the outcome BEFORE offering it to anyone. The
+                    // tally is what makes the outcome reachable; the channel
+                    // is a convenience on top of it.
+                    self.tally.record(&response);
+                    // Offer, never wait. Blocking here is the defect: nothing
+                    // in production drains this channel, so the worker stalled
+                    // on outcome 257, stopped draining requests, and the
+                    // capture thread — holding the dialog and stream write
+                    // locks — blocked handing over request ~513. The capture
+                    // and every reader of those locks stopped with it.
+                    // `Disconnected` needs no note: the handle is gone, so
+                    // there is no longer anyone to tell.
+                    if let Err(TrySendError::Full(_)) = self.resp_tx.try_send(response) {
+                        self.tally.note_unobserved_outcome();
+                    }
                 }
             }
         }
@@ -708,6 +970,19 @@ fn is_broadcast_or_multicast(addr: IpAddr) -> bool {
 /// Default rate limit for scanner-kill responses (per second).
 const DEFAULT_RATE_LIMIT: u32 = 10;
 
+/// How many kill requests may be in flight to the worker before further ones
+/// are dropped rather than made to wait.
+///
+/// The depth only has to cover a burst: the worker's per-request cost is a
+/// rate-limit check plus, for the few that pass it, one `sendto`. Anything
+/// deeper than a burst is a queue of responses to scanner packets that are
+/// already stale by the time they would be sent.
+const KILL_REQUEST_CAPACITY: usize = 256;
+
+/// How many outcomes may be waiting on the observation channel before further
+/// ones are counted-but-not-streamed.
+const KILL_OUTCOME_CAPACITY: usize = 256;
+
 /// Spawn the scanner-kill worker thread and return a handle for communication.
 ///
 /// The worker runs in a dedicated thread with its own rate limiter. Kill
@@ -734,8 +1009,9 @@ pub fn spawn_scanner_kill_worker(
     permit: TransmitPermit,
 ) -> Result<ScannerKillHandle, std::io::Error> {
     let rate = rate_limit.unwrap_or(DEFAULT_RATE_LIMIT);
-    let (tx, rx) = crossbeam_channel::bounded(256);
-    let (resp_tx, resp_rx) = crossbeam_channel::bounded(256);
+    let (tx, rx) = crossbeam_channel::bounded(KILL_REQUEST_CAPACITY);
+    let (resp_tx, resp_rx) = crossbeam_channel::bounded(KILL_OUTCOME_CAPACITY);
+    let tally = Arc::new(KillTally::default());
 
     // Bind the send sockets once, up front. Either family may be unavailable
     // (e.g. no IPv6 stack); a destination whose family has no socket is
@@ -751,6 +1027,7 @@ pub fn spawn_scanner_kill_worker(
     let worker = ScannerKillWorker {
         rx,
         resp_tx,
+        tally: Arc::clone(&tally),
         rate_limiter: RateLimiter::new(rate),
         per_dst_limiter: PerDstRateLimiter::new(),
         sock_v4,
@@ -764,10 +1041,11 @@ pub fn spawn_scanner_kill_worker(
         .spawn(move || worker.run())?;
 
     Ok(ScannerKillHandle {
-        tx,
+        tx: Some(tx),
         resp_rx,
         thread: Some(thread),
-        defense_disabled: std::sync::atomic::AtomicBool::new(false),
+        defense_disabled: AtomicBool::new(false),
+        tally,
     })
 }
 
@@ -1290,8 +1568,8 @@ mod tests {
         // Build a handle around a worker thread that dies immediately
         // (simulating a panic in the worker loop): its rx end drops on
         // unwind, exactly like a real panic in ScannerKillWorker::run.
-        let (tx, rx) = crossbeam_channel::bounded::<KillRequest>(256);
-        let (_resp_tx, resp_rx) = crossbeam_channel::bounded::<KillResponse>(256);
+        let (tx, rx) = crossbeam_channel::bounded::<KillRequest>(KILL_REQUEST_CAPACITY);
+        let (_resp_tx, resp_rx) = crossbeam_channel::bounded::<KillResponse>(KILL_OUTCOME_CAPACITY);
         let thread = std::thread::Builder::new()
             .name("scanner-kill-test".to_string())
             .spawn(move || {
@@ -1306,10 +1584,11 @@ mod tests {
         }
 
         let mut handle = ScannerKillHandle {
-            tx,
+            tx: Some(tx),
             resp_rx,
             thread: Some(thread),
-            defense_disabled: std::sync::atomic::AtomicBool::new(false),
+            defense_disabled: AtomicBool::new(false),
+            tally: Arc::new(KillTally::default()),
         };
 
         assert!(!handle.is_alive(), "dead worker must report not-alive");
@@ -1329,6 +1608,339 @@ mod tests {
 
         // shutdown() joins the panicked thread without propagating the panic.
         handle.shutdown();
+    }
+
+    /// A kill flood must never block the thread that reports the kill.
+    ///
+    /// `send_kill` is called from the packet loop while it holds the dialog
+    /// and stream write locks, so anything that blocks it stops the capture
+    /// AND every reader of those stores — the REST API, the TUI, and every
+    /// MCP tool, not just the kill one.
+    ///
+    /// The block was two bounded channels deep, so this drives the real
+    /// capacities rather than a shrunk stand-in: nothing in production drains
+    /// the outcome channel, so the worker stalled publishing outcome
+    /// `KILL_OUTCOME_CAPACITY + 1`, therefore stopped draining requests, the
+    /// request queue filled behind it, and request
+    /// `KILL_REQUEST_CAPACITY + KILL_OUTCOME_CAPACITY + 1` blocked forever.
+    /// This test never reads the outcome channel — reproducing production
+    /// exactly — and the flood is sized past both bounds. The producer runs on
+    /// its own thread and reports back, so the assertion is a timeout and a
+    /// regression fails instead of hanging CI.
+    #[test]
+    fn a_kill_flood_never_blocks_the_sender() {
+        // Comfortably past request-capacity + outcome-capacity, so the stall
+        // is reached even when the worker drains a good share on the way.
+        let flood = 2 * (KILL_REQUEST_CAPACITY + KILL_OUTCOME_CAPACITY);
+        // Never implicitly dropped: `Drop` calls `shutdown`, which joins the
+        // worker, and `join` has no timeout — so a wedged worker would hang
+        // the whole test binary during teardown instead of failing here. Only
+        // the success path, which has just proved the worker is still
+        // draining, shuts down.
+        let handle = std::mem::ManuallyDrop::new(Arc::new(
+            spawn_scanner_kill_worker(Some(u32::MAX), None, live_permit()).expect("spawn worker"),
+        ));
+        // One loopback destination: the per-destination limiter caps real
+        // sends at 3/min, so exactly three datagrams reach 127.0.0.1 and every
+        // other outcome is a rate-limit decision. Nothing leaves the host.
+        let dst = localhost_v4();
+        let producer = Arc::clone(&handle);
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<usize>(1);
+        let flooder = std::thread::Builder::new()
+            .name("kill-flood".to_string())
+            .spawn(move || {
+                let mut accepted = 0usize;
+                for _ in 0..flood {
+                    if producer
+                        .send_kill(KillRequest::SendResponse {
+                            dst_addr: dst,
+                            dst_port: 59_999,
+                            src_addr: dst,
+                            src_port: 5060,
+                            response_bytes: sample_response(),
+                        })
+                        .is_ok()
+                    {
+                        accepted += 1;
+                    }
+                }
+                let _ = done_tx.send(accepted);
+            })
+            .expect("spawn flood producer");
+
+        let accepted = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "send_kill blocked: {flood} kill requests did not drain in 10s. \
+                     The kill side channel has wedged its producer — in production \
+                     that producer is the capture loop, holding the dialog and \
+                     stream write locks, so the capture and every MCP tool stop \
+                     with it."
+                )
+            });
+        flooder.join().expect("flood producer must not panic");
+        assert!(accepted > 0, "the flood must actually reach the worker");
+
+        // The worker must still be draining. Nothing here reads the outcome
+        // channel — production does not either — so a worker that waits to
+        // publish an outcome stops taking requests altogether and the ledger
+        // stops advancing. That is the wedge seen from the outside, and it is
+        // what used to back up into the capture thread.
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+        let counts = loop {
+            let counts = handle.counts();
+            if counts.outcomes() == accepted as u64 {
+                break counts;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the worker stopped: only {} of {accepted} accepted requests \
+                 became outcomes. It is stuck publishing an outcome that \
+                 nothing is reading, which is where the capture thread ends up \
+                 queued behind it. counts={counts:?}",
+                counts.outcomes()
+            );
+            std::thread::yield_now();
+        };
+
+        // Nothing vanished: every request was either handed over or counted
+        // as a deliberate drop. A `try_send` that dropped silently would trade
+        // the hang for silent loss, which is the same class of bug.
+        assert_eq!(
+            accepted as u64 + counts.dropped_requests,
+            flood as u64,
+            "every offered request must be either accepted or counted as \
+             dropped; accepted={accepted} counts={counts:?}"
+        );
+
+        // Only reached with a healthy worker, so this join cannot hang.
+        drop(std::mem::ManuallyDrop::into_inner(handle));
+    }
+
+    /// Outcomes stay reachable when the observation channel overflows.
+    ///
+    /// The channel is a convenience stream; the tally is the record. Feeding
+    /// twice the channel's capacity through a worker nobody is listening to
+    /// must leave every outcome counted, with the exact shortfall attributed
+    /// to the stream rather than lost.
+    #[test]
+    fn outcomes_are_counted_even_when_nothing_reads_the_stream() {
+        let total = 2 * KILL_OUTCOME_CAPACITY;
+        // Never implicitly dropped. `Drop` calls `shutdown`, which joins the
+        // worker, and `join` has no timeout — so if this test ever fails
+        // because the worker is wedged, unwinding would join a thread that
+        // never returns and hang the whole test binary. Leaking the handle on
+        // the failing path is what keeps the deadline below a *failure*
+        // rather than a hang. The success path shuts down explicitly.
+        let handle = std::mem::ManuallyDrop::new(
+            spawn_scanner_kill_worker(Some(u32::MAX), None, live_permit()).expect("spawn worker"),
+        );
+        // A loopback destination distinct from the flood test's, so the two
+        // do not share a per-destination bucket when run concurrently.
+        let dst = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+
+        // Retry a full queue rather than giving up, so all `total` requests
+        // reach the worker and the arithmetic below is exact. (Production
+        // never retries — one detected scanner is one offer — so the refusals
+        // this loop provokes inflate `dropped_requests` here in a way a real
+        // run's would not. `a_refused_request_is_counted_not_silently_dropped`
+        // pins that counter down separately.)
+        for i in 0..total {
+            loop {
+                match handle.send_kill(KillRequest::SendResponse {
+                    dst_addr: dst,
+                    dst_port: 59_998,
+                    src_addr: dst,
+                    src_port: 5060,
+                    response_bytes: sample_response(),
+                }) {
+                    Ok(()) => break,
+                    Err(TrySendError::Full(_)) => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "the worker stopped draining requests after {i} of {total} \
+                             — it is stuck publishing an outcome nobody is reading"
+                        );
+                        std::thread::yield_now();
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        panic!("worker died after {i} of {total} requests")
+                    }
+                }
+            }
+        }
+
+        // Every accepted request must land in exactly one outcome class, and
+        // the stream's shortfall must be attributed rather than lost: the
+        // channel holds the first `KILL_OUTCOME_CAPACITY` outcomes and the
+        // rest are counted as unobserved.
+        //
+        // Waited for rather than sampled once. The worker books an outcome
+        // and notes its unobservability as two relaxed atomic adds, so a
+        // single snapshot taken between them is legitimately half-updated —
+        // the invariant is eventual, and the deadline is what turns "never"
+        // into a failure.
+        let unobserved_expected = (total - KILL_OUTCOME_CAPACITY) as u64;
+        let counts = loop {
+            let counts = handle.counts();
+            if counts.outcomes() == total as u64
+                && counts.unobserved_outcomes == unobserved_expected
+            {
+                break counts;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the ledger never reconciled: expected {total} outcomes with \
+                 {unobserved_expected} of them unobserved (the \
+                 {KILL_OUTCOME_CAPACITY}-slot stream holds the rest), got \
+                 {counts:?}"
+            );
+            std::thread::yield_now();
+        };
+
+        assert!(
+            counts.any_dropped(),
+            "an overflowing stream must be visible, not silent: {counts:?}"
+        );
+
+        // Only reached when the worker is healthy, so this join cannot hang.
+        std::mem::ManuallyDrop::into_inner(handle).shutdown();
+    }
+
+    /// A request the worker has no room for is counted, not silently dropped.
+    ///
+    /// Trading a hang for silent loss is the same defect wearing a different
+    /// hat, so the refusal has to leave a mark. Deterministic: a one-slot
+    /// queue with nothing draining it takes exactly one request, and the two
+    /// that follow are refused and counted.
+    #[test]
+    fn a_refused_request_is_counted_not_silently_dropped() {
+        let (tx, rx) = crossbeam_channel::bounded::<KillRequest>(1);
+        let (_resp_tx, resp_rx) = crossbeam_channel::bounded::<KillResponse>(KILL_OUTCOME_CAPACITY);
+        // Hold the receiving end so the channel is full, not disconnected —
+        // a full queue and a dead worker are different failures.
+        let _rx = rx;
+        let handle = Arc::new(ScannerKillHandle {
+            tx: Some(tx),
+            resp_rx,
+            thread: None,
+            defense_disabled: AtomicBool::new(false),
+            tally: Arc::new(KillTally::default()),
+        });
+
+        // Offered from another thread behind a timeout: if `send_kill` ever
+        // waits for a slot again, that wait is the capture thread's, so this
+        // must fail rather than hang the suite.
+        let offerer = Arc::clone(&handle);
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<usize>(1);
+        std::thread::Builder::new()
+            .name("kill-offer-test".to_string())
+            .spawn(move || {
+                let mut refused = 0usize;
+                for _ in 0..3 {
+                    let result = offerer.send_kill(KillRequest::SendResponse {
+                        dst_addr: localhost_v4(),
+                        dst_port: 59_996,
+                        src_addr: localhost_v4(),
+                        src_port: 5060,
+                        response_bytes: sample_response(),
+                    });
+                    if matches!(result, Err(TrySendError::Full(_))) {
+                        refused += 1;
+                    }
+                }
+                let _ = done_tx.send(refused);
+            })
+            .expect("spawn offer thread");
+
+        let refused = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect(
+                "send_kill waited for a slot on a full queue instead of \
+                 refusing — in production that wait is the capture thread's, \
+                 taken while it holds the dialog and stream write locks",
+            );
+        assert_eq!(
+            refused, 2,
+            "the one free slot takes the first request; the next two must be \
+             refused as Full, not reported as a dead worker"
+        );
+
+        let counts = handle.counts();
+        assert_eq!(
+            counts.dropped_requests, 2,
+            "both refusals must be counted: {counts:?}"
+        );
+        assert!(
+            counts.any_dropped(),
+            "a dropped kill response must be visible: {counts:?}"
+        );
+        assert!(
+            !handle.defense_disabled(),
+            "a full queue is backpressure, not a dead worker — the defense is \
+             still armed"
+        );
+    }
+
+    /// `shutdown` returns even when the request queue is full.
+    ///
+    /// Now that `send_kill` never waits, the queue can still be full when the
+    /// run ends, and the `Shutdown` message then does not fit. Shutdown must
+    /// not wait for a slot (that is the blocking this type exists to avoid),
+    /// so it drops the sender instead: the worker drains what is queued, sees
+    /// a disconnected channel and exits. Keeping the sender alive after a
+    /// failed ask would park the worker in `recv()` and this thread in
+    /// `join()` forever.
+    #[test]
+    fn shutdown_returns_even_when_the_request_queue_is_full() {
+        let (tx, rx) = crossbeam_channel::bounded::<KillRequest>(2);
+        let (_resp_tx, resp_rx) = crossbeam_channel::bounded::<KillResponse>(KILL_OUTCOME_CAPACITY);
+        // A worker that is not draining yet, so the queue is still full when
+        // shutdown asks it to stop. It then drains until the channel is
+        // disconnected — the same exit condition as the real worker loop.
+        let thread = std::thread::Builder::new()
+            .name("scanner-kill-slow-test".to_string())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                while rx.recv().is_ok() {}
+            })
+            .expect("spawn");
+        for _ in 0..2 {
+            tx.try_send(KillRequest::SendResponse {
+                dst_addr: localhost_v4(),
+                dst_port: 59_997,
+                src_addr: localhost_v4(),
+                src_port: 5060,
+                response_bytes: sample_response(),
+            })
+            .expect("filling a 2-slot queue must succeed");
+        }
+        let mut handle = ScannerKillHandle {
+            tx: Some(tx),
+            resp_rx,
+            thread: Some(thread),
+            defense_disabled: AtomicBool::new(false),
+            tally: Arc::new(KillTally::default()),
+        };
+
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
+        std::thread::Builder::new()
+            .name("kill-shutdown-test".to_string())
+            .spawn(move || {
+                handle.shutdown();
+                let _ = done_tx.send(());
+            })
+            .expect("spawn shutdown thread");
+
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect(
+                "shutdown blocked with a full request queue: the worker never \
+                 saw a disconnect, so it is parked in recv() and shutdown is \
+                 parked in join()",
+            );
     }
 
     /// `is_broadcast_or_multicast` classifies broadcast/multicast vs unicast.
