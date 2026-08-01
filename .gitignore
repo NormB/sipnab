@@ -37,3 +37,12 @@ build/
 # coverage run, and useless to anyone cloning.
 *.profraw
 *.profdata
+
+# Agent/debug scratch written into the repo root. `orph.json` appeared during a
+# validation run holding real capture IPs — the corpus at /home/gator/pcaps
+# carries PII and nothing derived from it may reach the repository. This is the
+# same shape as the 45 .profraw files that reached GitHub: a stray artefact plus
+# an indiscriminate `git add -A`. Scratch belongs outside the tree; this is the
+# backstop for when it does not.
+/orph.json
+/*.tmp.json

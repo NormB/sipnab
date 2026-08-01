@@ -425,6 +425,11 @@ pub struct Cli {
 
     /// Write a copy of the input pcapng (`-I`) to this path with all decryption
     /// secrets (DSBs) removed, then exit. The input is never modified.
+    ///
+    /// `-I` must resolve to exactly ONE capture. A directory or glob naming a
+    /// single file is fine; a set is refused, because this flag names one
+    /// output path and a set has nowhere to go. Stripping only the first would
+    /// hand over the rest with their keys intact while reporting success.
     #[arg(
         help_heading = "Name resolution",
         long = "strip-secrets",

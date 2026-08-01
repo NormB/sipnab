@@ -1177,12 +1177,17 @@ fn end_to_end_g711_pcap() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Additional: RTCP updates stream store
+// Additional: RTCP is recorded beside the measurement, not over it
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Processing an RTCP RR overwrites the matching stream's jitter (128.0) and lost_packets (15).
+/// An RTCP RR from the wire is filed as the far end's claim; the stream keeps
+/// what sipnab measured.
+///
+/// The whole datagram is built and parsed here rather than hand-constructing
+/// `ReceptionReport` values, so the byte-level path — sign-extended
+/// `cumulative_lost` included — is the one under test.
 #[test]
-fn rtcp_updates_stream_jitter_and_loss() {
+fn rtcp_is_recorded_beside_the_measurement() {
     let mut store = StreamStore::new(100);
 
     // Create a stream
@@ -1223,14 +1228,66 @@ fn rtcp_updates_stream_jitter_and_loss() {
     };
     let stream = store.get(&key).unwrap();
     assert_eq!(
-        // 128 RTP-timestamp units at 8 kHz → 128 * 1000 / 8000 = 16.0 ms.
-        stream.jitter,
-        16.0,
-        "RTCP should update jitter to the reported value, converted to ms"
+        stream.jitter, 0.0,
+        "one packet has produced no interarrival sample; the report's jitter \
+         must not stand in for one"
     );
     assert_eq!(
-        stream.lost_packets, 15,
-        "RTCP should update lost_packets to reported cumulative_lost"
+        stream.lost_packets, 0,
+        "no sequence gap was observed, so this stream has no measured loss — \
+         cumulative_lost counts the reporter's session on the reporter's path"
+    );
+
+    let remote = store.remote_report(&key).expect("report recorded");
+    assert_eq!(remote.reporter_ssrc, 0x9999);
+    assert_eq!(remote.cumulative_lost, 15);
+    assert_eq!(remote.highest_seq, 500);
+    assert_eq!(remote.jitter_timestamp_units, 128);
+    // 128 RTP-timestamp units at 8 kHz → 128 * 1000 / 8000 = 16.0 ms.
+    assert_eq!(remote.jitter_ms, Some(16.0));
+    assert!((remote.fraction_lost_pct() - 25.0 * 100.0 / 256.0).abs() < 1e-9);
+}
+
+/// A `cumulative_lost` field with its sign bit set (net duplicates) survives
+/// as a negative count instead of being clamped to zero and read as "no
+/// loss" — the sign is the whole information content of that case.
+#[test]
+fn negative_cumulative_lost_survives_as_negative() {
+    let mut store = StreamStore::new(100);
+    let parsed = make_rtp_parsed(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        20000,
+        30000,
+        0xFFFE,
+        100,
+        0,
+        0,
+    );
+    let rtp = parse_rtp_header(&parsed.payload).unwrap();
+    store.process_rtp(&parsed, &rtp, ts(0));
+
+    let mut rr = vec![0x81u8, 201];
+    rr.extend_from_slice(&7u16.to_be_bytes());
+    rr.extend_from_slice(&0x9999u32.to_be_bytes());
+    rr.extend_from_slice(&0xFFFEu32.to_be_bytes());
+    rr.push(0);
+    rr.extend_from_slice(&[0xFF, 0xFF, 0xFB]); // -5 as 24-bit signed
+    rr.extend_from_slice(&500u32.to_be_bytes());
+    rr.extend_from_slice(&0u32.to_be_bytes());
+    rr.extend_from_slice(&0u32.to_be_bytes());
+    rr.extend_from_slice(&0u32.to_be_bytes());
+    store.process_rtcp(&parse_rtcp(&rr));
+
+    let key = StreamKey {
+        ssrc: 0xFFFE,
+        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+    };
+    assert_eq!(
+        store.remote_report(&key).map(|r| r.cumulative_lost),
+        Some(-5),
+        "net duplicates are reported as a negative count, not clamped away"
     );
 }
 

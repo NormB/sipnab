@@ -25,6 +25,8 @@ pub mod hep;
 pub mod input_set;
 #[cfg(feature = "native")]
 pub mod live;
+#[cfg(feature = "native")]
+pub mod output_guard;
 pub mod packet;
 pub mod parse;
 pub mod pcap_reader;

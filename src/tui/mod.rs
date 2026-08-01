@@ -227,6 +227,9 @@ pub struct App {
     /// the (blocking) decode/resample runs — same pattern as pending_save.
     #[cfg(feature = "audio")]
     pending_audio_play: bool,
+    /// Capture files this session is reading, which a save must never write
+    /// over. Seeded from `-I` and extended by every capture opened in-session.
+    protected_inputs: crate::capture::output_guard::ProtectedInputs,
 }
 
 impl App {
@@ -319,7 +322,24 @@ impl App {
             audio_init_error: None,
             #[cfg(feature = "audio")]
             pending_audio_play: false,
+            protected_inputs: Default::default(),
         }
+    }
+
+    /// Declare the capture files this session reads, so the save dialog
+    /// refuses to write over them.
+    pub fn set_protected_inputs(
+        &mut self,
+        protected: crate::capture::output_guard::ProtectedInputs,
+    ) {
+        self.protected_inputs = protected;
+    }
+
+    /// Add a capture opened during the session to the protected set. The file
+    /// the TUI is displaying is an input whether the command line named it or
+    /// the file-open dialog did.
+    pub(crate) fn protect_input_file(&mut self, path: &std::path::Path) {
+        self.protected_inputs.protect_file(path);
     }
 
     /// Set the capture mode label (`mode`) displayed in the status bar.
@@ -419,6 +439,17 @@ impl App {
             return;
         };
         let path = pending.path;
+        // The save dialog takes a free-form path, and the capture on screen is
+        // the obvious name to type. Every writer below creates-or-truncates, so
+        // this is checked before dispatch, not inside each of the eleven
+        // formats — a guard in ten of eleven places is not a guard.
+        if let Err(msg) = self
+            .protected_inputs
+            .check(std::path::Path::new(&path), "Save to", false)
+        {
+            self.status_error = Some(msg);
+            return;
+        }
         let msg = match pending.format {
             SaveFormat::Pcap => save_to_pcap_path(self, &path, false),
             SaveFormat::PcapNg => save_to_pcap_path(self, &path, true),
@@ -1165,6 +1196,7 @@ pub fn run_tui_with_pause(
         visible_columns,
         name_setup,
         from_to_mode,
+        protected_inputs,
     } = options;
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -1196,6 +1228,7 @@ pub fn run_tui_with_pause(
         app.call_list.apply_visible_columns(cols);
     }
     app.set_from_to_mode(from_to_mode);
+    app.set_protected_inputs(protected_inputs);
     app.set_resolver(name_setup.resolver);
     app.set_name_mode(name_setup.mode);
     app.set_names_save_path(name_setup.save_path);

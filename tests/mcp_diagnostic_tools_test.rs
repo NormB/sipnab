@@ -598,6 +598,40 @@ fn file_tools_refuse_anything_that_is_not_a_bare_filename() {
     assert!(!std::path::Path::new("/tmp/escape.pcap").exists());
 }
 
+/// A file tool must not write over the capture the server is reading.
+///
+/// `--mcp-file-root` and `-I` routinely name the same directory — that is the
+/// natural setup, one folder of captures — so `export_capture` with the input's
+/// own filename is one autocompletion away, and an agent choosing a name has no
+/// way to know which files are inputs. The export truncated the capture it was
+/// reading, and the capture is frequently the only copy.
+#[test]
+fn export_capture_refuses_to_overwrite_the_capture_being_read() {
+    let root = tmp_root("export-over-input");
+    let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(G711);
+    let input = root.join("incident.pcap");
+    std::fs::copy(&src, &input).expect("stage the input inside the file root");
+    let before = std::fs::read(&input).expect("read input");
+
+    let msg = call_tool_with_args(
+        input.to_str().expect("utf8 path"),
+        &["--mcp-file-root", root.to_str().unwrap()],
+        "export_capture",
+        serde_json::json!({"filename": "incident.pcap"}),
+    );
+
+    let err = msg["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("would overwrite"),
+        "export_capture must refuse to write over its own input; got {msg}"
+    );
+    let after = std::fs::read(&input).expect("the input capture must still exist");
+    assert!(
+        after == before,
+        "the capture being read was modified by export_capture"
+    );
+}
+
 /// Without `--mcp-file-root` the file tools refuse rather than guessing a path.
 #[test]
 fn file_tools_are_disabled_without_a_configured_root() {

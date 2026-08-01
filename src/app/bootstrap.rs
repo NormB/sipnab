@@ -178,9 +178,24 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
                 resolved[0].path.display()
             );
         }
-        Some(CaptureSource::File {
-            paths: resolved.into_iter().map(|r| r.path).collect(),
-        })
+        let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(|r| r.path).collect();
+
+        // Precondition, not a post-hoc error: an output that names an input is
+        // refused here, before any writer exists. `-O` opens with truncation,
+        // so a check made after the open has already destroyed the capture —
+        // and a capture is routinely the only copy of an incident. Checked
+        // against the whole resolved SET and the directories `-I` named, since
+        // `-I` takes a directory or a glob.
+        let protected =
+            crate::capture::output_guard::ProtectedInputs::new(&cli.input, &paths, cli.recursive);
+        if let Some(ref out) = cli.output {
+            let split_active = cli.split.is_some();
+            protected
+                .check(std::path::Path::new(out), "-O/--output", split_active)
+                .map_err(PlanError::arg)?;
+        }
+
+        Some(CaptureSource::File { paths })
     } else if let Some(ref device) = cli.device {
         Some(CaptureSource::Live {
             device: device.clone(),
@@ -218,6 +233,34 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     } else {
         None
     };
+
+    // An operator who asked for a transmitting feature and is reading a file
+    // gets told once, here, before any mode branches. The refusal itself is
+    // structural (`security::transmit_guard::TransmitPermit` cannot be built
+    // from a file source, so the kill worker cannot be spawned and its sends
+    // cannot compile), but a structural refusal nobody is told about leaves
+    // someone believing their scanner defence is armed. Said in `plan` rather
+    // than at the spawn site because `plan` runs for every mode, including
+    // `--cores` and the TUI, which never reach the spawn site at all.
+    let kill_requested = cli.kill_scanner
+        || !cli.kill_target.is_empty()
+        || config.security.kill_scanner.unwrap_or(false);
+    if kill_requested
+        && let Some(ref s) = source
+        && crate::security::transmit_guard::TransmitPermit::for_source(s).is_none()
+    {
+        let flags = if cli.kill_target.is_empty() {
+            "--kill-scanner"
+        } else if cli.kill_scanner {
+            "--kill-scanner / -K"
+        } else {
+            "-K/--kill-target"
+        };
+        tracing::warn!(
+            "{}",
+            crate::security::transmit_guard::offline_refusal(flags)
+        );
+    }
 
     // Capture config from CLI + config file.
     let mut capture_config = build_capture_config(cli, config)?;
@@ -454,6 +497,12 @@ pub fn launch(
         }
     };
 
+    // Whether this run may put a packet on the network at all — decided from
+    // the source that was actually resolved (auto-detection included), before
+    // it is moved into the capture thread. See `security::transmit_guard`.
+    let may_transmit =
+        crate::security::transmit_guard::TransmitPermit::for_source(&source).is_some();
+
     // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
     //     grows under load up to the cap and the (unbounded) storage frees its
     //     segments when idle. Capacity is derived from the memory budget.
@@ -543,8 +592,22 @@ pub fn launch(
     // 16-kill. Open the raw scanner-kill socket while still privileged (it
     //         needs CAP_NET_RAW, which the drop below sheds). Only when the
     //         kill feature is active and --kill-spoof permits it.
+    //
+    //         Reading a capture file grants no transmit permit, so no kill
+    //         worker will be spawned and the socket would have nothing to send.
+    //         Skipping the open here also keeps `--kill-spoof raw -I file.pcap`
+    //         from failing the run over a raw socket it was never going to
+    //         use — the operator has already been told (in `plan`) that the
+    //         kill response is off for this run. Debug-level here: one warning
+    //         per run, not one per decision point.
     let kill_active = cli.kill_scanner || !cli.kill_target.is_empty();
-    let raw_kill_sock = if kill_active && cli.kill_spoof != crate::cli::KillSpoof::Ephemeral {
+    if kill_active && !may_transmit {
+        tracing::debug!("Scanner-kill: offline run, not opening a raw send socket");
+    }
+    let raw_kill_sock = if kill_active
+        && may_transmit
+        && cli.kill_spoof != crate::cli::KillSpoof::Ephemeral
+    {
         match crate::process_isolation::RawKillSocket::open() {
             Ok(sock) => {
                 tracing::info!("Scanner-kill: source-spoofing enabled (raw socket)");
@@ -829,6 +892,21 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
             );
             return Some(1);
         }
+        // Same precondition as `-O`: the sanitised copy must not be written
+        // over the file it is sanitising. `--strip-secrets` promises the input
+        // is never modified, and pointed at its own input it replaced it —
+        // taking the only copy of the decryption secrets with it, which is
+        // precisely the material this flag exists to preserve a copy without.
+        let protected = crate::capture::output_guard::ProtectedInputs::new(
+            &cli.input,
+            &resolved.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+            cli.recursive,
+        );
+        if let Err(msg) = protected.check(std::path::Path::new(out), "--strip-secrets", false) {
+            tracing::error!("{msg}");
+            return Some(2);
+        }
+
         let input = resolved[0].path.display().to_string();
         return Some(
             match crate::capture::pcapng_meta::strip_secrets(

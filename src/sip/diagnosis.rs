@@ -646,17 +646,16 @@ fn detect_registration_failure(messages: &[SipMessage], diag: &mut SignalingDiag
     let evidence = vec![register, idx];
 
     if !(200..300).contains(&code) {
-        let reason = msg.reason.clone().unwrap_or_default();
-        diag.hints.push(format!(
-            "Registration rejected: {code} {reason}. The endpoint is offline."
-        ));
-        diag.registration_failure = Some(RegistrationFailure {
+        let failure = RegistrationFailure {
             kind: RegistrationFailureKind::Rejected,
             code,
             requested_expiry_sec,
             granted_expiry_sec: None,
             evidence,
-        });
+        };
+        diag.hints
+            .push(registration_rejection_headline(&failure, messages));
+        diag.registration_failure = Some(failure);
         return;
     }
 
@@ -680,6 +679,184 @@ fn detect_registration_failure(messages: &[SipMessage], diag: &mut SignalingDiag
         granted_expiry_sec,
         evidence,
     });
+}
+
+/// The one-line statement of a rejected `REGISTER`, rendered from the status
+/// code's meaning in RFC 3261 and from what the dialog actually shows.
+///
+/// # Why this is a function and not two format strings
+///
+/// It used to be two: the diagnosis hint and the call report each carried
+/// their own copy of the sentence, and both copies said the same wrong thing —
+/// *"the endpoint is offline"* — for every non-`2xx` code there is. That claim
+/// is contradicted by the capture it is drawn from in nearly every case: a
+/// rejection is a response, so something answered, and where the endpoint
+/// replied to a challenge first it demonstrably transmitted twice. During a
+/// registration outage the sentence sent an operator to check firewalls when
+/// the fault was a password or a provisioning entry.
+///
+/// Rendering both surfaces from one function makes the two unable to disagree
+/// again, which was the deeper defect.
+///
+/// # What it will and will not say
+///
+/// Where the code determines a cause, it is named with the clause it comes
+/// from. Where it does not, the reason phrase is read back and nothing is
+/// inferred — `480 No DNS results` in the corpus is a proxy that could not
+/// resolve a hop, and any cause invented for the bare code would have been as
+/// wrong as the one this replaces.
+///
+/// `408` is the single code where a reachability problem is a live
+/// possibility, and it is phrased as one.
+///
+/// # Arguments
+///
+/// * `failure` — the detected rejection; `evidence` is `[request, response]`.
+/// * `messages` — the dialog's messages, which `failure.evidence` indexes.
+///   Out-of-range indices (a compacted dialog) degrade to the code alone
+///   rather than panicking.
+///
+/// # Returns
+///
+/// Complete, punctuated prose, e.g. `"Registration rejected: 403 Forbidden.
+/// The endpoint answered an authentication challenge and the registrar refused
+/// the credentials it offered …"` — rendered verbatim by both callers so
+/// neither can add a shade of meaning the other lacks.
+pub fn registration_rejection_headline(
+    failure: &RegistrationFailure,
+    messages: &[SipMessage],
+) -> String {
+    let code = failure.code;
+    // The response this was drawn from, when the message list still holds it.
+    let response = failure.evidence.get(1).and_then(|&i| messages.get(i));
+    let upto = failure.evidence.get(1).copied().unwrap_or(messages.len());
+
+    let reason = response
+        .and_then(|m| m.reason.as_deref())
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
+
+    // Two facts about the exchange, not guesses about it: was a challenge
+    // issued, and did the endpoint answer one with credentials?
+    let challenged = messages[..upto.min(messages.len())]
+        .iter()
+        .any(|m| matches!(m.status_code, Some(401 | 407)));
+    let credentials_offered = messages[..upto.min(messages.len())].iter().any(|m| {
+        m.is_request
+            && (m.header("Authorization").is_some() || m.header("Proxy-Authorization").is_some())
+    });
+
+    let min_expires = response
+        .and_then(|m| m.header("Min-Expires"))
+        .map(str::trim);
+    let retry_after = response
+        .and_then(|m| m.header("Retry-After"))
+        .map(str::trim);
+
+    let meaning: String = match code {
+        // RFC 3261 §21.4.1. A REGISTER the registrar could not read.
+        400 => "The registrar could not parse the request (RFC 3261 §21.4.1) — a malformed \
+                REGISTER, not an absent endpoint."
+            .to_string(),
+
+        // RFC 3261 §21.4.4: "Authorization will not help". The two shapes are
+        // genuinely different findings and must not share a sentence — the
+        // challenged one is the commonest registration fault there is, and
+        // the unchallenged one supports no statement of cause at all.
+        403 if challenged && credentials_offered => {
+            "The endpoint answered an authentication challenge and the registrar refused the \
+             credentials it offered, so the fault is in the account, its password or its \
+             permission to register — none of which is a reachability problem."
+                .to_string()
+        }
+        403 => "The registrar understood the request and refused it outright (RFC 3261 §21.4.4). \
+                No challenge was answered in this dialog, so nothing here says why."
+            .to_string(),
+
+        // RFC 3261 §21.4.5: definitive information that the user does not exist.
+        404 => "No such address-of-record at that domain (RFC 3261 §21.4.5). The endpoint \
+                reached the registrar, which has no binding to make for that user."
+            .to_string(),
+
+        // RFC 3261 §21.4.6 / §21.5.2: this server does not do registration here.
+        405 => "The registrar does not allow REGISTER on that Request-URI (RFC 3261 §21.4.6)."
+            .to_string(),
+        501 => "The server has not implemented REGISTER (RFC 3261 §21.5.2).".to_string(),
+
+        // RFC 3261 §21.4.9. The one code consistent with a path problem — and
+        // still only consistent with one, since the rejection itself arrived.
+        408 => "The transaction timed out (RFC 3261 §21.4.9). This is the one rejection \
+                consistent with a path or reachability problem rather than a provisioning one."
+            .to_string(),
+
+        // RFC 3261 §10.3 step 7 / §21.4.17. An interval negotiation. The
+        // registrar MUST state its minimum, so its absence is worth saying.
+        423 => match (failure.requested_expiry_sec, min_expires) {
+            (Some(req), Some(min)) => format!(
+                "An expiry negotiation, not a failure: the endpoint asked for {req}s and the \
+                 registrar's minimum is {min}s (RFC 3261 §10.3 step 7)."
+            ),
+            (None, Some(min)) => format!(
+                "An expiry negotiation, not a failure: the registrar's minimum is {min}s \
+                 (RFC 3261 §10.3 step 7)."
+            ),
+            (Some(req), None) => format!(
+                "An expiry negotiation, not a failure: the {req}s interval was rejected, but no \
+                 Min-Expires was sent to negotiate against, which RFC 3261 §10.3 step 7 requires."
+            ),
+            (None, None) => "An expiry negotiation, not a failure: the interval was rejected \
+                             with no Min-Expires to negotiate against, which RFC 3261 §10.3 \
+                             step 7 requires."
+                .to_string(),
+        },
+
+        // RFC 3261 §21.4.16. Max-Forwards reached zero, which is a routing
+        // fault between the two ends and not a property of either.
+        483 => "The request ran out of Max-Forwards before reaching a registrar that would \
+                answer it (RFC 3261 §21.4.16) — a routing loop or too long a proxy chain."
+            .to_string(),
+
+        // RFC 3261 §21.5.4. The server said it was unavailable; reading that
+        // as the endpoint being unavailable is the wrong end of the call.
+        503 => "The registrar is temporarily unable to handle the request (RFC 3261 §21.5.4) — \
+                the server side is unavailable, not the endpoint."
+            .to_string(),
+
+        500..=599 => "A server-side fault at the registrar (5xx): the request arrived and was \
+                      not processed."
+            .to_string(),
+
+        // RFC 3261 §21.6: a 6xx speaks for every location of the user.
+        600..=699 => "Refused for the user globally (6xx, RFC 3261 §21.6), not merely by this \
+                      registrar."
+            .to_string(),
+
+        // Everything else: state the observation and stop. This is the branch
+        // the old wording should have had, and its absence is why the corpus's
+        // `480 No DNS results` — a proxy that could not resolve a hop — was
+        // reported as an offline phone.
+        _ if reason.is_some() => "The registrar answered, but this code carries no \
+                                  registration-specific meaning in RFC 3261 — the reason phrase \
+                                  above is the only statement of cause the capture holds."
+            .to_string(),
+        _ => "The registrar answered, but this code carries no registration-specific meaning in \
+              RFC 3261 and the response carried no reason phrase, so the capture says nothing \
+              about the cause."
+            .to_string(),
+    };
+
+    let mut out = match reason {
+        Some(r) => format!("Registration rejected: {code} {r}. {meaning}"),
+        None => format!("Registration rejected: {code}. {meaning}"),
+    };
+    // Retry-After is the one number the server volunteered about when to come
+    // back; dropping it leaves the reader to reopen the packet for it.
+    if let Some(retry) = retry_after.filter(|r| !r.is_empty()) {
+        out.push_str(&format!(" Retry-After: {retry}."));
+    }
+    // The caller decides the terminal punctuation; every branch above already
+    // ends its own sentences, so nothing is appended here.
+    out
 }
 
 /// Detection 1 — final failure with cause.
@@ -1434,7 +1611,279 @@ mod tests {
         assert_eq!(r.kind, RegistrationFailureKind::Rejected);
         assert_eq!(r.code, 403);
         assert_eq!(r.requested_expiry_sec, Some(3600));
-        assert!(d.hints.iter().any(|h| h.contains("offline")));
+    }
+
+    /// A second `REGISTER` answering a challenge: same transaction shape as
+    /// [`register`] but carrying the `Authorization` header the registrar
+    /// asked for.
+    fn register_with_credentials() -> String {
+        "REGISTER sip:example.com SIP/2.0\n\
+         Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK2\n\
+         From: <sip:a@example.com>;tag=1\n\
+         To: <sip:a@example.com>\n\
+         Call-ID: r1@example.com\n\
+         CSeq: 2 REGISTER\n\
+         Contact: <sip:a@10.0.0.1>\n\
+         Authorization: Digest username=\"a\", realm=\"example.com\", \
+         nonce=\"abc\", uri=\"sip:example.com\", response=\"deadbeef\"\n\
+         Expires: 3600\n\
+         Content-Length: 0\n\n"
+            .to_string()
+    }
+
+    /// The hint for a rejected `REGISTER`, or a panic naming what was found
+    /// instead — a test that silently passed on an absent hint would prove
+    /// nothing about its wording.
+    fn rejection_hint(messages: &[SipMessage]) -> String {
+        let d = diagnose_signaling(messages);
+        d.hints
+            .iter()
+            .find(|h| h.starts_with("Registration"))
+            .unwrap_or_else(|| panic!("no registration hint among {:?}", d.hints))
+            .clone()
+    }
+
+    /// The defect this group exists for. Every non-`2xx` final response to a
+    /// `REGISTER` used to be reported as "the endpoint is offline", which is
+    /// false for all of these: each is answered BY a registrar the endpoint
+    /// reached, and several are answered after the endpoint proved it was
+    /// there by replying to a challenge.
+    ///
+    /// `408` is excluded because it is the one code where a reachability
+    /// problem is a live possibility — see
+    /// [`request_timeout_is_the_only_code_that_may_mention_reachability`].
+    #[test]
+    fn no_rejection_code_claims_the_endpoint_is_offline() {
+        for (code, phrase) in [
+            (400, "Bad Request"),
+            (403, "Forbidden"),
+            (404, "Not Found"),
+            (423, "Interval Too Brief"),
+            (480, "No DNS results"),
+            (500, "Server Internal Error"),
+            (503, "Service Unavailable"),
+            (603, "Decline"),
+        ] {
+            let hint = rejection_hint(&[
+                msg(&register("Expires: 3600\n")),
+                msg(&register_response(code, phrase, "")),
+            ]);
+            let lower = hint.to_lowercase();
+            for claim in ["offline", "unreachable", "not reachable"] {
+                assert!(
+                    !lower.contains(claim),
+                    "{code} {phrase} must not claim the endpoint is {claim}: {hint}"
+                );
+            }
+            assert!(
+                hint.contains(&code.to_string()),
+                "{code} hint must name the code it read: {hint}"
+            );
+        }
+    }
+
+    /// `401` challenge, credentials offered, `403` back. The endpoint is
+    /// demonstrably online — it answered the challenge — and the fault is in
+    /// the credentials or the account, not in the network.
+    #[test]
+    fn forbidden_after_a_challenge_points_at_the_credentials() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(401, "Unauthorized", "")),
+            msg(&register_with_credentials()),
+            msg(&register_response(403, "Forbidden", "")),
+        ]);
+        let lower = hint.to_lowercase();
+        assert!(
+            lower.contains("credential"),
+            "403 after a challenge is a credential rejection: {hint}"
+        );
+        assert!(
+            lower.contains("challenge"),
+            "the challenge is the evidence that the endpoint is reachable: {hint}"
+        );
+        assert!(!lower.contains("offline"), "{hint}");
+    }
+
+    /// The same `403` with no challenge in front of it is a different fact.
+    /// Nothing was offered and nothing was rejected, so naming credentials
+    /// would be inventing a cause exactly as the old wording did.
+    #[test]
+    fn forbidden_without_a_challenge_does_not_invent_credentials() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(403, "Forbidden", "")),
+        ]);
+        assert!(
+            !hint.to_lowercase().contains("credential"),
+            "no credentials were offered, so none were rejected: {hint}"
+        );
+        assert!(hint.contains("403"), "{hint}");
+    }
+
+    /// RFC 3261 §21.4.5: the server has definitive information that the user
+    /// does not exist. The endpoint is online; the address-of-record is not
+    /// provisioned.
+    #[test]
+    fn not_found_names_the_address_of_record() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(404, "Not Found", "")),
+        ]);
+        let lower = hint.to_lowercase();
+        assert!(
+            lower.contains("address-of-record") || lower.contains("aor"),
+            "404 is an unknown AOR: {hint}"
+        );
+    }
+
+    /// RFC 3261 §21.5.4: the SERVER is unable to process the request. Sending
+    /// an operator to check the phone points them at the wrong end of the
+    /// call.
+    #[test]
+    fn service_unavailable_points_at_the_registrar() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(503, "Service Unavailable", "")),
+        ]);
+        let lower = hint.to_lowercase();
+        assert!(
+            lower.contains("registrar") || lower.contains("server"),
+            "503 is the server's problem, not the endpoint's: {hint}"
+        );
+    }
+
+    /// RFC 3261 §10.3 step 7 / §21.4.17: the registrar rejects an expiry
+    /// shorter than its minimum and MUST say what that minimum is. Nothing is
+    /// offline; the two numbers are the whole diagnosis.
+    #[test]
+    fn interval_too_brief_reports_both_intervals() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 60\n")),
+            msg(&register_response(
+                423,
+                "Interval Too Brief",
+                "Min-Expires: 3600\n",
+            )),
+        ]);
+        assert!(hint.contains("60"), "the requested interval: {hint}");
+        assert!(hint.contains("3600"), "the registrar's minimum: {hint}");
+        assert!(!hint.to_lowercase().contains("offline"), "{hint}");
+    }
+
+    /// A `423` whose `Min-Expires` is missing is a registrar breaking RFC 3261
+    /// §10.3 step 7. Saying so beats inventing the minimum it did not send.
+    #[test]
+    fn interval_too_brief_without_min_expires_says_so() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 60\n")),
+            msg(&register_response(423, "Interval Too Brief", "")),
+        ]);
+        assert!(
+            hint.contains("Min-Expires"),
+            "the absent header is the finding: {hint}"
+        );
+    }
+
+    /// The one code where a reachability problem is a live possibility. It is
+    /// still phrased as a possibility, because the `408` reaching the endpoint
+    /// proves something answered it.
+    #[test]
+    fn request_timeout_is_the_only_code_that_may_mention_reachability() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(408, "Request Timeout", "")),
+        ]);
+        let lower = hint.to_lowercase();
+        assert!(hint.contains("408"), "{hint}");
+        assert!(
+            lower.contains("timed out") || lower.contains("timeout"),
+            "408 is a timeout: {hint}"
+        );
+    }
+
+    /// `483` turned up in the corpus and is a routing fault between the two
+    /// ends (RFC 3261 §21.4.16) — the request never reached a registrar that
+    /// would answer it. Neither end is offline.
+    #[test]
+    fn too_many_hops_is_a_routing_fault() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(483, "Too Many Hops", "")),
+        ]);
+        let lower = hint.to_lowercase();
+        assert!(hint.contains("Max-Forwards"), "{hint}");
+        assert!(!lower.contains("offline"), "{hint}");
+    }
+
+    /// A code with no registration-specific meaning gets the reason phrase
+    /// read back and nothing else. This is the "say what happened, not why"
+    /// case: `480 No DNS results` in the corpus is a proxy that could not
+    /// resolve, and any invented cause would have been wrong.
+    #[test]
+    fn an_unmapped_code_reports_the_observation_and_stops() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(480, "No DNS results", "")),
+        ]);
+        assert!(hint.contains("480"), "{hint}");
+        assert!(
+            hint.contains("No DNS results"),
+            "the reason phrase is the only cause evidence there is: {hint}"
+        );
+    }
+
+    /// `Retry-After` is the registrar saying when to come back; dropping it
+    /// leaves the reader guessing at the one number the server supplied.
+    #[test]
+    fn retry_after_is_carried_into_the_hint() {
+        let hint = rejection_hint(&[
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(
+                503,
+                "Service Unavailable",
+                "Retry-After: 120\n",
+            )),
+        ]);
+        assert!(hint.contains("120"), "Retry-After must survive: {hint}");
+    }
+
+    /// The diagnosis hint and the call report are rendered by ONE function,
+    /// so the two surfaces cannot drift back into disagreeing about what a
+    /// rejection meant — which is how both came to say "the endpoint is
+    /// offline" for every code.
+    #[test]
+    fn both_surfaces_render_the_same_headline() {
+        let messages = [
+            msg(&register("Expires: 3600\n")),
+            msg(&register_response(401, "Unauthorized", "")),
+            msg(&register_with_credentials()),
+            msg(&register_response(403, "Forbidden", "")),
+        ];
+        let d = diagnose_signaling(&messages);
+        let failure = d.registration_failure.expect("403 rejects the binding");
+        let shared = registration_rejection_headline(&failure, &messages);
+        assert!(
+            d.hints.iter().any(|h| h.starts_with(&shared)),
+            "the hint must be the shared headline: {:?} vs {shared}",
+            d.hints
+        );
+    }
+
+    /// A compacted dialog can no longer supply the response the headline was
+    /// drawn from. It must degrade to the code rather than panic on an
+    /// out-of-range evidence index.
+    #[test]
+    fn headline_survives_evidence_pointing_past_the_message_list() {
+        let failure = RegistrationFailure {
+            kind: RegistrationFailureKind::Rejected,
+            code: 404,
+            requested_expiry_sec: Some(3600),
+            granted_expiry_sec: None,
+            evidence: vec![0, 99],
+        };
+        let head = registration_rejection_headline(&failure, &[]);
+        assert!(head.contains("404"), "{head}");
     }
 
     #[test]

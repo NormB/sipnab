@@ -247,10 +247,18 @@ pub fn start_servers(
                 writing_to: cli.output.clone(),
             }
         };
+        // What this run is reading, so the file tools cannot write over it.
+        // Built from the `-I` specs rather than the resolved set: resolution
+        // opens every candidate through libpcap and has already run once in
+        // `bootstrap::plan`, and the specs already name every file and
+        // directory that matters here.
+        let protected_inputs =
+            crate::capture::output_guard::ProtectedInputs::new(&cli.input, &[], cli.recursive);
         let new_server = || {
             let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
                 .with_source_exhausted(Arc::clone(&exhausted))
-                .with_capture_context(capture_ctx.clone());
+                .with_capture_context(capture_ctx.clone())
+                .with_protected_inputs(protected_inputs.clone());
             let s = match cli.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
                 None => s,

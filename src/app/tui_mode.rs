@@ -410,6 +410,13 @@ pub fn run_tui_mode(
             visible_columns: config.display.visible_columns.clone(),
             name_setup,
             from_to_mode,
+            // The save dialog writes wherever the analyst types, and the
+            // capture on screen is the obvious name to reach for.
+            protected_inputs: crate::capture::output_guard::ProtectedInputs::new(
+                &cli.input,
+                &[],
+                cli.recursive,
+            ),
         },
     ) {
         tracing::error!("TUI error: {e}");

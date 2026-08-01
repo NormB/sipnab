@@ -382,9 +382,15 @@ impl RtpStream {
 
         // RFC 3550 jitter calculation (Section 6.4.1, A.8)
         if let (Some(prev_arrival), Some(prev_rtp_ts)) = (self.prev_arrival, self.prev_rtp_ts) {
-            let arrival_diff = timestamp
-                .signed_duration_since(prev_arrival)
-                .num_milliseconds() as f64;
+            // Microseconds, not milliseconds: on a 20 ms stream the interarrival
+            // variation being measured is itself sub-millisecond, so truncating
+            // to whole milliseconds quantises away the entire signal and reports
+            // jitter far above what the packets show. `num_microseconds` returns
+            // None only past ~292,000 years, where the old behaviour is fine.
+            let since = timestamp.signed_duration_since(prev_arrival);
+            let arrival_diff = since
+                .num_microseconds()
+                .map_or_else(|| since.num_milliseconds() as f64, |us| us as f64 / 1000.0);
             // Convert RTP timestamp difference to milliseconds. Wrapping
             // subtraction handles rollover; the result is interpreted as a
             // *signed* (i32) transit delta per RFC 3550, so a reordered

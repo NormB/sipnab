@@ -7,6 +7,13 @@
 //! BYE (PT=203). An unrecognized packet *type* is preserved as
 //! `RtcpPacket::Unknown` rather than dropped.
 //!
+//! Identification lives here too: [`looks_like_rtcp`] and
+//! [`is_rtcp_packet_type`] answer "is this datagram RTCP" from its content,
+//! covering the whole RFC 5761 packet-type range rather than the subset this
+//! module happens to decode. Callers that instead enumerate decodable types
+//! send everything else down the RTP path, where it becomes a stream that does
+//! not exist.
+//!
 //! One class of data is dropped, however: a sub-packet whose type is known
 //! but whose body fails to parse (e.g. a truncated SR) is skipped — it is
 //! neither returned as its typed variant nor as `Unknown`. This is a silent
@@ -25,6 +32,90 @@ const RTCP_PT_RR: u8 = 201;
 const RTCP_PT_BYE: u8 = 203;
 /// RTCP Extended Report (RFC 3611).
 const RTCP_PT_XR: u8 = 207;
+
+/// Lowest packet-type byte reserved for RTCP by RFC 5761 Section 4.
+pub const RTCP_PT_MIN: u8 = 192;
+/// Highest packet-type byte reserved for RTCP by RFC 5761 Section 4.
+pub const RTCP_PT_MAX: u8 = 223;
+
+/// Whether `pt` is an RTCP packet-type byte.
+///
+/// RFC 5761 Section 4 reserves 192-223 for RTCP so that RTP and RTCP can share
+/// one port: RTP payload types are chosen to avoid the range, which is why the
+/// range — not the port's parity, and not the handful of types a given parser
+/// happens to decode — is what identifies RTCP on the wire.
+///
+/// Enumerating only the types with a decoder (200-204) is a different question
+/// and a costly one to confuse with this: an unrecognized *type* is still
+/// RTCP, and treating it as "not RTCP" hands a control packet to the RTP path,
+/// where the version bits and a payload-type byte of `pt & 0x7F` are enough for
+/// it to be accepted as media and registered as a stream that does not exist.
+/// XR (207), RTPFB (205) and PSFB (206) all land outside 200-204 and all fold
+/// into RTP payload types 77-79.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::rtp::rtcp::is_rtcp_packet_type;
+///
+/// assert!(is_rtcp_packet_type(200)); // SR
+/// assert!(is_rtcp_packet_type(207)); // XR — RFC 3611, outside SR..APP
+/// assert!(!is_rtcp_packet_type(0)); // PCMU
+/// assert!(!is_rtcp_packet_type(96)); // dynamic RTP
+/// ```
+#[must_use]
+pub fn is_rtcp_packet_type(pt: u8) -> bool {
+    (RTCP_PT_MIN..=RTCP_PT_MAX).contains(&pt)
+}
+
+/// Whether a UDP payload is RTCP, judged by content alone.
+///
+/// Three conditions, all from RFC 3550 Section 6.1 / RFC 5761 Section 4:
+/// version 2, a packet-type byte in the RTCP range (see
+/// [`is_rtcp_packet_type`]), and a length field that frames the first
+/// sub-packet inside the datagram. The length check is what keeps an RTP
+/// packet whose marker+payload-type byte happens to land in 192-223 from being
+/// swallowed — its sequence number would have to equal the datagram's word
+/// count minus one.
+///
+/// Deliberately independent of the destination port. Port parity says where
+/// RTCP is *conventionally* found (RTP+1), never what a datagram *is*, and a
+/// parity test that also narrows the accepted packet types turns "arrived on
+/// the RTCP port" into "not RTCP" for every type outside that list.
+///
+/// A header-only packet (length field 0, e.g. a BYE naming no SSRC) is not
+/// recognized: it carries nothing, and accepting a 4-byte frame would make the
+/// length check vacuous for RTP.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::rtp::rtcp::looks_like_rtcp;
+///
+/// // An XR (PT=207) whose length field frames the datagram.
+/// let xr = [0x80, 207, 0, 2, 1, 2, 3, 4, 4, 0, 0, 1];
+/// assert!(looks_like_rtcp(&xr));
+///
+/// // A 12-byte PCMU RTP packet is not RTCP.
+/// let rtp = [0x80, 0x00, 0x00, 0x01, 0, 0, 0, 160, 0, 0, 0x12, 0x34];
+/// assert!(!looks_like_rtcp(&rtp));
+/// ```
+#[must_use]
+pub fn looks_like_rtcp(data: &[u8]) -> bool {
+    if data.len() < 8 {
+        return false;
+    }
+    if (data[0] >> 6) & 0x03 != 2 {
+        return false;
+    }
+    if !is_rtcp_packet_type(data[1]) {
+        return false;
+    }
+    // The header length counts 32-bit words minus one, so the first
+    // sub-packet occupies `(len + 1) * 4` bytes and must fit.
+    let word_len = ((data[2] as usize) << 8) | data[3] as usize;
+    word_len != 0 && (word_len + 1) * 4 <= data.len()
+}
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -78,11 +169,31 @@ pub struct ReceiverReport {
 pub struct ReceptionReport {
     /// SSRC of the source being reported about.
     pub ssrc: u32,
-    /// Fraction of packets lost since last report (0-255).
+    /// Packets lost since the previous report, as an 8-bit binary fraction:
+    /// the loss rate times 256, per RFC 3550 §6.4.1. This — not
+    /// [`Self::cumulative_lost`] — is the field that expresses a *rate*, and
+    /// even then it is the rate over the reporting interval, on the path from
+    /// the source to whoever sent the report.
     pub fraction_lost: u8,
     /// Cumulative number of packets lost — a 24-bit *signed* value per
     /// RFC 3550 §6.4.1 (negative when duplicates outnumber losses),
     /// sign-extended into an `i32`.
+    ///
+    /// Three properties make this number dangerous to reuse as if it were a
+    /// local measurement:
+    ///
+    /// - It counts **since the beginning of reception at the reporter**, not
+    ///   since the start of a capture. A capture that joins a call mid-session
+    ///   sees a count covering packets it never observed.
+    /// - It describes **the reporter's path segment**. A mid-path capture (a
+    ///   proxy, a SPAN port) sits on a different segment, so this is evidence
+    ///   about somewhere else.
+    /// - It is a **count, not a rate**. Dividing it by a locally observed
+    ///   packet count mixes two populations over two different windows.
+    ///
+    /// RFC 3550 also defines it as *expected minus received*, where received
+    /// includes late and duplicate packets — so reordering is explicitly not
+    /// loss here, which a naive sequence-gap estimator does not match either.
     pub cumulative_lost: i32,
     /// Extended highest sequence number received.
     pub highest_seq: u32,
@@ -831,6 +942,115 @@ mod tests {
                 }
             }
             other => panic!("Expected ExtendedReport, got {:?}", other),
+        }
+    }
+
+    /// Every RTCP packet type sipnab can meet must be recognized as RTCP,
+    /// including the ones it has no decoder for.
+    ///
+    /// The XR case is the one that bit: 207 sits outside SR..APP (200-204),
+    /// so a classifier enumerating only decodable types calls it "not RTCP",
+    /// and `207 & 0x7F` is RTP payload type 79 — a real media stream that
+    /// never existed.
+    #[test]
+    fn rtcp_types_outside_sr_to_app_are_still_rtcp() {
+        for pt in [200u8, 201, 202, 203, 204, 205, 206, 207, 210, 213] {
+            assert!(
+                is_rtcp_packet_type(pt),
+                "RTCP packet type {pt} must be recognized as RTCP; as RTP it \
+                 would read as payload type {}",
+                pt & 0x7F
+            );
+        }
+        assert!(is_rtcp_packet_type(RTCP_PT_MIN));
+        assert!(is_rtcp_packet_type(RTCP_PT_MAX));
+        // RTP payload types must stay out.
+        for pt in [0u8, 8, 9, 18, 34, 96, 111, 127, 191, 224, 255] {
+            assert!(!is_rtcp_packet_type(pt), "{pt} is not an RTCP packet type");
+        }
+    }
+
+    /// The content test recognizes a real XR datagram — the byte shape that
+    /// appears on the conventional odd RTCP port in captured traffic — and
+    /// rejects RTP.
+    #[test]
+    fn looks_like_rtcp_accepts_xr_and_rejects_rtp() {
+        // V=2, PT=207 (XR), length=0xF8 words → (0xF8 + 1) * 4 = 996 bytes,
+        // then the originator SSRC and a Receiver Reference Time block
+        // (BT=4, length 2). Framed exactly like the real thing.
+        let mut xr = vec![0x80, 207, 0x00, 0xF8];
+        xr.extend_from_slice(&0x44B6_2E0Au32.to_be_bytes());
+        xr.extend_from_slice(&[4, 0, 0, 2]);
+        xr.resize(1000, 0);
+        assert!(
+            looks_like_rtcp(&xr),
+            "an XR that frames its own datagram is RTCP"
+        );
+        // Read as RTP this is payload type 79 with SSRC 0x04000002 — the
+        // phantom stream this test exists to prevent.
+        assert_eq!(xr[1] & 0x7F, 79);
+
+        // A 12-byte PCMU packet: version 2, but PT 0 is not in the RTCP range.
+        let rtp = [0x80, 0x00, 0x00, 0x01, 0, 0, 0, 160, 0, 0, 0x12, 0x34];
+        assert!(!looks_like_rtcp(&rtp));
+
+        // An RTP packet with the marker bit set and payload type 79 puts 207
+        // in byte 1; the length field (its sequence number) must not frame it.
+        let mut muxed_rtp = vec![0x80, 207];
+        muxed_rtp.extend_from_slice(&40_000u16.to_be_bytes()); // sequence
+        muxed_rtp.extend_from_slice(&[0u8; 168]);
+        assert!(
+            !looks_like_rtcp(&muxed_rtp),
+            "the length check must reject RTP whose byte 1 lands in the RTCP range"
+        );
+    }
+
+    /// Compound RTCP is recognized from its first sub-packet, and short or
+    /// wrong-version input is not.
+    #[test]
+    fn looks_like_rtcp_edges() {
+        let mut compound = build_sr(0x10, 0, 0, 50, 8000);
+        compound.extend_from_slice(&build_rr_with_report(0x20, 0x10, 10, 100));
+        assert!(looks_like_rtcp(&compound));
+        assert!(looks_like_rtcp(&build_rr_with_report(1, 2, 0, 0)));
+        assert!(looks_like_rtcp(&build_bye(&[0xAAAA_AAAA])));
+
+        assert!(!looks_like_rtcp(&[]));
+        assert!(!looks_like_rtcp(&[0x80, 200, 0, 1]), "4 bytes is too short");
+        // Version 1.
+        assert!(!looks_like_rtcp(&[0x40, 200, 0, 1, 0, 0, 0, 1]));
+        // Length field claims 28 bytes but only 8 are present.
+        assert!(!looks_like_rtcp(&[0x80, 200, 0, 6, 0, 0, 0, 1]));
+        // Header-only (length field 0) carries nothing.
+        assert!(!looks_like_rtcp(&[0x80, 203, 0, 0, 0, 0, 0, 0]));
+    }
+
+    /// An XR arriving as the FIRST sub-packet of a datagram parses into its
+    /// blocks. This is the payload shape that the port-parity classifier
+    /// dropped: a compound starting with SR is recognized, one starting with
+    /// XR was not, so the metrics were lost as well as misfiled.
+    #[test]
+    fn xr_first_in_datagram_parses() {
+        let mut data = vec![0x80, 207];
+        data.extend_from_slice(&4u16.to_be_bytes()); // (4 + 1) * 4 = 20 bytes
+        data.extend_from_slice(&0x44B6_2E0Au32.to_be_bytes()); // originator
+        data.extend_from_slice(&[4, 0, 0, 2]); // BT=4, 2 words
+        data.extend_from_slice(&0x1122_3344_5566_7788u64.to_be_bytes());
+        assert!(looks_like_rtcp(&data));
+
+        let packets = parse_rtcp(&data);
+        assert_eq!(packets.len(), 1, "got {packets:?}");
+        match &packets[0] {
+            RtcpPacket::ExtendedReport(xr) => {
+                assert_eq!(xr.ssrc, 0x44B6_2E0A);
+                assert_eq!(
+                    xr.blocks,
+                    vec![XrBlock::ReceiverReferenceTime {
+                        ntp_timestamp: 0x1122_3344_5566_7788
+                    }]
+                );
+            }
+            other => panic!("expected ExtendedReport, got {other:?}"),
         }
     }
 

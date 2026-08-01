@@ -35,6 +35,143 @@ struct SdpEndpoint {
     rtpmap: Vec<(u8, String, u32)>,
 }
 
+/// How a stream's RTP clock rate — the divisor every jitter figure depends on
+/// — came to be known.
+///
+/// Jitter is an RTP-timestamp difference converted to milliseconds by the
+/// clock rate, so a wrong clock rate does not make the answer imprecise, it
+/// makes it meaningless: at 8 kHz assumed for a 90 kHz stream every sample is
+/// 11.25x too large. The three cases are worth distinguishing because only the
+/// first two are measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ClockGrounding {
+    /// A static payload type with a clock rate fixed by RFC 3551 Tables 4/5.
+    Rfc3551,
+    /// A dynamic payload type resolved from an SDP `a=rtpmap`.
+    Rtpmap,
+    /// Neither: a payload type outside RFC 3551 with no `a=rtpmap` for it.
+    /// The clock rate is a placeholder and any jitter derived from it is not a
+    /// measurement — see [`StreamStore::measured_jitter_ms`].
+    Assumed,
+}
+
+/// A reception report a **remote** endpoint asserted about a stream.
+///
+/// Kept beside sipnab's own measurement rather than replacing it, for two
+/// reasons that are easy to lose sight of once the numbers are in the same
+/// field:
+///
+/// - **Provenance.** RTCP is unauthenticated and trivially spoofable. A number
+///   that arrived in a datagram and a number sipnab computed from the media it
+///   observed cannot be shown to an operator as the same kind of fact.
+/// - **Vantage.** The report describes the path from the source to *the
+///   reporter*. On a mid-path capture that is a different segment than the one
+///   sipnab is watching, so the two disagreeing is normal and informative —
+///   overwriting one with the other destroys exactly that signal.
+///
+/// Nothing here feeds MOS. MOS is scored from sipnab's own jitter and loss, so
+/// a forged RTCP report cannot move it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct RemoteReceptionReport {
+    /// SSRC of the endpoint that sent the report (the receiver, not the
+    /// source being reported on).
+    pub reporter_ssrc: u32,
+    /// Loss fraction over the reporting interval, times 256 (RFC 3550
+    /// §6.4.1). See [`Self::fraction_lost_pct`].
+    pub fraction_lost: u8,
+    /// Packets lost since the reporter began receiving — a cumulative count
+    /// over the reporter's whole session, not a rate and not scoped to the
+    /// capture window. See
+    /// [`ReceptionReport::cumulative_lost`](crate::rtp::rtcp::ReceptionReport::cumulative_lost).
+    pub cumulative_lost: i32,
+    /// Extended highest sequence number the reporter received.
+    pub highest_seq: u32,
+    /// Interarrival jitter as it appears on the wire: RTP timestamp units.
+    pub jitter_timestamp_units: u32,
+    /// The same jitter in milliseconds, or `None` when the stream's clock rate
+    /// is [`ClockGrounding::Assumed`] — the conversion needs a clock rate, and
+    /// a guessed one produces a number that only looks like milliseconds.
+    pub jitter_ms: Option<f64>,
+    /// How many report blocks about this stream have been folded in. The other
+    /// fields hold the most recent; this says whether that is one sample or a
+    /// long-running exchange.
+    pub reports_seen: u64,
+}
+
+impl RemoteReceptionReport {
+    /// [`Self::fraction_lost`] as a percentage over the reporting interval.
+    ///
+    /// This, not `cumulative_lost`, is the report's rate quantity — though it
+    /// is still the *reporter's* rate on the *reporter's* path segment.
+    #[must_use]
+    pub fn fraction_lost_pct(&self) -> f64 {
+        f64::from(self.fraction_lost) * 100.0 / 256.0
+    }
+}
+
+/// Per-stream facts that are about the *provenance* of a stream's numbers
+/// rather than about the media, kept in the store so `RtpStream` stays a
+/// record of what was observed.
+#[derive(Debug, Clone, Default)]
+struct StreamProvenance {
+    /// The most recent RTCP reception report about this stream, if any.
+    remote: Option<RemoteReceptionReport>,
+    /// `packet_count` at which the jitter estimator was restarted because the
+    /// clock rate was corrected after packets had already been folded in at
+    /// the wrong one. `None` means it was never restarted.
+    jitter_restart_at: Option<u64>,
+}
+
+/// Packets the RFC 3550 jitter estimator needs to forget a restart.
+///
+/// `J += (|D| - J) / 16` has a 16-sample time constant, so after a restart the
+/// estimate is dominated by the seed (zero) until roughly that many samples
+/// have been folded in. Reporting it before then would publish "no jitter" for
+/// a stream that has simply not been measured yet.
+const JITTER_CONVERGENCE_PACKETS: u64 = 16;
+
+/// RTP clock rate in Hz for a static payload type, per RFC 3551 Tables 4 and 5.
+///
+/// `None` for every payload type RFC 3551 leaves unassigned or reserved,
+/// including the dynamic range 96-127 — those are knowable only from an SDP
+/// `a=rtpmap`, and there is no defensible default. Mirrors
+/// [`crate::sip::sdp::static_payload_name`], which answers the same question
+/// for the codec name.
+///
+/// Note this is a superset of [`crate::rtp::stream::clock_rate_from_pt`], which
+/// knows eight of the twenty-four assigned types and answers 8000 Hz for the
+/// rest by way of its caller's `unwrap_or`. Every video type in Table 5 is
+/// 90 kHz, so that default was wrong by a factor of 11.25 for JPEG, H.261,
+/// MPV and MP2T, and by 11.25 / 5.5 / 2.75 / 1.4 for MPA, L16, DVI4/22050 and
+/// DVI4/11025.
+fn rfc3551_clock_rate(payload_type: u8) -> Option<u32> {
+    Some(match payload_type {
+        // Table 4 — audio.
+        0 => 8000,        // PCMU
+        3 => 8000,        // GSM
+        4 => 8000,        // G723
+        5 => 8000,        // DVI4
+        6 => 16000,       // DVI4
+        7 => 8000,        // LPC
+        8 => 8000,        // PCMA
+        9 => 8000,        // G722 (8 kHz RTP clock despite 16 kHz audio)
+        10 | 11 => 44100, // L16 stereo / mono
+        12 => 8000,       // QCELP
+        13 => 8000,       // CN
+        14 => 90000,      // MPA
+        15 => 8000,       // G728
+        16 => 11025,      // DVI4
+        17 => 22050,      // DVI4
+        18 => 8000,       // G729
+        // Table 5 — video and one audio/video multiplex, all 90 kHz.
+        25 | 26 | 28 | 31 | 32 | 33 | 34 => 90000,
+        // 1-2 reserved, 19-24/27/29-30/35-95 unassigned, 96-127 dynamic.
+        _ => return None,
+    })
+}
+
 /// Central store for all tracked RTP streams.
 ///
 /// Streams are indexed by `StreamKey` for O(1) lookup. When the store
@@ -85,6 +222,12 @@ pub struct StreamStore {
     /// O(calls²) overall (SNB-0015). Kept consistent on insert/evict/clear, just
     /// like `ssrc_index`.
     endpoint_index: std::collections::HashMap<(IpAddr, u16), Vec<StreamKey>, ahash::RandomState>,
+    /// Provenance side-table: what the far end asserted about a stream, and
+    /// whether its jitter estimator was restarted. Separate from `streams` so
+    /// a remote assertion can never be mistaken for a local measurement by a
+    /// caller reading `RtpStream`. Kept consistent on evict/clear/merge, like
+    /// the other indexes.
+    provenance: std::collections::HashMap<StreamKey, StreamProvenance, ahash::RandomState>,
     /// Probe (SNB-0015): cumulative count of per-stream visits performed while
     /// linking SDP endpoints to streams. This is the work that was O(calls²); the
     /// endpoint index keeps it O(calls). Read via `link_scan_iters` and exposed
@@ -115,6 +258,7 @@ impl StreamStore {
             audio_capture: true,
             sdp_endpoints: IndexMap::default(),
             endpoint_index: std::collections::HashMap::default(),
+            provenance: std::collections::HashMap::default(),
             link_scan_iters: 0,
             evict_shift_work: 0,
             generation: 0,
@@ -208,6 +352,15 @@ impl StreamStore {
             self.ensure_capacity();
             let mut stream = RtpStream::new(key.clone(), rtp, timestamp);
             stream.octet_count = payload_len as u64;
+            // RFC 3551 knows the clock rate for twenty-four static payload
+            // types; `RtpStream::new` knows eight of them and answers 8000 Hz
+            // for the rest. Correct it here, before the first packet feeds the
+            // jitter estimate — the same reason the SDP resolution below runs
+            // at creation (SNB-0007): a jitter sample folded in at the wrong
+            // clock cannot be recomputed later.
+            if let Some(hz) = rfc3551_clock_rate(rtp.payload_type) {
+                stream.clock_rate = hz;
+            }
             // Resolve codec/clock/dialog from any SDP already seen for this
             // endpoint, before any packet feeds the jitter estimate (SNB-0007).
             self.resolve_from_sdp(&mut stream);
@@ -229,18 +382,40 @@ impl StreamStore {
         }
     }
 
-    /// Update streams from RTCP reception reports.
+    /// Record RTCP reception reports **beside** each stream's own measurement.
     ///
-    /// Matches report SSRCs against known streams to incorporate
-    /// authoritative loss/jitter data from receivers.
+    /// Reports are filed in the provenance side-table, readable via
+    /// [`Self::remote_report`]. They do not touch `RtpStream::jitter` or
+    /// `RtpStream::lost_packets`, which stay what sipnab measured from the
+    /// media it observed, and they therefore cannot move MOS.
+    ///
+    /// This used to assign `stream.lost_packets = report.cumulative_lost` and
+    /// `stream.jitter` from the report. Both were wrong twice over:
+    ///
+    /// - **The value.** `cumulative_lost` counts losses since the *reporter*
+    ///   began receiving, on the *reporter's* path segment. Combining it with
+    ///   a locally observed `packet_count` — which is what every loss
+    ///   percentage in sipnab does — divides one endpoint's session-long count
+    ///   by another observer's capture-window count. On real traffic that
+    ///   turned streams with zero measured loss into streams reported at up to
+    ///   50% loss with a MOS near the 1.0 floor, and no arithmetic recovers a
+    ///   rate from those two numbers.
+    /// - **The provenance.** RTCP is unauthenticated. Once the far end's claim
+    ///   is written into the same field as sipnab's measurement, an operator
+    ///   cannot tell which they are reading, a spoofed report moves the quality
+    ///   score, and on a mid-path capture the two legitimately describe
+    ///   different path segments — a disagreement worth seeing, not resolving
+    ///   by overwrite.
     ///
     /// # Side effects
     ///
-    /// For each reception report block in an SR/RR whose SSRC matches a
-    /// tracked stream, overwrites the earliest surviving matching stream's
-    /// `jitter` with the report's jitter value (which is in RTP timestamp
-    /// units) and its `lost_packets` with the report's cumulative loss.
-    /// Other packet types and unknown SSRCs are ignored.
+    /// For every reception report block inside an SR or RR, records the block
+    /// against **every** tracked stream carrying the reported SSRC (a source
+    /// relayed through the capture point appears under more than one 5-tuple;
+    /// filing the report against an arbitrary one of them was itself a
+    /// misattribution), incrementing that stream's `reports_seen`. Other RTCP
+    /// packet types and unknown SSRCs are ignored. Does not bump the
+    /// generation — no stream's identity, dialog or codec changes.
     pub fn process_rtcp(&mut self, packets: &[RtcpPacket]) {
         for pkt in packets {
             let reports: &[ReceptionReport] = match pkt {
@@ -248,30 +423,104 @@ impl StreamStore {
                 RtcpPacket::ReceiverReport(rr) => &rr.reports,
                 _ => continue,
             };
+            let reporter_ssrc = match pkt {
+                RtcpPacket::SenderReport(sr) => sr.ssrc,
+                RtcpPacket::ReceiverReport(rr) => rr.ssrc,
+                _ => continue,
+            };
 
             for report in reports {
-                // O(1) via the SSRC index; first key = earliest surviving
-                // stream, matching the previous insertion-order scan.
-                if let Some(stream) = self
-                    .ssrc_index
-                    .get(&report.ssrc)
-                    .and_then(|keys| keys.first())
-                    .and_then(|key| self.streams.get_mut(key))
-                {
-                    // The report's jitter is in RTP timestamp units; convert
-                    // to milliseconds with the stream's clock rate so it is
-                    // comparable to the interarrival estimate (and feeds MOS
-                    // correctly). Guard against an unknown (0) clock rate.
-                    stream.jitter = if stream.clock_rate > 0 {
-                        report.jitter as f64 * 1000.0 / stream.clock_rate as f64
-                    } else {
-                        report.jitter as f64
+                // O(1) via the SSRC index. Every matching stream is recorded,
+                // not just the first: the index exists because one SSRC can
+                // legitimately appear on several 5-tuples.
+                let Some(keys) = self.ssrc_index.get(&report.ssrc) else {
+                    continue;
+                };
+                let keys = keys.clone();
+                for key in &keys {
+                    let Some(stream) = self.streams.get(key) else {
+                        continue;
                     };
-                    // cumulative_lost is signed; a negative value means net
-                    // duplicates were received, which is zero real loss.
-                    stream.lost_packets = report.cumulative_lost.max(0) as u64;
+                    // Milliseconds only when the clock rate is a fact. An
+                    // assumed clock produces a number that looks like
+                    // milliseconds and is not; the wire value is kept either
+                    // way so nothing is lost.
+                    let jitter_ms = (Self::grounding_of(stream) != ClockGrounding::Assumed
+                        && stream.clock_rate > 0)
+                        .then(|| f64::from(report.jitter) * 1000.0 / f64::from(stream.clock_rate));
+                    let entry = self.provenance.entry(key.clone()).or_default();
+                    let reports_seen = entry.remote.map_or(0, |r| r.reports_seen).saturating_add(1);
+                    entry.remote = Some(RemoteReceptionReport {
+                        reporter_ssrc,
+                        fraction_lost: report.fraction_lost,
+                        cumulative_lost: report.cumulative_lost,
+                        highest_seq: report.highest_seq,
+                        jitter_timestamp_units: report.jitter,
+                        jitter_ms,
+                        reports_seen,
+                    });
                 }
             }
+        }
+    }
+
+    /// What a remote endpoint most recently asserted about this stream, if
+    /// anything — never sipnab's own measurement. See
+    /// [`RemoteReceptionReport`] for why the two are kept apart.
+    pub fn remote_report(&self, key: &StreamKey) -> Option<&RemoteReceptionReport> {
+        self.provenance.get(key).and_then(|p| p.remote.as_ref())
+    }
+
+    /// How a stream's RTP clock rate came to be known, or `None` if the stream
+    /// is not tracked.
+    pub fn clock_grounding(&self, key: &StreamKey) -> Option<ClockGrounding> {
+        self.streams.get(key).map(Self::grounding_of)
+    }
+
+    /// A stream's measured interarrival jitter in milliseconds, or `None` when
+    /// there is no honest number to give.
+    ///
+    /// `None` in two cases, both of which the bare `RtpStream::jitter` field
+    /// reports as a plain `f64` that reads like a measurement:
+    ///
+    /// - The clock rate is [`ClockGrounding::Assumed`]. Jitter is an RTP
+    ///   timestamp difference divided by the clock rate; with the wrong
+    ///   divisor the result is not an imprecise measurement but a different
+    ///   quantity. A dynamic payload type with no `a=rtpmap` gives no basis to
+    ///   pick one, and the 8 kHz that gets assumed anyway produced jitter
+    ///   figures in the millions of milliseconds on captured video.
+    /// - The clock rate was corrected *after* packets had been folded in at
+    ///   the wrong one, and the estimator has not yet re-converged
+    ///   ([`JITTER_CONVERGENCE_PACKETS`] samples).
+    ///
+    /// Callers that must print something can still read `RtpStream::jitter`;
+    /// this is the accessor for callers that would rather say "unknown".
+    pub fn measured_jitter_ms(&self, key: &StreamKey) -> Option<f64> {
+        let stream = self.streams.get(key)?;
+        if Self::grounding_of(stream) == ClockGrounding::Assumed {
+            return None;
+        }
+        if let Some(restart) = self.provenance.get(key).and_then(|p| p.jitter_restart_at)
+            && stream.packet_count.saturating_sub(restart) < JITTER_CONVERGENCE_PACKETS
+        {
+            return None;
+        }
+        Some(stream.jitter)
+    }
+
+    /// Classify a stream's clock rate without borrowing the whole store.
+    ///
+    /// A dynamic payload type carries a codec name only because an SDP
+    /// `a=rtpmap` supplied one, and the rtpmap that named the codec is the
+    /// same line that supplied the clock rate — so `codec.is_some()` on a
+    /// non-RFC-3551 payload type is exactly "resolved from rtpmap".
+    fn grounding_of(stream: &RtpStream) -> ClockGrounding {
+        if rfc3551_clock_rate(stream.payload_type).is_some() {
+            ClockGrounding::Rfc3551
+        } else if stream.codec.is_some() {
+            ClockGrounding::Rtpmap
+        } else {
+            ClockGrounding::Assumed
         }
     }
 
@@ -387,9 +636,26 @@ impl StreamStore {
                 && let Some((_, encoding, clock_rate)) =
                     rtpmap.iter().find(|(pt, _, _)| *pt == stream.payload_type)
             {
+                let was = stream.clock_rate;
                 stream.codec = Some(encoding.clone());
                 stream.clock_rate = *clock_rate;
                 self.generation += 1;
+                // A stream created before its SDP accumulated jitter against
+                // the placeholder clock, and RFC 3550's estimator is a running
+                // average with no history to rescale — the samples already
+                // folded in cannot be recovered. Restart it rather than leave a
+                // permanently wrong figure (an 8 kHz assumption on a 90 kHz
+                // stream is 11.25x too large), and remember where, so
+                // `measured_jitter_ms` withholds the estimate until it has
+                // re-converged instead of publishing the zero seed.
+                if was != *clock_rate && stream.packet_count > 1 {
+                    stream.jitter = 0.0;
+                    let at = stream.packet_count;
+                    self.provenance
+                        .entry(key.clone())
+                        .or_default()
+                        .jitter_restart_at = Some(at);
+                }
             }
         }
     }
@@ -543,6 +809,7 @@ impl StreamStore {
         self.ssrc_index.clear();
         self.endpoint_index.clear();
         self.sdp_endpoints.clear();
+        self.provenance.clear();
         self.generation += 1;
     }
 
@@ -601,6 +868,12 @@ impl StreamStore {
                     .or_default()
                     .push(key.clone());
                 self.index_endpoints(&key);
+                // Carry the stream's provenance across with it: dropping it
+                // would silently turn "the far end claimed X" into "nobody
+                // reported anything" on every multi-core run.
+                if let Some(p) = other.provenance.get(&key) {
+                    self.provenance.insert(key.clone(), p.clone());
+                }
                 self.streams.insert(key, stream);
                 self.generation += 1;
             }
@@ -655,6 +928,10 @@ impl StreamStore {
                     }
                 }
                 self.unindex_endpoints(key);
+                // The provenance table is keyed by StreamKey and must not
+                // outlive the stream, or a later stream reusing the same
+                // 5-tuple + SSRC would inherit a stranger's RTCP report.
+                self.provenance.remove(key);
             }
         }
     }
@@ -1396,18 +1673,29 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
-    /// An RR block matching a stream's SSRC overwrites its jitter and
-    /// loss counters — the report's jitter (RTP timestamp units) is
-    /// converted to milliseconds using the stream's clock rate.
+    /// An RR block is recorded beside the stream, never over it.
+    ///
+    /// The measurement and the assertion stay separately addressable: the
+    /// stream keeps what sipnab observed, `remote_report` holds what the far
+    /// end claimed, and each carries its units.
     #[test]
-    fn process_rtcp_updates_stream() {
+    fn process_rtcp_records_the_report_without_touching_the_measurement() {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
-        let rtp = make_rtp_header(0xFFFF, 1);
-        store.process_rtp(&parsed, &rtp, ts(0));
+        store.process_rtp(&parsed, &make_rtp_header(0xFFFF, 1), ts(0));
+        store.process_rtp(&parsed, &make_rtp_header(0xFFFF, 2), ts(1));
+
+        let key = StreamKey {
+            ssrc: 0xFFFF,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let measured_jitter = store.get(&key).unwrap().jitter;
+        let measured_lost = store.get(&key).unwrap().lost_packets;
+        assert_eq!(measured_lost, 0, "the fixture stream has no sequence gaps");
 
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
-        let rtcp_packets = vec![RtcpPacket::ReceiverReport(ReceiverReport {
+        store.process_rtcp(&[RtcpPacket::ReceiverReport(ReceiverReport {
             ssrc: 0x1111,
             reports: vec![ReceptionReport {
                 ssrc: 0xFFFF, // matches our stream
@@ -1418,20 +1706,343 @@ a=rtpmap:96 H264/90000\r\n";
                 last_sr: 0,
                 delay_since_sr: 0,
             }],
-        })];
+        })]);
 
-        store.process_rtcp(&rtcp_packets);
+        let stream = store.get(&key).expect("stream should exist");
+        assert_eq!(
+            stream.lost_packets, measured_lost,
+            "a stream with no observed gaps must not acquire loss from a \
+             datagram; cumulative_lost counts the reporter's whole session on \
+             the reporter's path, and dividing it by a locally observed packet \
+             count is not a loss rate"
+        );
+        assert_eq!(
+            stream.jitter, measured_jitter,
+            "the far end's jitter must not replace the measured estimate"
+        );
 
+        let remote = store.remote_report(&key).expect("report recorded");
+        assert_eq!(remote.reporter_ssrc, 0x1111);
+        assert_eq!(remote.cumulative_lost, 10);
+        assert_eq!(remote.jitter_timestamp_units, 42);
+        // PCMU is 8 kHz, so 42 timestamp units is 5.25 ms — kept as the
+        // reporter's figure, in the reporter's units and sipnab's.
+        assert_eq!(remote.jitter_ms, Some(5.25));
+        assert_eq!(remote.reports_seen, 1);
+        assert!((remote.fraction_lost_pct() - 25.0 * 100.0 / 256.0).abs() < 1e-9);
+    }
+
+    /// MOS is scored from sipnab's own measurement, so a forged RTCP report
+    /// cannot move it. RTCP is unauthenticated; before this, a single spoofed
+    /// datagram claiming heavy loss dropped a clean stream to the MOS floor.
+    #[test]
+    fn a_spoofed_rtcp_report_cannot_move_mos() {
+        let mut store = StreamStore::new(100);
+        let parsed = make_parsed(20000, 30000, 160);
+        for seq in 1..=40u16 {
+            store.process_rtp(
+                &parsed,
+                &make_rtp_header(0x5EED, seq),
+                ts_ms(i64::from(seq) * 20),
+            );
+        }
         let key = StreamKey {
-            ssrc: 0xFFFF,
+            ssrc: 0x5EED,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let stream = store.get(&key).expect("stream should exist");
-        // PCMU stream is 8 kHz, so 42 RTP-timestamp units = 42 * 1000 / 8000
-        // = 5.25 ms; the raw 42 would feed MOS an 8x-too-large jitter.
-        assert_eq!(stream.jitter, 5.25);
-        assert_eq!(stream.lost_packets, 10);
+        let mos_of = |store: &StreamStore| {
+            let s = store.get(&key).unwrap();
+            let total = s.packet_count + s.lost_packets;
+            let loss_pct = s.lost_packets as f64 / total as f64 * 100.0;
+            crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref())
+        };
+        let before = mos_of(&store);
+        assert!(before > 4.0, "clean fixture stream scores well: {before}");
+
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
+        store.process_rtcp(&[RtcpPacket::ReceiverReport(ReceiverReport {
+            ssrc: 0xDEAD,
+            reports: vec![ReceptionReport {
+                ssrc: 0x5EED,
+                fraction_lost: 255,
+                cumulative_lost: 100_000, // "since the beginning of reception"
+                highest_seq: 100_000,
+                jitter: 800_000,
+                last_sr: 0,
+                delay_since_sr: 0,
+            }],
+        })]);
+
+        assert_eq!(
+            mos_of(&store),
+            before,
+            "MOS must be computed from what sipnab measured, not from what a \
+             datagram asserted"
+        );
+        // The claim is not discarded — it is just labelled.
+        let remote = store.remote_report(&key).expect("claim recorded");
+        assert_eq!(remote.cumulative_lost, 100_000);
+    }
+
+    /// One SSRC on two 5-tuples is one source seen at two points; a report
+    /// about it is recorded against both, not against whichever happened to be
+    /// inserted first.
+    #[test]
+    fn rtcp_reaches_every_stream_carrying_the_reported_ssrc() {
+        let mut store = StreamStore::new(100);
+        let p1 = make_parsed(20000, 30000, 160);
+        let p2 = make_parsed(21000, 30000, 160);
+        let rtp = make_rtp_header(0xCAFE, 1);
+        store.process_rtp(&p1, &rtp, ts(0));
+        store.process_rtp(&p2, &rtp, ts(1));
+
+        store.process_rtcp(&rr_for(0xCAFE, 77));
+
+        let first = StreamKey {
+            ssrc: 0xCAFE,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let second = StreamKey {
+            ssrc: 0xCAFE,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 21000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        for key in [&first, &second] {
+            let r = store
+                .remote_report(key)
+                .unwrap_or_else(|| panic!("report missing for {key:?}"));
+            // 77 RTP-ts units at 8 kHz → 9.625 ms.
+            assert_eq!(r.jitter_ms, Some(9.625));
+            assert_eq!(r.cumulative_lost, 3);
+        }
+        // And neither measurement moved.
+        for (label, key) in [("first-inserted", &first), ("second-inserted", &second)] {
+            assert_eq!(
+                store.get(key).unwrap().lost_packets,
+                0,
+                "the {label} stream observed no sequence gap, so it has no loss \
+                 to report whatever the far end claims"
+            );
+        }
+    }
+
+    /// Repeated reports about one stream update in place and count.
+    #[test]
+    fn repeated_reports_keep_the_latest_and_count_them() {
+        let mut store = StreamStore::new(100);
+        let p = make_parsed(20000, 30000, 160);
+        store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
+        let key = StreamKey {
+            ssrc: 0xCAFE,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        store.process_rtcp(&rr_for(0xCAFE, 8));
+        store.process_rtcp(&rr_for(0xCAFE, 16));
+        let r = store.remote_report(&key).expect("recorded");
+        assert_eq!(r.jitter_timestamp_units, 16, "latest report wins");
+        assert_eq!(r.reports_seen, 2);
+    }
+
+    /// A stream whose clock rate is assumed must not have the report's jitter
+    /// dressed up as milliseconds — the conversion needs a clock rate, and
+    /// there is not one.
+    #[test]
+    fn remote_jitter_has_no_millisecond_form_without_a_clock_rate() {
+        let mut store = StreamStore::new(100);
+        let p = make_parsed(20000, 30000, 160);
+        // PT 100: outside RFC 3551, no rtpmap ever seen.
+        store.process_rtp(&p, &rtp_pkt(0xB0B0, 1, 100, 0), ts(0));
+        let key = StreamKey {
+            ssrc: 0xB0B0,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        assert_eq!(
+            store.clock_grounding(&key),
+            Some(ClockGrounding::Assumed),
+            "a dynamic PT with no rtpmap has no knowable clock rate"
+        );
+        store.process_rtcp(&rr_for(0xB0B0, 77));
+        let r = store.remote_report(&key).expect("recorded");
+        assert_eq!(r.jitter_timestamp_units, 77, "the wire value is kept");
+        assert_eq!(
+            r.jitter_ms, None,
+            "no clock rate, no milliseconds — 9.625 would be a fabrication"
+        );
+    }
+
+    /// Evicting a stream drops its provenance with it, so a later stream that
+    /// reuses the same 5-tuple + SSRC does not inherit a stranger's report.
+    #[test]
+    fn eviction_drops_provenance() {
+        let mut store = StreamStore::new(2);
+        let p1 = make_parsed(20000, 30000, 160);
+        store.process_rtp(&p1, &make_rtp_header(0xCAFE, 1), ts(0));
+        store.process_rtcp(&rr_for(0xCAFE, 77));
+        let key = StreamKey {
+            ssrc: 0xCAFE,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        assert!(store.remote_report(&key).is_some());
+
+        // Two more streams evict the first (cap 2).
+        store.process_rtp(
+            &make_parsed(21000, 30000, 160),
+            &make_rtp_header(0xBEEF, 1),
+            ts(1),
+        );
+        store.process_rtp(
+            &make_parsed(22000, 30000, 160),
+            &make_rtp_header(0xF00D, 1),
+            ts(2),
+        );
+        assert!(store.get(&key).is_none(), "evicted");
+        assert!(
+            store.remote_report(&key).is_none(),
+            "provenance must not outlive its stream"
+        );
+
+        // Re-create the same key: it starts with no remote claim.
+        store.process_rtp(&p1, &make_rtp_header(0xCAFE, 1), ts(3));
+        assert!(store.remote_report(&key).is_none());
+    }
+
+    /// RFC 3551 fixes a clock rate for every assigned static payload type, and
+    /// every video type in Table 5 is 90 kHz. Defaulting those to 8 kHz makes
+    /// each jitter sample 11.25x too large — not an approximation, a different
+    /// quantity.
+    #[test]
+    fn static_payload_types_get_their_rfc3551_clock_rate() {
+        let cases = [
+            (0u8, 8000u32), // PCMU
+            (6, 16000),     // DVI4 16 kHz
+            (9, 8000),      // G722 — 8 kHz RTP clock despite 16 kHz audio
+            (10, 44100),    // L16
+            (14, 90000),    // MPA
+            (16, 11025),    // DVI4
+            (17, 22050),    // DVI4
+            (26, 90000),    // JPEG
+            (31, 90000),    // H261
+            (33, 90000),    // MP2T
+            (34, 90000),    // H263
+        ];
+        for (i, (pt, want)) in cases.into_iter().enumerate() {
+            let mut store = StreamStore::new(100);
+            let port = 20000 + i as u16;
+            store.process_rtp(
+                &make_parsed(port, 30000, 160),
+                &rtp_pkt(0x600D, 1, pt, 0),
+                ts(0),
+            );
+            let key = StreamKey {
+                ssrc: 0x600D,
+                src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            };
+            assert_eq!(
+                store.get(&key).unwrap().clock_rate,
+                want,
+                "PT {pt} is {want} Hz in RFC 3551"
+            );
+            assert_eq!(store.clock_grounding(&key), Some(ClockGrounding::Rfc3551));
+        }
+    }
+
+    /// A payload type RFC 3551 does not assign, with no rtpmap to resolve it,
+    /// has no knowable clock rate — so there is no jitter measurement to
+    /// report, and `measured_jitter_ms` says so instead of returning the
+    /// number the 8 kHz placeholder produced.
+    #[test]
+    fn jitter_is_withheld_when_the_clock_rate_is_a_guess() {
+        let mut store = StreamStore::new(100);
+        let parsed = make_parsed(20000, 30000, 160);
+        // A 90 kHz video stream at 33 ms per frame, payload type 96, no SDP.
+        for i in 0..40u32 {
+            store.process_rtp(
+                &parsed,
+                &rtp_pkt(0x1DEA, i as u16 + 1, 96, i * 3000),
+                ts_ms(i64::from(i) * 33),
+            );
+        }
+        let key = StreamKey {
+            ssrc: 0x1DEA,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        assert_eq!(store.clock_grounding(&key), Some(ClockGrounding::Assumed));
+        assert!(
+            store.get(&key).unwrap().jitter > 100.0,
+            "the 8 kHz placeholder inflates this stream's jitter by 11.25x — \
+             the number the field still carries"
+        );
+        assert_eq!(
+            store.measured_jitter_ms(&key),
+            None,
+            "with no basis for the clock rate there is no jitter measurement"
+        );
+    }
+
+    /// An SDP that arrives after the media resolves the clock rate, but the
+    /// jitter already folded in at the placeholder cannot be rescaled — RFC
+    /// 3550's estimator is a running average with no history. The estimate is
+    /// restarted, and withheld until it has re-converged rather than published
+    /// as the zero it was seeded with.
+    #[test]
+    fn late_sdp_restarts_the_jitter_estimate_and_withholds_it_until_converged() {
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let port = 20000u16;
+        let parsed = make_parsed(port, 30000, 160);
+        let key = StreamKey {
+            ssrc: 0x1DEA,
+            src: SocketAddr::new(addr, port),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let mut store = StreamStore::new(100);
+        for i in 0..40u32 {
+            store.process_rtp(
+                &parsed,
+                &rtp_pkt(0x1DEA, i as u16 + 1, 96, i * 3000),
+                ts_ms(i64::from(i) * 33),
+            );
+        }
+        let stale = store.get(&key).unwrap().jitter;
+        assert!(stale > 100.0, "accumulated at 8 kHz: {stale}");
+
+        store.link_endpoint(addr, port, "late@call", &[(96, "H264".to_string(), 90000)]);
+        assert_eq!(store.get(&key).unwrap().clock_rate, 90000);
+        assert_eq!(store.clock_grounding(&key), Some(ClockGrounding::Rtpmap));
+        assert_eq!(
+            store.get(&key).unwrap().jitter,
+            0.0,
+            "the estimate accumulated at the wrong clock is discarded, not kept"
+        );
+        assert_eq!(
+            store.measured_jitter_ms(&key),
+            None,
+            "a freshly restarted estimator has measured nothing yet — \
+             publishing its zero seed would read as a perfect stream"
+        );
+
+        // Feed enough packets for the 16-sample estimator to re-converge.
+        for i in 40..60u32 {
+            store.process_rtp(
+                &parsed,
+                &rtp_pkt(0x1DEA, i as u16 + 1, 96, i * 3000),
+                ts_ms(i64::from(i) * 33),
+            );
+        }
+        let j = store
+            .measured_jitter_ms(&key)
+            .expect("re-converged, so reportable again");
+        assert!(
+            j < 5.0,
+            "at the true 90 kHz clock this evenly paced stream is near-zero \
+             jitter, got {j}"
+        );
     }
 
     /// With audio capture disabled (batch mode: nothing ever reads the
@@ -1486,44 +2097,10 @@ a=rtpmap:96 H264/90000\r\n";
         })]
     }
 
-    /// Two streams can share an SSRC (same source re-keyed by 5-tuple).
-    /// An RTCP report updates the FIRST-inserted matching stream only —
-    /// pins the insertion-order semantics any SSRC index must preserve.
+    /// After a stream sharing an SSRC is evicted, a report must still reach
+    /// the survivor — a stale SSRC index would miss it or address a ghost.
     #[test]
-    fn rtcp_updates_first_inserted_stream_for_shared_ssrc() {
-        let mut store = StreamStore::new(100);
-        let p1 = make_parsed(20000, 30000, 160);
-        let p2 = make_parsed(21000, 30000, 160);
-        let rtp = make_rtp_header(0xCAFE, 1);
-        store.process_rtp(&p1, &rtp, ts(0));
-        store.process_rtp(&p2, &rtp, ts(1));
-
-        store.process_rtcp(&rr_for(0xCAFE, 77));
-
-        let first = StreamKey {
-            ssrc: 0xCAFE,
-            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
-            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
-        };
-        let second = StreamKey {
-            ssrc: 0xCAFE,
-            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 21000),
-            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
-        };
-        // 77 RTP-ts units at 8 kHz → 77 * 1000 / 8000 = 9.625 ms.
-        assert_eq!(store.get(&first).unwrap().jitter, 9.625);
-        assert_eq!(
-            store.get(&second).unwrap().jitter,
-            0.0,
-            "only the first-inserted stream receives the RTCP update"
-        );
-    }
-
-    /// After the first-inserted stream with a shared SSRC is evicted, an
-    /// RTCP report must update the earliest SURVIVING stream — a stale
-    /// SSRC index would miss or update a ghost.
-    #[test]
-    fn rtcp_after_eviction_updates_surviving_stream() {
+    fn rtcp_after_eviction_reaches_surviving_stream() {
         let mut store = StreamStore::new(2);
         let p1 = make_parsed(20000, 30000, 160);
         let p2 = make_parsed(21000, 30000, 160);
@@ -1542,10 +2119,10 @@ a=rtpmap:96 H264/90000\r\n";
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
         assert_eq!(
-            store.get(&survivor).unwrap().jitter,
+            store.remote_report(&survivor).map(|r| r.jitter_ms),
             // 55 RTP-ts units at 8 kHz → 55 * 1000 / 8000 = 6.875 ms.
-            6.875,
-            "RTCP must reach the earliest surviving stream after eviction"
+            Some(Some(6.875)),
+            "RTCP must reach the surviving stream after eviction"
         );
     }
 
@@ -1561,7 +2138,7 @@ a=rtpmap:96 H264/90000\r\n";
     }
 
     /// An RTCP report for an untracked SSRC leaves existing streams
-    /// untouched.
+    /// untouched and records nothing.
     #[test]
     fn rtcp_unknown_ssrc_is_noop() {
         let mut store = StreamStore::new(100);
@@ -1574,6 +2151,7 @@ a=rtpmap:96 H264/90000\r\n";
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
         assert_eq!(store.get(&key).unwrap().jitter, 0.0);
+        assert!(store.remote_report(&key).is_none());
     }
 
     /// A fresh store reports empty with zero length.

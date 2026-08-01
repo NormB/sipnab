@@ -1364,8 +1364,17 @@ fn writer_warns_on_path_traversal() {
 #[test]
 fn scanner_kill_per_destination_rate_limit() {
     use sipnab::process_isolation::{KillRequest, KillResponse, spawn_scanner_kill_worker};
+    use sipnab::security::transmit_guard::TransmitPermit;
 
-    let mut handle = spawn_scanner_kill_worker(Some(100), None).expect("spawn worker");
+    // The worker only exists for a live source; a run reading a capture file
+    // gets no permit and therefore no worker (see `transmit_guard`). This test
+    // is about the rate limiter, so it declares the live source explicitly and
+    // sends only to loopback.
+    let permit = TransmitPermit::for_source(&sipnab::capture::CaptureSource::Live {
+        device: "lo".to_string(),
+    })
+    .expect("a live source grants a transmit permit");
+    let mut handle = spawn_scanner_kill_worker(Some(100), None, permit).expect("spawn worker");
 
     // Loopback destination so the real UDP send never leaves the host.
     let dst = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 50));
