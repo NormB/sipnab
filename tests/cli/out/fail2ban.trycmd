@@ -1,7 +1,9 @@
+`--fail2ban` writes detections, not a line per packet. A two-party call from an
+ordinary endpoint is not a detection, so the sample capture produces nothing —
+this used to emit a `scanner_detected` line for the caller's INVITE, ACK and
+BYE, which is every peer on a trunk handed to a tool that bans what it is given.
+
 ```
 $ sipnab -N -I tests/fixtures/sip_call.pcap --fail2ban
-[..]: scanner_detected src=10.0.0.1 ua="sipnab-test/1.0" method="INVITE"
-[..]: scanner_detected src=10.0.0.1 ua=- method="ACK"
-[..]: scanner_detected src=10.0.0.1 ua=- method="BYE"
 
 ```

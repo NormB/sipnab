@@ -318,9 +318,25 @@ pub struct Cli {
     #[arg(help_heading = "Capture", short = 'x', long = "quiet-bad-parse")]
     pub quiet_bad_parse: bool,
 
-    /// SIP port range to capture [default: 5060-5061]. An Option (not a
-    /// clap default) so an explicit `--portrange 5060-5061` still overrides
-    /// a config-file range.
+    /// SIP port range to capture [default: 5060-5061].
+    ///
+    /// Signalling only — media is never gated, because RTP uses
+    /// SDP-negotiated dynamic ports.
+    ///
+    /// The default is narrow, and SIP on other ports is ordinary: carriers and
+    /// SBCs use 5070, 5080 and others routinely. Reading a file, SIP whose
+    /// source and destination are both outside the range is skipped, and it
+    /// then appears in no message count, no dialog, and no output format. That
+    /// used to be silent; sipnab now counts what it skipped and says so,
+    /// naming the busiest ports so there is something to widen to. Pass
+    /// `--portrange 1-65535` to analyse everything the capture holds.
+    ///
+    /// Live capture also turns this into the BPF filter when no explicit
+    /// filter is given, so there the kernel drops the traffic and nothing
+    /// downstream — this counter included — can see it was there.
+    ///
+    /// An `Option` (not a clap default) so an explicit `--portrange 5060-5061`
+    /// still overrides a config-file range.
     #[arg(help_heading = "Capture", long, value_name = "RANGE")]
     pub portrange: Option<String>,
 

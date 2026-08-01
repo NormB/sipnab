@@ -24,6 +24,216 @@ pub fn port_in_range(src_port: u16, dst_port: u16, range: (u16, u16)) -> bool {
     (src_port >= lo && src_port <= hi) || (dst_port >= lo && dst_port <= hi)
 }
 
+// ── What `--portrange` threw away ────────────────────────────────────
+//
+// The default range is `5060-5061`, and SIP on other ports is ordinary —
+// carriers and SBCs use 5070, 5080 and 8090 routinely. Measured over a corpus
+// of real captures, the default skips 46,421 of the 148,944 SIP messages
+// sipnab can otherwise analyse (31.2%); `tshark` independently puts 49,576 of
+// 152,865 SIP frames outside the range (32.4%). In `tg.pcap0` it also costs
+// 1,401 of 3,712 dialogs (37.7%). The run then printed its reduced totals as
+// if they were complete.
+//
+// Three ways to fix that were available, and only one of them is honest about
+// what it costs:
+//
+//   * **Widen the default.** Measured on this corpus: `5060-5090` recovers
+//     26,033 of the 49,576 lost messages and still loses 23,543 — 15.4% of all
+//     the SIP there is, silently. Reaching 99.4% takes `5060-8090`, a
+//     3,031-port default that is still arbitrary and still leaves 297 behind,
+//     because the loss is spread over 1,198 distinct service ports. Widening
+//     trades a silent 32% loss for a silent 15% one, which is worse than
+//     leaving it alone: it looks fixed.
+//   * **Sniff SIP by content on any port.** Recovers all of it, and the sniff
+//     is strict enough to do it safely: unlike the payload-only RTP check that
+//     invented four phantom streams from DNS, `starts_sip_message` needs a
+//     literal ` SIP/2.0` version token terminating the first line, and the RTP
+//     stream count is unchanged whether the gate is on or off (648 in
+//     `tg.pcap0` both ways). But it makes `--portrange` a no-op for signalling,
+//     which is a different promise from the one the flag documents, and the
+//     gate's behaviour is pinned by tests outside this file.
+//   * **Report what was skipped.** Keeps `--portrange` meaning what it says
+//     and turns the silent loss into a prompt.
+//
+// The third is what is implemented here, and the reason is that the first two
+// are the same mistake in opposite directions: both decide on the operator's
+// behalf what their capture contains. Counting the loss instead lets sipnab
+// say "there is SIP on 8090 that you are not seeing" — which is the fact the
+// operator was missing, and which neither a wider default nor a silent
+// recovery would have told them.
+//
+// The accounting is exact and O(1): the key is a `u16`, so the tally is a flat
+// 64 K-entry table (512 KiB) allocated lazily on the first skip and never
+// otherwise. An eviction policy would have been the alternative, and getting
+// it wrong would under-report exactly the busiest ports the report exists to
+// name.
+
+/// One port's share of the SIP that the `--portrange` gate discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkippedPort {
+    /// The service port: the destination of a request, the source of a
+    /// response. Not the ephemeral client port, which would name a different
+    /// number on every dialog and tell the operator nothing.
+    pub port: u16,
+    /// SIP messages skipped on that port.
+    pub messages: u64,
+}
+
+/// What the `--portrange` gate discarded during this run.
+///
+/// Empty when nothing was skipped, which is the case for live capture (where
+/// `PipelineOptions::sip_portrange` is `None` because BPF already filtered) and
+/// for any capture whose SIP all falls inside the range.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PortrangeSkipReport {
+    /// Total SIP messages seen and skipped because both ports were outside
+    /// the range. These appear in no count, no dialog, and no output format.
+    pub messages: u64,
+    /// Per-port breakdown, busiest first.
+    pub ports: Vec<SkippedPort>,
+}
+
+/// Per-port tally of skipped SIP, plus the warning escalation state.
+struct PortrangeSkips {
+    /// Total skipped messages.
+    messages: u64,
+    /// Messages per service port, indexed by port. `None` until the first
+    /// skip — a capture whose SIP is all in range never allocates it.
+    per_port: Option<Box<[u64]>>,
+    /// Skip count at which the next warning fires (1, then ×10 each time).
+    next_warn: u64,
+}
+
+impl PortrangeSkips {
+    /// Empty tally with the first warning armed.
+    const fn new() -> Self {
+        Self {
+            messages: 0,
+            per_port: None,
+            next_warn: 1,
+        }
+    }
+}
+
+/// Process-global skip tally.
+///
+/// Global because the two places it could otherwise live are both closed:
+/// `PipelineOptions` is built by exhaustive struct literals in three modules,
+/// and `PacketAction` is matched exhaustively in two, so neither can gain a
+/// field or a variant without editing files this change does not own. A
+/// `Mutex` is affordable here precisely because it is only taken when SIP is
+/// actually being discarded — never on the RTP hot path.
+static PORTRANGE_SKIPS: parking_lot::Mutex<PortrangeSkips> =
+    parking_lot::Mutex::new(PortrangeSkips::new());
+
+/// Record one SIP message discarded by the `--portrange` gate.
+///
+/// # Arguments
+///
+/// * `src_port` / `dst_port` — the packet's ports, both outside the range.
+/// * `payload` — the SIP bytes, read only to tell a request from a response.
+/// * `range` — the configured range, quoted back in the warning.
+///
+/// # Side effects
+///
+/// Bumps the process-global tally and may emit a `WARN`. Warnings fire on the
+/// 1st skip and then at each power of ten, so a capture losing millions of
+/// messages costs a handful of lines and one losing three still says so.
+fn record_portrange_skip(src_port: u16, dst_port: u16, payload: &[u8], range: (u16, u16)) {
+    // A request's service port is its destination; a response's is its source.
+    // Keying on the ephemeral side instead would scatter one proxy's traffic
+    // across hundreds of ports and bury the number worth widening to.
+    let service_port = if payload.starts_with(b"SIP/2.0 ") {
+        src_port
+    } else {
+        dst_port
+    };
+
+    let warn = {
+        let mut st = PORTRANGE_SKIPS.lock();
+        st.messages += 1;
+        let table = st
+            .per_port
+            .get_or_insert_with(|| vec![0u64; usize::from(u16::MAX) + 1].into_boxed_slice());
+        table[usize::from(service_port)] += 1;
+
+        if st.messages < st.next_warn {
+            None
+        } else {
+            st.next_warn = st.messages.saturating_mul(10);
+            let busiest = busiest_ports(&st, 3);
+            Some((st.messages, busiest))
+        }
+    };
+
+    if let Some((messages, busiest)) = warn {
+        let ports = busiest
+            .iter()
+            .map(|p| format!("{} ({})", p.port, p.messages))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (lo, hi) = range;
+        tracing::warn!(
+            "SIP outside --portrange {lo}-{hi} is being skipped: {messages} \
+             message(s) so far, in no count, no dialog, and no output. \
+             Busiest port(s): {ports}. Re-run with a range that covers them \
+             (e.g. --portrange 1-65535) to analyse them."
+        );
+    }
+}
+
+/// The `n` busiest ports in `st`, busiest first.
+fn busiest_ports(st: &PortrangeSkips, n: usize) -> Vec<SkippedPort> {
+    let Some(ref table) = st.per_port else {
+        return Vec::new();
+    };
+    let mut ports: Vec<SkippedPort> = table
+        .iter()
+        .enumerate()
+        .filter(|&(_, &messages)| messages > 0)
+        .map(|(port, &messages)| SkippedPort {
+            // The table is indexed by `u16`, so every index fits.
+            port: port as u16,
+            messages,
+        })
+        .collect();
+    // Busiest first; ties by port number so the report is deterministic.
+    ports.sort_unstable_by(|a, b| b.messages.cmp(&a.messages).then(a.port.cmp(&b.port)));
+    ports.truncate(n);
+    ports
+}
+
+/// The SIP this run discarded because both ports fell outside `--portrange`.
+///
+/// The totals sipnab prints count what it analysed. This is what it saw, knew
+/// was SIP, and did not analyse — the difference an operator otherwise has no
+/// way to learn. Report it beside any message or dialog count that a
+/// `--portrange` was applied to.
+///
+/// # Returns
+///
+/// A [`PortrangeSkipReport`] with the running total and every port that
+/// carried skipped SIP, busiest first. All zeroes when nothing was skipped.
+pub fn portrange_skip_report() -> PortrangeSkipReport {
+    let st = PORTRANGE_SKIPS.lock();
+    PortrangeSkipReport {
+        messages: st.messages,
+        ports: busiest_ports(&st, usize::MAX),
+    }
+}
+
+/// Clear the skip tally and re-arm the warning escalation.
+///
+/// The tally is process-global, so a process that analyses several captures in
+/// sequence (and a test that asserts on the counts) needs a way back to zero.
+///
+/// # Side effects
+///
+/// Resets the global counters and frees the per-port table.
+pub fn reset_portrange_skips() {
+    *PORTRANGE_SKIPS.lock() = PortrangeSkips::new();
+}
+
 /// Extract the RTP-stream link tuples `(media_ip, media_port, call_id, media)`
 /// from an SDP offer/answer, one per `m=` line with a resolvable connection
 /// address (media-level `c=`, else the session `c=`). Media without an address
@@ -118,7 +328,11 @@ pub fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
     }
 
     match websocket::unwrap_websocket_frame(&pp.payload) {
-        Ok(Some(payload)) if sip::is_sip_message(&payload) => Some(payload),
+        // `starts_sip_message`, for the same reason `classify_packet` uses it:
+        // the narrower `sip::is_sip_message` would refuse to unwrap a frame
+        // carrying an extension-method request, and SIP-over-WebSocket
+        // (RFC 7118) is exactly where private methods turn up.
+        Ok(Some(payload)) if sip::parser::starts_sip_message(&payload) => Some(payload),
         _ => None,
     }
 }
@@ -235,10 +449,25 @@ pub fn classify_packet(
     // SIP detection first — parse and derive links, touching no store. The
     // port gate applies to signaling only; RTP uses SDP-negotiated dynamic
     // ports and falls through to the media checks below.
+    //
+    // `sip::parser::starts_sip_message`, not `sip::is_sip_message`: the latter
+    // sniffs the first line against a list of the fourteen registered methods,
+    // so a request using an RFC 3261 §7.1 `extension-method` was discarded here
+    // — before the parser, which handles it — and never appeared in any output.
+    let sip_looks_like_sip = sip::parser::starts_sip_message(effective_payload);
     let sip_port_ok = opts
         .sip_portrange
         .is_none_or(|range| port_in_range(pp.src_port, pp.dst_port, range));
-    if sip_port_ok && sip::is_sip_message(effective_payload) {
+    if let Some(range) = opts.sip_portrange
+        && !sip_port_ok
+        && sip_looks_like_sip
+    {
+        // The gate is doing what `--portrange` asked, but it is discarding real
+        // SIP and nothing downstream could tell. Record it so the loss is
+        // reportable instead of silent; see `portrange_skip_report`.
+        record_portrange_skip(pp.src_port, pp.dst_port, effective_payload, range);
+    }
+    if sip_port_ok && sip_looks_like_sip {
         match sip::parser::parse_sip_bytes(
             effective_payload,
             pp.timestamp,

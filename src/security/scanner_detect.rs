@@ -12,8 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::time::Instant;
 
+use chrono::{DateTime, TimeDelta, Utc};
 use regex::{Regex, RegexBuilder};
 
 use crate::sip::SipMessage;
@@ -48,6 +48,9 @@ const MAX_TARGETS_PER_SOURCE: usize = 1024;
 const BEHAVIORAL_WINDOW_SECS: u64 = 5;
 
 /// Tracks per-source behavioral state for probe detection.
+///
+/// Both timestamps are CAPTURE time — the timestamp the packet carries — not
+/// wall time. See [`ScannerDetector::latest_packet`] for why.
 struct BehavioralState {
     /// REGISTER requests seen from this source in the current window.
     register_count: u32,
@@ -57,10 +60,21 @@ struct BehavioralState {
     invite_count: u32,
     /// Distinct target extensions (To/R-URI user-part) seen this window.
     targets: HashSet<String>,
-    /// Start of the current behavioral window.
-    first_seen: Instant,
-    /// Most recent activity from this source (used for sweeping).
-    last_seen: Instant,
+    /// Start of the current behavioral window, in capture time.
+    first_seen: DateTime<Utc>,
+    /// Most recent activity from this source, in capture time (used for
+    /// sweeping).
+    last_seen: DateTime<Utc>,
+    /// Monotonic counter of when this source was last touched, used to pick
+    /// the eviction victim.
+    ///
+    /// Not a timestamp, because capture timestamps TIE: two packets can share
+    /// a microsecond, and a replay of one crafted message repeated is entirely
+    /// legitimate input. Under a tie `min_by_key` returns whichever entry the
+    /// hash order happened to visit first, so which source the memory cap
+    /// evicted became unpredictable — and the source being evicted is the one
+    /// whose detection state is discarded.
+    last_used: u64,
 }
 
 /// Alert produced when scanner activity is detected.
@@ -99,6 +113,35 @@ pub struct ScannerDetector {
     known_patterns: Vec<Regex>,
     /// Per-source behavioral tracking state.
     behavioral: HashMap<IpAddr, BehavioralState>,
+    /// Capture time of the most recent message checked — the detector's
+    /// "now". `None` before the first message.
+    ///
+    /// The rate and enumeration windows used to be paced by
+    /// `std::time::Instant`, which is the clock of the machine doing the
+    /// reading rather than of the traffic being read. Live those agree, since
+    /// a packet is timestamped as it arrives. Offline they do not: a file is
+    /// replayed as fast as the disk allows, so several minutes of a busy trunk
+    /// land inside one wall-clock second, the
+    /// [`BEHAVIORAL_WINDOW_SECS`]-second window never expires, and the
+    /// per-source counters accumulate over the WHOLE capture. Every peer that
+    /// sent more than [`BEHAVIORAL_THRESHOLD`] requests or reached more than
+    /// [`ENUMERATION_THRESHOLD`] extensions — an ordinary carrier SBC does
+    /// both in a minute — was then reported as a scanner, and with
+    /// `--kill-scanner` that decides whether sipnab answers it. It also made
+    /// the verdict a function of machine speed: the same bytes on a slower box
+    /// gave a different answer.
+    ///
+    /// This is the same defect [`crate::app::batch::SweepClock`] fixed for the
+    /// dialog and stream sweeps, applied where the clock is already to hand:
+    /// every message carries its own capture timestamp, so the detector reads
+    /// its "now" off the traffic and needs nothing threaded in from the caller.
+    ///
+    /// Never moves backwards. Captures do contain out-of-order timestamps, and
+    /// one reordered packet must not rewind the sweep horizon.
+    latest_packet: Option<DateTime<Utc>>,
+    /// Ticks once per tracked source touched; the value stamped into
+    /// [`BehavioralState::last_used`] to order eviction.
+    use_counter: u64,
 }
 
 impl ScannerDetector {
@@ -137,6 +180,8 @@ impl ScannerDetector {
         Self {
             known_patterns: patterns,
             behavioral: HashMap::new(),
+            latest_packet: None,
+            use_counter: 0,
         }
     }
 
@@ -147,6 +192,15 @@ impl ScannerDetector {
     /// probing threshold.
     #[must_use]
     pub fn check(&mut self, msg: &SipMessage) -> Option<ScannerAlert> {
+        // Advance the capture clock before any early return, so `sweep` still
+        // ages state out over a stretch of capture that held only responses.
+        if self
+            .latest_packet
+            .is_none_or(|latest| msg.timestamp > latest)
+        {
+            self.latest_packet = Some(msg.timestamp);
+        }
+
         // `None` when the request line carried no recognisable method. It used
         // to substitute the literal "UNKNOWN", which is a value a `Custom`
         // method can also hold — the same collision the `ua` field had.
@@ -178,23 +232,25 @@ impl ScannerDetector {
 
         // Behavioral analysis: track REGISTER/OPTIONS/INVITE rates
         if matches!(method, Some("REGISTER" | "OPTIONS" | "INVITE")) {
-            let now = Instant::now();
+            let now = msg.timestamp;
 
             // Cap the behavioral map to prevent memory exhaustion (H4)
             if self.behavioral.len() >= MAX_BEHAVIORAL_ENTRIES
                 && !self.behavioral.contains_key(&msg.src_addr)
             {
-                // Evict the oldest entry by first_seen
+                // Evict the least recently used entry.
                 if let Some(oldest_ip) = self
                     .behavioral
                     .iter()
-                    .min_by_key(|(_, s)| s.first_seen)
+                    .min_by_key(|(_, s)| s.last_used)
                     .map(|(&ip, _)| ip)
                 {
                     self.behavioral.remove(&oldest_ip);
                 }
             }
 
+            self.use_counter += 1;
+            let use_counter = self.use_counter;
             let state = self
                 .behavioral
                 .entry(msg.src_addr)
@@ -205,10 +261,18 @@ impl ScannerDetector {
                     targets: HashSet::new(),
                     first_seen: now,
                     last_seen: now,
+                    last_used: use_counter,
                 });
+            state.last_used = use_counter;
 
-            // Reset window if expired
-            if now.duration_since(state.first_seen).as_secs() > BEHAVIORAL_WINDOW_SECS {
+            // Reset window if expired. `signed_duration_since` rather than a
+            // subtraction that could go negative: an out-of-order packet
+            // yields a negative delta, which must not be read as an expired
+            // window (nor panic on an `unsigned_abs` that would read a packet
+            // from the past as one far in the future).
+            if now.signed_duration_since(state.first_seen)
+                > TimeDelta::seconds(BEHAVIORAL_WINDOW_SECS as i64)
+            {
                 state.register_count = 0;
                 state.options_count = 0;
                 state.invite_count = 0;
@@ -261,11 +325,25 @@ impl ScannerDetector {
         None
     }
 
-    /// Remove behavioral tracking entries older than `max_age`.
+    /// Remove behavioral tracking entries whose last activity is older than
+    /// `max_age` **in capture time**.
+    ///
+    /// Ages against the most recent packet checked, not `Instant::now()`: the
+    /// caller sweeps on a schedule, and offline the wall clock barely moves
+    /// between the first packet of a capture and the last, so a wall-clock
+    /// sweep held every source it ever saw for the whole run.
+    ///
+    /// A no-op before the first message: with no capture time there is nothing
+    /// to measure against, and nothing tracked to remove.
     pub fn sweep(&mut self, max_age: std::time::Duration) {
-        let now = std::time::Instant::now();
+        let Some(now) = self.latest_packet else {
+            return;
+        };
+        let Ok(max_age) = TimeDelta::from_std(max_age) else {
+            return;
+        };
         self.behavioral
-            .retain(|_, state| now.duration_since(state.last_seen) < max_age);
+            .retain(|_, state| now.signed_duration_since(state.last_seen) < max_age);
     }
 }
 
@@ -520,6 +598,167 @@ mod tests {
         assert!(alert.is_some(), "should detect custom --kill-ua pattern");
         let alert = alert.unwrap();
         assert_eq!(alert.detection_method, "ua_pattern");
+    }
+
+    // ── Packet time vs wall clock ────────────────────────────────────
+
+    /// Build a request of `method` probing `target` from `src`, stamped with
+    /// the capture time `at` — the knob these tests turn.
+    fn request_at(
+        method: &str,
+        target: &str,
+        src: IpAddr,
+        n: usize,
+        at: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            &format!("{method} sip:{target}@example.com SIP/2.0"),
+            &[
+                &format!("From: <sip:probe@example.com>;tag=t{n}"),
+                &format!("To: <sip:{target}@example.com>"),
+                &format!("Call-ID: clock-{n}@example.com"),
+                &format!("CSeq: 1 {method}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse")
+    }
+
+    /// Capture time `secs` seconds after the fixed base timestamp.
+    fn at(secs: i64) -> DateTime<Utc> {
+        ts() + chrono::TimeDelta::seconds(secs)
+    }
+
+    /// The behavioural window counts what the CAPTURE says, not how long
+    /// sipnab took to read it.
+    ///
+    /// A file replayed from disk delivers every packet within milliseconds of
+    /// wall time, so a window paced by `Instant::now()` never expires offline
+    /// and the per-source counters accumulate over the whole capture. A busy
+    /// trunk then trips `BEHAVIORAL_THRESHOLD` on volume it never had: here,
+    /// one REGISTER every two seconds — three per five-second window against a
+    /// threshold of ten — replayed in a tight loop.
+    #[test]
+    fn behavioural_window_is_measured_in_packet_time() {
+        let mut det = ScannerDetector::new(&[]);
+        let src = scanner_ip();
+        let mut fired = 0usize;
+        for i in 0..60 {
+            let msg = request_at("REGISTER", "sameuser", src, i, at(i as i64 * 2));
+            if det.check(&msg).is_some() {
+                fired += 1;
+            }
+        }
+        assert_eq!(
+            fired, 0,
+            "one REGISTER every 2s is 3 per {BEHAVIORAL_WINDOW_SECS}s window, well under \
+             the threshold of {BEHAVIORAL_THRESHOLD} — {fired} alerts means the window is \
+             being paced by how fast the file was read, not by the capture"
+        );
+    }
+
+    /// The enumeration window is packet time too.
+    ///
+    /// Ten seconds between probes is two full windows apart, so no window ever
+    /// holds more than one distinct target. Paced by wall time, all sixty land
+    /// in one window and the sixth trips `ENUMERATION_THRESHOLD`.
+    #[test]
+    fn enumeration_window_is_measured_in_packet_time() {
+        let mut det = ScannerDetector::new(&[]);
+        let src = scanner_ip();
+        let mut fired = 0usize;
+        for i in 0..60 {
+            let msg = request_at("OPTIONS", &format!("ext{i:04}"), src, i, at(i as i64 * 10));
+            if det.check(&msg).is_some() {
+                fired += 1;
+            }
+        }
+        assert_eq!(
+            fired, 0,
+            "probes {BEHAVIORAL_WINDOW_SECS}s apart put one target in each window, under the \
+             enumeration threshold of {ENUMERATION_THRESHOLD} — {fired} alerts means distinct \
+             targets are accumulating across the whole capture"
+        );
+    }
+
+    /// A genuine burst inside one window still fires — the packet-time window
+    /// must not become a way to never detect anything.
+    #[test]
+    fn a_real_burst_inside_one_packet_time_window_still_fires() {
+        let mut det = ScannerDetector::new(&[]);
+        let src = scanner_ip();
+        let mut fired = None;
+        for i in 0..15 {
+            // 100ms apart: all fifteen inside one BEHAVIORAL_WINDOW_SECS window.
+            let msg = request_at(
+                "REGISTER",
+                "sameuser",
+                src,
+                i,
+                ts() + chrono::TimeDelta::milliseconds(i as i64 * 100),
+            );
+            if let Some(a) = det.check(&msg) {
+                fired = Some(a);
+            }
+        }
+        let a = fired.expect("15 REGISTERs in 1.5s of capture time is a flood and must fire");
+        assert_eq!(a.detection_method, "behavioral");
+    }
+
+    /// A genuine sweep inside one window still fires as enumeration.
+    #[test]
+    fn a_real_sweep_inside_one_packet_time_window_still_fires() {
+        let mut det = ScannerDetector::new(&[]);
+        let src = scanner_ip();
+        let mut fired = None;
+        for i in 0..8 {
+            let msg = request_at(
+                "OPTIONS",
+                &format!("ext{i:04}"),
+                src,
+                i,
+                ts() + chrono::TimeDelta::milliseconds(i as i64 * 100),
+            );
+            if let Some(a) = det.check(&msg) {
+                fired = Some(a);
+            }
+        }
+        let a = fired.expect("8 distinct targets in 0.8s of capture time is enumeration");
+        assert_eq!(a.detection_method, "enumeration");
+    }
+
+    /// `sweep` ages entries out on capture time as well — in both directions.
+    ///
+    /// The two assertions pin the two ways a wrong clock goes wrong, and
+    /// neither alone is enough. An `Instant`-paced sweep retains everything:
+    /// offline the wall clock barely advances between the first packet and the
+    /// last, so nothing is ever old enough to drop, however long ago the
+    /// capture says the source went quiet. A `Utc::now()`-paced sweep does the
+    /// opposite on any capture that is not from today — every source is years
+    /// idle the moment it is read, so the sweep empties the map and the
+    /// detector forgets a scanner mid-scan.
+    #[test]
+    fn sweep_ages_entries_out_on_packet_time() {
+        let mut det = ScannerDetector::new(&[]);
+        let (quiet, active) = (scanner_ip(), localhost());
+        let _ = det.check(&request_at("REGISTER", "u", quiet, 0, at(0)));
+        assert_eq!(det.behavioral.len(), 1, "the source must be tracked");
+
+        // A packet 10 minutes later in capture time, then a 2-minute sweep.
+        let _ = det.check(&request_at("REGISTER", "u", active, 1, at(600)));
+        det.sweep(std::time::Duration::from_secs(120));
+        assert!(
+            !det.behavioral.contains_key(&quiet),
+            "a source last seen 600s ago in capture time must not survive a 120s sweep"
+        );
+        assert!(
+            det.behavioral.contains_key(&active),
+            "the source that sent the most recent packet is 0s idle in capture time and \
+             must survive — a sweep aged against `Utc::now()` drops it, because a capture \
+             recorded before today is already older than any max_age"
+        );
     }
 
     /// SIP responses are ignored (only requests are checked).

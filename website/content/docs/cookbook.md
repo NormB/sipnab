@@ -687,11 +687,21 @@ sudo sipnab -N -d eth0 \
 
 `--fail2ban` is a boolean flag — it switches sipnab's stdout to fail2ban-friendly log lines. Pipe to a file (or run under systemd and capture the unit's stdout).
 
+`--fail2ban` writes **detections**, so it needs a detector switched on beside it: `--kill-scanner` for `scanner_detected`, `--reg-flood` for `reg_flood`. On its own it selects the format and nothing produces lines for it, and a jail reading an always-empty file never says so.
+
 ```bash
 # Run sipnab with fail2ban-format output, write to a logfile
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban \
      >> /var/log/sipnab/fail2ban.log 2>&1
 ```
+
+**Measure it against your own traffic before any of it reaches fail2ban.** The detectors suit a honeypot or an edge box, and a carrier trunk is neither: the enumeration rule fires on more than five distinct called extensions from one source in five seconds, which an SBC fronting a hunt group does continuously. Point sipnab at a capture of a normal hour and count who it would have banned:
+
+```bash
+sipnab -N -I trunk.pcap --kill-scanner --fail2ban | grep -oE 'src=[^ ]+' | sort | uniq -c | sort -rn
+```
+
+Every address in that list is one the jail below would ban. On an ordinary carrier trunk this routinely names the carrier's own SBCs — see `ignoreip` in the jail, and raise `maxretry` until the list holds only what you meant.
 
 Sample log line shape (from `src/output/fail2ban.rs`):
 
@@ -725,10 +735,25 @@ ignoreregex =
 enabled = true
 filter = sipnab
 logpath = /var/log/sipnab/fail2ban.log
+# Never ban the boxes the phone system needs. List every carrier SBC, every
+# trunk peer and the PBX itself, before enabling the jail — these are the
+# addresses that talk to you most, so they are the ones a detector tuned for a
+# honeypot flags first.
+ignoreip = 127.0.0.1/8 ::1 203.0.113.0/24 198.51.100.10
 findtime = 600
-maxretry = 1
-bantime = 86400
+# Several detections inside findtime, not one. A single enumeration alert is
+# how a busy trunk looks, and `maxretry = 1` turns any one of them into a ban.
+maxretry = 5
+# An hour, not a day. Long enough to shed a scan, short enough that a wrong
+# ban of your own carrier heals without an engineer.
+bantime = 3600
 action = iptables-allports
+```
+
+Verify the filter against a real log file before enabling the jail, and check the ban list afterwards — `fail2ban-regex` reports what it would have matched without banning anything:
+
+```bash
+fail2ban-regex /var/log/sipnab/fail2ban.log /etc/fail2ban/filter.d/sipnab.conf
 ```
 
 ### 10c. Detect toll fraud and wangiri call-back bait

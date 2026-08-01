@@ -662,36 +662,56 @@ fn scanner_detector_caps_behavioral_entries() {
 
 /// H4: Fraud detector call patterns must be capped. Uses the wangiri path: a
 /// 3rd short call to the same numeric prefix alerts (`WANGIRI_THRESHOLD` = 3).
+///
+/// Each probe is a call that has ENDED: a `BYE` against a dialog whose span is
+/// one second. A call's duration is only knowable once the call is over, so a
+/// dialog still in `Trying` — which is all `SipDialog::new` produces — has no
+/// duration that could be short. The earlier form of this test set
+/// `updated_at` by hand on an unfinished dialog, which is exactly the state
+/// that used to make every call in a capture look like a short one.
 #[test]
 #[serial_test::serial]
 fn fraud_detector_caps_call_pattern_entries() {
-    let raw = build_sip(
+    let headers = [
+        "From: <sip:attacker@example.com>;tag=f1",
+        "To: <sip:5551234@example.com>;tag=t1",
+        "Call-ID: fraud-cap@test",
+        "CSeq: 1 INVITE",
+        "Content-Length: 0",
+    ];
+    let parse = |raw: &[u8]| {
+        sipnab::sip::parse_sip(
+            raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse")
+    };
+    let invite = parse(&build_sip(
         "INVITE sip:5551234@example.com SIP/2.0",
-        &[
-            "From: <sip:attacker@example.com>;tag=f1",
-            "To: <sip:5551234@example.com>",
-            "Call-ID: fraud-cap@test",
-            "CSeq: 1 INVITE",
-            "Content-Length: 0",
-        ],
+        &headers,
         b"",
-    );
-    let base = sipnab::sip::parse_sip(
-        &raw,
-        ts(),
-        localhost(),
-        localhost(),
-        5060,
-        5060,
-        TransportProto::Udp,
-    )
-    .expect("parse");
-    // A zero-duration dialog makes every call "short" (wangiri counts these).
-    let dialog = sipnab::sip::dialog::SipDialog::new(&base).expect("dialog");
-    let probe = |detector: &mut FraudDetector, ip: IpAddr| {
-        let mut msg = base.clone();
-        msg.src_addr = ip;
-        detector.check(&msg, &dialog)
+    ));
+    let bye = parse(&build_sip(
+        "BYE sip:5551234@example.com SIP/2.0",
+        &headers,
+        b"",
+    ));
+
+    let mut seq = 0usize;
+    let mut probe = |detector: &mut FraudDetector, ip: IpAddr| {
+        seq += 1;
+        let mut dialog = sipnab::sip::dialog::SipDialog::new(&invite).expect("dialog");
+        dialog.src_addr = ip;
+        dialog.call_id = format!("fraud-cap-{seq}@test");
+        // The BYE ends the dialog; the span is then the call's duration.
+        sipnab::sip::dialog::update_state(&mut dialog, &bye);
+        dialog.updated_at = dialog.created_at + chrono::TimeDelta::seconds(1);
+        detector.check(&bye, &dialog)
     };
 
     // Control: the 3rd short call to the same prefix alerts (2 do not).
