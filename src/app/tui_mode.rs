@@ -222,7 +222,10 @@ pub fn run_tui_mode(
             let mut writer: Option<PcapWriter> = None;
             let tui_export_mode = PcapExportMode::parse_mode(&cli_clone.pcap_export_mode)
                 .unwrap_or(PcapExportMode::Decrypted);
-            let mut last_sweep = std::time::Instant::now();
+            // Wall time for a live device, the capture's own timeline for
+            // `-I`: the TUI reads files too, and there the packet clock and
+            // `Utc::now()` are unrelated. See `batch::SweepClock`.
+            let mut sweep_clock = crate::app::batch::SweepClock::new(cli_clone.has_input());
             let sweep_interval = std::time::Duration::from_secs(5);
             let start = std::time::Instant::now();
             let mut total_count: u64 = 0;
@@ -232,10 +235,11 @@ pub fn run_tui_mode(
                     break;
                 }
 
-                if last_sweep.elapsed() >= sweep_interval {
+                if let Some(now) = sweep_clock.take_due(sweep_interval) {
                     processor.sweep();
-                    ss.write().mark_orphaned(std::time::Duration::from_secs(30));
-                    let compacted = ds.write().compact_idle(chrono::Utc::now());
+                    ss.write()
+                        .mark_orphaned(now.get(), std::time::Duration::from_secs(30));
+                    let compacted = ds.write().compact_idle(now.get());
                     if compacted.messages_evicted > 0 {
                         tracing::debug!(
                             "idle-dialog compaction: dropped {} messages from {} dialogs",
@@ -243,7 +247,6 @@ pub fn run_tui_mode(
                             compacted.dialogs_compacted
                         );
                     }
-                    last_sweep = std::time::Instant::now();
                 }
 
                 let packet = match rx.recv_timeout(std::time::Duration::from_millis(50)) {
@@ -251,6 +254,11 @@ pub fn run_tui_mode(
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                 };
+
+                // Offline, this packet's timestamp is what "now" means to the
+                // next sweep. Recorded before parsing so undecoded traffic
+                // still advances the clock.
+                sweep_clock.observe(packet.timestamp);
 
                 // Lazily initialize writer
                 if writer.is_none()

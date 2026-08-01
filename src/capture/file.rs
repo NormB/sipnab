@@ -192,8 +192,9 @@ pub fn capture_file(
 ///
 /// # Errors
 ///
-/// Fails when the first file cannot be opened or its BPF filter does not
-/// compile, or when libpcap reports a read error mid-file.
+/// Fails when the first file cannot be opened, when the BPF filter does not
+/// compile against ANY file of the set, or when libpcap reports a read error
+/// mid-file.
 ///
 /// # Side effects
 ///
@@ -205,6 +206,120 @@ pub fn capture_files(
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
+    let mut tally = ReadTally {
+        given: paths.len(),
+        ..ReadTally::default()
+    };
+    let mut count: u64 = 0;
+    let result = read_set(paths, config, &tx, ready_tx, &mut tally, &mut count);
+
+    // Reported before the result is propagated, and on every path out: a
+    // filter that fails against file twelve still read eleven, and what
+    // reached the store is exactly what the operator has to be told.
+    if paths.is_empty() {
+        return result;
+    }
+    let line = tally.summary(count);
+    if tally.lossy() {
+        tracing::warn!("{line}");
+    } else {
+        tracing::info!("{line}");
+    }
+    result
+}
+
+/// What became of each file of one `-I` set.
+///
+/// The old summary was `"Read {count} packets from {} file(s)", paths.len()` —
+/// the size of the set decided BEFORE any file was opened. Both `continue`
+/// arms and the read-error arm fell through to it, so a run that opened 3 of 27
+/// files still claimed 27, and an earlier truncation bug that abandoned twelve
+/// files was nearly invisible because the line it printed did not change.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReadTally {
+    /// Files in the resolved set — what used to be reported on its own.
+    given: usize,
+    /// Files read through to their last packet.
+    complete: usize,
+    /// Files whose read stopped before their end: a mid-file read error, or a
+    /// `--count`/`--duration` limit or shutdown landing inside them.
+    stopped_early: usize,
+    /// Files that never yielded a packet: they could not be opened, or the BPF
+    /// filter would not compile against their link type.
+    skipped: usize,
+    /// Whether anything was lost rather than merely left unread on request.
+    ///
+    /// Separate from the counts because `--count 100` over a 27-file set stops
+    /// early and leaves 26 files unread by design; a read error or a file that
+    /// would not open is data missing from the analysis, and only that turns
+    /// the summary into a warning.
+    lost: bool,
+}
+
+impl ReadTally {
+    /// Files the run never got to, because it stopped inside an earlier one.
+    fn not_reached(&self) -> usize {
+        self.given
+            .saturating_sub(self.complete + self.stopped_early + self.skipped)
+    }
+
+    /// Whether the summary describes missing data rather than a requested stop.
+    fn lossy(&self) -> bool {
+        self.lost
+    }
+
+    /// The closing line: packets read, and what happened to every file.
+    fn summary(&self, packets: u64) -> String {
+        let mut line = format!(
+            "Read {packets} packets: {} of {} file(s) read in full",
+            self.complete, self.given
+        );
+        for (n, what) in [
+            (self.stopped_early, "stopped early"),
+            (self.skipped, "skipped"),
+            (self.not_reached(), "not reached"),
+        ] {
+            if n > 0 {
+                line.push_str(", ");
+                line.push_str(&n.to_string());
+                line.push(' ');
+                line.push_str(what);
+            }
+        }
+        line
+    }
+}
+
+/// State carried from one file of a set to the next.
+///
+/// Bundled rather than passed as six more parameters, because every member of
+/// it exists precisely so the set reads as ONE capture: one packet count, one
+/// replay timeline, one tally, and one running end-of-the-previous-file.
+struct SetState<'a> {
+    /// Packets sent so far, shared so `--count` spans the whole set.
+    count: &'a mut u64,
+    /// Previous packet's timestamp, shared so replay reproduces the gap
+    /// BETWEEN files as well as within them.
+    prev_ts: Option<DateTime<Utc>>,
+    /// Per-file outcomes for the closing summary.
+    tally: &'a mut ReadTally,
+    /// The last file that held packets, and the time of its last packet.
+    prev_end: Option<(std::path::PathBuf, DateTime<Utc>)>,
+}
+
+/// Read every file of the set, tallying what happened to each.
+///
+/// Split out of [`capture_files`] so the summary is reported on every path out
+/// — including the error paths — and so the tally can be asserted directly in
+/// tests rather than through a log line.
+fn read_set(
+    paths: &[std::path::PathBuf],
+    config: &CaptureConfig,
+    tx: &PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    tally: &mut ReadTally,
+    count: &mut u64,
+) -> Result<()> {
     let Some((first, rest)) = paths.split_first() else {
         if let Some(ready) = ready_tx {
             let _ = ready.send(Err("no capture files to read".to_string()));
@@ -212,110 +327,187 @@ pub fn capture_files(
         anyhow::bail!("no capture files to read");
     };
 
+    let start = std::time::Instant::now();
+    let mut state = SetState {
+        count,
+        prev_ts: None,
+        tally,
+        prev_end: None,
+    };
+
     // The first file owns readiness: opening it is what proves the whole set
     // is usable, and the consumer starts as soon as it is signalled.
-    let (mut cap, _gz_guard) = match open_offline(first) {
+    if !read_member(first, config, tx, start, &mut state, ready_tx)? {
+        return Ok(());
+    }
+
+    for path in rest {
+        if !read_member(path, config, tx, start, &mut state, None)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Read one file of a set. Returns whether the set should continue.
+///
+/// `ready_tx` is `Some` only for the FIRST file, and that is the one asymmetry
+/// left between the members: a first file that will not open has proved the
+/// whole set unusable before the consumer started, so it fails the run, while
+/// a later one is logged and skipped. The set was already probed during
+/// resolution, so a later open failure means something changed underneath us
+/// mid-read — a rotating capture directory being cleaned up while it is
+/// analysed — and losing one file of a set is bad where losing the analysis of
+/// the other nine is worse.
+///
+/// A BPF filter that will not compile is treated the same wherever it happens.
+/// See [`filter_failure`].
+fn read_member(
+    path: &Path,
+    config: &CaptureConfig,
+    tx: &PacketTx,
+    start: std::time::Instant,
+    state: &mut SetState,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<bool> {
+    // `_gz_guard` owns any decompressed temp file and must outlive the read.
+    let (mut cap, _gz_guard) = match open_offline(path) {
         Ok(opened) => opened,
         Err(e) => {
             if let Some(ready) = ready_tx {
                 let _ = ready.send(Err(format!("{e:#}")));
+                return Err(e);
             }
-            return Err(e);
+            state.tally.skipped += 1;
+            state.tally.lost = true;
+            tracing::error!("Skipping '{}': {e:#}", path.display());
+            return Ok(true);
         }
     };
+
     if let Some(ref bpf) = config.bpf_filter
         && let Err(e) = cap.filter(bpf, true)
     {
-        let err = anyhow::Error::new(e).context(format!("Failed to compile BPF filter: {bpf}"));
+        let err = filter_failure(bpf, path, e);
+        state.tally.skipped += 1;
+        state.tally.lost = true;
         if let Some(ready) = ready_tx {
             let _ = ready.send(Err(format!("{err:#}")));
         }
         return Err(err);
     }
+
     if let Some(ready) = ready_tx {
         let _ = ready.send(Ok(()));
     }
 
-    let start = std::time::Instant::now();
-    let mut count: u64 = 0;
-    let mut prev_ts: Option<DateTime<Utc>> = None;
-
-    // The first file gets the same treatment as the rest: a read error stops
-    // it and the set continues. Being first is not a reason to abandon nine
-    // other files, and a ring buffer's truncated member can sort anywhere.
-    match read_opened_inner(
+    // A read error stops THIS file, not the set. Truncation is the normal
+    // state of a ring buffer -- the newest member is still being written when
+    // the capture stops, and libpcap reports `truncated dump file` on the
+    // trailing partial record. Propagating that with `?` abandoned every
+    // remaining file: observed on a 15-file directory where 15 started and 14
+    // finished, and it escaped notice only because the truncated member
+    // happened to sort last. Whatever was read before the break is already in
+    // the store and stays there.
+    let read = match read_opened_inner(
         &mut cap,
-        first,
+        path,
         config,
-        &tx,
+        tx,
         start,
-        &mut count,
-        &mut prev_ts,
+        state.count,
+        &mut state.prev_ts,
     ) {
-        Ok(true) => {}
-        Ok(false) => return Ok(()),
+        Ok(read) => read,
         Err(e) => {
+            state.tally.stopped_early += 1;
+            state.tally.lost = true;
             tracing::error!(
                 "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                first.display()
+                path.display()
             );
+            return Ok(true);
         }
-    }
-    drop(cap);
-    drop(_gz_guard);
+    };
 
-    for path in rest {
-        // A file that fails here is logged and skipped rather than aborting.
-        // The set was already probed during resolution, so reaching this means
-        // something changed underneath us mid-read — a rotating capture
-        // directory being cleaned up while it is analysed. Losing one file of
-        // a set is bad; losing the analysis of the other nine is worse.
-        let (mut cap, _gz_guard) = match open_offline(path) {
-            Ok(opened) => opened,
-            Err(e) => {
-                tracing::error!("Skipping '{}': {e:#}", path.display());
-                continue;
-            }
-        };
-        if let Some(ref bpf) = config.bpf_filter
-            && let Err(e) = cap.filter(bpf, true)
+    if read.reached_eof {
+        state.tally.complete += 1;
+    } else {
+        // A limit or a shutdown landed inside this file. Requested, so not a
+        // loss — but the file was still not read to its end.
+        state.tally.stopped_early += 1;
+    }
+
+    if let Some((first_ts, last_ts)) = read.span {
+        if let Some((prev_path, prev_end)) = state.prev_end.as_ref()
+            && let Some(msg) = overlap_message(prev_path, *prev_end, path, first_ts)
         {
-            tracing::error!("Skipping '{}': bad BPF filter: {e}", path.display());
-            continue;
+            tracing::warn!("{msg}");
         }
-        // A read error stops THIS file, not the set. Truncation is the normal
-        // state of a ring buffer -- the newest member is still being written
-        // when the capture stops, and libpcap reports `truncated dump file` on
-        // the trailing partial record. Propagating that with `?` abandoned
-        // every remaining file: observed on a 15-file directory where 15
-        // started and 14 finished, and it escaped notice only because the
-        // truncated member happened to sort last.
-        //
-        // Same reasoning as the open failure above. Whatever was read before
-        // the break is already in the store and stays there.
-        match read_opened_inner(&mut cap, path, config, &tx, start, &mut count, &mut prev_ts) {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(e) => {
-                tracing::error!(
-                    "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                    path.display()
-                );
-            }
-        }
+        state.prev_end = Some((path.to_path_buf(), last_ts));
     }
 
-    tracing::info!("Read {count} packets from {} file(s)", paths.len());
-    Ok(())
+    Ok(read.reached_eof)
+}
+
+/// The error for a BPF filter that will not compile against a file.
+///
+/// The same error whichever file of the set it happens on. The two arms used to
+/// disagree — the first file returned it, every later one logged
+/// `Skipping ...` and read on — and the skip is the wrong half of that
+/// disagreement: the filter text does not change between files, so a failure is
+/// a static misconfiguration against that file's link type, not a mid-read race
+/// like a file disappearing from a rotating directory. Skipping quietly dropped
+/// the whole traffic of every file with that link type (a Linux-cooked or
+/// DLT_NULL member among Ethernet ones) while the run still exited 0 with a
+/// confident report. An operator who wants only part of a mixed-link-type set
+/// filtered can select it with `--input-name` and run it separately.
+fn filter_failure(bpf: &str, path: &Path, e: pcap::Error) -> anyhow::Error {
+    anyhow::Error::new(e).context(format!(
+        "Failed to compile BPF filter '{bpf}' against '{}'",
+        path.display()
+    ))
+}
+
+/// The warning for a handover where the next file starts before the previous
+/// one ended, or `None` when the two are a clean sequence.
+///
+/// A clean ring buffer hands over cleanly: each file starts after the previous
+/// one ends. Overlap means the set is not one sequence — most often two capture
+/// runs, or the same traffic collected on two interfaces, mixed into one
+/// directory. sipnab will still read it, and the result double-counts every
+/// packet that appears twice, so this says so rather than letting the totals
+/// quietly disagree with reality.
+///
+/// This is the check [`super::input_set`] cannot make: a file's END time is not
+/// known until its last packet has been read, and reading every file twice to
+/// learn it would double the I/O of a 900 MB set. Here the packets stream past
+/// anyway, so the end costs nothing.
+fn overlap_message(
+    prev: &Path,
+    prev_end: DateTime<Utc>,
+    next: &Path,
+    next_start: DateTime<Utc>,
+) -> Option<String> {
+    if next_start >= prev_end {
+        return None;
+    }
+    let by = prev_end
+        .signed_duration_since(next_start)
+        .num_milliseconds();
+    Some(format!(
+        "'{}' starts at {next_start} but '{}' runs to {prev_end} — they overlap by {by} ms, \
+         so packets present in both are counted twice",
+        next.display(),
+        prev.display()
+    ))
 }
 
 /// Read every packet from an already-opened capture into `tx`.
 ///
 /// Split out of [`capture_file`] so a multi-file set shares one packet count,
 /// one duration clock, and one replay timeline across its members —
-/// see [`capture_files`]. Returns `Ok(false)` when the whole read should stop
-/// (shutdown, a limit reached, or the receiver gone) rather than merely this
-/// file ending.
+/// see [`capture_files`].
 fn read_opened(
     cap: &mut pcap::Capture<pcap::Offline>,
     path: &Path,
@@ -329,12 +521,29 @@ fn read_opened(
     Ok(())
 }
 
-/// The read loop itself, returning whether the caller should continue to the
-/// next file.
+/// What one file's read produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileRead {
+    /// Whether the read ran out of packets rather than stopping on a limit, a
+    /// shutdown, or a dropped receiver.
+    ///
+    /// The distinction is the "stop the whole set" signal: a count limit
+    /// reached inside file three must not be mistaken for file three simply
+    /// ending.
+    reached_eof: bool,
+    /// Timestamps of the first and last packet actually read, or `None` for a
+    /// file that held no packets.
+    ///
+    /// The end is what the overlap check in [`overlap_message`] needs, and
+    /// carrying it out of the read is what makes that check free: the resolver
+    /// would have to read every file a second time to learn it.
+    span: Option<(DateTime<Utc>, DateTime<Utc>)>,
+}
+
+/// The read loop itself.
 ///
-/// Separate from [`read_opened`] only so the "stop the whole set" signal has a
-/// return value: a count limit reached inside file three must not be mistaken
-/// for file three simply ending.
+/// Separate from [`read_opened`] only so its [`FileRead`] is available to
+/// [`capture_files`], which needs both halves of it.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn read_opened_inner(
     cap: &mut pcap::Capture<pcap::Offline>,
@@ -344,9 +553,12 @@ fn read_opened_inner(
     start: std::time::Instant,
     count: &mut u64,
     prev_ts: &mut Option<DateTime<Utc>>,
-) -> Result<bool> {
+) -> Result<FileRead> {
     let link_type = cap.get_datalink().0;
     let replay = config.replay;
+    // First and last packet of THIS file, tracked unconditionally: `prev_ts`
+    // above is the replay pacing state and is only written in replay mode.
+    let mut span: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
 
     if replay {
         tracing::info!("Replaying from '{}' with original timing", path.display());
@@ -354,29 +566,44 @@ fn read_opened_inner(
         tracing::info!("Reading from '{}'", path.display());
     }
 
+    // The read stopped short of this file's end. The span it did cover is
+    // still reported: it is real, and it is what the overlap check must use.
+    macro_rules! stopped {
+        () => {
+            return Ok(FileRead {
+                reached_eof: false,
+                span,
+            })
+        };
+    }
+
     loop {
         if signals::shutdown_requested() {
             tracing::debug!("Shutdown requested, stopping file reader");
-            return Ok(false);
+            stopped!();
         }
 
         if let Some(max_count) = config.count
             && *count >= max_count
         {
             tracing::debug!("Reached packet count limit ({max_count})");
-            return Ok(false);
+            stopped!();
         }
 
         if let Some(duration) = config.duration
             && start.elapsed() >= duration
         {
             tracing::debug!("Reached duration limit ({duration:?})");
-            return Ok(false);
+            stopped!();
         }
 
         match cap.next_packet() {
             Ok(pkt) => {
                 let ts = pcap_ts_to_chrono(pkt.header.ts);
+                span = Some(match span {
+                    Some((first, _)) => (first, ts),
+                    None => (ts, ts),
+                });
 
                 // Replay mode: reproduce the inter-packet gap, but sleep in
                 // bounded slices that poll the shutdown flag between them, so a
@@ -391,7 +618,7 @@ fn read_opened_inner(
                             tracing::debug!(
                                 "Shutdown requested during replay delay, stopping file reader"
                             );
-                            return Ok(false);
+                            stopped!();
                         }
                         // Negative deltas (out-of-order timestamps) are skipped
                     }
@@ -409,7 +636,7 @@ fn read_opened_inner(
 
                 if tx.send(packet).is_err() {
                     tracing::debug!("Receiver dropped, stopping file reader");
-                    return Ok(false);
+                    stopped!();
                 }
 
                 *count += 1;
@@ -429,7 +656,10 @@ fn read_opened_inner(
         "File reader finished: {count} packets total, through '{}'",
         path.display()
     );
-    Ok(true)
+    Ok(FileRead {
+        reached_eof: true,
+        span,
+    })
 }
 
 /// Sleep for `total`, waking at least every 200 ms to poll `should_stop`.
@@ -632,6 +862,221 @@ mod tests {
         assert_eq!(
             via_gz, baseline,
             "gzip-compressed capture should yield the same packets as the original"
+        );
+    }
+
+    /// The closing summary counts files that were READ, not the size of the
+    /// set decided before any of them was opened.
+    ///
+    /// `paths.len()` was the old count, so a run that opened 3 of 27 files
+    /// still claimed 27 — which is what made an earlier truncation bug nearly
+    /// invisible.
+    #[test]
+    fn the_summary_reports_files_read_not_files_offered() {
+        let tally = ReadTally {
+            given: 27,
+            complete: 3,
+            stopped_early: 1,
+            skipped: 2,
+            lost: true,
+        };
+        let line = tally.summary(1234);
+        assert!(line.contains("1234 packets"), "{line}");
+        assert!(line.contains("3 of 27 file(s) read in full"), "{line}");
+        assert!(line.contains("1 stopped early"), "{line}");
+        assert!(line.contains("2 skipped"), "{line}");
+        assert!(
+            line.contains("21 not reached"),
+            "the files never opened are the other half of the count: {line}"
+        );
+        assert!(tally.lossy(), "a read error and two skips are losses");
+    }
+
+    /// The overwhelmingly common case stays one clause, and is not a warning.
+    #[test]
+    fn the_summary_of_a_clean_single_file_run_stays_one_clause() {
+        let tally = ReadTally {
+            given: 1,
+            complete: 1,
+            ..ReadTally::default()
+        };
+        assert_eq!(
+            tally.summary(852),
+            "Read 852 packets: 1 of 1 file(s) read in full"
+        );
+        assert!(!tally.lossy());
+    }
+
+    /// A requested stop is not a loss: `--count` leaving files unread is what
+    /// the operator asked for, so the summary reports it without crying wolf.
+    #[test]
+    fn a_count_limit_is_reported_but_not_called_a_loss() {
+        let tally = ReadTally {
+            given: 3,
+            stopped_early: 1,
+            ..ReadTally::default()
+        };
+        let line = tally.summary(1);
+        assert!(line.contains("0 of 3 file(s) read in full"), "{line}");
+        assert!(line.contains("2 not reached"), "{line}");
+        assert!(!tally.lossy(), "a limit is not data loss");
+    }
+
+    /// A file of the set that cannot be opened is counted, not absorbed.
+    #[test]
+    fn a_file_of_the_set_that_cannot_be_opened_is_counted_as_skipped() {
+        let good = sample_pcap();
+        let also_good = fixture_path();
+        for p in [&good, &also_good] {
+            assert!(p.exists(), "fixture missing: {}", p.display());
+        }
+        let missing = std::path::PathBuf::from("/nonexistent/definitely-not-a-capture.pcap");
+
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let mut tally = ReadTally {
+            given: 3,
+            ..ReadTally::default()
+        };
+        let mut count = 0u64;
+        read_set(
+            &[good, missing, also_good],
+            &CaptureConfig::default(),
+            &tx,
+            None,
+            &mut tally,
+            &mut count,
+        )
+        .expect("one unopenable file must not fail the set");
+
+        assert_eq!(tally.complete, 2, "{tally:?}");
+        assert_eq!(tally.skipped, 1, "{tally:?}");
+        assert_eq!(tally.not_reached(), 0, "{tally:?}");
+        assert!(tally.lossy(), "a file that never opened is a loss");
+        assert!(count > 0, "the readable files still contributed packets");
+    }
+
+    /// A read reports the span it covered, which is where the end time for the
+    /// overlap check comes from — no extra pass over the file.
+    #[test]
+    fn a_file_read_reports_the_span_it_covered() {
+        let path = sample_pcap();
+        let (mut cap, _guard) = open_offline(&path).expect("open");
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let mut count = 0u64;
+        let mut prev_ts = None;
+        let read = read_opened_inner(
+            &mut cap,
+            &path,
+            &CaptureConfig::default(),
+            &tx,
+            std::time::Instant::now(),
+            &mut count,
+            &mut prev_ts,
+        )
+        .expect("read");
+
+        assert!(read.reached_eof, "the fixture reads to the end");
+        let (first, last) = read.span.expect("the fixture holds packets");
+        assert_eq!(
+            first.timestamp(),
+            1_480_171_979,
+            "the fixture's first packet is a fixed fact about it"
+        );
+        assert!(
+            last > first,
+            "the last packet cannot precede the first: {first} .. {last}"
+        );
+    }
+
+    /// Overlap is the previous file's END against the next file's START.
+    ///
+    /// Comparing consecutive STARTS — what the resolver could see without
+    /// reading anything — never described the case the warning exists for: two
+    /// capture runs, or the same traffic collected on two interfaces, whose
+    /// packets are then counted twice.
+    #[test]
+    fn overlap_is_the_previous_end_against_the_next_start() {
+        let t = |s: i64| DateTime::from_timestamp(s, 0).expect("timestamp");
+        let a = Path::new("first.pcap");
+        let b = Path::new("second.pcap");
+
+        // second.pcap starts 30 s before first.pcap ends: the two hold the same
+        // 30 s of traffic and every count spanning it is inflated.
+        let msg = overlap_message(a, t(1_767_225_660), b, t(1_767_225_630))
+            .expect("an overlapping handover must be reported");
+        assert!(
+            msg.contains("first.pcap") && msg.contains("second.pcap"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("twice"),
+            "the consequence must be stated: {msg}"
+        );
+    }
+
+    /// A clean ring-buffer handover is silent: file N+1 starts after file N
+    /// ends, which is the normal state of every `tcpdump -C -W` set.
+    #[test]
+    fn a_clean_handover_is_not_reported_as_overlap() {
+        let t = |s: i64| DateTime::from_timestamp(s, 0).expect("timestamp");
+        assert!(
+            overlap_message(
+                Path::new("a.pcap"),
+                t(1_767_225_630),
+                Path::new("b.pcap"),
+                t(1_767_225_660),
+            )
+            .is_none()
+        );
+    }
+
+    /// Helper: a sample whose link type is NOT Ethernet, so an `ether` filter
+    /// cannot compile against it. `h263-over-rtp.pcap` is DLT_NULL (BSD
+    /// loopback); libpcap rejects `ether host ...` on it.
+    fn non_ethernet_pcap() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("pcap-samples")
+            .join("h263-over-rtp.pcap")
+    }
+
+    /// A BPF filter that does not compile fails the run wherever in the set it
+    /// fails — not only when the file it fails on happens to sort first.
+    ///
+    /// The two arms used to disagree: the first file returned the error, every
+    /// later one logged `Skipping ...` and read on. A filter that will not
+    /// compile against a link type is a static misconfiguration, not a
+    /// mid-read race, so the whole traffic of that file — and of every other
+    /// file sharing its link type — left the analysis behind one log line while
+    /// the run still exited 0.
+    #[test]
+    fn a_bpf_filter_that_does_not_compile_fails_on_a_later_file_too() {
+        let ethernet = sample_pcap();
+        let other_link = non_ethernet_pcap();
+        for p in [&ethernet, &other_link] {
+            assert!(p.exists(), "fixture missing: {}", p.display());
+        }
+        let config = CaptureConfig {
+            // Compiles against Ethernet, cannot compile against DLT_NULL.
+            bpf_filter: Some("ether host 00:00:00:00:00:01".to_string()),
+            ..CaptureConfig::default()
+        };
+
+        // Failing on the FIRST file has always been an error.
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let first = capture_files(&[other_link.clone(), ethernet.clone()], &config, tx, None);
+        assert!(first.is_err(), "first-file filter failure must error");
+
+        // Failing on a LATER file must be the same error, not a skip.
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let later = capture_files(&[ethernet, other_link], &config, tx, None);
+        let err = later.expect_err(
+            "a filter that does not compile against file 2's link type must fail \
+             the run, not silently drop that file's traffic",
+        );
+        assert!(
+            format!("{err:#}").contains("BPF filter"),
+            "the error must name the filter: {err:#}"
         );
     }
 

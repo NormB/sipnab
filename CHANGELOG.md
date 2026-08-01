@@ -11,6 +11,89 @@ entry that carries them.
 ## [Unreleased]
 
 ### Fixed
+- **Offline analysis was not deterministic — the same capture gave different
+  answers on different machines.** `compact_idle` and `mark_orphaned` compared
+  `Utc::now()` against PACKET timestamps, and the sweep itself was gated on a
+  wall-clock `Instant`. Offline those have no relationship: a 2016 capture is
+  always "idle", so what survived depended on how many 5-second sweeps fitted
+  into the run.
+
+  Measured on a 4.5M-packet set: the release build kept 84,882 messages and a
+  44-rung flow ladder; the debug build over the same bytes kept 84,568 and 24
+  rungs — 314 messages gone, 1,410 differing report lines. Two engineers reading
+  one capture saw different ladders.
+
+  A `SweepClock` now drives both the gate and the sweep's `now` from the
+  timestamp of the most recent packet when reading files, and keeps wall time
+  for live capture, where it is correct. Monotonic, so a reordered packet cannot
+  rewind the schedule. After: byte-identical, zero differing lines.
+
+  The speed-dependence test uses `--replay` as its slow arm rather than a test
+  hook, and cannot flake in the failing direction: after the fix the report is a
+  pure function of the fixture bytes, so a loaded CI machine makes the two arms
+  agree rather than disagree.
+
+- **Input resolution dropped files silently, seven ways.** Symlinked captures
+  vanished (`follow_links(false)` makes `is_file()` false for the link itself);
+  walkdir and glob errors were discarded by `filter_map(Result::ok)`; the dedup
+  keyed on the canonical path while the explicit-file upgrade compared raw
+  paths; `--input-name` was read in one place and so did nothing for globs;
+  a glob matching a directory was dropped; and `warn_on_overlap` had never
+  fired — it applied an absolute `f64::EPSILON` to epoch seconds of magnitude
+  1.5e9, which degenerates to exact bit equality, and compared starts rather
+  than ranges.
+
+  The run summary reported `paths.len()` — the size of the set decided before
+  any file was opened — so a run that opened 3 of 27 files still claimed 27.
+  It now reports what actually happened: *"Read 4532272 packets: 14 of 15
+  file(s) read in full, 1 stopped early"*.
+
+- **MCP query tools truncated silently.** `list_dialogs` returned 50 of 2311
+  dialogs as a bare array with no total, no flag and no cursor — the remainder
+  unreachable, not merely unshown. It matters more here than elsewhere because
+  the consumer is an LLM: an agent asked "how many calls failed?" counts the
+  rows it received and answers confidently.
+
+  `list_dialogs` and `find_problems` now return `{dialogs, returned,
+  total_matched, truncated, next_cursor}`, matching `search_by_time`, which
+  already did this. Paging reaches all 2311 in 3 pages. The cursor is
+  `tail_dialogs`' compound form via one shared parser, but keyed on `created_at`
+  rather than `updated_at`: a full listing must not follow records as they move,
+  or a dialog gaining a message mid-sweep jumps past a cursor already gone by
+  and vanishes.
+
+  `find_problems` and `search_by_time` gained `filter`; `rtp_stats` gained a
+  capture-wide mode reaching streams no `call_id` can — `codec-negotiation.pcap`
+  has four streams and zero dialogs, and orphans are what NAT and one-way faults
+  look like from the media side.
+
+  A MOS bound **excludes ungrounded streams and reports how many**. Silent
+  filtering fails both directions: a healthy AMR-WB stream never appears under
+  `max_mos`, and a degraded one gets selected on a placeholder. On one file,
+  `max_mos: 4.3` returns 36 matched and 18 excluded — every one of the 18
+  scoring the identical 4.216 placeholder.
+
+- **`--strip-secrets` sanitised only the first `-I` and exited 0.** Given two
+  pcapng inputs it stripped one and left the other's `CLIENT_RANDOM` intact,
+  reporting success. It now resolves the full set and refuses anything but a
+  single capture, naming every file — a privacy control doing a fraction of its
+  job silently is the failure being fixed. `-I <dir>` naming exactly one capture
+  now works, where it previously died with `Is a directory`.
+
+- A shipped rpm had no documented install command. Four variants publish;
+  `docs/install.md` documented three.
+
+### Added
+- `docs/design/large-capture-memory.md` — what happens when a capture's
+  retained data exceeds memory. sipnab does not run out; it silently analyses
+  less. Includes a measured memory model, the caps that are parsed and never
+  read, and eviction that discards the oldest dialogs uncounted.
+- `docs/design/deferred-and-declined.md` — four long-open design questions
+  resolved, each with what would reopen it. A declined feature with a recorded
+  reason is finished work; an undecided one comes back forever.
+
+
+### Fixed
 - **`[limits]` config keys were parsed, validated, documented — and never
   read.** A config saying `dialog_limit = 100` loaded cleanly, printed no
   warning, and still returned 18948 dialogs. `max_streams`, `max_reassembly`

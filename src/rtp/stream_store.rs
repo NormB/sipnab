@@ -469,16 +469,21 @@ impl StreamStore {
     ///
     /// # Arguments
     ///
-    /// * `timeout` — how long past `first_seen` (relative to `Utc::now()`)
-    ///   an unassociated stream may live before being flagged; a timeout
-    ///   too large for chrono falls back to 365 days.
+    /// * `now` — the instant `first_seen` is measured against. This is the
+    ///   *capture* clock, which equals wall time only for a live capture: a
+    ///   stream whose `first_seen` is a packet timestamp from 2023 is not
+    ///   three years old when the file is read in 2026, it is as old as the
+    ///   capture says. Taking `Utc::now()` here flagged every unassociated
+    ///   stream on the first offline sweep.
+    /// * `timeout` — how long past `first_seen` an unassociated stream may
+    ///   live before being flagged; a timeout too large for chrono falls back
+    ///   to 365 days.
     ///
     /// # Side effects
     ///
     /// Sets `orphaned = true` on qualifying streams. Does not bump the
     /// generation.
-    pub fn mark_orphaned(&mut self, timeout: Duration) {
-        let now = Utc::now();
+    pub fn mark_orphaned(&mut self, now: DateTime<Utc>, timeout: Duration) {
         let timeout_chrono = match chrono::Duration::from_std(timeout) {
             Ok(d) => d,
             Err(_) => chrono::Duration::days(365),
@@ -1317,7 +1322,14 @@ a=rtpmap:96 H264/90000\r\n";
     }
 
     /// An unlinked stream whose first_seen is past the timeout gets
-    /// flagged as orphaned.
+    /// flagged as orphaned — measured on the CAPTURE clock.
+    ///
+    /// This test used to pass `Utc::now()` implicitly and its comment read
+    /// "since ts(0) is in the past ... it will be orphaned", which documented
+    /// the defect as the intent: on the wall clock a fixed-epoch fixture is
+    /// years old, so the "not enough time" sweep flagged the stream anyway and
+    /// the assertion could never distinguish the two cases. Both are checked
+    /// separately now.
     #[test]
     fn mark_orphaned_flags_unlinked_streams() {
         let mut store = StreamStore::new(100);
@@ -1325,12 +1337,44 @@ a=rtpmap:96 H264/90000\r\n";
         let rtp = make_rtp_header(0xDDDD, 1);
         store.process_rtp(&parsed, &rtp, ts(0));
 
-        // Not enough time → not orphaned
-        store.mark_orphaned(Duration::from_secs(30));
-        // Stream was created at ts(0) = 1_700_000_000 and "now" is current wall-clock.
-        // Since ts(0) is in the past and mark_orphaned uses Utc::now(), it will be orphaned.
-        // Let's verify the stream count.
+        // 29 s of capture time into a 30 s timeout: not orphaned yet.
+        store.mark_orphaned(ts(29), Duration::from_secs(30));
+        assert_eq!(
+            store.orphaned_count(),
+            0,
+            "flagged before the timeout elapsed in capture time"
+        );
+
+        // 30 s: the timeout is inclusive, so now it is.
+        store.mark_orphaned(ts(30), Duration::from_secs(30));
         assert_eq!(store.orphaned_count(), 1);
+    }
+
+    /// Wall-clock time must not leak into the orphan decision.
+    ///
+    /// A capture read long after it was recorded has `first_seen` values far
+    /// in the past. Sweeping it with the capture's own clock leaves a
+    /// short-lived stream alone; sweeping it with `Utc::now()` flags every
+    /// unassociated stream on the first sweep, which is what made an offline
+    /// run's orphan list depend on how long the read took.
+    #[test]
+    fn mark_orphaned_ignores_wall_clock_age_of_the_capture() {
+        let mut store = StreamStore::new(100);
+        let parsed = make_parsed(20000, 30000, 160);
+        let rtp = make_rtp_header(0xD00D, 1);
+        store.process_rtp(&parsed, &rtp, ts(0));
+
+        // The fixture epoch is years behind Utc::now(); the stream is 2 s old.
+        assert!(
+            Utc::now().signed_duration_since(ts(0)) > chrono::Duration::days(365),
+            "fixture epoch must be well in the past for this test to mean anything"
+        );
+        store.mark_orphaned(ts(2), Duration::from_secs(30));
+        assert_eq!(
+            store.orphaned_count(),
+            0,
+            "a 2-second-old stream in an old capture is not orphaned"
+        );
     }
 
     /// A dialog-linked stream is never marked orphaned, even at zero
@@ -1344,7 +1388,7 @@ a=rtpmap:96 H264/90000\r\n";
 
         store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000, "call-456");
 
-        store.mark_orphaned(Duration::from_secs(0));
+        store.mark_orphaned(ts(60), Duration::from_secs(0));
         assert_eq!(
             store.orphaned_count(),
             0,

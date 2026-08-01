@@ -749,8 +749,10 @@ pub fn init_logging(cli: &Cli) {
 ///
 /// `--completions` prints a shell-completion script to stdout;
 /// `--setup-caps` sets file capabilities on the sipnab binary;
-/// `--strip-secrets` writes a DSB-free copy of the input pcapng
-/// (atomically; the input is never modified).
+/// `--strip-secrets` resolves `-I` (reading the directories and globs it
+/// names) and writes a DSB-free copy of the one capture it resolves to
+/// (atomically; the input is never modified). It refuses an input set of any
+/// other size rather than sanitising part of it.
 pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // --completions <shell>: print a completion script and exit. Needs no
     // config, capture, or privileges.
@@ -777,13 +779,60 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // --strip-secrets: write a DSB-free copy of the input pcapng. The input
     // is never modified; the output is written atomically.
     if let Some(ref out) = cli.strip_secrets {
-        let Some(input) = cli.primary_input() else {
+        if !cli.has_input() {
             tracing::error!("--strip-secrets requires an input file (-I <file>)");
             return Some(1);
-        };
+        }
+        // Resolve `-I` the way a normal run does instead of reading
+        // `cli.primary_input()`, the first `-I` *argument*. `-I` is repeatable
+        // and expands directories and globs, so the argument is often not a
+        // file at all — a directory reached the pcapng writer as a path and
+        // failed with a bare "Is a directory".
+        //
+        // Resolution opens each candidate through libpcap, so a file sipnab
+        // cannot read as a capture is now named in an error rather than handed
+        // to the stripper. That is the same standard every other `-I` path
+        // holds, and the operator learns which file rather than which errno.
+        let resolved =
+            match crate::capture::input_set::resolve(&cli.input, &cli.input_resolve_options()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("--strip-secrets: {e:#}");
+                    return Some(1);
+                }
+            };
+
+        // More than one resolved file is refused, not partly handled.
+        //
+        // `--strip-secrets <out>` names ONE output path, so a set of inputs has
+        // nowhere to go: stripping every file would mean inventing output names
+        // and writing files the operator never asked for. The alternative this
+        // replaces was worse — it sanitised the first file, exited 0, and said
+        // "Stripped N decryption secret(s)". This is a privacy control. Someone
+        // running it before sending captures to a vendor reads that success and
+        // ships the remaining files with live TLS keys inside them, and nothing
+        // in the output gives them a reason to doubt it. A partial job reported
+        // as a whole one is the failure being fixed here, so refusing is the
+        // fix: an error naming every resolved file loses nobody any keys, and
+        // re-running once per file is a loop the operator can write.
+        if resolved.len() != 1 {
+            let names = resolved
+                .iter()
+                .map(|r| format!("'{}'", r.path.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            tracing::error!(
+                "--strip-secrets writes one sanitised copy, but -I resolved to {} files: {names}. \
+                 Run it once per file — stripping only one of them would ship the rest with \
+                 their decryption secrets intact.",
+                resolved.len()
+            );
+            return Some(1);
+        }
+        let input = resolved[0].path.display().to_string();
         return Some(
             match crate::capture::pcapng_meta::strip_secrets(
-                std::path::Path::new(input),
+                &resolved[0].path,
                 std::path::Path::new(out),
             ) {
                 Ok(n) => {

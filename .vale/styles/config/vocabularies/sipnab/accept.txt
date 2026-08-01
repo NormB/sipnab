@@ -663,3 +663,8 @@ zsh
 [Bb]itrates
 monaural
 gzip
+usize
+ANDed
+ANDs
+ORing
+ORed
