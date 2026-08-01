@@ -70,8 +70,11 @@ pub fn is_rtcp_packet(data: &[u8], dst_port: u16) -> bool {
     }
     let pt = data[1];
     if !dst_port.is_multiple_of(2) {
-        // Odd port: classic separate-port RTCP (RTP+1).
-        return (200..=204).contains(&pt);
+        // Odd port: classic separate-port RTCP (RTP+1). The whole RFC 5761
+        // range, not just SR..APP — an XR (207) here is still RTCP, and
+        // rejecting it hands the datagram to the RTP path, where the first
+        // report-block header reads as an SSRC and invents a stream.
+        return crate::rtp::rtcp::is_rtcp_packet_type(pt);
     }
     // Even port: RFC 5761 mux. Require an RTCP packet-type byte and a
     // self-consistent length field so muxed RTP is not swallowed.

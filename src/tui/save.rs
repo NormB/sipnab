@@ -1708,4 +1708,64 @@ mod tests {
         assert_eq!(format_dialog_state(&DialogState::Failed), "Failed");
         assert_eq!(format_dialog_state(&DialogState::Terminated), "Terminated");
     }
+
+    // ── The save dialog must not write over the capture on screen ────
+
+    /// Saving to the path of the capture being read is refused, and the file
+    /// is left byte-identical.
+    ///
+    /// The dialog takes a free-form path and the capture on screen is the
+    /// obvious name to type; every writer here creates-or-truncates, so the
+    /// only safe place to decide is before dispatch.
+    #[test]
+    fn save_over_the_capture_being_read_is_refused() {
+        use crate::tui::state::{PendingSave, SaveFormat};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let input = dir.path().join("incident.pcap");
+        let original = b"pretend this is the only copy of an incident capture";
+        std::fs::write(&input, original).expect("stage input");
+
+        let mut app = app_with_dialogs();
+        app.protect_input_file(&input);
+        app.pending_save = Some(PendingSave {
+            format: SaveFormat::Pcap,
+            path: input.to_string_lossy().into_owned(),
+        });
+        app.run_pending_save();
+
+        let status = app.status_error.clone().unwrap_or_default();
+        assert!(
+            status.contains("would overwrite"),
+            "the save must be refused with a reason; got: {status}"
+        );
+        assert_eq!(
+            std::fs::read(&input).expect("input still exists"),
+            original,
+            "the capture being read was written over"
+        );
+    }
+
+    /// A save to any other path still runs — the guard must not break saving.
+    #[test]
+    fn save_to_a_different_path_still_works() {
+        use crate::tui::state::{PendingSave, SaveFormat};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let input = dir.path().join("incident.pcap");
+        std::fs::write(&input, b"input").expect("stage input");
+        let out = dir.path().join("export.pcap");
+
+        let mut app = app_with_dialogs();
+        app.protect_input_file(&input);
+        app.pending_save = Some(PendingSave {
+            format: SaveFormat::Pcap,
+            path: out.to_string_lossy().into_owned(),
+        });
+        app.run_pending_save();
+
+        let status = app.status_error.clone().unwrap_or_default();
+        assert!(status.contains("Saved"), "got: {status}");
+        assert!(out.is_file(), "the legitimate export was not written");
+    }
 }

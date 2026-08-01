@@ -180,8 +180,148 @@ pub struct DialogStore {
 /// the default since SNB-0004.)
 pub const IDLE_COMPACT_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 
-/// How many of the most recent messages an idle dialog keeps.
+/// How many messages an idle dialog keeps. A hard cap: compaction never
+/// leaves more than this, whatever the retention rule decides is worth
+/// keeping.
 pub const KEEP_MESSAGES_PER_IDLE_DIALOG: usize = 20;
+
+/// Whether a message states something about the dialog that its POSITION in
+/// the ladder does not.
+///
+/// # Why position is the wrong question
+///
+/// Compaction used to keep the last N messages, which treats a dialog as a
+/// log. It is a state machine. On an `INVITE` dialog the `200 OK` arrives
+/// second or third, so it was among the FIRST messages evicted, and
+/// [`SipDialog::final_status_code`](crate::sip::dialog::SipDialog::final_status_code)
+/// then returned `None` on a call that had completed normally. That is worse
+/// than a shortened ladder: a shortened ladder loses detail, this loses the
+/// outcome — and "no final response" is a diagnosis sipnab emits in its own
+/// right (`NoFinalResponse`, Timer C), so the loss did not read as missing
+/// data. It read as a specific fault that never happened.
+///
+/// # What counts
+///
+/// * The dialog's opening request (`INVITE`, `REGISTER`, `SUBSCRIBE` …) —
+///   the thing the call *was*, and the message every evidence index and the
+///   report header are anchored on.
+/// * `BYE` and `CANCEL` — deliberate teardown. A `CANCEL` sits early in a
+///   long ladder and would otherwise go the same way as the `200`.
+/// * Every final (`>= 200`) response, and the `401`/`407` challenges, since
+///   `final_status_code` falls back to a challenge for a dialog that was only
+///   ever challenged.
+///
+/// Retransmissions of an anchor are not themselves anchors: the caller keeps
+/// the first occurrence of each distinct `(status, CSeq method)` pair, so a
+/// `200` sent eight times pins one message rather than eight.
+///
+/// Everything else — provisionals, `ACK`, in-dialog `OPTIONS`/`INFO`/`UPDATE`
+/// — is mid-call detail whose value really is positional, and the most recent
+/// of those fill whatever budget the anchors leave.
+fn carries_dialog_outcome(msg: &SipMessage, dialog_method: &SipMethod) -> bool {
+    if msg.is_request {
+        return matches!(msg.method, Some(SipMethod::Bye | SipMethod::Cancel))
+            || msg.method.as_ref() == Some(dialog_method);
+    }
+    matches!(msg.status_code, Some(c) if c >= 200 || c == 401 || c == 407)
+}
+
+/// The indices of `messages` to keep when compacting an idle dialog, in
+/// capture order.
+///
+/// Anchors ([`carries_dialog_outcome`], de-duplicated) take the budget first;
+/// the remainder goes to the most recent non-anchor messages. Returns `None`
+/// when nothing would be dropped, so the caller can skip the dialog and stay
+/// idempotent.
+///
+/// # Arguments
+///
+/// * `messages` — the dialog's stored messages, in capture order.
+/// * `dialog_method` — the method the dialog was opened with.
+/// * `budget` — the hard maximum to keep ([`KEEP_MESSAGES_PER_IDLE_DIALOG`]).
+///
+/// # Returns
+///
+/// `Some(indices)` — strictly ascending, at most `budget` long, strictly
+/// shorter than `messages` — or `None` when `messages` already fits.
+fn retained_indices(
+    messages: &[SipMessage],
+    dialog_method: &SipMethod,
+    budget: usize,
+) -> Option<Vec<usize>> {
+    if messages.len() <= budget {
+        return None;
+    }
+
+    let mut anchors: Vec<usize> = Vec::new();
+    let mut seen_responses: Vec<(u16, String)> = Vec::new();
+    let mut seen_opening_request = false;
+    let mut seen_request_methods: Vec<&SipMethod> = Vec::new();
+
+    for (idx, msg) in messages.iter().enumerate() {
+        if !carries_dialog_outcome(msg, dialog_method) {
+            continue;
+        }
+        if msg.is_request {
+            let Some(method) = msg.method.as_ref() else {
+                continue;
+            };
+            // One INVITE anchor, not one per re-INVITE or retransmission;
+            // one BYE, one CANCEL.
+            if method == dialog_method {
+                if seen_opening_request {
+                    continue;
+                }
+                seen_opening_request = true;
+            } else if seen_request_methods.contains(&method) {
+                continue;
+            } else {
+                seen_request_methods.push(method);
+            }
+        } else {
+            let key = (
+                msg.status_code.unwrap_or_default(),
+                msg.cseq().map(|(_, m)| m.to_string()).unwrap_or_default(),
+            );
+            if seen_responses.contains(&key) {
+                continue;
+            }
+            seen_responses.push(key);
+        }
+        anchors.push(idx);
+    }
+
+    // A peer that answers one request with hundreds of DISTINCT status codes
+    // could otherwise use the anchor rule to defeat the bound. The budget is
+    // a memory guarantee, so it wins: the earliest anchors and the last one
+    // survive, which keeps both ends of the exchange.
+    //
+    // `budget == 0` is not reachable from `KEEP_MESSAGES_PER_IDLE_DIALOG`, but
+    // it is reachable from the signature, and `budget - 1` on it would panic
+    // in debug and wrap in release — the shape of bug this module exists to
+    // stop shipping.
+    if anchors.len() > budget {
+        let Some(last) = anchors.last().copied() else {
+            return Some(Vec::new());
+        };
+        anchors.truncate(budget.saturating_sub(1));
+        if anchors.len() < budget {
+            anchors.push(last);
+        }
+        return Some(anchors);
+    }
+
+    // Whatever the anchors leave goes to the most recent messages, which is
+    // what the old rule did with the whole budget.
+    let mut keep: std::collections::BTreeSet<usize> = anchors.iter().copied().collect();
+    for idx in (0..messages.len()).rev() {
+        if keep.len() >= budget {
+            break;
+        }
+        keep.insert(idx);
+    }
+    Some(keep.into_iter().collect())
+}
 
 /// What one [`DialogStore::compact_idle`] sweep did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -244,14 +384,22 @@ impl DialogStore {
     }
 
     /// Compact dialogs that have been idle longer than
-    /// [`IDLE_COMPACT_AFTER`]: keep only the last
-    /// [`KEEP_MESSAGES_PER_IDLE_DIALOG`] messages of each (and release the
-    /// Vec's excess capacity). Bounds long-run memory: an idle dialog can
-    /// otherwise pin hundreds of full SIP messages forever.
+    /// [`IDLE_COMPACT_AFTER`] down to at most
+    /// [`KEEP_MESSAGES_PER_IDLE_DIALOG`] messages each, keeping the ones that
+    /// say what the dialog DID and compacting the middle. Bounds long-run
+    /// memory: an idle dialog can otherwise pin hundreds of full SIP messages
+    /// forever.
     ///
-    /// Intended to be called from the existing periodic sweep. Idempotent:
-    /// a compacted dialog is skipped until it grows past the keep limit
-    /// again.
+    /// # Retention, not truncation
+    ///
+    /// This kept the last N messages until it was caught reporting a
+    /// completed call as having no final response: on an `INVITE` dialog the
+    /// `200 OK` arrives early, so position-based eviction took the OUTCOME
+    /// first and left the mid-call filler. See [`carries_dialog_outcome`] for
+    /// what survives regardless of where it sits and why.
+    ///
+    /// Intended to be called from the existing periodic sweep. Idempotent: a
+    /// compacted dialog is skipped until it grows past the keep limit again.
     ///
     /// # Arguments
     ///
@@ -265,10 +413,10 @@ impl DialogStore {
     ///
     /// # Side effects
     ///
-    /// Drains the oldest messages of each idle dialog, releases the Vec's
-    /// excess capacity, adds to the lifetime `idle_messages_evicted`
-    /// counter, and bumps the generation counter (unconditionally, even
-    /// when nothing is compacted).
+    /// Rewrites the message list of each over-limit idle dialog, releases the
+    /// Vec's excess capacity, adds to the lifetime `idle_messages_evicted`
+    /// counter, and bumps the generation counter (unconditionally, even when
+    /// nothing is compacted).
     pub fn compact_idle(&mut self, now: chrono::DateTime<chrono::Utc>) -> CompactStats {
         self.generation += 1;
         let mut stats = CompactStats::default();
@@ -276,17 +424,34 @@ impl DialogStore {
             if now - dialog.updated_at <= IDLE_COMPACT_AFTER {
                 continue;
             }
-            let excess = dialog
-                .messages
-                .len()
-                .saturating_sub(KEEP_MESSAGES_PER_IDLE_DIALOG);
-            if excess == 0 {
+            let Some(keep) = retained_indices(
+                &dialog.messages,
+                &dialog.method,
+                KEEP_MESSAGES_PER_IDLE_DIALOG,
+            ) else {
+                continue;
+            };
+            let before = dialog.messages.len();
+            // Ascending indices, consumed in order: retain_mut walks the Vec
+            // once and moves survivors down in place, so a long dialog costs
+            // one pass rather than a removal per evicted message.
+            let mut next = keep.iter().copied().peekable();
+            let mut idx = 0usize;
+            dialog.messages.retain_mut(|_| {
+                let keep_this = next.peek() == Some(&idx);
+                if keep_this {
+                    next.next();
+                }
+                idx += 1;
+                keep_this
+            });
+            dialog.messages.shrink_to_fit();
+            let evicted = before - dialog.messages.len();
+            if evicted == 0 {
                 continue;
             }
-            dialog.messages.drain(..excess);
-            dialog.messages.shrink_to_fit();
             stats.dialogs_compacted += 1;
-            stats.messages_evicted += excess;
+            stats.messages_evicted += evicted;
         }
         self.idle_messages_evicted += stats.messages_evicted as u64;
         stats
@@ -1597,8 +1762,15 @@ mod tests {
         base_ts() + IDLE_COMPACT_AFTER + TimeDelta::seconds(1)
     }
 
-    /// An idle dialog over the keep limit is truncated to the most recent
-    /// `KEEP_MESSAGES_PER_IDLE_DIALOG` messages (the earliest are evicted).
+    /// An idle dialog over the keep limit is compacted to
+    /// `KEEP_MESSAGES_PER_IDLE_DIALOG` messages.
+    ///
+    /// The fixture is 30 `INVITE`s and nothing else, so exactly one of them —
+    /// the first, which opened the dialog — is load-bearing. It survives at
+    /// index 0 and the remaining 19 slots go to the most recent messages, so
+    /// the middle (CSeq 2..11) is what disappears. This assertion used to read
+    /// `Some(11)`: that was "keep the last N" stated as a contract, and it is
+    /// the contract that cost answered calls their `200 OK`.
     #[test]
     fn compact_idle_truncates_idle_dialog_to_keep_limit() {
         let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
@@ -1611,9 +1783,20 @@ mod tests {
 
         let d = store.get("idle-1").unwrap();
         assert_eq!(d.messages.len(), KEEP_MESSAGES_PER_IDLE_DIALOG);
-        // The LAST messages are kept (the most recent context), so the
-        // first surviving message is the 11th fed in (CSeq 11).
-        assert_eq!(d.messages[0].cseq().map(|(seq, _)| seq), Some(11));
+        assert_eq!(
+            d.messages[0].cseq().map(|(seq, _)| seq),
+            Some(1),
+            "the request that opened the dialog survives wherever it sits"
+        );
+        assert_eq!(
+            d.messages[1].cseq().map(|(seq, _)| seq),
+            Some(12),
+            "the middle is what gets compacted"
+        );
+        assert_eq!(
+            d.messages.last().unwrap().cseq().map(|(seq, _)| seq),
+            Some(n as u32)
+        );
     }
 
     /// A dialog updated within the idle window is not compacted at all.
@@ -1717,6 +1900,340 @@ mod tests {
         assert_eq!(store.total_idle_messages_evicted(), 0);
         store.compact_idle(idle_now());
         assert_eq!(store.total_idle_messages_evicted(), 4);
+    }
+
+    // ── compact_idle: the outcome survives ───────────────────────────
+
+    /// A timestamp past the idle window measured from the dialog's OWN last
+    /// message, so a fixture whose messages are spaced realistically still
+    /// counts as idle. `idle_now` is measured from `base_ts` and would
+    /// silently fail to make a spread-out fixture idle at all.
+    fn idle_after(store: &DialogStore, call_id: &str) -> DateTime<Utc> {
+        store.get(call_id).expect("dialog exists").updated_at
+            + IDLE_COMPACT_AFTER
+            + TimeDelta::seconds(1)
+    }
+
+    /// An in-dialog request (`OPTIONS`, CSeq `cseq`) for `call_id` at `ts` —
+    /// the mid-call filler that pushes an answered call past the keep limit
+    /// without carrying any outcome of its own.
+    fn make_in_dialog_filler(call_id: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "OPTIONS sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: {cseq} OPTIONS"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse OPTIONS")
+    }
+
+    /// A `CANCEL` of the initial `INVITE` (CSeq 1) for `call_id` at `ts`.
+    fn make_cancel_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "CANCEL sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 CANCEL",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse CANCEL")
+    }
+
+    /// An arbitrary response for `call_id` carrying `cseq` (e.g. `"1 INVITE"`).
+    fn make_response(
+        call_id: &str,
+        code: u16,
+        phrase: &str,
+        cseq: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            &format!("SIP/2.0 {code} {phrase}"),
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: {cseq}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse response")
+    }
+
+    /// A call that was offered, answered, filled with `filler` mid-dialog
+    /// requests, then hung up — the ordinary shape of a long call, and the
+    /// one where "keep the last N" throws away the answer.
+    fn store_with_answered_call(call_id: &str, filler: u32) -> DialogStore {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg(call_id, t0));
+        store.process_message(make_200_ok(call_id, t0 + TimeDelta::seconds(1)));
+        for i in 0..filler {
+            store.process_message(make_in_dialog_filler(
+                call_id,
+                10 + i,
+                t0 + TimeDelta::seconds(2 + i64::from(i)),
+            ));
+        }
+        store.process_message(make_bye_msg(
+            call_id,
+            t0 + TimeDelta::seconds(2 + i64::from(filler)),
+        ));
+        store
+    }
+
+    /// The defect: the `200 OK` arrives second, so "keep the last N" evicts it
+    /// first and the call's OUTCOME disappears while the mid-call filler
+    /// survives. A completed call then reports no final response — which is
+    /// itself a diagnosis sipnab emits (`NoFinalResponse`, Timer C), so
+    /// compaction manufactures the appearance of a specific fault.
+    #[test]
+    fn compact_idle_keeps_the_final_response() {
+        let mut store = store_with_answered_call("answered-1", 40);
+        assert_eq!(
+            store.get("answered-1").unwrap().final_status_code(),
+            Some(200),
+            "precondition: the call answered"
+        );
+
+        let now = idle_after(&store, "answered-1");
+        let stats = store.compact_idle(now);
+        assert!(stats.messages_evicted > 0, "the dialog is over the limit");
+
+        let d = store.get("answered-1").unwrap();
+        assert_eq!(
+            d.final_status_code(),
+            Some(200),
+            "a call that completed normally must not read as having no final response \
+             after compaction"
+        );
+    }
+
+    /// The request that opened the dialog is the other end of the ladder that
+    /// position-based eviction always takes first.
+    #[test]
+    fn compact_idle_keeps_the_opening_request() {
+        let mut store = store_with_answered_call("answered-2", 40);
+        let now = idle_after(&store, "answered-2");
+        store.compact_idle(now);
+        let d = store.get("answered-2").unwrap();
+        assert!(
+            d.messages
+                .iter()
+                .any(|m| m.is_request && m.method == Some(SipMethod::Invite)),
+            "the INVITE the call was made with must survive"
+        );
+    }
+
+    /// A `BYE` says the call was torn down deliberately.
+    #[test]
+    fn compact_idle_keeps_the_teardown() {
+        let mut store = store_with_answered_call("answered-3", 40);
+        let now = idle_after(&store, "answered-3");
+        store.compact_idle(now);
+        let d = store.get("answered-3").unwrap();
+        assert!(
+            d.messages
+                .iter()
+                .any(|m| m.is_request && m.method == Some(SipMethod::Bye)),
+            "the BYE must survive"
+        );
+    }
+
+    /// A `CANCEL`ed call that then goes quiet: the `CANCEL` and the `487` both
+    /// sit early in a long ladder, and both are the outcome. Unlike the `BYE`
+    /// case they cannot survive by being recent, so this is the test that
+    /// tells retention-by-meaning from retention-by-position.
+    #[test]
+    fn compact_idle_keeps_a_cancelled_calls_outcome() {
+        let call_id = "cancelled-1";
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg(call_id, t0));
+        store.process_message(make_cancel_msg(call_id, t0 + TimeDelta::seconds(1)));
+        store.process_message(make_response(
+            call_id,
+            487,
+            "Request Terminated",
+            "1 INVITE",
+            t0 + TimeDelta::seconds(2),
+        ));
+        for i in 0..40 {
+            store.process_message(make_in_dialog_filler(
+                call_id,
+                10 + i,
+                t0 + TimeDelta::seconds(3 + i64::from(i)),
+            ));
+        }
+
+        let now = idle_after(&store, call_id);
+        store.compact_idle(now);
+        let d = store.get(call_id).unwrap();
+        assert_eq!(
+            d.final_status_code(),
+            Some(487),
+            "a cancelled call must still report 487"
+        );
+        assert!(
+            d.messages
+                .iter()
+                .any(|m| m.is_request && m.method == Some(SipMethod::Cancel)),
+            "the CANCEL must survive"
+        );
+    }
+
+    /// A call that FAILED must keep its failure: the `486` sits early in the
+    /// ladder exactly as a `200` does.
+    #[test]
+    fn compact_idle_keeps_a_failure_code() {
+        let call_id = "busy-1";
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg(call_id, t0));
+        store.process_message(make_response(
+            call_id,
+            486,
+            "Busy Here",
+            "1 INVITE",
+            t0 + TimeDelta::seconds(1),
+        ));
+        for i in 0..40 {
+            store.process_message(make_in_dialog_filler(
+                call_id,
+                10 + i,
+                t0 + TimeDelta::seconds(2 + i64::from(i)),
+            ));
+        }
+        let now = idle_after(&store, call_id);
+        store.compact_idle(now);
+        assert_eq!(store.get(call_id).unwrap().final_status_code(), Some(486));
+    }
+
+    /// Compaction is a memory bound, so retention must not exceed it: the
+    /// surviving set is still capped at `KEEP_MESSAGES_PER_IDLE_DIALOG`.
+    #[test]
+    fn compact_idle_still_bounds_the_message_count() {
+        let mut store = store_with_answered_call("answered-4", 200);
+        let now = idle_after(&store, "answered-4");
+        store.compact_idle(now);
+        assert!(
+            store.get("answered-4").unwrap().messages.len() <= KEEP_MESSAGES_PER_IDLE_DIALOG,
+            "compaction must still bound memory"
+        );
+    }
+
+    /// Messages are kept in capture order whatever the retention rule: an
+    /// evidence index is only readable if the ladder still runs forwards.
+    #[test]
+    fn compact_idle_preserves_capture_order() {
+        let mut store = store_with_answered_call("answered-5", 60);
+        let now = idle_after(&store, "answered-5");
+        store.compact_idle(now);
+        let d = store.get("answered-5").unwrap();
+        let ts: Vec<_> = d.messages.iter().map(|m| m.timestamp).collect();
+        assert!(
+            ts.windows(2).all(|w| w[0] <= w[1]),
+            "retained messages must stay in capture order"
+        );
+    }
+
+    /// Selective retention must still be idempotent — a second sweep over an
+    /// already-compacted dialog evicts nothing, or a long-running capture
+    /// would re-count the same loss on every sweep.
+    #[test]
+    fn compact_idle_selective_retention_is_idempotent() {
+        let mut store = store_with_answered_call("answered-6", 60);
+        let now = idle_after(&store, "answered-6");
+        let first = store.compact_idle(now);
+        assert!(first.messages_evicted > 0);
+        let second = store.compact_idle(now);
+        assert_eq!(second.dialogs_compacted, 0, "second pass must be a no-op");
+        assert_eq!(second.messages_evicted, 0);
+    }
+
+    /// A budget smaller than the anchor set is still a hard bound, and a
+    /// budget of zero does not panic. Neither is reachable from
+    /// `KEEP_MESSAGES_PER_IDLE_DIALOG`, but both are reachable from the
+    /// function signature.
+    #[test]
+    fn retained_indices_honours_a_budget_below_the_anchor_count() {
+        let store = store_with_answered_call("degenerate-1", 40);
+        let d = store.get("degenerate-1").expect("dialog exists");
+        for budget in [0usize, 1, 2, 3] {
+            let keep = retained_indices(&d.messages, &d.method, budget)
+                .expect("the dialog is over every one of these budgets");
+            assert!(
+                keep.len() <= budget,
+                "budget {budget} exceeded: kept {}",
+                keep.len()
+            );
+            assert!(
+                keep.windows(2).all(|w| w[0] < w[1]),
+                "indices must stay ascending: {keep:?}"
+            );
+        }
+    }
+
+    /// The most recent messages are still the tie-break for everything that
+    /// carries no outcome: the newest filler survives and the oldest does not.
+    #[test]
+    fn compact_idle_fills_the_remaining_budget_with_the_newest_messages() {
+        let mut store = store_with_answered_call("answered-7", 60);
+        let now = idle_after(&store, "answered-7");
+        store.compact_idle(now);
+        let d = store.get("answered-7").unwrap();
+        let fillers: Vec<u32> = d
+            .messages
+            .iter()
+            .filter(|m| m.method == Some(SipMethod::Options))
+            .filter_map(|m| m.cseq().map(|(n, _)| n))
+            .collect();
+        assert!(!fillers.is_empty(), "some filler must survive");
+        assert!(
+            fillers.contains(&69),
+            "the newest filler (CSeq 69) must survive: {fillers:?}"
+        );
+        assert!(
+            !fillers.contains(&10),
+            "the oldest filler (CSeq 10) must not: {fillers:?}"
+        );
     }
 
     /// Build and parse a 200 OK to the initial INVITE (CSeq 1) for

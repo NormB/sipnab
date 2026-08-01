@@ -1070,7 +1070,7 @@ REGISTER exchange:
   "auth_loop": null,
   "hints": [
     "Call failed: 403 Forbidden.",
-    "Registration rejected: 403 Forbidden. The endpoint is offline."
+    "Registration rejected: 403 Forbidden. The endpoint answered an authentication challenge and the registrar refused the credentials it offered, so the fault is in the account, its password or its permission to register — none of which is a reachability problem."
   ],
   "registration_failure": {
     "kind": "rejected",

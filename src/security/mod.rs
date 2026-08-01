@@ -14,6 +14,10 @@ pub mod kill_packet;
 pub mod reg_flood;
 pub mod scanner_detect;
 pub mod scanner_kill;
+// Names `capture::CaptureSource`, which exists only in native builds; gated to
+// match `crate::process_isolation`, the module whose sends it guards.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod transmit_guard;
 
 pub use alerting::{AlertEngine, AlertRule};
 pub use digest_leak::{DigestAlert, DigestLeakDetector, DigestVulnerability};

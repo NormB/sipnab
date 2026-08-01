@@ -463,7 +463,15 @@ pub fn run(
         return;
     }
 
-    let runner = match BatchRunner::new(cli, config, batch, policy, raw_kill_sock) {
+    // Derived from the source the capture thread actually opened, not from the
+    // flags — `-I` beating `-d`, device auto-detection and `--hep-listen` are
+    // all already resolved into `handle.source`, so re-deriving it from `cli`
+    // here would be a second copy of that precedence to get wrong.
+    let transmit_permit =
+        crate::security::transmit_guard::TransmitPermit::for_source(&handle.source);
+
+    let runner = match BatchRunner::new(cli, config, batch, policy, raw_kill_sock, transmit_permit)
+    {
         Ok(runner) => runner,
         Err(fatal) => {
             // `handle`'s thread has been running since bootstrap::launch, and
@@ -572,6 +580,7 @@ impl BatchRunner {
         batch: BatchProcessing,
         policy: CapturePolicy,
         raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
+        transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
     ) -> Result<Self, crate::app::bootstrap::PlanError> {
         let matcher = batch.matcher;
         let filter_expr = batch.filter_expr;
@@ -667,8 +676,14 @@ impl BatchRunner {
             })
             .collect();
         // The kill worker is needed whenever we may emit a kill response —
-        // detection-driven (--kill-scanner) OR targeted (-K).
-        let kill_worker_active = kill_scanner_active || !kill_targets.is_empty();
+        // detection-driven (--kill-scanner) OR targeted (-K) — and permitted
+        // only when this run watches a live source. `transmit_permit` is None
+        // for a capture file, and the worker's constructor takes one by value,
+        // so an offline run cannot build a transmitting worker at all. The
+        // operator was told why in `bootstrap::plan`; detection, alerting,
+        // `--fail2ban` output and reporting all continue below.
+        let kill_worker_active =
+            (kill_scanner_active || !kill_targets.is_empty()) && transmit_permit.is_some();
 
         let scanner_detector = if kill_scanner_active {
             let custom = cli
@@ -682,17 +697,20 @@ impl BatchRunner {
         };
 
         // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
-        let scanner_kill_handle: Option<ScannerKillHandle> = if kill_worker_active {
-            match process_isolation::spawn_scanner_kill_worker(None, raw_kill_sock) {
-                Ok(handle) => Some(handle),
-                Err(e) => {
-                    tracing::error!("Failed to spawn scanner-kill worker: {e}");
-                    None
+        let scanner_kill_handle: Option<ScannerKillHandle> =
+            match (kill_worker_active, transmit_permit) {
+                (true, Some(permit)) => {
+                    match process_isolation::spawn_scanner_kill_worker(None, raw_kill_sock, permit)
+                    {
+                        Ok(handle) => Some(handle),
+                        Err(e) => {
+                            tracing::error!("Failed to spawn scanner-kill worker: {e}");
+                            None
+                        }
+                    }
                 }
-            }
-        } else {
-            None
-        };
+                _ => None,
+            };
         let kill_response_code = cli.kill_response;
 
         let fraud_detector = if cli.fraud_detect || config.security.fraud_detect.unwrap_or(false) {

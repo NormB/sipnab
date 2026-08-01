@@ -556,6 +556,9 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     if !path.exists() {
         return format!("File not found: {path_str}");
     }
+    // A capture opened here is an input for the rest of the session, exactly
+    // as `-I` was, so the save dialog must refuse to write over it too.
+    app.protect_input_file(path);
     reset_for_load(app);
     let progress = PcapLoadProgress::new(path_str);
     let outcome = run_pcap_load(path, &app.dialog_store, &app.stream_store, &progress);
@@ -590,6 +593,8 @@ pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
         app.status_error = Some(format!("File not found: {path_str}"));
         return;
     }
+    // Same reason as `load_pcap_file`: this file is now an input.
+    app.protect_input_file(path);
 
     reset_for_load(app);
 

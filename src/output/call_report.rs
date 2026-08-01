@@ -12,6 +12,7 @@ use crate::rtp::diagnosis::MediaDiagnosis;
 use crate::rtp::stream::RtpStream;
 use crate::sip::diagnosis::{
     AbandonedKind, AuthLoopKind, RegistrationFailureKind, diagnose_signaling,
+    registration_rejection_headline,
 };
 use crate::sip::dialog::{DialogState, SipDialog};
 
@@ -159,11 +160,13 @@ fn signaling_findings(dialog: &SipDialog) -> Vec<(String, String)> {
 
     if let Some(r) = &diag.registration_failure {
         let head = match r.kind {
+            // Rendered by the diagnosis module, not restated here. This report
+            // used to carry its own copy of the sentence, and the copy said
+            // "the endpoint is offline" for every status code — as did the
+            // hint it was duplicating. One renderer means the two cannot
+            // disagree about what a rejection meant.
             RegistrationFailureKind::Rejected => {
-                format!(
-                    "Registration rejected: {} — the endpoint is offline",
-                    r.code
-                )
+                registration_rejection_headline(r, &dialog.messages)
             }
             RegistrationFailureKind::ShortenedExpiry => format!(
                 "Registration granted {}s against {}s requested — re-registers sooner \
@@ -1005,5 +1008,104 @@ mod tests {
         );
         assert!(report.contains("## Signalling"), "got:\n{report}");
         assert!(report.contains("OUTCOME UNKNOWN"), "got:\n{report}");
+    }
+
+    /// A `REGISTER` challenged `401`, answered with credentials, and refused
+    /// `403` — the shape the corpus keeps, and the one this report used to
+    /// summarise as an offline endpoint.
+    fn make_rejected_registration_dialog() -> SipDialog {
+        let t0 = base_ts();
+        let build = |first_line: &str, extra: &[&str], offset: i64| {
+            let mut headers = vec![
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg",
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:1001@example.com>",
+                "Call-ID: rejected-registration@example.com",
+                "CSeq: 1 REGISTER",
+            ];
+            headers.extend_from_slice(extra);
+            headers.push("Content-Length: 0");
+            let raw = build_sip(first_line, &headers, b"");
+            parse_sip(
+                &raw,
+                t0 + TimeDelta::milliseconds(offset),
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse")
+        };
+
+        let register = build(
+            "REGISTER sip:example.com SIP/2.0",
+            &["Contact: <sip:1001@127.0.0.1>", "Expires: 3600"],
+            0,
+        );
+        let challenge = build("SIP/2.0 401 Unauthorized", &[], 10);
+        let authed = build(
+            "REGISTER sip:example.com SIP/2.0",
+            &[
+                "Contact: <sip:1001@127.0.0.1>",
+                "Expires: 3600",
+                "Authorization: Digest username=\"1001\", realm=\"example.com\", \
+                 nonce=\"abc\", uri=\"sip:example.com\", response=\"deadbeef\"",
+            ],
+            20,
+        );
+        let refused = build("SIP/2.0 403 Forbidden", &[], 30);
+
+        let mut d = SipDialog::new(&register).expect("should create");
+        d.messages.push(challenge);
+        d.messages.push(authed);
+        d.messages.push(refused);
+        d
+    }
+
+    /// The report renders exactly what the diagnosis says, character for
+    /// character.
+    ///
+    /// It used to render its OWN sentence, and both copies claimed the
+    /// endpoint was offline for every status code there is. An assertion on
+    /// the wording alone would let the two drift apart again as long as each
+    /// stayed individually plausible, so this pins them to one string.
+    #[test]
+    fn the_report_renders_the_shared_registration_headline() {
+        let dialog = make_rejected_registration_dialog();
+        let diag = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
+        let failure = diag
+            .registration_failure
+            .expect("403 rejects the registration");
+        let expected =
+            crate::sip::diagnosis::registration_rejection_headline(&failure, &dialog.messages);
+
+        for format in [ReportFormat::Text, ReportFormat::Markdown] {
+            let report = generate_call_report(&dialog, &[], &MediaDiagnosis::default(), format);
+            assert!(
+                report.contains(&expected),
+                "{format:?} report must carry the diagnosis headline verbatim.\n\
+                 expected: {expected}\ngot:\n{report}"
+            );
+        }
+    }
+
+    /// The claim itself, asserted on the rendered report rather than on the
+    /// function that builds it: an operator reading this page must not be
+    /// sent to check connectivity for a phone that answered a challenge in
+    /// the same four messages.
+    #[test]
+    fn the_report_never_calls_a_rejected_registration_offline() {
+        let dialog = make_rejected_registration_dialog();
+        let report =
+            generate_call_report(&dialog, &[], &MediaDiagnosis::default(), ReportFormat::Text);
+        assert!(
+            !report.to_lowercase().contains("offline"),
+            "the endpoint answered the 401 in this capture:\n{report}"
+        );
+        assert!(
+            report.contains("credentials"),
+            "403 after an answered challenge is a credential rejection:\n{report}"
+        );
     }
 }

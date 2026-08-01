@@ -18,6 +18,8 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 
+use crate::security::transmit_guard::TransmitPermit;
+
 /// `IPV6_HDRINCL` socket option (Linux ≥4.5) — not exposed by the `libc`
 /// crate, so we name the kernel constant directly.
 #[cfg(target_os = "linux")]
@@ -125,8 +127,17 @@ impl RawKillSocket {
     /// Send a pre-built IPv4 datagram (its own IP header carries the spoofed
     /// source) to `dst`. The kernel routes on `dst`; the datagram's L3/L4
     /// headers are ours.
+    ///
+    /// The `TransmitPermit` is the offline-analysis gate: it can only be
+    /// obtained from a live capture source, so this function is uncallable on a
+    /// run that is reading a file. See [`crate::security::transmit_guard`].
     #[cfg(target_os = "linux")]
-    fn send_to_v4(&self, packet: &[u8], dst: SocketAddrV4) -> std::io::Result<usize> {
+    fn send_to_v4(
+        &self,
+        _permit: &TransmitPermit,
+        packet: &[u8],
+        dst: SocketAddrV4,
+    ) -> std::io::Result<usize> {
         use std::os::fd::AsRawFd;
         let fd = self.fd_v4.as_ref().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::Unsupported, "no IPv4 raw socket")
@@ -155,9 +166,15 @@ impl RawKillSocket {
     }
 
     /// Send a pre-built IPv6 datagram (its own IPv6 header carries the spoofed
-    /// source) to `dst`.
+    /// source) to `dst`. Gated on a `TransmitPermit` for the same reason as
+    /// [`Self::send_to_v4`].
     #[cfg(target_os = "linux")]
-    fn send_to_v6(&self, packet: &[u8], dst: std::net::SocketAddrV6) -> std::io::Result<usize> {
+    fn send_to_v6(
+        &self,
+        _permit: &TransmitPermit,
+        packet: &[u8],
+        dst: std::net::SocketAddrV6,
+    ) -> std::io::Result<usize> {
         use std::os::fd::AsRawFd;
         let fd = self.fd_v6.as_ref().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::Unsupported, "no IPv6 raw socket")
@@ -188,7 +205,12 @@ impl RawKillSocket {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn send_to_v4(&self, _packet: &[u8], _dst: SocketAddrV4) -> std::io::Result<usize> {
+    fn send_to_v4(
+        &self,
+        _permit: &TransmitPermit,
+        _packet: &[u8],
+        _dst: SocketAddrV4,
+    ) -> std::io::Result<usize> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "raw-socket send is only supported on Linux",
@@ -196,11 +218,44 @@ impl RawKillSocket {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn send_to_v6(&self, _packet: &[u8], _dst: std::net::SocketAddrV6) -> std::io::Result<usize> {
+    fn send_to_v6(
+        &self,
+        _permit: &TransmitPermit,
+        _packet: &[u8],
+        _dst: std::net::SocketAddrV6,
+    ) -> std::io::Result<usize> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "raw-socket send is only supported on Linux",
         ))
+    }
+}
+
+/// An ephemeral UDP send socket for scanner-kill responses.
+///
+/// A newtype around `UdpSocket` whose only purpose is to make the permit
+/// mandatory: a bare `UdpSocket` field would let a future edit call
+/// `send_to` with no proof the run is live, which is exactly the mistake this
+/// module now refuses to make possible. See
+/// [`crate::security::transmit_guard`].
+struct KillUdpSocket(UdpSocket);
+
+impl KillUdpSocket {
+    /// Bind an ephemeral send socket, or `None` when that family is
+    /// unavailable (e.g. a host with no IPv6 stack).
+    fn bind(addr: (IpAddr, u16)) -> Option<Self> {
+        UdpSocket::bind(addr).ok().map(Self)
+    }
+
+    /// Send `buf` to `dst`. Requires a [`TransmitPermit`], so it is uncallable
+    /// while reading a capture file.
+    fn send_to(
+        &self,
+        _permit: &TransmitPermit,
+        buf: &[u8],
+        dst: (IpAddr, u16),
+    ) -> std::io::Result<usize> {
+        self.0.send_to(buf, dst)
     }
 }
 
@@ -484,13 +539,17 @@ struct ScannerKillWorker {
     per_dst_limiter: PerDstRateLimiter,
     /// UDP socket for IPv4 destinations (bound to `0.0.0.0:0`); `None` if the
     /// bind failed at spawn.
-    sock_v4: Option<UdpSocket>,
+    sock_v4: Option<KillUdpSocket>,
     /// UDP socket for IPv6 destinations (bound to `[::]:0`); `None` if the
     /// bind failed at spawn.
-    sock_v6: Option<UdpSocket>,
+    sock_v6: Option<KillUdpSocket>,
     /// Raw socket for source-spoofed IPv4 responses, opened privileged and
     /// moved in at spawn. `None` → the ephemeral UDP send is used.
     raw_sock: Option<RawKillSocket>,
+    /// Proof that this run watches a live source. Required to construct the
+    /// worker at all, and handed to every send below, so a worker reading a
+    /// capture file cannot exist and could not transmit if it did.
+    permit: TransmitPermit,
 }
 
 impl ScannerKillWorker {
@@ -583,13 +642,13 @@ impl ScannerKillWorker {
                     let dst = SocketAddrV4::new(dst_v4, dst_port);
                     let src = SocketAddrV4::new(src_v4, src_port);
                     crate::security::kill_packet::build_ipv4_udp(src, dst, response_bytes)
-                        .map(|pkt| raw.send_to_v4(&pkt, dst))
+                        .map(|pkt| raw.send_to_v4(&self.permit, &pkt, dst))
                 }
                 (IpAddr::V6(dst_v6), IpAddr::V6(src_v6)) => {
                     let dst = std::net::SocketAddrV6::new(dst_v6, dst_port, 0, 0);
                     let src = std::net::SocketAddrV6::new(src_v6, src_port, 0, 0);
                     crate::security::kill_packet::build_ipv6_udp(src, dst, response_bytes)
-                        .map(|pkt| raw.send_to_v6(&pkt, dst))
+                        .map(|pkt| raw.send_to_v6(&self.permit, &pkt, dst))
                 }
                 _ => None,
             };
@@ -623,7 +682,7 @@ impl ScannerKillWorker {
             tracing::error!("Scanner-kill: {message}");
             return KillResponse::Error { message };
         };
-        match sock.send_to(response_bytes, (dst_addr, dst_port)) {
+        match sock.send_to(&self.permit, response_bytes, (dst_addr, dst_port)) {
             Ok(n) => {
                 inc_kill_response_sent(false);
                 tracing::info!("Scanner-kill: sent {n} byte response to {dst_addr}:{dst_port}");
@@ -662,6 +721,9 @@ const DEFAULT_RATE_LIMIT: u32 = 10;
 ///   default of 10/sec.
 /// * `raw_sock` — Raw IPv4 socket for source-spoofed responses, opened during
 ///   the privileged window. Pass `None` to always use the ephemeral UDP send.
+/// * `permit` — proof, obtained from the capture source, that this run watches
+///   a live source. There is no way to spawn a transmitting worker for a run
+///   that is reading a capture file: see [`crate::security::transmit_guard`].
 ///
 /// # Errors
 ///
@@ -669,6 +731,7 @@ const DEFAULT_RATE_LIMIT: u32 = 10;
 pub fn spawn_scanner_kill_worker(
     rate_limit: Option<u32>,
     raw_sock: Option<RawKillSocket>,
+    permit: TransmitPermit,
 ) -> Result<ScannerKillHandle, std::io::Error> {
     let rate = rate_limit.unwrap_or(DEFAULT_RATE_LIMIT);
     let (tx, rx) = crossbeam_channel::bounded(256);
@@ -677,8 +740,8 @@ pub fn spawn_scanner_kill_worker(
     // Bind the send sockets once, up front. Either family may be unavailable
     // (e.g. no IPv6 stack); a destination whose family has no socket is
     // reported as an error at send time rather than silently dropped.
-    let sock_v4 = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok();
-    let sock_v6 = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).ok();
+    let sock_v4 = KillUdpSocket::bind((IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+    let sock_v6 = KillUdpSocket::bind((IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0));
     if sock_v4.is_none() && sock_v6.is_none() {
         tracing::error!(
             "Scanner-kill: could not bind any UDP send socket; kill responses will error"
@@ -693,6 +756,7 @@ pub fn spawn_scanner_kill_worker(
         sock_v4,
         sock_v6,
         raw_sock,
+        permit,
     };
 
     let thread = std::thread::Builder::new()
@@ -716,6 +780,34 @@ mod tests {
     //! worker detection. Raw-socket spoof tests self-skip without `CAP_NET_RAW`.
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// A transmit permit standing for a live capture.
+    ///
+    /// These tests exercise the sending worker, so they must declare a live
+    /// source exactly as a real run does — there is no back door, which is the
+    /// point of the guard. Every send below goes to loopback only.
+    fn live_permit() -> TransmitPermit {
+        TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
+            device: "lo".to_string(),
+        })
+        .expect("a live source must grant a transmit permit")
+    }
+
+    /// A worker reading a capture file cannot be spawned: the permit its
+    /// constructor requires does not exist for a file source. This is the
+    /// compile-time half of the offline-transmit guard, asserted here as the
+    /// runtime fact it derives from.
+    #[test]
+    fn a_file_source_yields_no_permit_so_no_worker_can_be_spawned() {
+        let file = crate::capture::CaptureSource::File {
+            paths: vec![std::path::PathBuf::from("/tmp/evidence.pcap")],
+        };
+        assert!(
+            TransmitPermit::for_source(&file).is_none(),
+            "spawn_scanner_kill_worker takes a TransmitPermit by value, so a \
+             None here means no kill worker can exist on a file run"
+        );
+    }
 
     /// Poll the response channel until a response arrives or `deadline`
     /// expires — replaces fixed sleeps (fast when fast, CI-tolerant).
@@ -807,7 +899,8 @@ mod tests {
         let victim_ip = Ipv4Addr::new(127, 0, 0, 9);
         let victim_port = 5060u16;
 
-        let mut handle = spawn_scanner_kill_worker(Some(10), Some(raw)).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), Some(raw), live_permit()).expect("spawn worker");
         let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
         handle
             .send_kill(KillRequest::SendResponse {
@@ -873,7 +966,8 @@ mod tests {
         // loopback that delivers), so the port is the discriminating field.
         let victim_port = 5060u16;
 
-        let mut handle = spawn_scanner_kill_worker(Some(10), Some(raw)).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), Some(raw), live_permit()).expect("spawn worker");
         let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
         handle
             .send_kill(KillRequest::SendResponse {
@@ -910,7 +1004,8 @@ mod tests {
     /// A queued kill request is processed and answered with `Sent`.
     #[test]
     fn handle_send_and_receive() {
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {
@@ -932,7 +1027,8 @@ mod tests {
     /// `Sent` and 5 `RateLimited`.
     #[test]
     fn rate_limiter_enforces_limit() {
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
 
         // Send 15 requests to different destination IPs so the per-dst
         // limiter doesn't interfere with the global rate limit test. Loopback
@@ -977,7 +1073,8 @@ mod tests {
     /// A broadcast destination is rejected.
     #[test]
     fn broadcast_address_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {
@@ -1001,7 +1098,8 @@ mod tests {
     /// An IPv4 multicast destination is rejected.
     #[test]
     fn multicast_v4_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
 
         // 224.0.0.1 is multicast
         handle
@@ -1026,7 +1124,8 @@ mod tests {
     /// An IPv6 multicast destination is rejected.
     #[test]
     fn multicast_v6_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
 
         // ff02::1 is IPv6 multicast
         let multicast_v6 = IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1));
@@ -1052,7 +1151,8 @@ mod tests {
     /// `shutdown` joins the worker thread without panicking.
     #[test]
     fn shutdown_exits_cleanly() {
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
         handle.shutdown();
         // No panic, thread joined successfully
     }
@@ -1060,7 +1160,8 @@ mod tests {
     /// An empty response body is rejected.
     #[test]
     fn empty_response_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {
@@ -1093,7 +1194,8 @@ mod tests {
             .expect("set read timeout");
         let port = listener.local_addr().expect("local addr").port();
 
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
         let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
         handle
             .send_kill(KillRequest::SendResponse {
@@ -1132,7 +1234,8 @@ mod tests {
             .expect("set read timeout");
         let port = listener.local_addr().expect("local addr").port();
 
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
         let payload = vec![
             0x00u8, 0xff, b'S', b'I', b'P', b'\\', 0x0d, 0x0a, 0x00, 0x80, 0x7f,
         ];
@@ -1172,7 +1275,8 @@ mod tests {
     /// A fresh worker reports alive/not-disabled; after shutdown it is gone.
     #[test]
     fn is_alive_true_for_running_worker() {
-        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
+        let mut handle =
+            spawn_scanner_kill_worker(Some(10), None, live_permit()).expect("spawn worker");
         assert!(handle.is_alive(), "freshly spawned worker must be alive");
         assert!(!handle.defense_disabled());
         handle.shutdown();

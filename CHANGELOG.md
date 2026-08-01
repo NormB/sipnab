@@ -10,7 +10,106 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Security
+- **Reading a capture FILE with `--kill-scanner` transmitted real packets to
+  third parties.** Offline analysis is supposed to be inert. It was not: the
+  scanner-kill responder fired on packets read from a pcap, sending SIP
+  responses to the addresses recorded inside it. Those addresses belong to
+  whoever was on the wire when the capture was taken — not to the person
+  analysing it, and not to their network. Verified during development: three
+  responses (317/317/322 bytes) left the machine for three public addresses on
+  ports 5060/5060/5080, from a capture file.
+
+  Fixed structurally rather than with a check. `TransmitPermit` (new,
+  `src/security/transmit_guard.rs`) is a zero-size token whose only constructor
+  takes the `CaptureSource` and returns `Some` for live capture and HEP, `None`
+  for a file. `send_to_v4`, `send_to_v6` and `KillUdpSocket::send_to` all
+  require one, so transmitting from an offline run is a compile error, not a
+  runtime condition that a future code path can forget to test. Detection,
+  alerting and reporting still run offline; the run explains that it will not
+  answer, and why.
+
+- **`-O` pointed at the input capture destroyed it and exited 0.** Naming the
+  same path for input and output truncated the file being read — frequently the
+  only copy of the evidence — and the run reported success. `ProtectedInputs`
+  (new, `src/capture/output_guard.rs`) compares canonical paths, so symlinks,
+  `./` prefixes and glob expansions cannot slip past, and refuses before the
+  first byte is written. Wired into every route that can name an output file:
+  the CLI plan, startup commands, the MCP root resolver and the TUI save path.
+
 ### Fixed
+- **RTCP reception reports overwrote sipnab's own measurements, so the quality
+  numbers described someone else's path.** `process_rtcp` wrote the far end's
+  `jitter` and `cumulative_lost` straight into the stream, and MOS scored those.
+  Two consequences: an unauthenticated packet could move the quality figure, and
+  on a mid-path capture the report describes a *different* segment from the one
+  in front of sipnab.
+
+  Measured against `tshark` ground truth: sipnab's own measurement agreed with
+  tshark on all 533 streams of one capture; its *reported* loss disagreed on 10,
+  every one a false positive. A 1302-packet PCMU stream with zero measured loss
+  was reported at 5.5% loss and MOS 2.94. The single worst jitter figure in the
+  corpus — 272,087 ms — came from RTCP, where the stream's own measurement was
+  0.985 ms. The overwrite also erased real loss: a stream with 78 measured lost
+  packets reported 0. Corpus-wide, 553 streams had measurements overwritten.
+
+  Reports now go to a provenance side-table (`StreamStore::remote_report`) and
+  never reach the score. A remote assertion is no longer reachable through
+  `RtpStream` at all, and reports attach to every stream carrying the SSRC
+  rather than an arbitrary first match. MOS values will move: 104 of 542 streams
+  changed in one capture alone.
+
+- **RTCP XR on an odd port was parsed as RTP and invented streams.** The
+  separate-port branch of `is_rtcp_packet` accepted only types 200–204, so an XR
+  (207) was handed to the RTP path, where the first report-block header read as
+  an SSRC. Corpus-wide: 374 RTCP datagrams misrouted, producing 28 phantom
+  streams, all payload type 79. The branch now accepts the whole RFC 5761 range.
+
+- **Jitter was quantised to whole milliseconds, which is larger than the signal
+  being measured.** The interarrival delta used `num_milliseconds()`; on a 20 ms
+  stream the variation is itself sub-millisecond, so truncation discarded it and
+  inflated the result. Against tshark over 529 streams: streams reported above
+  tshark's *maximum* jitter fell from 319 to 6, streams inside tshark's
+  [min,max] band rose from 210 to 522, and the median ratio to tshark's mean
+  went from 2.73× to 1.10× (worst case 39.5× to 3.0×).
+
+- **Static payload types assumed an 8 kHz clock.** `clock_rate_from_pt` knew 8
+  of RFC 3551's 24 assigned types and defaulted the rest to 8000, so JPEG, H.261,
+  MPV, MP2T and MPA (all 90 kHz) plus L16 and DVI4 were off by up to 11.25× —
+  one corpus stream measured 88,336,408 ms of jitter. The full RFC 3551 Tables
+  4/5 mapping is applied at stream creation, before the first jitter sample. A
+  stream whose clock is still a guess now reports its jitter as unknown rather
+  than publishing a number, and late SDP that corrects the clock restarts the
+  estimate instead of rescaling history it cannot rescale.
+
+- **Registration diagnosis said "the endpoint is offline" for every rejection
+  code.** It said so for `403` in dialogs where the endpoint had already
+  answered a `401` challenge — that is, had demonstrably transmitted and been
+  answered — and for `480 No DNS results`, where the reason phrase contradicts
+  it outright. Corpus-wide the sentence fired 46 times across codes 403, 404,
+  480 and 483, and was wrong every time.
+
+  Each code now maps to one RFC 3261 clause: a challenged `403` points at the
+  credentials offered, an unchallenged `403` says only that the registrar
+  refused, `404` is an unknown address-of-record, `423` reports the expiry
+  negotiation, `408` says "consistent with" a reachability problem rather than
+  asserting one, and anything not determined by the code reads back the reason
+  phrase and stops. The two surfaces that printed this had hand-copied the
+  prose, so both said the same wrong thing; they now render one shared string,
+  pinned character-for-character by test.
+
+- **Idle compaction evicted the final status code, so completed calls reported
+  no outcome.** A 25-message `INVITE` that completed with `200` returned `None`
+  from `final_status_code()` after compaction — the report's Code column showed
+  `-`, and "no final response" is a fault sipnab diagnoses in its own right, so
+  the loss read as a specific failure that never happened.
+
+  `compact_idle` now keeps the messages that carry meaning wherever they sit —
+  the opening request, `BYE`/`CANCEL`, and every final response plus `401`/`407`
+  — de-duplicated by `(status, CSeq method)` so a `200` sent eight times pins one
+  message. The remaining budget goes to the most recent messages, so the middle
+  is what compacts. The message cap is unchanged.
+
 - **Offline analysis was not deterministic — the same capture gave different
   answers on different machines.** `compact_idle` and `mark_orphaned` compared
   `Utc::now()` against PACKET timestamps, and the sweep itself was gated on a

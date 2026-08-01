@@ -7,7 +7,10 @@
 //!
 //! Tool descriptions never instruct the LLM to "trust", "verify", or
 //! "act on" returned content. They state what the tool returns and stop.
-//! A CI lint enforces this — see `scripts/check-tool-descriptions.sh`.
+//! A test enforces this — `tests/mcp_tool_descriptions_test.rs`. This line
+//! previously named a shell lint that was never written, so the rule read
+//! as enforced while nothing checked it; the test also asserts that any
+//! gate named here exists.
 //!
 //! # Lock discipline (Gotcha 3)
 //!
@@ -53,6 +56,14 @@ pub struct SipnabMcp {
     source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Directory the file tools are confined to. `None` disables them.
     file_root: Option<std::path::PathBuf>,
+    /// Capture files and directories this server is reading, which the file
+    /// tools must never write over.
+    ///
+    /// `--mcp-file-root` and `-I` routinely name the same directory — one
+    /// folder of captures is the obvious setup — so an export named after an
+    /// input is one autocompletion away, and an agent picking a filename has no
+    /// way to know which names are inputs.
+    protected_inputs: crate::capture::output_guard::ProtectedInputs,
     /// Whether `shutdown_server` may stop this process.
     allow_shutdown: bool,
     /// What this server is attached to, and when it started.
@@ -95,10 +106,21 @@ impl SipnabMcp {
             alert_engine: None,
             source_exhausted: None,
             file_root: None,
+            protected_inputs: Default::default(),
             allow_shutdown: false,
             capture: None,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Declare the capture inputs this server is reading so the file tools
+    /// refuse to write over them.
+    pub fn with_protected_inputs(
+        mut self,
+        protected: crate::capture::output_guard::ProtectedInputs,
+    ) -> Self {
+        self.protected_inputs = protected;
+        self
     }
 
     /// Attach a shared alert engine so the `security_findings` tool can
@@ -177,7 +199,17 @@ impl SipnabMcp {
                 None,
             ));
         }
-        Ok(root.join(name))
+        let target = root.join(name);
+
+        // Refuse before the caller opens anything: every file tool writes with
+        // truncation, so a check made after the open has already destroyed the
+        // capture. This is the same precondition `-O` enforces, applied at the
+        // one place all file tools resolve their path.
+        self.protected_inputs
+            .check(&target, "the requested filename", false)
+            .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+
+        Ok(target)
     }
 }
 

@@ -226,6 +226,9 @@ pub struct TuiOptions {
     pub name_setup: NameSetup,
     /// Initial From/To column display mode.
     pub from_to_mode: FromToMode,
+    /// Capture files this session reads, which the save dialog must never
+    /// write over (see [`crate::capture::output_guard`]).
+    pub protected_inputs: crate::capture::output_guard::ProtectedInputs,
 }
 
 /// A single entry in the file-open browser's directory listing.
