@@ -16,6 +16,11 @@
 //! as "never" and a scoped subscriber here captures nothing, at random. One
 //! test per binary makes the capture deterministic.
 
+// The whole file, not just the test: the capturing subscriber below is only
+// ever constructed by that test, so a build without `native` sees it as dead
+// code and `-D warnings` rejects it.
+#![cfg(feature = "native")]
+
 use std::sync::{Arc, Mutex};
 
 /// Collects `tracing` events emitted on the current thread.
