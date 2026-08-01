@@ -192,19 +192,30 @@ fn parallel_config(
     }
 }
 
-/// Multi-core offline file reconstruction (`--cores N` with `-I file`,
-/// single device): read the pcap directly and shard packets across N worker
+/// Multi-core offline file reconstruction (`--cores N` with `-I`, single
+/// device): read the capture files directly and shard packets across N worker
 /// threads, fusing read+peek+shard into one stage — no capture reader
 /// thread, no semaphore channel. Reports and exits; advanced per-message
 /// features use the single-threaded path.
 ///
 /// # Arguments
 ///
-/// * `cli` — parsed flags; `cli.input` names the pcap (a silent no-op when
-///   absent) and `cli.cores` the worker count.
+/// * `cli` — parsed flags; `cli.cores` gives the worker count.
 /// * `config` — loaded configuration for `no_rtp` / X-CID fallbacks.
 /// * `capture_config` — capture parameters forwarded to the file reader.
 /// * `portrange` — SIP signaling port range for classification.
+/// * `paths` — the RESOLVED capture files, in read order, taken from
+///   `RunPlan::source`.
+///
+///   Not re-derived from `cli` here. `-I` accepts a directory, a glob and
+///   repeated occurrences, and `cli.primary_input()` returns the first `-I`
+///   *argument* — which for `-I /pcaps` is a directory. Handing that to the
+///   pcap opener made `--cores` open a directory as a capture and report
+///   nothing at all: 18948 dialogs without `--cores`, 0 with `--cores 4`, exit
+///   code 0, no error. `bootstrap::plan` has already resolved and
+///   timestamp-ordered the set, and resolution opens every file to order it —
+///   so re-resolving here would pay that cost twice and give the two paths a
+///   second chance to disagree.
 ///
 /// # Side effects
 ///
@@ -216,17 +227,19 @@ pub fn run_cores_file(
     config: &Config,
     capture_config: &CaptureConfig,
     portrange: (u16, u16),
+    paths: &[PathBuf],
 ) {
-    let Some(input) = cli.primary_input() else {
-        return;
-    };
+    if paths.is_empty() {
+        // Unreachable through `main`: `RunMode::CoresFile` requires `-I`, and
+        // `input_set::resolve` already failed the run if nothing resolved. Say
+        // so loudly anyway rather than exiting 0 with an empty report, which is
+        // precisely the failure this path used to have.
+        tracing::error!("--cores: no capture files to read");
+        std::process::exit(1);
+    }
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
-    match crate::parallel::run_offline_parallel_file(
-        std::path::Path::new(input),
-        capture_config,
-        pcfg,
-    ) {
+    match crate::parallel::run_offline_parallel_file(paths, capture_config, pcfg) {
         Ok(r) => {
             // The return value is the "report could not be produced" signal and
             // was dropped here, so an unknown --call-report id or an unwritable

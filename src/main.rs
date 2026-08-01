@@ -102,8 +102,30 @@ fn main() {
     };
 
     // 8. Multi-core offline reconstruction bypasses the capture thread.
+    //
+    //    It still needs the file set, and the set is already on the plan:
+    //    `plan()` ran `input_set::resolve`, so `plan.source` holds the
+    //    resolved, timestamp-ordered `Vec<PathBuf>`. Dispatching here — before
+    //    `launch` — used to discard it and let `run_cores_file` re-derive the
+    //    input from `cli.primary_input()`, i.e. the first `-I` *argument*. For
+    //    `-I <directory>`, `-I '<glob>'` or repeated `-I` that argument is not
+    //    a file, so the pcap opener was handed a directory and the run reported
+    //    nothing while exiting 0.
     if matches!(plan.mode, RunMode::CoresFile) {
-        batch::run_cores_file(&cli, &loaded.config, &plan.capture_config, plan.portrange);
+        let paths: &[std::path::PathBuf] = match plan.source {
+            Some(sipnab::capture::CaptureSource::File { ref paths }) => paths,
+            // `CoresFile` is only chosen when `-I` was given, so the source is
+            // always `File`. An empty slice makes `run_cores_file` fail loudly
+            // rather than silently analysing nothing if that ever changes.
+            _ => &[],
+        };
+        batch::run_cores_file(
+            &cli,
+            &loaded.config,
+            &plan.capture_config,
+            plan.portrange,
+            paths,
+        );
         return;
     }
 

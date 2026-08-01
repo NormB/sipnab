@@ -275,33 +275,132 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     }
 }
 
-/// Like `run_offline_parallel`, but reads the pcap FILE directly in this thread
-/// instead of consuming a `PacketRx` fed by a separate capture reader thread.
-/// This fuses pcap-read + host-pair peek + shard into a SINGLE serial stage —
-/// eliminating the dispatcher thread and the semaphore-capped capture channel
-/// that capped `--cores` scaling at ~2 workers (the read→dispatcher hand-off was
-/// two serial stages). Sharding/reassembly/merge are identical to
-/// `run_offline_parallel`, so `--cores N` parity with `--cores 1` is preserved.
-pub fn run_offline_parallel_file(
+/// The reader hands packets to workers in BATCHES rather than one at a time.
+/// Focused --cores research (SNB-0015 follow-up) showed the regression past
+/// cores 2 is NOT the reconstruction work — even with idle workers throughput
+/// halved from cores 2→4. The cost is the per-packet channel hop: every send
+/// bounces a cache line across cores, and that coherency traffic scales with
+/// worker count. Sending ~`BATCH` packets per channel op amortizes that hop by
+/// ~BATCH×, so the single reader can feed more workers before saturating.
+/// Channel depth is in batches; BATCH × depth keeps the in-flight packet cap
+/// (~8192) identical to the old per-packet bound.
+const BATCH: usize = 128;
+
+/// Read every packet of an already-opened capture into the per-worker batches,
+/// flushing a batch to its worker whenever it fills.
+///
+/// Split out of [`run_offline_parallel_file`] so a multi-file set shares ONE set
+/// of partial batches, one packet budget and one loss counter across its
+/// members — the direct analogue of `read_opened_inner` in
+/// [`crate::capture::file`] on the single-threaded path. Partial batches
+/// deliberately survive the file boundary: flushing them per file would be pure
+/// channel overhead, and the workers' stores live for the whole run either way.
+///
+/// Returns `Ok(false)` when the whole SET should stop (the `--count` budget is
+/// spent) rather than merely this file ending.
+fn shard_opened(
+    cap: &mut pcap::Capture<pcap::Offline>,
     path: &std::path::Path,
+    capture_config: &crate::capture::CaptureConfig,
+    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    batches: &mut [Vec<crate::capture::packet::Packet>],
+    count: &mut u64,
+    dropped: &mut u64,
+) -> anyhow::Result<bool> {
+    use crate::capture::file::pcap_ts_to_chrono;
+    use crate::capture::packet::Packet;
+
+    let n = txs.len();
+    let link_type = cap.get_datalink().0;
+    tracing::info!("Reading from '{}'", path.display());
+    loop {
+        if let Some(max) = capture_config.count
+            && *count >= max
+        {
+            tracing::debug!("Reached packet count limit ({max})");
+            return Ok(false);
+        }
+        match cap.next_packet() {
+            Ok(pkt) => {
+                let packet = Packet::new(
+                    pcap_ts_to_chrono(pkt.header.ts),
+                    pkt.data.to_vec(),
+                    pkt.header.caplen as usize,
+                    pkt.header.len as usize,
+                    None,
+                    link_type,
+                );
+                let s = match crate::capture::parse::peek_host_pair(&packet) {
+                    Some((a, b)) => shard_for(a, b, n),
+                    None => 0,
+                };
+                batches[s].push(packet);
+                if batches[s].len() >= BATCH {
+                    let full = std::mem::replace(&mut batches[s], Vec::with_capacity(BATCH));
+                    let weight = full.len() as u64;
+                    *dropped += shard_send(&txs[s], full, weight);
+                }
+                *count += 1;
+            }
+            Err(pcap::Error::NoMorePackets) => return Ok(true),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Error reading pcap '{}': {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+/// Like `run_offline_parallel`, but reads the capture FILES directly in this
+/// thread instead of consuming a `PacketRx` fed by a separate capture reader
+/// thread. This fuses pcap-read + host-pair peek + shard into a SINGLE serial
+/// stage — eliminating the dispatcher thread and the semaphore-capped capture
+/// channel that capped `--cores` scaling at ~2 workers (the read→dispatcher
+/// hand-off was two serial stages). Sharding/reassembly/merge are identical to
+/// `run_offline_parallel`, so `--cores N` parity with `--cores 1` is preserved.
+///
+/// # Cross-file dialog stitching
+///
+/// `paths` is the whole `-I` set — a directory, a glob or repeated `-I` all
+/// resolve to one ordered list (see [`crate::capture::input_set`]) — and every
+/// file feeds the SAME worker pool, whose thread-local stores live for the
+/// entire run. A call whose INVITE lands in `tg.pcap3` and whose BYE lands in
+/// `tg.pcap4` therefore reconstructs as one dialog exactly as it does on the
+/// single-threaded path ([`crate::capture::file::capture_files`]): sharding is
+/// by direction-independent host pair, so both files' halves of the call route
+/// to the same worker and land in the same `DialogStore`. Reading each file
+/// into a fresh pool would report two fragments instead — a call that never
+/// ends, and a stray BYE.
+///
+/// `paths` must already be in read order; the packet budget (`--count`) and the
+/// loss counter are shared across the set, so `--count 100` over four files
+/// means a hundred packets in total.
+///
+/// # Errors
+///
+/// When `paths` is empty, or when the FIRST file cannot be opened or its BPF
+/// filter does not compile — opening it is what proves the set usable at all.
+/// A later file that cannot be opened, or that stops reading mid-way (the
+/// normal state of a ring buffer's newest member), is logged and skipped so one
+/// bad member cannot hide the rest of the set. This mirrors
+/// [`crate::capture::file::capture_files`] exactly; without it `--cores` would
+/// abandon a set the single-threaded path reads through.
+pub fn run_offline_parallel_file(
+    paths: &[std::path::PathBuf],
     capture_config: &crate::capture::CaptureConfig,
     cfg: ParallelConfig,
 ) -> anyhow::Result<ReconResult> {
-    use crate::capture::file::{open_offline, pcap_ts_to_chrono};
+    use crate::capture::file::open_offline;
     use crate::capture::packet::Packet;
     use crossbeam_channel::bounded;
     let n = cfg.cores.max(2);
 
-    // The reader hands packets to workers in BATCHES rather than one at a time.
-    // Focused --cores research (SNB-0015 follow-up) showed the regression past
-    // cores 2 is NOT the reconstruction work — even with idle workers throughput
-    // halved from cores 2→4. The cost is the per-packet channel hop: every send
-    // bounces a cache line across cores, and that coherency traffic scales with
-    // worker count. Sending ~`BATCH` packets per channel op amortizes that hop
-    // by ~BATCH×, so the single reader can feed more workers before saturating.
-    // Channel depth is in batches; BATCH × depth keeps the in-flight packet cap
-    // (~8192) identical to the old per-packet bound.
-    const BATCH: usize = 128;
+    if paths.is_empty() {
+        anyhow::bail!("no capture files to read");
+    }
+
     let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Vec<Packet>>(64)).unzip();
     let workers: Vec<_> = rxs
         .into_iter()
@@ -342,55 +441,58 @@ pub fn run_offline_parallel_file(
         })
         .collect();
 
-    // Single reader+sharder: open the pcap (gzip-transparent), apply any BPF, and
-    // for each packet do the cheap host-pair peek + append to that worker's batch.
-    // A batch is flushed (one channel hop for ~BATCH packets) when it fills, and
-    // any partial batches are flushed at EOF. One thread, one copy, one hop per
-    // batch.
-    let (mut cap, _gz_guard) = open_offline(path)?;
-    if let Some(ref bpf) = capture_config.bpf_filter {
-        cap.filter(bpf, true)
-            .map_err(|e| anyhow::anyhow!("Failed to compile BPF filter '{bpf}': {e}"))?;
-    }
-    let link_type = cap.get_datalink().0;
+    // Single reader+sharder: open each pcap in turn (gzip-transparent), apply any
+    // BPF, and for each packet do the cheap host-pair peek + append to that
+    // worker's batch. A batch is flushed (one channel hop for ~BATCH packets)
+    // when it fills, and any partial batches are flushed once the whole SET is
+    // read. One thread, one copy, one hop per batch.
     let mut count: u64 = 0;
     let mut dropped: u64 = 0;
     let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
-    loop {
-        if let Some(max) = capture_config.count
-            && count >= max
-        {
-            break;
-        }
-        match cap.next_packet() {
-            Ok(pkt) => {
-                let packet = Packet::new(
-                    pcap_ts_to_chrono(pkt.header.ts),
-                    pkt.data.to_vec(),
-                    pkt.header.caplen as usize,
-                    pkt.header.len as usize,
-                    None,
-                    link_type,
-                );
-                let s = match crate::capture::parse::peek_host_pair(&packet) {
-                    Some((a, b)) => shard_for(a, b, n),
-                    None => 0,
-                };
-                batches[s].push(packet);
-                if batches[s].len() >= BATCH {
-                    let full = std::mem::replace(&mut batches[s], Vec::with_capacity(BATCH));
-                    let weight = full.len() as u64;
-                    dropped += shard_send(&txs[s], full, weight);
-                }
-                count += 1;
-            }
-            Err(pcap::Error::NoMorePackets) => break,
+    for (i, path) in paths.iter().enumerate() {
+        let is_first = i == 0;
+        let (mut cap, _gz_guard) = match open_offline(path) {
+            Ok(opened) => opened,
+            // The first file owns the "is this set usable at all" verdict. A
+            // later one that vanished mid-run — a rotating capture directory
+            // being cleaned up while it is analysed — is logged and skipped:
+            // losing one file of a set is bad, losing the other nine is worse.
+            Err(e) if is_first => return Err(e),
             Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Error reading pcap '{}': {e}",
-                    path.display()
-                ));
+                tracing::error!("Skipping '{}': {e:#}", path.display());
+                continue;
             }
+        };
+        if let Some(ref bpf) = capture_config.bpf_filter
+            && let Err(e) = cap.filter(bpf, true)
+        {
+            let err = anyhow::anyhow!("Failed to compile BPF filter '{bpf}': {e}");
+            if is_first {
+                return Err(err);
+            }
+            tracing::error!("Skipping '{}': {err:#}", path.display());
+            continue;
+        }
+        // A read error stops THIS file, not the set. Truncation is the normal
+        // state of a ring buffer — the newest member is still being written when
+        // the capture stops, and libpcap reports `truncated dump file` on the
+        // trailing partial record. Whatever was read before the break is already
+        // in the workers' stores and stays there.
+        match shard_opened(
+            &mut cap,
+            path,
+            capture_config,
+            &txs,
+            &mut batches,
+            &mut count,
+            &mut dropped,
+        ) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => tracing::error!(
+                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
+                path.display()
+            ),
         }
     }
     // Flush every partial batch so no tail packets are lost.
@@ -611,12 +713,14 @@ mod tests {
     #[test]
     fn batched_dispatch_is_core_count_invariant() {
         use crate::capture::CaptureConfig;
-        let path = std::path::Path::new("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap");
+        let paths = [std::path::PathBuf::from(
+            "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap",
+        )];
         let cc = CaptureConfig::default();
 
         let runs: Vec<(usize, ReconResult)> = [2usize, 4, 8]
             .into_iter()
-            .map(|c| (c, run_offline_parallel_file(path, &cc, pcfg(c)).unwrap()))
+            .map(|c| (c, run_offline_parallel_file(&paths, &cc, pcfg(c)).unwrap()))
             .collect();
 
         let (base_c, base) = &runs[0];
@@ -651,9 +755,11 @@ mod tests {
     #[test]
     fn codec_negotiation_fixture_reconstructs_used_codecs() {
         use crate::capture::CaptureConfig;
-        let path = std::path::Path::new("tests/pcap-samples/codec-negotiation.pcap");
+        let paths = [std::path::PathBuf::from(
+            "tests/pcap-samples/codec-negotiation.pcap",
+        )];
         let cc = CaptureConfig::default();
-        let r = run_offline_parallel_file(path, &cc, pcfg(2)).unwrap();
+        let r = run_offline_parallel_file(&paths, &cc, pcfg(2)).unwrap();
         let codecs: std::collections::HashSet<String> = r
             .stream_store
             .iter()
@@ -682,9 +788,11 @@ mod tests {
     #[test]
     fn opus_fixture_reconstructs_dynamic_codec_from_sdp() {
         use crate::capture::CaptureConfig;
-        let path = std::path::Path::new("tests/pcap-samples/invite-opus-bye.pcap");
+        let paths = [std::path::PathBuf::from(
+            "tests/pcap-samples/invite-opus-bye.pcap",
+        )];
         let cc = CaptureConfig::default();
-        let r = run_offline_parallel_file(path, &cc, pcfg(2)).unwrap();
+        let r = run_offline_parallel_file(&paths, &cc, pcfg(2)).unwrap();
         let opus = r
             .stream_store
             .iter()
