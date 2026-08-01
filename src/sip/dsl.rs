@@ -401,6 +401,100 @@ impl FilterExpr {
     }
 }
 
+// ── Applying a compiled filter to the stores ────────────────────────
+
+/// The dialogs a compiled filter admits, paired with their RTP streams.
+///
+/// Returned by [`select_dialogs`]. The post-capture output paths
+/// (`--report`, `--json-dialogs`) render whole stores rather than the packet
+/// stream, so they need the *selection* — which dialogs survive the filter,
+/// and which streams belong to them — as one value: they differ only in how
+/// they format it, and a filter that narrowed one but not the other would
+/// report different calls for the same command line.
+pub struct DialogSelection<'a> {
+    /// Matching dialogs in store order, each with the streams linked to it
+    /// (empty when the dialog carries no media).
+    pub dialogs: Vec<(&'a SipDialog, Vec<&'a RtpStream>)>,
+    /// Streams to show alongside `dialogs`, in store order. With no filter
+    /// this is every stream in the store, orphans included — an unfiltered
+    /// run must be unchanged. With a filter it is the streams linked to a
+    /// selected dialog, so the media on screen belongs to the calls on
+    /// screen.
+    pub streams: Vec<&'a RtpStream>,
+}
+
+/// Apply an optional compiled filter to the final store contents.
+///
+/// `filter` of `None` selects everything, so a caller can funnel the filtered
+/// and unfiltered cases through one path instead of branching at each output
+/// format — the branch that was missing, leaving `--filter` inert on every
+/// post-capture output.
+///
+/// Streams are grouped by Call-ID once rather than rescanned per dialog: the
+/// per-dialog scan is O(dialogs × streams), and these paths visit every
+/// dialog in the store.
+///
+/// # Arguments
+///
+/// * `filter` — Compiled expression, or `None` to select every dialog.
+/// * `dialog_store` — Dialogs to select from.
+/// * `stream_store` — Streams to associate and (when filtering) narrow.
+///
+/// # Returns
+///
+/// The matching dialogs with their streams, in store order.
+pub fn select_dialogs<'a>(
+    filter: Option<&FilterExpr>,
+    dialog_store: &'a super::dialog_store::DialogStore,
+    stream_store: &'a crate::rtp::stream_store::StreamStore,
+) -> DialogSelection<'a> {
+    let mut by_call: std::collections::HashMap<&'a str, Vec<&'a RtpStream>> =
+        std::collections::HashMap::new();
+    for stream in stream_store.iter() {
+        if let Some(id) = stream.associated_dialog.as_deref() {
+            by_call.entry(id).or_default().push(stream);
+        }
+    }
+
+    let dialogs: Vec<(&'a SipDialog, Vec<&'a RtpStream>)> = dialog_store
+        .iter()
+        .filter_map(|dialog| {
+            let streams = by_call
+                .get(dialog.call_id.as_str())
+                .cloned()
+                .unwrap_or_default();
+            match filter {
+                Some(expr) if !expr.matches_dialog(dialog, &streams) => None,
+                _ => Some((dialog, streams)),
+            }
+        })
+        .collect();
+
+    let streams = match filter {
+        // Byte-for-byte the previous unfiltered behaviour: every stream the
+        // store holds, orphans included, in store order.
+        None => stream_store.iter().collect(),
+        Some(_) => {
+            let selected: std::collections::HashSet<&str> = dialogs
+                .iter()
+                .map(|(dialog, _)| dialog.call_id.as_str())
+                .collect();
+            // Store order, not selection order, so a filtered stream table is
+            // a subsequence of the unfiltered one.
+            stream_store
+                .iter()
+                .filter(|s| {
+                    s.associated_dialog
+                        .as_deref()
+                        .is_some_and(|id| selected.contains(id))
+                })
+                .collect()
+        }
+    };
+
+    DialogSelection { dialogs, streams }
+}
+
 // ── Nesting depth check ─────────────────────────────────────────────
 
 /// Verify parenthesis nesting does not exceed [`MAX_NESTING_DEPTH`].
@@ -2538,6 +2632,105 @@ mod tests {
         // A codec present on no stream still does not match.
         let miss = FilterExpr::parse("rtp.codec == 'opus'").expect("parse");
         assert!(!miss.matches_dialog(&dialog, &streams));
+    }
+
+    // ── select_dialogs ──────────────────────────────────────────────
+
+    /// Build a store holding one INVITE dialog per Call-ID given.
+    fn store_with(call_ids: &[&str]) -> crate::sip::dialog_store::DialogStore {
+        let mut store = crate::sip::dialog_store::DialogStore::new(100, false);
+        for id in call_ids {
+            let raw = build_sip(
+                "INVITE sip:2002@example.com SIP/2.0",
+                &[
+                    "From: <sip:1001@example.com>;tag=t1",
+                    "To: <sip:2002@example.com>",
+                    &format!("Call-ID: {id}"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = parse_sip(
+                &raw,
+                base_ts(),
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse");
+            store.process_message(msg);
+        }
+        store
+    }
+
+    /// No filter selects every dialog, in store order — the post-capture
+    /// outputs must be unchanged when `--filter` is absent.
+    #[test]
+    fn select_dialogs_without_a_filter_selects_everything() {
+        let dialogs = store_with(&["a@example.com", "b@example.com", "c@example.com"]);
+        let streams = crate::rtp::stream_store::StreamStore::new(16);
+
+        let selection = select_dialogs(None, &dialogs, &streams);
+
+        let ids: Vec<&str> = selection
+            .dialogs
+            .iter()
+            .map(|(d, _)| d.call_id.as_str())
+            .collect();
+        assert_eq!(ids, ["a@example.com", "b@example.com", "c@example.com"]);
+    }
+
+    /// A filter selects the matching dialogs and only those. The defect it
+    /// guards: the whole store came back for every expression.
+    #[test]
+    fn select_dialogs_with_a_filter_selects_only_matches() {
+        let dialogs = store_with(&["a@example.com", "b@example.com", "c@example.com"]);
+        let streams = crate::rtp::stream_store::StreamStore::new(16);
+        let expr = FilterExpr::parse("call_id == 'b@example.com'").expect("should parse");
+
+        let selection = select_dialogs(Some(&expr), &dialogs, &streams);
+
+        let ids: Vec<&str> = selection
+            .dialogs
+            .iter()
+            .map(|(d, _)| d.call_id.as_str())
+            .collect();
+        assert_eq!(ids, ["b@example.com"]);
+    }
+
+    /// An unsatisfiable filter selects nothing — an empty result is an
+    /// answer, and must not degrade into "show everything".
+    #[test]
+    fn select_dialogs_with_an_unsatisfiable_filter_selects_nothing() {
+        let dialogs = store_with(&["a@example.com", "b@example.com"]);
+        let streams = crate::rtp::stream_store::StreamStore::new(16);
+
+        let selection = select_dialogs(Some(&FilterExpr::never()), &dialogs, &streams);
+
+        assert!(selection.dialogs.is_empty());
+        assert!(
+            selection.streams.is_empty(),
+            "no dialog selected leaves no stream to show"
+        );
+    }
+
+    /// An empty store yields an empty selection under both arms rather than
+    /// panicking on the missing-Call-ID lookups.
+    #[test]
+    fn select_dialogs_on_an_empty_store_is_empty() {
+        let dialogs = store_with(&[]);
+        let streams = crate::rtp::stream_store::StreamStore::new(16);
+        let expr = FilterExpr::parse("state == 'Failed'").expect("should parse");
+
+        assert!(select_dialogs(None, &dialogs, &streams).dialogs.is_empty());
+        assert!(
+            select_dialogs(Some(&expr), &dialogs, &streams)
+                .dialogs
+                .is_empty()
+        );
     }
 }
 
