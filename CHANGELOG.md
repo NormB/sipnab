@@ -10,6 +10,40 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+- **`--cores N` ignored multi-file input entirely.** `-I <dir> --cores 4`
+  returned **0 dialogs** where the single-threaded path returned 18948.
+  `run_cores_file` reached for `cli.primary_input()` — the first `-I`
+  *argument*, not a resolved file — and handed that raw string to the pcap
+  opener, so a directory, a glob, or a repeated `-I` all collapsed to one
+  unopenable path. `main.rs` dispatched this mode before `bootstrap::launch`,
+  discarding the resolved, timestamp-ordered list the plan already held.
+
+  The genuinely silent form was repeated `-I a -I b`: it read only `a`,
+  reported 2 dialogs instead of 3, and exited 0. (The directory form did print
+  "Is a directory" and exit 1 — my own reproduction hid that behind
+  `2>/dev/null`, which is worth recording as a reminder that a discarded
+  stderr turns a loud failure into a silent one.)
+
+  `run_offline_parallel_file` now takes the resolved path set and reads it
+  through one worker pool, so cross-file dialog stitching survives: both halves
+  of a split call route to the same worker by host pair and land in the same
+  store, matching `capture_files`. Error policy now matches too — the first
+  file's open failure is fatal, later files are skipped with a log, and a
+  mid-file read error stops that file only.
+
+  That last part mattered more than expected: `--cores` previously turned a
+  truncated file into exit 1 with **no report at all**, so it discarded the
+  analysis of every `tcpdump -C -W` ring buffer it was pointed at, a truncated
+  final member being the normal state of one.
+
+  Tests compare dialog *fingerprints* (`call_id state msg_count`), not Call-ID
+  sets: `merge` is Call-ID-keyed, so cross-worker fragments union back into one
+  entry and an ID-only assertion passes while the reconstruction is wrong.
+  Mutation-tested four ways, including restoring the original bug and rotating
+  the shard per file.
+
+
 ## [0.5.71] - 2026-07-31
 
 ### Fixed
