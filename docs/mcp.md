@@ -297,13 +297,13 @@ carries a default ceiling (HARD_LIMIT = 1000).
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `list_dialogs` | `filter?`, `limit?` | Dialog summaries with optional alias / DSL filter |
+| `list_dialogs` | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
 | `get_dialog_report` | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
-| `find_problems` | `kinds?`, `limit?` | Dialogs matching one or more diagnostic alias names |
+| `find_problems` | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
 | `get_dialog` | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
 | `get_message` | `call_id`, `index` | Single SIP message at a given index |
 | `render_ladder` | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
-| `rtp_stats` | `call_id` | Per-stream RTP quality + media diagnosis |
+| `rtp_stats` | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
 | `search_messages` | `query`, `limit?` | Substring search across method/From/To/UA/body |
 | `tail_dialogs` | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
 | `security_findings` | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
@@ -315,7 +315,7 @@ carries a default ceiling (HARD_LIMIT = 1000).
 | `explain_response_code` | `code` | IANA registry meaning and class for a SIP status code |
 | `compare_dialogs` | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
 | `get_sdp_timeline` | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
-| `search_by_time` | `start`, `end?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
+| `search_by_time` | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
 | `list_captures` | -- | Capture files in `--mcp-file-root`, with sizes |
 | `export_capture` | `filename` | Writes held packets to a pcap in `--mcp-file-root` |
 | `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root` |
@@ -324,36 +324,97 @@ carries a default ceiling (HARD_LIMIT = 1000).
 
 ### `list_dialogs`
 
-Returns dialog summaries from the live capture store.
+Returns one page of dialog summaries from the live capture store.
 
 | Name | Type | Description |
 |---|---|---|
 | `filter` | string? | Diagnostic alias name (`problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media`) **or** a raw [filter DSL](filter-dsl.md) expression. |
-| `limit` | u32? | Max dialogs to return. Default 50, max 1000. |
+| `limit` | u32? | Max dialogs per page. Default 50, max 1000. |
+| `cursor` | string? | The previous response's `next_cursor`, passed back verbatim (`<RFC 3339 created_at>\|<Call-ID>`). Omit on the first call. |
 
-**Returns** — array of `DialogSummary`:
+**Returns** — a page object, not a bare array:
+
+| Field | Type | Description |
+|---|---|---|
+| `dialogs` | `DialogSummary[]` | This page, oldest first (ties broken by Call-ID). |
+| `returned` | usize | Rows in `dialogs`, so counting the array is never necessary. |
+| `total_matched` | usize | Dialogs matching the filter across the **whole store**, whatever `limit` and `cursor` say. This is the number that answers "how many". |
+| `truncated` | bool | `true` when matches remain after this page. |
+| `next_cursor` | string? | Pass back to continue. `null` on the final page. |
+
+The example below runs against `tests/pcap-samples/sipp-branch-scenario.pcapng`,
+which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so:
 
 ```jsonc
-[
-  {
-    "call_id": "abc@host",
-    "state": "Completed",
-    "method": "INVITE",
-    "from_user": "1001",
-    "to_user": "1002",
-    "msg_count": 7,
-    "duration_sec": 91.3,
-    "created_at": "2026-05-02T14:02:11Z",
-    "updated_at": "2026-05-02T14:03:42Z",
-    "timing": {
-      "pdd_ms": 820,
-      "setup_ms": 1400,
-      "retransmits": 0,
-      "duration_ms": 89100
+// list_dialogs { "limit": 2 }
+{
+  "schema_version": 1,
+  "dialogs": [
+    {
+      "call_id": "1-4461@127.0.1.1",
+      "state": "Registered",
+      "method": "REGISTER",
+      "from_user": "ua1",
+      "to_user": "ua1",
+      "msg_count": 7,
+      "duration_sec": 0.003,
+      "created_at": "2016-11-17T21:52:35.303348+00:00",
+      "updated_at": "2016-11-17T21:52:35.307346+00:00",
+      "timing": {
+        "pdd_ms": null,
+        "setup_ms": null,
+        "retransmits": 0,
+        "duration_ms": null
+      }
+    },
+    {
+      "call_id": "2-4461@127.0.1.1",
+      "state": "Registered",
+      "method": "REGISTER",
+      "from_user": "ua1",
+      "to_user": "ua1",
+      "msg_count": 7,
+      "duration_sec": 5.005,
+      "created_at": "2016-11-17T21:52:35.401366+00:00",
+      "updated_at": "2016-11-17T21:52:40.406369+00:00",
+      "timing": {
+        "pdd_ms": null,
+        "setup_ms": null,
+        "retransmits": 0,
+        "duration_ms": null
+      }
     }
-  }
-]
+  ],
+  "returned": 2,
+  "total_matched": 1334,
+  "truncated": true,
+  "next_cursor": "2016-11-17T21:52:35.401366+00:00|2-4461@127.0.1.1"
+}
 ```
+
+#### Why the page object, and why the cursor is compound
+
+A bare array hides its own size. This tool returned 50 of 2311 dialogs on a
+production capture with nothing in the reply to mark the cut, and `limit` alone
+could not close the gap: requests above 1000 clamp to the hard cap, leaving 1311
+dialogs no call could reach. An agent asked "how many calls failed?" counts the
+rows it holds and answers with that number, so a short list does not read as an
+incomplete answer — it reads as a confident wrong one. `total_matched` and
+`truncated` name the shortfall. `cursor` closes it.
+
+`next_cursor` pairs a timestamp with a Call-ID for the same reason
+[`tail_dialogs`](#tail_dialogs) does. Dialogs share a `created_at` routinely — a
+burst of registrations lands on one millisecond — and a bare timestamp forces a
+choice between dropping the rest of that group and serving it twice. Resuming
+after the `(created_at, Call-ID)` pair splits the group exactly where the page
+ended. **Pass the value back unmodified.** A bare RFC 3339 timestamp still
+parses, so rebuilding one by hand fails silently rather than erroring.
+
+The two tools page on different clocks, deliberately. `tail_dialogs` follows
+`updated_at`, because reporting change is its job. `list_dialogs` pages on
+`created_at`, which never moves: a dialog that gains one more message mid-sweep
+would jump forward in an `updated_at` ordering, past a cursor that had already
+gone by, and vanish from the listing.
 
 ### `get_dialog_report`
 
@@ -387,28 +448,61 @@ single text content. Unknown `call_id` returns invalid_params (-32602).
 
 ### `find_problems`
 
-Convenience wrapper over `list_dialogs` that ORs each named alias.
+Convenience wrapper over `list_dialogs` that ORs each named alias, then ANDs
+the optional `filter`.
 
 | Name | Type | Description |
 |---|---|---|
 | `kinds` | string[]? | Aliases to OR. Default `["problems"]`. |
-| `limit` | u32? | Default 50, max 1000. |
+| `filter` | string? | An alias name or a raw [DSL](filter-dsl.md) expression, **ANDed** with the alias match. |
+| `limit` | u32? | Max dialogs per page. Default 50, max 1000. |
+| `cursor` | string? | The previous response's `next_cursor`, passed back verbatim. |
 
-Unknown aliases return invalid_params (-32602) with the offending name.
+Returns the same page object as [`list_dialogs`](#list_dialogs): `dialogs`,
+`returned`, `total_matched`, `truncated` and `next_cursor`, with the same
+meanings.
+
+`filter` is what makes this the triage entry point rather than a firehose. The
+aliases answer "is this call interesting". The filter answers "is it one of
+mine", so `{"kinds": ["problems"], "filter": "dst.ip == '203.0.113.9'"}` asks a
+question that previously needed a client-side join. The two AND together —
+ORing them would widen the sweep instead of narrowing it.
+
+An unknown alias, or a filter that neither names an alias nor parses, returns
+invalid_params (-32602) naming the offending value.
 
 ```jsonc
-// find_problems {} — defaults to the 'problems' alias
-[
-  {
-    "call_id": "1-1966@10.0.2.20",
-    "state": "InCall",
-    "method": "INVITE",
-    "from_user": "sipp",
-    "to_user": "test",
-    "msg_count": 4
-  }
-]
+// find_problems { "limit": 1, "filter": "msg_count > 5" }
+{
+  "schema_version": 1,
+  "dialogs": [
+    {
+      "call_id": "73-4461@127.0.1.1",
+      "state": "Failed",
+      "method": "REGISTER",
+      "from_user": "ua1",
+      "to_user": "ua1",
+      "msg_count": 6,
+      "duration_sec": 0.005,
+      "created_at": "2016-11-17T21:52:42.501366+00:00",
+      "updated_at": "2016-11-17T21:52:42.507352+00:00",
+      "timing": {
+        "pdd_ms": null,
+        "setup_ms": null,
+        "retransmits": 0,
+        "duration_ms": null
+      }
+    }
+  ],
+  "returned": 1,
+  "total_matched": 6,
+  "truncated": true,
+  "next_cursor": "2016-11-17T21:52:42.501366+00:00|73-4461@127.0.1.1"
+}
 ```
+
+The same capture answers `find_problems {}` with `total_matched: 127`. Six of
+those 127 carry more than five messages, which is what the filter selects.
 
 ### `get_dialog`
 
@@ -499,18 +593,23 @@ Output is byte-identical to `sipnab --call-report <id> --markdown` /
 
 ### `rtp_stats`
 
-Per-stream RTP quality plus media diagnosis for the dialog.
+Per-stream RTP quality for one call, or across the whole capture.
 
 | Name | Type | Description |
 |---|---|---|
-| `call_id` | string | Required. |
+| `call_id` | string? | One dialog's streams. **Omit** to sweep every stream in the capture. |
+| `min_mos` | f64? | Sweep only: keep streams scoring at or above this. |
+| `max_mos` | f64? | Sweep only: keep streams scoring below this. |
+| `limit` | u32? | Sweep only: max streams per page. Default 50, max 1000. |
+| `cursor` | string? | Sweep only: the previous response's `next_cursor`, verbatim. |
 
-Returns `{ call_id, streams, diagnosis }` where `streams` is an array
-of stream JSON objects (codec, MOS, jitter, loss%, packets, SSRC,
-quality intervals) and `diagnosis` includes the standard one-way /
-NAT-mismatch flags plus the Phase 8.7 asymmetry signals
-(`codec_asymmetry`, `ptime_asymmetry`, `payload_type_asymmetry`,
-`duration_asymmetry`, `late_media`).
+**With `call_id`** the answer keeps its existing shape — `{ call_id, streams, diagnosis }`,
+where `streams` is an array of stream JSON objects (codec, MOS, jitter, loss%,
+packets, SSRC, quality intervals) and `diagnosis` carries the standard one-way /
+NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
+`ptime_asymmetry`, `payload_type_asymmetry`, `duration_asymmetry`,
+`late_media`). A MOS bound alongside a `call_id` returns invalid_params
+(-32602) rather than quietly doing nothing.
 
 ```jsonc
 // rtp_stats { call_id }
@@ -537,7 +636,75 @@ MOS means **unknown**, not "about 4.2", and a `mos_note` says so.
 
 For AMR-WB specifically the placeholder is wrong by roughly a full MOS point in
 either direction: its nine modes genuinely span about 4.49 down to 3.51. Do not
-report a MOS to a human without checking this field.
+report a MOS to a human without checking this field. See
+[MOS and codecs](mos-and-codecs.md) for the full picture.
+
+#### Capture-wide sweep — omit `call_id`
+
+"Every stream with a MOS below 3.5" is one call rather than a listing plus one
+`rtp_stats` per dialog, which costs thousands of round trips on a real capture.
+The sweep also reaches streams the per-call mode cannot: a stream that never
+linked to a dialog has no Call-ID to ask about, and an orphan is not an oddity —
+it is what a NAT or one-way-audio fault looks like from the media side.
+
+| Field | Type | Description |
+|---|---|---|
+| `streams` | object[] | This page, oldest `first_seen` first. |
+| `returned` | usize | Rows in `streams`. |
+| `total_matched` | usize | Streams matching across the whole store. |
+| `ungrounded_excluded` | usize | Streams a MOS bound could not judge. |
+| `truncated` | bool | `true` when matches remain after this page. |
+| `next_cursor` | string? | Pass back to continue. `null` on the final page. |
+
+**A MOS bound only judges codecs G.113 publishes a value for.** `min_mos` and
+`max_mos` skip every ungrounded stream and count it in `ungrounded_excluded`,
+because a bound on a placeholder picks calls out of a guess — and it goes
+wrong in both directions. A healthy AMR-WB stream never appears in a `max_mos`
+sweep, while a degraded one turns up on a figure that never described it.
+Reporting the skipped count keeps the difference visible: "2 streams below 3.5"
+and "2 streams below 3.5, plus 200 I cannot score" describe different captures,
+and on any network carrying AMR-WB, EVS or G.722 the second one is the truth.
+Omit both bounds and the sweep lists every stream, including the codecs with no
+published value, each still carrying `mos_grounded`.
+
+The example runs against `tests/pcap-samples/codec-negotiation.pcap`, which
+carries four streams — two PCMU, two G722 — and no dialogs at all:
+
+```jsonc
+// rtp_stats { "max_mos": 4.5, "limit": 1 }
+{
+  "schema_version": 1,
+  "streams": [
+    {
+      "codec": "PCMU",
+      "dst": "127.0.0.1:5084",
+      "first_seen": "2026-07-08T18:35:27.407583+00:00",
+      "jitter_ms": 0.4412578823750519,
+      "last_seen": "2026-07-08T18:35:30.407077+00:00",
+      "loss_pct": 0.0,
+      "mos": 4.357857257577409,
+      "mos_grounded": true,
+      "octets": 24160,
+      "orphaned": false,
+      "packets": 151,
+      "payload_type": 0,
+      "quality_intervals": [],
+      "schema_version": 1,
+      "src": "127.0.0.1:5094",
+      "ssrc": "0x0e330af3"
+    }
+  ],
+  "returned": 1,
+  "total_matched": 2,
+  "ungrounded_excluded": 2,
+  "truncated": true,
+  "next_cursor": "2026-07-08T18:35:27.407583+00:00|0x0e330af3@127.0.0.1:5094>127.0.0.1:5084"
+}
+```
+
+`total_matched: 2` and `ungrounded_excluded: 2` account for all four streams.
+The two G722 streams score 4.22 from the placeholder arm, which would have put
+them under a 4.5 bound on a number that means nothing.
 
 ### `search_messages`
 
@@ -804,18 +971,53 @@ the two ends disagree about the codec.
 
 ### `search_by_time`
 
-Takes an RFC 3339 `start`, an optional `end`, and returns dialogs whose first
-message falls in the window, oldest first.
+Returns dialogs whose first message falls in the window, oldest first.
+
+| Name | Type | Description |
+|---|---|---|
+| `start` | string | Required. Inclusive RFC 3339 instant, e.g. `"2026-07-31T14:00:00Z"`. |
+| `end` | string? | Exclusive RFC 3339 instant. Omit for "everything since `start`". An `end` at or before `start` returns invalid_params (-32602). |
+| `filter` | string? | An alias name or a raw [DSL](filter-dsl.md) expression, ANDed with the window. |
+| `limit` | u32? | Max dialogs to return. Default 50, max 1000. |
+
+**Returns** `{ dialogs, returned, total_matched, truncated }`. Each row carries
+`call_id`, `created_at`, `state` and `final_status_code`. `total_matched` counts
+every dialog in the window before `limit` applies, so a small answer from a
+quiet window reads differently from a truncated one.
+
+`filter` turns "failed calls between 14:00 and 14:05" into a single call. The
+window narrows first and the filter runs over what survives.
+
+The example runs against `tests/pcap-samples/sipp-branch-scenario.pcapng`. The
+same window without a filter answers `total_matched: 247`:
 
 ```jsonc
-// search_by_time { "start": "2026-07-31T14:00:00Z", "end": "2026-07-31T14:05:00Z" }
-{ "dialogs": [ { "call_id": "...", "created_at": "...", "state": "Failed",
-                 "final_status_code": 503 } ],
-  "total_matched": 12, "truncated": false }
+// search_by_time { "start": "2016-11-17T21:52:35Z", "end": "2016-11-17T21:53:00Z",
+//                  "filter": "problems", "limit": 2 }
+{
+  "schema_version": 1,
+  "dialogs": [
+    {
+      "call_id": "12-4461@127.0.1.1",
+      "created_at": "2016-11-17T21:52:36.401371+00:00",
+      "final_status_code": 403,
+      "state": "Failed"
+    },
+    {
+      "call_id": "48-4461@127.0.1.1",
+      "created_at": "2016-11-17T21:52:40.001366+00:00",
+      "final_status_code": 403,
+      "state": "Failed"
+    }
+  ],
+  "returned": 2,
+  "total_matched": 16,
+  "truncated": true
+}
 ```
 
-`total_matched` is the count before the limit, so you can tell a narrow window
-from a truncated answer.
+This tool takes no cursor. Narrow `start` and `end` to reach past a truncated
+answer — the window itself is the pagination.
 
 ### File tools — the shared rule
 
@@ -991,6 +1193,12 @@ rather than an empty result.
 
 These are hard-coded to keep tool-call costs predictable for chatty
 agents. Override via the per-call `limit` parameter where supported.
+
+A bound is not a loss. Every list-style tool reports `total_matched` alongside
+its page, so a caller can always see how much of the answer it holds, and
+`list_dialogs`, `find_problems`, `tail_dialogs`, `get_dialog` and the
+capture-wide `rtp_stats` sweep each carry a cursor to the rest. Raising `limit`
+past 1000 does nothing: the cap clamps it. Page instead.
 
 ## Security model
 

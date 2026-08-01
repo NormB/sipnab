@@ -247,6 +247,12 @@ The standard package on an aarch64 (arm64) host — pick the variant matching
 sudo rpm -i sipnab-0.5.70-1.aarch64.rpm
 ```
 
+The headless / no-ALSA variant on aarch64:
+
+```bash
+sudo rpm -i sipnab-0.5.70-1.aarch64-noaudio.rpm
+```
+
 ### Homebrew (macOS)
 
 ```bash

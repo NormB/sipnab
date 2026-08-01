@@ -233,7 +233,8 @@ mod tui_snapshots {
                 payload_offset: 12,
             };
             store.process_rtp(&parsed2, &rtp2, ts);
-            store.mark_orphaned(std::time::Duration::from_secs(0));
+            // Zero timeout on the capture clock: orphaned as of this packet.
+            store.mark_orphaned(ts, std::time::Duration::from_secs(0));
         }
 
         App::new(

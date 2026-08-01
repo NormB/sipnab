@@ -50,8 +50,13 @@ const KNOWN_UNTESTED: &[&str] = &[
     "telephone-event", // DTMF RTP display — needs a DTMF pcap + RTP-output check
     "on-quality-exec", // fires on an RTP quality drop — needs a degraded fixture
     "alert-exec",      // fires on a security alert — needs a scanner/fraud trigger
-    "replay",          // replays at original timing — no offline output to assert
-    "split",           // splits output by size — needs a large enough capture
+    // `replay` was here for "no offline output to assert". There is one, and it
+    // is the sharpest assertion in the suite: replaying a capture at its
+    // original timing is the only way to make an offline read take seconds
+    // instead of milliseconds, which is exactly what
+    // capture_clock_test::offline_report_is_identical_fast_and_slow needs to
+    // prove the report does not depend on read speed.
+    "split", // splits output by size — needs a large enough capture
 ];
 
 /// All long flags (and long aliases) the CLI accepts, via clap.

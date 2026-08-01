@@ -33,6 +33,140 @@ use crate::capture::parse::TransportProto;
 #[cfg(feature = "tls")]
 use crate::capture::tls;
 
+// ── Sweep clock ────────────────────────────────────────────────────
+
+/// Which clock drives the periodic sweep, and what "now" the sweep's
+/// age-based cutoffs are measured against.
+///
+/// Live capture and offline replay genuinely differ, and forcing one rule on
+/// both is what broke offline analysis:
+///
+/// * **Live** — packets arrive as they happen, so wall time *is* capture time.
+///   `Instant::elapsed` paces the sweep and `Utc::now()` is the right "now".
+/// * **Offline (`-I`)** — packet timestamps have no relationship to
+///   `Utc::now()`. A capture recorded in 2023 and read in 2026 is three years
+///   "idle" the moment it is loaded, so every sweep that fired compacted every
+///   dialog down to
+///   [`KEEP_MESSAGES_PER_IDLE_DIALOG`](crate::sip::dialog_store::KEEP_MESSAGES_PER_IDLE_DIALOG)
+///   and flagged every unassociated stream as orphaned. Worse, *how many*
+///   sweeps fired was decided by how long the read took: a debug build lost
+///   messages a release build kept, over the same bytes and the same commit.
+///   Offline the clock therefore comes from the packets themselves — the
+///   timestamp of the most recent one processed — so the answer is a function
+///   of the capture, not of the machine.
+///
+/// The capture clock is threaded through explicitly rather than kept in a
+/// global: the receive loop already sees every packet's timestamp, and a
+/// process-wide "current packet time" would be wrong the moment two captures
+/// are analysed at once (the parallel `--cores` path, the API server).
+#[derive(Debug)]
+pub(crate) enum SweepClock {
+    /// Live capture: wall time.
+    Live {
+        /// When the last sweep ran.
+        last_sweep: std::time::Instant,
+    },
+    /// Offline capture: the timeline recorded in the file.
+    Capture {
+        /// Timestamp of the most recent packet seen, or `None` before the
+        /// first packet arrives.
+        latest_packet: Option<chrono::DateTime<chrono::Utc>>,
+        /// Capture time at which the last sweep ran. Seeded from the first
+        /// packet, so the first sweep is one interval into the capture — the
+        /// same offset the live path gets from starting its timer at loop
+        /// entry.
+        last_sweep: Option<chrono::DateTime<chrono::Utc>>,
+    },
+}
+
+impl SweepClock {
+    /// A clock for a run reading `offline` (`-I`) or from a live device.
+    pub(crate) fn new(offline: bool) -> Self {
+        if offline {
+            Self::Capture {
+                latest_packet: None,
+                last_sweep: None,
+            }
+        } else {
+            Self::Live {
+                last_sweep: std::time::Instant::now(),
+            }
+        }
+    }
+
+    /// Record a packet's capture timestamp. No-op for a live run, whose clock
+    /// is the wall clock.
+    ///
+    /// The stored value never moves backwards: captures do contain
+    /// out-of-order timestamps (the replay reader skips negative deltas for
+    /// the same reason), and a single reordered packet must not rewind the
+    /// sweep schedule.
+    pub(crate) fn observe(&mut self, ts: chrono::DateTime<chrono::Utc>) {
+        if let Self::Capture { latest_packet, .. } = self
+            && latest_packet.is_none_or(|latest| ts > latest)
+        {
+            *latest_packet = Some(ts);
+        }
+    }
+
+    /// Claim a sweep if one is due, returning the "now" its age cutoffs must
+    /// be measured against.
+    ///
+    /// Claiming and marking are one operation so the two can never disagree —
+    /// a separate `is_due()` / `mark_swept()` pair invites a caller that
+    /// sweeps with one instant and records another.
+    ///
+    /// # Side effects
+    ///
+    /// Advances the recorded last-sweep time when it returns `Some`.
+    pub(crate) fn take_due(&mut self, interval: std::time::Duration) -> Option<CaptureNow> {
+        match self {
+            Self::Live { last_sweep } => {
+                if last_sweep.elapsed() < interval {
+                    return None;
+                }
+                *last_sweep = std::time::Instant::now();
+                Some(CaptureNow(chrono::Utc::now()))
+            }
+            Self::Capture {
+                latest_packet,
+                last_sweep,
+            } => {
+                // Nothing has been read yet: there is no capture time to
+                // sweep against, and nothing in the stores to sweep.
+                let now = (*latest_packet)?;
+                let Some(previous) = *last_sweep else {
+                    // First packet: start the clock, do not sweep on it.
+                    *last_sweep = Some(now);
+                    return None;
+                };
+                let elapsed = now.signed_duration_since(previous).to_std().ok()?;
+                if elapsed < interval {
+                    return None;
+                }
+                *last_sweep = Some(now);
+                Some(CaptureNow(now))
+            }
+        }
+    }
+}
+
+/// The "now" a sweep measures its age cutoffs against: wall time for a live
+/// capture, the latest packet's timestamp for an offline one.
+///
+/// A newtype rather than a bare `DateTime<Utc>` so a future caller cannot
+/// quietly substitute `Utc::now()` where the capture clock is required — the
+/// defect this whole type exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CaptureNow(chrono::DateTime<chrono::Utc>);
+
+impl CaptureNow {
+    /// The instant itself, for the store APIs that take a plain timestamp.
+    pub(crate) fn get(self) -> chrono::DateTime<chrono::Utc> {
+        self.0
+    }
+}
+
 // ── Bundled parameter structs ──────────────────────────────────────
 
 /// Security detection engines bundle.
@@ -924,7 +1058,9 @@ impl BatchRunner {
             .and_then(|f| output::group::GroupField::parse(f).ok())
             .map(output::group::GroupBuffer::new);
 
-        let mut last_sweep = std::time::Instant::now();
+        // Wall time for a live device, the capture's own timeline for `-I`.
+        // See `SweepClock` for why the two cannot share one rule.
+        let mut sweep_clock = SweepClock::new(cli.has_input());
         let sweep_interval = std::time::Duration::from_secs(5);
 
         // Shared buffered stdout sink for every per-message emitter (JSON,
@@ -953,13 +1089,14 @@ impl BatchRunner {
                 break;
             }
 
-            // Periodic sweep of reassembly state and orphan detection (every 5 seconds)
-            if last_sweep.elapsed() >= sweep_interval {
+            // Periodic sweep of reassembly state and orphan detection (every
+            // 5 seconds of capture time, which is wall time only when live).
+            if let Some(now) = sweep_clock.take_due(sweep_interval) {
                 processor.sweep();
                 stream_store
                     .write()
-                    .mark_orphaned(std::time::Duration::from_secs(30));
-                let compacted = dialog_store.write().compact_idle(chrono::Utc::now());
+                    .mark_orphaned(now.get(), std::time::Duration::from_secs(30));
+                let compacted = dialog_store.write().compact_idle(now.get());
                 if compacted.messages_evicted > 0 {
                     tracing::debug!(
                         "idle-dialog compaction: dropped {} messages from {} dialogs",
@@ -986,8 +1123,6 @@ impl BatchRunner {
                 {
                     tracing::debug!("Keylog poll error: {e}");
                 }
-
-                last_sweep = std::time::Instant::now();
             }
 
             // Use recv_timeout so we can check shutdown periodically. Flush
@@ -1001,6 +1136,13 @@ impl BatchRunner {
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             };
+
+            // Offline, this packet's timestamp is what "now" means to the next
+            // sweep. Recorded before any parse/filter step so that a capture of
+            // traffic sipnab does not decode still advances the clock — the
+            // alternative would stall compaction on exactly the captures whose
+            // memory growth it exists to bound.
+            sweep_clock.observe(packet.timestamp);
 
             // Lazily initialize the writer on first packet (we need link_type)
             if writer.is_none()
@@ -3129,5 +3271,111 @@ mod tests {
         assert!(emit_follow(true, Some(weird), &mut followed));
         assert!(emit_follow(false, Some(weird), &mut followed));
         assert!(!emit_follow(false, Some("other"), &mut followed));
+    }
+
+    // ── SweepClock ─────────────────────────────────────────────────
+
+    /// A fixed capture epoch years behind wall time, so any wall-clock
+    /// contamination of the offline path is unmissable.
+    fn cap_ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+    }
+
+    /// Five seconds, the sweep interval the receive loops use.
+    const FIVE: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Offline, the sweep is paced by the capture's timeline: no packets means
+    /// no sweep, however long the process has been running.
+    #[test]
+    fn capture_clock_does_not_sweep_without_packets() {
+        let mut clock = SweepClock::new(true);
+        assert_eq!(clock.take_due(FIVE), None);
+        // The first packet only starts the clock.
+        clock.observe(cap_ts(0));
+        assert_eq!(clock.take_due(FIVE), None);
+    }
+
+    /// Offline, a sweep is due once the CAPTURE has advanced by the interval,
+    /// and its "now" is the packet time — not `Utc::now()`.
+    #[test]
+    fn capture_clock_sweeps_on_packet_time() {
+        let mut clock = SweepClock::new(true);
+        clock.observe(cap_ts(0));
+        assert_eq!(clock.take_due(FIVE), None);
+
+        clock.observe(cap_ts(4));
+        assert_eq!(clock.take_due(FIVE), None, "4 s of capture is not 5");
+
+        clock.observe(cap_ts(5));
+        assert_eq!(
+            clock.take_due(FIVE),
+            Some(CaptureNow(cap_ts(5))),
+            "sweep must run at the packet's time, not the wall clock's"
+        );
+        // ...and not again until another interval of capture time passes.
+        assert_eq!(clock.take_due(FIVE), None);
+        clock.observe(cap_ts(9));
+        assert_eq!(clock.take_due(FIVE), None);
+        clock.observe(cap_ts(10));
+        assert_eq!(clock.take_due(FIVE), Some(CaptureNow(cap_ts(10))));
+    }
+
+    /// The whole point: how long the read takes cannot change the offline
+    /// sweep schedule. Two clocks fed the same timestamps agree even though
+    /// one of them has real time passing between the calls.
+    #[test]
+    fn capture_clock_is_independent_of_wall_time() {
+        let stamps = [0, 2, 4, 6, 8, 10, 12];
+        let sweep = |pause: std::time::Duration| {
+            let mut clock = SweepClock::new(true);
+            let mut fired = Vec::new();
+            for s in stamps {
+                clock.observe(cap_ts(s));
+                if let Some(now) = clock.take_due(FIVE) {
+                    fired.push(now.get());
+                }
+                std::thread::sleep(pause);
+            }
+            fired
+        };
+        let fast = sweep(std::time::Duration::ZERO);
+        let slow = sweep(std::time::Duration::from_millis(20));
+        assert_eq!(fast, slow, "offline sweep schedule moved with wall time");
+        assert_eq!(fast, vec![cap_ts(6), cap_ts(12)]);
+    }
+
+    /// An out-of-order packet must not rewind the capture clock: a stale
+    /// timestamp would otherwise postpone every later sweep.
+    #[test]
+    fn capture_clock_never_moves_backwards() {
+        let mut clock = SweepClock::new(true);
+        clock.observe(cap_ts(0));
+        assert_eq!(clock.take_due(FIVE), None);
+        clock.observe(cap_ts(10));
+        clock.observe(cap_ts(3)); // reordered arrival
+        assert_eq!(
+            clock.take_due(FIVE),
+            Some(CaptureNow(cap_ts(10))),
+            "a reordered packet rewound the capture clock, postponing the sweep"
+        );
+    }
+
+    /// Live capture keeps wall time, where it is correct: packet timestamps
+    /// are ignored and the sweep is due after the interval really elapses.
+    #[test]
+    fn live_clock_uses_wall_time_and_ignores_packet_time() {
+        let mut clock = SweepClock::new(false);
+        // A packet from the distant past cannot make a live sweep due.
+        clock.observe(cap_ts(0));
+        assert_eq!(clock.take_due(FIVE), None);
+        // ...and a zero interval makes one due immediately, on wall time.
+        let now = clock
+            .take_due(std::time::Duration::ZERO)
+            .expect("elapsed >= 0 always");
+        assert!(
+            chrono::Utc::now().signed_duration_since(now.get()) < chrono::TimeDelta::seconds(5),
+            "a live sweep's now must be wall time, got {:?}",
+            now.get()
+        );
     }
 }

@@ -776,10 +776,12 @@ fn unlinked_stream_marked_orphaned() {
         0,
     );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
-    store.process_rtp(&parsed, &rtp, ts(0)); // ts(0) = 1_700_000_000, far in past
+    store.process_rtp(&parsed, &rtp, ts(0));
 
-    // mark_orphaned uses Utc::now(), and our stream's first_seen is far in the past
-    store.mark_orphaned(Duration::from_secs(30));
+    // `now` is the CAPTURE clock, not `Utc::now()`: 31 s of capture time past
+    // first_seen is what makes this stream orphaned, and the fixture's age in
+    // wall-clock terms is irrelevant.
+    store.mark_orphaned(ts(31), Duration::from_secs(30));
 
     assert_eq!(
         store.orphaned_count(),
@@ -815,7 +817,7 @@ fn linked_stream_not_orphaned() {
     store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000, "linked-call");
 
     // Even with zero timeout, linked stream should not be orphaned
-    store.mark_orphaned(Duration::from_secs(0));
+    store.mark_orphaned(ts(60), Duration::from_secs(0));
     assert_eq!(
         store.orphaned_count(),
         0,

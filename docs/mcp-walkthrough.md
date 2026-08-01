@@ -1034,16 +1034,27 @@ Start from the whole capture — you may not know which Call-ID to ask about:
 ```
 
 ```json
-[
-  {
-    "call_id": "YzAwMDllYjUyNmVlZWFhZjE0NDViMWRkNDUyNzJmZDU.",
-    "state": "Failed",
-    "method": "REGISTER",
-    "from_user": "telephone1",
-    "msg_count": 4
-  }
-]
+{
+  "dialogs": [
+    {
+      "call_id": "YzAwMDllYjUyNmVlZWFhZjE0NDViMWRkNDUyNzJmZDU.",
+      "state": "Failed",
+      "method": "REGISTER",
+      "from_user": "telephone1",
+      "msg_count": 4
+    }
+  ],
+  "returned": 1,
+  "total_matched": 1,
+  "truncated": false,
+  "next_cursor": null
+}
 ```
+
+`total_matched` against `returned` is the field to read first. They differ
+whenever the capture holds more problems than one page, and `truncated` says so
+outright — a bare list of 50 rows used to be indistinguishable from a capture
+that had exactly 50 problems.
 
 Then ask the registration-specific tool, which knows the shape of a healthy
 REGISTER exchange:

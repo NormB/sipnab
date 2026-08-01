@@ -906,6 +906,46 @@ fn docs_current_version_markers_match_cargo() {
             include_str!("../docs/install.md"),
             r"sipnab-(\d+\.\d+\.\d+)-1\.(?:x86_64|aarch64)(?:-noaudio)?\.rpm",
         ),
+        // The alternation above gates the version of whatever `rpm -i` recipes
+        // the page HAPPENS to carry. It says nothing about one that is missing,
+        // and one was: a release publishes four rpms, while install.md
+        // documented three commands -- x86_64, x86_64-noaudio, aarch64. The
+        // published `sipnab-<version>-1.aarch64-noaudio.rpm` had no line naming
+        // it anywhere on the page, so an arm64 headless reader had to guess the
+        // filename off the packaging table. Same section and same copy-paste as
+        // the drift the comment above records, one step further along: there the
+        // gate could not see two thirds of the recipes, here it could not see
+        // that a quarter of the packages had no recipe at all.
+        //
+        // Each entry below pins one exact variant, so the loop's "expected at
+        // least one" assertion fires the moment a recipe disappears -- and each
+        // still tracks published_version like every other download marker. Add
+        // one whenever the release workflow grows a package flavour, and add the
+        // `rpm -i` line it gates.
+        //
+        // Only docs/install.md is listed: website/content/docs/install.md is
+        // generated from it, and site_pages_mirror_is_current compares the two
+        // byte-for-byte, so the mirror cannot carry a different set of recipes.
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.x86_64\.rpm",
+        ),
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.x86_64-noaudio\.rpm",
+        ),
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.aarch64\.rpm",
+        ),
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.aarch64-noaudio\.rpm",
+        ),
         (
             "website/content/docs/install.md",
             include_str!("../website/content/docs/install.md"),
@@ -2072,8 +2112,8 @@ fn no_documentation_table_repeats_a_row() {
     // the duplicates it exists to find simply stop being looked for.
     assert_eq!(
         files.len(),
-        112,
-        "found {} tracked markdown files, expected 112. More is fine — bump \
+        113,
+        "found {} tracked markdown files, expected 113. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2121,8 +2161,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 393,
-        "walked {tables} tables, expected 393. More is fine — bump this. FEWER \
+        tables, 402,
+        "walked {tables} tables, expected 402. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

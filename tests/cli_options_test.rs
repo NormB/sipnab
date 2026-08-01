@@ -11,6 +11,12 @@ use std::path::PathBuf;
 #[path = "support/run.rs"]
 mod run_support;
 
+// Builds the pcapng-with-Decryption-Secrets-Block fixtures the
+// `--strip-secrets` tests at the end of this file need; no checked-in sample
+// carries a DSB.
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /// Absolute path to `tests/fixtures/sip_call.pcap` (7-message complete call:
@@ -1191,4 +1197,173 @@ fn summary_reports_correct_counts() {
     let combined = format!("{stdout}{stderr}");
     assert!(combined.contains("7 packets captured"), "got: {combined}");
     assert!(combined.contains("7 SIP messages"), "got: {combined}");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  --strip-secrets INPUT RESOLUTION
+// ═══════════════════════════════════════════════════════════════════════
+//
+// `--strip-secrets` is a privacy control: it exists so an operator can hand a
+// capture to a vendor without handing over the TLS keys embedded in it. It
+// used to act on `cli.primary_input()` — the FIRST `-I` *argument* — while `-I`
+// is repeatable and expands directories and globs. Every file past the first
+// kept its Decryption Secrets Block, the command exited 0, and nothing said so.
+// A partial sanitisation that reports success is worse than a refusal, so these
+// tests pin both halves: one resolved file gets stripped, anything else is
+// rejected loudly with the input untouched.
+
+/// pcapng block type of a Decryption Secrets Block.
+const DSB_BLOCK_TYPE: u32 = 0x0000_000a;
+
+/// Write a one-packet pcapng carrying a TLS key-log Decryption Secrets Block.
+///
+/// No checked-in sample carries a DSB, so the fixtures are built here — the
+/// same approach `strip_secrets_removes_the_dsb_and_preserves_the_input` in
+/// `cli_flag_behavior_test.rs` takes.
+///
+/// # Arguments
+/// * `path` — file to write.
+/// * `call_id` — Call-ID of the single SIP message, so fixtures stay distinct.
+///
+/// # Side effects
+/// Writes `path`.
+fn write_pcapng_with_secrets(path: &std::path::Path, call_id: &str) {
+    let payload = format!(
+        "OPTIONS sip:a@b SIP/2.0\r\nCall-ID: {call_id}\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n"
+    );
+    let frame = pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 5060, 5060, payload.as_bytes());
+    pcap_build::write_pcapng_with_dsb(path, "CLIENT_RANDOM 0011 22334455\n", &frame);
+    assert_eq!(
+        pcap_build::count_pcapng_blocks(path, DSB_BLOCK_TYPE),
+        1,
+        "fixture must start with exactly one DSB"
+    );
+}
+
+/// Two `-I` arguments must be refused outright: one output path cannot hold two
+/// sanitised captures, and stripping only the first ships the operator's live
+/// keys to whoever receives the rest.
+#[test]
+fn strip_secrets_refuses_two_input_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.pcapng");
+    let second = dir.path().join("second.pcapng");
+    write_pcapng_with_secrets(&first, "strip-multi-1");
+    write_pcapng_with_secrets(&second, "strip-multi-2");
+    let out = dir.path().join("stripped.pcapng");
+
+    let (_stdout, stderr, code) = run_with_log(
+        &[
+            "-N",
+            "-I",
+            first.to_str().unwrap(),
+            "-I",
+            second.to_str().unwrap(),
+            "--strip-secrets",
+            out.to_str().unwrap(),
+            "--no-cli-print",
+        ],
+        "error",
+    );
+
+    assert_ne!(
+        code, 0,
+        "--strip-secrets must refuse a two-file input set instead of sanitising \
+         one of them and reporting success:\n{stderr}"
+    );
+    assert!(
+        !out.exists(),
+        "a refused --strip-secrets must leave no output file behind"
+    );
+    for input in [&first, &second] {
+        assert_eq!(
+            pcap_build::count_pcapng_blocks(input, DSB_BLOCK_TYPE),
+            1,
+            "--strip-secrets must never modify its input ({})",
+            input.display()
+        );
+    }
+    assert!(
+        stderr.contains("first.pcapng") && stderr.contains("second.pcapng"),
+        "the refusal must name every file the operator pointed at, so nobody \
+         assumes the unnamed ones were handled:\n{stderr}"
+    );
+}
+
+/// A single `-I` naming a directory that holds several captures must be
+/// refused the same way. This is the sneakier shape: the operator typed one
+/// `-I`, so nothing on the command line hints that more than one file is in
+/// play.
+#[test]
+fn strip_secrets_refuses_a_directory_of_captures() {
+    let dir = tempfile::tempdir().unwrap();
+    write_pcapng_with_secrets(&dir.path().join("ring-0.pcapng"), "strip-dir-0");
+    write_pcapng_with_secrets(&dir.path().join("ring-1.pcapng"), "strip-dir-1");
+    let out_dir = tempfile::tempdir().unwrap();
+    let out = out_dir.path().join("stripped.pcapng");
+
+    let (_stdout, stderr, code) = run_with_log(
+        &[
+            "-N",
+            "-I",
+            dir.path().to_str().unwrap(),
+            "--strip-secrets",
+            out.to_str().unwrap(),
+            "--no-cli-print",
+        ],
+        "error",
+    );
+
+    assert_ne!(
+        code, 0,
+        "a directory of captures must be refused:\n{stderr}"
+    );
+    assert!(
+        !out.exists(),
+        "a refused --strip-secrets must leave no output file behind"
+    );
+    assert!(
+        stderr.contains("ring-0.pcapng") && stderr.contains("ring-1.pcapng"),
+        "the refusal must name the resolved files, not just the directory — \
+         otherwise the operator cannot tell what went unsanitised:\n{stderr}"
+    );
+}
+
+/// `-I <directory>` holding exactly one capture must work: the resolved file
+/// is what gets stripped, not the `-I` argument as typed. Handing a directory
+/// path straight to the pcapng writer fails with an unhelpful I/O error.
+#[test]
+fn strip_secrets_accepts_a_directory_holding_one_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("only.pcapng");
+    write_pcapng_with_secrets(&input, "strip-dir-single");
+    let out_dir = tempfile::tempdir().unwrap();
+    let out = out_dir.path().join("stripped.pcapng");
+
+    let (_stdout, stderr, code) = run_with_log(
+        &[
+            "-N",
+            "-I",
+            dir.path().to_str().unwrap(),
+            "--strip-secrets",
+            out.to_str().unwrap(),
+            "--no-cli-print",
+        ],
+        "error",
+    );
+
+    assert_eq!(
+        code, 0,
+        "a directory naming exactly one capture must be stripped:\n{stderr}"
+    );
+    assert_eq!(
+        pcap_build::count_pcapng_blocks(&out, DSB_BLOCK_TYPE),
+        0,
+        "the stripped copy must contain no Decryption Secrets Block"
+    );
+    assert_eq!(
+        pcap_build::count_pcapng_blocks(&input, DSB_BLOCK_TYPE),
+        1,
+        "--strip-secrets must never modify its input"
+    );
 }

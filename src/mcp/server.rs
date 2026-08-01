@@ -192,6 +192,10 @@ pub struct ListDialogsParams {
     pub filter: Option<String>,
     /// Maximum dialogs to return (1..=1000, default 50).
     pub limit: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339>|<Call-ID>`) to continue after that page. Omit on the
+    /// first call.
+    pub cursor: Option<String>,
 }
 
 /// Parameters for `get_dialog_report`.
@@ -211,8 +215,15 @@ pub struct GetDialogReportParams {
 pub struct FindProblemsParams {
     /// Diagnostic alias names to OR together. Defaults to ["problems"].
     pub kinds: Option<Vec<String>>,
+    /// Extra filter ANDed with the alias match — a named alias or a raw DSL
+    /// expression. Narrows "anything problematic" to "problems on this
+    /// trunk".
+    pub filter: Option<String>,
     /// Maximum dialogs to return (1..=1000, default 50).
     pub limit: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339>|<Call-ID>`). Omit on the first call.
+    pub cursor: Option<String>,
 }
 
 // ── Dialog-inspection parameter structs ─────────────────────────────
@@ -250,11 +261,28 @@ pub struct RenderLadderParams {
 }
 
 /// Parameters for `rtp_stats`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct RtpStatsParams {
-    /// Call-ID identifying the dialog.
-    pub call_id: String,
+    /// Call-ID identifying the dialog. Omit to sweep every stream in the
+    /// capture, including the orphans no Call-ID can name.
+    pub call_id: Option<String>,
+    /// Capture-wide sweep only: keep streams whose MOS is at or above this.
+    /// Applies to grounded streams only — see `max_mos`.
+    pub min_mos: Option<f64>,
+    /// Capture-wide sweep only: keep streams whose MOS is strictly below this.
+    ///
+    /// Either bound restricts the sweep to codecs with a published ITU-T G.113
+    /// impairment value. Everything else scores from a placeholder that is
+    /// byte-identical to an unidentified stream's, and `ungrounded_excluded`
+    /// reports how many streams the bound therefore could not judge.
+    pub max_mos: Option<f64>,
+    /// Capture-wide sweep only: maximum streams to return (1..=1000,
+    /// default 50).
+    pub limit: Option<u32>,
+    /// Capture-wide sweep only: pass back the previous response's
+    /// `next_cursor` verbatim. Omit on the first call.
+    pub cursor: Option<String>,
 }
 
 /// Parameters for `search_messages`.
@@ -267,11 +295,6 @@ pub struct SearchMessagesParams {
     /// Maximum hits to return (default 50, max 1000).
     pub limit: Option<u32>,
 }
-
-/// Separator between the timestamp and Call-ID halves of a compound
-/// `tail_dialogs` cursor. `|` appears in neither an RFC 3339 timestamp
-/// nor a valid Call-ID (RFC 3261 `word`), so the split is unambiguous.
-const TAIL_CURSOR_SEP: char = '|';
 
 /// Zero-allocation ASCII-case-insensitive substring test used by
 /// `search_messages`: is `needle` (already ASCII-lowercased by the caller)
@@ -405,7 +428,11 @@ pub struct SearchByTimeParams {
     pub start: String,
     /// Exclusive RFC 3339 end. Omit for "everything since `start`".
     pub end: Option<String>,
-    /// Maximum dialogs to return.
+    /// Extra filter ANDed with the window — a named alias (e.g. "problems")
+    /// or a raw DSL expression, so "failed calls between 14:00 and 14:05" is
+    /// one call rather than two.
+    pub filter: Option<String>,
+    /// Maximum dialogs to return (1..=1000, default 50).
     pub limit: Option<u32>,
 }
 
@@ -505,7 +532,350 @@ pub struct FindingJson {
 /// `msg_count`, Debug-formatted methods).
 pub use crate::output::model::DialogSummary;
 
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// A bounded page of dialogs that says how much of the answer it is.
+///
+/// `list_dialogs` and `find_problems` returned a bare JSON array. On a
+/// production capture holding 2311 dialogs the default page was 50 of them,
+/// with nothing in the response to say so and no cursor to reach the rest —
+/// even `limit: 100000` clamps to the hard cap of 1000 and leaves 1311
+/// unreachable.
+///
+/// The consumer here is a language model. An agent asked "how many calls
+/// failed?" counts the rows it was handed and answers with confidence, so a
+/// silently short list is not a missing feature but a wrong answer delivered
+/// convincingly. Every field below exists to make that impossible: the count
+/// it did not send, the flag saying it did not, and the cursor that reaches
+/// the remainder.
+pub struct DialogPage {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// This page of dialog summaries, oldest first (ties broken by Call-ID).
+    pub dialogs: Vec<DialogSummary>,
+    /// Rows in `dialogs`, so counting the array is never necessary.
+    pub returned: usize,
+    /// Dialogs matching the query across the WHOLE store, independent of
+    /// `limit` and `cursor`. This is the number that answers "how many".
+    pub total_matched: usize,
+    /// True when matches remain after this page. Pass `next_cursor` back to
+    /// continue.
+    pub truncated: bool,
+    /// Opaque cursor (`<RFC 3339 created_at>|<Call-ID>` of the last row) to
+    /// pass to the next call. Null on the final page.
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// A bounded page of RTP streams from a capture-wide `rtp_stats` sweep.
+pub struct StreamPage {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// This page of stream objects, oldest `first_seen` first.
+    pub streams: Vec<serde_json::Value>,
+    /// Rows in `streams`.
+    pub returned: usize,
+    /// Streams matching the query across the whole store, independent of
+    /// `limit` and `cursor`.
+    pub total_matched: usize,
+    /// Streams a MOS bound could not judge, because no published ITU-T G.113
+    /// impairment value exists for their codec.
+    ///
+    /// Reported rather than folded into the answer. "2 streams below 3.5" and
+    /// "2 streams below 3.5, plus 200 I cannot score" describe different
+    /// captures, and the second one is the truth on any network carrying
+    /// AMR-WB, EVS or G.722. Zero whenever no MOS bound was given.
+    pub ungrounded_excluded: usize,
+    /// True when matches remain after this page.
+    pub truncated: bool,
+    /// Opaque cursor to pass to the next call. Null on the final page.
+    pub next_cursor: Option<String>,
+}
+
+/// Render one RTP stream as the MCP JSON object, MOS grounding included.
+///
+/// Shared by the per-call and capture-wide `rtp_stats` modes so the two cannot
+/// describe the same stream differently.
+fn stream_json(s: &crate::rtp::stream::RtpStream) -> serde_json::Value {
+    let line = crate::output::json::stream_to_json(s);
+    let mut v: serde_json::Value = serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
+    // Say whether the MOS is a real estimate or a placeholder.
+    //
+    // An agent reading `mos: 4.2` cannot otherwise tell a grounded G.711 score
+    // from the identical number sipnab returns for AMR-WB, EVS or an
+    // unidentified stream — they are byte-identical today. Reporting a guess as
+    // a measurement to something that will then reason about it is how a
+    // confident wrong answer reaches an operator.
+    if let Some(obj) = v.as_object_mut() {
+        // The MOS itself, because the NDJSON stream shape this builds on does
+        // not carry one — that is the CLI's per-stream line, where MOS lives on
+        // the dialog instead. Without this the grounding flag below described a
+        // number absent from the payload, which is worse than saying nothing:
+        // it implies a MOS is there.
+        if let Some(n) = serde_json::Number::from_f64(stream_mos(s)) {
+            obj.insert("mos".into(), serde_json::Value::Number(n));
+        }
+        let grounded = mos_is_grounded(s);
+        obj.insert("mos_grounded".into(), serde_json::Value::Bool(grounded));
+        if !grounded {
+            obj.insert(
+                "mos_note".into(),
+                serde_json::Value::String(
+                    "No published ITU-T G.113 impairment value for this codec. \
+                     The MOS is a placeholder meaning 'unknown', not an estimate."
+                        .into(),
+                ),
+            );
+        }
+    }
+    v
+}
+
+/// The MOS `rtp_stats` reports for a stream, on the narrowband G.107 scale.
+fn stream_mos(s: &crate::rtp::stream::RtpStream) -> f64 {
+    let total = s.packet_count + s.lost_packets;
+    let loss_pct = if total > 0 {
+        (s.lost_packets as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
+    crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref())
+}
+
+/// Whether ITU-T G.113 publishes an impairment value for this stream's codec.
+fn mos_is_grounded(s: &crate::rtp::stream::RtpStream) -> bool {
+    matches!(
+        crate::rtp::quality::mos_grounding(s.codec.as_deref()),
+        crate::rtp::quality::MosGrounding::Published
+    )
+}
+
+/// The tie-break half of a stream cursor: `0xSSRC@src>dst`.
+///
+/// Unique per stream (the store keys on exactly these three values) and free
+/// of the cursor separator, so `<first_seen>|<identity>` splits unambiguously.
+fn stream_identity(s: &crate::rtp::stream::RtpStream) -> String {
+    format!("0x{:08x}@{}>{}", s.key.ssrc, s.key.src, s.key.dst)
+}
+
 // ── Tool implementations ────────────────────────────────────────────
+
+impl SipnabMcp {
+    /// Compile a caller-supplied filter: a named alias or a raw DSL expression.
+    ///
+    /// Done outside every lock, so a pathological expression cannot hold the
+    /// stores while it parses.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) naming the offending expression when it is
+    /// neither a known alias nor parseable.
+    fn compile_filter(filter: Option<&str>) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
+        let Some(f) = filter else { return Ok(None) };
+        let expr_str = expand_alias(f).unwrap_or(f);
+        FilterExpr::parse(expr_str).map(Some).map_err(|e| {
+            rmcp::ErrorData::invalid_params(format!("invalid filter '{f}': {e}"), None)
+        })
+    }
+
+    /// Build one bounded page of dialogs from a predicate over the store.
+    ///
+    /// The single implementation behind `list_dialogs` and `find_problems`,
+    /// because the two differ only in which dialogs they select and the
+    /// counting is the part that has to be right.
+    ///
+    /// Order is `(created_at, Call-ID)`. Creation time is used rather than the
+    /// `updated_at` that `tail_dialogs` pages on, and the difference matters:
+    /// `tail_dialogs` exists to report change, so it must follow records as
+    /// they move, while a full listing must not. A dialog that receives one
+    /// more message mid-pagination would jump forward in an `updated_at`
+    /// ordering, past a cursor that already went by — silently dropping it from
+    /// the sweep. `created_at` never changes, so a page boundary stays where it
+    /// was put.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `cursor`'s timestamp half is not RFC 3339.
+    fn dialog_page(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+        select: impl Fn(&crate::sip::dialog::SipDialog, &[&crate::rtp::stream::RtpStream]) -> bool,
+    ) -> Result<DialogPage, rmcp::ErrorData> {
+        let cursor = match cursor {
+            Some(raw) => Some(
+                super::shape::parse_cursor(raw)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+            ),
+            None => None,
+        };
+
+        let ds = self.dialog_store.read();
+        let ss = self.stream_store.read();
+
+        // Group streams by Call-ID once. `streams_for` scans the whole stream
+        // store per dialog, which was affordable while these tools stopped at
+        // the first `limit` matches and is quadratic now that they must visit
+        // every dialog to count one.
+        let mut by_call: std::collections::HashMap<&str, Vec<&crate::rtp::stream::RtpStream>> =
+            std::collections::HashMap::new();
+        for s in ss.iter() {
+            if let Some(id) = s.associated_dialog.as_deref() {
+                by_call.entry(id).or_default().push(s);
+            }
+        }
+
+        // Every match, not the first `limit` of them: `total_matched` is the
+        // whole point and cannot be known from a truncated scan.
+        const NO_STREAMS: &[&crate::rtp::stream::RtpStream] = &[];
+        let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
+            .iter()
+            .filter(|d| {
+                let streams = by_call
+                    .get(d.call_id.as_str())
+                    .map_or(NO_STREAMS, Vec::as_slice);
+                select(d, streams)
+            })
+            .collect();
+        let total_matched = matched.len();
+
+        matched.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.call_id.cmp(&b.call_id))
+        });
+        // Sort BEFORE the cursor filter and the truncation. Store order is
+        // insertion order, so cutting first would let `next_cursor` skip past
+        // dialogs that were never returned.
+        let remaining: Vec<&crate::sip::dialog::SipDialog> = match &cursor {
+            None => matched,
+            Some(c) => matched
+                .into_iter()
+                .filter(|d| c.precedes(d.created_at, &d.call_id))
+                .collect(),
+        };
+
+        let truncated = remaining.len() > limit;
+        let page = &remaining[..remaining.len().min(limit)];
+        let next_cursor = truncated
+            .then(|| page.last())
+            .flatten()
+            .map(|d| super::shape::format_cursor(d.created_at, &d.call_id));
+        let dialogs: Vec<DialogSummary> = page.iter().map(|d| DialogSummary::from(*d)).collect();
+        drop(ss);
+        drop(ds);
+
+        Ok(DialogPage {
+            schema_version: 1,
+            returned: dialogs.len(),
+            dialogs,
+            total_matched,
+            truncated,
+            next_cursor,
+        })
+    }
+
+    /// Sweep every RTP stream in the capture, optionally bounded by MOS.
+    ///
+    /// The mode exists because `rtp_stats { call_id }` cannot answer "which
+    /// streams sound bad". Asking it per call costs one round trip per dialog —
+    /// thousands on a real capture — and it never reaches an orphaned stream at
+    /// all, since there is no Call-ID to name one with. Orphans are not an edge
+    /// case: a stream with no dialog is what a NAT or one-way-audio fault looks
+    /// like from the media side.
+    ///
+    /// # A MOS bound only judges what G.113 publishes
+    ///
+    /// `estimate_mos` returns 4.216 at 10 ms jitter for AMR, AMR-WB, EVS and
+    /// G.722 — the same number it returns for a stream whose codec was never
+    /// identified. Selecting on that is selecting on a placeholder, and it is
+    /// wrong in both directions: a healthy AMR-WB stream is invisible to a
+    /// `max_mos` sweep, and a degraded one gets picked out on a figure that
+    /// never described it.
+    ///
+    /// So a bound restricts the sweep to codecs with a published impairment
+    /// value and reports `ungrounded_excluded`. Filtering silently would let an
+    /// agent report a clean capture on the strength of streams it could not
+    /// score; the count turns that into a question the agent can ask.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `cursor`'s timestamp half is not RFC 3339.
+    fn rtp_stats_capture_wide(
+        &self,
+        params: &RtpStatsParams,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let limit = resolve_limit(params.limit);
+        let cursor = match params.cursor.as_deref() {
+            Some(raw) => Some(
+                super::shape::parse_cursor(raw)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+            ),
+            None => None,
+        };
+        let bounded = params.min_mos.is_some() || params.max_mos.is_some();
+
+        let page = {
+            let ss = self.stream_store.read();
+
+            let mut ungrounded_excluded = 0usize;
+            let mut matched: Vec<&crate::rtp::stream::RtpStream> = Vec::new();
+            for s in ss.iter() {
+                if !bounded {
+                    matched.push(s);
+                    continue;
+                }
+                if !mos_is_grounded(s) {
+                    ungrounded_excluded += 1;
+                    continue;
+                }
+                let mos = stream_mos(s);
+                if params.min_mos.is_some_and(|lo| mos < lo)
+                    || params.max_mos.is_some_and(|hi| mos >= hi)
+                {
+                    continue;
+                }
+                matched.push(s);
+            }
+            let total_matched = matched.len();
+
+            matched.sort_by(|a, b| {
+                a.first_seen
+                    .cmp(&b.first_seen)
+                    .then_with(|| stream_identity(a).cmp(&stream_identity(b)))
+            });
+            let remaining: Vec<&crate::rtp::stream::RtpStream> = match &cursor {
+                None => matched,
+                Some(c) => matched
+                    .into_iter()
+                    .filter(|s| c.precedes(s.first_seen, &stream_identity(s)))
+                    .collect(),
+            };
+
+            let truncated = remaining.len() > limit;
+            let rows = &remaining[..remaining.len().min(limit)];
+            let next_cursor = truncated
+                .then(|| rows.last())
+                .flatten()
+                .map(|s| super::shape::format_cursor(s.first_seen, &stream_identity(s)));
+            let streams: Vec<serde_json::Value> = rows.iter().map(|s| stream_json(s)).collect();
+            drop(ss);
+
+            StreamPage {
+                schema_version: 1,
+                returned: streams.len(),
+                streams,
+                total_matched,
+                ungrounded_excluded,
+                truncated,
+                next_cursor,
+            }
+        };
+
+        Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
+    }
+}
 
 #[tool_router(router = tool_router)]
 impl SipnabMcp {
@@ -516,67 +886,34 @@ impl SipnabMcp {
     ///
     /// # Returns
     ///
-    /// A JSON array of `DialogSummary` rows (empty when nothing matches).
+    /// A `DialogPage`: this page of `DialogSummary` rows, the `total_matched`
+    /// across the whole store, a `truncated` flag, and a `next_cursor` (null on
+    /// the final page).
     ///
     /// # Errors
     ///
     /// `invalid_params` (-32602) when `filter` is neither a known alias nor a
-    /// parseable DSL expression.
+    /// parseable DSL expression, or when `cursor`'s timestamp half is not
+    /// RFC 3339.
     #[tool(
         name = "list_dialogs",
-        description = "Returns dialog summaries from the live capture store. \
-                       Filter accepts a diagnostic alias name or a raw DSL expression. \
-                       Output is paginated and capped at 1000 entries per call."
+        description = "Returns a page of dialog summaries from the live capture \
+                       store. Filter accepts a diagnostic alias name or a raw DSL \
+                       expression. The response carries total_matched, a truncated \
+                       flag, and next_cursor for the remaining dialogs."
     )]
     pub async fn list_dialogs(
         &self,
         Parameters(params): Parameters<ListDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit(params.limit);
-
-        // Compile the filter outside the lock so we don't hold it during
-        // potentially-expensive DSL parsing.
-        let compiled_filter = if let Some(ref f) = params.filter {
-            let expr_str = expand_alias(f).unwrap_or(f);
-            match FilterExpr::parse(expr_str) {
-                Ok(expr) => Some(expr),
-                Err(e) => {
-                    return Err(rmcp::ErrorData::invalid_params(
-                        format!("invalid filter '{f}': {e}"),
-                        None,
-                    ));
-                }
-            }
-        } else {
-            None
-        };
-
-        // Snapshot under the read lock, then drop before serializing.
-        let summaries: Vec<DialogSummary> = {
-            let ds = self.dialog_store.read();
-            let ss = self.stream_store.read();
-            let mut out = Vec::with_capacity(limit.min(HARD_LIMIT));
-            for d in ds.iter() {
-                if let Some(ref expr) = compiled_filter {
-                    let streams: Vec<&crate::rtp::stream::RtpStream> =
-                        ss.streams_for(&d.call_id).collect();
-                    if !expr.matches_dialog(d, &streams) {
-                        continue;
-                    }
-                }
-                out.push(DialogSummary::from(d));
-                if out.len() >= limit {
-                    break;
-                }
-            }
-            drop(ss);
-            drop(ds);
-            out
-        };
-
-        Ok(CallToolResult::success(vec![ContentBlock::json(
-            summaries,
-        )?]))
+        let filter = Self::compile_filter(params.filter.as_deref())?;
+        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams| {
+            filter
+                .as_ref()
+                .is_none_or(|expr| expr.matches_dialog(d, streams))
+        })?;
+        Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
     /// Returns a structured per-call report (timing, parties, RTP quality,
@@ -656,24 +993,28 @@ impl SipnabMcp {
     }
 
     /// Convenience wrapper over `list_dialogs` — runs each named alias from
-    /// `kinds` (default `["problems"]`) and ORs the matches together. Useful
-    /// when you want "anything that looks problematic" in one call.
+    /// `kinds` (default `["problems"]`) and ORs the matches together, then ANDs
+    /// the optional `filter`. Useful when you want "anything that looks
+    /// problematic" in one call, or that narrowed to one trunk.
     ///
     /// # Returns
     ///
-    /// A JSON array of `DialogSummary` rows matching any alias (empty when
-    /// nothing matches).
+    /// A `DialogPage` of `DialogSummary` rows matching any alias and the
+    /// filter, with `total_matched`, `truncated` and `next_cursor`.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) for an unknown alias name or an alias whose
-    /// expansion fails to parse.
+    /// `invalid_params` (-32602) for an unknown alias name, an alias whose
+    /// expansion fails to parse, an unparseable `filter`, or a `cursor` whose
+    /// timestamp half is not RFC 3339.
     #[tool(
         name = "find_problems",
-        description = "Returns dialogs that match any of the named diagnostic \
-                       aliases (problems, slow-setup, short-calls, one-way, \
-                       nat-issues, codec-asym, ptime-asym, payload-asym, \
-                       duration-asym, late-media). Defaults to ['problems']."
+        description = "Returns a page of dialogs matching any of the named \
+                       diagnostic aliases (problems, slow-setup, short-calls, \
+                       one-way, nat-issues, codec-asym, ptime-asym, \
+                       payload-asym, duration-asym, late-media), optionally \
+                       narrowed by a DSL filter. Defaults to ['problems']. The \
+                       response carries total_matched, truncated and next_cursor."
     )]
     pub async fn find_problems(
         &self,
@@ -698,29 +1039,18 @@ impl SipnabMcp {
                 }
             }
         }
+        let extra = Self::compile_filter(params.filter.as_deref())?;
 
-        let summaries: Vec<DialogSummary> = {
-            let ds = self.dialog_store.read();
-            let ss = self.stream_store.read();
-            let mut out = Vec::with_capacity(limit.min(HARD_LIMIT));
-            for d in ds.iter() {
-                let streams: Vec<&crate::rtp::stream::RtpStream> =
-                    ss.streams_for(&d.call_id).collect();
-                if compiled.iter().any(|expr| expr.matches_dialog(d, &streams)) {
-                    out.push(DialogSummary::from(d));
-                    if out.len() >= limit {
-                        break;
-                    }
-                }
-            }
-            drop(ss);
-            drop(ds);
-            out
-        };
-
-        Ok(CallToolResult::success(vec![ContentBlock::json(
-            summaries,
-        )?]))
+        // ANY alias AND the filter. The aliases answer "is this call
+        // interesting", the filter answers "is it the one I am looking at" —
+        // ORing them instead would widen the triage sweep rather than narrow it.
+        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams| {
+            compiled.iter().any(|expr| expr.matches_dialog(d, streams))
+                && extra
+                    .as_ref()
+                    .is_none_or(|expr| expr.matches_dialog(d, streams))
+        })?;
+        Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
     // ── Dialog-inspection and monitoring tools ──────────────────────
@@ -882,89 +1212,59 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::text(report)]))
     }
 
-    /// Returns RTP quality stats for all streams associated with the dialog.
+    /// Returns RTP quality stats: for one dialog, or across the whole capture.
     ///
     /// # Returns
     ///
-    /// A JSON object with the `call_id`, a `streams` array (empty when the
-    /// dialog has no media), and the media `diagnosis`.
+    /// With `call_id`, a JSON object carrying the `call_id`, a `streams` array
+    /// (empty when the dialog has no media), and the media `diagnosis`.
+    ///
+    /// Without `call_id`, a `StreamPage` sweeping every stream in the store —
+    /// including the orphans no Call-ID can name — with `total_matched`,
+    /// `ungrounded_excluded`, `truncated` and `next_cursor`.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `call_id` is not found.
+    /// `invalid_params` (-32602) when `call_id` is not found, when a MOS bound
+    /// accompanies a `call_id`, or when `cursor`'s timestamp half is not
+    /// RFC 3339.
     #[tool(
         name = "rtp_stats",
-        description = "Returns per-stream RTP quality (codec, MOS, jitter, \
-                       loss%, packet count, SSRC) plus media diagnosis for \
-                       every stream associated with the given Call-ID."
+        description = "Returns per-stream RTP quality (codec, MOS, mos_grounded, \
+                       jitter, loss%, packet count, SSRC). With call_id: every \
+                       stream of that dialog plus its media diagnosis. Without \
+                       call_id: a paged sweep of every stream in the capture, \
+                       optionally bounded by min_mos / max_mos, which apply only \
+                       to codecs with a published ITU-T G.113 impairment value."
     )]
     pub async fn rtp_stats(
         &self,
         Parameters(params): Parameters<RtpStatsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let Some(call_id) = params.call_id.as_deref() else {
+            return self.rtp_stats_capture_wide(&params);
+        };
+        // A MOS bound alongside a Call-ID is a misunderstanding of the tool,
+        // and silently dropping it would answer a question nobody asked.
+        if params.min_mos.is_some() || params.max_mos.is_some() {
+            return Err(rmcp::ErrorData::invalid_params(
+                "min_mos and max_mos sweep the whole capture; omit call_id to \
+                 use them, or drop them to report on one call"
+                    .to_string(),
+                None,
+            ));
+        }
+
         let payload: serde_json::Value = {
             let ds = self.dialog_store.read();
-            let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
-                    format!("call_id '{}' not found", params.call_id),
-                    None,
-                )
+            let dialog = ds.get(call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(format!("call_id '{call_id}' not found"), None)
             })?;
             let ss = self.stream_store.read();
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-                ss.streams_for(&params.call_id).collect();
-            let stream_jsons: Vec<serde_json::Value> = dialog_streams
-                .iter()
-                .map(|s| {
-                    let line = crate::output::json::stream_to_json(s);
-                    let mut v: serde_json::Value =
-                        serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
-                    // Say whether the MOS is a real estimate or a placeholder.
-                    //
-                    // An agent reading `mos: 4.2` cannot otherwise tell a
-                    // grounded G.711 score from the identical number sipnab
-                    // returns for AMR-WB, EVS or an unidentified stream — they
-                    // are byte-identical today. Reporting a guess as a
-                    // measurement to something that will then reason about it
-                    // is how a confident wrong answer reaches an operator.
-                    if let Some(obj) = v.as_object_mut() {
-                        // The MOS itself, because the NDJSON stream shape this
-                        // builds on does not carry one — that is the CLI's
-                        // per-stream line, where MOS lives on the dialog
-                        // instead. Without this the grounding flag below
-                        // described a number absent from the payload, which is
-                        // worse than saying nothing: it implies a MOS is there.
-                        let loss_pct = {
-                            let total = s.packet_count + s.lost_packets;
-                            if total > 0 {
-                                (s.lost_packets as f64 / total as f64) * 100.0
-                            } else {
-                                0.0
-                            }
-                        };
-                        let mos =
-                            crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref());
-                        if let Some(n) = serde_json::Number::from_f64(mos) {
-                            obj.insert("mos".into(), serde_json::Value::Number(n));
-                        }
-                        let grounded = matches!(
-                            crate::rtp::quality::mos_grounding(s.codec.as_deref()),
-                            crate::rtp::quality::MosGrounding::Published
-                        );
-                        obj.insert("mos_grounded".into(), serde_json::Value::Bool(grounded));
-                        if !grounded {
-                            obj.insert(
-                                "mos_note".into(),
-                                serde_json::Value::String(
-                                    "No published ITU-T G.113 impairment value for this codec.                                      The MOS is a placeholder meaning 'unknown', not an estimate."
-                                        .into(),
-                                ),
-                            );
-                        }
-                    }
-                    v
-                })
-                .collect();
+                ss.streams_for(call_id).collect();
+            let stream_jsons: Vec<serde_json::Value> =
+                dialog_streams.iter().map(|s| stream_json(s)).collect();
             let mut diag = diagnose_media(&dialog_streams, None);
             diagnose_asymmetry(
                 &mut diag,
@@ -976,7 +1276,7 @@ impl SipnabMcp {
             drop(ss);
             drop(ds);
             serde_json::json!({
-                "call_id": params.call_id,
+                "call_id": call_id,
                 "streams": stream_jsons,
                 "diagnosis": diag_json,
             })
@@ -1093,25 +1393,14 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit(params.limit);
         // The cursor is `<RFC 3339>` (legacy) or `<RFC 3339>|<Call-ID>`
-        // (compound, what next_cursor emits). `|` cannot appear in an
-        // RFC 3339 timestamp or a valid Call-ID (RFC 3261 `word` has no
-        // `|`), so splitting on the first `|` is unambiguous.
-        let cursor: Option<(chrono::DateTime<chrono::Utc>, Option<String>)> = match params.cursor {
-            Some(s) => {
-                let (ts_part, id_part) = match s.split_once(TAIL_CURSOR_SEP) {
-                    Some((ts, id)) => (ts, Some(id.to_string())),
-                    None => (s.as_str(), None),
-                };
-                match chrono::DateTime::parse_from_rfc3339(ts_part) {
-                    Ok(dt) => Some((dt.with_timezone(&chrono::Utc), id_part)),
-                    Err(e) => {
-                        return Err(rmcp::ErrorData::invalid_params(
-                            format!("cursor must be RFC 3339: {e}"),
-                            None,
-                        ));
-                    }
-                }
-            }
+        // (compound, what next_cursor emits) — parsed by the shared helper in
+        // `shape`, which the paged list tools use too. One implementation of
+        // the tie-break, because it is the part that goes silently wrong.
+        let cursor = match params.cursor.as_deref() {
+            Some(raw) => Some(
+                super::shape::parse_cursor(raw)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+            ),
             None => None,
         };
 
@@ -1128,12 +1417,10 @@ impl SipnabMcp {
             // duplicated.
             let mut changed: Vec<&crate::sip::dialog::SipDialog> = ds
                 .iter()
-                .filter(|d| match &cursor {
-                    None => true,
-                    Some((ts, None)) => d.updated_at > *ts,
-                    Some((ts, Some(id))) => {
-                        d.updated_at > *ts || (d.updated_at == *ts && d.call_id > *id)
-                    }
+                .filter(|d| {
+                    cursor
+                        .as_ref()
+                        .is_none_or(|c| c.precedes(d.updated_at, &d.call_id))
                 })
                 .collect();
             changed.sort_by(|a, b| {
@@ -1142,13 +1429,9 @@ impl SipnabMcp {
                     .then_with(|| a.call_id.cmp(&b.call_id))
             });
             changed.truncate(limit);
-            let next_cursor = changed.last().map(|d| {
-                format!(
-                    "{}{TAIL_CURSOR_SEP}{}",
-                    d.updated_at.to_rfc3339(),
-                    d.call_id
-                )
-            });
+            let next_cursor = changed
+                .last()
+                .map(|d| super::shape::format_cursor(d.updated_at, &d.call_id));
             let summaries: Vec<DialogSummary> =
                 changed.into_iter().map(DialogSummary::from).collect();
             drop(ds);
@@ -1507,12 +1790,14 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
-    /// Dialogs that started inside a time window.
+    /// Dialogs that started inside a time window, optionally filtered.
     #[tool(
         name = "search_by_time",
         description = "Returns dialogs whose first message falls in an RFC 3339 \
-                       time window. Use it to scope an investigation to when a \
-                       user says the problem happened."
+                       time window, optionally narrowed by a diagnostic alias or \
+                       DSL filter. Use it to scope an investigation to when a \
+                       user says the problem happened. The response carries \
+                       total_matched and a truncated flag."
     )]
     pub async fn search_by_time(
         &self,
@@ -1543,14 +1828,26 @@ impl SipnabMcp {
             ));
         }
         let limit = crate::mcp::shape::resolve_limit(params.limit);
+        let filter = Self::compile_filter(params.filter.as_deref())?;
 
         let payload = {
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let mut hits: Vec<serde_json::Value> = ds
                 .iter()
                 .filter(|d| {
                     let t = d.created_at;
                     t >= start && end.is_none_or(|e| t < e)
+                })
+                .filter(|d| {
+                    // Streams are collected only for the dialogs that survived
+                    // the window, which is the cheap test and usually the
+                    // selective one.
+                    filter.as_ref().is_none_or(|expr| {
+                        let streams: Vec<&crate::rtp::stream::RtpStream> =
+                            ss.streams_for(&d.call_id).collect();
+                        expr.matches_dialog(d, &streams)
+                    })
                 })
                 .map(|d| {
                     serde_json::json!({
@@ -1566,9 +1863,12 @@ impl SipnabMcp {
             hits.sort_by(|a, b| a["created_at"].as_str().cmp(&b["created_at"].as_str()));
             let total = hits.len();
             hits.truncate(limit);
+            drop(ss);
+            drop(ds);
             serde_json::json!({
                 "schema_version": 1,
                 "dialogs": hits,
+                "returned": hits.len(),
                 "total_matched": total,
                 "truncated": total > limit,
             })
@@ -2150,6 +2450,80 @@ mod tests {
         SipnabMcp::new(ds, ss)
     }
 
+    /// A server whose dialogs ALL share one `created_at`.
+    ///
+    /// The case no fixture in `tests/pcap-samples/` produces: sipp spaces its
+    /// registrations far enough apart that every dialog gets a distinct
+    /// microsecond, so a pagination test over a real capture never puts two
+    /// dialogs on the same instant. Real traffic does it constantly.
+    ///
+    /// Call-IDs are inserted in an order that disagrees with their sort order,
+    /// so a sort that leaves ties in store order is visibly different from one
+    /// that orders them by Call-ID.
+    fn server_with_simultaneous_dialogs(call_ids: &[&str]) -> SipnabMcp {
+        let mut ds = DialogStore::new(100, false);
+        for id in call_ids {
+            ds.process_message(invite(id, base_ts()));
+            ds.process_message(ok200(id, base_ts()));
+        }
+        SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        )
+    }
+
+    /// One page of `list_dialogs`, as parsed JSON.
+    async fn page(server: &SipnabMcp, limit: u32, cursor: Option<&str>) -> serde_json::Value {
+        let result = server
+            .list_dialogs(Parameters(ListDialogsParams {
+                filter: None,
+                limit: Some(limit),
+                cursor: cursor.map(str::to_string),
+            }))
+            .await
+            .expect("list_dialogs should succeed");
+        serde_json::from_str(&text_of(&result)).expect("valid JSON page")
+    }
+
+    /// Paging through dialogs that share a timestamp loses none and repeats none.
+    ///
+    /// The `(created_at, Call-ID)` ordering has to hold in BOTH places or the
+    /// pages do not line up: the sort decides where the boundary falls, and the
+    /// cursor comparison decides where the next page resumes. Sorting on the
+    /// timestamp alone leaves ties in store insertion order while the cursor
+    /// still resumes by Call-ID, so a dialog sorted before the boundary but
+    /// named after it disappears from the sweep — silently, and only when two
+    /// dialogs happen to share an instant.
+    ///
+    /// A mutation dropping `.then_with(|| a.call_id.cmp(&b.call_id))` from the
+    /// sort survived every capture-driven test in the suite. This one fails.
+    #[tokio::test]
+    async fn list_dialogs_pages_through_dialogs_sharing_one_timestamp() {
+        // Inserted in an order that is not sorted order.
+        let server = server_with_simultaneous_dialogs(&["d@h", "b@h", "e@h", "a@h", "c@h"]);
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let v = page(&server, 2, cursor.as_deref()).await;
+            assert_eq!(v["total_matched"], 5, "the store holds 5: {v}");
+            for d in v["dialogs"].as_array().expect("dialogs") {
+                seen.push(d["call_id"].as_str().expect("call_id").to_string());
+            }
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+
+        assert_eq!(
+            seen,
+            vec!["a@h", "b@h", "c@h", "d@h", "e@h"],
+            "every dialog exactly once, in Call-ID order within the shared \
+             instant; got {seen:?}"
+        );
+    }
+
     /// Extract the text body of the first content item.
     fn text_of(result: &CallToolResult) -> String {
         result.content[0]
@@ -2233,7 +2607,7 @@ mod tests {
         let err = server
             .list_dialogs(Parameters(ListDialogsParams {
                 filter: Some("THIS IS NOT A FILTER".to_string()),
-                limit: None,
+                ..Default::default()
             }))
             .await
             .expect_err("invalid filter must error");
@@ -2279,7 +2653,7 @@ mod tests {
         let err = server
             .find_problems(Parameters(FindProblemsParams {
                 kinds: Some(vec!["this-alias-does-not-exist".to_string()]),
-                limit: None,
+                ..Default::default()
             }))
             .await
             .expect_err("unknown alias must error");
@@ -2537,7 +2911,8 @@ mod tests {
         let server = empty_server();
         let err = server
             .rtp_stats(Parameters(RtpStatsParams {
-                call_id: "missing@x".to_string(),
+                call_id: Some("missing@x".to_string()),
+                ..Default::default()
             }))
             .await
             .expect_err("unknown call_id must error");
@@ -2551,7 +2926,8 @@ mod tests {
         let server = server_with_dialog("rtp@x");
         let result = server
             .rtp_stats(Parameters(RtpStatsParams {
-                call_id: "rtp@x".to_string(),
+                call_id: Some("rtp@x".to_string()),
+                ..Default::default()
             }))
             .await
             .expect("rtp_stats should succeed");
@@ -2966,6 +3342,7 @@ mod tests {
                 .search_by_time(Parameters(SearchByTimeParams {
                     start: "yesterday".into(),
                     end: None,
+                    filter: None,
                     limit: None,
                 }))
                 .await
@@ -2981,6 +3358,7 @@ mod tests {
                 .search_by_time(Parameters(SearchByTimeParams {
                     start: "2026-01-02T00:00:00Z".into(),
                     end: Some("2026-01-01T00:00:00Z".into()),
+                    filter: None,
                     limit: None,
                 }))
                 .await

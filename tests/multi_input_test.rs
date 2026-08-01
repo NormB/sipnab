@@ -522,6 +522,325 @@ fn a_directory_with_nothing_readable_is_an_error() {
     );
 }
 
+/// Write two OVERLAPPING slices of `src` into `dir`, returning them in read
+/// order.
+///
+/// The second slice starts inside the first, which is what two capture runs —
+/// or the same traffic collected on two interfaces — look like once they are
+/// mixed into one directory: every packet in the shared span is read twice.
+fn overlapping_slices(src: &Path, dir: &Path) -> (PathBuf, PathBuf) {
+    let early = dir.join("early.pcap");
+    let late = dir.join("late.pcap");
+    for (out, range) in [(&early, "1-600"), (&late, "400-852")] {
+        let status = Command::new("editcap")
+            .args(["-r", &src.to_string_lossy(), &out.to_string_lossy(), range])
+            .status()
+            .expect("run editcap");
+        assert!(status.success(), "editcap failed for range {range}");
+    }
+    (early, late)
+}
+
+/// A capture reached through a symlink is read, not silently dropped.
+///
+/// Capture directories commonly symlink to storage. The directory walk keeps
+/// `follow_links(false)` for loop protection, which makes walkdir report the
+/// LINK's own type — so classifying by that type made every symlinked capture
+/// disappear from the set with nothing logged.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_capture_in_a_directory_is_read() {
+    let store = tempfile::tempdir().expect("tempdir");
+    let view = tempfile::tempdir().expect("tempdir");
+    let real = store.path().join("real.pcap");
+    std::fs::copy(samples().join("sip-rtp-g711.pcap"), &real).expect("copy");
+    std::os::unix::fs::symlink(&real, view.path().join("link.pcap")).expect("symlink");
+
+    let through_link = dialog_ids(&["-I", &view.path().to_string_lossy()]);
+    let direct = dialog_ids(&["-I", &real.to_string_lossy()]);
+    assert_eq!(
+        through_link, direct,
+        "a symlinked capture must yield exactly what the file itself does"
+    );
+}
+
+/// A subdirectory that cannot be read is NAMED, not quietly dropped.
+///
+/// The walk used `filter_map(Result::ok)`, so a permission-denied directory
+/// produced a shorter set and no reason for it — the same shape as traffic that
+/// was never captured.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_subdirectory_is_named_not_silently_skipped() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::copy(
+        samples().join("sip-rtp-g711.pcap"),
+        root.path().join("top.pcap"),
+    )
+    .expect("copy");
+    let locked = root.path().join("locked");
+    std::fs::create_dir(&locked).expect("mkdir");
+    std::fs::copy(
+        samples().join("sip-register.pcap"),
+        locked.join("buried.pcap"),
+    )
+    .expect("copy");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+
+    let (_out, err, code) = run_support::run(
+        &["-N", "-I", &root.path().to_string_lossy(), "--recursive"],
+        Some("warn"),
+    );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    assert_eq!(code, Some(0), "the readable file still analyses:\n{err}");
+    assert!(
+        err.contains("locked") && err.contains("Skipping"),
+        "the unreadable directory must be named:\n{err}"
+    );
+}
+
+/// A symlink whose target is gone is named too.
+///
+/// A capture directory that symlinks into storage grows dangling links as the
+/// storage rotates, and a dangling link is not a file: it left the set with
+/// nothing said, looking exactly like traffic that was never captured.
+#[cfg(unix)]
+#[test]
+fn a_symlink_with_no_target_is_named() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::copy(
+        samples().join("sip-rtp-g711.pcap"),
+        dir.path().join("real.pcap"),
+    )
+    .expect("copy");
+    std::os::unix::fs::symlink(
+        dir.path().join("rotated-away.pcap"),
+        dir.path().join("dangling.pcap"),
+    )
+    .expect("symlink");
+
+    let (_out, err, code) = run_support::run(
+        &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
+        Some("warn"),
+    );
+    assert_eq!(code, Some(0), "the real capture still analyses:\n{err}");
+    assert!(
+        err.contains("dangling.pcap") && err.contains("Skipping"),
+        "a symlink with no target must be named:\n{err}"
+    );
+}
+
+/// The same, for a glob match that cannot be read.
+#[cfg(unix)]
+#[test]
+fn a_glob_match_that_cannot_be_read_is_named() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let open_dir = root.path().join("open");
+    let locked = root.path().join("locked");
+    std::fs::create_dir(&open_dir).expect("mkdir");
+    std::fs::create_dir(&locked).expect("mkdir");
+    std::fs::copy(samples().join("sip-rtp-g711.pcap"), open_dir.join("a.pcap")).expect("copy");
+    std::fs::copy(samples().join("sip-register.pcap"), locked.join("b.pcap")).expect("copy");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+
+    let pattern = format!("{}/*/*.pcap", root.path().display());
+    let (_out, err, code) = run_support::run(&["-N", "-I", &pattern], Some("warn"));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    assert_eq!(code, Some(0), "the readable match still analyses:\n{err}");
+    assert!(
+        err.contains("locked") && err.contains("Skipping"),
+        "a glob match that cannot be read must be named:\n{err}"
+    );
+}
+
+/// `--input-name` narrows a GLOB, not only a directory.
+///
+/// It used to be read in exactly one place — the directory walk — so pairing it
+/// with a glob was accepted and did nothing at all: the operator believes they
+/// filtered and did not.
+#[test]
+fn input_name_filters_a_glob_too() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::copy(
+        samples().join("sip-rtp-g711.pcap"),
+        dir.path().join("keep-me.pcap"),
+    )
+    .expect("copy");
+    std::fs::copy(
+        samples().join("sip-register.pcap"),
+        dir.path().join("skip-me.pcap"),
+    )
+    .expect("copy");
+
+    let pattern = format!("{}/*.pcap", dir.path().display());
+    let filtered = dialog_ids(&["-I", &pattern, "--input-name", "keep-*"]);
+    let only_kept = dialog_ids(&["-I", &dir.path().join("keep-me.pcap").to_string_lossy()]);
+    let all = dialog_ids(&["-I", &pattern]);
+
+    assert!(filtered.len() < all.len(), "the filter must exclude a file");
+    assert_eq!(
+        filtered, only_kept,
+        "the filtered glob must read exactly the kept file"
+    );
+}
+
+/// `--input-name` against a directly named file is refused instead of ignored.
+///
+/// There is no silent option: dropping the file loses a capture the operator
+/// named, and ignoring the pattern leaves them believing they filtered.
+#[test]
+fn input_name_against_a_named_file_is_refused() {
+    let f = samples().join("sip-rtp-g711.pcap");
+    let (_out, err, code) = run_support::run(
+        &["-N", "-I", &f.to_string_lossy(), "--input-name", "tg.pcap*"],
+        Some("error"),
+    );
+    assert_eq!(code, Some(1), "the combination must fail:\n{err}");
+    assert!(
+        err.contains("--input-name"),
+        "the error must point at the flag:\n{err}"
+    );
+}
+
+/// A glob matching DIRECTORIES reads the captures inside them.
+///
+/// `-I '/caps/*'` over a tree of per-host subdirectories kept only
+/// `path.is_file()`, so it resolved to nothing and said nothing.
+#[test]
+fn a_glob_over_per_host_directories_reads_their_captures() {
+    let root = tempfile::tempdir().expect("tempdir");
+    for (sub, sample) in [
+        ("host-a", "sip-rtp-g711.pcap"),
+        ("host-b", "sip-register.pcap"),
+    ] {
+        let dir = root.path().join(sub);
+        std::fs::create_dir(&dir).expect("mkdir");
+        std::fs::copy(samples().join(sample), dir.join("cap.pcap")).expect("copy");
+    }
+
+    let pattern = format!("{}/*", root.path().display());
+    let via_glob = dialog_ids(&["-I", &pattern]);
+    let a = dialog_ids(&["-I", &samples().join("sip-rtp-g711.pcap").to_string_lossy()]);
+    let b = dialog_ids(&["-I", &samples().join("sip-register.pcap").to_string_lossy()]);
+    assert_eq!(
+        via_glob.len(),
+        a.len() + b.len(),
+        "both per-host directories must contribute: {via_glob:?}"
+    );
+}
+
+/// The run summary counts the files that were READ, not the files that were
+/// offered.
+///
+/// `paths.len()` was the size of the set decided before any file was opened, so
+/// a run that opened 3 of 27 still claimed 27 — which is what made an earlier
+/// truncation bug nearly invisible.
+#[test]
+fn the_run_summary_counts_files_read_not_files_offered() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _after = set_with_a_truncated_middle(dir.path());
+
+    let (_out, err, code) = run_support::run(
+        &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
+        Some("warn"),
+    );
+    assert_eq!(
+        code,
+        Some(0),
+        "a truncated member does not fail the run:\n{err}"
+    );
+    assert!(
+        err.contains("2 of 3 file(s) read in full"),
+        "the summary must count what was read:\n{err}"
+    );
+    assert!(
+        err.contains("1 stopped early"),
+        "the truncated member must be reported as such:\n{err}"
+    );
+}
+
+/// A limit that leaves files unread says so, without calling it a loss.
+#[test]
+fn the_run_summary_reports_files_a_limit_never_reached() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["sip-rtp-g711.pcap", "sip-register.pcap", "sip-proxy.pcap"] {
+        std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
+    }
+
+    let (_out, err, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            &dir.path().to_string_lossy(),
+            "-n",
+            "1",
+            "--no-cli-print",
+        ],
+        Some("info"),
+    );
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        err.contains("2 not reached"),
+        "files a limit never opened must be counted, not folded into the set \
+         size:\n{err}"
+    );
+}
+
+/// Two captures of the same traffic in one directory are reported.
+///
+/// This is the case the overlap warning exists for, and it had never fired:
+/// the test compared consecutive files' START times with an ABSOLUTE
+/// `f64::EPSILON` against epoch seconds, which degenerates to exact bit
+/// equality. Real overlap is the previous file's END against the next file's
+/// START, and here the two slices share 200 packets — every count spanning
+/// them is inflated.
+#[test]
+fn overlapping_captures_in_one_directory_are_reported() {
+    if Command::new("editcap").arg("--version").output().is_err() {
+        eprintln!("editcap not installed — skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_early, _late) = overlapping_slices(&samples().join("sip-rtp-g711.pcap"), dir.path());
+
+    let (_out, err, code) = run_support::run(
+        &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
+        Some("warn"),
+    );
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        err.contains("overlap") && err.contains("counted twice"),
+        "an overlapping pair must be reported, with the consequence stated:\n{err}"
+    );
+}
+
+/// A clean ring-buffer set is NOT reported as overlapping.
+///
+/// The other half of the tolerance: a warning that fires on every ordinary
+/// multi-file read is as useless as one that never fires.
+#[test]
+fn a_clean_multi_file_set_reports_no_overlap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["sip-rtp-g711.pcap", "sip-register.pcap", "sip-proxy.pcap"] {
+        std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
+    }
+    let (_out, err, code) = run_support::run(
+        &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
+        Some("warn"),
+    );
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        !err.contains("overlap") && !err.contains("same instant"),
+        "three unrelated captures do not overlap:\n{err}"
+    );
+}
+
 /// Single-file input is untouched by any of this.
 #[test]
 fn a_single_file_still_behaves_exactly_as_before() {

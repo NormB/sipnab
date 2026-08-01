@@ -92,8 +92,13 @@ fn read_response_with_id(
 /// slow runner; every reply must still be well-formed.
 ///
 /// # Returns
-/// The parsed dialog-summaries JSON array (non-empty); panics on timeout or
-/// a malformed reply.
+/// The `dialogs` array out of the `list_dialogs` page (non-empty); panics on
+/// timeout or a malformed reply.
+///
+/// The tool answers with a page object — `{dialogs, returned, total_matched,
+/// truncated, next_cursor}` — rather than a bare array, so that a caller can
+/// tell 50 dialogs from the first 50 of 2311. This helper hands back the
+/// `dialogs` array so its callers keep indexing rows.
 ///
 /// # Side effects
 /// Sends repeated `tools/call` requests on the child's stdin.
@@ -122,9 +127,16 @@ fn list_dialogs_until_nonempty(
             .as_str()
             .expect("text content");
         let parsed: serde_json::Value = serde_json::from_str(body).expect("inner JSON parses");
-        let arr = parsed.as_array().expect("dialog summaries array");
-        if !arr.is_empty() {
-            return parsed;
+        let dialogs = parsed["dialogs"]
+            .as_array()
+            .unwrap_or_else(|| panic!("list_dialogs page must carry `dialogs`: {parsed}"));
+        // The count that makes a short page readable has to be there too.
+        assert!(
+            parsed["total_matched"].is_u64(),
+            "a page without total_matched is a silently truncated answer: {parsed}"
+        );
+        if !dialogs.is_empty() {
+            return parsed["dialogs"].clone();
         }
         assert!(
             Instant::now() < deadline,
@@ -700,11 +712,15 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     let text = resp["result"]["content"][0]["text"]
         .as_str()
         .expect("find_problems text");
+    let page: serde_json::Value = serde_json::from_str(text).expect("find_problems JSON");
     assert!(
-        serde_json::from_str::<serde_json::Value>(text)
-            .expect("find_problems JSON")
-            .is_array(),
-        "find_problems must return a JSON array"
+        page["dialogs"].is_array(),
+        "find_problems must return a page object carrying `dialogs`: {page}"
+    );
+    assert!(
+        page["total_matched"].is_u64() && page["truncated"].is_boolean(),
+        "the page must say how many matched and whether it withheld any — a \
+         bare array lets an agent count its rows and answer with them: {page}"
     );
 
     // security_findings with no AlertEngine attached → empty JSON array, no error.
