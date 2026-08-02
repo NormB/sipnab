@@ -15,6 +15,7 @@ use chrono::{TimeZone, Utc};
 use proptest::prelude::*;
 
 use sipnab::net::TransportProto;
+use sipnab::rtp::diagnosis::CaptureMedia;
 use sipnab::sip::dialog::SipDialog;
 use sipnab::sip::dsl::FilterExpr;
 use sipnab::sip::parser::parse_sip;
@@ -153,7 +154,7 @@ proptest! {
         if let Ok(filter) = FilterExpr::parse(&s) {
             // Evaluation is likewise total: a parsed expression never
             // panics against a real dialog (empty stream slice).
-            let _ = filter.matches_dialog(&dialog, &[]);
+            let _ = filter.matches_dialog(&dialog, &[], CaptureMedia::Absent);
         }
     }
 
@@ -169,6 +170,6 @@ proptest! {
         let expr = format!("from.user {op} '{user}' AND rtp.loss > {loss}");
         let filter = FilterExpr::parse(&expr)
             .unwrap_or_else(|e| panic!("valid expr {expr:?} must parse: {e}"));
-        let _got: bool = filter.matches_dialog(&dialog, &[]);
+        let _got: bool = filter.matches_dialog(&dialog, &[], CaptureMedia::Absent);
     }
 }

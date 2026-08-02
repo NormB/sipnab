@@ -523,7 +523,8 @@ pub struct Cli {
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub one_way: bool,
 
-    /// Show calls with NAT-related issues (Contact/Via mismatch).
+    /// Show calls whose RTP arrived from an address no SDP in the dialog
+    /// advertised — the signature of a NAT rewriting the media source.
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub nat_issues: bool,
 

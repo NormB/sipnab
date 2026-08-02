@@ -196,35 +196,66 @@ challenges excluded: a call challenged and then answered reports 200, not the
 leaves as free text — `500 Service Unavailable` is legal and common, so match on
 the code.
 
+**Both fields read INVITE transactions only, and are absent from every other
+dialog.** A `REGISTER` rejected `403`, an `OPTIONS` that timed out `408`, a
+failed `SUBSCRIBE` — each carries `state: "Failed"` and no
+`final_status_code` at all, because no INVITE CSeq exists to take a code from.
+The recipe above is therefore a *call* recipe: point it at registration or
+keepalive traffic and every row comes back empty. For those, read
+`signaling_diagnosis` instead — `final_failure.code` carries the status for any
+dialog, and `registration_failure` answers the registration question directly:
+
+```bash
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select(.state == "Failed") |
+           {call_id, method,
+            code: (.final_status_code // .signaling_diagnosis.final_failure.code)}'
+```
+
 A `signaling_diagnosis` object sits beside `diagnosis` when something is wrong
 with the signalling rather than the media, and **drops out entirely** when
 the detections found nothing — so a healthy dialog serializes exactly as before
-the field existed. It carries up to three findings, each naming the messages it
-drew on, as indices into the dialog's own message list:
+the field existed. Eight detections run over every dialog, each naming the
+messages it drew on as indices into the dialog's own message list:
 
 | Field | Meaning |
 |---|---|
 | `final_failure` | The dialog ended on a `4xx`/`5xx`/`6xx`. Carries `code`, `reason_phrase`, and the `Reason:` (RFC 3326) and `Warning:` headers when present, which frequently hold the real cause behind a generic status code. |
 | `auth_loop` | Three or more `401`/`407` challenges with no `2xx`. `kind` is `credential_failure` when the client answers each challenge and is re-challenged, or `silent_drop` when it never sends `Authorization` at all — different faults with different fixes. |
-| `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. |
-| `icmp_unreachable` | An ICMP or ICMPv6 error quoting one of this dialog's requests. Carries `unreachable_endpoint` (the host that did not answer), `reported_by` (the router or host that sent the error — a *different* machine), `description` of the ICMP cause, an exact `errors` count, and capped `samples`. |
+| `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `method`, `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. |
+| `ack_missing` | A `2xx` answer to an `INVITE` that no `ACK` followed, once the observation window passed RFC 3261 Timer H (32 s). Carries `waited_sec` and `answer_transmissions` — a UAS retransmits its answer until Timer H, so a count above one is the peer agreeing the `ACK` never arrived. |
+| `abandoned` | The dialog never reached a final response. `kind` separates the two cases, which are not the same claim: `cancelled` means someone sent a `CANCEL`, `no_final_response` means the wait outlived RFC 3261 Timer C (180 s) — a statement about the capture, **not** a failed call. Carries `elapsed_sec`. |
+| `post_dial_delay` | `INVITE` to first provisional response over 11 s, the ITU-T E.721 Table 2 ninety-fifth-percentile target for an international connection. Carries `delay_sec`, the `threshold_sec` it exceeded, and the `responded_with` code that ended the wait. |
+| `registration_failure` | A `REGISTER` rejected (`kind: rejected`), or granted less time than it asked for (`kind: shortened_expiry`, `code: 200`). Carries `requested_expiry_sec` and `granted_expiry_sec` when the messages said. Kept separate from `final_failure` because "is this phone online?" is a different question from "why did this call fail?". |
+| `icmp_unreachable` | An ICMP or ICMPv6 error quoting one of this dialog's requests. Carries `unreachable_endpoint` (the host that did not answer), `reported_by` (the router or host that sent the error — a *different* machine), `description` of the ICMP cause, the raw `icmp_type` / `icmp_code` bytes, the quoted request's `method`, an exact `errors` count, and `truncated`. |
 
-Each finding has an `evidence` array of message indices, and `hints` carries one
-plain-language line per finding. Detections 4–7 in
-[the spec](design/sip-problem-diagnosis.md) are not implemented, and their fields
-are absent rather than always-null: a field that is never populated reads as
-"checked, nothing found", which would be a lie.
+Every finding carries an `evidence` array of message indices, and `hints`
+carries one plain-language line per finding.
+
+The first seven fields are always present: `null` there means "checked, nothing
+found". `icmp_unreachable` is the exception and is **omitted** when absent,
+because it is the one detection that cannot run unless the capture holds ICMP at
+all — a `null` on a capture that carried none would claim a check that never
+happened.
 
 `icmp_unreachable` is worth singling out because it is the only finding that
 reports a **fact** rather than an inference. The others read the SIP and reason
 about what the silence means. This one carries a router's own statement that the
-far end is not reachable. Note that `errors` counts every occurrence while
-`samples` keeps only the first few — on a real capture 720 of 3,232 errors fell
-past the sample cap, so counting samples would have reported "8 times" for a
-peer that failed thirty. Distinguish
-`unreachable_endpoint` from `reported_by` when acting on it: the reporter is
-usually a router in the path, and sending an engineer to that device wastes the
-finding.
+far end is not reachable. Two fields repay attention:
+
+- `errors` is the exact number of ICMP errors the dialog drew, not the number of
+  quotes sipnab retained — a cap bounds retention, and on a real capture 720 of
+  3,232 errors fell past it. Reporting the retained count would have said "8
+  times" for a peer that failed thirty. `evidence` draws on the retained quotes
+  only, so on a heavily hit dialog it names fewer messages than `errors` counts.
+- `unreachable_endpoint` is the socket to go and look at. `reported_by` is the
+  device that noticed and said so, usually a working router in the path.
+  Sending an engineer to the reporter wastes the finding.
+
+`truncated` is `true` in the ordinary case: RFC 792 guarantees only 8 bytes past
+the quoted IP header, so most quotes are a prefix. The field exists so a reader
+knows the quote was partial rather than assuming the fields came from a whole
+datagram.
 
 The same document is what you get from:
 

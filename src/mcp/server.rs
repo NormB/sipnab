@@ -31,7 +31,9 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 
 use crate::output::{ReportFormat, generate_call_report};
-use crate::rtp::diagnosis::{AsymmetryThresholds, diagnose_asymmetry, diagnose_media};
+use crate::rtp::diagnosis::{
+    AsymmetryThresholds, CaptureMedia, MediaContext, diagnose_asymmetry, diagnose_media,
+};
 use crate::rtp::stream_store::StreamStore;
 use crate::security::alerting::AlertEngine;
 use crate::sip::dialog_store::DialogStore;
@@ -733,7 +735,11 @@ impl SipnabMcp {
         &self,
         cursor: Option<&str>,
         limit: usize,
-        select: impl Fn(&crate::sip::dialog::SipDialog, &[&crate::rtp::stream::RtpStream]) -> bool,
+        select: impl Fn(
+            &crate::sip::dialog::SipDialog,
+            &[&crate::rtp::stream::RtpStream],
+            CaptureMedia,
+        ) -> bool,
     ) -> Result<DialogPage, rmcp::ErrorData> {
         let cursor = match cursor {
             Some(raw) => Some(
@@ -761,13 +767,15 @@ impl SipnabMcp {
         // Every match, not the first `limit` of them: `total_matched` is the
         // whole point and cannot be known from a truncated scan.
         const NO_STREAMS: &[&crate::rtp::stream::RtpStream] = &[];
+        // One run-level fact, read once rather than per dialog.
+        let capture = CaptureMedia::of_store(&ss);
         let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
             .iter()
             .filter(|d| {
                 let streams = by_call
                     .get(d.call_id.as_str())
                     .map_or(NO_STREAMS, Vec::as_slice);
-                select(d, streams)
+                select(d, streams, capture)
             })
             .collect();
         let total_matched = matched.len();
@@ -940,10 +948,10 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit(params.limit);
         let filter = Self::compile_filter(params.filter.as_deref())?;
-        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams| {
+        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams, capture| {
             filter
                 .as_ref()
-                .is_none_or(|expr| expr.matches_dialog(d, streams))
+                .is_none_or(|expr| expr.matches_dialog(d, streams, capture))
         })?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
@@ -999,7 +1007,8 @@ impl SipnabMcp {
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&params.call_id).collect();
 
-            let mut diag = diagnose_media(&dialog_streams, None);
+            let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let mut diag = diagnose_media(&dialog_streams, &media);
             diagnose_asymmetry(
                 &mut diag,
                 Some(dialog),
@@ -1076,11 +1085,13 @@ impl SipnabMcp {
         // ANY alias AND the filter. The aliases answer "is this call
         // interesting", the filter answers "is it the one I am looking at" —
         // ORing them instead would widen the triage sweep rather than narrow it.
-        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams| {
-            compiled.iter().any(|expr| expr.matches_dialog(d, streams))
+        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams, capture| {
+            compiled
+                .iter()
+                .any(|expr| expr.matches_dialog(d, streams, capture))
                 && extra
                     .as_ref()
-                    .is_none_or(|expr| expr.matches_dialog(d, streams))
+                    .is_none_or(|expr| expr.matches_dialog(d, streams, capture))
         })?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
@@ -1229,7 +1240,8 @@ impl SipnabMcp {
             let ss = self.stream_store.read();
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&params.call_id).collect();
-            let mut diag = diagnose_media(&dialog_streams, None);
+            let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let mut diag = diagnose_media(&dialog_streams, &media);
             diagnose_asymmetry(
                 &mut diag,
                 Some(dialog),
@@ -1297,7 +1309,8 @@ impl SipnabMcp {
                 ss.streams_for(call_id).collect();
             let stream_jsons: Vec<serde_json::Value> =
                 dialog_streams.iter().map(|s| stream_json(s)).collect();
-            let mut diag = diagnose_media(&dialog_streams, None);
+            let ctx = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let mut diag = diagnose_media(&dialog_streams, &ctx);
             diagnose_asymmetry(
                 &mut diag,
                 Some(dialog),
@@ -1865,6 +1878,7 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
+            let capture = CaptureMedia::of_store(&ss);
             let mut hits: Vec<serde_json::Value> = ds
                 .iter()
                 .filter(|d| {
@@ -1878,7 +1892,7 @@ impl SipnabMcp {
                     filter.as_ref().is_none_or(|expr| {
                         let streams: Vec<&crate::rtp::stream::RtpStream> =
                             ss.streams_for(&d.call_id).collect();
-                        expr.matches_dialog(d, &streams)
+                        expr.matches_dialog(d, &streams, capture)
                     })
                 })
                 .map(|d| {
@@ -1934,7 +1948,8 @@ impl SipnabMcp {
             let ss = self.stream_store.read();
             let streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&dialog.call_id).collect();
-            let mut media = crate::rtp::diagnosis::diagnose_media(&streams, None);
+            let ctx = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let mut media = crate::rtp::diagnosis::diagnose_media(&streams, &ctx);
             crate::rtp::diagnosis::diagnose_asymmetry(
                 &mut media,
                 Some(dialog),

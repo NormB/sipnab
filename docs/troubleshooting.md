@@ -2,6 +2,30 @@
 
 > **Under pressure?** Each scenario below is: Problem, Command, What to look for, Next steps. Copy-paste and go.
 
+## Find your symptom
+
+Match the complaint, not what you think is wrong -- the section works back to
+the cause from there.
+
+| What the caller says | Section |
+|---|---|
+| "It just says the number is unavailable" / call never connects | [Failed calls](#failed-calls) |
+| "It rings and rings, then nothing" / 408, or no response at all | [Nothing came back](#nothing-came-back-408-or-silence-ask-the-network) |
+| "It hangs up after 30 seconds" / after exactly 15 or 30 minutes | [Dropped calls](#dropped-calls-call-answers-then-disconnects-mid-conversation) |
+| "Calls to that one carrier fail immediately" / 488 | [488 Not Acceptable Here](#488-not-acceptable-here-codec-mismatch) |
+| "They can hear me but I can't hear them" | [One-way audio](#one-way-audio) |
+| "It sounds choppy / robotic / underwater" | [Poor call quality](#poor-call-quality) |
+| "There's a long pause before it rings" | [Slow call setup](#slow-call-setup-post-dial-delay) |
+| "Audio dies as soon as they answer" / works internally, not externally | [NAT traversal issues](#nat-traversal-issues) |
+| "The phones keep dropping off" / no inbound calls arrive | [Registration failures](#registration-failures) |
+| "Something is hammering the PBX" / probes across unknown extensions | [SIP scanner detection](#sip-scanner-detection) |
+| Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
+
+Whatever the symptom, three things decide whether the answer is in the capture
+at all: it covers the right time window, it comes from a point that sees both
+directions, and `--portrange` covers the ports in use. The next section deals
+with the third.
+
 ## Start here: one pass over everything
 
 Don't know which problem you have yet? The `--problems` alias surfaces every
@@ -15,6 +39,24 @@ sipnab -N -I capture.pcap --problems --json
 ```
 
 `--problems` is shorthand for the full Filter-DSL expression `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR ...` -- so it is a superset of "failed calls". Once you know the symptom, jump to the matching section below for the precise filter.
+
+> **First, check you are reading the whole capture.** `--portrange` defaults to
+> `5060-5061`, and sipnab skips any SIP message whose source and destination
+> ports both fall outside it. Skipped messages reach no count, no dialog and no
+> output, so a call carried on 5070 or 5080 -- ordinary on carrier trunks and
+> SBCs -- is simply not in any answer below. sipnab says so on stderr and again
+> at the end of the run:
+>
+> ```text
+> NOT ANALYSED: 1 further SIP message(s) were seen on ports outside --portrange
+> and are in none of the totals above. Busiest: 8090 (1).
+> ```
+>
+> If you see that line, or the call you are chasing is missing, add
+> `--portrange 1-65535` to every command on this page and start again. On a
+> **live** capture the range becomes the kernel BPF filter, so the traffic never
+> reaches sipnab and nothing reports it missing -- set the range before you
+> capture.
 
 ---
 
@@ -37,10 +79,10 @@ You should see one line per response message of each failed call (minimal exampl
 {"call_id":"def456@host","status_code":408,"reason":"Request Timeout"}
 ```
 
-Once one of those Call-IDs is worth escalating, write the detailed Markdown report for that single call and attach it to a ticket. Substitute the Call-ID you picked. The redirect overwrites `report.md` in the current directory:
+Once one of those Call-IDs is worth escalating, write the detailed Markdown report for that single call and attach it to a ticket. Substitute the Call-ID you picked. The redirect overwrites `report.md` in the current directory. `--no-cli-print` is not optional here: without it sipnab dumps every message in the capture ahead of the report, and the file you attach opens with hundreds of lines of raw SIP:
 
 ```bash
-sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
+sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print > report.md
 ```
 
 **What to look for:** sipnab includes response code intelligence -- the status field tells you why:
@@ -55,7 +97,62 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
 | 488 | Not acceptable here | Codec mismatch, SDP incompatibility -- full recipe [below](#488-not-acceptable-here-codec-mismatch) |
 | 503 | Service unavailable | Upstream overload, trunk down, proxy crash |
 
-**Next steps:** If the response code is 408 or you see high `retransmits`, the problem is network-level -- check connectivity and firewall rules before touching SIP config.
+**Next steps:** If the response code is 408 or you see high `retransmits`, the problem is network-level -- check connectivity and firewall rules before touching SIP config. The next section turns that "network-level" guess into evidence.
+
+---
+
+## Nothing came back (408, or silence) -- ask the network
+
+A 408 and a call that simply stops both look like "the far end did not answer". Usually that is an inference from silence. Sometimes it is not: if a router or the host itself sent an ICMP error quoting your request, the network stated the cause, and sipnab reads it.
+
+Any run that saw such an error ends with a capture-wide tally on stderr, so you do not have to go looking for it. A run that saw none prints nothing:
+
+```text
+ICMP: 4 error(s) quoting a SIP request, naming 2 unreachable endpoint(s).
+Busiest: 192.0.2.10:5060 (2, port unreachable), 192.0.2.11:5080 (2, host unreachable).
+```
+
+Seeing that line, pull the affected calls out as one object each and read the finding:
+
+```bash
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select(.signaling_diagnosis.icmp_unreachable) |
+           {call_id, method,
+            code: (.final_status_code // .signaling_diagnosis.final_failure.code),
+            icmp: .signaling_diagnosis.icmp_unreachable}'
+```
+
+Then read one of them in full, which lays the ICMP finding beside the SIP timeline and names the messages it came from:
+
+```bash
+sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
+```
+
+```text
+Signalling Issues:
+  - Final failure: 408 Request Timeout
+    evidence: #2 408 Request Timeout
+  - ICMP port unreachable: 192.0.2.10:5060 unreachable (2 times), reported by 198.51.100.1
+    evidence: #0 OPTIONS, #1 OPTIONS
+```
+
+**What to look for:**
+
+| Field | What it tells you |
+|-------|-------------------|
+| `description` | The network's own words -- `port unreachable`, `host unreachable`, `administratively prohibited`. Each points somewhere different. |
+| `unreachable_endpoint` | The socket that did not answer. **This is the machine to go and look at.** |
+| `reported_by` | The device that noticed and said so -- usually a working router in the path. Do not send an engineer here. |
+| `errors` | Exact count of such errors for this call. Two or three says the peer was consistently unreachable, not momentarily busy. |
+
+**Next steps:**
+
+1. `port unreachable` means the host is up and nothing is listening on that port. Check that the SIP service is running and bound where you think, and that the port in the `Contact`/`Via` matches what it actually listens on.
+2. `host unreachable` or `network unreachable` is a routing problem short of the destination -- the reporter names the hop that gave up.
+3. `administratively prohibited` is a firewall saying no, on purpose. Someone configured that.
+4. No ICMP at all does **not** clear the network: most firewalls drop ICMP errors outright, and the summary can only report what the capture holds.
+
+There is no `icmp` field in the Filter DSL, so select these calls with `jq` on `--json-dialogs` as above rather than with `--filter`.
 
 ---
 
@@ -157,7 +254,7 @@ Get the diagnosis detail (`one_way_audio`, `nat_mismatch`, hints) per call with 
 
 **What to look for:**
 
-- `nat_mismatch == true` alongside `one_way` -- the Contact/Via IP doesn't match the packet source. This is the most common cause.
+- `nat_mismatch == true` alongside `one_way` -- RTP reached the capture point from an address no SDP in the dialog advertised, which is what a NAT rewriting the media source looks like. This is the most common cause.
 - Codec asymmetry in the SDP offer/answer (one side offers a codec the other doesn't support).
 - RTP ports in the SDP that never receive traffic (firewall blocking the return path).
 
@@ -258,7 +355,7 @@ The `--nat-issues` alias is the same selection without writing the filter out:
 sipnab -N -I capture.pcap --nat-issues
 ```
 
-**What to look for:** `nat_mismatch == true` means the SIP headers contain an IP/port that differs from where the packet actually came from. This breaks return routing for SIP responses and RTP media.
+**What to look for:** `nat_mismatch == true` means RTP for the call reached the capture point from an address that no SDP in the dialog advertised. The far end therefore sends its media to the address the SDP named, which nothing answers on -- so the return path fails even though signalling completed. sipnab compares addresses only, not ports, because NAT and RTP proxies rewrite the port on healthy calls too.
 
 **Next steps:**
 
@@ -288,9 +385,17 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 
 **Next steps:**
 
-1. Point fail2ban at the log file sipnab writes with `--fail2ban`.
-2. For broader detection, combine flags: `sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood --alert syslog`
-3. Use `--digest-leak` to check if any endpoints are leaking credentials in cleartext.
+1. Count who the detectors would ban *before* fail2ban sees any of it. On a carrier trunk the enumeration signature and a busy hunt group look alike, and the addresses at the top of this list are routinely your own SBCs:
+
+   ```bash
+   sipnab -N -I capture.pcap --kill-scanner --fail2ban \
+     | grep -oE 'src=[^ ]+' | sort | uniq -c | sort -rn
+   ```
+
+   Put every address you recognise into the jail's `ignoreip` and raise `maxretry` until the list holds only what you meant. A jail that bans your carrier takes the phone system down more thoroughly than the scanner would have.
+2. Then point fail2ban at the log file. `--fail2ban` chooses the **format** and detects nothing on its own: `--kill-scanner` (or `--kill-ua`) produces `scanner_detected` lines, `--reg-flood` produces `reg_flood` lines, and without one of those the log stays empty while looking like an all-clear. sipnab warns on stderr when you ask for the format with no scanner detector armed.
+3. For broader detection, combine flags: `sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood --alert syslog`
+4. Use `--digest-leak` to check if any endpoints are leaking credentials in cleartext.
 
 ---
 
@@ -302,6 +407,26 @@ REGISTER rejected with `401 Unauthorized`, `403 Forbidden`, or `423 Interval Too
 sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND state == 'Failed'" --json
 ```
 
+For one line per registration rather than one per message, read the
+`registration_failure` finding. It answers this question directly, and it also
+catches the failure that is not a rejection at all -- a registrar that grants
+less time than the phone asked for, so the phone re-registers far more often
+than it planned:
+
+```bash
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select(.signaling_diagnosis.registration_failure) |
+           {call_id, from} + .signaling_diagnosis.registration_failure'
+```
+
+`kind` is `rejected` or `shortened_expiry`. On the second, compare
+`requested_expiry_sec` against `granted_expiry_sec`.
+
+> Do **not** reach for `final_status_code` here: it reads INVITE transactions
+> only, so on a `REGISTER` dialog it is always `null`, however the registration
+> ended. `signaling_diagnosis.final_failure.code` carries the status for any
+> dialog.
+
 **What to look for:**
 
 | Code | Meaning | Typical fix |
@@ -310,7 +435,7 @@ sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND state == 'Failed'" 
 | 403 | Forbidden | IP not in ACL, registration not allowed for this user, or domain mismatch |
 | 423 | Interval too brief | The registrar wants a longer expiry. Increase the registration interval on the phone. |
 
-**Next steps:** A REGISTER that gets 401 followed by a second REGISTER with credentials followed by 200 is healthy. If you see repeated 401s with no successful registration, the password or auth username is wrong. If you see `retransmits > 3` on REGISTERs, the registrar may be unreachable.
+**Next steps:** A REGISTER that gets 401 followed by a second REGISTER with credentials followed by 200 is healthy. If you see repeated 401s with no successful registration, the password or auth username is wrong. If you see `retransmits > 3` on REGISTERs, the registrar may be unreachable. Three or more challenges with no 200 is exactly what `signaling_diagnosis.auth_loop` reports, and its `kind` separates the two causes: `credential_failure` (the phone answers and is re-challenged -- wrong password) from `silent_drop` (the phone never sends `Authorization` at all -- it has none configured, or does not understand the challenge).
 
 ---
 
@@ -318,10 +443,10 @@ sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND state == 'Failed'" 
 
 Export call data for tickets, post-mortems, or automated pipelines.
 
-A Markdown report for one call, to attach to a ticket. The redirect overwrites `report.md` in the current directory:
+A Markdown report for one call, to attach to a ticket. The redirect overwrites `report.md` in the current directory, and `--no-cli-print` keeps the capture's per-message dump out of it:
 
 ```bash
-sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
+sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print > report.md
 ```
 
 A JSON export of every failed call, to feed a monitoring system. This one overwrites `failed_calls.json`:

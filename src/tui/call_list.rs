@@ -459,7 +459,12 @@ pub fn displayed_dialogs<'a>(
     #[cfg(test)]
     DISPLAYED_DIALOGS_CALLS.with(|c| c.set(c.get() + 1));
     let mut dialogs: Vec<_> = match filter {
-        Some(f) => store.iter().filter(|d| f.matches_dialog(d, &[])).collect(),
+        // This list is built from dialogs alone; with no stream data it
+        // cannot testify that a call carried no media.
+        Some(f) => store
+            .iter()
+            .filter(|d| f.matches_dialog(d, &[], crate::rtp::diagnosis::CaptureMedia::Absent))
+            .collect(),
         None => store.iter().collect(),
     };
     if !search_query.is_empty() {

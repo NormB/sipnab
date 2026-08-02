@@ -38,7 +38,7 @@ sipnab reads configuration from the first file it finds in this order:
 | 4 | `~/.sipnabrc` |
 | 5 | `/etc/sipnab/sipnab.toml` |
 
-Use `--no-config` (`-F`) to skip all file loading. Use `--dump-config` (`-D`) to print the effective merged configuration.
+Use `--no-config` (`-F`) to skip all file loading. Use `--dump-config` (`-D`) to print which file sipnab loaded and the keys it set — see the note under [Full example](#full-example) for what `-D` does and does not show.
 
 Unknown keys produce a warning and go no further, so one config can span versions.
 
@@ -61,7 +61,7 @@ Packet capture defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface |
-| `portrange` | string | `"5060-5061"` | SIP port range |
+| `portrange` | string | `"5060-5061"` | SIP **signalling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyse at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes |
 | `buffer` | integer | `2` | Kernel capture buffer size in MiB |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
@@ -415,4 +415,23 @@ clear_calls = "F5"
 column_selector = "F10"
 ```
 
-> **Tip:** Use `sipnab --dump-config` to see the effective configuration — the loaded file merged over the built-in defaults, with the path it came from. It is a config-file view only: CLI flags arrive later in startup and never show up there, and there is no environment-variable override layer (`SIPNAB_CONFIG` only selects which file to read). To check what a flag does, compare against the [CLI reference](@/docs/cli.md).
+> **Tip:** Use `sipnab --dump-config` to see which file sipnab actually loaded
+> and what that file set. It prints the path it came from, then every section
+> header with the keys that file supplied under each.
+>
+> Read the omissions carefully, because `-D` shows less than "effective
+> configuration" suggests:
+>
+> - **Built-in defaults do not appear.** A key you did not set prints nothing,
+>   not its default. `sipnab -F --dump-config` therefore prints a list of empty
+>   section headers, which is correct output and not a fault. The defaults are
+>   the ones in the tables on this page.
+> - **CLI flags do not appear.** They arrive later in startup, so `-D` cannot
+>   show what a flag would override. Compare against the
+>   [CLI reference](@/docs/cli.md) for that.
+> - **There is no environment-variable override layer.** `SIPNAB_CONFIG` only
+>   selects which file to read.
+>
+> So `-D` answers "did sipnab read the file I meant, and did it accept my
+> keys?" — which is the question behind most configuration surprises. It does
+> not answer "what value is this setting running with?".

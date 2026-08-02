@@ -34,6 +34,61 @@ entry that carries them.
   counting samples would have reported "8 times" for a peer that failed thirty.
 
 ### Fixed
+- **Scanner detection flagged the carrier's own PBX and customer phones.** The
+  behavioural rules stood on a request rate, and volume does not separate
+  reconnaissance from operation — a trunk sends OPTIONS keepalives by design.
+  On an ordinary 11-second carrier capture the busiest "scanner" was an Asterisk
+  PBX with 2,713 keepalives.
+
+  Both rules now require an **outcome the capture already holds**: five or more
+  refusals matched to a probe transaction by top-`Via` branch, or five or more
+  probes still unanswered after RFC 3261's T1. Auth challenges and ordinary call
+  outcomes are not refusals, and `5xx` blames the server. A peer that completed
+  a registration or a call needs four times either number.
+
+  Across ten captures of one trunk: **25,738 scanner alerts became 21**, all
+  from User-Agent matches, with no behavioural source at all. Corpus-wide, six
+  behavioural sources remain and every one is supported by an outcome in the
+  packets.
+
+  **What it misses is documented rather than tuned away**: a sweep the box
+  answers `200` — which is what the corpus's own real scanner traffic is — is
+  invisible to the behavioural rules and caught only by User-Agent.
+
+- **Three fraud detectors had the same error as the scanner.** `VolumeSpike`
+  started from a *guessed* baseline of 1.0, truncated it to an integer, and
+  froze it on the first alert — so any source's sixth call in a minute was
+  "5× its baseline", permanently. `Wangiri` counted `Failed` and `Redirected`
+  dialogs as short calls, and a `404` returns in milliseconds, so three wrong
+  numbers to one prefix were call-back fraud. `SequentialScanning` ran over
+  every call, so a contiguous DID block tripped it. **405 fraud alerts became
+  zero** on the same ten captures.
+
+- **`no_media` and `nat_mismatch` could never be true.** Both need the
+  negotiated SDP, and every production caller — CLI, MCP, REST and the filter
+  DSL — passed `None`. `--nat-issues` matched nothing on any capture, so an
+  operator checking for NAT problems got a clean result and stopped looking.
+
+  `diagnose_media` now takes a `MediaContext` rather than an `Option`, so the
+  diagnosis can no longer be asked for while withholding what it needs. The
+  context makes each choice explicit: advertised addresses are the **union of
+  every exchange**, because RTP spans the whole call and reading only the newest
+  offer reports every hold and re-INVITE as a NAT fault.
+
+  The NAT rule had to be rewritten, not merely wired: comparing a stream source
+  against one `c=` line would have flagged one direction of **every** healthy
+  two-way call. It is now set membership — a source no SDP in the dialog named —
+  and addresses only, never ports, since NAT and RTP proxies rewrite ports on
+  healthy calls. Verified against `tshark`, including a negative control on the
+  exact call the naive rule would have falsely flagged.
+
+- **`rtp.orphaned` is now a parse error rather than a silent falsehood.** It
+  asked whether a stream belonging to a dialog belongs to no dialog — the two
+  halves exclude each other by construction. It matched nothing on any capture
+  while `NOT rtp.orphaned` matched everything, and the `problems` alias carried
+  it as a dead term. Orphaned media is real and still reachable through
+  `--report` and the REST API, both of which model streams rather than dialogs.
+
 - **`--filter` was ignored by every CLI output path, silently, exit 0.** The
   expression compiled, and then `--report` and `--json-dialogs` rendered the
   whole store anyway; the filter was only ever consulted per-packet in the

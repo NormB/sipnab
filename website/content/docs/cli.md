@@ -29,16 +29,20 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'"
 ```
 
 With one of those Call-IDs in hand, print just that dialog's call flow.
+`--no-cli-print` is what makes it *just* that: on its own, `--call-report`
+appends the report to the whole capture's per-message dump, so the report you
+came for arrives after every message in the file.
 
 ```bash
-sipnab -I capture.pcap --call-report "abc123@host"
+sipnab -N -I capture.pcap --call-report "abc123@host" --no-cli-print
 ```
 
 When the finding belongs in a ticket, write the same report as Markdown to a
-file instead of reading it on the terminal.
+file instead of reading it on the terminal. Keep `--no-cli-print` here too, or
+`report.md` opens with hundreds of lines of raw SIP before its first heading.
 
 ```bash
-sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
+sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print > report.md
 ```
 
 ### Monitor live SIP quality
@@ -85,10 +89,21 @@ sipnab -N -I capture.pcap --slow-setup --report
 ### Security monitoring
 
 Detect SIP scanning and append it in fail2ban's format to the log its jail
-reads.
+reads. `--kill-scanner` is what detects — `--fail2ban` only chooses the format,
+so leaving it out leaves the log empty.
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
+```
+
+Before that log reaches a jail, run the same detectors over a capture of an
+ordinary hour and read the list of addresses they would ban. On a carrier trunk
+it routinely names your own SBCs, because the enumeration signature and a busy
+hunt group look alike.
+
+```bash
+sipnab -N -I capture.pcap --kill-scanner --fail2ban \
+  | grep -oE 'src=[^ ]+' | sort | uniq -c | sort -rn
 ```
 
 Audit a capture for digest credentials that went out where anyone could read them.
@@ -156,10 +171,17 @@ sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50
 ```
 
 Capture across every interface at once, timestamping each message relative to
-the one before it.
+the one before it. On Linux the `any` pseudo-device is what makes this every
+interface — `--multi-device` is for naming a specific list, as below.
 
 ```bash
-sipnab -d any --multi-device --delta-time
+sipnab -d any --delta-time
+```
+
+Capture on two named interfaces instead, one libpcap handle each.
+
+```bash
+sipnab -d eth0,eth1 --multi-device --delta-time
 ```
 
 > **Tip:** Every output flag (`--json`, `--report`, `--fail2ban`, etc.) needs `-N`. Think of it as "non-interactive mode" -- it disables the TUI and writes to stdout instead.
@@ -181,8 +203,8 @@ sipnab -d any --multi-device --delta-time
 | `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet (sipgrep `-S`). Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
 | `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of sipgrep `-a`). Useful for pure single-packet UDP scanning |
 | `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse (sipgrep `-x`). sipnab drops the packet either way; this only silences the notice on a noisy link |
-| `--portrange` | `<RANGE>` | `5060-5061` | SIP port range to capture |
-| `--multi-device` | -- | off | Capture on all available interfaces |
+| `--portrange` | `<RANGE>` | `5060-5061` | SIP **signalling** port range. Media is never gated — RTP uses SDP-negotiated dynamic ports. The default is narrow and carriers routinely run SIP on 5070, 5080 and elsewhere, so widen it or analyse a fraction of the file — see the note below |
+| `--multi-device` | -- | off | Open one capture per interface named in a comma-separated `-d` list, e.g. `-d eth0,docker0 --multi-device`. It does **not** enumerate interfaces for you: with a single `-d` (or none) it falls back to an ordinary single capture. On Linux the zero-argument default already sniffs every interface via the `any` pseudo-device |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
 | `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode (sipgrep `-p`). Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
 | `--bpf-file` | `<FILE>` | -- | Read BPF filter from a file |
@@ -241,16 +263,43 @@ sipnab -d any --multi-device --delta-time
 
 > **`-I` and `-d` are alternatives, not companions.** sipnab accepts both, and the FILE wins: sipnab reads it, never opens the interface, and the output looks like a normal run. sipnab warns on stderr when you do this. To switch a file command to live capture, **remove `-I`** rather than adding `-d` beside it.
 
+> **`--portrange` decides how much of the file you analyse.** The default,
+> `5060-5061`, is narrow. SIP on other ports is ordinary: carriers and SBCs use
+> 5070, 5080 and others routinely, and a capture from a real trunk commonly
+> carries a large share of its signalling outside the default.
+>
+> Reading a file, sipnab skips any SIP message whose source **and** destination
+> ports both fall outside the range. A skipped message reaches no message count,
+> no dialog, and no output format — so every total you read, and every ratio you
+> compute from one, describes the range and not the capture. sipnab counts what
+> it skipped and says so on stderr and at the end of the run, naming the busiest
+> ports so there is something to widen to:
+>
+> ```text
+> NOT ANALYSED: 1 further SIP message(s) were seen on ports outside --portrange
+> and are in none of the totals above. Busiest: 8090 (1). Re-run with
+> --portrange 1-65535 to include them.
+> ```
+>
+> `--portrange 1-65535` analyses everything the capture holds. Reach for it
+> first on an unfamiliar capture, then narrow once you know what is in there.
+>
+> **Live capture is different, and worse.** With no explicit BPF filter sipnab
+> compiles the range into the filter, so the kernel drops the traffic before
+> sipnab sees it — nothing downstream, this counter included, can report what
+> went missing. Set the range correctly *before* the capture, because no rerun
+> recovers it.
+
 **Examples**
 
 - `sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000` — record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range
 - `sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse` — live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (sipgrep -x)
-- `sudo sipnab -N --multi-device --output capture.pcap --autostop filesize:100` — capture on all available interfaces headlessly, stopping once the output file reaches 100 MiB
+- `sudo sipnab -N -d eth0,eth1 --multi-device --output capture.pcap --autostop filesize:100` — capture on two named interfaces at once, headlessly, stopping once the output file reaches 100 MiB. `--multi-device` needs the list; without one it is a no-op
 - `sipnab -N --input capture.pcap --replay --no-rtp` — replay a pcap at its original timing with RTP capture and analysis disabled
-- `sipnab -N --input /var/captures/ --json-dialogs` — read every capture in a directory as one timeline, so a call split across the ring buffer resolves to one dialog instead of two fragments
-- `sipnab -N --input /var/captures/ --recursive --input-name '*.pcap.gz' --json-dialogs` — descend into per-day subdirectories and read only the compressed archives
+- `sipnab -N --input /var/captures/ --json-dialogs --no-cli-print` — read every capture in a directory as one timeline, so a call split across the ring buffer resolves to one dialog instead of two fragments
+- `sipnab -N --input /var/captures/ --recursive --input-name '*.pcap.gz' --json-dialogs --no-cli-print` — descend into per-day subdirectories and read only the compressed archives
 - `sipnab -N --input 'captures/tg.pcap[0-4]' --report` — analyse the first five members of a ring buffer with a glob sipnab expands itself, no shell needed
-- `sipnab -N --input a.pcap --input b.pcap --json-dialogs` — read two named captures as a single set, ordered by their packets
+- `sipnab -N --input a.pcap --input b.pcap --json-dialogs --no-cli-print` — read two named captures as a single set, ordered by their packets
 - `sipnab -N --input /var/captures/ --input-name 'edge1-*' --recursive --json` — pick one host's captures out of a tree holding several
 - `sipnab -N --input capture.pcap --limitlen 512 --no-reassembly --quiet-bad-parse` — scan a pcap sipgrep-style: parse only the first 512 bytes of each packet, every packet standalone (no reassembly), without parse-error noise
 - `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --duration 5m` — capture for 5 minutes using a BPF filter read from sip.bpf, without putting the interface into promiscuous mode (sipgrep -p)
@@ -346,16 +395,16 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--problems` | -- | off | Show calls matching any diagnostic signal: failed state, one-way audio, RTP loss > 2%, jitter > 50 ms, NAT mismatch, more than 3 retransmits, PDD > 32 s, orphaned RTP, codec/ptime/payload/duration asymmetry, or late media — see [Named Aliases](@/docs/filter-dsl.md#named-aliases) for the exact expansion |
+| `--problems` | -- | off | Show calls matching any diagnostic signal: failed state, one-way audio, RTP loss > 2%, jitter > 50 ms, NAT mismatch, more than 3 retransmits, PDD > 32 s, codec/ptime/payload/duration asymmetry, or late media — see [Named Aliases](@/docs/filter-dsl.md#named-aliases) for the exact expansion. Orphaned RTP is **not** among them: an orphaned stream belongs to no dialog, so it cannot select one. Find it in the "Orphaned Streams" section of `--report`, or `/v1/streams?orphaned=true` |
 | `--slow-setup` | -- | off | Show calls with post-dial delay > 3 seconds |
 | `--short-calls` | -- | off | Show completed calls shorter than 5 seconds |
 | `--one-way` | -- | off | Show calls with potential one-way audio issues |
-| `--nat-issues` | -- | off | Show calls with Contact/Via NAT mismatch |
+| `--nat-issues` | -- | off | Show calls whose RTP arrived from an address no SDP advertised (NAT-rewritten media source) |
 
 **Examples**
 
 - `sipnab -N -I capture.pcap --short-calls --one-way` — flag completed calls under 5 seconds and calls with suspected one-way audio in a capture
-- `sudo sipnab -d eth0 -N --one-way --nat-issues` — live-monitor for one-way audio and Contact/Via NAT mismatches
+- `sudo sipnab -d eth0 -N --one-way --nat-issues` — live-monitor for one-way audio and NAT-rewritten media sources
 - `sipnab -N -I capture.pcap --short-calls --report` — summarize short completed calls from a capture in a post-run report
 
 
@@ -365,7 +414,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 |------|-------|---------|-------------|
 | `--json` | -- | off | Output as NDJSON (one JSON object per line, schema in [output-formats.md](@/docs/output-formats.md)). Requires `-N` |
 | `--json-pretty` | -- | off | Output each message as pretty-printed multi-line JSON (use `--json` for line-oriented NDJSON). Requires `-N` |
-| `--json-dialogs` | -- | off | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; pair with `--no-cli-print` to get only the objects). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it. |
+| `--json-dialogs` | -- | off | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; pair with `--no-cli-print` to get only the objects). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it — those two read INVITE transactions only and are `null` on a `REGISTER`/`OPTIONS`/`SUBSCRIBE` dialog, where `signaling_diagnosis.final_failure.code` carries it instead. |
 | `--plugin` | `<PATH>` | -- | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](https://github.com/NormB/sipnab/blob/main/docs/design/wasm-plugin-api.md) |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
@@ -383,7 +432,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--no-cli-print` | -- | off | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
 | `--wireshark` | -- | off | Launch Wireshark with a display filter for the current capture |
 | `--tshark-filter` | `<EXPR>` | -- | Generate a tshark-compatible display filter string |
-| `--fail2ban` | -- | off | Output in fail2ban-compatible format for SIP security events. Requires `-N` |
+| `--fail2ban` | -- | off | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (or `--kill-ua`) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me" |
 | `--group-by` | `<FIELD>` | -- | Group output by field (e.g., `call-id`, `from`, `method`) |
 
 **Examples**
@@ -651,7 +700,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sipnab --from alice --to bob` — filter by From/To headers
 - `sipnab 'host 192.0.2.1 and port 5060'` — BPF display filter
 - `sipnab --filter "method == 'INVITE' AND rtp.mos < 3.0"` — advanced filter DSL
-- `sipnab -I capture.pcap --call-report "abc123@host" --markdown` — generate detailed report for a call
+- `sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print` — generate detailed report for a call (drop `--no-cli-print` and the whole capture's message dump precedes it)
 - `sipnab -d eth0 -H 192.0.2.50:9060` — capture with HEP mirror
 - `sipnab -d eth0 --keylog /tmp/sslkeys.log --keylog-watch` — live TLS decryption
 

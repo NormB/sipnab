@@ -49,7 +49,9 @@ use serde_json::{Value, json};
 
 use crate::output;
 use crate::output::prometheus::{self, PrometheusMetrics};
-use crate::rtp::diagnosis::{AsymmetryThresholds, diagnose_asymmetry, diagnose_media};
+use crate::rtp::diagnosis::{
+    AsymmetryThresholds, CaptureMedia, MediaContext, diagnose_asymmetry, diagnose_media,
+};
 use crate::rtp::quality;
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog::DialogState;
@@ -687,7 +689,8 @@ async fn get_dialog(
     let ss = state.stream_store.read();
     let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
 
-    let mut diagnosis = diagnose_media(&streams, None);
+    let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+    let mut diagnosis = diagnose_media(&streams, &media);
     diagnose_asymmetry(
         &mut diagnosis,
         Some(dialog),
@@ -736,7 +739,8 @@ async fn get_dialog_report(
     let ss = state.stream_store.read();
     let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
 
-    let mut diagnosis = diagnose_media(&streams, None);
+    let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+    let mut diagnosis = diagnose_media(&streams, &media);
     diagnose_asymmetry(
         &mut diagnosis,
         Some(dialog),
