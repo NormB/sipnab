@@ -1,7 +1,7 @@
 # MCP server
 
 sipnab can run as a **Model Context Protocol** server, exposing its
-read-only analysis surface (dialogs, streams, RTP quality, diagnostic
+analysis surface (dialogs, streams, RTP quality, diagnostic
 hints, security findings, call reports) as tools that an AI agent —
 Claude Code, Claude Desktop, or any MCP-capable client — can call to
 debug captures interactively.
@@ -1247,9 +1247,14 @@ past 1000 does nothing: the cap clamps it. Page instead.
 
 ## Security model
 
-- **Read-only by design.** No tool mutates the dialog/stream/alert
-  stores or sends SIP. systemd owns the capture lifecycle, or the
-  CLI flags, not by the LLM.
+- **No tool mutates a store, and no tool sends SIP.** That is the rule, and it
+  is narrower than "read-only": `export_capture` and `export_audio` write files
+  under `--mcp-file-root`, and `shutdown_server` ends the run where
+  `--mcp-allow-shutdown` permits it. What an agent cannot do is change the
+  analysis you are reading while you read it. Ending a session is visible.
+  Rewriting the evidence underneath someone mid-incident would not be.
+  Otherwise the capture lifecycle belongs to systemd or the CLI flags, not to
+  the LLM.
 - **Localhost-default.** HTTP transport binds `127.0.0.1:8731` unless
   explicitly overridden.
 - **Bearer auth on non-loopback.** Tokens compared in constant time
@@ -1384,7 +1389,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"rmcp","version":"1.6.0"},"instructions":"sipnab MCP server — read-only access ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"rmcp","version":"1.6.0"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Raw HTTP test
