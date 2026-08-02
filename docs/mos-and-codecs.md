@@ -26,8 +26,23 @@ and a note.
 ## MOS comes from what sipnab measured, never from what the far end claimed
 
 The jitter and loss behind the score come from sipnab's own observation of the
-captured media. sipnab keeps RTCP reception reports separately — read them via
-`StreamStore::remote_report` — and never feeds them to the score.
+captured media. sipnab keeps what RTCP asserted separately and never feeds any of
+it to the score. Two side-tables hold it:
+
+| What the far end sent | Read it via | Carries |
+|---|---|---|
+| Reception report (SR/RR, RFC 3550) | `StreamStore::remote_report` | Loss fraction, cumulative loss, interarrival jitter |
+| VoIP Metrics (XR, RFC 3611 Section 4.7) | `StreamStore::remote_voip_metrics` | The endpoint's own R-factor, MOS-LQ and MOS-CQ, burst and gap densities, round-trip and end-system delay, discard rate |
+
+The XR block is the stronger evidence of the two, because it carries the
+endpoint's own quality score rather than raw counters, and because its discard
+rate names an impairment no capture can see. A discarded packet arrived at the
+endpoint and the jitter buffer threw it away, so the packet appears in the file
+and still never reached the listener.
+
+That makes an XR-reported MOS a third kind of number, next to a grounded
+sipnab estimate and a placeholder. `rtp::quality::MosProvenance` names all three
+so no surface has to guess which one it holds.
 
 Two reasons. Nothing authenticates RTCP, so anything that can reach the port can
 assert a loss figure. If that figure moved the MOS, an attacker would control the

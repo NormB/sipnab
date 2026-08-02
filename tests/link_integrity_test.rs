@@ -392,9 +392,12 @@ fn wiki_intra_docs_links_resolve() {
     // new "What `--hep-send` sends" section: one from the `--hep-send` table
     // row, one from that section back to `#security`. Both are same-page
     // anchors and both resolve.
+    // Raised 248 -> 249 when the RTCP XR section of `docs/filter-dsl.md`
+    // gained a cross-link to `mos-and-codecs.md`, where the rule it depends on
+    // — a far end's reported figures never move sipnab's own — is written out.
     assert_eq!(
-        seen, 248,
-        "extractor found {seen} wiki links, expected 248. More is fine — bump \
+        seen, 249,
+        "extractor found {seen} wiki links, expected 249. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

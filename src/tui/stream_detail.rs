@@ -359,6 +359,91 @@ pub fn render_stream_detail(
         lines.push(Line::raw(""));
     }
 
+    // ── Reported by the far end (RTCP XR) ───────────────────────────
+    // Everything above this point is what sipnab measured from the media it
+    // saw. Everything below is what an endpoint asserted in an RTCP XR VoIP
+    // Metrics block (RFC 3611 §4.7) — a different kind of fact, on a
+    // different path segment, over an unauthenticated datagram. The section
+    // header says so, and no value from here is folded into anything above.
+    if let Some(xr) = store.remote_voip_metrics(key) {
+        let m = &xr.metrics;
+        lines.push(section_header("Reported by Far End (RTCP XR)", theme));
+        lines.push(Line::styled(
+            format!(
+                "  Endpoint's own claim, not sipnab's measurement \
+                 (reporter SSRC 0x{:08X}, {} report{})",
+                xr.reporter_ssrc,
+                xr.reports_seen,
+                if xr.reports_seen == 1 { "" } else { "s" },
+            ),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
+        ));
+
+        lines.push(Line::from(vec![
+            Span::raw("  MOS-LQ: "),
+            Span::styled(reported_mos(m.mos_lq()), Style::default().fg(theme.header)),
+            Span::raw("    MOS-CQ: "),
+            Span::styled(reported_mos(m.mos_cq()), Style::default().fg(theme.header)),
+            Span::raw("    R factor: "),
+            Span::styled(reported_u8(m.r_factor()), Style::default().fg(theme.header)),
+            Span::raw("    Ext R: "),
+            Span::raw(reported_u8(m.ext_r_factor())),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::raw("  Loss: "),
+            Span::raw(format!("{:.2}%", m.loss_rate_pct())),
+            Span::raw("    Discard: "),
+            Span::raw(format!("{:.2}%", m.discard_rate_pct())),
+            Span::raw("    Burst density: "),
+            Span::raw(format!("{:.1}%", m.burst_density_pct())),
+            Span::raw("    Gap density: "),
+            Span::raw(format!("{:.1}%", m.gap_density_pct())),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::raw("  Burst duration: "),
+            Span::raw(format!("{}ms", m.burst_duration)),
+            Span::raw("    Gap duration: "),
+            Span::raw(format!("{}ms", m.gap_duration)),
+            Span::raw("    Round-trip: "),
+            Span::raw(format!("{}ms", m.round_trip_delay)),
+            Span::raw("    End-system: "),
+            Span::raw(format!("{}ms", m.end_system_delay)),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::raw("  Signal: "),
+            Span::raw(reported_dbm0(m.signal_level_dbm0())),
+            Span::raw("    Noise: "),
+            Span::raw(reported_dbm0(m.noise_level_dbm0())),
+            Span::raw("    RERL: "),
+            Span::raw(match m.rerl_db() {
+                Some(v) => format!("{v} dB"),
+                None => "n/a".to_string(),
+            }),
+            Span::raw("    Gmin: "),
+            Span::raw(m.gmin.to_string()),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::raw("  Jitter buffer nominal: "),
+            Span::raw(format!("{}ms", m.jb_nominal)),
+            Span::raw("    max: "),
+            Span::raw(format!("{}ms", m.jb_maximum)),
+            Span::raw("    absolute max: "),
+            Span::raw(if m.jb_abs_max_is_capped() {
+                format!("{}ms or more", m.jb_abs_max)
+            } else {
+                format!("{}ms", m.jb_abs_max)
+            }),
+        ]));
+
+        lines.push(Line::raw(""));
+    }
+
     // ── Render with scroll ──────────────────────────────────────────
     let visible_height = area.height as usize;
     let max_scroll = lines.len().saturating_sub(visible_height);
@@ -370,6 +455,28 @@ pub fn render_stream_detail(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/// Render an endpoint-reported MOS, or `n/a` when the endpoint marked it
+/// unavailable.
+///
+/// Deliberately not styled by [`MosBand`]: that colouring belongs to the MOS
+/// sipnab estimated, and painting an endpoint's claim in the same green would
+/// invite reading the two as one number. The band's remedy is also wrong here
+/// — a bad score from the far end points at the far end, not at the capture.
+fn reported_mos(value: Option<f64>) -> String {
+    value.map_or_else(|| "n/a".to_string(), |v| format!("{v:.1}"))
+}
+
+/// Render an endpoint-reported R factor, or `n/a` when marked unavailable.
+fn reported_u8(value: Option<u8>) -> String {
+    value.map_or_else(|| "n/a".to_string(), |v| v.to_string())
+}
+
+/// Render an endpoint-reported level in dBm0, or `n/a` when marked
+/// unavailable. Negative by nature — RFC 3611 puts these on 0 to -127 dBm0.
+fn reported_dbm0(value: Option<i8>) -> String {
+    value.map_or_else(|| "n/a".to_string(), |v| format!("{v} dBm0"))
+}
 
 /// Perceptual quality band for a MOS score.
 ///
@@ -850,6 +957,136 @@ mod tests {
         assert!(out.contains("Loss:"));
         assert!(out.contains("Lost pkts:"), "lost pkts line missing: {out}");
         let _ = Color::Reset; // keep Color import used regardless of assertions
+    }
+
+    /// Attach an XR VoIP Metrics block reporting the far end's own figures to
+    /// the stream in `store`. The values are chosen to be unmistakable if any
+    /// of them leaks into a sipnab-measured field.
+    fn attach_xr(store: &mut StreamStore, ssrc: u32, mos_lq: u8, r_factor: u8) {
+        use crate::rtp::rtcp::{ExtendedReport, VoipMetrics, XrBlock};
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x7777_7777,
+            blocks: vec![XrBlock::VoipMetrics(VoipMetrics {
+                ssrc,
+                loss_rate: 128,
+                discard_rate: 64,
+                burst_density: 200,
+                gap_density: 8,
+                burst_duration: 3_000,
+                gap_duration: 250,
+                round_trip_delay: 450,
+                end_system_delay: 90,
+                signal_level: 0xEC, // -20 dBm0
+                noise_level: 127,   // unavailable
+                rerl: 30,
+                gmin: 16,
+                r_factor,
+                ext_r_factor: 127, // unavailable
+                mos_lq,
+                mos_cq: 13,
+                jb_nominal: 40,
+                jb_maximum: 120,
+                jb_abs_max: 65_535,
+            })],
+        })]);
+    }
+
+    /// A stream carrying an XR VoIP Metrics block renders the far end's own
+    /// figures, attributed to the far end.
+    ///
+    /// Before this the block was fully decoded and then dropped, so the one
+    /// place an endpoint tells you what it measured showed nothing at all.
+    #[test]
+    fn render_stream_detail_shows_far_end_xr_report() {
+        let (mut store, key) = store_with_stream(0x5151_5151, 5, 0);
+        attach_xr(&mut store, 0x5151_5151, 15, 32);
+
+        let out = render_to_string(&store, &key);
+        assert!(
+            out.contains("Reported by Far End"),
+            "the XR section must appear: {out}"
+        );
+        assert!(
+            out.contains("not sipnab's measurement"),
+            "the section must say whose number this is: {out}"
+        );
+        assert!(out.contains("MOS-LQ: 1.5"), "MOS x10 decodes to 1.5: {out}");
+        assert!(out.contains("R factor: 32"), "R factor rendered: {out}");
+        assert!(
+            out.contains("Discard: 25.00%"),
+            "discard rate is the impairment a capture cannot see: {out}"
+        );
+        assert!(
+            out.contains("Round-trip: 450ms"),
+            "round-trip delay rendered: {out}"
+        );
+    }
+
+    /// Fields the endpoint marked unavailable render as `n/a`, never as the
+    /// sentinel. RFC 3611 reserves 127, so a raw render publishes an R factor
+    /// of 127 on a 0-to-100 scale and a MOS of 12.7 on a 1-to-5 one.
+    #[test]
+    fn render_stream_detail_xr_unavailable_fields_are_not_numbers() {
+        let (mut store, key) = store_with_stream(0x5252_5252, 5, 0);
+        attach_xr(&mut store, 0x5252_5252, 127, 127);
+
+        let out = render_to_string(&store, &key);
+        assert!(
+            out.contains("MOS-LQ: n/a"),
+            "an unavailable MOS must not render as 12.7: {out}"
+        );
+        assert!(
+            out.contains("R factor: n/a"),
+            "an unavailable R factor must not render as 127: {out}"
+        );
+        assert!(
+            !out.contains("12.7"),
+            "the MOS sentinel must never reach the screen as a value: {out}"
+        );
+    }
+
+    /// A stream with no XR renders no far-end section at all, rather than a
+    /// row of zeroes that reads as an endpoint reporting perfect silence.
+    #[test]
+    fn render_stream_detail_without_xr_omits_the_far_end_section() {
+        let (store, key) = store_with_stream(0x5353_5353, 5, 0);
+        let out = render_to_string(&store, &key);
+        assert!(
+            !out.contains("Reported by Far End"),
+            "no XR means no far-end section: {out}"
+        );
+    }
+
+    /// The far end's claimed MOS must not displace the MOS sipnab estimated.
+    ///
+    /// Both appear, in separate sections, with separate labels. This is the
+    /// #61 rule at the render layer: an XR claiming MOS 1.5 on a clean stream
+    /// leaves the estimated MOS where it was.
+    #[test]
+    fn render_stream_detail_far_end_mos_does_not_replace_the_estimate() {
+        let (mut store, key) = store_with_stream(0x5454_5454, 5, 0);
+        let before = render_to_string(&store, &key);
+        let estimated = before
+            .lines()
+            .find(|l| l.contains("  MOS: "))
+            .expect("estimated MOS line")
+            .to_string();
+
+        attach_xr(&mut store, 0x5454_5454, 15, 32);
+        let after = render_to_string(&store, &key);
+        let still = after
+            .lines()
+            .find(|l| l.contains("  MOS: "))
+            .expect("estimated MOS line survives");
+
+        assert_eq!(
+            estimated, still,
+            "an endpoint asserting MOS 1.5 must not move the MOS sipnab estimated"
+        );
+        assert!(
+            after.contains("MOS-LQ: 1.5"),
+            "and the endpoint's claim is still shown, separately: {after}"
+        );
     }
 
     /// Edge case: a long quality history must not emit one sparkline glyph per

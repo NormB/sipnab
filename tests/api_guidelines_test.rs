@@ -20,6 +20,7 @@ const NON_EXHAUSTIVE_ENUMS: &[(&str, &str)] = &[
     ("src/security/digest_leak.rs", "DigestVulnerability"),
     ("src/rtp/rtcp.rs", "RtcpPacket"),
     ("src/rtp/rtcp.rs", "XrBlock"),
+    ("src/rtp/quality.rs", "MosProvenance"),
     ("src/net.rs", "TransportProto"),
     ("src/sip/sdp_timeline.rs", "SdpEvent"),
     ("src/sip/sdp_timeline.rs", "OfferAnswer"),
