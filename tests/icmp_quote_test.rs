@@ -242,18 +242,31 @@ fn icmpv4_port_unreachable_quoting_sip_is_parsed() {
 /// The ICMP source is the *reporter*; the quoted destination is the endpoint
 /// that did not answer. Conflating them blames the wrong address, which is
 /// worse than saying nothing.
+///
+/// Asserted at BOTH layers, deliberately. An earlier version of this test
+/// stopped at `parse_icmp_error`, where the two addresses arrive already
+/// separated and can hardly be confused — so it verified the invariant where it
+/// was not at risk. Swapping the two one layer later, where `record_icmp_error`
+/// copies them into the evidence, left this test green while the reports named
+/// the router as the dead host. Four unrelated tests caught that; the one named
+/// for the invariant did not. The round trip below is what closes the gap.
 #[test]
+#[serial_test::serial(icmp_evidence)]
 fn the_reporter_is_never_the_unreachable_endpoint() {
+    pipeline::reset_icmp_evidence();
+
+    let call_id = "icmp-attrib-1@test";
     let quoted = quoted_ipv4_udp(
         sender(),
         dead_peer(),
         5080,
         5080,
-        &options_keepalive("icmp-attrib-1@test"),
+        &options_keepalive(call_id),
     );
     let pkt = icmpv4_error(router(), sender(), 3, 1, &quoted);
     let q = parse_icmp_error(&pkt).expect("parses");
 
+    // Layer 1: the parser keeps them apart.
     assert_eq!(q.reporter, IpAddr::V4(router()));
     assert_eq!(q.reported_to, IpAddr::V4(sender()));
     assert_eq!(q.quoted_dst, IpAddr::V4(dead_peer()));
@@ -261,6 +274,40 @@ fn the_reporter_is_never_the_unreachable_endpoint() {
         q.reporter, q.quoted_dst,
         "the router that reported the failure is not the host that failed"
     );
+
+    // Layer 2: so does everything a reader actually sees. This is the layer
+    // that decides which address an engineer is sent to.
+    assert!(parse_packet(&pkt).is_err(), "an ICMP error is not a packet");
+
+    let ev = pipeline::icmp_evidence_for(call_id);
+    assert_eq!(ev.errors, 1, "the quote names this Call-ID");
+    assert_eq!(
+        ev.samples[0].unreachable_addr,
+        IpAddr::V4(dead_peer()),
+        "the recorded unreachable endpoint must be the host that did not \
+         answer, not the router that said so"
+    );
+    assert_eq!(
+        ev.samples[0].reported_by,
+        IpAddr::V4(router()),
+        "the reporter must stay the ICMP source"
+    );
+    assert_ne!(
+        ev.samples[0].unreachable_addr, ev.samples[0].reported_by,
+        "recording the reporter as the unreachable endpoint sends an engineer \
+         to the wrong device"
+    );
+
+    // And in the capture-wide tally, which is what the summary line prints.
+    let report = pipeline::icmp_evidence_report();
+    assert_eq!(report.endpoints.len(), 1);
+    assert_eq!(
+        report.endpoints[0].addr,
+        IpAddr::V4(dead_peer()),
+        "the endpoint tally must name the dead host, not the reporter"
+    );
+
+    pipeline::reset_icmp_evidence();
 }
 
 /// RFC 792's minimum: the IP header plus 8 bytes. The quote then holds the UDP
