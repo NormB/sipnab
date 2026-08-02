@@ -90,12 +90,26 @@ fn build_example_once() -> PathBuf {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let path = PathBuf::from(manifest)
-        .join("target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm");
+    // Resolve the target directory the way cargo just did, rather than assuming
+    // `<manifest>/target`. Anyone verifying in isolation sets CARGO_TARGET_DIR —
+    // which is the required practice when several agents build one checkout —
+    // and cargo writes the artifact THERE while this assertion looked in the
+    // manifest. All five tests in this file then failed with a message claiming
+    // the build produced nothing, which reads as a toolchain fault and sends the
+    // reader hunting for a break that does not exist.
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .or_else(|| std::env::var_os("CARGO_BUILD_TARGET_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(manifest).join("target"));
+    let path = target_root.join("wasm32-unknown-unknown/release/sipnab_plugin_example.wasm");
     assert!(
         path.is_file(),
-        "build reported success but produced no artifact at {}",
-        path.display()
+        "the build reported success but no artifact is at {}. That directory \
+         comes from CARGO_TARGET_DIR when it is set (here: {:?}), otherwise \
+         <manifest>/target — so a mismatch means this test is looking in the \
+         wrong place, not that the build failed.",
+        path.display(),
+        std::env::var_os("CARGO_TARGET_DIR")
     );
     path
 }

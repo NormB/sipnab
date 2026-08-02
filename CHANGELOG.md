@@ -8,9 +8,118 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.73] - 2026-08-02
+
+### Added
+- **ICMP errors quoting a SIP request are now evidence, not invisible.** A
+  router answering "host unreachable" for an INVITE is the most diagnostic
+  packet a capture can hold — it is a categorical statement that the far end is
+  not there — and sipnab never looked inside ICMP at all. Five corpus captures
+  each lost about 26% of their SIP to it; the deficits matched their ICMP counts
+  exactly.
+
+  ICMPv4 (RFC 792) and ICMPv6 (RFC 4443) errors are parsed, the quoted datagram
+  is read as a *prefix* rather than a message, and the evidence is filed against
+  the dialog by `Call-ID`. It surfaces as the `icmp_unreachable` finding in
+  `--json-dialogs`, `--report`, the REST API and MCP, and as a capture-wide line
+  in the batch summary.
+
+  On one capture: **97 dialogs gained a stated cause where none had one**, and
+  the SIP message total is unchanged at 1902 — a quote is evidence about a
+  message, never a message. The quote is truncated by design, so a partial
+  request is never counted as a complete one. `unreachable_endpoint` and
+  `reported_by` are kept distinct: the reporter is usually a router in the path,
+  and blaming it sends an engineer to the wrong device. `errors` is exact while
+  `samples` is capped — 720 of 3,232 real errors fell past the sample cap, so
+  counting samples would have reported "8 times" for a peer that failed thirty.
 
 ### Fixed
+- **Scanner detection flagged the carrier's own PBX and customer phones.** The
+  behavioural rules stood on a request rate, and volume does not separate
+  reconnaissance from operation — a trunk sends OPTIONS keepalives by design.
+  On an ordinary 11-second carrier capture the busiest "scanner" was an Asterisk
+  PBX with 2,713 keepalives.
+
+  Both rules now require an **outcome the capture already holds**: five or more
+  refusals matched to a probe transaction by top-`Via` branch, or five or more
+  probes still unanswered after RFC 3261's T1. Auth challenges and ordinary call
+  outcomes are not refusals, and `5xx` blames the server. A peer that completed
+  a registration or a call needs four times either number.
+
+  Across ten captures of one trunk: **25,738 scanner alerts became 21**, all
+  from User-Agent matches, with no behavioural source at all. Corpus-wide, six
+  behavioural sources remain and every one is supported by an outcome in the
+  packets.
+
+  **What it misses is documented rather than tuned away**: a sweep the box
+  answers `200` — which is what the corpus's own real scanner traffic is — is
+  invisible to the behavioural rules and caught only by User-Agent.
+
+- **Three fraud detectors had the same error as the scanner.** `VolumeSpike`
+  started from a *guessed* baseline of 1.0, truncated it to an integer, and
+  froze it on the first alert — so any source's sixth call in a minute was
+  "5× its baseline", permanently. `Wangiri` counted `Failed` and `Redirected`
+  dialogs as short calls, and a `404` returns in milliseconds, so three wrong
+  numbers to one prefix were call-back fraud. `SequentialScanning` ran over
+  every call, so a contiguous DID block tripped it. **405 fraud alerts became
+  zero** on the same ten captures.
+
+- **`no_media` and `nat_mismatch` could never be true.** Both need the
+  negotiated SDP, and every production caller — CLI, MCP, REST and the filter
+  DSL — passed `None`. `--nat-issues` matched nothing on any capture, so an
+  operator checking for NAT problems got a clean result and stopped looking.
+
+  `diagnose_media` now takes a `MediaContext` rather than an `Option`, so the
+  diagnosis can no longer be asked for while withholding what it needs. The
+  context makes each choice explicit: advertised addresses are the **union of
+  every exchange**, because RTP spans the whole call and reading only the newest
+  offer reports every hold and re-INVITE as a NAT fault.
+
+  The NAT rule had to be rewritten, not merely wired: comparing a stream source
+  against one `c=` line would have flagged one direction of **every** healthy
+  two-way call. It is now set membership — a source no SDP in the dialog named —
+  and addresses only, never ports, since NAT and RTP proxies rewrite ports on
+  healthy calls. Verified against `tshark`, including a negative control on the
+  exact call the naive rule would have falsely flagged.
+
+- **`rtp.orphaned` is now a parse error rather than a silent falsehood.** It
+  asked whether a stream belonging to a dialog belongs to no dialog — the two
+  halves exclude each other by construction. It matched nothing on any capture
+  while `NOT rtp.orphaned` matched everything, and the `problems` alias carried
+  it as a dead term. Orphaned media is real and still reachable through
+  `--report` and the REST API, both of which model streams rather than dialogs.
+
+- **`--filter` was ignored by every CLI output path, silently, exit 0.** The
+  expression compiled, and then `--report` and `--json-dialogs` rendered the
+  whole store anyway; the filter was only ever consulted per-packet in the
+  streaming path. `--cores N` never received it at all. On a 2311-dialog
+  capture, **every valid expression returned all 2311 rows** — an operator
+  narrowing to failed calls got the entire capture back and no indication.
+
+  Now `state == 'Failed'` selects 10, `state == 'Completed'` selects 1712, and
+  `--cores 4` agrees with the single-threaded path. `--call-report <ID>` is
+  deliberately not narrowed: a lookup by name is not a listing.
+
+- **The alias flags expanded to different expressions than the documentation
+  specified.** `--short-calls` was `duration < 10.0` with no state gate rather
+  than the documented `duration < 5.0 AND state == 'Completed'`, selecting
+  **2310 of 2311 dialogs**. `--slow-setup` tested `setup_time` where the alias
+  says `pdd`. `--problems` used a 2-term expression against a documented
+  13-term one, and neither was a superset of the other. The flags now route
+  through the same expansion the documentation describes.
+
+### Documented
+- **`rtp.*` fields read `0` for a dialog with no media, not "unknown"**, and a
+  scored stream never goes below `1.0`. So `rtp.mos < 3.5` selects 2292 of 2311
+  dialogs on a signalling-heavy capture — nearly everything — while
+  `AND rtp.packets > 0` selects 2. The documented low-MOS recipe now carries
+  that guard.
+- **`no_media`, `nat_mismatch` and `rtp.orphaned` can never be true.** Not
+  "absent from your capture" — structurally unsatisfiable. The first two only
+  become true when the media diagnosis receives the negotiated SDP, and every
+  caller (CLI, MCP, REST, and the DSL itself) passes none. `rtp.orphaned` asks
+  whether a stream belonging to the dialog belongs to no dialog. Documented
+  where the fields are defined, with the working alternatives.
 - **`--fail2ban` emitted a line for every SIP request, with no detector in the
   path at all.** The flag exists to hand detections to a tool whose entire job
   is to ban what it is given, and it was handing over the trunk. On an ordinary

@@ -30,7 +30,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=0.5.72 sh
+curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=0.5.73 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -116,7 +116,7 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
-Alpine included. Replace `<version>` with the latest, e.g. 0.5.72:
+Alpine included. Replace `<version>` with the latest, e.g. 0.5.73:
 
 ```bash
 # Run all of these, in order.
@@ -135,7 +135,7 @@ sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/loca
 ```
 
 Manual download with checksum verification (replace `<version>` with the
-latest, e.g. 0.5.72):
+latest, e.g. 0.5.73):
 
 ```bash
 # Run all of these, in order.
@@ -177,7 +177,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package — replace `<version>` with the
-latest, e.g. 0.5.72:
+latest, e.g. 0.5.73:
 
 ```bash
 # Run all of these, in order.
@@ -236,26 +236,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.72-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.73-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.72-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.73-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.72-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.73-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.72-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.73-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
@@ -540,14 +540,22 @@ Open a capture file in the TUI, which is the quickest end-to-end test:
 sipnab -I /path/to/capture.pcap
 ```
 
-Or read the same file in CLI mode — non-interactive, first 5 dialogs:
+Or read the same file in CLI mode — non-interactive, the first few SIP
+messages. `-N` streams one line per **message**, not per call:
 
 ```bash
 sipnab -N -I /path/to/capture.pcap | head -5
 ```
 
-Dump the effective config, which confirms the feature flags in a form you can
-paste into a bug report:
+For one line per **call** instead, ask for the report and suppress the message
+stream:
+
+```bash
+sipnab -N -I /path/to/capture.pcap --report --no-cli-print | head -5
+```
+
+Print the version banner and the config sipnab loaded, which is what a bug
+report wants:
 
 ```bash
 sipnab -D
@@ -556,20 +564,38 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.72 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+sipnab 0.5.73 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
 ```
 
 This is the fastest way to confirm a build carries the feature set
 you expected (e.g. that `mcp-http` is present on a server build).
 
-A first non-interactive run against a capture looks like this:
+A first non-interactive run against a capture looks like this — timestamp,
+source, destination, method or status line, transport, one line per SIP
+message:
 
 ```text
-$ sipnab -N -I demo.pcap | head -3
-INVITE alice -> bob  192.0.2.1:5060 -> 192.0.2.2:5060 InCall PDD=847ms
-REGISTER admin -> --  192.0.2.5:5060 -> 192.0.2.1:5060 Registered
-INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060 Failed 408 Request Timeout
+$ sipnab -N -I demo.pcap | head -4
+09:14:22.881 192.0.2.5:44285 -> 192.0.2.1:5060 REGISTER UDP
+09:14:22.883 192.0.2.1:5060 -> 192.0.2.5:44285 401 Unauthorized UDP
+09:14:22.901 192.0.2.5:44285 -> 192.0.2.1:5060 REGISTER UDP
+09:14:22.904 192.0.2.1:5060 -> 192.0.2.5:44285 200 OK UDP
 ```
+
+`--report --no-cli-print` gives the per-call view of the same file instead:
+
+```text
+$ sipnab -N -I demo.pcap --report --no-cli-print | head -4
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+a84b4c76e66710@192.0.2.5         alice          alice          Registered   -      0s         4      -        -
+3848276298220188511@192.0.2.6    alice          bob            Completed    200    14s        15     0.7s     -
+```
+
+Two things surprise people here. The `Code` column reads INVITE transactions
+only, so a `REGISTER` row shows `-` whatever the registrar answered. And
+`Duration` is the span from the dialog's first message to its last, not talk
+time.
 
 ## Next steps
 

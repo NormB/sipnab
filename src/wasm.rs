@@ -224,7 +224,15 @@ impl SipnabSession {
         let matching: Vec<&str> = self
             .dialog_store
             .iter()
-            .filter(|d| filter.matches_dialog(d, &empty_streams))
+            // The wasm build carries no stream store, so it has no RTP to
+            // reason about and must not claim a call had none.
+            .filter(|d| {
+                filter.matches_dialog(
+                    d,
+                    &empty_streams,
+                    crate::rtp::diagnosis::CaptureMedia::Absent,
+                )
+            })
             .map(|d| d.call_id.as_str())
             .collect();
         Ok(serde_json::to_string(&matching).unwrap_or_default())

@@ -12,7 +12,7 @@ use std::net::IpAddr;
 
 use super::stream::RtpStream;
 use crate::sip::dialog::SipDialog;
-use crate::sip::sdp::{SdpSession, effective_address};
+use crate::sip::sdp::{SdpDirection, SdpSession, effective_address};
 
 /// Codec asymmetry — A leg uses one codec, B leg uses another.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -120,28 +120,222 @@ impl Default for AsymmetryThresholds {
     }
 }
 
+/// Whether the capture as a whole recorded any RTP.
+///
+/// A run-level fact, not a per-call one, and the difference matters: on a
+/// signalling-only capture — a proxy tap that never sees media, a HEP feed,
+/// `--no-rtp` — *every* answered call has zero RTP, and a `no_media` flag
+/// computed without this would describe where the capture was taken rather
+/// than what happened on the call. Measured on one signalling-only corpus
+/// capture, the guard is the difference between 338 no-media claims and none.
+///
+/// It is an enum rather than a `bool` so the call sites read as a statement
+/// about the capture instead of an unlabelled `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureMedia {
+    /// The capture recorded at least one RTP stream, so an individual call
+    /// having none is evidence about that call.
+    Observed,
+    /// The capture recorded no RTP at all, so it cannot answer a question
+    /// about any one call's media.
+    Absent,
+}
+
+impl CaptureMedia {
+    /// Read the fact off a stream store.
+    pub fn of_store(store: &crate::rtp::stream_store::StreamStore) -> Self {
+        if store.is_empty() {
+            CaptureMedia::Absent
+        } else {
+            CaptureMedia::Observed
+        }
+    }
+}
+
+/// The media a dialog negotiated, reduced to what the diagnosis needs.
+///
+/// # Which offer/answer this reads, and why
+///
+/// A dialog is not one SDP. It is a sequence of offer/answer exchanges — the
+/// initial INVITE and its 200, a re-INVITE for hold, a resume, a codec
+/// renegotiation — and "the SDP" is a decision rather than a lookup. This type
+/// makes the decision once, explicitly:
+///
+/// * [`advertised`](Self::advertised) is the union of the connection addresses
+///   from **every** exchange in the dialog, offer and answer alike. The RTP a
+///   diagnosis compares against spans the whole call, so an anchor that a
+///   re-INVITE later replaced was still legitimate while media flowed through
+///   it. Reading only the newest exchange would report every hold, resume and
+///   anchor change as a NAT fault.
+/// * [`expects_media`](Self::expects_media) is true when **any** exchange
+///   described media that was actually meant to flow: an RTP transport, a
+///   non-zero `m=` port, a connection address that is not the black hole, and
+///   a direction other than `a=inactive`. A call held for its entire life
+///   carries no RTP by agreement, and calling that "no media" would invent a
+///   fault. A call that negotiated `sendrecv` at any point and then carried
+///   nothing did fail.
+/// * [`negotiated`](Self::negotiated) is true when SDP appeared in both a
+///   request and a response, which is what completes an offer/answer under
+///   every ordering — INVITE/200, INVITE/183, and the delayed offer carried in
+///   a 200 and answered in the ACK. Counting bodies instead would let an
+///   INVITE and its own retransmission look like a negotiation.
+///
+/// Building one is cheap but not free (it reparses the dialog's SDP bodies),
+/// so callers construct it only when a diagnosis is actually going to be read.
+#[derive(Debug, Clone)]
+pub struct MediaContext {
+    /// Every connection address the dialog advertised, in first-seen order.
+    /// Addresses that do not parse as an IP (an FQDN `c=` line) are absent,
+    /// which suppresses the NAT check rather than guessing at it.
+    advertised: Vec<IpAddr>,
+    /// The first advertised address, kept as written, for the report.
+    primary: Option<String>,
+    /// SDP appeared in both a request and a response: an offer was answered.
+    negotiated: bool,
+    /// Some exchange described media that was expected to flow.
+    expects_media: bool,
+    /// The dialog reached a 2xx — media was supposed to happen at all.
+    established: bool,
+    /// What the capture as a whole saw.
+    capture: CaptureMedia,
+}
+
+impl Default for MediaContext {
+    /// A context that knows nothing: no advertised address, no completed
+    /// negotiation, and a capture presumed to hold no media.
+    ///
+    /// Written out rather than derived because the capture field has no
+    /// neutral value. [`CaptureMedia::Absent`] is the choice that withholds a
+    /// `no_media` claim, and withholding is what "I know nothing" should do.
+    fn default() -> Self {
+        MediaContext {
+            advertised: Vec::new(),
+            primary: None,
+            negotiated: false,
+            expects_media: false,
+            established: false,
+            capture: CaptureMedia::Absent,
+        }
+    }
+}
+
+impl MediaContext {
+    /// Read a dialog's negotiation, paired with what the capture could see.
+    pub fn for_dialog(dialog: &SipDialog, capture: CaptureMedia) -> Self {
+        let mut ctx = MediaContext {
+            capture,
+            established: matches!(dialog.final_status_code(), Some(200..=299)),
+            ..MediaContext::default()
+        };
+
+        let (mut sdp_in_request, mut sdp_in_response) = (false, false);
+        for msg in &dialog.messages {
+            let Some(sdp) = msg.sdp() else { continue };
+            if msg.is_request {
+                sdp_in_request = true;
+            } else {
+                sdp_in_response = true;
+            }
+            ctx.absorb(&sdp);
+        }
+        ctx.negotiated = sdp_in_request && sdp_in_response;
+        ctx
+    }
+
+    /// A context that knows one SDP session and nothing about the dialog or
+    /// the capture around it. For callers holding a bare session (and for
+    /// tests); it can never satisfy `no_media`, which needs the dialog.
+    pub fn from_session(sdp: &SdpSession, capture: CaptureMedia) -> Self {
+        let mut ctx = MediaContext {
+            capture,
+            ..MediaContext::default()
+        };
+        ctx.absorb(sdp);
+        ctx
+    }
+
+    /// Fold one SDP body into the accumulated view.
+    fn absorb(&mut self, sdp: &SdpSession) {
+        for media in &sdp.media {
+            let Some(addr) = effective_address(media, sdp) else {
+                continue;
+            };
+            if self.primary.is_none() {
+                self.primary = Some(addr.clone());
+            }
+            let parsed = addr.parse::<IpAddr>().ok();
+            if let Some(ip) = parsed
+                && !self.advertised.contains(&ip)
+            {
+                self.advertised.push(ip);
+            }
+            // `c=0.0.0.0` (and the IPv6 `::`) is the RFC 2543 hold form older
+            // gateways still emit: it asks for no media at all.
+            let black_holed = parsed.is_some_and(|ip| ip.is_unspecified());
+            // T.38 (`m=image ... udptl`) and other non-RTP transports carry no
+            // RTP by definition, so their absence is not a media failure.
+            let carries_rtp = media.proto.to_ascii_uppercase().contains("RTP");
+            if carries_rtp
+                && media.port != 0
+                && !black_holed
+                && media.direction != SdpDirection::Inactive
+            {
+                self.expects_media = true;
+            }
+        }
+    }
+
+    /// Every connection address the dialog advertised.
+    pub fn advertised(&self) -> &[IpAddr] {
+        &self.advertised
+    }
+
+    /// Whether an offer in this dialog was answered.
+    pub fn negotiated(&self) -> bool {
+        self.negotiated
+    }
+
+    /// Whether any exchange described media that was expected to flow.
+    pub fn expects_media(&self) -> bool {
+        self.expects_media
+    }
+}
+
 /// Diagnose media path issues for a dialog's associated RTP streams.
 ///
-/// Examines the stream list and optional SDP session to detect:
+/// Examines the stream list and the dialog's negotiated media to detect:
 /// - **One-way audio:** Streams exist in only one direction while the dialog
 ///   has been established long enough for bidirectional media.
-/// - **NAT mismatch:** The SDP `c=` address differs from the actual RTP
-///   packet source address, indicating NAT rewriting.
-/// - **No media:** SDP was negotiated but zero RTP packets have arrived.
+/// - **NAT mismatch:** A stream's RTP source address is one that no SDP in the
+///   dialog advertised — the signature of a NAT rewriting the media source.
+/// - **No media:** An answered call negotiated media that was expected to
+///   flow, and none arrived.
+///
+/// `media` is taken by reference rather than as an `Option` on purpose. It
+/// used to be `Option<&SdpSession>`, every production caller passed `None`,
+/// and `nat_mismatch` and `no_media` were therefore false on every surface
+/// sipnab has — silently, because a filter that matches nothing looks exactly
+/// like a clean capture. There is no longer a way to ask for the diagnosis and
+/// withhold what it needs; a caller with nothing to say passes
+/// [`MediaContext::default`], and that reads as the claim it is.
 ///
 /// Returns a `MediaDiagnosis` with boolean flags and descriptive hints.
-pub fn diagnose_media(
-    dialog_streams: &[&RtpStream],
-    sdp_info: Option<&SdpSession>,
-) -> MediaDiagnosis {
+pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> MediaDiagnosis {
     let mut diag = MediaDiagnosis::default();
 
-    // No media detection
+    // No media detection. Every clause is load-bearing: see `MediaContext`
+    // for why an unanswered, held, or black-holed call is not a fault, and
+    // `CaptureMedia` for why a capture with no RTP cannot answer at all.
     if dialog_streams.is_empty() {
-        if sdp_info.is_some() {
+        diag.sdp_media = media.primary.clone();
+        if media.negotiated
+            && media.established
+            && media.expects_media
+            && media.capture == CaptureMedia::Observed
+        {
             diag.no_media = true;
             diag.hints
-                .push("SDP negotiated but zero RTP packets observed.".to_string());
+                .push("Media was negotiated and answered, but no RTP was observed.".to_string());
         }
         return diag;
     }
@@ -192,31 +386,45 @@ pub fn diagnose_media(
         }
     }
 
-    // NAT mismatch detection: compare SDP c= address against actual RTP source
-    if let Some(sdp) = sdp_info {
-        'media: for media in &sdp.media {
-            if let Some(addr_str) = effective_address(media, sdp) {
-                diag.sdp_media = Some(addr_str.clone());
-
-                if let Ok(sdp_addr) = addr_str.parse::<IpAddr>() {
-                    // Check if any stream's source address differs from SDP
-                    for stream in dialog_streams {
-                        let actual_src = stream.key.src.ip();
-                        if actual_src != sdp_addr {
-                            diag.nat_mismatch = true;
-                            diag.actual_media = Some(actual_src.to_string());
-                            diag.hints.push(format!(
-                                "SDP c= address ({sdp_addr}) differs from actual RTP source ({actual_src}) \
-                                 — likely NAT issue."
-                            ));
-                            // Stop at the first mismatching media so the reported
-                            // sdp_media/actual_media reflect the media that actually
-                            // mismatched, not a later (matching) m= line.
-                            break 'media;
-                        }
-                    }
-                }
+    // NAT mismatch detection: a stream sourced from an address that no SDP in
+    // this dialog ever advertised.
+    //
+    // Not "the c= address differs from this stream's source", which is the
+    // shape this check used to have. A two-way call has TWO advertised
+    // addresses — the caller's and the callee's — and RTP flows from both, so
+    // comparing every stream against a single `c=` line reports one direction
+    // of every healthy call as a NAT fault. Set membership is the question
+    // that survives contact with a bidirectional call.
+    //
+    // Addresses only, never ports: NAT and RTP proxies rewrite the port on a
+    // large share of ordinary calls without breaking anything, while media
+    // arriving from an address nobody advertised is the fault operators are
+    // actually looking for.
+    diag.sdp_media = media.primary.clone();
+    if !media.advertised.is_empty() {
+        for stream in dialog_streams {
+            let actual_src = stream.key.src.ip();
+            if media.advertised.contains(&actual_src) {
+                continue;
             }
+            diag.nat_mismatch = true;
+            diag.actual_media = Some(actual_src.to_string());
+            // The address this leg should have used is an advertised one that
+            // is not the far end this stream is aimed at.
+            let far_end = stream.key.dst.ip();
+            if let Some(expected) = media
+                .advertised
+                .iter()
+                .find(|a| **a != far_end)
+                .or_else(|| media.advertised.first())
+            {
+                diag.sdp_media = Some(expected.to_string());
+                diag.hints.push(format!(
+                    "RTP arrived from {actual_src}, which no SDP in this dialog advertised \
+                     (it offered {expected}) — the media source was rewritten, typically by NAT."
+                ));
+            }
+            break;
         }
     }
 
@@ -489,6 +697,94 @@ mod tests {
         }
     }
 
+    /// An audio+video SDP: the session `c=` is `session_addr`, the audio
+    /// `m=` overrides it with `audio_addr`, and the video `m=` inherits the
+    /// session one. Two advertised addresses from one offer.
+    fn audio_video_sdp(session_addr: &str, audio_addr: &str) -> SdpSession {
+        let mk_media = |mtype: &str, port: u16, conn: Option<&str>| SdpMedia {
+            media_type: mtype.to_string(),
+            port,
+            proto: "RTP/AVP".to_string(),
+            formats: vec!["0".to_string()],
+            connection: conn.map(|a| SdpConnection {
+                addr: a.to_string(),
+            }),
+            direction: SdpDirection::SendRecv,
+            rtpmap: Vec::new(),
+            fmtp: Vec::new(),
+            ptime: None,
+            crypto: Vec::new(),
+            ice_candidates: Vec::new(),
+        };
+        SdpSession {
+            origin: None,
+            session_name: None,
+            connection: Some(SdpConnection {
+                addr: session_addr.to_string(),
+            }),
+            media: vec![
+                mk_media("audio", 20000, Some(audio_addr)),
+                mk_media("video", 20002, None),
+            ],
+        }
+    }
+
+    /// Build an answered INVITE dialog whose offer and answer both carry an
+    /// audio SDP at `addr:port` with the given direction attribute.
+    ///
+    /// Two SDP bodies, one in the request and one in the response — the shape
+    /// [`MediaContext::for_dialog`] reads as a completed offer/answer.
+    fn answered_dialog_with_sdp(direction: &str, addr: &str, port: u16) -> SipDialog {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message;
+
+        let body = format!(
+            "v=0\r\n\
+             o=- 0 0 IN IP4 {addr}\r\n\
+             s=-\r\n\
+             c=IN IP4 {addr}\r\n\
+             t=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\n\
+             a=rtpmap:0 PCMU/8000\r\n\
+             a={direction}\r\n"
+        );
+        let build = |first: &str, to: &str| {
+            let raw = build_sip_message(
+                first,
+                &[
+                    "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-diag",
+                    "From: <sip:a@example.net>;tag=aaa",
+                    to,
+                    "Call-ID: media-ctx@example.net",
+                    "CSeq: 1 INVITE",
+                    "Content-Type: application/sdp",
+                    &format!("Content-Length: {}", body.len()),
+                ],
+                body.as_bytes(),
+            );
+            parse_sip(
+                &raw,
+                ts(),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("fixture should parse")
+        };
+
+        let invite = build(
+            "INVITE sip:b@example.net SIP/2.0",
+            "To: <sip:b@example.net>",
+        );
+        let ok = build("SIP/2.0 200 OK", "To: <sip:b@example.net>;tag=bbb");
+        let mut dialog = SipDialog::new(&invite).expect("dialog from INVITE");
+        dialog.messages.push(ok);
+        dialog
+    }
+
     /// Two streams in opposite directions are not flagged as one-way audio.
     #[test]
     fn bidirectional_streams_no_one_way() {
@@ -496,7 +792,7 @@ mod tests {
         let s2 = make_stream([10, 0, 0, 2], [10, 0, 0, 1], 30000, 20000);
         let streams: Vec<&RtpStream> = vec![&s1, &s2];
 
-        let diag = diagnose_media(&streams, None);
+        let diag = diagnose_media(&streams, &MediaContext::default());
         assert!(!diag.one_way_audio);
         assert!(diag.hints.is_empty() || !diag.hints.iter().any(|h| h.contains("only")));
     }
@@ -507,7 +803,7 @@ mod tests {
         let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
         let streams: Vec<&RtpStream> = vec![&s1];
 
-        let diag = diagnose_media(&streams, None);
+        let diag = diagnose_media(&streams, &MediaContext::default());
         assert!(diag.one_way_audio);
         assert!(diag.hints.iter().any(|h| h.contains("only")));
     }
@@ -521,7 +817,10 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&s1];
         let sdp = make_sdp("192.168.1.100", 20000);
 
-        let diag = diagnose_media(&streams, Some(&sdp));
+        let diag = diagnose_media(
+            &streams,
+            &MediaContext::from_session(&sdp, CaptureMedia::Observed),
+        );
         assert!(diag.nat_mismatch);
         assert_eq!(diag.sdp_media.as_deref(), Some("192.168.1.100"));
         assert_eq!(diag.actual_media.as_deref(), Some("10.0.0.1"));
@@ -535,26 +834,79 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&s1];
         let sdp = make_sdp("10.0.0.1", 20000);
 
-        let diag = diagnose_media(&streams, Some(&sdp));
+        let diag = diagnose_media(
+            &streams,
+            &MediaContext::from_session(&sdp, CaptureMedia::Observed),
+        );
         assert!(!diag.nat_mismatch);
     }
 
-    /// SDP negotiated but no streams observed flags `no_media`.
+    /// An answered call that negotiated media it then never carried flags
+    /// `no_media`.
+    ///
+    /// A bare SDP session is deliberately not enough. `no_media` is a claim
+    /// about a *call* — that an offer was answered and audio was supposed to
+    /// follow — so it needs the dialog, and a caller holding only a session
+    /// cannot accidentally assert it.
     #[test]
-    fn no_rtp_with_sdp_flags_no_media() {
+    fn answered_negotiation_with_no_rtp_flags_no_media() {
+        let streams: Vec<&RtpStream> = vec![];
+        let dialog = answered_dialog_with_sdp("sendrecv", "10.0.0.1", 20000);
+
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        let diag = diagnose_media(&streams, &ctx);
+        assert!(diag.no_media, "hints were {:?}", diag.hints);
+        assert!(diag.hints.iter().any(|h| h.contains("no RTP was observed")));
+    }
+
+    /// The same call on a capture that recorded no RTP at all does not flag
+    /// `no_media`: the capture cannot answer the question it is being asked.
+    #[test]
+    fn no_media_is_withheld_when_the_capture_recorded_no_rtp() {
+        let streams: Vec<&RtpStream> = vec![];
+        let dialog = answered_dialog_with_sdp("sendrecv", "10.0.0.1", 20000);
+
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Absent);
+        let diag = diagnose_media(&streams, &ctx);
+        assert!(!diag.no_media);
+        assert!(diag.hints.is_empty());
+    }
+
+    /// A call whose media was negotiated `a=inactive` throughout carries no
+    /// RTP by agreement, so it is not a media failure.
+    #[test]
+    fn held_call_does_not_flag_no_media() {
+        let streams: Vec<&RtpStream> = vec![];
+        let dialog = answered_dialog_with_sdp("inactive", "10.0.0.1", 20000);
+
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        assert!(
+            !ctx.expects_media(),
+            "inactive media is not expected to flow"
+        );
+        assert!(!diagnose_media(&streams, &ctx).no_media);
+    }
+
+    /// A bare SDP session with no dialog behind it can never assert
+    /// `no_media`, whatever the capture saw.
+    #[test]
+    fn a_session_without_a_dialog_cannot_claim_no_media() {
         let streams: Vec<&RtpStream> = vec![];
         let sdp = make_sdp("10.0.0.1", 20000);
 
-        let diag = diagnose_media(&streams, Some(&sdp));
-        assert!(diag.no_media);
-        assert!(diag.hints.iter().any(|h| h.contains("zero RTP")));
+        let ctx = MediaContext::from_session(&sdp, CaptureMedia::Observed);
+        assert!(
+            !ctx.negotiated(),
+            "one session is an offer, not a negotiation"
+        );
+        assert!(!diagnose_media(&streams, &ctx).no_media);
     }
 
     /// No streams and no SDP produces a clean diagnosis with no flags or hints.
     #[test]
     fn no_streams_no_sdp_is_clean() {
         let streams: Vec<&RtpStream> = vec![];
-        let diag = diagnose_media(&streams, None);
+        let diag = diagnose_media(&streams, &MediaContext::default());
         assert!(!diag.no_media);
         assert!(!diag.one_way_audio);
         assert!(!diag.nat_mismatch);
@@ -571,7 +923,7 @@ mod tests {
         s1.cn_frames = 5; // 5/10 = 50% CN
         let streams: Vec<&RtpStream> = vec![&s1];
 
-        let diag = diagnose_media(&streams, None);
+        let diag = diagnose_media(&streams, &MediaContext::default());
         // With high CN ratio, one_way_audio should NOT be flagged
         assert!(
             !diag.one_way_audio,
@@ -592,7 +944,10 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&s1];
         let sdp = make_sdp("192.168.1.100", 20000);
 
-        let diag = diagnose_media(&streams, Some(&sdp));
+        let diag = diagnose_media(
+            &streams,
+            &MediaContext::from_session(&sdp, CaptureMedia::Observed),
+        );
         assert!(diag.one_way_audio);
         assert!(diag.nat_mismatch);
         assert!(diag.hints.iter().any(|h| h.contains("wrong address")));
@@ -688,7 +1043,7 @@ mod tests {
         let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 18, "G729", 8000, 20, 0, 100);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         let asym = diag.codec_asymmetry.expect("codec asymmetry should be set");
         assert_eq!(asym.a_codec, "PCMU");
@@ -702,7 +1057,7 @@ mod tests {
         let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 100);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.codec_asymmetry.is_none());
     }
@@ -715,7 +1070,7 @@ mod tests {
         let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 96, "PCMA", 8000, 20, 0, 100);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         let asym = diag
             .payload_type_asymmetry
@@ -733,7 +1088,7 @@ mod tests {
         let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 8, "PCMA", 8000, 20, 0, 100);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.codec_asymmetry.is_some());
         assert!(diag.payload_type_asymmetry.is_none());
@@ -746,7 +1101,7 @@ mod tests {
         let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 30, 0, 100);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         let asym = diag.ptime_asymmetry.expect("ptime asymmetry should be set");
         assert_eq!(asym.a_ptime_ms, 20);
@@ -760,7 +1115,7 @@ mod tests {
         let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 100);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.ptime_asymmetry.is_none());
     }
@@ -776,7 +1131,7 @@ mod tests {
         b.last_seen = b.first_seen + chrono::Duration::seconds(25);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         let dur = diag
             .duration_asymmetry
@@ -797,7 +1152,7 @@ mod tests {
         b.last_seen = b.first_seen + chrono::Duration::milliseconds(29_500);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.duration_asymmetry.is_none());
     }
@@ -811,7 +1166,7 @@ mod tests {
         let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 2, 100);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(
             &mut diag,
             Some(&dialog),
@@ -831,7 +1186,7 @@ mod tests {
         let b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 100);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(
             &mut diag,
             Some(&dialog),
@@ -841,52 +1196,52 @@ mod tests {
         assert!(diag.late_media.is_none());
     }
 
-    /// NAT mismatch must report the media that actually mismatched, not the
-    /// last-evaluated `m=` line. The first (audio) media's `c=` is a pre-NAT
-    /// private address that differs from the RTP source, while the second
-    /// (video) media falls back to the session address that matches it.
+    /// A multi-media offer advertises one address per `m=` line, and RTP
+    /// sourced from ANY of them is legitimate.
+    ///
+    /// The audio `m=` carries a pre-NAT private `c=`; the video `m=` falls
+    /// back to the session address, which is where the RTP actually came
+    /// from. Judging each `m=` line separately called that a NAT fault. The
+    /// dialog advertised the address, so it is not one.
     #[test]
-    fn nat_mismatch_reports_mismatching_media_not_last() {
+    fn rtp_from_any_advertised_media_is_not_a_nat_mismatch() {
         let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
         let streams: Vec<&RtpStream> = vec![&s1];
+        let sdp = audio_video_sdp("10.0.0.1", "192.168.1.100");
 
-        let mk_media = |mtype: &str, port: u16, conn: Option<&str>| SdpMedia {
-            media_type: mtype.to_string(),
-            port,
-            proto: "RTP/AVP".to_string(),
-            formats: vec!["0".to_string()],
-            connection: conn.map(|a| SdpConnection {
-                addr: a.to_string(),
-            }),
-            direction: SdpDirection::SendRecv,
-            rtpmap: Vec::new(),
-            fmtp: Vec::new(),
-            ptime: None,
-            crypto: Vec::new(),
-            ice_candidates: Vec::new(),
-        };
-        let sdp = SdpSession {
-            origin: None,
-            session_name: None,
-            connection: Some(SdpConnection {
-                addr: "10.0.0.1".to_string(),
-            }),
-            media: vec![
-                // audio: media-level c= is a pre-NAT private address → mismatches src.
-                mk_media("audio", 20000, Some("192.168.1.100")),
-                // video: no media c=, falls back to session 10.0.0.1 → matches src.
-                mk_media("video", 20002, None),
-            ],
-        };
+        let diag = diagnose_media(
+            &streams,
+            &MediaContext::from_session(&sdp, CaptureMedia::Observed),
+        );
+        assert!(
+            !diag.nat_mismatch,
+            "10.0.0.1 was advertised by the video m= line; hints were {:?}",
+            diag.hints
+        );
+    }
 
-        let diag = diagnose_media(&streams, Some(&sdp));
+    /// When the source matches none of several advertised addresses, the
+    /// report names an advertised address that is not the far end — the one
+    /// this leg should have used — rather than whichever `m=` line came last.
+    #[test]
+    fn nat_mismatch_names_the_address_this_leg_should_have_used() {
+        // Source 198.51.100.7 is advertised nowhere; the far end is 10.0.0.1.
+        let s1 = make_stream([198, 51, 100, 7], [10, 0, 0, 1], 20000, 30000);
+        let streams: Vec<&RtpStream> = vec![&s1];
+        let sdp = audio_video_sdp("10.0.0.1", "192.168.1.100");
+
+        let diag = diagnose_media(
+            &streams,
+            &MediaContext::from_session(&sdp, CaptureMedia::Observed),
+        );
         assert!(diag.nat_mismatch);
+        assert_eq!(diag.actual_media.as_deref(), Some("198.51.100.7"));
         assert_eq!(
             diag.sdp_media.as_deref(),
             Some("192.168.1.100"),
-            "should report the address of the media that actually mismatched"
+            "the far end is 10.0.0.1, so the address this leg should have used \
+             is the other advertised one"
         );
-        assert_eq!(diag.actual_media.as_deref(), Some("10.0.0.1"));
     }
 
     /// Inferred ptime must not be inflated by packet loss: lost packets still
@@ -909,7 +1264,7 @@ mod tests {
         let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
         let streams: Vec<&RtpStream> = vec![&a];
 
-        let mut diag = diagnose_media(&streams, None);
+        let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.codec_asymmetry.is_none());
         assert!(diag.ptime_asymmetry.is_none());

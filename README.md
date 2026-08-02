@@ -109,10 +109,11 @@ CLI mode instead of the TUI, filtering on the From header:
 sudo sipnab -N -d eth0 --from 1001
 ```
 
-Diagnose a specific call from a pcap:
+Diagnose a specific call from a pcap. `--no-cli-print` keeps the whole capture's
+message dump out of the way, so the report is all you get:
 
 ```bash
-sipnab -N -I capture.pcap --call-report <call-id>
+sipnab -N -I capture.pcap --call-report <call-id> --no-cli-print
 ```
 
 Show only the calls sipnab considers problematic:
@@ -190,15 +191,36 @@ Note: `audio` is in the default feature set, but it does **not** add a load-time
 
 ## Documentation
 
-- [CLI Reference](docs/cli-reference.md) -- all flags, organized by group
-- [Library API](docs/library.md) -- using sipnab as a Rust crate; typed `ParseError`/`CaptureError`
+[docs/README.md](docs/README.md) is the full index, grouped by what you are
+trying to do. The pages worth knowing by name:
+
+**Arrived with a problem**
+
+- [Troubleshooting](docs/troubleshooting.md) -- symptom to command. Calls that
+  fail, drop after a round number of minutes, ring for ages, or carry audio one
+  way only: what to run, and what the output means
 - [Cookbook](docs/examples.md) -- copy-paste recipes for common workflows
-- [Output Formats](docs/output-formats.md) -- NDJSON schema, jq recipes, pcap export
-- [Keybindings](docs/keybindings.md) -- TUI keyboard shortcuts
+- [Filter DSL](docs/filter-dsl.md) -- narrow to what matters
+  (`rtp.mos < 3.5 and one_way == true`), plus the diagnostic aliases
+
+**Looking something up**
+
+- [Installation](docs/install.md) -- binaries, packages, capabilities for live capture
+- [CLI Reference](docs/cli-reference.md) -- all flags, organized by group
 - [Config Reference](docs/config-reference.md) -- TOML config file format
   (starter file: [contrib/sipnabrc.example](contrib/sipnabrc.example))
+- [Output Formats](docs/output-formats.md) -- NDJSON schema, jq recipes, pcap export
+- [Keybindings](docs/keybindings.md) -- TUI keyboard shortcuts
+- [MOS and codecs](docs/mos-and-codecs.md) -- where the quality score comes
+  from, and which codecs report a placeholder instead
+- [REST API & Metrics](docs/rest-api.md) -- endpoints, response shapes, Prometheus
 - [MCP Server](docs/mcp.md) -- tools, transports, token bootstrap, systemd unit, troubleshooting
+- [Library API](docs/library.md) -- using sipnab as a Rust crate; typed `ParseError`/`CaptureError`
+
+**Understanding it**
+
 - [Architecture](docs/architecture.md) -- module map, data flow, threading model
+- [Fault model](docs/fault-model.md) -- what sipnab does when things go wrong
 - [Implementation Plan](docs/design/implementation-plan-v6.md) -- historical design decisions and roadmap
 
 ## Getting help
