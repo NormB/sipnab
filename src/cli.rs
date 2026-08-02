@@ -1031,22 +1031,6 @@ pub struct Cli {
     )]
     pub mcp_allow_shutdown: bool,
 
-    /// Allow the `open_capture` MCP tool to load a different capture.
-    ///
-    /// Off by default, so a stock server holds the capture it was started on.
-    /// The tool reads only files inside `--mcp-file-root`, refuses while the
-    /// current source is a live interface or is still being read, and mints a
-    /// new capture identity that every later answer carries — so a swap cannot
-    /// reach a consumer as an ordinary update.
-    ///
-    /// It still discards the analysis an operator may be reading. Enable it on
-    /// a long-lived server working through a corpus; leave it off where a
-    /// restart with a different `-I` costs nothing.
-    #[arg(
-        help_heading = "MCP (Model Context Protocol)",
-        long = "mcp-allow-open-capture"
-    )]
-    pub mcp_allow_open_capture: bool,
 
     // ── HEP (Homer Encapsulation Protocol) ───────────────────────────
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
