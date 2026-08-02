@@ -621,7 +621,7 @@ pub fn layout(
                 let dir = ss
                     .media
                     .first()
-                    .map(|m| m.direction.clone())
+                    .map(|m| m.direction)
                     .unwrap_or(SdpDirection::SendRecv);
                 if let Some(prev_codecs) = last_codecs.get(&cid) {
                     let mut badge_parts: Vec<String> = Vec::new();

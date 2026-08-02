@@ -396,8 +396,8 @@ fn wiki_intra_docs_links_resolve() {
     // gained a cross-link to `mos-and-codecs.md`, where the rule it depends on
     // — a far end's reported figures never move sipnab's own — is written out.
     assert_eq!(
-        seen, 249,
-        "extractor found {seen} wiki links, expected 249. More is fine — bump \
+        seen, 251,
+        "extractor found {seen} wiki links, expected 251. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
@@ -825,8 +825,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // matters here, and matches how `linked_code_targets_exist` pins its link
     // count. Adding a docs page fails this once, deliberately: bump the number.
     assert_eq!(
-        checked, 33,
-        "docs-page walk saw {checked} pages, expected 33. More is fine — bump \
+        checked, 34,
+        "docs-page walk saw {checked} pages, expected 34. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );

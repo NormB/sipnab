@@ -53,10 +53,26 @@ pub struct SdpMedia {
     pub crypto: Vec<SdpCrypto>,
     /// ICE candidate lines from `a=candidate` attributes.
     pub ice_candidates: Vec<String>,
+    /// Whether this media description carries `a=rtcp-mux` (RFC 5761 §5.1.1).
+    ///
+    /// In an offer it requests RTP and RTCP on one port; in an answer it agrees.
+    /// The pair matters: RFC 5761 §5.1.1 makes an offerer whose answer stayed
+    /// silent send RTCP on the separate port after all, so an offer and an
+    /// answer are two different facts and a `bool` per description holds both.
+    pub rtcp_mux: bool,
+    /// Explicit RTCP port from `a=rtcp:<port>` (RFC 3605 §2.1), when present.
+    ///
+    /// Without it RTCP goes to the RTP port plus one (RFC 3264 §6.1), which is
+    /// what makes "RTCP arrived somewhere else" a decidable observation.
+    pub rtcp_port: Option<u16>,
 }
 
 /// Stream directionality attribute.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Copy` because it is a fieldless enum passed by value throughout the
+/// offer/answer rules, where `&SdpDirection` would buy nothing and clutter
+/// every comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SdpDirection {
     /// Both send and receive (default).
     SendRecv,
@@ -314,6 +330,8 @@ fn parse_media_line(value: &str) -> Option<SdpMedia> {
         ptime: None,
         crypto: Vec::new(),
         ice_candidates: Vec::new(),
+        rtcp_mux: false,
+        rtcp_port: None,
     })
 }
 
@@ -349,6 +367,12 @@ fn parse_attribute(value: &str, media: &mut SdpMedia) {
             media.direction = SdpDirection::Inactive;
             return;
         }
+        // RFC 5761 §5.1.1: a flag attribute, no value. In an offer it asks for
+        // RTP and RTCP on one port, in an answer it agrees.
+        "rtcp-mux" => {
+            media.rtcp_mux = true;
+            return;
+        }
         _ => {}
     }
 
@@ -367,6 +391,12 @@ fn parse_attribute(value: &str, media: &mut SdpMedia) {
         }
     } else if let Some(rest) = value.strip_prefix("candidate:") {
         media.ice_candidates.push(rest.to_string());
+    } else if let Some(rest) = value.strip_prefix("rtcp:") {
+        // RFC 3605 §2.1: `a=rtcp:<port> [nettype space addrtype space
+        // connection-address]`. Only the port is read here — the optional
+        // address redirects RTCP elsewhere entirely, which is a separate
+        // question from which port it lands on.
+        media.rtcp_port = rest.split_whitespace().next().and_then(|p| p.parse().ok());
     }
 }
 
@@ -419,6 +449,45 @@ fn parse_crypto(value: &str) -> Option<SdpCrypto> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `a=rtcp-mux` and `a=rtcp:` are read, and their absence stays absent.
+    ///
+    /// Both were parsed as unknown attributes and dropped. RFC 5761 §5.1.1
+    /// makes the offer/answer pair decide which port RTCP lands on, so a tool
+    /// that cannot see the attribute cannot tell a conformant capture from one
+    /// where RTCP went somewhere nobody agreed to.
+    #[test]
+    fn rtcp_attributes_are_parsed() {
+        let muxed = parse_sdp(
+            b"v=0\r\n\
+              c=IN IP4 192.0.2.1\r\n\
+              m=audio 49170 RTP/AVP 97\r\n\
+              a=rtpmap:97 iLBC/8000\r\n\
+              a=rtcp-mux\r\n",
+        )
+        .expect("muxed SDP must parse");
+        assert!(muxed.media[0].rtcp_mux);
+        assert_eq!(muxed.media[0].rtcp_port, None);
+
+        let explicit = parse_sdp(
+            b"v=0\r\n\
+              c=IN IP4 192.0.2.1\r\n\
+              m=audio 49170 RTP/AVP 0\r\n\
+              a=rtcp:53020 IN IP4 192.0.2.9\r\n",
+        )
+        .expect("explicit RTCP port must parse");
+        assert!(!explicit.media[0].rtcp_mux);
+        assert_eq!(explicit.media[0].rtcp_port, Some(53020));
+
+        let plain = parse_sdp(
+            b"v=0\r\n\
+              c=IN IP4 192.0.2.1\r\n\
+              m=audio 49170 RTP/AVP 0\r\n",
+        )
+        .expect("plain SDP must parse");
+        assert!(!plain.media[0].rtcp_mux);
+        assert_eq!(plain.media[0].rtcp_port, None);
+    }
 
     /// Minimal SDP with one audio media line.
     #[test]
