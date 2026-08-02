@@ -1608,12 +1608,199 @@ pub fn capture_hep(
     Ok(())
 }
 
+// ── Deliberate export: a destination the operator named ──────────────
+//
+// `--hep-send` is the one place sipnab originates traffic outside the
+// scanner-kill path, and it is a *different* question from the one
+// [`crate::security::transmit_guard::TransmitPermit`] answers.
+//
+// The kill path aims at an address read out of a packet. On a capture file
+// those addresses are historical third parties who never asked to hear from
+// this tool, so that path is refused offline and there is no flag to reopen
+// it. `--hep-send` aims at a collector the operator typed on the command
+// line — their own infrastructure, chosen deliberately — so refusing it on a
+// file would break replaying an archived capture into a Homer instance, a
+// real workflow. It stays allowed.
+//
+// What it still owes the operator is a type that says which of those two
+// things it is, and a sentence saying what will happen. `HepExportPermit`
+// is the type. [`file_export_notice`] is the sentence.
+//
+// See `docs/design/outbound-transmit-capability.md` for the shape these
+// follow, in particular why the two permits must never be interconvertible.
+
+/// The flag an operator types to ask for the HEP export, quoted verbatim in
+/// [`file_export_notice`] so the message names what they wrote.
+pub const HEP_SEND_FLAG: &str = "--hep-send";
+
+/// A destination the **operator** named — on the command line or in a
+/// configuration file — for sipnab to originate traffic at.
+///
+/// [`from_cli_flag`](Self::from_cli_flag) is the only constructor, and the
+/// omissions are the design: there is deliberately no `From<IpAddr>`, no
+/// `From<SocketAddr>`, no constructor taking a [`Packet`],
+/// [`HepPacket`] or a parsed SIP message. A future call site that wants to
+/// export to an address it read out of the capture cannot express it, because
+/// there is no function to call — the same trick
+/// [`crate::security::transmit_guard::TransmitPermit`]'s private field plays
+/// on the capture *source*, applied here to the *destination*.
+///
+/// That distinction is the whole point. "The operator named this collector"
+/// licenses sending them the capture. It licenses nothing about the addresses
+/// inside the capture, and the type is what keeps those two apart when the
+/// next exporter is written.
+#[derive(Debug, Clone)]
+pub struct OperatorDestination {
+    /// The flag the value arrived on, quoted back in operator-facing text.
+    flag: &'static str,
+    /// The destination as the operator wrote it (`host:port`), unresolved.
+    value: String,
+}
+
+impl OperatorDestination {
+    /// Record a destination the operator supplied through `flag`.
+    ///
+    /// `value` must come from a command-line argument or a configuration
+    /// file. Passing an address formatted out of captured traffic would defeat
+    /// the type, and is the one misuse it cannot detect — which is why no
+    /// constructor accepts an address type in the first place.
+    ///
+    /// # Arguments
+    ///
+    /// * `flag` — the flag the operator typed, e.g. [`HEP_SEND_FLAG`].
+    /// * `value` — the destination they gave it, in `host:port` form.
+    pub fn from_cli_flag(flag: &'static str, value: &str) -> Self {
+        Self {
+            flag,
+            value: value.to_string(),
+        }
+    }
+
+    /// The flag this destination arrived on.
+    pub fn flag(&self) -> &'static str {
+        self.flag
+    }
+
+    /// The destination as the operator wrote it, unresolved.
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+}
+
+/// Proof that the operator, in this run, named the destination sipnab is
+/// about to originate traffic at.
+///
+/// Constructible only by [`Self::for_destination`], which needs an
+/// [`OperatorDestination`], which in turn cannot be built from anything the
+/// capture supplied. The private unit field is what makes that the only route.
+///
+/// **This is not a [`crate::security::transmit_guard::TransmitPermit`] and
+/// never converts into one, in either direction.** That permit proves the run
+/// watches a live source and licenses answering an address read out of it.
+/// This one proves an operator named a destination and licenses nothing about
+/// the capture's contents beyond exporting them where they asked. Collapsing
+/// the two would silently let a capture-derived address become an export
+/// target, with no compile error to mark the loss.
+#[derive(Debug, Clone, Copy)]
+pub struct HepExportPermit(());
+
+impl HepExportPermit {
+    /// Grant the export because `destination` came from the operator.
+    ///
+    /// There is no failing case: the proof is the argument's *type*, not any
+    /// check performed here. Holding an [`OperatorDestination`] already means
+    /// the address came through a flag or a config file rather than out of a
+    /// packet.
+    pub fn for_destination(destination: &OperatorDestination) -> Self {
+        // Bound to the destination by construction; nothing further to inspect.
+        let _ = destination;
+        Self(())
+    }
+}
+
+/// How many capture file names the export notice lists before summarising the
+/// rest. Enough to recognise the input at a glance, few enough that a
+/// `tcpdump -C -W` ring of forty files does not bury the sentence that matters.
+const NOTICE_MAX_NAMED_FILES: usize = 3;
+
+/// What an operator must be told when `--hep-send` is pointed at a run that is
+/// reading capture FILES: that the contents of those files are what leaves.
+///
+/// `sipnab -I customer.pcap --hep-send collector:9060` used to log a single
+/// line naming the socket — "HEP sender targeting …" — which describes the
+/// plumbing, not the consequence. An engineer smoke-testing a HEP pipeline
+/// against a customer capture has no reason to read that as "every SIP message
+/// in this file is about to leave the machine", and the flag's name says
+/// nothing about files. The export is legitimate. The silence was not.
+///
+/// Deliberately *not* a refusal. The destination is the operator's own, they
+/// typed it, and replaying an archive into a collector is a supported
+/// workflow — see the module comment above [`OperatorDestination`].
+///
+/// # Arguments
+///
+/// * `destination` — the collector the operator named, quoted with its flag.
+/// * `paths` — the capture files this run reads, in read order.
+///
+/// # Returns
+///
+/// The message to log before the first packet is read. Returns `None` when
+/// `paths` is empty, which means the run is not reading files and has nothing
+/// to announce.
+pub fn file_export_notice(
+    destination: &OperatorDestination,
+    paths: &[std::path::PathBuf],
+) -> Option<String> {
+    if paths.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = paths
+        .iter()
+        .take(NOTICE_MAX_NAMED_FILES)
+        .map(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.to_string_lossy().into_owned())
+        })
+        .collect();
+    let listed = named.join(", ");
+    let remainder = paths.len().saturating_sub(named.len());
+    let files = if paths.len() == 1 {
+        format!("a capture FILE ({listed})")
+    } else if remainder == 0 {
+        format!("{} capture FILES ({listed})", paths.len())
+    } else {
+        format!(
+            "{} capture FILES ({listed}, and {remainder} more)",
+            paths.len()
+        )
+    };
+    Some(format!(
+        "{} {} forwards every SIP message this run reads to that address, and \
+         this run is reading {files}. The signalling in those captures leaves \
+         this machine: request lines, headers, URIs, and any message bodies \
+         they hold. sipnab forwards them as they were recorded and redacts \
+         nothing. Point {} at a collector you control, or drop it to analyse \
+         the captures without forwarding them.",
+        destination.flag(),
+        destination.as_str(),
+        destination.flag(),
+    ))
+}
+
 // ── HEP sender ───────────────────────────────────────────────────────
 
 /// HEP v3 sender: encapsulates SIP messages as HEP v3 and sends via UDP.
 ///
 /// Create one `HepSender` per destination. Each [`send`](HepSender::send)
 /// call builds a HEP v3 packet and transmits it over UDP.
+///
+/// Every sender carries a [`HepExportPermit`], minted at construction from the
+/// [`OperatorDestination`] it targets, and the only function that touches the
+/// socket takes that permit. So the export is inside the permit system rather
+/// than beside it: an auditor asking "what can put a packet on the network"
+/// finds two permits, not one, and neither is reachable without proving
+/// something first.
 pub struct HepSender {
     /// Underlying UDP socket (connected to the destination).
     socket: UdpSocket,
@@ -1631,16 +1818,28 @@ pub struct HepSender {
     nonce_salt: u64,
     /// Monotonic per-message counter forming the low half of each nonce.
     nonce_counter: std::sync::atomic::AtomicU64,
+    /// Proof that the operator named this destination, minted once at
+    /// construction and required by [`Self::transmit`]. Held rather than
+    /// passed in from outside for the same reason the scanner-kill worker
+    /// holds its `TransmitPermit` in a field: the permit is a property of the
+    /// thing that was built, and nothing can build this one without it.
+    permit: HepExportPermit,
 }
 
 impl HepSender {
     /// Create a new HEP sender targeting `dest_addr` (e.g., `"10.0.0.50:9060"`).
     ///
-    /// Binds an ephemeral local UDP socket and connects it to the destination.
+    /// The CLI entry point: `dest_addr` is the raw value of the operator's
+    /// `--hep-send` argument, wrapped here into an [`OperatorDestination`].
+    /// Prefer [`Self::for_destination`] anywhere the destination has already
+    /// been through that type — this wrapper exists because the batch wiring
+    /// still passes the flag's string straight through.
     ///
     /// # Arguments
     ///
-    /// * `dest_addr` — destination HEP collector address (host:port).
+    /// * `dest_addr` — destination HEP collector address (host:port), **as the
+    ///   operator supplied it**. Never an address formatted out of captured
+    ///   traffic.
     /// * `capture_id` — capture agent ID stamped into every packet.
     /// * `auth_key` — optional shared secret for the `0x000e` chunk.
     /// * `auth_mode` — how the secret is presented (`Plain` or `Hmac`).
@@ -1652,18 +1851,56 @@ impl HepSender {
     ///
     /// # Side effects
     ///
-    /// Resolves `dest_addr` (may perform a blocking DNS lookup for a
-    /// hostname), binds a UDP socket on `[::]:0` for an IPv6 destination or
-    /// `0.0.0.0:0` for IPv4 — the bind family must follow the destination or
-    /// the connect fails with EAFNOSUPPORT — and connects it; reads the
-    /// system clock and process ID to derive the HMAC nonce salt.
+    /// Those of [`Self::for_destination`].
     pub fn new(
         dest_addr: &str,
         capture_id: u32,
         auth_key: Option<String>,
         auth_mode: HepAuthMode,
     ) -> Result<Self> {
+        Self::for_destination(
+            &OperatorDestination::from_cli_flag(HEP_SEND_FLAG, dest_addr),
+            capture_id,
+            auth_key,
+            auth_mode,
+        )
+    }
+
+    /// Create a HEP sender for a destination the operator named.
+    ///
+    /// Binds an ephemeral local UDP socket, connects it to `destination`, and
+    /// mints the [`HepExportPermit`] every send is checked against. Taking an
+    /// [`OperatorDestination`] rather than a bare address is what stops a
+    /// future call site exporting to something it read out of a packet.
+    ///
+    /// # Arguments
+    ///
+    /// * `destination` — the collector the operator named.
+    /// * `capture_id` — capture agent ID stamped into every packet.
+    /// * `auth_key` — optional shared secret for the `0x000e` chunk.
+    /// * `auth_mode` — how the secret is presented (`Plain` or `Hmac`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the destination cannot be resolved or the socket
+    /// cannot be created or connected.
+    ///
+    /// # Side effects
+    ///
+    /// Resolves the destination (may perform a blocking DNS lookup for a
+    /// hostname), binds a UDP socket on `[::]:0` for an IPv6 destination or
+    /// `0.0.0.0:0` for IPv4 — the bind family must follow the destination or
+    /// the connect fails with EAFNOSUPPORT — and connects it; reads the
+    /// system clock and process ID to derive the HMAC nonce salt.
+    pub fn for_destination(
+        destination: &OperatorDestination,
+        capture_id: u32,
+        auth_key: Option<String>,
+        auth_mode: HepAuthMode,
+    ) -> Result<Self> {
         use std::net::ToSocketAddrs;
+        let permit = HepExportPermit::for_destination(destination);
+        let dest_addr = destination.as_str();
         let dest = dest_addr
             .to_socket_addrs()
             .with_context(|| format!("Failed to resolve HEP destination '{dest_addr}'"))?
@@ -1692,6 +1929,7 @@ impl HepSender {
             auth_mode,
             nonce_salt,
             nonce_counter: std::sync::atomic::AtomicU64::new(0),
+            permit,
         })
     }
 
@@ -1755,8 +1993,28 @@ impl HepSender {
             &msg.raw,
         );
 
+        self.transmit(&self.permit, &pkt)
+    }
+
+    /// The only function in this module that puts bytes on the network.
+    ///
+    /// It takes the permit so that "what can transmit" has a single answer an
+    /// auditor can reach from the type: reaching this socket needs a
+    /// [`HepExportPermit`], which needs an [`OperatorDestination`], which
+    /// cannot be built from anything the capture supplied. `_permit` is unread
+    /// on purpose — the proof is in holding one, exactly as in the
+    /// scanner-kill path's `RawKillSocket::send_to_v4`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the UDP send fails.
+    ///
+    /// # Side effects
+    ///
+    /// Transmits one datagram on the connected UDP socket.
+    fn transmit(&self, _permit: &HepExportPermit, pkt: &[u8]) -> Result<()> {
         self.socket
-            .send(&pkt)
+            .send(pkt)
             .with_context(|| "Failed to send HEP v3 packet")?;
 
         Ok(())
@@ -2121,6 +2379,93 @@ mod tests {
         assert!(
             local.is_ipv4(),
             "local bind family must be IPv4, got {local}"
+        );
+    }
+
+    /// A destination the operator named reaches the sender through
+    /// `for_destination`, and the sender it builds carries the export permit.
+    /// Without the permit in the field, [`HepSender::transmit`] could not be
+    /// called at all, so this is what puts the export inside the permit system.
+    #[test]
+    fn a_sender_built_from_an_operator_destination_carries_its_permit() {
+        let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "127.0.0.1:9060");
+        assert_eq!(dest.flag(), "--hep-send");
+        assert_eq!(dest.as_str(), "127.0.0.1:9060");
+
+        let sender = HepSender::for_destination(&dest, 1, None, HepAuthMode::Plain)
+            .expect("an operator-named destination must construct a sender");
+        // `transmit` is the only path to the socket and it needs the permit;
+        // that this compiles is the assertion.
+        sender
+            .transmit(&sender.permit, b"HEP3\x00\x06")
+            .expect("a connected loopback socket must accept a datagram");
+    }
+
+    /// The notice names the flag, the destination and the capture, and says
+    /// what leaves. A message that named only the socket is what this
+    /// replaces — an operator smoke-testing a HEP pipeline against a customer
+    /// capture reads "HEP sender targeting …" without hearing "the capture is
+    /// about to leave this machine".
+    #[test]
+    fn the_file_export_notice_names_the_flag_the_destination_and_the_capture() {
+        let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "collector.example:9060");
+        let paths = vec![std::path::PathBuf::from("/cases/4711/customer.pcap")];
+        let msg = file_export_notice(&dest, &paths).expect("a file source must produce a notice");
+
+        assert!(msg.contains("--hep-send"), "must name the flag: {msg}");
+        assert!(
+            msg.contains("collector.example:9060"),
+            "must name where the capture goes: {msg}"
+        );
+        assert!(
+            msg.contains("customer.pcap"),
+            "must name the capture that leaves: {msg}"
+        );
+        assert!(
+            msg.contains("capture FILE"),
+            "must say the source is a file: {msg}"
+        );
+        assert!(
+            msg.contains("redacts nothing"),
+            "must say the contents are forwarded as recorded: {msg}"
+        );
+    }
+
+    /// A `tcpdump -C -W` ring is summarised rather than listed in full: the
+    /// count is exact, the first few names are shown, and the sentence stays
+    /// readable.
+    #[test]
+    fn the_file_export_notice_summarises_a_capture_ring() {
+        let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "10.0.0.5:9060");
+        let paths: Vec<std::path::PathBuf> = (0..40)
+            .map(|i| std::path::PathBuf::from(format!("/cases/ring/tg.pcap{i}")))
+            .collect();
+        let msg = file_export_notice(&dest, &paths).expect("a file source must produce a notice");
+
+        assert!(
+            msg.contains("40 capture FILES"),
+            "must give the count: {msg}"
+        );
+        assert!(msg.contains("tg.pcap0"), "must name the first files: {msg}");
+        assert!(
+            msg.contains("and 37 more"),
+            "must summarise the remainder rather than list 40 names: {msg}"
+        );
+        assert!(
+            !msg.contains("tg.pcap39"),
+            "must not list the whole ring: {msg}"
+        );
+    }
+
+    /// No files, no notice. A live or HEP-fed run forwards traffic the
+    /// operator is already watching go past, which is what `--hep-send` reads
+    /// like; there is nothing surprising to announce.
+    #[test]
+    fn a_run_reading_no_files_has_nothing_to_announce() {
+        let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "10.0.0.5:9060");
+        assert!(
+            file_export_notice(&dest, &[]).is_none(),
+            "only a file source forwards a stored capture"
         );
     }
 
