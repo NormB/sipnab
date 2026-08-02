@@ -699,7 +699,11 @@ pub struct Cli {
     pub tag: Option<String>,
 
     // ── RTP ──────────────────────────────────────────────────────────
-    /// RTP statistics reporting interval in seconds.
+    /// Accepted and ignored: periodic RTP statistics reporting is not built.
+    ///
+    /// The flag stays so an existing invocation keeps working, and sipnab warns
+    /// when you pass a value, because the alternative is a runbook that quietly
+    /// reports nothing. See docs/cli-reference.md.
     #[arg(help_heading = "RTP", long, value_name = "SECS", default_value = "1")]
     pub rtp_interval: u32,
 
@@ -1026,6 +1030,23 @@ pub struct Cli {
         long = "mcp-allow-shutdown"
     )]
     pub mcp_allow_shutdown: bool,
+
+    /// Allow the `open_capture` MCP tool to load a different capture.
+    ///
+    /// Off by default, so a stock server holds the capture it was started on.
+    /// The tool reads only files inside `--mcp-file-root`, refuses while the
+    /// current source is a live interface or is still being read, and mints a
+    /// new capture identity that every later answer carries — so a swap cannot
+    /// reach a consumer as an ordinary update.
+    ///
+    /// It still discards the analysis an operator may be reading. Enable it on
+    /// a long-lived server working through a corpus; leave it off where a
+    /// restart with a different `-I` costs nothing.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-allow-open-capture"
+    )]
+    pub mcp_allow_open_capture: bool,
 
     // ── HEP (Homer Encapsulation Protocol) ───────────────────────────
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
@@ -1486,6 +1507,19 @@ impl Cli {
     /// `crate::Error::CliValidation` with a user-facing message for each
     /// rejected combination. Pure — no side effects.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // --rtp-interval parses, defaults and documents itself, and nothing
+        // reads it. Saying so beats accepting a value and reporting nothing,
+        // because docs/cli-reference.md used to teach "stats every 5 seconds"
+        // as a worked example. Warn rather than refuse: an existing invocation
+        // keeps working, and the operator learns the interval is not honoured.
+        if self.rtp_interval != 1 {
+            tracing::warn!(
+                "--rtp-interval {} is accepted and ignored: periodic RTP statistics \
+                 reporting is not implemented, so no interval report will appear. \
+                 Stream statistics are reported once, at end of capture.",
+                self.rtp_interval
+            );
+        }
         let output_flags_used: Vec<&str> = [
             (self.json, "--json"),
             (self.json_dialogs, "--json-dialogs"),
