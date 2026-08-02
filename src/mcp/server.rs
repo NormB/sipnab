@@ -2175,10 +2175,16 @@ impl SipnabMcp {
     /// Write the retained packets to a capture file.
     #[tool(
         name = "export_capture",
-        description = "Writes the packets sipnab is holding to a pcap file in \
-                       the configured file root and returns the path. Use it to \
-                       preserve a live capture before stopping it — otherwise \
-                       the packets end with the process."
+        description = "Writes the SIP signalling sipnab is holding to a pcap file \
+                       in the configured file root and returns the path. The \
+                       file is NOT a copy of the capture: sipnab keeps parsed \
+                       messages rather than the original frames, so each message \
+                       is written as a re-synthesised Ethernet/IP/UDP frame with \
+                       reconstructed link and IP headers. It contains no RTP, no \
+                       RTCP and no non-SIP traffic, and a SIP-over-TCP message \
+                       is written as UDP. Use it to preserve signalling before \
+                       stopping a live capture — otherwise the messages end with \
+                       the process."
     )]
     pub async fn export_capture(
         &self,
@@ -3259,7 +3265,12 @@ mod tests {
     #[tokio::test]
     async fn security_findings_with_engine_returns_recorded_finding() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", localhost(), "probe from scanner");
+        engine.fire(
+            "scanner",
+            localhost(),
+            "probe from scanner",
+            chrono::Utc::now(),
+        );
         let engine = Arc::new(RwLock::new(engine));
 
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -3281,7 +3292,7 @@ mod tests {
     #[tokio::test]
     async fn security_findings_kinds_filter_excludes_other_rules() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", localhost(), "scan");
+        engine.fire("scanner", localhost(), "scan", chrono::Utc::now());
         let engine = Arc::new(RwLock::new(engine));
 
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));

