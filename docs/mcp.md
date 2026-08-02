@@ -1170,9 +1170,30 @@ No parameters. Returns:
   "dialog_count": 42,
   "stream_count": 18,
   "orphaned_stream_count": 2,
-  "active_call_count": 5
+  "active_call_count": 5,
+  "unanalysed_sip_messages": 4249,
+  "unanalysed_busiest_ports": [
+    { "port": 8090, "messages": 2430 },
+    { "port": 5080, "messages": 598 }
+  ]
 }
 ```
+
+> **`unanalysed_sip_messages` is the count the other numbers do not include.**
+> `--portrange` decides which ports sipnab parses as SIP, and its default is
+> `5060-5061`. SIP on 5070, 5080 and elsewhere is ordinary — carriers and SBCs
+> use those routinely — so on real traffic the counters above can describe a
+> fraction of the capture. On one carrier trunk that fraction was two thirds:
+> 2,311 dialogs reported against 3,712 present.
+>
+> The field is always there, including when it is zero, so nobody has to
+> read meaning into its absence. A non-zero value means the answer to "how many calls
+> are in this capture" is larger than `dialog_count`, and re-running with
+> `--portrange 1-65535` is what makes the difference visible.
+>
+> `unanalysed_busiest_ports` names the service port — destination of a request,
+> source of a response — never the ephemeral port, which differs on every
+> dialog and identifies nothing.
 
 ### Tool argument enums
 
