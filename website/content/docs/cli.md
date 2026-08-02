@@ -322,6 +322,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 
 - `sipnab --no-tui -I capture.pcap --calls-only` — analyze a pcap headlessly, showing only complete SIP dialogs (calls), not standalone messages
 - `sudo sipnab --no-tui -d eth0 --telephone-event` — headless live capture that decodes DTMF and logs each digit with its duration and SSRC
+- `sipnab --no-tui -I capture.pcap --calls-only --telephone-event` — read a capture headlessly, report only complete dialogs, and log the DTMF digits each one carried
 
 **Where the digits go.** sipnab writes each decoded digit to the log at `info`
 level and keeps a count. Nothing else carries them: no report, no JSON field, no
