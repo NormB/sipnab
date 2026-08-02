@@ -447,6 +447,12 @@ fn audio_retention_wanted(cli: &Cli) -> bool {
     cli.mcp
 }
 
+/// Print the ICMP evidence summary for a finished run.
+///
+/// Called from all three batch summary sites rather than written inline,
+/// because it used to live only in the single-threaded one — so `--cores N`
+/// printed no ICMP summary at all, and the two paths disagreed about what the
+/// same capture contained.
 fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
     let icmp = crate::pipeline::icmp_evidence_report();
     if icmp.errors > 0 {
