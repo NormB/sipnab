@@ -52,6 +52,115 @@ pub struct PrometheusMetrics {
     pub diagnosis_total: HashMap<String, u64>,
 }
 
+/// SIP response classes, as label values for `sipnab_responses_total{code}`.
+///
+/// Closed set (RFC 3261 §7.2), so a scrape can initialize every one of them
+/// to zero. That matters more than it looks: an empty labelled family is
+/// omitted from the exposition entirely, and a rule over a series that does
+/// not exist is no-data, not zero — an alert on "5xx responses appeared"
+/// would never fire on a proxy that had been healthy up to that point.
+pub const RESPONSE_CLASSES: [&str; 6] = ["1xx", "2xx", "3xx", "4xx", "5xx", "6xx"];
+
+/// Media-diagnosis findings counted by `sipnab_diagnosis_total{type}`, also
+/// zero-initialized on every scrape for the reason above.
+pub const DIAGNOSIS_TYPES: [&str; 3] = ["one_way_audio", "nat_mismatch", "no_media"];
+
+impl PrometheusMetrics {
+    /// Start a scrape: process-wide counters loaded, closed label sets
+    /// initialized to zero.
+    ///
+    /// Every collector must build its metrics from here rather than from
+    /// [`Default`]. The counters fed by the data plane — captured packets,
+    /// reassembly timeouts, security alerts — live in the modules that own
+    /// those events, and a collector that skipped this step would publish a
+    /// literal `0` for a capture that was in fact running: the exact defect
+    /// that made `sipnab_capture_packets_total` unusable.
+    ///
+    /// # Returns
+    ///
+    /// Metrics carrying the process counters, with the store-derived fields
+    /// left empty for the caller to fill.
+    pub fn for_scrape() -> Self {
+        let mut m = Self {
+            capture_packets_total: crate::capture::captured_packets(),
+            reassembly_timeouts_total: crate::capture::reassembly::reassembly_timeouts(),
+            ..Self::default()
+        };
+        for class in RESPONSE_CLASSES {
+            m.responses_total.insert(class.to_string(), 0);
+        }
+        for kind in DIAGNOSIS_TYPES {
+            m.diagnosis_total.insert(kind.to_string(), 0);
+        }
+        for (kind, count) in crate::security::alerts_by_type() {
+            m.security_alerts_total.insert(kind, count);
+        }
+        m
+    }
+
+    /// Count one SIP response under its class label.
+    ///
+    /// # Arguments
+    ///
+    /// * `status_code` — the response's status code (100–699).
+    ///
+    /// # Side effects
+    ///
+    /// Bumps `responses_total` for the class; a code outside 1xx–6xx (which
+    /// the parser does not produce) is ignored rather than inventing a
+    /// label.
+    pub fn record_response(&mut self, status_code: u16) {
+        let Some(class) = RESPONSE_CLASSES.get(usize::from(status_code / 100).wrapping_sub(1))
+        else {
+            return;
+        };
+        *self
+            .responses_total
+            .entry((*class).to_string())
+            .or_insert(0) += 1;
+    }
+
+    /// Count one dialog's media diagnosis, one increment per finding.
+    ///
+    /// A dialog with two findings counts under both — the metric answers
+    /// "how many calls show this problem", per problem.
+    ///
+    /// # Arguments
+    ///
+    /// * `diagnosis` — the media diagnosis computed for one dialog.
+    ///
+    /// # Side effects
+    ///
+    /// Bumps `diagnosis_total` for each flag the diagnosis raised.
+    pub fn record_media_diagnosis(&mut self, diagnosis: &crate::rtp::diagnosis::MediaDiagnosis) {
+        // Destructured rather than field-tested so that adding a flag to
+        // `MediaDiagnosis` without deciding whether it is counted here fails
+        // to compile, instead of quietly never appearing in the metric.
+        let crate::rtp::diagnosis::MediaDiagnosis {
+            one_way_audio,
+            nat_mismatch,
+            no_media,
+            sdp_media: _,
+            actual_media: _,
+            hints: _,
+            codec_asymmetry: _,
+            ptime_asymmetry: _,
+            payload_type_asymmetry: _,
+            duration_asymmetry: _,
+            late_media: _,
+        } = diagnosis;
+        for (raised, kind) in [
+            (one_way_audio, "one_way_audio"),
+            (nat_mismatch, "nat_mismatch"),
+            (no_media, "no_media"),
+        ] {
+            if *raised {
+                *self.diagnosis_total.entry(kind.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+}
+
 // ── Formatting ───────────────────────────────────────────────────────
 
 /// Format all collected metrics in Prometheus exposition format.

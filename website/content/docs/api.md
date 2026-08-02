@@ -555,7 +555,7 @@ to "why" lives:
       "evidence": [2]
     },
     "auth_loop": null,
-    "retransmissions": { "method": "INVITE", "count": 7, "span_sec": 32.0, "evidence": [0, 1, 3] },
+    "retransmissions": { "method": "INVITE", "count": 7, "span_sec": 32.0, "evidence": [0, 1, 3], "icmp_cause": "port unreachable" },
     "ack_missing": null,
     "abandoned": null,
     "post_dial_delay": null,
@@ -573,7 +573,8 @@ to "why" lives:
     },
     "hints": [
       "Call failed: 408 Request Timeout.",
-      "ICMP port unreachable: the network could not deliver the INVITE sent to 192.0.2.10:5060 (2 times), reported by 198.51.100.1. The endpoint was not reachable on that port — this is not a timeout."
+      "No response to INVITE: 7 transmissions over 32.0s with nothing received — and ICMP says why: port unreachable. The count is how hard the sender tried; the ICMP finding is the cause.",
+      "ICMP port unreachable: the network could not deliver the INVITE sent to 192.0.2.10:5060 (2 times), reported by 198.51.100.1. The host answered, so it is reachable — nothing was listening on that port. Check the service and the address it binds, not the network."
     ]
   }
 }
@@ -992,17 +993,24 @@ Metric names emitted by `src/output/prometheus.rs`:
 |---|---|---|
 | `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
 | `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
+| `sipnab_responses_total{code}` | counter | SIP responses in the tracked dialogs, grouped by class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `6xx`. Every class appears on every scrape, at `0` where the capture saw none, so a rule watching for the first `5xx` reads zero instead of no-data. |
 | `sipnab_rtp_streams_active` | gauge | The two servers count different things under this one name. The `--api` server counts streams not flagged `orphaned` (linked to a dialog, or not yet old enough for the sweep to flag them — an unlinked stream is only flagged once it is 30 seconds old), however long ago the last packet arrived; the standalone `--metrics` server counts streams whose last packet arrived within the previous 30 seconds, whatever their dialog association. A call whose media died five minutes ago is still counted by `--api` and is not counted by `--metrics` — an alert threshold tuned on one scrape target does not carry over to the other. |
 | `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` once the sweep has found a stream unlinked to a dialog for 30 seconds, `established` otherwise. `--api` only. The standalone `--metrics` server never populates the map, and an empty family drops out rather than reporting zero, so on `--metrics` the series does not exist at all — a panel built on it stays permanently blank. |
 | `sipnab_kill_responses_sent_total{mode}` | counter | Scanner-kill responses sent, by source mode: `raw` (source-spoofed via a raw socket) or `ephemeral` (sipnab's own port). Alert on unexpected `ephemeral` to catch a silent spoof fallback. |
+| `sipnab_capture_packets_total` | counter | Packets the capture handed to the processing pipeline since the process started. Counted before parsing, so a frame sipnab cannot parse still counts — it arrived. One process-wide total covering every input (`-I` files, live devices, HEP) and every worker of the parallel pipeline, identical on both servers. A line that stops climbing means packets stopped arriving. |
+| `sipnab_reassembly_timeouts_total` | counter | IP fragments whose datagram never completed, plus TCP streams that went idle, dropped once older than the 30-second reassembly TTL. Capacity evictions stay out of this number: those say the entry cap is too small, not that a peer stopped sending. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
+| `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding: `one_way_audio`, `nat_mismatch`, `no_media`. A dialog with two findings counts under both. All three types appear on every scrape, at `0` where nothing raises them. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
+| `sipnab_security_alerts_total{type}` | counter | Security alerts by the detector that fired: `scanner`, `fraud`, `digest`, `reg_flood`. See the hand-off note below — the capture path does not feed this family yet. |
 | `sipnab_pdd_seconds` | histogram | Post-dial delay distribution (buckets at 0.5/1/2/3/5/10s). Emits `sipnab_pdd_seconds_bucket{le}`, `_count`, `_sum`. |
 | `sipnab_mos` | histogram | RTP MOS distribution (buckets at 1/2/2.5/3/3.5/4/4.5). |
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-The source declares the following metric *names*, but nothing wires them to the data plane as of 0.5.73 — nothing in the capture path ever increments them. They do not all fail the same way, which matters when you write the alert. The three labelled families — `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{type}` — are map-backed, and an empty family drops out, so those series are absent from the scrape and a rule over them goes no-data. sipnab writes the two scalars — `sipnab_capture_packets_total` and `sipnab_reassembly_timeouts_total` — unconditionally, so they report a hard `0`, which is indistinguishable from a capture that has genuinely stopped receiving packets. Don't depend on any of these in alerts yet, and in particular don't read `sipnab_capture_packets_total 0` as evidence that capture is alive or dead.
+Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total` and `sipnab_capture_backpressure_blocks_total` count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say. The rest — dialogs, messages, responses, streams, diagnosis findings — describe what sipnab tracks right now, and they fall as dialogs and streams age out of their stores. Alert on the current value or on a ratio there, never on `increase()`.
+
+One family is still waiting on its increment: as of 0.5.73 nothing in the capture path records into `sipnab_security_alerts_total{type}`, so the family stays absent from the scrape rather than reporting zero. Read an absent series as "not yet available", not as "no alert fired" — the `[ALERT]` lines on stderr, the JSON alert channel and the MCP `security_findings` tool all report alerts today. The counter behind the metric and the exposition are in place. The recording call belongs in `AlertEngine::fire` (`src/security/alerting.rs`), and `tests/metrics_alert_wiring_test.rs` holds the ignored test that turns green with it.
 
 ## Status codes
 

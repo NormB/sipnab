@@ -31,12 +31,20 @@ writer can.
 **Enforced by.** Structure rather than a lint: the spawn moves the stores into
 the processing thread's closure.
 
-**The one exception**, and the reason this page documents it rather than
-forbidding it:
+**The two exceptions**, and the reason this page documents them rather than
+forbidding them:
 opening a pcap from inside the TUI spawns `pcap-load`, a second writer against
 the live stores. Its whole design — progress via `async_messages`, never a
 blocking read on the render side — exists to make that safe. See
 [Threading](@/docs/internals/threading.md).
+
+The second is the same shape with a different poller: `open_capture` spawns
+`mcp-pcap-load` ([`mcp/load.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/load.rs)), and an agent polls
+`capture_status` where the TUI polls its event loop. Two conditions admit it,
+and the tool enforces both before it spawns anything — the source must be a
+file rather than a live interface, and it must already have drained, so the
+first writer has stopped for good. The tool refuses a live source outright,
+because its writer never finishes.
 
 **Fails as.** A second writer turns every `try_read()` contention into a
 dropped frame, and the UI appears to stall under load rather than degrade.
@@ -204,21 +212,30 @@ them would revoke live credentials on upgrade. Static `--api-key` /
 shared secrets, not tokens, and an operator who sets the same static secret on
 both surfaces has deliberately shared one credential.
 
-## 7. MCP tools never mutate, and every response has a ceiling
+## 7. MCP tools never edit the analysis, and every response has a ceiling
 
-**Rule.** No MCP tool mutates a store, and every response hits a size ceiling
-before serialization.
+**Rule.** No MCP tool edits a store in place, and every response hits a size
+ceiling before serialization. One tool replaces a store wholesale —
+`open_capture`, behind `--mcp-allow-open-capture` — and it rotates the capture
+identity in the same critical section that clears the stores, so no answer can
+change meaning without saying so.
 
 **Why.** An LLM agent drives the MCP surface: it must not be able to
-change what an operator is looking at, and an unbounded response is a
-denial-of-service against the agent's context window as much as against
-sipnab.
+change what an operator is looking at *and leave it looking like what they were
+looking at*, and an unbounded response is a denial-of-service against the
+agent's context window as much as against sipnab. The rule used to read "no
+tool mutates a store", which was true until a capture swap existed and is the
+wrong test anyway: what protects the operator is the identity on the wire, not
+the absence of the verb.
 
 **Enforced by.** [`shape.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/shape.rs) — `DEFAULT_LIMIT` 50,
 `HARD_LIMIT` 1000, `MAX_BODY_BYTES` 4096, applied by
 [`resolve_limit()`](https://github.com/NormB/sipnab/blob/main/src/mcp/shape.rs) — with
 [`mcp_stdio_test`](https://github.com/NormB/sipnab/blob/main/tests/mcp_stdio_test.rs) and
-[`mcp_http_test`](https://github.com/NormB/sipnab/blob/main/tests/mcp_http_test.rs) end to end.
+[`mcp_http_test`](https://github.com/NormB/sipnab/blob/main/tests/mcp_http_test.rs) end to end. The identity half is
+[`provenance.rs`](https://github.com/NormB/sipnab/blob/main/src/provenance.rs), stamped on every whole-store
+response and checked by
+[`mcp_open_capture_test`](https://github.com/NormB/sipnab/blob/main/tests/mcp_open_capture_test.rs).
 
 **Fails as.** An agent that quietly truncates or floods, and an operator who
 cannot tell which.
