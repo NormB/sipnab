@@ -8,9 +8,10 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [0.5.73] - 2026-08-02
+## [0.5.74] - 2026-08-02
 
 ### Added
+
 - **An agent can open a different capture, and every answer says which capture
   it came from.** The `open_capture` MCP tool loads another file from
   `--mcp-file-root` and replaces the dialogs and streams the server holds. It
@@ -34,6 +35,103 @@ entry that carries them.
   reporting `--mcp-file-root`, `--mcp-allow-shutdown` and
   `--mcp-allow-open-capture`, so an agent can check what a server permits
   instead of discovering it by being refused.
+
+- **A SIP conformance linter, led by the class only sipnab can check.** Every
+  other linter compares text against a grammar. sipnab holds the media in the
+  same process, so it checks what the SDP *declared* against what the wire
+  actually *carried*: a payload type negotiated but not sent, a media port
+  advertised but not used, `sendrecv` agreed and media flowing one way. Across
+  the local corpus those fire 15, 43 and 1 time. The RFC rules follow —
+  mandatory headers, Content-Length disagreeing with the body, the `z9hG4bK`
+  cookie that identifies a pre-3261 stack on sight, `To`-tag in an initial
+  request, ACK CSeq mismatch, and the RFC 3264 answer rules.
+
+  Every finding carries its RFC section as a field rather than as prose inside a
+  string, which is what lets an agent cite RFC 3261 section 20.10 instead of
+  inventing a plausible-looking one. Rule ids are stable, so a finding is
+  suppressible in CI and citable in a carrier ticket. Documented in
+  `docs/sip-lint-rules.md`.
+
+- **RTCP Extended Reports are kept, as the far end's claim.** The parser
+  decoded all 19 VoIP Metrics fields and the store dropped them. Across the
+  corpus that is 589 XR packets and 575 VoIP Metrics blocks. They now land in
+  the same provenance side-table the reception reports use, and nothing
+  overwrites sipnab's own jitter, loss or MOS with them — `MosProvenance` gains
+  a third category, `ReportedByEndpoint`, distinct from both a grounded estimate
+  and a placeholder. The TUI shows them below everything measured and
+  deliberately does not colour them like a sipnab MOS, so two numbers cannot
+  read as one.
+
+- **ICMP errors that quote media are visible.** 3,262 quoting a SIP request were
+  read and 514 quoting anything else were parsed and dropped. Attribution is
+  tiered and the tier is reported, because an exact 5-tuple match and a
+  no-match guess are not equally strong claims.
+
+- **A gate that every CLI flag reaches something that reads it.** This project
+  kept rediscovering flags that parse, validate, document themselves and do
+  nothing. All 151 are swept.
+
+### Changed
+
+- **The MCP surface is described as it is, not as "read-only".** That stopped
+  being true when file export and shutdown landed. The invariant that does hold
+  is narrower: no tool alters the analysis an operator is reading. Ending a
+  session is visible. Rewriting the evidence underneath someone mid-incident
+  would not be. The surface is 25 tools.
+
+- **`--rtp-interval` says it is accepted and ignored.** Periodic RTP statistics
+  reporting is not built. The flag stays so an existing invocation keeps
+  working, and sipnab warns when a value is passed, because the documentation
+  taught "stats every 5 seconds" as a worked example.
+
+- **`-t` describes what it does.** It decodes DTMF and logs each digit. Both
+  documented examples showed it in modes that hide the log.
+
+### Fixed
+
+- **`export_audio` could never succeed.** RTP payload retention was off for
+  every MCP run, so the tool decoded an always-empty buffer — for every call, in
+  every capture, in every build. Retention now follows whether the run can read
+  it back, and the memory bound is stated at startup.
+
+- **A mixed-link-type export mislabelled every frame.** Exporting an Ethernet
+  capture with a Linux SLL2 capture exited 0 and wrote 235,769 frames that
+  `capinfos` called Ethernet, where tshark found 7 SIP frames against the
+  source's 2,598. Plain pcap now refuses and names both link types. pcapng
+  represents it faithfully and recovers all 2,605.
+
+- **`--alert-exec` had no rate limit.** A detector naming 180 peers spawned
+  against all 180. On a real capture the fix took 231 spawns to 24 with every
+  alert still firing. All of the suppression came from the per-source cap and
+  none from the global one, so a global-only limit would have changed nothing.
+
+- **`--hep-send` says what a capture file forwards**, before it opens the file.
+  The export is byte-identical either way.
+
+- **`-I` resolution says what it left out.** Against a real corpus sipnab read
+  15 files and said nothing about 122 more in three subdirectories, in a line
+  identical to the one a complete read produces.
+
+- **The dialog store reports what it shed.** Three loss counters existed and
+  none had a consumer. On the corpus, 402 messages were evicted while the
+  summary reported 103,234 and said nothing.
+
+- **The Prometheus metrics move.** They were declared, rendered, and never
+  incremented, with two reporting a hard 0.
+
+- **The MCP handshake names sipnab.** Every client was told it had connected to
+  "rmcp" and the rmcp crate version.
+
+- **`capture_status` reads `source_exhausted` after `done`, not before.** One
+  answer could carry a finished load beside a stale flag, so a poller that
+  stopped on `done` waited for an update that never came.
+
+- **`--exec-rate-limit` reaches `--alert-exec`**, and the HEP destination is
+  minted at the call site rather than inside the constructor.
+
+## [0.5.73] - 2026-08-02
+
+### Added
 - **ICMP errors quoting a SIP request are now evidence, not invisible.** A
   router answering "host unreachable" for an INVITE is the most diagnostic
   packet a capture can hold — it is a categorical statement that the far end is
