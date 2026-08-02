@@ -50,6 +50,7 @@ pub use native::{
     CaptureConfig, CaptureHandle, CaptureSource, start_capture, start_multi_capture, stop_and_join,
 };
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -57,6 +58,30 @@ use smallvec::{SmallVec, smallvec};
 
 pub use packet::Packet;
 pub use parse::ParsedPacket;
+
+/// Raw packets handed to [`PacketProcessor::process`] since the process
+/// started, exported as `sipnab_capture_packets_total`.
+///
+/// Process-global rather than per-processor because the parallel pipeline
+/// gives every worker thread its own [`PacketProcessor`], and a scrape asks
+/// about the capture, not about one worker. Relaxed ordering: this is a
+/// counter read by a scrape, never a happens-before edge for other state.
+static CAPTURED_PACKETS: AtomicU64 = AtomicU64::new(0);
+
+/// Packets processed since start — the value behind
+/// `sipnab_capture_packets_total`.
+///
+/// Counted at the head of [`PacketProcessor::process`], so it includes
+/// packets that turn out to be unparseable: those were still captured, and a
+/// counter that dropped them would read as a stalled capture on a link full
+/// of non-IP traffic.
+///
+/// # Returns
+///
+/// Monotonic count of packets fed to the processing pipeline.
+pub fn captured_packets() -> u64 {
+    CAPTURED_PACKETS.load(Ordering::Relaxed)
+}
 
 /// Output of [`PacketProcessor::process`]: the parsed packets ready from one
 /// input packet. Inline-sized for one element — the dominant case (UDP, a
@@ -177,8 +202,12 @@ impl PacketProcessor {
     /// # Side effects
     ///
     /// Mutates the fragment/TCP reassembler state and the held-partial map
-    /// via `process_inner`.
+    /// via `process_inner`, and bumps the process-wide captured-packet
+    /// counter read by [`captured_packets`] (and so by every `/metrics`
+    /// scrape). Counted before parsing: an unparseable frame was still
+    /// captured.
     pub fn process(&mut self, packet: &Packet) -> ParsedPackets {
+        CAPTURED_PACKETS.fetch_add(1, Ordering::Relaxed);
         let mut out = self.process_inner(packet);
         if let Some(limit) = self.parse_limit {
             for p in out.iter_mut() {

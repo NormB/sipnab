@@ -411,29 +411,38 @@ pub fn parse_metrics_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
 
 /// Collect current metrics from the dialog and stream stores.
 ///
-/// Populates per-state dialog counts, per-method message counts, the
-/// active-stream gauge, and (when a meter is supplied) capture queue
-/// depth and backpressure counters.
+/// Populates per-state dialog counts, per-method message counts, per-class
+/// response counts, per-type media diagnosis counts, the active-stream
+/// gauge, and (when a meter is supplied) capture queue depth and
+/// backpressure counters — on top of the process-wide counters
+/// `PrometheusMetrics::for_scrape` loads (captured packets, reassembly
+/// timeouts, security alerts).
 ///
 /// # Side effects
 ///
-/// Takes the dialog- then stream-store read locks (sequentially, dropped
-/// before returning).
+/// Takes the dialog- and stream-store read locks (dialog first, matching
+/// the REST API; both dropped before returning).
 fn collect_metrics(
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     capture_meter: Option<&crate::capture::channel::CaptureMeter>,
 ) -> PrometheusMetrics {
-    let mut metrics = PrometheusMetrics::default();
+    // `for_scrape`, never `default`: the two scalar counters and the alert
+    // family are fed by the capture path, not by these stores, and a
+    // `default()` here published a literal `0` for a live capture.
+    let mut metrics = PrometheusMetrics::for_scrape();
 
     if let Some(meter) = capture_meter {
         metrics.capture_queue_depth_packets = meter.in_flight() as u64;
         metrics.capture_backpressure_blocks_total = meter.backpressure_blocks();
     }
 
-    // Dialog metrics
+    // Dialog metrics (the stream store is read alongside them: the
+    // per-dialog media diagnosis needs both).
     {
         let ds = dialog_store.read();
+        let ss = stream_store.read();
+        let capture_media = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
         for dialog in ds.iter() {
             let state_str = dialog.state().to_string();
             *metrics.dialogs_total.entry(state_str).or_insert(0) += 1;
@@ -443,6 +452,20 @@ fn collect_metrics(
                 .messages_total
                 .entry(dialog.method.to_string())
                 .or_insert(0) += dialog.messages.len() as u64;
+
+            for msg in &dialog.messages {
+                if let Some(code) = msg.status_code {
+                    metrics.record_response(code);
+                }
+            }
+
+            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+                ss.streams_for(&dialog.call_id).collect();
+            let media = crate::rtp::diagnosis::MediaContext::for_dialog(dialog, capture_media);
+            metrics.record_media_diagnosis(&crate::rtp::diagnosis::diagnose_media(
+                &dialog_streams,
+                &media,
+            ));
         }
     }
 

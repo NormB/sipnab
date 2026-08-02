@@ -962,8 +962,11 @@ async fn get_stats(
 
 /// `GET /metrics` — Prometheus-compatible metrics endpoint.
 ///
-/// Populates a `PrometheusMetrics` from the shared stores and formats
-/// via `prometheus::format_metrics` for full metric coverage.
+/// Populates a `PrometheusMetrics` from the process-wide capture counters
+/// (`PrometheusMetrics::for_scrape`) plus the shared stores, and formats via
+/// `prometheus::format_metrics` for full metric coverage. The per-dialog
+/// media diagnosis is computed here, so scrape cost scales with the number
+/// of tracked dialogs (bounded by `-l`/`--limit`).
 ///
 /// # Arguments
 ///
@@ -978,8 +981,9 @@ async fn get_stats(
 ///
 /// # Side effects
 ///
-/// Takes the dialog- then stream-store read locks (sequentially) while
-/// aggregating; mutates the rate limiter.
+/// Takes the dialog- then stream-store read locks (both held while the
+/// per-dialog diagnosis is computed, in the same order as every other
+/// handler); mutates the rate limiter.
 async fn get_metrics(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -990,10 +994,17 @@ async fn get_metrics(
     // existing deployment.
     guard_scoped(&state, &headers, addr.ip(), crate::auth::SCOPE_METRICS)?;
 
-    let mut metrics = PrometheusMetrics::default();
+    // `for_scrape`, never `default`: it loads the counters the capture path
+    // and the alerting engine feed, and initializes the closed label sets so
+    // a rule over an unseen response class reads zero rather than no-data.
+    let mut metrics = PrometheusMetrics::for_scrape();
 
-    // Populate from dialog store
+    // Populate from dialog store. The stream store is read alongside it (in
+    // that order, matching every other handler) because the per-dialog media
+    // diagnosis needs both.
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    let capture_media = CaptureMedia::of_store(&ss);
     for d in ds.iter() {
         let state_str = d.state().to_string().to_lowercase();
         *metrics.dialogs_total.entry(state_str).or_insert(0) += 1;
@@ -1011,11 +1022,21 @@ async fn get_metrics(
             .messages_total
             .entry(d.method.to_string())
             .or_insert(0) += d.messages.len() as u64;
+
+        for msg in &d.messages {
+            if let Some(code) = msg.status_code {
+                metrics.record_response(code);
+            }
+        }
+
+        let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+            ss.streams_for(&d.call_id).collect();
+        let media = MediaContext::for_dialog(d, capture_media);
+        metrics.record_media_diagnosis(&diagnose_media(&dialog_streams, &media));
     }
     drop(ds);
 
     // Populate from stream store
-    let ss = state.stream_store.read();
     let mut established = 0u64;
     let mut orphaned = 0u64;
     for s in ss.iter() {

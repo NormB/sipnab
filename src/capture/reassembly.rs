@@ -8,9 +8,35 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use super::parse::ParsedPacket;
+
+// ── Timeout counter ───────────────────────────────────────────────────
+
+/// Reassembly entries dropped because they aged past their TTL, exported as
+/// `sipnab_reassembly_timeouts_total`.
+///
+/// Process-global: both reassemblers feed it, every capture thread has its
+/// own pair, and a scrape asks about the capture rather than about one
+/// [`FragmentReassembler`]. Capacity evictions are deliberately NOT counted
+/// here — those say the cap is too small, not that a peer stopped sending,
+/// and they already warn.
+static REASSEMBLY_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+
+/// Reassembly entries timed out since start — the value behind
+/// `sipnab_reassembly_timeouts_total`.
+///
+/// Counts IP fragments whose datagram never completed and TCP streams that
+/// went idle, both dropped by a `sweep` once older than the TTL.
+///
+/// # Returns
+///
+/// Monotonic count of entries evicted by TTL across both reassemblers.
+pub fn reassembly_timeouts() -> u64 {
+    REASSEMBLY_TIMEOUTS.load(Ordering::Relaxed)
+}
 
 // ── Constants ─────────────────────────────────────────────────────────
 
@@ -212,6 +238,11 @@ impl FragmentReassembler {
     /// Evict entries older than the configured TTL.
     ///
     /// Should be called periodically (e.g., every 5 seconds) from the main loop.
+    ///
+    /// # Side effects
+    ///
+    /// Drops the timed-out entries and adds them to the process-wide
+    /// reassembly-timeout counter read by [`reassembly_timeouts`].
     pub fn sweep(&mut self) {
         let now = Instant::now();
         let before = self.entries.len();
@@ -219,6 +250,7 @@ impl FragmentReassembler {
             .retain(|_key, entry| now.duration_since(entry.created) < self.ttl);
         let evicted = before - self.entries.len();
         if evicted > 0 {
+            REASSEMBLY_TIMEOUTS.fetch_add(evicted as u64, Ordering::Relaxed);
             tracing::debug!("Fragment reassembler: swept {evicted} stale entries");
         }
     }
@@ -555,6 +587,11 @@ impl TcpReassembler {
     /// Evict TCP stream entries older than the configured TTL.
     ///
     /// Should be called periodically (e.g., every 5 seconds) from the main loop.
+    ///
+    /// # Side effects
+    ///
+    /// Drops the idle streams and adds them to the process-wide
+    /// reassembly-timeout counter read by [`reassembly_timeouts`].
     pub fn sweep(&mut self) {
         let now = Instant::now();
         let before = self.streams.len();
@@ -562,6 +599,7 @@ impl TcpReassembler {
             .retain(|_key, stream| now.duration_since(stream.last_seen) < self.ttl);
         let evicted = before - self.streams.len();
         if evicted > 0 {
+            REASSEMBLY_TIMEOUTS.fetch_add(evicted as u64, Ordering::Relaxed);
             tracing::debug!("TCP reassembler: swept {evicted} stale streams");
         }
     }

@@ -606,6 +606,12 @@ impl AlertEngine {
         // Record this firing
         self.cooldowns.insert(key, (now, tick));
 
+        // Count it here, past the cooldown, so the metric matches what an
+        // operator actually saw. Counting at entry would report every
+        // suppressed repeat and make a single noisy source look like a storm —
+        // which is the reading `sipnab_security_alerts_total` exists to give.
+        super::record_alert(alert_type);
+
         // Sanitize attacker-controlled values for log output (M3)
         let sanitized_detail = sanitize_log_value(detail);
 

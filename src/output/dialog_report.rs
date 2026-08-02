@@ -593,6 +593,94 @@ mod tests {
         assert!(report.contains("2.0%"), "loss 5/(250+5)=2.0%: {report}");
     }
 
+    // ── Orphaned-stream section ────────────────────────────────────────
+
+    /// Build the stream of [`make_rtp_stream`] as an orphan: no dialog, and
+    /// flagged by the sweep. A distinct SSRC so a mixed report can name which
+    /// row landed in which table.
+    fn make_orphaned_stream() -> crate::rtp::stream::RtpStream {
+        let mut s = make_rtp_stream();
+        s.key.ssrc = 0x0bad0bad;
+        s.associated_dialog = None;
+        s.orphaned = true;
+        s
+    }
+
+    /// An orphaned stream renders a row under the orphan heading.
+    ///
+    /// Filed as "the Orphaned Streams section can never render a row", on the
+    /// premise that this renderer is handed one dialog's linked streams and a
+    /// linked stream is never flagged orphaned. It is handed the store, not a
+    /// dialog: the only production caller is `--report`, which passes every
+    /// stream the capture holds whenever no `--filter` narrows it. Under a
+    /// filter the section is absent by design — a filter selects dialogs, and
+    /// an orphan belongs to none — which `docs/filter-dsl.md` states. The
+    /// per-call `--call-report` is a different renderer
+    /// (`crate::output::call_report`) with no orphan section at all, so
+    /// nothing there can go empty either.
+    #[test]
+    fn orphaned_stream_renders_under_the_orphan_heading() {
+        let s = make_orphaned_stream();
+
+        let report = print_dialog_report(&[], &[&s]);
+
+        let (before, orphans) = report.split_once("Orphaned Streams:").unwrap_or_else(|| {
+            panic!("an orphaned stream produced no Orphaned Streams section:\n{report}")
+        });
+        assert!(
+            orphans.contains("0x0bad0bad"),
+            "the orphaned stream's SSRC must appear under the heading:\n{report}"
+        );
+        assert!(
+            !before.contains("RTP Streams:"),
+            "an orphan has no dialog, so it must not open the associated table:\n{report}"
+        );
+    }
+
+    /// A stream linked to a dialog raises no orphan heading.
+    ///
+    /// The section is absent rather than empty, so "no Orphaned Streams" in a
+    /// report reads as "this capture had no orphans" and must stay true.
+    #[test]
+    fn linked_stream_raises_no_orphan_heading() {
+        let mut s = make_rtp_stream();
+        s.associated_dialog = Some("report-test@example.com".to_string());
+
+        let report = print_dialog_report(&[], &[&s]);
+
+        assert!(
+            report.contains("RTP Streams:"),
+            "a linked stream belongs in the associated table:\n{report}"
+        );
+        assert!(
+            !report.contains("Orphaned Streams:"),
+            "a linked stream is not orphaned and must not raise the heading:\n{report}"
+        );
+    }
+
+    /// The shape every real capture produces: the two tables partition the
+    /// streams, each SSRC under exactly one heading.
+    #[test]
+    fn mixed_report_partitions_streams_between_the_two_tables() {
+        let mut linked = make_rtp_stream();
+        linked.associated_dialog = Some("report-test@example.com".to_string());
+        let orphan = make_orphaned_stream();
+
+        let report = print_dialog_report(&[], &[&linked, &orphan]);
+
+        let (associated, orphans) = report
+            .split_once("Orphaned Streams:")
+            .unwrap_or_else(|| panic!("a report holding one orphan needs both tables:\n{report}"));
+        assert!(
+            associated.contains("0x0a0b0c0d") && !associated.contains("0x0bad0bad"),
+            "the associated table must hold the linked stream and only it:\n{report}"
+        );
+        assert!(
+            orphans.contains("0x0bad0bad") && !orphans.contains("0x0a0b0c0d"),
+            "the orphan table must hold the orphan and only it:\n{report}"
+        );
+    }
+
     /// A long Call-ID is truncated within the limit and ends with "...".
     #[test]
     fn truncate_long_call_id() {
