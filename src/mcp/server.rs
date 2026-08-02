@@ -1816,11 +1816,6 @@ impl SipnabMcp {
                        before reasoning about stopping or restarting a capture."
     )]
     pub async fn capture_status(&self) -> Result<CallToolResult, rmcp::ErrorData> {
-        let exhausted = self
-            .source_exhausted
-            .as_ref()
-            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
-
         let payload = {
             // Capture lock first, then the stores — see `CaptureState`. Held
             // together so the identity, the source name and the counts all
@@ -1854,6 +1849,17 @@ impl SipnabMcp {
                     error: outcome.as_ref().and_then(|o| o.error.clone()),
                 }
             });
+            // Read AFTER `finished()`, never before. The loader stores this flag
+            // and then releases `done`, so an Acquire read of `done` is what
+            // makes the store visible. Sampling it first — which this did — lets
+            // one answer pair a fresh `done: true` with a stale
+            // `source_exhausted: false`, and a poller that stops on `done` then
+            // trusts `source_exhausted` waits for an update that never comes.
+            // Reproduced on macOS in CI; the window is real, not a slow test.
+            let exhausted = self
+                .source_exhausted
+                .as_ref()
+                .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire));
             let resp = CaptureStatusResponse {
                 schema_version: 1,
                 source,
