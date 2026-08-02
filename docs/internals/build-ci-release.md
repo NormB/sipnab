@@ -165,6 +165,41 @@ before committing.
 - **`audit`** — `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`** — the `fuzz/` workspace compiles.
 
+### Dependabot bumps fail on a generated file, not on an API break
+
+**Every Dependabot pull request fails the same way, and it is almost never a
+code break.** A script generates `THIRD-PARTY-NOTICES.md` from the dependency
+graph, and the `third_party_notices_are_current` gate in `tests/docs_drift_test.rs`
+re-runs `scripts/build-third-party-notices.py` and fails when the committed file
+differs. Dependabot moves `Cargo.lock` and never regenerates what derives from
+it.
+
+The fix is one command on the branch:
+
+```bash
+python3 scripts/build-third-party-notices.py
+```
+
+**Read the failure signature before you believe the job names.** Exactly the
+jobs that *execute* the suite fail — `check` on both platforms, `coverage`, and
+the single `features` combination that runs `cargo test` — while every
+check-only `features` combination stays green. A real compile break fails those
+too. `check` runs the tests, and its name reads like "compiles".
+
+On 2026-08-02 this presented as three pull requests each failing five jobs,
+which looked exactly like three simultaneous major-version API breaks.
+`wasmi` 0.51 to 1.1, `rmcp` 2.2.0 to 3.0.1, and a three-crate group each needed
+**zero** code changes. Verifying that cost three separate investigations, which
+is why this section exists.
+
+One caveat on `rmcp` specifically: a major bump can be genuinely wide and still
+touch nothing sipnab uses. Diff the actual MCP wire traffic rather than reading
+the changelog, because that is what tells you whether behaviour moved.
+
+Branch protection sets `required_status_checks.strict: true`, so a green pull
+request shows `BEHIND` whenever `main` moves. Arm auto-merge per pull request
+rather than racing a manual rebase against your own pushes.
+
 **`install-sh` and `deb-package` are not in that list.** They run on every push
 — the installer test suite plus shellcheck, and the `.deb` build for both the
 full and `noaudio` variants — but a failure in either does **not** block a
