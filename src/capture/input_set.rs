@@ -52,6 +52,23 @@
 //! target are each named in a `Skipping ...` line. A file that vanishes from
 //! the set silently is indistinguishable from traffic that was never captured.
 //!
+//! # The numbers have to reconcile
+//!
+//! Naming each dropped candidate is not the whole of it, because the two
+//! commonest drops have no line to give. A subdirectory the walk declined to
+//! enter cannot warn on every `archive/` in every capture directory without
+//! becoming noise, and an entry that is simply not a file used to leave through
+//! a branch that said nothing at all.
+//!
+//! So resolution also **counts** every way a candidate left the set and reports
+//! the totals beside the set it returned. The case that forced it: `-I` at a
+//! real capture directory holding 15 files beside three subdirectories holding
+//! 122 more printed `Reading 15 capture files in timestamp order` — a line
+//! byte-identical to the one a directory of exactly 15 captures produces.
+//! Recursion stays opt-in, which is the right default; what changed is that the
+//! run now says what the default cost. This is the shape `--portrange` already
+//! uses: print the loss beside the total it reduced, so the two numbers add up.
+//!
 //! # `--input-name` and the shape of `-I`
 //!
 //! The pattern filters every **discovered** path — from a directory walk and
@@ -96,6 +113,99 @@ pub struct ResolvedInput {
     pub first_packet: Option<f64>,
 }
 
+/// What resolution left out of the set it returned.
+///
+/// Each field is one way a candidate the operator's `-I` reached can fail to
+/// become a file that is read, and each already produces its own line at the
+/// moment it happens — except the two that never did: a subdirectory the walk
+/// declined to enter, and an entry that is not a file at all.
+///
+/// Counting them is what makes the per-item lines *reconcile*. `-I /pcaps`
+/// over a directory of 15 captures and 3 subdirectories holding 122 more
+/// reported "Reading 15 capture files" and nothing else, which is
+/// indistinguishable from a directory that holds 15 captures and nothing else.
+/// The shape is the one `--portrange` already uses: say what was left out,
+/// beside the total it reduced, so the two numbers add up.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ResolveTally {
+    /// Subdirectories the walk did not enter because `--recursive` is off.
+    not_descended: usize,
+    /// Symlinked directories, which are never followed even under
+    /// `--recursive` — following them is what risks a loop.
+    link_to_dir: usize,
+    /// Entries that are not files: a dangling symlink, a fifo, a socket, a
+    /// device node, or a glob match that is neither a file nor a directory.
+    unusable: usize,
+    /// Directory entries and glob matches that could not be read at all,
+    /// most often because a component of the path is not readable.
+    unreachable: usize,
+    /// Discovered files that would not open as a capture.
+    unreadable: usize,
+    /// Discovered files the `--input-name` pattern rejected.
+    filtered_out: usize,
+    /// Repeat paths collapsed so the file is read once.
+    duplicates: usize,
+}
+
+impl ResolveTally {
+    /// Whether anything at all was left out of the returned set.
+    ///
+    /// Nothing is printed when it is not: a clean run already says how many
+    /// files it is about to read, and repeating "and nothing was dropped"
+    /// on every run trains the reader to skip the line that matters.
+    fn dropped_any(&self) -> bool {
+        self.not_descended
+            + self.link_to_dir
+            + self.unusable
+            + self.unreachable
+            + self.unreadable
+            + self.filtered_out
+            + self.duplicates
+            > 0
+    }
+
+    /// Whether what was left out is data missing rather than data declined.
+    ///
+    /// `--input-name` and a path named twice are what the operator asked for.
+    /// Everything else — including a subdirectory left out by the *default*
+    /// `--recursive` setting, which nobody typed — is capture the run does not
+    /// contain and the reader has no other way to learn about.
+    fn lossy(&self) -> bool {
+        self.not_descended + self.link_to_dir + self.unusable + self.unreachable + self.unreadable
+            > 0
+    }
+
+    /// The reconciling line: what resolved, and what did not.
+    fn summary(&self, resolved: usize, recursive: bool) -> String {
+        let descended = if recursive {
+            "subdirectory(ies) not descended"
+        } else {
+            "subdirectory(ies) not descended (pass --recursive to read them)"
+        };
+        let mut line = format!("-I resolved to {resolved} capture file(s)");
+        for (n, what) in [
+            (self.not_descended, descended),
+            (
+                self.link_to_dir,
+                "symlinked directory(ies) not followed (name each with its own -I)",
+            ),
+            (self.unusable, "entry(ies) that are not files"),
+            (self.unreachable, "entry(ies) that could not be read"),
+            (self.unreadable, "file(s) that are not readable captures"),
+            (self.filtered_out, "file(s) excluded by --input-name"),
+            (self.duplicates, "repeat path(s) read once"),
+        ] {
+            if n > 0 {
+                line.push_str(", ");
+                line.push_str(&n.to_string());
+                line.push(' ');
+                line.push_str(what);
+            }
+        }
+        line
+    }
+}
+
 /// Expand and order `-I` arguments into the files to read.
 ///
 /// # Errors
@@ -104,9 +214,39 @@ pub struct ResolvedInput {
 /// as a capture, when a glob pattern is malformed, or when the whole set
 /// resolves to no readable file.
 pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedInput>> {
+    let (resolved, tally) = resolve_counting(specs, opts)?;
+
+    // Reported here rather than left to the caller, so it reaches the operator
+    // for every `-I` path there is without each of them remembering to ask.
+    if tally.dropped_any() {
+        let line = tally.summary(resolved.len(), opts.recursive);
+        if tally.lossy() {
+            tracing::warn!("{line}");
+        } else {
+            tracing::info!("{line}");
+        }
+    }
+
+    warn_on_overlap(&resolved);
+    Ok(resolved)
+}
+
+/// [`resolve`], plus what it left out.
+///
+/// Split out so the accounting can be asserted directly instead of through a
+/// log line — the same split [`super::file`] makes for its read tally.
+///
+/// # Errors
+///
+/// As [`resolve`].
+fn resolve_counting(
+    specs: &[String],
+    opts: &ResolveOptions,
+) -> Result<(Vec<ResolvedInput>, ResolveTally)> {
     if specs.is_empty() {
         bail!("no capture input given");
     }
+    let mut tally = ResolveTally::default();
 
     // Compiled once, and here rather than inside the directory walk, so a
     // malformed pattern fails the run whatever shape the -I argument has
@@ -130,7 +270,7 @@ pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedIn
     let mut seen: BTreeMap<PathBuf, usize> = BTreeMap::new();
 
     for spec in specs {
-        let found = expand_one(spec, opts, name_pat.as_ref())?;
+        let found = expand_one(spec, opts, name_pat.as_ref(), &mut tally)?;
         for (path, explicit) in found {
             let key = path.canonicalize().unwrap_or_else(|_| path.clone());
             match seen.entry(key) {
@@ -139,6 +279,7 @@ pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedIn
                     candidates.push((path, explicit));
                 }
                 Entry::Occupied(slot) => {
+                    tally.duplicates += 1;
                     if explicit {
                         candidates[*slot.get()].1 = true;
                     }
@@ -157,6 +298,7 @@ pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedIn
                 });
             }
             Err(e) => {
+                tally.unreadable += 1;
                 tracing::warn!(
                     "Skipping '{}': not a readable capture ({e:#})",
                     path.display()
@@ -189,8 +331,7 @@ pub fn resolve(specs: &[String], opts: &ResolveOptions) -> Result<Vec<ResolvedIn
         .then_with(|| a.path.cmp(&b.path))
     });
 
-    warn_on_overlap(&resolved);
-    Ok(resolved)
+    Ok((resolved, tally))
 }
 
 /// Expand one `-I` argument. Returns `(path, explicitly_named)` pairs.
@@ -198,6 +339,7 @@ fn expand_one(
     spec: &str,
     opts: &ResolveOptions,
     name_pat: Option<&glob::Pattern>,
+    tally: &mut ResolveTally,
 ) -> Result<Vec<(PathBuf, bool)>> {
     // A glob is identified by its metacharacters. Checked before the
     // filesystem, because a path containing them may also happen to exist.
@@ -210,6 +352,7 @@ fn expand_one(
             let path = match entry {
                 Ok(p) => p,
                 Err(e) => {
+                    tally.unreachable += 1;
                     tracing::warn!(
                         "Skipping '{}' matched by '{spec}': {}",
                         e.path().display(),
@@ -224,16 +367,20 @@ fn expand_one(
             // was discovered rather than named, so one that yields no capture
             // is a warning and not the end of the run.
             if path.is_dir() {
-                match expand_dir(&path, opts, name_pat) {
+                match expand_dir(&path, opts, name_pat, tally) {
                     Ok(found) => out.extend(found),
-                    Err(e) => tracing::warn!(
-                        "Skipping directory '{}' matched by '{spec}': {e:#}",
-                        path.display()
-                    ),
+                    Err(e) => {
+                        tally.unreachable += 1;
+                        tracing::warn!(
+                            "Skipping directory '{}' matched by '{spec}': {e:#}",
+                            path.display()
+                        );
+                    }
                 }
                 continue;
             }
             if !path.is_file() {
+                tally.unusable += 1;
                 tracing::warn!(
                     "Skipping '{}' matched by '{spec}': not a file or a directory",
                     path.display()
@@ -243,6 +390,7 @@ fn expand_one(
             if let Some(pat) = name_pat
                 && !name_matches(pat, &path)
             {
+                tally.filtered_out += 1;
                 continue;
             }
             out.push((path, false));
@@ -258,7 +406,7 @@ fn expand_one(
 
     let path = PathBuf::from(spec);
     if path.is_dir() {
-        return expand_dir(&path, opts, name_pat);
+        return expand_dir(&path, opts, name_pat, tally);
     }
     if path.exists() {
         // A directly named file is not filtered — see the module docs. Saying
@@ -293,7 +441,11 @@ fn expand_dir(
     dir: &Path,
     opts: &ResolveOptions,
     name_pat: Option<&glob::Pattern>,
+    tally: &mut ResolveTally,
 ) -> Result<Vec<(PathBuf, bool)>> {
+    // What this directory alone left out, so a directory that resolves to
+    // nothing can say whether the captures are one level further down.
+    let skipped_before = tally.not_descended;
     // walkdir rather than a hand-rolled read_dir recursion: it carries the
     // symlink-loop protection, which a directory of captures can genuinely
     // hit when someone symlinks `latest -> .`.
@@ -308,6 +460,7 @@ fn expand_dir(
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
+                tally.unreachable += 1;
                 let at = e.path().unwrap_or(dir).display().to_string();
                 tracing::warn!("Skipping '{at}': cannot read directory entry ({e})");
                 continue;
@@ -322,43 +475,80 @@ fn expand_dir(
         // what the glob branch has always used.
         let path = entry.path();
         if !path.is_file() {
-            report_unusable_entry(&entry, opts);
+            report_unusable_entry(&entry, opts, tally);
             continue;
         }
         if let Some(pat) = name_pat
             && !name_matches(pat, path)
         {
+            tally.filtered_out += 1;
             continue;
         }
         out.push((path.to_path_buf(), false));
     }
 
     if out.is_empty() {
+        // A directory of nothing but subdirectories is the shape a per-host or
+        // per-day capture tree takes, and "no files in '/pcaps'" read as "that
+        // directory is empty" when 122 captures sat one level down.
+        let buried = tally.not_descended - skipped_before;
+        let deeper = if buried > 0 {
+            format!(
+                " ({buried} subdirectory(ies) were not descended; pass --recursive to read them)"
+            )
+        } else {
+            String::new()
+        };
         match opts.name_glob.as_deref() {
-            Some(g) => bail!("no files matching '{g}' in '{}'", dir.display()),
-            None => bail!("no files in '{}'", dir.display()),
+            Some(g) => bail!("no files matching '{g}' in '{}'{deeper}", dir.display()),
+            None => bail!("no files in '{}'{deeper}", dir.display()),
         }
     }
     Ok(out)
 }
 
-/// Warn about a walked entry that is not a file, when its absence is a loss.
+/// Account for a walked entry that is not a file, and name it when naming it
+/// helps.
 ///
-/// A plain subdirectory is not one: reaching into it is what `--recursive`
-/// decides, and the walk already reflects that choice. A **broken** symlink and
-/// a symlinked subdirectory under `--recursive` are, because in both cases
-/// something that looks like part of the capture set contributes nothing.
-fn report_unusable_entry(entry: &walkdir::DirEntry, opts: &ResolveOptions) {
-    if entry.depth() == 0 || !entry.path_is_symlink() {
+/// Three outcomes, and the difference between them is what the reader can act
+/// on. A subdirectory the walk declined to enter gets no line of its own — a
+/// per-line warning for every `archive/` in every capture directory is noise —
+/// but it is COUNTED, because "15 files" beside a directory holding 137 is the
+/// silence this module exists to remove. A symlinked directory under
+/// `--recursive` gets a line, because the operator asked to recurse and this is
+/// the one directory that will not be. Everything else — a dangling symlink, a
+/// fifo, a socket, a device node — is named, because something shaped like part
+/// of the capture set contributed nothing to it.
+fn report_unusable_entry(
+    entry: &walkdir::DirEntry,
+    opts: &ResolveOptions,
+    tally: &mut ResolveTally,
+) {
+    // Depth 0 is the directory `-I` named. It is the walk, not a member of it.
+    if entry.depth() == 0 {
         return;
     }
     let path = entry.path();
-    if !path.exists() {
+    if path.is_dir() {
+        if !opts.recursive {
+            tally.not_descended += 1;
+        } else if entry.path_is_symlink() {
+            tally.link_to_dir += 1;
+            tracing::warn!(
+                "Skipping '{}': symlinked directory, not descended (following it \
+                 risks a loop); name it with its own -I to read it",
+                path.display()
+            );
+        }
+        return;
+    }
+    tally.unusable += 1;
+    if entry.path_is_symlink() && !path.exists() {
         tracing::warn!("Skipping '{}': symlink with no target", path.display());
-    } else if opts.recursive && path.is_dir() {
+    } else {
         tracing::warn!(
-            "Skipping '{}': symlinked directory, not descended (following it \
-             risks a loop); name it with its own -I to read it",
+            "Skipping '{}': not a file (a fifo, socket or device node cannot \
+             hold a capture)",
             path.display()
         );
     }
@@ -885,9 +1075,15 @@ mod tests {
             name_glob: Some("keep-*".to_string()),
             ..Default::default()
         };
-        let out = resolve(&[format!("{}/*.pcap", dir.path().display())], &opts).expect("resolve");
+        let (out, tally) = resolve_counting(&[format!("{}/*.pcap", dir.path().display())], &opts)
+            .expect("resolve");
         assert_eq!(out.len(), 1, "the filter must narrow a glob too: {out:?}");
         assert!(out[0].path.ends_with("keep-me.pcap"), "{out:?}");
+        assert_eq!(
+            tally.filtered_out, 1,
+            "the glob branch has its own copy of the filter, so it needs its \
+             own accounting: {tally:?}"
+        );
     }
 
     /// `--input-name` against a directly named file is a contradiction, and it
@@ -962,7 +1158,7 @@ mod tests {
         .expect("copy");
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
 
-        let out = resolve(
+        let out = resolve_counting(
             &[spec(root.path())],
             &ResolveOptions {
                 recursive: true,
@@ -972,11 +1168,281 @@ mod tests {
         // Restore before asserting so a failure still leaves a removable dir.
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-        let out = out.expect("resolve");
+        let (out, tally) = out.expect("resolve");
         assert_eq!(
             out.len(),
             1,
             "the readable file must still resolve: {out:?}"
+        );
+        assert!(
+            tally.unreachable > 0,
+            "a directory the walk could not read is missing capture, and the \
+             count is what tells the reader the set is short: {tally:?}"
+        );
+        assert!(tally.lossy(), "{tally:?}");
+    }
+
+    /// A symlinked directory is never followed, and that is counted separately.
+    ///
+    /// It is the one directory `--recursive` does not reach — following it is
+    /// what risks the `latest -> .` loop — so an operator who asked to recurse
+    /// has to be told which directory the request did not apply to.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_directory_under_recursive_is_counted_separately() {
+        let store = tempfile::tempdir().expect("tempdir");
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::copy(
+            samples().join("sip-rtp-g711.pcap"),
+            root.path().join("top.pcap"),
+        )
+        .expect("copy");
+        std::fs::copy(
+            samples().join("sip-register.pcap"),
+            store.path().join("buried.pcap"),
+        )
+        .expect("copy");
+        std::os::unix::fs::symlink(store.path(), root.path().join("elsewhere")).expect("symlink");
+
+        let (out, tally) = resolve_counting(
+            &[spec(root.path())],
+            &ResolveOptions {
+                recursive: true,
+                ..Default::default()
+            },
+        )
+        .expect("resolve");
+        assert_eq!(out.len(), 1, "the link is not followed: {out:?}");
+        assert_eq!(
+            tally.link_to_dir, 1,
+            "--recursive was asked for and one directory did not get it; that \
+             is not the same fact as recursion being off: {tally:?}"
+        );
+        assert_eq!(
+            tally.not_descended, 0,
+            "recursion IS on, so this is not the recursion-is-off case: {tally:?}"
+        );
+    }
+
+    /// Lay out `root/top.pcap` and `root/archive/buried.pcap`.
+    fn dir_with_a_buried_capture(root: &Path) {
+        let sub = root.join("archive");
+        std::fs::create_dir(&sub).expect("mkdir");
+        std::fs::copy(samples().join("sip-rtp-g711.pcap"), root.join("top.pcap")).expect("copy");
+        std::fs::copy(samples().join("sip-register.pcap"), sub.join("buried.pcap")).expect("copy");
+    }
+
+    /// A subdirectory the walk declined to enter is COUNTED.
+    ///
+    /// This is the silence the tally exists for, and it is the one that shows
+    /// up on real capture trees rather than on fixtures. `-I` at a directory
+    /// holding 15 captures beside three subdirectories of 122 more resolved to
+    /// 15 and said only "Reading 15 capture files" — a line that reads exactly
+    /// the same when the directory really does hold 15 and nothing else.
+    /// Recursion staying opt-in is right; being unable to tell the two
+    /// directories apart is not.
+    #[test]
+    fn a_subdirectory_the_walk_did_not_enter_is_counted() {
+        let root = tempfile::tempdir().expect("tempdir");
+        dir_with_a_buried_capture(root.path());
+
+        let (out, tally) =
+            resolve_counting(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        assert_eq!(out.len(), 1, "recursion is opt-in and stays so: {out:?}");
+        assert_eq!(
+            tally.not_descended, 1,
+            "the subdirectory holding a capture must be counted, not merely \
+             left out: {tally:?}"
+        );
+        assert!(
+            tally.lossy(),
+            "nobody typed --recursive=false; the default chose it, so the \
+             capture missing from this run is a loss the reader must be told \
+             about: {tally:?}"
+        );
+    }
+
+    /// …and is NOT counted when `--recursive` did enter it.
+    ///
+    /// The counter has to distinguish "not read" from "read", or the warning
+    /// fires on every recursive run and stops meaning anything.
+    #[test]
+    fn a_descended_subdirectory_is_not_counted_as_dropped() {
+        let root = tempfile::tempdir().expect("tempdir");
+        dir_with_a_buried_capture(root.path());
+
+        let (out, tally) = resolve_counting(
+            &[spec(root.path())],
+            &ResolveOptions {
+                recursive: true,
+                ..Default::default()
+            },
+        )
+        .expect("resolve");
+        assert_eq!(
+            out.len(),
+            2,
+            "--recursive reaches the subdirectory: {out:?}"
+        );
+        assert_eq!(
+            tally.not_descended, 0,
+            "a directory that WAS read is not a drop: {tally:?}"
+        );
+        assert!(!tally.dropped_any(), "nothing was left out: {tally:?}");
+    }
+
+    /// The line the operator reads names the flag that would have read them.
+    ///
+    /// A count with no remedy beside it is a puzzle, not a disclosure.
+    #[test]
+    fn the_summary_names_the_flag_that_would_have_read_the_subdirectory() {
+        let tally = ResolveTally {
+            not_descended: 3,
+            ..ResolveTally::default()
+        };
+        let line = tally.summary(15, false);
+        assert!(
+            line.contains("15") && line.contains('3') && line.contains("--recursive"),
+            "the reader needs what was read, what was not, and the flag that \
+             would change it: {line}"
+        );
+    }
+
+    /// An entry that cannot hold a capture is counted and named.
+    ///
+    /// A fifo in a capture directory is not exotic — a live `tcpdump | ...`
+    /// pipeline leaves one — and `path.is_file()` is false for it, so it left
+    /// the set through the one branch that said nothing at all.
+    #[cfg(unix)]
+    #[test]
+    fn an_entry_that_is_not_a_file_is_counted() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::copy(
+            samples().join("sip-rtp-g711.pcap"),
+            root.path().join("real.pcap"),
+        )
+        .expect("copy");
+        let fifo = root.path().join("live.pcap");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let (out, tally) =
+            resolve_counting(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        assert_eq!(out.len(), 1, "the real capture still resolves: {out:?}");
+        assert_eq!(
+            tally.unusable, 1,
+            "a fifo named like a capture must be accounted for, not dropped \
+             through the silent branch: {tally:?}"
+        );
+    }
+
+    /// What `--input-name` excluded is counted, and is not called a loss.
+    ///
+    /// The operator typed the filter, so this is data declined rather than data
+    /// missing — but the count still reconciles the set against the directory.
+    #[test]
+    fn what_the_name_pattern_excluded_is_counted_but_not_a_loss() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::copy(
+            samples().join("sip-rtp-g711.pcap"),
+            root.path().join("keep-me.pcap"),
+        )
+        .expect("copy");
+        std::fs::copy(
+            samples().join("sip-register.pcap"),
+            root.path().join("drop-me.pcap"),
+        )
+        .expect("copy");
+
+        let opts = ResolveOptions {
+            name_glob: Some("keep-*".to_string()),
+            ..Default::default()
+        };
+        let (out, tally) = resolve_counting(&[spec(root.path())], &opts).expect("resolve");
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(tally.filtered_out, 1, "{tally:?}");
+        assert!(
+            tally.dropped_any() && !tally.lossy(),
+            "a filter the operator typed is reported, not warned about: {tally:?}"
+        );
+    }
+
+    /// A path reached twice is read once, and the collapse is counted.
+    #[test]
+    fn a_path_reached_twice_is_counted_as_a_duplicate() {
+        let a = samples().join("sip-rtp-g711.pcap");
+        let (out, tally) =
+            resolve_counting(&[spec(&a), spec(&a)], &ResolveOptions::default()).expect("resolve");
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(
+            tally.duplicates, 1,
+            "two -I arguments produced one file, and the arithmetic has to \
+             close: {tally:?}"
+        );
+        assert!(!tally.lossy(), "nothing was lost: {tally:?}");
+    }
+
+    /// A discovered file that will not open as a capture is counted.
+    #[test]
+    fn a_discovered_file_that_is_not_a_capture_is_counted() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::copy(
+            samples().join("sip-rtp-g711.pcap"),
+            root.path().join("good.pcap"),
+        )
+        .expect("copy");
+        std::fs::copy(
+            samples().join("c07-sip-r2.cap"),
+            root.path().join("netmon.cap"),
+        )
+        .expect("copy");
+
+        let (out, tally) =
+            resolve_counting(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(
+            tally.unreadable, 1,
+            "the NetMon capture libpcap cannot open must appear in the \
+             accounting, not only in a passing warning: {tally:?}"
+        );
+        assert!(tally.lossy(), "{tally:?}");
+    }
+
+    /// A clean run says nothing, so the line means something when it appears.
+    #[test]
+    fn a_run_that_dropped_nothing_reports_nothing() {
+        let f = samples().join("sip-rtp-g711.pcap");
+        let (out, tally) =
+            resolve_counting(&[spec(&f)], &ResolveOptions::default()).expect("resolve");
+        assert_eq!(out.len(), 1);
+        assert!(
+            !tally.dropped_any(),
+            "a single named file drops nothing, and a line on every run is a \
+             line nobody reads: {tally:?}"
+        );
+    }
+
+    /// A directory of nothing but subdirectories says where the captures are.
+    ///
+    /// A per-host or per-day capture tree has exactly this shape, and
+    /// "no files in '/pcaps'" reads as "that directory is empty" when 122
+    /// captures sit one level down.
+    #[test]
+    fn a_directory_of_only_subdirectories_says_the_captures_are_deeper() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let sub = root.path().join("host-a");
+        std::fs::create_dir(&sub).expect("mkdir");
+        std::fs::copy(samples().join("sip-rtp-g711.pcap"), sub.join("cap.pcap")).expect("copy");
+
+        let err = resolve(&[spec(root.path())], &ResolveOptions::default()).expect_err("must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not descended") && msg.contains("--recursive"),
+            "an empty-looking directory with captures one level down must say \
+             so: {msg}"
         );
     }
 
