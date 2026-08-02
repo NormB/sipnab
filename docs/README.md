@@ -67,6 +67,8 @@ through.
   registry, the RFC section defining it, and whether it means the call failed.
 - [SIP parameters](sip-parameters.md) — every URI parameter, header-field
   parameter and option tag in the IANA registry, and which sipnab parses.
+- [SIP conformance rules](sip-lint-rules.md) — every linter rule, the RFC
+  section behind it, and how to suppress it in CI.
 - [REST API & Metrics](rest-api.md) — every endpoint and its response shape,
   status codes, Prometheus, curl recipes.
 - [MCP server](mcp.md) — every tool, both transports, client configuration.

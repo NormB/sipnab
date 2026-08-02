@@ -365,6 +365,9 @@
                     "type": "integer",
                     "minimum": 0
                   }
+                },
+                "icmp_cause": {
+                  "type": "string"
                 }
               }
             },

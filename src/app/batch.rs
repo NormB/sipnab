@@ -393,6 +393,8 @@ pub fn run_cores_file(
                     r.stream_store.len(),
                     cli.cores,
                 );
+                report_icmp_summary(&r.stream_store);
+                report_retention_losses(&r.dialog_store);
             }
             if !reports_ok {
                 std::process::exit(1);
@@ -401,6 +403,170 @@ pub fn run_cores_file(
         Err(e) => {
             tracing::error!("multi-core reconstruction failed: {e:#}");
             std::process::exit(1);
+        }
+    }
+}
+
+/// Print what ICMP said about this run, on stderr, beside the packet totals.
+///
+/// Two blocks, because the two answer different questions and are attributed
+/// by different keys. "Why did this call fail to set up" is signalling, keyed
+/// by `Call-ID`. "Why could nobody hear anything" is media, keyed by the
+/// quoted datagram's own 5-tuple against the streams this run tracked. A
+/// reader scanning a summary should not have to open each dialog to discover
+/// that a router has been answering on the peer's behalf.
+///
+/// Called from every batch summary path — single-threaded and both `--cores`
+/// entry points. The signalling block used to be inline in the
+/// single-threaded one only, so a `--cores` run printed nothing however much
+/// ICMP the capture held. Evidence that reaches no surface is the defect this
+/// whole area exists to remove, so there is one renderer and every path calls
+/// it.
+///
+/// # Arguments
+///
+/// * `streams` — the run's stream store, merged when the run was parallel.
+///   Media quotes are resolved against it here; an empty store yields a report
+///   in which every media error is unattributed, which is honest.
+///
+/// # Side effects
+///
+/// Writes to stderr. Prints nothing at all when the capture held no ICMP,
+/// which is the common case.
+/// Whether this run should retain RTP payload bytes.
+///
+/// Retention costs a per-packet payload clone, so it stays off unless
+/// something in *this* run can read the buffers back. Batch reporting cannot.
+/// The MCP server can: `export_audio` decodes exactly these buffers, so with
+/// retention off it could not succeed for any call in any capture, in any
+/// build — which is what it did. MCP is the only batch-mode consumer, so it is
+/// the condition.
+///
+/// The TUI keeps its own retention decision in `tui_mode.rs`, which is why its
+/// F2 WAV export always worked against the same decoder.
+fn audio_retention_wanted(cli: &Cli) -> bool {
+    cli.mcp
+}
+
+/// Report what the dialog store shed, beside the totals that hide it.
+///
+/// The packet and message counters sit UPSTREAM of the store, so they count
+/// what arrived rather than what was kept. On the corpus that gap is real: 314
+/// messages evicted from 65 dialogs while the summary reported 103,234 SIP
+/// messages and said nothing, because the only other signal is a `debug!` line
+/// nobody sees at the default level.
+///
+/// Three distinct loss channels, each silent until now, and each meaning
+/// something different to an operator:
+/// - idle compaction drops MESSAGES from dialogs it keeps
+/// - at capacity with `--no-rotate`, a new dialog is REJECTED, so the earliest
+///   calls are the ones you keep
+/// - at capacity while rotating, the OLDEST dialog is discarded instead
+///
+/// Silent when nothing was shed, so a clean run stays quiet — the same rule
+/// the `-I` resolution accounting follows.
+fn report_retention_losses(dialogs: &DialogStore) {
+    if let Some(msg) = retention_summary(dialogs) {
+        tracing::warn!("{msg}");
+    }
+}
+
+/// The retention sentence, or `None` when the store shed nothing.
+///
+/// Split from the logging so the wording is testable: the value of this line
+/// is entirely in what it says, and a test that only checked "something was
+/// logged" would pass on a sentence naming the wrong number.
+fn retention_summary(dialogs: &DialogStore) -> Option<String> {
+    let msgs = dialogs.total_idle_messages_evicted();
+    let dropped = dialogs.total_capacity_dialogs_dropped();
+    let rotated = dialogs.total_capacity_dialogs_evicted();
+    if msgs == 0 && dropped == 0 && rotated == 0 {
+        return None;
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if msgs > 0 {
+        parts.push(format!(
+            "{msgs} message(s) evicted from retained dialogs by idle compaction"
+        ));
+    }
+    if dropped > 0 {
+        parts.push(format!(
+            "{dropped} new dialog(s) refused at capacity (--no-rotate keeps the earliest)"
+        ));
+    }
+    if rotated > 0 {
+        parts.push(format!(
+            "{rotated} oldest dialog(s) discarded at capacity by rotation"
+        ));
+    }
+
+    Some(format!(
+        "retention: {}. The message and packet counts above are what sipnab READ, \
+         not what it kept — raise --limit, or --max-dialogs, to keep more.",
+        parts.join("; ")
+    ))
+}
+
+/// Print the ICMP evidence summary for a finished run.
+///
+/// Called from all three batch summary sites rather than written inline,
+/// because it used to live only in the single-threaded one — so `--cores N`
+/// printed no ICMP summary at all, and the two paths disagreed about what the
+/// same capture contained.
+fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
+    let icmp = crate::pipeline::icmp_evidence_report();
+    if icmp.errors > 0 {
+        let top: Vec<String> = icmp
+            .endpoints
+            .iter()
+            .take(5)
+            .map(|e| match e.port {
+                Some(p) => format!("{}:{} ({}, {})", e.addr, p, e.errors, e.description),
+                None => format!("{} ({}, {})", e.addr, e.errors, e.description),
+            })
+            .collect();
+        eprintln!(
+            "ICMP: {} error(s) quoting a SIP request, naming {} unreachable endpoint(s). \
+             Busiest: {}.",
+            icmp.errors,
+            icmp.endpoints.len(),
+            top.join(", ")
+        );
+        // A cap that silently swallowed evidence would make the numbers above
+        // understate the problem, so say when one bit.
+        if icmp.unattributed > 0 || icmp.untracked_dialogs > 0 {
+            eprintln!(
+                "ICMP: {} error(s) quoted too little to name a Call-ID and {} more reached no \
+                 dialog because the tracking cap was full — real evidence that appears against \
+                 no call.",
+                icmp.unattributed, icmp.untracked_dialogs
+            );
+        }
+    }
+
+    // A media quote that matched no stream is still printed. Dropping it would
+    // hide that the network answered, which is the whole point of reading ICMP.
+    let media = crate::pipeline::icmp_media_report(streams);
+    if media.errors > 0 {
+        eprintln!(
+            "ICMP: {} error(s) quoting non-SIP traffic, {} of them media, across {} flow(s). \
+             Attributed to a stream or SDP endpoint: {}; matched nothing this capture holds: {}.",
+            media.errors,
+            media.media,
+            media.flows.len(),
+            media.attributed,
+            media.unattributed,
+        );
+        for f in media.flows.iter().take(5) {
+            eprintln!("  {}", f.hint);
+        }
+        if media.unkeyed > 0 || media.untracked_flows > 0 {
+            eprintln!(
+                "ICMP: {} media error(s) quoted too little to name a flow and {} more reached no \
+                 flow because the tracking cap was full.",
+                media.unkeyed, media.untracked_flows
+            );
         }
     }
 }
@@ -466,6 +632,8 @@ pub fn run(
                 result.stream_store.len(),
                 cli.cores,
             );
+            report_icmp_summary(&result.stream_store);
+            report_retention_losses(&result.dialog_store);
         }
         if !reports_ok {
             std::process::exit(1);
@@ -605,35 +773,46 @@ impl BatchRunner {
 
         // 16a. Initialize HEP sender if --hep-send is set
         #[cfg(feature = "hep")]
-        let hep_sender: Option<crate::capture::hep::HepSender> = if let Some(ref addr) =
-            cli.hep_send
-        {
-            let capture_id = cli.hep_id.unwrap_or(1);
-            let hep_auth = match cli.resolve_hep_auth() {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::error!("HEP auth: {e}");
-                    None
+        let hep_sender: Option<crate::capture::hep::HepSender> =
+            if let Some(ref addr) = cli.hep_send {
+                let capture_id = cli.hep_id.unwrap_or(1);
+                let hep_auth = match cli.resolve_hep_auth() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::error!("HEP auth: {e}");
+                        None
+                    }
+                };
+                let authenticated = hep_auth.is_some();
+                // Mint the destination here rather than inside the constructor, so
+                // the type is proven at the call site. While the constructor took a
+                // &str, any future caller could mint a destination from an arbitrary
+                // string -- which is the hole the permit type exists to close.
+                let destination = crate::capture::hep::OperatorDestination::from_cli_flag(
+                    crate::capture::hep::HEP_SEND_FLAG,
+                    addr,
+                );
+                match crate::capture::hep::HepSender::for_destination(
+                    &destination,
+                    capture_id,
+                    hep_auth,
+                    cli.hep_auth_mode,
+                ) {
+                    Ok(sender) => {
+                        tracing::info!(
+                            "HEP sender targeting {addr} (capture id {capture_id}{})",
+                            if authenticated { ", authenticated" } else { "" }
+                        );
+                        Some(sender)
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create HEP sender: {e}");
+                        None
+                    }
                 }
+            } else {
+                None
             };
-            let authenticated = hep_auth.is_some();
-            match crate::capture::hep::HepSender::new(addr, capture_id, hep_auth, cli.hep_auth_mode)
-            {
-                Ok(sender) => {
-                    tracing::info!(
-                        "HEP sender targeting {addr} (capture id {capture_id}{})",
-                        if authenticated { ", authenticated" } else { "" }
-                    );
-                    Some(sender)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to create HEP sender: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
 
         // 17. Initialize processing state
         //
@@ -661,9 +840,18 @@ impl BatchRunner {
             if let Some(max_frames) = config.limits.max_audio_frames {
                 ss.set_max_audio_frames(max_frames as usize);
             }
-            // Batch mode has no audio export/playback path; don't pay a
-            // per-packet payload clone for buffers nothing will read.
-            ss.set_audio_capture(false);
+            if audio_retention_wanted(&cli) {
+                ss.set_audio_capture(true);
+                // Retention changes this run's memory profile, so state the
+                // bound rather than letting an operator discover it under load.
+                let frames = config.limits.max_audio_frames.unwrap_or(1500);
+                let streams = cli.max_streams_limit(config);
+                tracing::info!(
+                    "RTP payload retention is on so the MCP export_audio tool can decode it: \
+                     up to {frames} frame(s) per stream across at most {streams} stream(s). \
+                     Lower [limits] max_audio_frames or --max-streams to bound it further."
+                );
+            }
             Arc::new(RwLock::new(ss))
         };
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
@@ -816,6 +1004,10 @@ impl BatchRunner {
             .clone()
             .or(config.security.alert_exec.clone());
         let mut alert_engine = AlertEngine::new(alert_rules, effective_alert_exec);
+        // Without this the global budget sits at its default and --exec-rate-limit
+        // is silently inert on the alert path -- the same shape as #35, #55, #63
+        // and #83, where a flag parsed, validated, and did nothing.
+        alert_engine.set_exec_rate_limit(cli.exec_rate_limit);
         if cli.syslog || alert_channel_syslog {
             alert_engine.set_syslog(true);
         }
@@ -1519,39 +1711,8 @@ impl BatchRunner {
                 );
             }
 
-            // ICMP errors quoting SIP: the capture-wide view of what the
-            // per-dialog findings say one call at a time. An operator scanning
-            // a summary for "why are calls failing" should not have to open
-            // each dialog to discover a router has been answering for them.
-            let icmp = crate::pipeline::icmp_evidence_report();
-            if icmp.errors > 0 {
-                let top: Vec<String> = icmp
-                    .endpoints
-                    .iter()
-                    .take(5)
-                    .map(|e| match e.port {
-                        Some(p) => format!("{}:{} ({}, {})", e.addr, p, e.errors, e.description),
-                        None => format!("{} ({}, {})", e.addr, e.errors, e.description),
-                    })
-                    .collect();
-                eprintln!(
-                    "ICMP: {} error(s) quoting a SIP request, naming {} unreachable \
-                     endpoint(s). Busiest: {}.",
-                    icmp.errors,
-                    icmp.endpoints.len(),
-                    top.join(", ")
-                );
-                // A cap that silently swallowed evidence would make the numbers
-                // above understate the problem, so say when one bit.
-                if icmp.unattributed > 0 || icmp.untracked_dialogs > 0 {
-                    eprintln!(
-                        "ICMP: {} error(s) quoted too little to name a Call-ID and {} more \
-                         reached no dialog because the tracking cap was full — real evidence \
-                         that appears against no call.",
-                        icmp.unattributed, icmp.untracked_dialogs
-                    );
-                }
-            }
+            report_icmp_summary(&stream_store.read());
+            report_retention_losses(&dialog_store.read());
 
             // Helpful guidance when no SIP signalling was found. If RTP was
             // parsed, the capture was readable — just media-only — so soften
@@ -2521,6 +2682,93 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     /// Baseline non-interactive CLI; mutate the pub fields per test.
+    /// Build a `SipMessage` for `call_id` from the shared INVITE fixture.
+    fn invite_msg(call_id: &str) -> sip::message::SipMessage {
+        let data = bytes::Bytes::from(invite_bytes(call_id));
+        sip::parser::parse_sip_bytes(
+            &data,
+            chrono::Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("fixture parses")
+    }
+
+    /// A run that shed nothing must stay quiet.
+    ///
+    /// Without this the obvious implementation — always print the counters —
+    /// would pass the other test while adding a line to every clean run, and a
+    /// warning that fires constantly is one operators learn to skim past.
+    #[test]
+    fn a_run_that_kept_everything_reports_no_retention_loss() {
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_msg("kept-1@example.com"));
+
+        assert_eq!(
+            retention_summary(&store),
+            None,
+            "nothing was shed, so there is nothing to warn about"
+        );
+    }
+
+    /// A dialog discarded at capacity must be named, with its count.
+    ///
+    /// The defect this closes: three separate loss counters existed, each
+    /// carefully documented, and NONE had a consumer outside its own unit test.
+    /// On the corpus 402 messages were evicted while the summary reported
+    /// 103,234 SIP messages and said nothing, because the packet counters sit
+    /// upstream of the store — they count what arrived, not what was kept.
+    #[test]
+    fn a_dialog_discarded_at_capacity_is_named_with_its_count() {
+        // Capacity one, rotating: the second dialog displaces the first.
+        let mut store = DialogStore::new(1, true);
+        store.process_message(invite_msg("first@example.com"));
+        store.process_message(invite_msg("second@example.com"));
+
+        assert_eq!(
+            store.total_capacity_dialogs_evicted(),
+            1,
+            "the fixture must actually evict, or this test proves nothing"
+        );
+
+        let msg = retention_summary(&store).expect("an eviction must be reported");
+        assert!(
+            msg.contains('1') && msg.contains("discarded at capacity"),
+            "the warning must carry the count and the cause: {msg}"
+        );
+        assert!(
+            msg.contains("what sipnab READ"),
+            "it must say the totals above are not what was kept: {msg}"
+        );
+    }
+
+    /// Retention must follow whether *this* run can read the buffers back.
+    ///
+    /// The whole defect was that it did not: retention was hardcoded off, so
+    /// `export_audio` decoded an always-empty buffer and failed for every call
+    /// in every capture. Asserting the false case matters as much as the true
+    /// one — a blanket `true` would restore the per-packet clone for batch runs
+    /// that never read it, which is why it was switched off in the first place.
+    #[test]
+    fn audio_payload_is_retained_exactly_when_mcp_can_read_it() {
+        let mut cli = base_cli();
+
+        cli.mcp = false;
+        assert!(
+            !audio_retention_wanted(&cli),
+            "a plain batch run has no reader, so it must not pay the clone"
+        );
+
+        cli.mcp = true;
+        assert!(
+            audio_retention_wanted(&cli),
+            "export_audio decodes these buffers; with retention off it cannot succeed"
+        );
+    }
+
     fn base_cli() -> Cli {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.no_tui = true;

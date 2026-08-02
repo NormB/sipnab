@@ -503,9 +503,9 @@ fn quoted_header(prefix: &[u8], name: &[u8], compact: Option<u8>) -> Option<Stri
 ///
 /// Called from the ICMP arm of the packet parser, which is the only place
 /// every capture path passes through. Errors whose quote is not a SIP request
-/// — media, DNS, anything else — are not SIP evidence and are ignored here;
-/// they remain visible to [`crate::capture::parse::parse_icmp_error`] for a
-/// caller that wants them.
+/// — media, DNS, anything else — are not SIP evidence and go to the media
+/// store instead (see [`icmp_media_report`]), so that nothing parsed is
+/// dropped.
 ///
 /// # Returns
 ///
@@ -517,6 +517,7 @@ fn quoted_header(prefix: &[u8], name: &[u8], compact: Option<u8>) -> Option<Stri
 /// other ICMP errors.
 pub fn record_icmp_error(quote: &crate::capture::parse::IcmpQuote) -> bool {
     let Some(sip) = quoted_sip_prefix(&quote.quoted_payload) else {
+        record_media_icmp_error(quote);
         return false;
     };
 
@@ -650,6 +651,607 @@ pub fn icmp_evidence_report() -> IcmpEvidenceReport {
 pub fn reset_icmp_evidence() {
     *ICMP_EVIDENCE.lock() = None;
     ICMP_EVIDENCE_SEEN.store(false, std::sync::atomic::Ordering::Release);
+    *MEDIA_ICMP.lock() = None;
+}
+
+// ── What ICMP said about media ───────────────────────────────────────
+//
+// The section above reads ICMP errors that quote a SIP request. This one reads
+// the rest of them, and the rest of them are not noise: across one real corpus
+// of fifteen captures, 544 of 3,776 ICMP errors quoted a non-SIP port, and
+// `tshark` places the exact quoted 5-tuple of 543 of those in traffic the same
+// corpus contains. Every one was parsed and thrown away. "Your audio is being
+// sent to a host that is not listening" is one of the commonest questions this
+// tool exists to answer, and the packet that answers it was in the file.
+//
+// The association key is the hard part and it is NOT the signalling one. A
+// media datagram carries no `Call-ID`, so a quote of one has nothing to key on
+// but the failed datagram's own 5-tuple and — when the router quoted past RFC
+// 792's 8-byte minimum — an RTP or RTCP header. Matching those needs the
+// stream store, which does not exist at parse time and, under `--cores`, is
+// per-worker while this store is process-global. So recording and attribution
+// are deliberately separate: the quote is filed by flow as it is parsed, and
+// [`icmp_media_report`] resolves it against a `StreamStore` at the end of the
+// run. That is the same split the signalling side uses (record by `Call-ID`,
+// resolve at diagnosis time), for the same reason.
+//
+// Three rules, each because the obvious alternative is wrong:
+//
+//   * **A quote is not a packet.** It never creates a stream, never moves a
+//     stream count, and never enters the SIP evidence report. The signalling
+//     side holds that line for message counts; this holds it for stream counts.
+//   * **Unmatched is reported, not dropped.** A quote that matches no stream
+//     still names a real socket that a real router said was unreachable. It is
+//     counted as unattributed and its endpoint is still tallied, so the report
+//     distinguishes "no evidence" from "evidence sipnab could not place".
+//   * **What the payload is and what it matched are different facts.** A quote
+//     can be recognisably RTP and match no stream (media this capture does not
+//     hold), or match a stream with no payload left to read (the RFC 792
+//     minimum). Collapsing them into one "is media" flag would lose which of
+//     the two a reader is looking at.
+
+pub use crate::rtp::stream_store::{MediaAttribution, MediaMatch};
+
+/// Distinct quoted flows the media store retains.
+///
+/// The totals stay exact past this; [`IcmpMediaReport::untracked_flows`] says
+/// how many errors reached no flow entry at all.
+pub const MAX_ICMP_MEDIA_FLOWS: usize = 4_096;
+
+/// Errors retained per flow. Past this the per-flow COUNT still rises — only
+/// the retained detail stops, because the ninth quote of one flow shows
+/// nothing the first eight did not.
+pub const MAX_ICMP_PER_FLOW: usize = 8;
+
+/// What a quoted non-SIP payload turned out to be.
+///
+/// Read from the quote itself, never inferred from the port: a "media port" is
+/// a convention, and reporting a failed DNS query as a media blackhole because
+/// it used a high UDP port would be a fabricated diagnosis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotedMediaKind {
+    /// An RTP header. `ssrc` is the second key onto a tracked stream.
+    Rtp {
+        /// Synchronisation source from the RTP header.
+        ssrc: u32,
+        /// Payload type, so a reader knows which codec went missing.
+        payload_type: u8,
+    },
+    /// An RTCP packet — a sender or receiver report, SDES, BYE, or feedback.
+    Rtcp {
+        /// Synchronisation source from the report.
+        ssrc: u32,
+        /// RTCP packet type (200 SR, 201 RR, 202 SDES, …).
+        packet_type: u8,
+    },
+    /// The quote carried no payload past the transport header, which is what
+    /// RFC 792's 8-byte minimum guarantees and nothing more. Not a failure:
+    /// the flow may still match a stream.
+    Unread,
+    /// Payload was present and is neither RTP nor RTCP.
+    NotMedia,
+}
+
+impl QuotedMediaKind {
+    /// The SSRC this payload named, when it named one.
+    pub fn ssrc(self) -> Option<u32> {
+        match self {
+            Self::Rtp { ssrc, .. } | Self::Rtcp { ssrc, .. } => Some(ssrc),
+            Self::Unread | Self::NotMedia => None,
+        }
+    }
+
+    /// Whether the payload itself proves this datagram was media.
+    pub fn is_media(self) -> bool {
+        matches!(self, Self::Rtp { .. } | Self::Rtcp { .. })
+    }
+}
+
+/// Read a quoted non-SIP UDP payload as RTP or RTCP.
+///
+/// # The bar is set where a false positive stops being cheap
+///
+/// A bare "version == 2" test passes on a quarter of all random two-bit
+/// prefixes, and this module already carries the scar of a looser media check:
+/// a payload-only RTP heuristic once invented four phantom streams out of DNS
+/// traffic. So:
+///
+/// * **RTCP** must have version 2 *and* a packet type in the assigned range
+///   *and* a length field that fits inside the datagram. That is roughly 19
+///   bits of agreement, and it is what the corpus's media errors actually are.
+/// * **RTP** must have version 2, a payload type outside 64–95 (which RFC 5761
+///   §4 reserves so RTP and RTCP can be told apart on one port), no padding
+///   claim it cannot support, and twelve bytes to hold a header.
+///
+/// Even then the answer only ever *labels* a quote. It never creates a stream
+/// and never attributes one on its own: attribution is
+/// [`crate::rtp::stream_store::StreamStore::attribute_media_quote`]'s job, and
+/// the SSRC read here is one of the keys it is offered.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::pipeline::{QuotedMediaKind, quoted_media_kind};
+///
+/// // An RTP header: version 2, PCMU, SSRC 0x0BADF00D.
+/// let mut rtp = vec![0x80u8, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xA0];
+/// rtp.extend_from_slice(&0x0BAD_F00Du32.to_be_bytes());
+/// assert_eq!(
+///     quoted_media_kind(&rtp),
+///     QuotedMediaKind::Rtp { ssrc: 0x0BAD_F00D, payload_type: 0 }
+/// );
+///
+/// // RFC 792's minimum quote reaches no payload at all.
+/// assert_eq!(quoted_media_kind(&[]), QuotedMediaKind::Unread);
+///
+/// // A DNS query is not claimed as media.
+/// let dns = [0x12u8, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+/// assert_eq!(quoted_media_kind(&dns), QuotedMediaKind::NotMedia);
+/// ```
+pub fn quoted_media_kind(payload: &[u8]) -> QuotedMediaKind {
+    if payload.is_empty() {
+        return QuotedMediaKind::Unread;
+    }
+    let Some(&first) = payload.first() else {
+        return QuotedMediaKind::Unread;
+    };
+    if first >> 6 != 2 {
+        return QuotedMediaKind::NotMedia;
+    }
+    let Some(&second) = payload.get(1) else {
+        // One byte of payload is not enough to tell RTP from RTCP from
+        // anything else, and guessing from it would be guessing.
+        return QuotedMediaKind::Unread;
+    };
+
+    // RTCP first: its packet types occupy 192-223, which RFC 5761 §4 excludes
+    // from RTP's payload-type space precisely so this test is unambiguous.
+    if (192..=223).contains(&second) && payload.len() >= 8 {
+        let words = u16::from_be_bytes([payload[2], payload[3]]);
+        let declared = (usize::from(words) + 1) * 4;
+        // A truncated quote holds less than the packet declared, so the
+        // header may legitimately claim more than is here — but never less,
+        // and never zero.
+        if declared >= 8 {
+            return QuotedMediaKind::Rtcp {
+                ssrc: u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]),
+                packet_type: second,
+            };
+        }
+        return QuotedMediaKind::NotMedia;
+    }
+
+    let payload_type = second & 0x7f;
+    // 64-95 is the RTCP range under RFC 5761 multiplexing: an RTP packet must
+    // not use it, so a "version 2" payload that does is not RTP.
+    if (64..=95).contains(&payload_type) {
+        return QuotedMediaKind::NotMedia;
+    }
+    if payload.len() < 12 {
+        return QuotedMediaKind::Unread;
+    }
+    QuotedMediaKind::Rtp {
+        ssrc: u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]),
+        payload_type,
+    }
+}
+
+/// The quoted datagram's flow: who sent it, who did not answer, and over what.
+///
+/// The association key for a media quote, and the reason the media store is
+/// keyed differently from the signalling one. Two sockets and a transport,
+/// with no room for the reporter's address — naming the router that noticed as
+/// the endpoint that failed is the mistake this whole area is shaped to
+/// prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QuotedFlow {
+    /// Source socket of the failed datagram: the sender of the media.
+    pub src: std::net::SocketAddr,
+    /// Destination socket: THE SOCKET THAT DID NOT ANSWER.
+    pub dst: std::net::SocketAddr,
+    /// Transport the failed datagram used.
+    pub transport: TransportProto,
+}
+
+/// One ICMP error about a datagram that was not a SIP request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaIcmpEvidence {
+    /// Capture time of the ICMP error.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Who reported the failure: the ICMP message's source. A router on the
+    /// path — not the endpoint that failed, and never to be named as one.
+    pub reported_by: std::net::IpAddr,
+    /// Raw ICMP type byte.
+    pub icmp_type: u8,
+    /// Raw ICMP code byte.
+    pub icmp_code: u8,
+    /// The network's own words for this type/code.
+    pub description: &'static str,
+    /// What the quoted payload turned out to be.
+    pub payload: QuotedMediaKind,
+    /// Whether the quote is known to be shorter than the datagram it quotes.
+    pub truncated: bool,
+    /// Bytes of the original transport payload the quote actually carried.
+    pub quoted_bytes: usize,
+}
+
+/// Every ICMP error recorded against one quoted flow.
+///
+/// `errors` is exact; `samples` is capped at [`MAX_ICMP_PER_FLOW`], for the
+/// same reason the signalling side caps its own: a flow hit thirty times must
+/// not be reported as hit eight.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FlowIcmpEvidence {
+    /// How many ICMP errors quoted this flow. Exact, whatever the cap.
+    pub errors: u64,
+    /// Retained errors, oldest first.
+    pub samples: Vec<MediaIcmpEvidence>,
+}
+
+/// Retained media evidence, plus the counters that stay exact past the caps.
+struct MediaIcmpStore {
+    /// Evidence keyed by the quoted datagram's flow.
+    by_flow: std::collections::HashMap<QuotedFlow, FlowIcmpEvidence>,
+    /// Per-endpoint tally, so a quote matching no stream still names the
+    /// socket that failed.
+    endpoints: std::collections::HashMap<(std::net::IpAddr, Option<u16>), UnreachableEndpoint>,
+    /// Exact total, unaffected by the caps below.
+    errors: u64,
+    /// Errors whose quote stopped before the transport header, so they have no
+    /// flow to be keyed on at all.
+    unkeyed: u64,
+    /// Errors whose flow was never tracked, because the store was full.
+    untracked_flows: u64,
+    /// Errors whose endpoint was never tallied, because the store was full.
+    untallied_endpoints: u64,
+}
+
+impl MediaIcmpStore {
+    /// Empty store.
+    fn new() -> Self {
+        Self {
+            by_flow: std::collections::HashMap::new(),
+            endpoints: std::collections::HashMap::new(),
+            errors: 0,
+            unkeyed: 0,
+            untracked_flows: 0,
+            untallied_endpoints: 0,
+        }
+    }
+}
+
+/// Process-global media evidence. Global for the same reason the signalling
+/// store is: `--cores` shards by outer host pair, and an ICMP error's outer
+/// pair is (router, sender) — a different pair from the media it describes.
+static MEDIA_ICMP: parking_lot::Mutex<Option<Box<MediaIcmpStore>>> = parking_lot::Mutex::new(None);
+
+/// Record one ICMP error about a datagram that was not a SIP request.
+///
+/// Called only from [`record_icmp_error`], on the path where the quote failed
+/// to parse as a SIP request start line. Filing it by flow here, and resolving
+/// it against a `StreamStore` later in [`icmp_media_report`], is what lets the
+/// same error be recorded under `--cores` (where no worker owns the media it
+/// describes) and still be attributed to the right stream.
+///
+/// # Side effects
+///
+/// Takes the process-global media evidence lock, which is only ever contended
+/// by other ICMP errors.
+fn record_media_icmp_error(quote: &crate::capture::parse::IcmpQuote) {
+    let evidence = MediaIcmpEvidence {
+        timestamp: quote.timestamp,
+        reported_by: quote.reporter,
+        icmp_type: quote.icmp_type,
+        icmp_code: quote.icmp_code,
+        description: quote.description(),
+        payload: quoted_media_kind(&quote.quoted_payload),
+        truncated: quote.quoted_truncated,
+        quoted_bytes: quote.quoted_payload.len(),
+    };
+
+    let mut guard = MEDIA_ICMP.lock();
+    let store = guard.get_or_insert_with(|| Box::new(MediaIcmpStore::new()));
+    store.errors += 1;
+
+    // The quoted DESTINATION, never the ICMP source: the former did not
+    // answer, the latter is the device that noticed.
+    let endpoint_key = (quote.quoted_dst, quote.quoted_dst_port);
+    let endpoints_full = store.endpoints.len() >= MAX_ICMP_ENDPOINTS;
+    if let Some(e) = store.endpoints.get_mut(&endpoint_key) {
+        e.errors += 1;
+        e.description = evidence.description;
+    } else if endpoints_full {
+        store.untallied_endpoints += 1;
+    } else {
+        store.endpoints.insert(
+            endpoint_key,
+            UnreachableEndpoint {
+                addr: quote.quoted_dst,
+                port: quote.quoted_dst_port,
+                errors: 1,
+                description: evidence.description,
+            },
+        );
+    }
+
+    // No ports means no flow: the quote stopped before the transport header,
+    // or quoted a non-first fragment, which has none. The endpoint tally above
+    // already holds what the error proves; only the flow is unknown, and the
+    // report says so rather than the error vanishing.
+    let (Some(src_port), Some(dst_port), Some(transport)) = (
+        quote.quoted_src_port,
+        quote.quoted_dst_port,
+        quote.quoted_transport,
+    ) else {
+        store.unkeyed += 1;
+        return;
+    };
+    let flow = QuotedFlow {
+        src: std::net::SocketAddr::new(quote.quoted_src, src_port),
+        dst: std::net::SocketAddr::new(quote.quoted_dst, dst_port),
+        transport,
+    };
+
+    let flows_full = store.by_flow.len() >= MAX_ICMP_MEDIA_FLOWS;
+    if let Some(f) = store.by_flow.get_mut(&flow) {
+        f.errors += 1;
+        if f.samples.len() < MAX_ICMP_PER_FLOW {
+            f.samples.push(evidence);
+        }
+    } else if flows_full {
+        store.untracked_flows += 1;
+    } else {
+        store.by_flow.insert(
+            flow,
+            FlowIcmpEvidence {
+                errors: 1,
+                samples: vec![evidence],
+            },
+        );
+    }
+}
+
+/// One quoted flow the network reported as undeliverable, resolved against the
+/// media sipnab tracked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaIcmpFinding {
+    /// `address:port` that sent the datagram that failed.
+    pub source: String,
+    /// `address:port` of the socket that did not answer. The thing to look at.
+    pub unreachable_endpoint: String,
+    /// Address of the device that reported the failure. Not the fault.
+    pub reported_by: String,
+    /// Transport the failed datagram used.
+    pub transport: &'static str,
+    /// The network's own words, e.g. `port unreachable`.
+    pub description: String,
+    /// Raw ICMP type byte.
+    pub icmp_type: u8,
+    /// Raw ICMP code byte.
+    pub icmp_code: u8,
+    /// How many errors named this flow. Exact — not the number of retained
+    /// samples, which is capped.
+    pub errors: u64,
+    /// What the quoted payload was.
+    pub payload: QuotedMediaKind,
+    /// Which rule tied this flow to tracked media, if any.
+    pub matched: MediaMatch,
+    /// How many tracked streams the rule matched.
+    pub streams: usize,
+    /// `Call-ID`s of the affected dialogs, when the match named any.
+    pub call_ids: Vec<String>,
+    /// Plain-language rendering, so surfaces do not each re-invent it.
+    pub hint: String,
+}
+
+/// What ICMP reported about this run's non-signalling traffic.
+///
+/// All zeroes when no ICMP error quoted anything but SIP, which is the common
+/// case for a healthy capture.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IcmpMediaReport {
+    /// ICMP errors quoting a datagram that was not a SIP request.
+    pub errors: u64,
+    /// How many were tied to media: the quoted payload was RTP or RTCP, or the
+    /// flow matched a tracked stream, or both. The rest are ordinary network
+    /// failures about something else and are not claimed as audio problems.
+    pub media: u64,
+    /// How many were tied to a tracked stream or SDP-advertised endpoint.
+    pub attributed: u64,
+    /// How many matched nothing this capture holds. The evidence is real; only
+    /// the stream is unknown.
+    ///
+    /// `attributed + unattributed == errors`, always.
+    pub unattributed: u64,
+    /// Errors whose quote stopped before the transport header, so they carry
+    /// no flow to match at all. A subset of `unattributed`.
+    pub unkeyed: u64,
+    /// Errors whose flow was never tracked because the flow cap was full. A
+    /// subset of `unattributed`.
+    pub untracked_flows: u64,
+    /// Errors whose endpoint was not tallied because the endpoint cap was
+    /// full. These are missing from `endpoints`.
+    pub untallied_endpoints: u64,
+    /// One finding per retained flow, busiest first.
+    pub flows: Vec<MediaIcmpFinding>,
+    /// Endpoints ICMP named unreachable, busiest first.
+    pub endpoints: Vec<UnreachableEndpoint>,
+}
+
+/// What ICMP reported about this run's media, resolved against the streams
+/// sipnab tracked.
+///
+/// The second half of the split described at the top of this section: quotes
+/// are filed by flow as they are parsed, and tied to streams here, once, at
+/// the end of a run when the store is complete. Calling it earlier is not
+/// wrong, only less informative — a flow whose stream has not been seen yet
+/// reports as unattributed.
+///
+/// # Arguments
+///
+/// * `streams` — the run's stream store. An empty one is valid and yields a
+///   report in which everything is unattributed, which is the honest answer
+///   for a capture that holds no media.
+///
+/// # Returns
+///
+/// An [`IcmpMediaReport`] with exact totals, one finding per retained flow and
+/// every unreachable endpoint, both busiest first.
+pub fn icmp_media_report(streams: &StreamStore) -> IcmpMediaReport {
+    let guard = MEDIA_ICMP.lock();
+    let Some(store) = guard.as_ref() else {
+        return IcmpMediaReport::default();
+    };
+
+    let mut flows: Vec<MediaIcmpFinding> = Vec::with_capacity(store.by_flow.len());
+    let mut attributed = 0u64;
+    let mut media = 0u64;
+
+    for (flow, evidence) in &store.by_flow {
+        // The most recent sample describes the flow's current state; the count
+        // beside it is every error, retained or not.
+        let Some(last) = evidence.samples.last() else {
+            continue;
+        };
+        // Read the payload across every retained sample, not only the last.
+        // Routers on one path do not all quote the same number of bytes, and
+        // one quote that reached the RTP header is enough to know what the
+        // flow carries — taking only the newest would throw that away because
+        // a later router was stingier.
+        let payload = evidence
+            .samples
+            .iter()
+            .rev()
+            .map(|s| s.payload)
+            .find(|p| p.is_media())
+            .unwrap_or(last.payload);
+
+        let attribution = streams.attribute_media_quote(flow.src, flow.dst, payload.ssrc());
+        // Every error on the flow is credited, not one: the match is a
+        // property of the flow, and each error on it is about the same media.
+        if attribution.matched != MediaMatch::None {
+            attributed += evidence.errors;
+        }
+        // Either proof will do: a recognisable RTP header, or a match onto
+        // media sipnab watched. A quote can have one without the other.
+        if payload.is_media() || attribution.matched != MediaMatch::None {
+            media += evidence.errors;
+        }
+
+        let hint = media_hint(flow, last, payload, evidence.errors, &attribution);
+        flows.push(MediaIcmpFinding {
+            source: flow.src.to_string(),
+            unreachable_endpoint: flow.dst.to_string(),
+            reported_by: last.reported_by.to_string(),
+            transport: flow.transport.as_str(),
+            description: last.description.to_string(),
+            icmp_type: last.icmp_type,
+            icmp_code: last.icmp_code,
+            errors: evidence.errors,
+            payload,
+            matched: attribution.matched,
+            streams: attribution.streams,
+            call_ids: attribution.call_ids,
+            hint,
+        });
+    }
+
+    // Busiest first; ties by endpoint then source so the report is
+    // deterministic across runs of a hash map.
+    flows.sort_unstable_by(|a, b| {
+        b.errors
+            .cmp(&a.errors)
+            .then(a.unreachable_endpoint.cmp(&b.unreachable_endpoint))
+            .then(a.source.cmp(&b.source))
+    });
+
+    let mut endpoints: Vec<UnreachableEndpoint> = store.endpoints.values().cloned().collect();
+    endpoints.sort_unstable_by(|a, b| {
+        b.errors
+            .cmp(&a.errors)
+            .then(a.addr.cmp(&b.addr))
+            .then(a.port.cmp(&b.port))
+    });
+
+    IcmpMediaReport {
+        errors: store.errors,
+        media,
+        attributed,
+        unattributed: store.errors.saturating_sub(attributed),
+        unkeyed: store.unkeyed,
+        untracked_flows: store.untracked_flows,
+        untallied_endpoints: store.untallied_endpoints,
+        flows,
+        endpoints,
+    }
+}
+
+/// Render one media finding in plain language.
+///
+/// Kept next to the report rather than in each surface for the reason
+/// [`crate::output::call_report`] states about the signalling hints: one
+/// renderer means two surfaces cannot disagree about what a failure meant.
+fn media_hint(
+    flow: &QuotedFlow,
+    last: &MediaIcmpEvidence,
+    payload: QuotedMediaKind,
+    errors: u64,
+    attribution: &MediaAttribution,
+) -> String {
+    let occurrences = if errors == 1 {
+        String::new()
+    } else {
+        format!(" ({errors} times)")
+    };
+    let what = match payload {
+        QuotedMediaKind::Rtp { payload_type, .. } => {
+            format!("RTP (payload type {payload_type})")
+        }
+        QuotedMediaKind::Rtcp { packet_type, .. } => format!("RTCP (type {packet_type})"),
+        QuotedMediaKind::Unread | QuotedMediaKind::NotMedia => {
+            format!("a {} datagram", flow.transport.as_str())
+        }
+    };
+    let placed = match attribution.matched {
+        MediaMatch::Flow => "This is one of the media streams in this capture".to_string(),
+        MediaMatch::Ssrc => {
+            "The SSRC in the quote belongs to a media stream in this capture".to_string()
+        }
+        MediaMatch::Endpoint => {
+            "That socket carries one of the media streams in this capture".to_string()
+        }
+        MediaMatch::SdpEndpoint => {
+            "That socket was negotiated in SDP for a call in this capture".to_string()
+        }
+        MediaMatch::None => "It matched no stream in this capture, so the evidence is \
+                             reported without a call — the endpoint is real either way"
+            .to_string(),
+    };
+    let calls = if attribution.call_ids.is_empty() {
+        String::new()
+    } else {
+        format!(" ({} call(s) affected)", attribution.call_ids.len())
+    };
+    let audio = if attribution.matched == MediaMatch::None && !payload.is_media() {
+        String::new()
+    } else {
+        " Audio sent that way is discarded before it arrives, which is heard as one-way or \
+         missing audio."
+            .to_string()
+    };
+    format!(
+        "ICMP {}: {what} from {} to {} could not be delivered{occurrences}, reported by {}. \
+         {placed}{calls}.{audio} {}",
+        last.description,
+        flow.src,
+        flow.dst,
+        last.reported_by,
+        crate::sip::diagnosis::icmp_remedy(
+            last.icmp_type,
+            last.icmp_code,
+            last.reported_by.is_ipv6()
+        ),
+    )
 }
 
 /// Extract the RTP-stream link tuples `(media_ip, media_port, call_id, media)`
@@ -1317,5 +1919,129 @@ mod quiet_bad_parse_tests {
             matches!(action, PacketAction::Sip { .. }),
             "valid INVITE must still classify as Sip"
         );
+    }
+}
+
+/// Tests for reading a quoted non-SIP payload.
+///
+/// The rest of the media path needs a `StreamStore` and a parsed packet and
+/// lives in `tests/icmp_media_test.rs`; this is the one piece that is a pure
+/// function of bytes, and it is the piece where a loose check turns unrelated
+/// traffic into a fabricated media diagnosis.
+#[cfg(test)]
+mod quoted_media_tests {
+    use super::{QuotedMediaKind, quoted_media_kind};
+
+    /// A well-formed RTP header yields its SSRC and payload type.
+    #[test]
+    fn an_rtp_header_yields_its_ssrc_and_payload_type() {
+        let mut p = vec![0x80u8, 8]; // V=2, PT=8 (PCMA)
+        p.extend_from_slice(&7u16.to_be_bytes());
+        p.extend_from_slice(&1600u32.to_be_bytes());
+        p.extend_from_slice(&0x1234_5678u32.to_be_bytes());
+        p.extend_from_slice(&[0u8; 160]);
+        assert_eq!(
+            quoted_media_kind(&p),
+            QuotedMediaKind::Rtp {
+                ssrc: 0x1234_5678,
+                payload_type: 8
+            }
+        );
+    }
+
+    /// An RTCP sender report yields its SSRC and packet type.
+    #[test]
+    fn an_rtcp_sender_report_yields_its_ssrc() {
+        let mut p = vec![0x80u8, 200]; // V=2, RC=0, PT=200 (SR)
+        p.extend_from_slice(&6u16.to_be_bytes());
+        p.extend_from_slice(&0x00C0_FFEEu32.to_be_bytes());
+        p.extend_from_slice(&[0u8; 20]);
+        assert_eq!(
+            quoted_media_kind(&p),
+            QuotedMediaKind::Rtcp {
+                ssrc: 0x00C0_FFEE,
+                packet_type: 200
+            }
+        );
+    }
+
+    /// RFC 792 guarantees only the IP header plus 8 bytes, which for UDP is
+    /// the transport header and nothing else. That is `Unread`, not
+    /// `NotMedia`: the flow may still match a stream, and saying "not media"
+    /// would rule that out on no evidence.
+    #[test]
+    fn an_empty_quote_is_unread_not_not_media() {
+        assert_eq!(quoted_media_kind(&[]), QuotedMediaKind::Unread);
+    }
+
+    /// A truncated RTP header — version and payload type readable, SSRC not —
+    /// is also `Unread`. Reading an SSRC out of bytes that are not there is
+    /// how a quote gets attributed to the wrong stream.
+    #[test]
+    fn a_quote_too_short_for_an_ssrc_is_unread() {
+        assert_eq!(
+            quoted_media_kind(&[0x80, 0x00, 0x00, 0x01, 0x00, 0x00]),
+            QuotedMediaKind::Unread
+        );
+    }
+
+    /// A DNS query is not media. Version bits of anything but 2 settle it.
+    #[test]
+    fn a_dns_query_is_not_media() {
+        let dns = [0x12u8, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        assert_eq!(quoted_media_kind(&dns), QuotedMediaKind::NotMedia);
+    }
+
+    /// RFC 5761 §4 reserves payload types 64-95 so RTP and RTCP can share one
+    /// port unambiguously. A "version 2" datagram using one is not RTP, and
+    /// claiming it is would let a whole class of traffic pass the check on two
+    /// bits of agreement.
+    #[test]
+    fn the_rtcp_demux_range_is_not_read_as_rtp() {
+        for pt in [64u8, 80, 95] {
+            let mut p = vec![0x80u8, pt];
+            p.extend_from_slice(&[0u8; 20]);
+            assert_eq!(
+                quoted_media_kind(&p),
+                QuotedMediaKind::NotMedia,
+                "payload type {pt} is reserved for RTCP demultiplexing"
+            );
+        }
+    }
+
+    /// An RTCP packet type with a length field that cannot describe even its
+    /// own header is malformed, not RTCP.
+    #[test]
+    fn an_rtcp_length_that_cannot_hold_a_header_is_rejected() {
+        // length = 0 declares 4 bytes, which is less than the 8-byte minimum
+        // for a report with an SSRC.
+        let p = [0x80u8, 201, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
+        assert_eq!(quoted_media_kind(&p), QuotedMediaKind::NotMedia);
+    }
+
+    /// The SSRC accessor answers for both media shapes and for neither of the
+    /// other two, so a caller cannot accidentally match on a zero.
+    #[test]
+    fn only_a_media_payload_offers_an_ssrc() {
+        assert_eq!(
+            QuotedMediaKind::Rtp {
+                ssrc: 9,
+                payload_type: 0
+            }
+            .ssrc(),
+            Some(9)
+        );
+        assert_eq!(
+            QuotedMediaKind::Rtcp {
+                ssrc: 9,
+                packet_type: 200
+            }
+            .ssrc(),
+            Some(9)
+        );
+        assert_eq!(QuotedMediaKind::Unread.ssrc(), None);
+        assert_eq!(QuotedMediaKind::NotMedia.ssrc(), None);
+        assert!(!QuotedMediaKind::Unread.is_media());
+        assert!(!QuotedMediaKind::NotMedia.is_media());
     }
 }

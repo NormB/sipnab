@@ -133,11 +133,212 @@ fn parse_duration(s: &str) -> Option<Duration> {
     }
 }
 
+// ── Shared tumbling-window rate limiter ──────────────────────────────
+
+/// A clock a [`TumblingWindow`] measures its window against.
+///
+/// Two paths in this crate spawn a process on the operator's behalf — the
+/// alert engine below and [`crate::output::event_exec`] — and they run on
+/// different clocks. Alerting measures everything in CAPTURE time, because
+/// offline a whole capture elapses in milliseconds of wall time and a
+/// wall-clock budget would either never refill or refill instantly. Event
+/// exec fires from dialog and stream state and runs on `Instant`.
+///
+/// The *rule* is the same either way, so it is written once and the clock is
+/// a parameter. This repo has twice been bitten by one rule having two
+/// implementations that drifted apart; a second copy of a rate limiter would
+/// be the third.
+#[cfg(feature = "native")]
+pub(crate) trait WindowClock: Copy {
+    /// Whole seconds from `earlier` to `self`, saturating at zero when `self`
+    /// is not after `earlier`.
+    ///
+    /// Saturating rather than signed is load-bearing, not defensive. Packet
+    /// stamps go backwards — out of order on a merged capture, replayed on a
+    /// crafted one, and attacker-influenced on a live interface. A window that
+    /// rolled on a backwards jump would hand out a fresh budget for every
+    /// stale stamp, which is the opposite of a rate limit.
+    fn secs_since(self, earlier: Self) -> u64;
+}
+
+#[cfg(feature = "native")]
+impl WindowClock for DateTime<Utc> {
+    fn secs_since(self, earlier: Self) -> u64 {
+        u64::try_from(self.signed_duration_since(earlier).num_seconds()).unwrap_or(0)
+    }
+}
+
+#[cfg(feature = "native")]
+impl WindowClock for std::time::Instant {
+    fn secs_since(self, earlier: Self) -> u64 {
+        self.saturating_duration_since(earlier).as_secs()
+    }
+}
+
+/// A fixed (tumbling) window rate limiter: at most `limit` events per
+/// `window_secs` of the clock `T`.
+///
+/// Tumbling, not sliding: the count and the window start reset the first time
+/// an event arrives `window_secs` or more after the window began, not
+/// continuously. That is the same shape the kill worker's `PerDstRateLimiter`
+/// already uses, so all three limited paths behave alike under a burst.
+///
+/// Checking and booking are deliberately separate ([`Self::allows`] then
+/// [`Self::record`]) so an action that was allowed but then failed to happen —
+/// a spawn that errored — does not spend budget it never used.
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TumblingWindow<T> {
+    /// Maximum events per window. Zero disables the limiter entirely.
+    limit: u32,
+    /// Window length in whole seconds; never zero.
+    window_secs: u64,
+    /// Start of the current window. `None` until the first event, so a limiter
+    /// built long before its first event does not start mid-window.
+    start: Option<T>,
+    /// Events booked against the current window.
+    count: u32,
+}
+
+#[cfg(feature = "native")]
+impl<T: WindowClock> TumblingWindow<T> {
+    /// Create a limiter of `limit` events per `window_secs`.
+    ///
+    /// A `limit` of 0 disables the limiter — every event is allowed — matching
+    /// `--exec-rate-limit 0` on the event-exec path. A `window_secs` of 0 is
+    /// clamped to 1: a zero-length window would roll on every event and
+    /// silently disable the limit that was asked for.
+    pub(crate) const fn new(limit: u32, window_secs: u64) -> Self {
+        Self {
+            limit,
+            window_secs: if window_secs == 0 { 1 } else { window_secs },
+            start: None,
+            count: 0,
+        }
+    }
+
+    /// Roll the window if it has expired, then report whether one more event
+    /// fits. Does not book the event — call [`Self::record`] once the action
+    /// actually happened.
+    pub(crate) fn allows(&mut self, now: T) -> bool {
+        if self.limit == 0 {
+            return true;
+        }
+        match self.start {
+            Some(start) if now.secs_since(start) < self.window_secs => {}
+            _ => {
+                self.start = Some(now);
+                self.count = 0;
+            }
+        }
+        self.count < self.limit
+    }
+
+    /// Book one event against the current window.
+    pub(crate) fn record(&mut self) {
+        self.count = self.count.saturating_add(1);
+    }
+
+    /// Replace the limit, leaving the current window and its count alone so
+    /// raising or lowering the limit mid-run cannot hand out a free window.
+    pub(crate) fn set_limit(&mut self, limit: u32) {
+        self.limit = limit;
+    }
+}
+
 /// Maximum entries in the cooldowns map before eviction.
 const MAX_COOLDOWN_ENTRIES: usize = 10_000;
 
 /// Default capacity of the in-memory findings ring buffer (Phase 8.3).
 pub const DEFAULT_FINDINGS_HISTORY: usize = 1000;
+
+// ── `--alert-exec` budgets ───────────────────────────────────────────
+
+/// Default `--alert-exec` commands per second of CAPTURE time, across all
+/// sources.
+///
+/// Ten is not a new number: it is `--exec-rate-limit`'s default for
+/// `--on-dialog-exec`/`--on-quality-exec` (`cli.rs`) and the scanner-kill
+/// worker's `DEFAULT_RATE_LIMIT` (`process_isolation.rs`). Three paths that
+/// act on the operator's behalf now share one budget shape, so an operator
+/// who has tuned one has tuned their intuition for the others.
+#[cfg(feature = "native")]
+const DEFAULT_EXEC_PER_SECOND: u32 = 10;
+
+/// Maximum `--alert-exec` commands per minute of CAPTURE time for any single
+/// source IP.
+///
+/// This is the kill path's `MAX_PER_DST_PER_MINUTE`, and the reason is the
+/// one `docs/design/threat-mitigation-hooks.md` §5(c) gives for it: the
+/// failure that actually happens is *one* peer being misidentified, and a
+/// global-only limiter would spend its whole budget on that one peer and stay
+/// silent about everything else. Bounding per source bounds the blast radius
+/// to the peer the signature was wrong about.
+#[cfg(feature = "native")]
+const MAX_EXEC_PER_SOURCE_PER_MINUTE: u32 = 3;
+
+/// Maximum concurrently-running `--alert-exec` children.
+///
+/// A concurrency cap is not a rate — a command that exits immediately frees
+/// its slot immediately — so this is the last line of the three checks, not
+/// the only one it used to be. It still matters for a *slow* command, which
+/// the budgets above cannot bound.
+#[cfg(feature = "native")]
+const MAX_EXEC_CHILDREN: usize = 100;
+
+/// Maximum per-source exec budgets tracked before LRU eviction.
+///
+/// Deliberately the same bound as the cooldown and event maps: the key is a
+/// source IP and is therefore attacker-influenced on a live interface. An
+/// attacker with more than this many source addresses can evict a bucket and
+/// so reset one source's per-minute count, but reaching that state means
+/// firing alerts from 10,000 distinct sources, and the global per-second
+/// budget still applies to every one of them.
+#[cfg(feature = "native")]
+const MAX_EXEC_SOURCE_ENTRIES: usize = MAX_COOLDOWN_ENTRIES;
+
+/// Why one `--alert-exec` invocation did not run.
+///
+/// Recorded per reason rather than as a single total because the reasons call
+/// for different responses: a global-limit drop says the run is noisy overall,
+/// a source-limit drop names a single peer, and a spawn failure means the
+/// operator's command is broken rather than throttled.
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ExecDropCounts {
+    /// Suppressed because the global per-second budget was already spent.
+    pub rate_limited: u64,
+    /// Suppressed because that one source IP had spent its per-minute budget.
+    pub source_limited: u64,
+    /// Suppressed because `MAX_EXEC_CHILDREN` were still running.
+    pub queue_full: u64,
+    /// The spawn itself failed — no `sh`, fork limit, or the command is not
+    /// executable. Counted here because from the operator's point of view the
+    /// action did not happen, which is the question these counts answer.
+    pub spawn_failed: u64,
+}
+
+#[cfg(feature = "native")]
+impl ExecDropCounts {
+    /// Total `--alert-exec` invocations that did not run, for any reason.
+    pub fn total(&self) -> u64 {
+        self.rate_limited
+            .saturating_add(self.source_limited)
+            .saturating_add(self.queue_full)
+            .saturating_add(self.spawn_failed)
+    }
+}
+
+/// Whether `n` is an exact power of ten (1, 10, 100, …).
+///
+/// Used to log suppressed execs at each order of magnitude. Warning on every
+/// drop would make the log the flood it is reporting; warning once would hide
+/// the scale. The exact totals are always available from
+/// [`AlertEngine::exec_drops`].
+#[cfg(feature = "native")]
+fn is_order_of_magnitude(n: u64) -> bool {
+    n > 0 && 10u64.checked_pow(n.ilog10()) == Some(n)
+}
 
 /// Single emitted finding — recorded in the ring buffer after the cooldown
 /// check passes (so deduplicated firings aren't double-counted).
@@ -199,6 +400,28 @@ pub struct AlertEngine {
     /// Tracked child processes from exec commands (for reaping).
     #[cfg(feature = "native")]
     children: Vec<std::process::Child>,
+    /// Global `--alert-exec` budget, in CAPTURE time.
+    ///
+    /// The cooldown above bounds repeats against *one* (source, rule) pair and
+    /// does nothing against many: a detector naming 180 peers passes 180
+    /// cooldowns and used to spawn 180 processes, throttled only by how fast
+    /// they exited. This is the bound that is a rate.
+    #[cfg(feature = "native")]
+    exec_rate: TumblingWindow<DateTime<Utc>>,
+    /// Per-source `--alert-exec` budget, in CAPTURE time.
+    ///
+    /// Value is `(budget, LRU sequence)`. The sequence is the same monotonic
+    /// tick the cooldown and event maps evict on, and for the same reason:
+    /// capture stamps tie, and `min_by_key` over a tied timestamp makes which
+    /// source loses its state depend on hash order.
+    #[cfg(feature = "native")]
+    exec_per_source: HashMap<IpAddr, (TumblingWindow<DateTime<Utc>>, u64)>,
+    /// `--alert-exec` invocations that did not run, by reason.
+    #[cfg(feature = "native")]
+    exec_drops: ExecDropCounts,
+    /// `--alert-exec` commands actually spawned.
+    #[cfg(feature = "native")]
+    exec_spawned: u64,
     /// Phase 8.3 — bounded ring buffer of post-cooldown findings exposed
     /// via the MCP `security_findings` tool and the future
     /// `GET /v1/security/findings` REST endpoint. In-memory only.
@@ -228,6 +451,14 @@ impl AlertEngine {
             json_output: false,
             #[cfg(feature = "native")]
             children: Vec::new(),
+            #[cfg(feature = "native")]
+            exec_rate: TumblingWindow::new(DEFAULT_EXEC_PER_SECOND, 1),
+            #[cfg(feature = "native")]
+            exec_per_source: HashMap::new(),
+            #[cfg(feature = "native")]
+            exec_drops: ExecDropCounts::default(),
+            #[cfg(feature = "native")]
+            exec_spawned: 0,
             findings: std::collections::VecDeque::with_capacity(DEFAULT_FINDINGS_HISTORY),
             findings_capacity: DEFAULT_FINDINGS_HISTORY,
         }
@@ -423,35 +654,239 @@ impl AlertEngine {
 
         // Execute command if configured — pass data via env vars, never interpolated
         #[cfg(feature = "native")]
-        if let Some(cmd) = &self.exec_cmd {
-            // Reap finished children to prevent zombie accumulation
-            self.children
-                .retain_mut(|child| child.try_wait().ok().flatten().is_none());
-
-            // Cap concurrent children to prevent local DoS
-            if self.children.len() >= 100 {
-                warn!("Alert exec queue full (100 children), dropping alert");
-            } else {
-                use std::process::Command;
-                let mut command = Command::new("sh");
-                command.arg("-c").arg(cmd);
-                command.env("SIPNAB_SRC", src_ip.to_string());
-                command.env("SIPNAB_RULE", alert_type);
-                command.env("SIPNAB_DETAIL", &sanitized_detail);
-
-                match command.spawn() {
-                    Ok(child) => self.children.push(child),
-                    Err(e) => warn!("Failed to execute alert command: {e}"),
-                }
-            }
-        }
+        self.run_alert_exec(alert_type, src_ip, &sanitized_detail, now, tick);
 
         true
+    }
+
+    /// Run the `--alert-exec` command for one fired alert, subject to the
+    /// per-source budget, the global budget and the concurrency cap.
+    ///
+    /// The alert itself has already fired by the time this is called: it is in
+    /// the log, on the JSON channel, in syslog and in the findings buffer.
+    /// Only the operator's *action* is rate limited here, and that is the
+    /// direction the failure has to take — the evidence must survive the
+    /// conditions under which alerting matters most.
+    ///
+    /// # Side effects
+    ///
+    /// Reaps finished children, then spawns `sh -c <cmd>` without waiting for
+    /// it. SIP data is passed exclusively via `SIPNAB_*` environment
+    /// variables, never interpolated into the command string. Suppressed and
+    /// failed invocations are counted (see [`Self::exec_drops`]).
+    #[cfg(feature = "native")]
+    fn run_alert_exec(
+        &mut self,
+        alert_type: &str,
+        src_ip: IpAddr,
+        detail: &str,
+        now: DateTime<Utc>,
+        tick: u64,
+    ) {
+        if self.exec_cmd.is_none() {
+            return;
+        }
+
+        // Reap first, so a command that has already exited frees its slot
+        // before the concurrency cap is consulted.
+        self.children
+            .retain_mut(|child| child.try_wait().ok().flatten().is_none());
+
+        // Per-source first, then global. The order is what keeps a single
+        // noisy peer from spending the budget every other peer needs: a source
+        // that is over its own limit never touches the global window at all.
+        if !self.source_allows_exec(src_ip, now, tick) {
+            self.note_exec_drop(ExecDropReason::SourceLimited, alert_type, src_ip);
+            return;
+        }
+        if !self.exec_rate.allows(now) {
+            self.note_exec_drop(ExecDropReason::RateLimited, alert_type, src_ip);
+            return;
+        }
+        if self.children.len() >= MAX_EXEC_CHILDREN {
+            self.note_exec_drop(ExecDropReason::QueueFull, alert_type, src_ip);
+            return;
+        }
+
+        use std::process::Command;
+        let mut command = Command::new("sh");
+        if let Some(cmd) = &self.exec_cmd {
+            command.arg("-c").arg(cmd);
+        }
+        command.env("SIPNAB_SRC", src_ip.to_string());
+        command.env("SIPNAB_RULE", alert_type);
+        command.env("SIPNAB_DETAIL", detail);
+
+        match command.spawn() {
+            Ok(child) => {
+                // Book the budgets only now: an allowed-but-failed spawn did
+                // not use the capacity it was granted.
+                self.exec_rate.record();
+                if let Some((window, _)) = self.exec_per_source.get_mut(&src_ip) {
+                    window.record();
+                }
+                self.exec_spawned = self.exec_spawned.saturating_add(1);
+                self.children.push(child);
+            }
+            Err(e) => {
+                warn!("Failed to execute alert command: {e}");
+                self.note_exec_drop(ExecDropReason::SpawnFailed, alert_type, src_ip);
+            }
+        }
+    }
+
+    /// Whether `src_ip` has `--alert-exec` budget left in its own window,
+    /// creating and LRU-touching its bucket.
+    #[cfg(feature = "native")]
+    fn source_allows_exec(&mut self, src_ip: IpAddr, now: DateTime<Utc>, tick: u64) -> bool {
+        // Bound the map the way the cooldown and event maps are bounded, and
+        // on the same monotonic tick rather than on the capture stamp.
+        if !self.exec_per_source.contains_key(&src_ip)
+            && self.exec_per_source.len() >= MAX_EXEC_SOURCE_ENTRIES
+            && let Some(oldest) = self
+                .exec_per_source
+                .iter()
+                .min_by_key(|(_, (_, seq))| *seq)
+                .map(|(k, _)| *k)
+        {
+            self.exec_per_source.remove(&oldest);
+        }
+
+        let entry = self.exec_per_source.entry(src_ip).or_insert((
+            TumblingWindow::new(MAX_EXEC_PER_SOURCE_PER_MINUTE, 60),
+            tick,
+        ));
+        entry.1 = tick;
+        entry.0.allows(now)
+    }
+
+    /// Book one suppressed `--alert-exec`, logging at each order of magnitude.
+    ///
+    /// Counting rather than only warning is the point: the defect being fixed
+    /// is a dropped action whose only trace was one `warn` line, and a rate
+    /// limiter that drops silently would move that defect rather than close
+    /// it. A run can now say how many operator commands it swallowed and why,
+    /// via [`Self::exec_drops`].
+    #[cfg(feature = "native")]
+    fn note_exec_drop(&mut self, reason: ExecDropReason, alert_type: &str, src_ip: IpAddr) {
+        let counts = &mut self.exec_drops;
+        let counter = match reason {
+            ExecDropReason::RateLimited => &mut counts.rate_limited,
+            ExecDropReason::SourceLimited => &mut counts.source_limited,
+            ExecDropReason::QueueFull => &mut counts.queue_full,
+            ExecDropReason::SpawnFailed => &mut counts.spawn_failed,
+        };
+        *counter = counter.saturating_add(1);
+
+        let total = self.exec_drops.total();
+        if is_order_of_magnitude(total) {
+            warn!(
+                target: "sipnab::alert",
+                %src_ip,
+                alert_type,
+                reason = reason.as_str(),
+                suppressed_total = total,
+                rate_limited = self.exec_drops.rate_limited,
+                source_limited = self.exec_drops.source_limited,
+                queue_full = self.exec_drops.queue_full,
+                spawn_failed = self.exec_drops.spawn_failed,
+                "--alert-exec suppressed for src={src_ip} rule={alert_type} ({}); \
+                 {total} command(s) not run so far. The alerts themselves still \
+                 fired — only the command was held back.",
+                reason.as_str()
+            );
+        }
+    }
+
+    /// Set the global `--alert-exec` budget in commands per second of CAPTURE
+    /// time.
+    ///
+    /// Zero disables the global budget, matching `--exec-rate-limit 0` on the
+    /// event-exec path. The per-source cap still applies, so an unlimited
+    /// global budget is not an unlimited fork rate for any one peer.
+    #[cfg(feature = "native")]
+    pub fn set_exec_rate_limit(&mut self, per_second: u32) {
+        self.exec_rate.set_limit(per_second);
+    }
+
+    /// `--alert-exec` invocations that did not run, by reason.
+    #[cfg(feature = "native")]
+    pub fn exec_drops(&self) -> ExecDropCounts {
+        self.exec_drops
+    }
+
+    /// `--alert-exec` commands actually spawned.
+    #[cfg(feature = "native")]
+    pub fn exec_spawned(&self) -> u64 {
+        self.exec_spawned
     }
 
     /// Return a reference to the configured rules.
     pub fn rules(&self) -> &[AlertRule] {
         &self.rules
+    }
+}
+
+/// Why one `--alert-exec` invocation did not run.
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, Copy)]
+enum ExecDropReason {
+    /// The global per-second budget was already spent.
+    RateLimited,
+    /// The source IP had spent its per-minute budget.
+    SourceLimited,
+    /// `MAX_EXEC_CHILDREN` commands were still running.
+    QueueFull,
+    /// The spawn itself failed.
+    SpawnFailed,
+}
+
+#[cfg(feature = "native")]
+impl ExecDropReason {
+    /// A short stable token for logs and structured fields.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimited => "global rate limit",
+            Self::SourceLimited => "per-source rate limit",
+            Self::QueueFull => "concurrent-command cap",
+            Self::SpawnFailed => "spawn failed",
+        }
+    }
+}
+
+/// Report the `--alert-exec` totals once, at teardown.
+///
+/// Without this a run's last word on suppressed commands is whichever
+/// order-of-magnitude line happened to be reached, which rounds 4,611 down to
+/// "1000". A security tool that swallowed actions has to say exactly how many,
+/// because "no entries" and "entries I did not print" are the two answers an
+/// operator must never have to distinguish.
+#[cfg(feature = "native")]
+impl Drop for AlertEngine {
+    fn drop(&mut self) {
+        let drops = self.exec_drops;
+        if drops.total() == 0 {
+            return;
+        }
+        warn!(
+            target: "sipnab::alert",
+            spawned = self.exec_spawned,
+            suppressed_total = drops.total(),
+            rate_limited = drops.rate_limited,
+            source_limited = drops.source_limited,
+            queue_full = drops.queue_full,
+            spawn_failed = drops.spawn_failed,
+            "--alert-exec ran {} command(s) and suppressed {} \
+             (global rate limit {}, per-source rate limit {}, \
+             concurrent-command cap {}, spawn failed {}). \
+             Every alert still fired; only the commands were held back.",
+            self.exec_spawned,
+            drops.total(),
+            drops.rate_limited,
+            drops.source_limited,
+            drops.queue_full,
+            drops.spawn_failed
+        );
     }
 }
 
@@ -869,6 +1304,171 @@ mod tests {
         assert_eq!(v["src"], "10.0.0.1");
         assert_eq!(v["detail"], "method=OPTIONS detection=enumeration");
         assert!(v["ts"].as_str().unwrap().starts_with("2026-06-24T01:02:03"));
+    }
+
+    // ── Shared tumbling-window rate limiter ──────────────────────────
+
+    /// The window rolls on the clock, not on the event count: three events
+    /// fill a 3-per-second budget, and only the passage of a second refills
+    /// it.
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_window_rolls_on_the_clock_not_on_events() {
+        let mut w = TumblingWindow::new(3, 1);
+        for i in 0..3 {
+            assert!(w.allows(at(0)), "event {i} of 3 is inside the budget");
+            w.record();
+        }
+        assert!(!w.allows(at(0)), "the fourth event in one second is over");
+        assert!(w.allows(at(1)), "a second later the window has rolled");
+    }
+
+    /// A limit of zero disables the limiter, matching `--exec-rate-limit 0`.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_zero_limit_disables_the_window() {
+        let mut w = TumblingWindow::new(0, 1);
+        for _ in 0..1000 {
+            assert!(w.allows(at(0)), "a zero limit must never deny");
+            w.record();
+        }
+    }
+
+    /// A backwards clock must not roll the window.
+    ///
+    /// Capture stamps go backwards — out of order on a merged capture,
+    /// replayed on a crafted one. Rolling on a backwards jump would refill the
+    /// budget once per stale stamp, which is not a rate limit but a way to ask
+    /// for one.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_backwards_clock_does_not_roll_the_window() {
+        let mut w = TumblingWindow::new(2, 60);
+        assert!(w.allows(at(3600)));
+        w.record();
+        assert!(w.allows(at(0)), "second event still fits the budget");
+        w.record();
+        assert!(
+            !w.allows(at(0)),
+            "an hour-old stamp must not hand out a fresh window"
+        );
+        assert!(!w.allows(at(-86_400)), "nor must a stamp a day old");
+    }
+
+    /// A zero-length window is clamped to one second rather than silently
+    /// disabling the limit that was asked for.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_zero_length_window_is_clamped() {
+        let mut w = TumblingWindow::new(1, 0);
+        assert!(w.allows(at(0)));
+        w.record();
+        assert!(!w.allows(at(0)), "a 0s window must not roll on every event");
+        assert!(w.allows(at(1)));
+    }
+
+    /// Checking does not book: an action that was allowed but never happened
+    /// (a spawn that errored) must not spend the budget it was granted.
+    #[cfg(feature = "native")]
+    #[test]
+    fn checking_the_budget_does_not_spend_it() {
+        let mut w = TumblingWindow::new(1, 1);
+        assert!(w.allows(at(0)));
+        assert!(w.allows(at(0)), "an unbooked check must not consume budget");
+        w.record();
+        assert!(!w.allows(at(0)), "the booked event did consume it");
+    }
+
+    /// Drops are logged at 1, 10, 100, … and nowhere in between.
+    #[cfg(feature = "native")]
+    #[test]
+    fn order_of_magnitude_boundaries() {
+        for n in [1u64, 10, 100, 1000, 10_000_000] {
+            assert!(is_order_of_magnitude(n), "{n} is a power of ten");
+        }
+        for n in [0u64, 2, 11, 99, 101, 999, 1001] {
+            assert!(!is_order_of_magnitude(n), "{n} is not a power of ten");
+        }
+    }
+
+    // ── Per-source alert-exec budgets ────────────────────────────────
+
+    /// A source that has spent its per-minute budget is denied, and a source
+    /// that has not is unaffected by it.
+    #[cfg(feature = "native")]
+    #[test]
+    fn one_source_exhausting_its_budget_does_not_affect_another() {
+        let mut engine = AlertEngine::new(vec![], None);
+        let noisy = test_ip();
+        let quiet: IpAddr = "10.0.0.2".parse().expect("valid IP");
+
+        for i in 0..MAX_EXEC_PER_SOURCE_PER_MINUTE {
+            assert!(
+                engine.source_allows_exec(noisy, at(0), u64::from(i)),
+                "spawn {i} is inside the per-source budget"
+            );
+            engine
+                .exec_per_source
+                .get_mut(&noisy)
+                .expect("bucket exists after allows")
+                .0
+                .record();
+        }
+        assert!(
+            !engine.source_allows_exec(noisy, at(0), 100),
+            "a fourth spawn in one capture minute is over the per-source budget"
+        );
+        assert!(
+            engine.source_allows_exec(quiet, at(0), 101),
+            "a different source must keep its own budget"
+        );
+        assert!(
+            engine.source_allows_exec(noisy, at(60), 102),
+            "a capture minute later the source's window has rolled"
+        );
+    }
+
+    /// The per-source budget map is bounded and evicts least-recently-used.
+    ///
+    /// The key is a source IP, so it is attacker-influenced on a live
+    /// interface; an unbounded map would be a memory defect wearing a rate
+    /// limiter's clothes. Eviction is on the monotonic tick, not the capture
+    /// stamp, because capture stamps tie.
+    #[cfg(feature = "native")]
+    #[test]
+    fn per_source_exec_budgets_are_bounded() {
+        let mut engine = AlertEngine::new(vec![], None);
+        let victim = test_ip();
+
+        // Spend the victim's whole budget, oldest tick in the map.
+        for i in 0..MAX_EXEC_PER_SOURCE_PER_MINUTE {
+            assert!(engine.source_allows_exec(victim, at(0), u64::from(i)));
+            engine
+                .exec_per_source
+                .get_mut(&victim)
+                .expect("bucket exists after allows")
+                .0
+                .record();
+        }
+        assert!(
+            !engine.source_allows_exec(victim, at(0), 10),
+            "control: the victim is out of budget, else the check below is vacuous"
+        );
+
+        // Flood distinct sources until the map has to evict.
+        for i in 0..=MAX_EXEC_SOURCE_ENTRIES {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0b00_0000 + i as u32));
+            engine.source_allows_exec(ip, at(0), 1000 + i as u64);
+        }
+        assert!(
+            engine.exec_per_source.len() <= MAX_EXEC_SOURCE_ENTRIES,
+            "the per-source map must stay bounded: {} entries",
+            engine.exec_per_source.len()
+        );
+        assert!(
+            engine.source_allows_exec(victim, at(0), u64::MAX),
+            "cap regressed: the victim's spent budget survived the flood"
+        );
     }
 
     /// A crafted detail string stays escaped inside `detail` and cannot inject
