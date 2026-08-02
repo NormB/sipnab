@@ -693,6 +693,8 @@ mod tests {
                 ptime: None,
                 crypto: Vec::new(),
                 ice_candidates: Vec::new(),
+                rtcp_mux: false,
+                rtcp_port: None,
             }],
         }
     }
@@ -715,6 +717,8 @@ mod tests {
             ptime: None,
             crypto: Vec::new(),
             ice_candidates: Vec::new(),
+            rtcp_mux: false,
+            rtcp_port: None,
         };
         SdpSession {
             origin: None,

@@ -14,6 +14,7 @@ pub mod diagnosis;
 pub mod dialog;
 pub mod dialog_store;
 pub mod dsl;
+pub mod lint;
 #[cfg(feature = "native")]
 pub mod matcher;
 pub mod message;
