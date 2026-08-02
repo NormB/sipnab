@@ -117,6 +117,58 @@ fn tool_descriptions_do_not_instruct_the_model_to_trust_content() {
     );
 }
 
+/// A tool whose output could be mistaken for a recording must say it is not.
+///
+/// The export writes one re-synthesised Ethernet/IP/UDP frame per held SIP
+/// message, because the dialog store keeps parsed messages and not the original
+/// bytes. So the file holds no RTP, carries reconstructed link and IP headers,
+/// and on a measured corpus export was missing 97.5% of the packets that had
+/// been on the wire.
+///
+/// None of that was a secret: the function's own doc comment says it plainly and
+/// calls the result "honest about the rest". The problem was WHERE it was said.
+/// An MCP client reads the tool description and nothing else, so a caveat living
+/// in a code comment reaches the one reader who does not need it and misses the
+/// one who does. The output is a pcap, and a pcap is evidence — it gets attached
+/// to carrier tickets and regulator filings by people who never saw either text.
+///
+/// This gate keeps the disclosure at the layer the consumer actually reads.
+#[test]
+fn an_export_that_synthesises_frames_says_so_where_the_model_reads() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src =
+        std::fs::read_to_string(repo.join("src/mcp/server.rs")).expect("read src/mcp/server.rs");
+
+    let export = tool_descriptions(&src)
+        .into_iter()
+        .find(|(name, _)| {
+            name.contains("export") && name.contains("capture") || name == "export_signalling"
+        })
+        .expect("an export tool is registered");
+
+    let lower = export.1.to_lowercase();
+    let discloses = ["synthes", "reconstruct", "rebuilt", "re-synthes"]
+        .iter()
+        .any(|w| lower.contains(w));
+    assert!(
+        discloses,
+        "the '{}' tool description must say the frames are re-synthesised rather \
+         than captured. Without it the model is told it is preserving packets and \
+         hands on a reconstruction that reads as a recording. Description was: {}",
+        export.0, export.1
+    );
+
+    let names_the_gap =
+        lower.contains("rtp") || lower.contains("signalling") || lower.contains("signaling");
+    assert!(
+        names_the_gap,
+        "the '{}' description must name what the file does NOT contain — it holds \
+         no RTP, only signalling. 'Re-synthesised' alone still reads as complete. \
+         Description was: {}",
+        export.0, export.1
+    );
+}
+
 /// The module doc must not cite a gate that does not exist.
 ///
 /// `src/mcp/server.rs` pointed at `scripts/check-tool-descriptions.sh` for

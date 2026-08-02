@@ -2175,10 +2175,16 @@ impl SipnabMcp {
     /// Write the retained packets to a capture file.
     #[tool(
         name = "export_capture",
-        description = "Writes the packets sipnab is holding to a pcap file in \
-                       the configured file root and returns the path. Use it to \
-                       preserve a live capture before stopping it — otherwise \
-                       the packets end with the process."
+        description = "Writes the SIP signalling sipnab is holding to a pcap file \
+                       in the configured file root and returns the path. The \
+                       file is NOT a copy of the capture: sipnab keeps parsed \
+                       messages rather than the original frames, so each message \
+                       is written as a re-synthesised Ethernet/IP/UDP frame with \
+                       reconstructed link and IP headers. It contains no RTP, no \
+                       RTCP and no non-SIP traffic, and a SIP-over-TCP message \
+                       is written as UDP. Use it to preserve signalling before \
+                       stopping a live capture — otherwise the messages end with \
+                       the process."
     )]
     pub async fn export_capture(
         &self,
