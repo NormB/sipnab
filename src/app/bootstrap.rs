@@ -367,6 +367,47 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // once at the parse boundary rather than re-derived here. Deriving it
     // here instead would fix only this decision and leave the three output
     // gates in `app::batch` still reading `no_tui` as a proxy for "batch".
+    // `--cores N` shards by host pair and rebuilds dialogs per shard. It has no
+    // per-message stream to write, no writer for `-O`, and no replay clock — so
+    // asking for any of those alongside it used to produce NOTHING, exit 0,
+    // beside a summary that cheerfully reported the messages it had found.
+    // Measured on one capture: `--json` 13,460 lines at `--cores 1` and 0 at
+    // `--cores 4`; `--text-dump` 194,321 and 0; `-O` a 100 MB file and no file
+    // at all. An empty output that exits 0 reads as "there was nothing to
+    // report", which is the one conclusion the run had disproved.
+    //
+    // Refusing is not the whole answer — these could be implemented, and #82
+    // records what that would take. It is the honest answer until then, because
+    // the alternative is a silent wrong result.
+    if cli.cores > 1 && cli.has_input() && !cli.multi_device {
+        let mut unsupported: Vec<&str> = Vec::new();
+        if cli.json || cli.json_pretty {
+            unsupported.push("--json");
+        }
+        if cli.text_dump {
+            unsupported.push("--text-dump");
+        }
+        if cli.fail2ban {
+            unsupported.push("--fail2ban");
+        }
+        if cli.output.is_some() {
+            unsupported.push("-O/--output");
+        }
+        if !unsupported.is_empty() {
+            tracing::error!(
+                "--cores {} cannot produce {}: the parallel reader rebuilds \
+                 dialogs per shard and has no per-message stream or capture \
+                 writer, so it would emit nothing and still exit 0. Drop \
+                 --cores for these, or keep --cores and ask for a whole-capture \
+                 view instead (--json-dialogs, --report, --call-report), which \
+                 the parallel path does produce.",
+                cli.cores,
+                unsupported.join(", ")
+            );
+            std::process::exit(2);
+        }
+    }
+
     let mode = if cli.cores > 1 && cli.has_input() && !cli.multi_device {
         RunMode::CoresFile
     } else {

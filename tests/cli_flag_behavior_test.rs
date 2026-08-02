@@ -1349,3 +1349,74 @@ fn alert_rule_syntax_still_parses() {
         "a value with ':' is a rule, not a channel:\n{stderr}"
     );
 }
+
+/// `--cores N` refuses the outputs it cannot produce instead of emitting none.
+///
+/// The parallel reader shards by host pair and rebuilds dialogs per shard. It
+/// has no per-message stream, no capture writer and no replay clock, so asking
+/// for one used to produce nothing at all and exit 0 — beside a summary line
+/// that reported the messages it had just found. Measured on a real capture
+/// before this refusal: `--json` gave 13,460 lines at `--cores 1` and 0 at
+/// `--cores 4`; `--text-dump` gave 194,321 and 0; `-O` wrote a 100 MB file and
+/// then no file at all.
+///
+/// An empty output that exits 0 reads as "there was nothing to report", which
+/// is the one conclusion the run had already disproved. Refusing is not the
+/// whole answer — these could be implemented — but it is the honest answer.
+#[test]
+fn cores_refuses_the_outputs_it_cannot_produce() {
+    for flag in ["--json", "--text-dump", "--fail2ban"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args([
+                "-N",
+                "--cores",
+                "4",
+                "-I",
+                "tests/fixtures/sip_call.pcap",
+                flag,
+            ])
+            .output()
+            .expect("spawn sipnab");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`--cores 4 {flag}` must refuse rather than emit nothing and exit 0"
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "a refused run must not also write output for {flag}"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(flag) && stderr.contains("cannot produce"),
+            "the refusal must name the flag it cannot honour, so the operator \
+             knows which one to drop; got:\n{stderr}"
+        );
+    }
+}
+
+/// The whole-capture views still work under `--cores`, so the refusal above is
+/// specific rather than a blanket ban on combining the flags.
+#[test]
+fn cores_still_produces_the_whole_capture_views() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "--cores",
+            "4",
+            "-I",
+            "tests/fixtures/sip_call.pcap",
+            "--json-dialogs",
+        ])
+        .output()
+        .expect("spawn sipnab");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "--json-dialogs is produced by the parallel path and must not be refused"
+    );
+    assert!(
+        !out.stdout.is_empty(),
+        "--json-dialogs under --cores must still emit dialogs"
+    );
+}
