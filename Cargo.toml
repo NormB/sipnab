@@ -144,7 +144,7 @@ axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 
 # Phase 8.1: MCP server (Model Context Protocol)
-rmcp = { version = "2", default-features = false, features = ["server", "transport-io", "macros", "schemars"], optional = true }
+rmcp = { version = "3", default-features = false, features = ["server", "transport-io", "macros", "schemars"], optional = true }
 
 # WASM browser integration (feature-gated)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
