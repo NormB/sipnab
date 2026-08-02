@@ -178,6 +178,28 @@ fn signaling_findings(dialog: &SipDialog) -> Vec<(String, String)> {
         out.push((head, evidence_label(dialog, &r.evidence)));
     }
 
+    // An ICMP error quoting one of this dialog's requests is the strongest
+    // statement a capture can make about reachability: not "nothing came back"
+    // but "a router said this host is not there". Name the reporter separately
+    // from the unreachable endpoint — they are different machines, and blaming
+    // the router would send someone to the wrong device.
+    if let Some(i) = &diag.icmp_unreachable {
+        out.push((
+            format!(
+                "ICMP {}: {} unreachable{}, reported by {}",
+                i.description,
+                i.unreachable_endpoint,
+                if i.errors > 1 {
+                    format!(" ({} times)", i.errors)
+                } else {
+                    String::new()
+                },
+                i.reported_by
+            ),
+            evidence_label(dialog, &i.evidence),
+        ));
+    }
+
     out
 }
 

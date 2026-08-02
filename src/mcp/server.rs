@@ -31,7 +31,9 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 
 use crate::output::{ReportFormat, generate_call_report};
-use crate::rtp::diagnosis::{AsymmetryThresholds, diagnose_asymmetry, diagnose_media};
+use crate::rtp::diagnosis::{
+    AsymmetryThresholds, CaptureMedia, MediaContext, diagnose_asymmetry, diagnose_media,
+};
 use crate::rtp::stream_store::StreamStore;
 use crate::security::alerting::AlertEngine;
 use crate::sip::dialog_store::DialogStore;
@@ -200,6 +202,35 @@ impl SipnabMcp {
             ));
         }
         let target = root.join(name);
+
+        // A bare name can still leave the root, because the escape is not in
+        // the string: a symlink someone already placed in the root is one
+        // normal component and passes every check above, and the kernel follows
+        // it at `open`. Measured before this: an export wrote 77,736 bytes
+        // through such a link to a path outside the root, exit 0, and returned
+        // the in-root path as though that were where the bytes went.
+        //
+        // `canonical_target` is the same resolver `-O` uses to catch different
+        // spellings of one file — reused rather than reimplemented, because two
+        // implementations of one rule is a defect pattern this tree has already
+        // been bitten by.
+        //
+        // The resolved path is what gets returned, so a caller is told where
+        // the bytes will actually land rather than where it asked for them.
+        let resolved = crate::capture::output_guard::canonical_target(&target);
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if !resolved.starts_with(&canonical_root) {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "'{name}' resolves outside the configured --mcp-file-root. \
+                     The name is a link to '{}', and these tools write only \
+                     inside the root.",
+                    resolved.display()
+                ),
+                None,
+            ));
+        }
+        let target = resolved;
 
         // Refuse before the caller opens anything: every file tool writes with
         // truncation, so a check made after the open has already destroyed the
@@ -733,7 +764,11 @@ impl SipnabMcp {
         &self,
         cursor: Option<&str>,
         limit: usize,
-        select: impl Fn(&crate::sip::dialog::SipDialog, &[&crate::rtp::stream::RtpStream]) -> bool,
+        select: impl Fn(
+            &crate::sip::dialog::SipDialog,
+            &[&crate::rtp::stream::RtpStream],
+            CaptureMedia,
+        ) -> bool,
     ) -> Result<DialogPage, rmcp::ErrorData> {
         let cursor = match cursor {
             Some(raw) => Some(
@@ -761,13 +796,15 @@ impl SipnabMcp {
         // Every match, not the first `limit` of them: `total_matched` is the
         // whole point and cannot be known from a truncated scan.
         const NO_STREAMS: &[&crate::rtp::stream::RtpStream] = &[];
+        // One run-level fact, read once rather than per dialog.
+        let capture = CaptureMedia::of_store(&ss);
         let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
             .iter()
             .filter(|d| {
                 let streams = by_call
                     .get(d.call_id.as_str())
                     .map_or(NO_STREAMS, Vec::as_slice);
-                select(d, streams)
+                select(d, streams, capture)
             })
             .collect();
         let total_matched = matched.len();
@@ -940,10 +977,10 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit(params.limit);
         let filter = Self::compile_filter(params.filter.as_deref())?;
-        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams| {
+        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams, capture| {
             filter
                 .as_ref()
-                .is_none_or(|expr| expr.matches_dialog(d, streams))
+                .is_none_or(|expr| expr.matches_dialog(d, streams, capture))
         })?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
@@ -999,7 +1036,8 @@ impl SipnabMcp {
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&params.call_id).collect();
 
-            let mut diag = diagnose_media(&dialog_streams, None);
+            let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let mut diag = diagnose_media(&dialog_streams, &media);
             diagnose_asymmetry(
                 &mut diag,
                 Some(dialog),
@@ -1076,11 +1114,13 @@ impl SipnabMcp {
         // ANY alias AND the filter. The aliases answer "is this call
         // interesting", the filter answers "is it the one I am looking at" —
         // ORing them instead would widen the triage sweep rather than narrow it.
-        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams| {
-            compiled.iter().any(|expr| expr.matches_dialog(d, streams))
+        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams, capture| {
+            compiled
+                .iter()
+                .any(|expr| expr.matches_dialog(d, streams, capture))
                 && extra
                     .as_ref()
-                    .is_none_or(|expr| expr.matches_dialog(d, streams))
+                    .is_none_or(|expr| expr.matches_dialog(d, streams, capture))
         })?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
@@ -1229,7 +1269,8 @@ impl SipnabMcp {
             let ss = self.stream_store.read();
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&params.call_id).collect();
-            let mut diag = diagnose_media(&dialog_streams, None);
+            let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let mut diag = diagnose_media(&dialog_streams, &media);
             diagnose_asymmetry(
                 &mut diag,
                 Some(dialog),
@@ -1297,7 +1338,8 @@ impl SipnabMcp {
                 ss.streams_for(call_id).collect();
             let stream_jsons: Vec<serde_json::Value> =
                 dialog_streams.iter().map(|s| stream_json(s)).collect();
-            let mut diag = diagnose_media(&dialog_streams, None);
+            let ctx = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let mut diag = diagnose_media(&dialog_streams, &ctx);
             diagnose_asymmetry(
                 &mut diag,
                 Some(dialog),
@@ -1865,6 +1907,7 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
+            let capture = CaptureMedia::of_store(&ss);
             let mut hits: Vec<serde_json::Value> = ds
                 .iter()
                 .filter(|d| {
@@ -1878,7 +1921,7 @@ impl SipnabMcp {
                     filter.as_ref().is_none_or(|expr| {
                         let streams: Vec<&crate::rtp::stream::RtpStream> =
                             ss.streams_for(&d.call_id).collect();
-                        expr.matches_dialog(d, &streams)
+                        expr.matches_dialog(d, &streams, capture)
                     })
                 })
                 .map(|d| {
@@ -1934,7 +1977,8 @@ impl SipnabMcp {
             let ss = self.stream_store.read();
             let streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&dialog.call_id).collect();
-            let mut media = crate::rtp::diagnosis::diagnose_media(&streams, None);
+            let ctx = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let mut media = crate::rtp::diagnosis::diagnose_media(&streams, &ctx);
             crate::rtp::diagnosis::diagnose_asymmetry(
                 &mut media,
                 Some(dialog),
@@ -2160,10 +2204,16 @@ impl SipnabMcp {
     /// Write the retained packets to a capture file.
     #[tool(
         name = "export_capture",
-        description = "Writes the packets sipnab is holding to a pcap file in \
-                       the configured file root and returns the path. Use it to \
-                       preserve a live capture before stopping it — otherwise \
-                       the packets end with the process."
+        description = "Writes the SIP signalling sipnab is holding to a pcap file \
+                       in the configured file root and returns the path. The \
+                       file is NOT a copy of the capture: sipnab keeps parsed \
+                       messages rather than the original frames, so each message \
+                       is written as a re-synthesised Ethernet/IP/UDP frame with \
+                       reconstructed link and IP headers. It contains no RTP, no \
+                       RTCP and no non-SIP traffic, and a SIP-over-TCP message \
+                       is written as UDP. Use it to preserve signalling before \
+                       stopping a live capture — otherwise the messages end with \
+                       the process."
     )]
     pub async fn export_capture(
         &self,
@@ -2473,6 +2523,73 @@ mod tests {
 
     /// A server whose dialog store holds one dialog (`call_id`) with an
     /// INVITE followed by a 200 OK (two messages).
+    /// A bare filename that is a symlink out of the root is refused.
+    ///
+    /// `resolve_in_root` rejected separators, `..` and anything that was not a
+    /// single normal component, then joined and returned. String validation
+    /// cannot see a symlink, because the escape is not in the string: the name
+    /// really is one bare component, and the kernel does the rest at `open`.
+    ///
+    /// Measured before this check existed: an export wrote 77,736 bytes through
+    /// an in-root symlink to a path outside the root, exit 0, and returned the
+    /// in-root path as though that were where the bytes went. The shipped
+    /// security model says "naming one directory means the worst an agent can
+    /// do is fill it", and that did not hold.
+    ///
+    /// The escape needs prior write access inside the root, so this is not a
+    /// remote break. It is listed and fixed because it is the STATED boundary of
+    /// an agent-facing surface, and a boundary documented as absolute should be.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_file_root_is_refused() {
+        let base = std::env::temp_dir().join("sipnab-mcp-root-symlink");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+
+        let escape = outside.join("secrets.pcap");
+        std::fs::write(&escape, b"original").expect("seed the file outside");
+        std::os::unix::fs::symlink(&escape, root.join("innocent.pcap")).expect("symlink");
+
+        let srv = server_with_dialog("sym@test").with_file_root(&root);
+        let err = srv
+            .resolve_in_root("innocent.pcap")
+            .expect_err("a name that resolves outside the root must be refused");
+
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("outside") || msg.contains("symlink") || msg.contains("root"),
+            "the refusal must say the name leaves the root, not merely that it \
+             failed: {msg}"
+        );
+        assert_eq!(
+            std::fs::read(&escape).expect("read"),
+            b"original",
+            "the file outside the root must be untouched"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// An ordinary name inside the root still resolves, so the check above is
+    /// not simply refusing everything.
+    #[cfg(unix)]
+    #[test]
+    fn a_plain_name_inside_the_file_root_still_resolves() {
+        let root = std::env::temp_dir().join("sipnab-mcp-root-plain");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+
+        let srv = server_with_dialog("plain@test").with_file_root(&root);
+        let path = srv
+            .resolve_in_root("out.pcap")
+            .expect("a bare name inside the root must resolve");
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("out.pcap"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn server_with_dialog(call_id: &str) -> SipnabMcp {
         let mut ds = DialogStore::new(100, false);
         ds.process_message(invite(call_id, base_ts()));
@@ -3244,7 +3361,12 @@ mod tests {
     #[tokio::test]
     async fn security_findings_with_engine_returns_recorded_finding() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", localhost(), "probe from scanner");
+        engine.fire(
+            "scanner",
+            localhost(),
+            "probe from scanner",
+            chrono::Utc::now(),
+        );
         let engine = Arc::new(RwLock::new(engine));
 
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -3266,7 +3388,7 @@ mod tests {
     #[tokio::test]
     async fn security_findings_kinds_filter_excludes_other_rules() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", localhost(), "scan");
+        engine.fire("scanner", localhost(), "scan", chrono::Utc::now());
         let engine = Arc::new(RwLock::new(engine));
 
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));

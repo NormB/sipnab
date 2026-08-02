@@ -1126,27 +1126,35 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
         };
     }
 
-    // Diagnostic alias expansion
+    // Diagnostic alias expansion, through the SAME table `--filter <name>`
+    // and the MCP `find_problems` kinds use. These flags are documented as
+    // that alias by another name, and the hand-written copies that used to
+    // live here had drifted from it: `--short-calls` was `duration < 10.0`
+    // with no state gate, selecting 2310 of 2311 dialogs on a real capture
+    // where the documented `duration < 5.0 AND state == 'Completed'` selected
+    // 1681, and `--slow-setup` measured `setup_time` where the alias measures
+    // `pdd`. Two spellings of one flag cannot disagree if there is only one.
     let mut parts: Vec<&str> = Vec::new();
-
-    if cli.problems {
-        parts.push("retransmits > 0 OR state == 'Failed'");
-    }
-    if cli.slow_setup {
-        parts.push("setup_time > 3.0");
-    }
-    if cli.short_calls {
-        parts.push("duration < 10.0");
-    }
-    if cli.one_way {
-        parts.push("one_way == true");
-    }
-    if cli.nat_issues {
-        parts.push("nat_mismatch == true");
+    for (enabled, alias) in [
+        (cli.problems, "problems"),
+        (cli.slow_setup, "slow-setup"),
+        (cli.short_calls, "short-calls"),
+        (cli.one_way, "one-way"),
+        (cli.nat_issues, "nat-issues"),
+    ] {
+        if enabled && let Some(expansion) = crate::sip::dsl::expand_alias(alias) {
+            parts.push(expansion);
+        }
     }
 
     if !parts.is_empty() {
-        let combined = parts.join(" OR ");
+        // Parenthesized: an alias may expand to an `AND` (short-calls does),
+        // and joining those bare would let `OR` capture only its last term.
+        let combined = parts
+            .iter()
+            .map(|p| format!("({p})"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
         return match FilterExpr::parse(&combined) {
             Ok(f) => Ok(Some(f)),
             Err(e) => Err(PlanError::arg(format!(

@@ -125,6 +125,7 @@ fn main() {
             &plan.capture_config,
             plan.portrange,
             paths,
+            plan.filter_expr.as_ref(),
         );
         return;
     }

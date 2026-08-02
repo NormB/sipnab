@@ -389,8 +389,8 @@ fn wiki_intra_docs_links_resolve() {
     // that nobody can name is the regex breaking, which is exactly what this
     // pin is here to catch, and editing the number is how it gets missed.
     assert_eq!(
-        seen, 233,
-        "extractor found {seen} wiki links, expected 233. More is fine — bump \
+        seen, 246,
+        "extractor found {seen} wiki links, expected 246. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
@@ -465,8 +465,8 @@ fn root_community_file_links_resolve() {
     // Pinned for the same reason as the wiki pin above: a floor cannot tell a
     // healthy repo from an extractor that stopped matching.
     assert_eq!(
-        seen, 34,
-        "extractor found {seen} root community links, expected 34. More is \
+        seen, 41,
+        "extractor found {seen} root community links, expected 41. More is \
          fine — bump this. FEWER means the regex stopped matching and this \
          gate narrowed silently."
     );

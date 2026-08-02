@@ -695,13 +695,31 @@ sudo sipnab -N -d eth0 --kill-scanner --fail2ban \
      >> /var/log/sipnab/fail2ban.log 2>&1
 ```
 
-**Measure it against your own traffic before any of it reaches fail2ban.** The detectors suit a honeypot or an edge box, and a carrier trunk is neither: the enumeration rule fires on more than five distinct called extensions from one source in five seconds, which an SBC fronting a hunt group does continuously. Point sipnab at a capture of a normal hour and count who it would have banned:
+**Measure it against your own traffic before any of it reaches fail2ban.** Point sipnab at a capture of a normal hour and count who it would have banned:
 
 ```bash
 sipnab -N -I trunk.pcap --kill-scanner --fail2ban | grep -oE 'src=[^ ]+' | sort | uniq -c | sort -rn
 ```
 
-Every address in that list is one the jail below would ban. On an ordinary carrier trunk this routinely names the carrier's own SBCs — see `ignoreip` in the jail, and raise `maxretry` until the list holds only what you meant.
+Every address in that list is one the jail below would ban. Use `ignoreip` in the jail for the peers you already trust.
+
+#### What the behavioural rules actually test
+
+Neither behavioural rule fires on volume, because volume does not separate reconnaissance from operation. A trunk sends OPTIONS keepalives continuously by design — that is how each end learns the other is alive — and an SBC fronting a hunt group reaches dozens of distinct extensions a second. Both rules therefore need an OUTCOME as well as a rate:
+
+| Signal | What it counts | What arms it |
+|---|---|---|
+| `behavioral` | More than 10 probe transactions from one source in 5s | Probing evidence |
+| `enumeration` | More than 5 distinct target extensions in 5s | Probing evidence |
+
+Probing evidence means one of two things inside that window:
+
+- **5 refusals** — final responses past `4xx` that are neither an auth challenge (`401`, `407`) nor an ordinary call outcome (`408`, `480`, `486`, `487`, `488`, `491`, `600`, `603`). A `5xx` blames the server, so it counts for nothing. Only a refusal on a probe transaction counts, matched by the `Via` branch: a `481` answering a stray `NOTIFY` says nothing about the OPTIONS beside it.
+- **5 probes with no answer**, still unanswered half a second later, and outnumbering the ones that drew a reply. Any response settles a probe, including a `100 Trying` — the question is whether anything is there, and waiting for the final response would count every ringing call as a probe into a hole. Retransmissions of one request count once, so a peer resending an INVITE is one probe rather than four.
+
+A source that has completed a registration or a call — a `2xx` to its REGISTER or its INVITE — needs four times either number. Answering its OPTIONS earns it nothing, because sipnab answers anyone's.
+
+Two consequences follow for anyone reading a file rather than watching an interface. A capture of one direction holds no responses, so sipnab stands the unanswered test down entirely and leaves only the signature and refusal rules. And a capture taken upstream of whatever generates your `404`s — between two proxies, say — never shows the refusals either.
 
 Sample log line shape (from `src/output/fail2ban.rs`):
 

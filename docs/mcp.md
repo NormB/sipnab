@@ -317,7 +317,7 @@ carries a default ceiling (HARD_LIMIT = 1000).
 | `get_sdp_timeline` | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
 | `search_by_time` | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
 | `list_captures` | -- | Capture files in `--mcp-file-root`, with sizes |
-| `export_capture` | `filename` | Writes held packets to a pcap in `--mcp-file-root` |
+| `export_capture` | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root` |
 | `shutdown_server` | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | `server_capabilities` | -- | sipnab version and the optional features this binary carries |
@@ -560,8 +560,11 @@ Call-flow ladder for one Call-ID.
 | `call_id` | string | Required. |
 | `format` | "markdown" \| "text" | Default `"markdown"`. |
 
-Output is byte-identical to `sipnab --call-report <id> --markdown` /
-`--call-report <id>` for the same dialog.
+Output is byte-identical to the report
+`sipnab -N --call-report <id> --markdown --no-cli-print` /
+`sipnab -N --call-report <id> --no-cli-print` writes for the same dialog.
+`--no-cli-print` matters for the comparison: without it the CLI writes the whole
+capture's per-message dump ahead of the report, and the tool never does.
 
 ```text
 # Call Report: 1-1966@10.0.2.20
@@ -1029,6 +1032,17 @@ sipnab refuses `../x`, `/etc/passwd` and `sub/dir.pcap` before any filesystem
 call. That is the whole security model and it is deliberately absolute: a tool
 accepting an agent-supplied path is an arbitrary file write, not an export.
 
+Name checking alone does not finish the job, so sipnab does one more thing. A
+symlink already sitting in the root is a single bare component — it passes every
+check above, and the kernel follows it when the file opens. sipnab therefore
+compares the resolved path against the root in its fully resolved form and refuses a name by
+where it points rather than by how someone spelled it. Each tool returns the
+resolved path, so a caller learns where the bytes actually went.
+
+That escape needed prior write access inside the root, so it never amounted to a
+remote break. sipnab closes it because this page calls the boundary absolute, and
+a boundary described that way ought to be.
+
 ### `list_captures`
 
 Capture files in the configured root, with sizes. It skips anything that is
@@ -1040,17 +1054,27 @@ not a capture.
 
 ### `export_capture`
 
-Writes the packets sipnab is holding to a pcap. Use it to preserve a live
-capture **before** stopping it — otherwise the packets end with the process.
+Writes the SIP signalling sipnab is holding to a pcap. Use it to preserve
+signalling **before** stopping a live capture — otherwise the messages end with
+the process.
+
+> **The file is not a copy of the capture.** sipnab keeps parsed messages, not
+> the frames that arrived, so the export rebuilds one Ethernet/IP/UDP frame
+> around each message. The SIP layer is faithful. Everything under it is
+> reconstructed from the addresses and ports sipnab recorded.
+>
+> Concretely, the file holds **no RTP, no RTCP and no non-SIP traffic**, and
+> writes a SIP-over-TCP message as UDP. On one measured export, 4,875 of the
+> 5,000 packets that had been on the wire were absent.
+>
+> That matters beyond the analysis, because the output is a pcap and people
+> forward pcaps. If the file is going to a carrier, a regulator or a court, say
+> what it is — nothing inside it announces that the frames were rebuilt.
 
 ```jsonc
 // export_capture { "filename": "demo.pcap" }
 { "path": "/var/spool/sipnab-exports/demo.pcap", "messages": 4, "bytes": 2373 }
 ```
-
-It re-synthesises a frame per held message, so the SIP layer is faithful while
-the link and IP headers come from the addresses sipnab recorded — not from the
-bytes originally on the wire.
 
 ### `export_audio`
 
@@ -1123,7 +1147,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.72",
+  "version": "0.5.73",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep

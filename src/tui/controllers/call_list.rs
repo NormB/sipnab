@@ -420,10 +420,11 @@ pub(in crate::tui) fn clear_non_matching(app: &mut App) {
         // it. Lock order is dialog-then-stream, matching the rest of the app.
         let mut ds = app.dialog_store.write();
         let ss = app.stream_store.read();
+        let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
         let before = ds.len();
         ds.retain(|d| {
             let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-            filter.matches_dialog(d, &streams)
+            filter.matches_dialog(d, &streams, capture)
         });
         before - ds.len()
     };
@@ -451,10 +452,11 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
         // look non-matching, so it wrongly survived a "clear matching".
         let mut ds = app.dialog_store.write();
         let ss = app.stream_store.read();
+        let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
         let before = ds.len();
         ds.retain(|d| {
             let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-            !filter.matches_dialog(d, &streams)
+            !filter.matches_dialog(d, &streams, capture)
         });
         before - ds.len()
     };
