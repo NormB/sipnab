@@ -1,13 +1,13 @@
-# Four decisions: three declined, one re-scoped
+# Four decisions: one re-scoped, one deferred, two approved
 
-**Status:** decided, 2026-08-01. Nothing on this page is scheduled. Verified
-against `main` at 1998303.
+**Status:** decided 2026-08-01; §2 and §4 approved to move forward 2026-08-02.
+§1 and §3 remain unscheduled. Verified against `main` at 1998303.
 
 Four requests sat open a long time each, and they had one thing in common: the
 honest answer turned out to be some version of *not as asked*. An undecided
-feature comes back every quarter with the same arguments; a declined one with a
-written reason and a named trigger does not. So the deliverable here is the
-writing-down, and each section ends with the specific fact that would reopen it.
+feature comes back every quarter with the same arguments; one with a written
+reason and a named trigger does not. So the deliverable here is the
+writing-down, and each section ends with the specific fact that governs it.
 
 A note on method, because it changed several of the answers below. Every claim
 was re-checked against the current tree rather than carried over from the review
@@ -17,8 +17,8 @@ that raised it, and three inherited framings did not survive:
   could be built on — it is the opposite operation, and §1 measures the damage;
 - that `shutdown_server` is an exception to the read-only invariant — it is not,
   and §2 shows what actually broke instead;
-- the recorded rationale for declining `open_capture`, which §4 rebuilds from
-  scratch rather than repairing.
+- the recorded rationale against `open_capture`, which §4 rebuilt from scratch
+  rather than repairing — and which §4 has since withdrawn.
 
 Where a conclusion still holds it holds on different evidence, and this page
 shows the work rather than the verdict.
@@ -26,9 +26,9 @@ shows the work rather than the verdict.
 | # | Request | Decision |
 |---|---|---|
 | 1 | TUI multi-session / multi-capture comparison | **Re-scoped.** The want is real; the specification is not buildable and the `-I` set does not substitute for it |
-| 2 | Write-back MCP tools | **Declined.** The invariant survives intact; its stated rationale does not, and §2 says which |
+| 2 | Write-back MCP tools | **Approved to move forward** (2026-08-02). The invariant analysis in §2 stands and becomes the build requirements |
 | 3 | Automated threat-mitigation hooks | **Fixes extracted and shipped; the action ledger deferred** on a named prerequisite |
-| 4 | `open_capture` MCP tool | **Declined**, on a rationale rebuilt from scratch |
+| 4 | `open_capture` MCP tool | **Approved to move forward** (2026-08-02). §4 records what has to change first |
 
 ---
 
@@ -190,7 +190,7 @@ thing the store destroyed before the view ran.
 
 ### Decision, and what would change it
 
-**Declined as specified. The underlying want — "these two captures should be
+**Re-scoped, not built as specified. The underlying want — "these two captures should be
 telling the same story and they are not" — is real and is not addressed by
 anything shipped.** It is blocked on a prerequisite that is larger than the
 feature:
@@ -221,9 +221,11 @@ does, and it unions them, and the union is a measured 2× on every count.
 
 ## 2. Write-back MCP tools
 
-**Decision: declined. And the reconciliation that was offered for it —
-"`shutdown_server` is a documented exception to the read-only invariant" — is
-wrong on the facts.**
+**Decision: approved to move forward, 2026-08-02.** Write-back tools are
+accepted for managing the MCP server. The analysis below is unchanged and still
+load-bearing — including its finding that the reconciliation once offered for
+this, "`shutdown_server` is a documented exception to the read-only invariant",
+is wrong on the facts. What moved is the verdict, not the evidence.
 
 ### Invariant 7, read literally, is not violated by anything in the tree
 
@@ -378,28 +380,32 @@ production.
 
 ### Decision, and what would change it
 
-**Declined.** Not "not yet" — the shape is wrong, and no amount of guarding
-fixes it, because the failure the guards would have to prevent is *silent
-divergence between what the agent did and what the operator sees*, and sipnab has
-no mechanism to surface that.
+**Approved to move forward, 2026-08-02.** Write-back tools are accepted for
+managing the MCP server. The concern is not withdrawn — the failure to design
+against is *silent divergence between what the agent did and what the operator
+sees*, and sipnab has no mechanism to surface that today. It is now a
+requirement to satisfy rather than a reason to stop.
 
-**Reopen when both of these are true**, not either:
+**Both of these are build requirements**, not conditions on reconsidering:
 
-1. **There is a wire-visible store identity** — a generation or etag on REST and
-   MCP responses — so a consumer can detect that the thing it is reading changed
+1. **A wire-visible store identity** — a generation or etag on REST and MCP
+   responses — so a consumer can detect that the thing it is reading changed
    underneath it. `DialogStore::generation` already exists internally
    ([`dialog_store.rs:163`](../../src/sip/dialog_store.rs)) and is bumped by every
    mutating method; exposing it is small. Without it, "who changed this" has no
-   answer at any layer.
+   answer at any layer. §4 needs the same primitive, so it is built once.
 2. **The write-back state is separate from the analysis** — an annotation store
    that a tool may edit and that no analysis reads. A note attached to a Call-ID
    in a side-car map changes no derived verdict, so nothing an operator is
    reading becomes wrong; the argument above simply does not apply to it. A
    field on `SipDialog` is a different proposal, because every diagnosis reads
-   that struct.
+   that struct, and should be judged on its own.
 
-A proposal that satisfies both is a different feature from the one declined
-here, and should be judged on its own.
+**Invariant 7 moves with the first tool that ships.**
+[Invariant 7](../internals/invariants.md) says no MCP tool mutates a store, and
+the analysis above establishes that this is still true of the tree. The first
+write-back tool makes it false. Amend it in the same change, rather than leaving
+a stated invariant the code has quietly stopped honouring.
 
 ---
 
@@ -572,9 +578,12 @@ before anything is built on top of this worker.
 
 ## 4. The `open_capture` MCP tool
 
-**Decision: declined. The rationale below is built from the current tree rather
-than inherited — the previously recorded one did not survive re-checking and is
-not reused here, in whole or in part.**
+**Decision: approved to move forward, 2026-08-02.** The analysis below was built
+from the current tree rather than inherited — the previously recorded rationale
+did not survive re-checking and is not reused here, in whole or in part. It
+argued against building this; that argument is set out in full, and then
+withdrawn at the end of the section, so the reasoning is auditable rather than
+merely reversed.
 
 ### Taking the case *for* building it seriously first
 
@@ -652,10 +661,10 @@ A `/v1/dialogs` poller would see the dialog set change completely between two
 requests with nothing indicating that it is now reading a different capture. This
 is the same missing primitive that §2 requires, which is not a coincidence.
 
-### The decisive one
+### The decisive one, as it was argued
 
 The three costs above are engineering: real, quantifiable, and payable. The
-reason to decline is that the benefit is near zero in two of sipnab's three
+argument against rested on the benefit being near zero in two of sipnab's three
 deployment shapes, and the roadmap already enumerated them
 ([`mcp-tool-roadmap.md`](mcp-tool-roadmap.md) Part 1): SSH-launched stdio, local
 stdio, and persistent HTTP. In both stdio shapes the sipnab process is a child of
@@ -693,24 +702,42 @@ does not exist, at any layer, for the same reason §1 is blocked.
 
 ### Decision, and what would change it
 
-**Declined.** Not on "it mutates state" — `shutdown_server` retired that argument
-— but because the cheapest correct alternative (restart with a different `-I`) is
-free in two of three deployment shapes, and because the tool cannot report what it
-did without a capture identity sipnab does not have.
+**Approved to move forward, 2026-08-02.** The argument above rested on the
+benefit being near zero outside persistent HTTP, on the grounds that the cheapest
+correct alternative — restart with a different `-I` — is free in the two stdio
+shapes. That reasoning is withdrawn: persistent HTTP is a shape sipnab is
+expected to serve, and a restart is not an acceptable substitute there. What was
+filed as the load-bearing condition is therefore treated as met by decision
+rather than by an operator hitting the dead end first.
 
-**Reopen when both of these are true:**
+None of the three cost findings above is retracted, because none of them was
+what the argument turned on. They are the build requirements, and each names the
+file that has to change:
 
-1. **Persistent HTTP MCP is a primary deployment shape**, evidenced by an
-   operator running it that way and hitting the dead end — not by it being
-   listed as possible. This is the load-bearing condition; everything else is
-   engineering.
-2. **`CaptureContext` is shared rather than per-session**, and its identity is
-   visible in tool responses. That is roughly the same change §2 requires and
-   §1 needs a stronger version of, so if any of the three moves, this one gets
-   cheaper.
+1. **`CaptureContext` must become shared, not per-session.** It is a plain
+   `Option<CaptureContext>` field ([`server.rs:64`](../../src/mcp/server.rs)) on
+   a `SipnabMcp` cloned per HTTP session
+   ([`transport.rs:192-193`](../../src/mcp/transport.rs)). Until it moves behind
+   a shared lock, a swap leaves `capture_status`
+   ([`server.rs:1548`](../../src/mcp/server.rs)) naming the old file in the
+   calling session and in every other one.
+2. **Capture identity must be visible on the wire.** `DialogStore::generation`
+   ([`dialog_store.rs:163`](../../src/sip/dialog_store.rs)) is bumped by every
+   mutating method and exposed nowhere, so a `/v1/dialogs` poller cannot tell the
+   dataset changed underneath it. This is the same primitive §2 requires;
+   building it once settles both.
+3. **The load must not run inside the handler.** A synchronous read stops the
+   server answering for its duration. The shape that works is the TUI's
+   `pcap-load` design ported to MCP — a load thread plus a progress-polling tool.
 
-A narrower tool would be worth considering sooner and does not carry any of the
-above: **`capture_sources` (read-only)** — report the *full* resolved `-I` set
+The opt-in machinery and the path confinement are already solved and should be
+reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
+builder and first-statement refusal
+([`server.rs:2226`](../../src/mcp/server.rs)), and `--mcp-file-root` with
+`resolve_in_root` ([`server.rs:150`](../../src/mcp/server.rs)).
+
+A narrower tool is worth building alongside it, and carries none of the above:
+**`capture_sources` (read-only)** — report the *full* resolved `-I` set
 rather than `primary_input()`'s first element, with each file's first-packet
 timestamp. `input_set::resolve` already computes that timestamp into
 `ResolvedInput.first_packet` ([`input_set.rs:88-97`](../../src/capture/input_set.rs))
@@ -723,13 +750,14 @@ cannot see its own context"* — and it mutates nothing.
 
 ---
 
-## Reopening conditions, in one place
+## Conditions, in one place
 
-| Decision | Reopen when |
+| Decision | Condition |
 |---|---|
-| §1 Multi-capture comparison | Per-dialog capture provenance exists for another reason (most likely multi-device attribution reaching `SipDialog`) |
-| §2 Write-back MCP tools | **Both**: a wire-visible store generation/etag, *and* a proposal that writes to an annotation store no analysis reads |
-| §3 Threat-mitigation ledger | sipnab gains durable cross-run state — and only after the three blind spots in §3 are closed as ordinary defects |
-| §4 `open_capture` | **Both**: persistent HTTP is a primary deployment shape in practice, *and* `CaptureContext` becomes shared and wire-visible |
+| §1 Multi-capture comparison | Reopens when per-dialog capture provenance exists for another reason (most likely multi-device attribution reaching `SipDialog`) |
+| §2 Write-back MCP tools | Approved. **Both** a wire-visible store generation/etag *and* an annotation store no analysis reads are build requirements — see §2 |
+| §3 Threat-mitigation ledger | Reopens when sipnab gains durable cross-run state — and only after the three blind spots in §3 are closed as ordinary defects |
+| §4 `open_capture` | Approved. **Both** a shared, wire-visible `CaptureContext` *and* a load that does not block the handler are build requirements — see §4 |
 
-None of these reopens on "someone asked again".
+The two still open, §1 and §3, do not move on "someone asked again"; they move on
+the facts named above.
