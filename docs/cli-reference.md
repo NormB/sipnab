@@ -489,14 +489,14 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--rtp-interval` | `<SECS>` | `1` | RTP statistics reporting interval in seconds |
+| `--rtp-interval` | `<SECS>` | `1` | **Accepted and ignored.** Periodic RTP statistics reporting is not implemented, so no interval report appears. sipnab warns when you pass a non-default value, and reports stream statistics once, at end of capture |
 | `--max-streams` | `<N>` | `50000` | Maximum number of RTP streams to track simultaneously |
 | `--quality-threshold` | `<MOS>` | `3.0` | MOS quality threshold for alerts (1.0-5.0 scale) |
 
 **Examples**
 
-- `sudo sipnab -d eth0 --rtp-interval 5 --quality-threshold 3.5 --max-streams 10000` — monitor live RTP with 5-second statistics reports and MOS alerts below 3.5
-- `sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000` — batch-analyze RTP streams in a capture, reporting stats every 2 seconds with a raised stream cap
+- `sudo sipnab -d eth0 --rtp-interval 5 --quality-threshold 3.5 --max-streams 10000` — monitor live RTP with MOS alerts below 3.5. sipnab accepts `--rtp-interval 5`, ignores it, and says so: expect no 5-second reports, only the end-of-capture statistics
+- `sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000` — batch-analyse RTP streams with a raised stream cap. Again `--rtp-interval 2` changes nothing; the statistics arrive once, when the capture ends
 
 
 ## Security
@@ -651,6 +651,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
 | `--mcp-file-root` | `<DIR>` | -- | Directory the MCP file tools (`export_capture`, `export_audio`, `list_captures`) may read and write. Without it those tools refuse to run. They take a bare FILENAME, never a path — an agent cannot escape this directory. Feature: `mcp` |
 | `--mcp-allow-shutdown` | -- | off | Permit the `shutdown_server` MCP tool to stop this process. Off by default, so an agent cannot stop a stock server. Even enabled, the tool dry-runs unless told otherwise and refuses to discard an unsaved live capture. Feature: `mcp` |
+| `--mcp-allow-open-capture` | -- | off | Permit the `open_capture` MCP tool to load a different capture from `--mcp-file-root`, discarding every dialog and stream held. Off by default, so a stock server keeps the capture the command line named. The tool refuses while the source is live or still filling the stores, loads in the background, and mints a new capture identity every later answer carries. Feature: `mcp` |
 
 ## TLS / decryption
 
@@ -669,6 +670,8 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab-exports` — let an agent save captures and audio, confined to one directory
 - `sudo sipnab -N -d eth0 --mcp --mcp-file-root /var/spool/sipnab-exports --mcp-allow-shutdown` — a live capture an agent may export from and, deliberately, stop
 - `sipnab -N -I capture.pcap --mcp --mcp-allow-shutdown` — a replay session an agent may end when it has finished; nothing to lose, since the file is already on disk
+- `sipnab -N -I first.pcap --mcp --mcp-transport http --mcp-file-root /var/spool/sipnab-captures --mcp-allow-open-capture` — a long-lived service an agent may move through a corpus with, one capture at a time
+- `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab-captures --mcp-allow-open-capture --mcp-allow-shutdown` — the same, plus the ability to end the session; both opt-ins are separate on purpose
 - `sipnab -N -I capture.pcap --tls-key /etc/sipnab/tls-rsa.key --keylog /etc/sipnab/keys.log --allow-coredump` — decrypt TLS 1.2 RSA-key-exchange SIP from a pcap using an RSA private key, with core dumps left enabled
 - `sipnab -N -I capture.pcap --srtp-keys /etc/sipnab/srtp.keys --dtls-keylog /etc/sipnab/dtls.log` — decrypt SRTP media in an offline pcap from an SRTP master-keys file plus DTLS-SRTP handshake keys
 - `sudo sipnab -d eth0 --tls-key /etc/sipnab/tls-rsa.key --srtp-keys /etc/sipnab/srtp.keys --keylog /etc/sipnab/keys.log --keylog-watch --allow-coredump` — live decrypt both SIP (RSA key) and SRTP media, watching the key log for new PFS session keys

@@ -206,3 +206,201 @@ pub fn post_json(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> H
         body: body.to_string(),
     }
 }
+
+// ── stdio session ───────────────────────────────────────────────────
+
+/// A loaded `sipnab --mcp` process that answers repeated tool calls.
+///
+/// Pagination cannot be tested one process at a time: each call has to feed the
+/// previous response's `next_cursor` back in, and a fresh replay per page both
+/// costs a reload and proves nothing about resuming. So the session outlives a
+/// single call and the capture loads once.
+pub struct McpSession {
+    /// The running server. Kept so `stdin` stays open and `Drop` can stop it.
+    child: std::process::Child,
+    /// Line reader over the server's stdout, which is the JSON-RPC wire.
+    reader: BufReader<std::process::ChildStdout>,
+    /// Next JSON-RPC request id, so replies are matched rather than assumed.
+    next_id: i64,
+}
+
+impl McpSession {
+    /// Spawn `sipnab --mcp` on `pcap`, handshake, and wait for the replay to drain.
+    ///
+    /// The wait matters: without it these tests raced the pcap reader and passed
+    /// on Linux by luck, while macOS saw an empty store and reported "no messages
+    /// are held", "call_id not found" and an empty dialog list. A test that wins a
+    /// race on one platform is an unobserved failure, not a pass. Polling
+    /// `capture_status` until the file source drains is exactly what that tool is
+    /// for.
+    pub fn start(pcap: &str, extra: &[&str]) -> Self {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let mut argv: Vec<&str> = vec!["--mcp", "-N", "-I", pcap, "--quiet"];
+        argv.extend_from_slice(extra);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .current_dir(manifest)
+            .args(&argv)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sipnab --mcp");
+
+        {
+            let stdin = child.stdin.as_mut().expect("stdin");
+            writeln!(
+                stdin,
+                "{}",
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                               "clientInfo": {"name": "t", "version": "1"}}
+                })
+            )
+            .expect("write initialize");
+            writeln!(
+                stdin,
+                "{}",
+                serde_json::json!({
+                    "jsonrpc": "2.0", "method": "notifications/initialized"
+                })
+            )
+            .expect("write initialized");
+            stdin.flush().expect("flush");
+        }
+
+        let stdout = child.stdout.take().expect("stdout");
+        let mut session = Self {
+            child,
+            reader: BufReader::new(stdout),
+            next_id: 2,
+        };
+
+        // Bounded, so a genuine hang fails the test rather than running forever.
+        const MAX_POLLS: usize = 200;
+        let mut loaded = false;
+        for _ in 0..MAX_POLLS {
+            let msg = session.call("capture_status", serde_json::json!({}));
+            let text = msg["result"]["content"][0]["text"].as_str().unwrap_or("{}");
+            let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            if v["source_exhausted"] == true {
+                loaded = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(loaded, "capture never finished loading for {pcap}");
+        session
+    }
+
+    /// Issue one `tools/call` and return the raw JSON-RPC reply.
+    ///
+    /// Raw rather than unwrapped, so callers can assert on refusals as well as
+    /// results — a tool that must reject an argument combination is tested here
+    /// the same way as one that must answer it.
+    pub fn call(&mut self, tool: &str, args: serde_json::Value) -> serde_json::Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        {
+            let stdin = self.child.stdin.as_mut().expect("stdin");
+            writeln!(
+                stdin,
+                "{}",
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": {"name": tool, "arguments": args}
+                })
+            )
+            .expect("write tool call");
+            stdin.flush().expect("flush");
+        }
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
+                panic!("sipnab closed stdout while waiting for {tool}");
+            }
+            let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            if msg["id"] == serde_json::json!(id) {
+                return msg;
+            }
+        }
+    }
+
+    /// Issue one `tools/call` and return the parsed payload, failing on a refusal.
+    pub fn ok(&mut self, tool: &str, args: serde_json::Value) -> serde_json::Value {
+        let msg = self.call(tool, args);
+        ok_payload(&msg)
+    }
+
+    /// The tool names this server advertises, sorted.
+    ///
+    /// Registration and permission are separate questions here: a tool the
+    /// operator did not enable is still listed and refuses when called, so an
+    /// agent can tell "not permitted on this server" from "this build cannot
+    /// do it at all".
+    pub fn list_tools(&mut self) -> Vec<String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        {
+            let stdin = self.child.stdin.as_mut().expect("stdin");
+            writeln!(
+                stdin,
+                "{}",
+                serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"})
+            )
+            .expect("write tools/list");
+            stdin.flush().expect("flush");
+        }
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
+                panic!("sipnab closed stdout while waiting for tools/list");
+            }
+            let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            if msg["id"] == serde_json::json!(id) {
+                let mut names: Vec<String> = msg["result"]["tools"]
+                    .as_array()
+                    .unwrap_or(&Vec::new())
+                    .iter()
+                    .filter_map(|t| t["name"].as_str().map(str::to_string))
+                    .collect();
+                names.sort();
+                return names;
+            }
+        }
+    }
+}
+
+impl Drop for McpSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Call a tool with extra CLI args, waiting for the capture to load first.
+///
+/// Returns the raw JSON-RPC message so callers can assert on errors as well as
+/// results.
+pub fn call_tool_with_args(
+    pcap: &str,
+    extra: &[&str],
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    McpSession::start(pcap, extra).call(tool, args)
+}
+
+/// Unwrap a successful tool result to its parsed JSON payload.
+pub fn ok_payload(msg: &serde_json::Value) -> serde_json::Value {
+    let text = msg["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected success, got {msg}"));
+    serde_json::from_str(text).expect("payload is JSON")
+}

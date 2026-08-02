@@ -68,15 +68,50 @@ pub struct SipnabMcp {
     protected_inputs: crate::capture::output_guard::ProtectedInputs,
     /// Whether `shutdown_server` may stop this process.
     allow_shutdown: bool,
-    /// What this server is attached to, and when it started.
+    /// Whether `open_capture` may replace the loaded capture.
+    allow_open_capture: bool,
+    /// What this server is attached to, which capture that is, and whether a
+    /// load is filling it.
+    ///
+    /// **Shared, not per-session.** `SipnabMcp` is cloned per HTTP session
+    /// (`transport.rs`), so a plain field would leave `open_capture` naming the
+    /// new file in nobody's session, including the calling one: every clone
+    /// carries its own copy and the swap reaches none of them. Two agents on
+    /// one server would read the same stores and disagree about which capture
+    /// they were reading.
+    capture: Arc<RwLock<CaptureState>>,
+    /// rmcp router mapping tool names to the handler methods below.
+    tool_router: ToolRouter<Self>,
+}
+
+/// Which capture this server holds, behind one lock so a swap is atomic.
+///
+/// Everything a swap changes lives here together on purpose. The identity and
+/// the description have to move as one: an answer stamped with the old
+/// instance and the new filename, or the reverse, is worse than either alone
+/// because it looks self-consistent.
+///
+/// **Lock order: this lock, then the dialog store, then the stream store.**
+/// `open_capture` clears both stores while holding this one, so a reader that
+/// takes a store guard and then reaches for this lock deadlocks against it.
+/// Every handler that stamps an answer with the identity holds all three
+/// across the read for the same reason: releasing this lock first lets a swap
+/// land between the id and the rows, and the answer then names a capture it
+/// did not come from.
+#[derive(Debug, Default)]
+pub struct CaptureState {
+    /// Identity of the capture currently loaded — see [`crate::provenance`].
+    /// Rotated in the same critical section that clears the stores.
+    pub identity: crate::provenance::CaptureIdentity,
+    /// What this server is attached to, and when that capture began.
     ///
     /// An agent had no way to ask whether it was reading a live interface or
     /// replaying a file — so it could not tell whether "stop the capture"
     /// would lose anything, nor whether a quiet capture meant a quiet network
     /// or a finished file. Every downstream misjudgement traced back to that.
-    capture: Option<CaptureContext>,
-    /// rmcp router mapping tool names to the handler methods below.
-    tool_router: ToolRouter<Self>,
+    pub context: Option<CaptureContext>,
+    /// The background load filling this capture, while one is running.
+    pub load: Option<Arc<super::load::CaptureLoad>>,
 }
 
 /// Where this server's packets come from, for `capture_status`.
@@ -110,7 +145,8 @@ impl SipnabMcp {
             file_root: None,
             protected_inputs: Default::default(),
             allow_shutdown: false,
-            capture: None,
+            allow_open_capture: false,
+            capture: Arc::new(RwLock::new(CaptureState::default())),
             tool_router: Self::tool_router(),
         }
     }
@@ -143,8 +179,11 @@ impl SipnabMcp {
     /// Describe what this server is attached to, so `capture_status` can
     /// answer. Without it the tool reports `source: "unknown"` rather than
     /// guessing.
-    pub fn with_capture_context(mut self, ctx: CaptureContext) -> Self {
-        self.capture = Some(ctx);
+    pub fn with_capture_context(self, ctx: CaptureContext) -> Self {
+        {
+            let mut state = self.capture.write();
+            state.context = Some(ctx);
+        }
         self
     }
 
@@ -157,6 +196,12 @@ impl SipnabMcp {
     /// Permit `shutdown_server` to stop this process.
     pub fn with_shutdown(mut self) -> Self {
         self.allow_shutdown = true;
+        self
+    }
+
+    /// Permit `open_capture` to replace the capture this server holds.
+    pub fn with_open_capture(mut self) -> Self {
+        self.allow_open_capture = true;
         self
     }
 
@@ -416,6 +461,12 @@ pub struct TailDialogsResponse {
     /// (e.g., pcap EOF). Subsequent calls will keep returning empty
     /// dialogs arrays unless a new capture starts.
     pub source_exhausted: bool,
+    /// Which capture these dialogs came from, and which revision of its stores.
+    ///
+    /// This is the response that most needs it: a poller holding a cursor
+    /// sees an empty page after a swap and reads it as "nothing changed",
+    /// when the truth is that everything did.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 /// Parameters for `explain_response_code`.
@@ -451,6 +502,15 @@ pub struct ExportAudioParams {
     /// Call whose audio to export.
     pub call_id: String,
     /// Bare filename inside `--mcp-file-root`, e.g. "call.wav".
+    pub filename: String,
+}
+
+/// Parameters for `open_capture`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct OpenCaptureParams {
+    /// Bare filename inside `--mcp-file-root`, e.g. "outage-0722.pcap".
+    /// A path is refused: these tools take a name.
     pub filename: String,
 }
 
@@ -524,6 +584,39 @@ pub struct CaptureStatusResponse {
     /// The most useful field here: the difference between "restart this
     /// whenever you like" and "an afternoon of capture ends with this process".
     pub unsaved: bool,
+    /// Which capture this is, and which revision of its stores.
+    ///
+    /// The instance changes the moment `open_capture` clears the stores, so
+    /// two answers carrying different instances describe different captures
+    /// however similar the rest of the fields look.
+    pub capture_identity: crate::provenance::CaptureEtag,
+    /// The background load filling this capture, while one runs. Null
+    /// otherwise, including before any `open_capture` call.
+    pub load: Option<LoadStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// Progress of an `open_capture` load, reported by `capture_status`.
+///
+/// The load runs on its own thread and the stores fill as it goes, so a poller
+/// sees dialogs appear before `done`. What it must not do is treat a partial
+/// capture as a complete one, which is what every field here is for.
+pub struct LoadStatus {
+    /// The file being read, as `open_capture` was asked for it.
+    pub filename: String,
+    /// Capture instance this load fills. Matches `capture_identity.instance`
+    /// unless another load has started since.
+    pub instance: String,
+    /// Packets read so far.
+    pub packets: u64,
+    /// Seconds since the load started.
+    pub elapsed_sec: u64,
+    /// True once the reader stopped, whether it finished the file or failed.
+    pub done: bool,
+    /// Why the load stopped early, when it did. A partial load keeps whatever
+    /// it read; this says the capture is not all of the file.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -542,6 +635,29 @@ pub struct CapabilitiesResponse {
     pub can_hep: bool,
     /// True when this build can load WASM plugins.
     pub can_plugins: bool,
+    /// Server-side opt-ins the operator passed at startup.
+    pub runtime: RuntimeFlags,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// The startup flags that decide which tools do anything.
+///
+/// Compiled features and operator choices are different questions, and this
+/// answers the second. Every tool that needs one of these refuses by name when
+/// it is missing, so the two agree: what is reported here is what the refusal
+/// would have named.
+pub struct RuntimeFlags {
+    /// Directory the file tools are confined to (`--mcp-file-root`), or null
+    /// when they are disabled. `list_captures`, `export_capture`,
+    /// `export_audio` and `open_capture` all need it.
+    pub mcp_file_root: Option<String>,
+    /// Whether `shutdown_server` may stop this process
+    /// (`--mcp-allow-shutdown`).
+    pub mcp_allow_shutdown: bool,
+    /// Whether `open_capture` may replace the loaded capture
+    /// (`--mcp-allow-open-capture`).
+    pub mcp_allow_open_capture: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -574,6 +690,11 @@ pub struct StatsResponse {
     /// The service port — destination of a request, source of a response —
     /// never the ephemeral port, which differs per dialog and names nothing.
     pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
+    /// Which capture these counts describe, and which revision of its stores.
+    ///
+    /// Every number above is a whole-store aggregate, so a swap changes all of
+    /// them at once with nothing else in the response to say why.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 /// One port carrying SIP that `--portrange` excluded from the analysis.
@@ -653,6 +774,12 @@ pub struct DialogPage {
     /// Opaque cursor (`<RFC 3339 created_at>|<Call-ID>` of the last row) to
     /// pass to the next call. Null on the final page.
     pub next_cursor: Option<String>,
+    /// Which capture this page came from, and which revision of its stores.
+    ///
+    /// A cursor is only meaningful within one capture. `open_capture` can
+    /// replace the whole dialog set between two pages, and without this the
+    /// second page would look like an ordinary continuation of the first.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -680,6 +807,8 @@ pub struct StreamPage {
     pub truncated: bool,
     /// Opaque cursor to pass to the next call. Null on the final page.
     pub next_cursor: Option<String>,
+    /// Which capture this page came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 /// Render one RTP stream as the MCP JSON object, MOS grounding included.
@@ -804,6 +933,10 @@ impl SipnabMcp {
             None => None,
         };
 
+        // Capture lock first, stores second, all three held together — see
+        // `CaptureState`. A page and the identity stamped on it must describe
+        // one capture.
+        let state = self.capture.read();
         let ds = self.dialog_store.read();
         let ss = self.stream_store.read();
 
@@ -858,8 +991,10 @@ impl SipnabMcp {
             .flatten()
             .map(|d| super::shape::format_cursor(d.created_at, &d.call_id));
         let dialogs: Vec<DialogSummary> = page.iter().map(|d| DialogSummary::from(*d)).collect();
+        let capture_identity = state.identity.etag(ds.generation(), ss.generation());
         drop(ss);
         drop(ds);
+        drop(state);
 
         Ok(DialogPage {
             schema_version: 1,
@@ -868,6 +1003,7 @@ impl SipnabMcp {
             total_matched,
             truncated,
             next_cursor,
+            capture_identity,
         })
     }
 
@@ -912,6 +1048,12 @@ impl SipnabMcp {
         let bounded = params.min_mos.is_some() || params.max_mos.is_some();
 
         let page = {
+            // Capture, then dialogs, then streams — the order `CaptureState`
+            // documents. The dialog store is read only for its generation, so
+            // the identity on this page names the same store revision the rows
+            // came from.
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
 
             let mut ungrounded_excluded = 0usize;
@@ -955,7 +1097,10 @@ impl SipnabMcp {
                 .flatten()
                 .map(|s| super::shape::format_cursor(s.first_seen, &stream_identity(s)));
             let streams: Vec<serde_json::Value> = rows.iter().map(|s| stream_json(s)).collect();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(ss);
+            drop(ds);
+            drop(state);
 
             StreamPage {
                 schema_version: 1,
@@ -965,6 +1110,7 @@ impl SipnabMcp {
                 ungrounded_excluded,
                 truncated,
                 next_cursor,
+                capture_identity,
             }
         };
 
@@ -1505,6 +1651,8 @@ impl SipnabMcp {
         };
 
         let response: TailDialogsResponse = {
+            // Capture lock first, then the stores — see `CaptureState`.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
             // Collect EVERY dialog past the cursor, sort by the cursor's
             // ordering key (updated_at, Call-ID tie-break), and only then
@@ -1534,7 +1682,11 @@ impl SipnabMcp {
                 .map(|d| super::shape::format_cursor(d.updated_at, &d.call_id));
             let summaries: Vec<DialogSummary> =
                 changed.into_iter().map(DialogSummary::from).collect();
+            let ss = self.stream_store.read();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
             drop(ds);
+            drop(state);
             TailDialogsResponse {
                 dialogs: summaries,
                 next_cursor,
@@ -1542,6 +1694,7 @@ impl SipnabMcp {
                     .source_exhausted
                     .as_ref()
                     .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)),
+                capture_identity,
             }
         };
 
@@ -1621,10 +1774,13 @@ impl SipnabMcp {
     )]
     pub async fn stats(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
+            // Capture lock first, then the stores — see `CaptureState`.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
             let skipped = crate::pipeline::portrange_skip_report();
             let resp = StatsResponse {
+                capture_identity: state.identity.etag(ds.generation(), ss.generation()),
                 schema_version: 1,
                 dialog_count: ds.len(),
                 stream_count: ss.len(),
@@ -1643,6 +1799,7 @@ impl SipnabMcp {
             };
             drop(ss);
             drop(ds);
+            drop(state);
             resp
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -1664,23 +1821,39 @@ impl SipnabMcp {
             .as_ref()
             .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
 
-        let (source, name, uptime_sec, writing_to, live) = match &self.capture {
-            Some(c) => (
-                if c.live { "live" } else { "file" }.to_string(),
-                Some(c.name.clone()),
-                Some(c.started.elapsed().as_secs()),
-                c.writing_to.clone(),
-                c.live,
-            ),
-            // Reported honestly rather than guessed. A wrong "live" here would
-            // be worse than an admission of ignorance: it is the field an agent
-            // consults before deciding whether stopping is destructive.
-            None => ("unknown".to_string(), None, None, None, false),
-        };
-
         let payload = {
+            // Capture lock first, then the stores — see `CaptureState`. Held
+            // together so the identity, the source name and the counts all
+            // describe one capture; an `open_capture` landing mid-answer
+            // would otherwise produce a status that is true of nothing.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
+            let (source, name, uptime_sec, writing_to, live) = match &state.context {
+                Some(c) => (
+                    if c.live { "live" } else { "file" }.to_string(),
+                    Some(c.name.clone()),
+                    Some(c.started.elapsed().as_secs()),
+                    c.writing_to.clone(),
+                    c.live,
+                ),
+                // Reported honestly rather than guessed. A wrong "live" here
+                // would be worse than an admission of ignorance: it is the
+                // field an agent consults before deciding whether stopping is
+                // destructive.
+                None => ("unknown".to_string(), None, None, None, false),
+            };
+            let load = state.load.as_ref().map(|l| {
+                let outcome = l.outcome.lock();
+                LoadStatus {
+                    filename: l.filename.clone(),
+                    instance: l.instance.clone(),
+                    packets: l.packets.load(std::sync::atomic::Ordering::Relaxed),
+                    elapsed_sec: l.started.elapsed().as_secs(),
+                    done: l.finished(),
+                    error: outcome.as_ref().and_then(|o| o.error.clone()),
+                }
+            });
             let resp = CaptureStatusResponse {
                 schema_version: 1,
                 source,
@@ -1693,21 +1866,28 @@ impl SipnabMcp {
                 // Only a live capture can hold packets that exist nowhere else.
                 // A file replay is by definition already on disk.
                 unsaved: live && writing_to.is_none(),
+                capture_identity: state.identity.etag(ds.generation(), ss.generation()),
+                load,
             };
             drop(ss);
             drop(ds);
+            drop(state);
             resp
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
-    /// Which optional features this binary was built with.
+    /// Which optional features this binary was built with, and which
+    /// server-side opt-ins the operator turned on.
     #[tool(
         name = "server_capabilities",
-        description = "Returns the sipnab version and which optional features \
-                       this binary was compiled with (tls, hep, plugins, ...). \
-                       Call this before asking for decryption or HEP: a build \
-                       without the feature fails confusingly otherwise."
+        description = "Returns the sipnab version, which optional features this \
+                       binary was compiled with (tls, hep, plugins, ...), and \
+                       which server-side opt-ins are on (--mcp-file-root, \
+                       --mcp-allow-shutdown, --mcp-allow-open-capture). Call \
+                       this before asking for decryption, HEP, a file export or \
+                       a capture swap: a build or a server without them fails \
+                       confusingly otherwise."
     )]
     pub async fn server_capabilities(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         // Read from cfg! rather than a hand-kept list, so this cannot claim a
@@ -1738,6 +1918,16 @@ impl SipnabMcp {
             can_hep: cfg!(feature = "hep"),
             can_plugins: cfg!(feature = "plugins"),
             features,
+            // What the OPERATOR turned on, which no `cfg!` can answer. Every
+            // one of these is off by default, so without them an agent could
+            // only discover the setup by calling a tool and being refused —
+            // and a refusal mid-investigation reads as a dead end rather than
+            // as a server it was never allowed to use that way.
+            runtime: RuntimeFlags {
+                mcp_file_root: self.file_root.as_ref().map(|d| d.display().to_string()),
+                mcp_allow_shutdown: self.allow_shutdown,
+                mcp_allow_open_capture: self.allow_open_capture,
+            },
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
@@ -2330,6 +2520,186 @@ impl SipnabMcp {
         )?]))
     }
 
+    /// Replace the loaded capture with another file from the file root.
+    /// Opt-in, refused against a live or still-loading source, and the read
+    /// itself runs on a background thread.
+    ///
+    /// # Returns
+    ///
+    /// The new capture identity and the path being read, as soon as the load
+    /// thread starts. The dialogs arrive over the following seconds; poll
+    /// `capture_status` for `load.done`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when the server did not opt in, when the
+    /// filename is not a bare name inside `--mcp-file-root`, when the current
+    /// source is a live interface or has not finished reading, or when a load
+    /// is already running.
+    ///
+    /// `internal_error` (-32603) when the load thread cannot be spawned. The
+    /// stores are untouched in that case — the swap happens only once the
+    /// thread is running.
+    #[tool(
+        name = "open_capture",
+        description = "Loads a different capture file from --mcp-file-root, \
+                       REPLACING every dialog and stream this server holds. \
+                       Requires --mcp-allow-open-capture. Takes a bare \
+                       filename, never a path. Refused while the current \
+                       source is a live interface or is still being read. \
+                       Returns as soon as the background load starts, with the \
+                       new capture_identity; poll capture_status until \
+                       load.done is true. Answers from the previous capture \
+                       carry a different capture_identity and cannot be mixed \
+                       with answers from this one."
+    )]
+    pub async fn open_capture(
+        &self,
+        Parameters(params): Parameters<OpenCaptureParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if !self.allow_open_capture {
+            return Err(rmcp::ErrorData::invalid_params(
+                "opening a capture is disabled: start sipnab with \
+                 --mcp-allow-open-capture to permit it. A stock server holds \
+                 the capture it was started on."
+                    .to_string(),
+                None,
+            ));
+        }
+        // The same resolver every file tool uses, unchanged: one bare
+        // component, then a symlink-resolved re-check against the root. A
+        // capture that is part of THIS run's `-I` set is refused by it too —
+        // the message says "would overwrite", because the resolver is the
+        // output guard, and the outcome is right for a different reason: that
+        // file is already loaded, and re-reading it under a new identity would
+        // duplicate what the store holds.
+        let path = self.resolve_in_root(&params.filename)?;
+
+        // A live capture's writer never finishes, so a second writer against
+        // the same stores would race it for as long as the process runs. This
+        // is the one refusal with no opt-out.
+        let exhausted = self
+            .source_exhausted
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
+
+        // One critical section for the whole swap: check, rotate, clear,
+        // spawn. Two agents calling this at once must not both get past the
+        // in-flight check, and no reader may see a cleared store still
+        // wearing the previous capture's identity.
+        let (identity, previous_dialogs) = {
+            let mut state = self.capture.write();
+            if let Some(c) = &state.context
+                && c.live
+            {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "refusing to open '{}': this server is capturing live from '{}'. \
+                         The capture thread never finishes, so loading a file would leave \
+                         two writers on one store. Restart sipnab with -I to analyse files.",
+                        params.filename, c.name
+                    ),
+                    None,
+                ));
+            }
+            // The in-flight check comes FIRST of the two, because a running
+            // load also holds `source_exhausted` false: testing exhaustion
+            // first answered "the current source has not finished reading" to
+            // an agent whose own previous call is the thing still reading, and
+            // sent it to poll a field that describes the wrong subject.
+            if let Some(load) = &state.load
+                && !load.finished()
+            {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "refusing to open '{}': '{}' is still loading ({} packets so far). \
+                         Poll capture_status until load.done is true.",
+                        params.filename,
+                        load.filename,
+                        load.packets.load(std::sync::atomic::Ordering::Relaxed)
+                    ),
+                    None,
+                ));
+            }
+            if !exhausted {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "refusing to open '{}': the current source has not finished \
+                         reading. Poll capture_status until source_exhausted is true, \
+                         then call again.",
+                        params.filename
+                    ),
+                    None,
+                ));
+            }
+
+            let previous_dialogs = self.dialog_store.read().len();
+            // Rotate BEFORE the stores are touched. Every answer from here on
+            // names the new capture, including one that catches the stores
+            // half-filled — which is true and useful, where the old id would
+            // have been a lie about data that is already gone.
+            let instance = state.identity.rotate().to_string();
+            let identity = {
+                let mut ds = self.dialog_store.write();
+                ds.clear();
+                let dialog_generation = ds.generation();
+                drop(ds);
+                let mut ss = self.stream_store.write();
+                ss.clear();
+                let stream_generation = ss.generation();
+                drop(ss);
+                state.identity.etag(dialog_generation, stream_generation)
+            };
+
+            let load = super::load::spawn(
+                path.clone(),
+                &params.filename,
+                &instance,
+                Arc::clone(&self.dialog_store),
+                Arc::clone(&self.stream_store),
+                self.source_exhausted.clone(),
+            )
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("cannot start the load thread: {e}"), None)
+            })?;
+
+            // The description follows the data. `writing_to` is deliberately
+            // dropped: any `-O` on the command line belongs to the source this
+            // run started with, and the packets read here are not written
+            // there.
+            state.context = Some(CaptureContext {
+                live: false,
+                name: path.display().to_string(),
+                started: std::time::Instant::now(),
+                writing_to: None,
+            });
+            state.load = Some(load);
+            drop(state);
+            (identity, previous_dialogs)
+        };
+
+        tracing::warn!(
+            "MCP open_capture: replacing the capture ({previous_dialogs} dialogs discarded) \
+             with '{}' as instance {}",
+            path.display(),
+            identity.instance
+        );
+
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            serde_json::json!({
+                "schema_version": 1,
+                "status": "loading",
+                "filename": params.filename,
+                "path": path.display().to_string(),
+                "capture_identity": identity,
+                "discarded_dialogs": previous_dialogs,
+                "note": "the previous capture is gone; poll capture_status until \
+                         load.done is true, and treat every answer carrying a \
+                         different capture_identity.instance as a different capture",
+            }),
+        )?]))
+    }
+
     /// Stop this sipnab process. Opt-in, dry-run by default.
     #[tool(
         name = "shutdown_server",
@@ -2357,9 +2727,14 @@ impl SipnabMcp {
         // not a stopped capture.
         let dry_run = params.dry_run.unwrap_or(true);
 
-        let (live, writing_to) = match &self.capture {
-            Some(c) => (c.live, c.writing_to.clone()),
-            None => (false, None),
+        let (live, writing_to) = {
+            let state = self.capture.read();
+            let pair = match &state.context {
+                Some(c) => (c.live, c.writing_to.clone()),
+                None => (false, None),
+            };
+            drop(state);
+            pair
         };
         let unsaved = live && writing_to.is_none();
         let (dialogs, streams) = {
@@ -3743,5 +4118,349 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
         assert_eq!(v["dialog_count"], 1);
         assert_eq!(v["stream_count"], 0);
+    }
+
+    // ── open_capture and capture identity ────────────────────────────
+
+    /// A server whose source has already drained, which is what
+    /// `open_capture` requires before it will replace anything.
+    fn exhausted_server() -> SipnabMcp {
+        empty_server()
+            .with_source_exhausted(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+            .with_capture_context(CaptureContext {
+                live: false,
+                name: "first.pcap".into(),
+                started: std::time::Instant::now(),
+                writing_to: None,
+            })
+    }
+
+    /// A temp directory that is a valid `--mcp-file-root`, holding a copy of
+    /// the G.711 fixture under `name`.
+    fn root_with_capture(dir: &str, name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("sipnab-open-capture-{dir}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create the file root");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/pcap-samples/sip-rtp-g711.pcap"),
+            root.join(name),
+        )
+        .expect("stage the fixture");
+        root
+    }
+
+    /// Without the flag the tool refuses and names the flag, so an agent
+    /// learns what to ask the operator for rather than that sipnab is broken.
+    #[tokio::test]
+    async fn open_capture_is_refused_without_the_opt_in_flag() {
+        let server = exhausted_server();
+        let err = server
+            .open_capture(Parameters(OpenCaptureParams {
+                filename: "other.pcap".into(),
+            }))
+            .await
+            .expect_err("must refuse");
+        assert!(
+            err.message.contains("--mcp-allow-open-capture"),
+            "the refusal must name the flag; got {err:?}"
+        );
+    }
+
+    /// The refusal comes BEFORE any path handling: a server that did not opt
+    /// in must not reveal whether the file exists, and must not report the
+    /// file-root error instead of the one that actually applies.
+    #[tokio::test]
+    async fn the_opt_in_refusal_precedes_the_path_check() {
+        let server = exhausted_server();
+        let err = server
+            .open_capture(Parameters(OpenCaptureParams {
+                filename: "../escape.pcap".into(),
+            }))
+            .await
+            .expect_err("must refuse");
+        assert!(
+            err.message.contains("--mcp-allow-open-capture"),
+            "the flag refusal must come first; got {err:?}"
+        );
+    }
+
+    /// With the flag but no `--mcp-file-root`, the shared resolver refuses and
+    /// names the missing flag — the same rule every file tool applies.
+    #[tokio::test]
+    async fn open_capture_needs_a_file_root() {
+        let server = exhausted_server().with_open_capture();
+        let err = server
+            .open_capture(Parameters(OpenCaptureParams {
+                filename: "other.pcap".into(),
+            }))
+            .await
+            .expect_err("must refuse");
+        assert!(
+            err.message.contains("--mcp-file-root"),
+            "the refusal must name the root flag; got {err:?}"
+        );
+    }
+
+    /// A path is refused exactly as it is for every other file tool, because
+    /// this reuses `resolve_in_root` rather than resolving paths its own way.
+    #[tokio::test]
+    async fn open_capture_refuses_anything_that_is_not_a_bare_filename() {
+        let root = root_with_capture("traversal", "ok.pcap");
+        let server = exhausted_server().with_open_capture().with_file_root(&root);
+        for bad in ["../escape.pcap", "/etc/passwd", "sub/dir.pcap", ".."] {
+            let err = server
+                .open_capture(Parameters(OpenCaptureParams {
+                    filename: bad.to_string(),
+                }))
+                .await
+                .expect_err("must refuse a path");
+            assert!(
+                err.message.contains("bare filename") || err.message.contains("resolves outside"),
+                "'{bad}' must be refused for what it is; got {err:?}"
+            );
+        }
+    }
+
+    /// A live capture's writer never finishes, so a second writer would race
+    /// it for the life of the process. That refusal has no opt-out.
+    #[tokio::test]
+    async fn open_capture_refuses_while_the_source_is_live() {
+        let root = root_with_capture("live", "next.pcap");
+        let server = empty_server()
+            .with_open_capture()
+            .with_file_root(&root)
+            .with_source_exhausted(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+            .with_capture_context(CaptureContext {
+                live: true,
+                name: "eth0".into(),
+                started: std::time::Instant::now(),
+                writing_to: None,
+            });
+        let err = server
+            .open_capture(Parameters(OpenCaptureParams {
+                filename: "next.pcap".into(),
+            }))
+            .await
+            .expect_err("must refuse a live source");
+        assert!(
+            err.message.contains("capturing live"),
+            "the refusal must say why; got {err:?}"
+        );
+    }
+
+    /// While the original reader is still filling the stores it is the one
+    /// writer, and the tool waits rather than joining it.
+    #[tokio::test]
+    async fn open_capture_refuses_while_the_source_is_still_reading() {
+        let root = root_with_capture("unexhausted", "next.pcap");
+        let server = empty_server()
+            .with_open_capture()
+            .with_file_root(&root)
+            .with_source_exhausted(Arc::new(std::sync::atomic::AtomicBool::new(false)))
+            .with_capture_context(CaptureContext {
+                live: false,
+                name: "first.pcap".into(),
+                started: std::time::Instant::now(),
+                writing_to: None,
+            });
+        let err = server
+            .open_capture(Parameters(OpenCaptureParams {
+                filename: "next.pcap".into(),
+            }))
+            .await
+            .expect_err("must refuse an unfinished source");
+        assert!(
+            err.message.contains("source_exhausted"),
+            "the refusal must name the field to poll; got {err:?}"
+        );
+    }
+
+    /// The swap must reach every clone, because HTTP clones the server per
+    /// session. This is the defect the shared lock exists to prevent: the
+    /// calling session saw the new capture and every other session kept
+    /// reading the old name.
+    #[tokio::test]
+    async fn a_swap_is_visible_to_every_clone_of_the_server() {
+        let root = root_with_capture("clone", "second.pcap");
+        let server = exhausted_server().with_open_capture().with_file_root(&root);
+        // The clone stands in for a second HTTP session.
+        let other_session = server.clone();
+
+        let before: serde_json::Value = serde_json::from_str(&text_of(
+            &other_session.capture_status().await.expect("status"),
+        ))
+        .unwrap();
+        assert_eq!(before["name"], "first.pcap");
+
+        server
+            .open_capture(Parameters(OpenCaptureParams {
+                filename: "second.pcap".into(),
+            }))
+            .await
+            .expect("the swap should be accepted");
+
+        let after: serde_json::Value = serde_json::from_str(&text_of(
+            &other_session.capture_status().await.expect("status"),
+        ))
+        .unwrap();
+        assert!(
+            after["name"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("second.pcap"),
+            "the other session still names {}; the swap did not reach it",
+            after["name"]
+        );
+        assert_ne!(
+            before["capture_identity"]["instance"], after["capture_identity"]["instance"],
+            "the capture instance must change on a swap, in every session"
+        );
+    }
+
+    /// Two loads at once would have two writers filling one store. The second
+    /// call is refused while the first is running.
+    #[tokio::test]
+    async fn a_second_load_is_refused_while_one_is_running() {
+        let root = root_with_capture("concurrent", "second.pcap");
+        let server = exhausted_server().with_open_capture().with_file_root(&root);
+        server
+            .open_capture(Parameters(OpenCaptureParams {
+                filename: "second.pcap".into(),
+            }))
+            .await
+            .expect("the first swap should be accepted");
+
+        // Racy by nature: the load may already have finished on a fast box,
+        // in which case a second call is legitimately allowed. Assert the
+        // refusal only when it is actually still running.
+        let running = {
+            let state = server.capture.read();
+            let running = state.load.as_ref().is_some_and(|l| !l.finished());
+            drop(state);
+            running
+        };
+        if running {
+            let err = server
+                .open_capture(Parameters(OpenCaptureParams {
+                    filename: "second.pcap".into(),
+                }))
+                .await
+                .expect_err("a concurrent load must be refused");
+            assert!(
+                err.message.contains("still loading"),
+                "the refusal must name the running load; got {err:?}"
+            );
+        }
+    }
+
+    /// Every response that describes the whole store carries the identity, so
+    /// a consumer holding a cursor can tell a continuation from a new capture.
+    #[tokio::test]
+    async fn whole_store_responses_carry_the_capture_identity() {
+        let server = server_with_dialog("ident@x");
+        let calls: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "capture_status",
+                serde_json::from_str(&text_of(&server.capture_status().await.expect("status")))
+                    .unwrap(),
+            ),
+            (
+                "stats",
+                serde_json::from_str(&text_of(&server.stats().await.expect("stats"))).unwrap(),
+            ),
+            (
+                "list_dialogs",
+                serde_json::from_str(&text_of(
+                    &server
+                        .list_dialogs(Parameters(ListDialogsParams::default()))
+                        .await
+                        .expect("list"),
+                ))
+                .unwrap(),
+            ),
+            (
+                "tail_dialogs",
+                serde_json::from_str(&text_of(
+                    &server
+                        .tail_dialogs(Parameters(TailDialogsParams {
+                            cursor: None,
+                            limit: None,
+                        }))
+                        .await
+                        .expect("tail"),
+                ))
+                .unwrap(),
+            ),
+        ];
+        for (tool, v) in calls {
+            let id = &v["capture_identity"];
+            assert!(
+                id["instance"].as_str().is_some_and(|s| !s.is_empty()),
+                "{tool} carries no capture instance: {v}"
+            );
+            assert!(
+                id["dialog_generation"].is_u64() && id["stream_generation"].is_u64(),
+                "{tool} carries no store generations: {v}"
+            );
+        }
+    }
+
+    /// The generation must move when the store does, or the etag says
+    /// "unchanged" about a store that changed.
+    #[tokio::test]
+    async fn the_generation_moves_when_the_store_does() {
+        let server = server_with_dialog("gen@x");
+        let before: serde_json::Value =
+            serde_json::from_str(&text_of(&server.stats().await.expect("stats"))).unwrap();
+        {
+            let mut ds = server.dialog_store.write();
+            ds.process_message(invite("gen2@x", base_ts()));
+        }
+        let after: serde_json::Value =
+            serde_json::from_str(&text_of(&server.stats().await.expect("stats"))).unwrap();
+        assert_eq!(
+            before["capture_identity"]["instance"], after["capture_identity"]["instance"],
+            "a new message is the same capture"
+        );
+        assert!(
+            after["capture_identity"]["dialog_generation"]
+                .as_u64()
+                .unwrap_or(0)
+                > before["capture_identity"]["dialog_generation"]
+                    .as_u64()
+                    .unwrap_or(0),
+            "the dialog generation must move: {before} then {after}"
+        );
+    }
+
+    /// The operator's opt-ins are reportable, so an agent can check before it
+    /// is refused rather than after.
+    #[tokio::test]
+    async fn server_capabilities_reports_the_runtime_flags() {
+        let plain: serde_json::Value = serde_json::from_str(&text_of(
+            &empty_server().server_capabilities().await.expect("caps"),
+        ))
+        .unwrap();
+        assert_eq!(plain["runtime"]["mcp_allow_open_capture"], false);
+        assert_eq!(plain["runtime"]["mcp_allow_shutdown"], false);
+        assert!(plain["runtime"]["mcp_file_root"].is_null());
+
+        let opted: serde_json::Value = serde_json::from_str(&text_of(
+            &empty_server()
+                .with_open_capture()
+                .with_shutdown()
+                .with_file_root("/var/spool/sipnab-exports")
+                .server_capabilities()
+                .await
+                .expect("caps"),
+        ))
+        .unwrap();
+        assert_eq!(opted["runtime"]["mcp_allow_open_capture"], true);
+        assert_eq!(opted["runtime"]["mcp_allow_shutdown"], true);
+        assert_eq!(
+            opted["runtime"]["mcp_file_root"],
+            "/var/spool/sipnab-exports"
+        );
     }
 }

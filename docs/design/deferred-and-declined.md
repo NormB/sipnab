@@ -592,17 +592,17 @@ Three things changed since [`mcp-tool-roadmap.md`](mcp-tool-roadmap.md) filed
 state — needs the same opt-in treatment as shutdown."*
 
 **The opt-in treatment now exists and is proven.** `shutdown_server` shipped with
-a flag ([`cli.rs:988-1001`](../../src/cli.rs)), an off-by-default field
-([`server.rs:57`](../../src/mcp/server.rs)), a builder
-([`server.rs:134`](../../src/mcp/server.rs)) and a first-statement refusal
-([`server.rs:2226`](../../src/mcp/server.rs)). Copying that shape costs almost
+a flag ([`cli.rs:1019-1032`](../../src/cli.rs)), an off-by-default field
+([`server.rs:70`](../../src/mcp/server.rs)), a builder
+([`server.rs:207`](../../src/mcp/server.rs)) and a first-statement refusal
+([`server.rs:2734`](../../src/mcp/server.rs)). Copying that shape costs almost
 nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
 `list_captures`, was filed with *"needs a path allowlist or it is an
-arbitrary-file-read"*. It shipped ([`server.rs:2096`](../../src/mcp/server.rs))
+arbitrary-file-read"*. It shipped ([`server.rs:2415`](../../src/mcp/server.rs))
 with `--mcp-file-root` and `resolve_in_root`
-([`server.rs:150`](../../src/mcp/server.rs)), which accepts a bare filename and
+([`server.rs:230`](../../src/mcp/server.rs)), which accepts a bare filename and
 rejects anything with a separator, a `..`, a root prefix or a drive letter before
 touching the filesystem. So an agent can already *see* the corpus, safely, and
 `open_capture` would need no new security machinery.
@@ -625,13 +625,13 @@ design — progress via `async_messages`, never a blocking read on the render si
 — exists to make that safe."* An MCP handler filling the stores would be a second
 such writer, and would need its own equivalent of that design. Note that this is
 survivable in the file case — `source_exhausted`
-([`server.rs:53`](../../src/mcp/server.rs)) already tells the tool when the
+([`server.rs:58`](../../src/mcp/server.rs)) already tells the tool when the
 original reader is done — but a live capture's writer never finishes, so the tool
 would have to refuse outright when `capture.live`.
 
 **A long read inside a handler stalls every other surface.** The API and MCP
 servers share one thread running one `tokio::runtime::Builder::new_current_thread()`
-([`servers.rs:314`](../../src/app/servers.rs)). Reading a multi-gigabyte pcap
+([`servers.rs:327`](../../src/app/servers.rs)). Reading a multi-gigabyte pcap
 inside a tool handler blocks that thread for the duration — every other MCP tool
 call and every REST request behind it. This is not a lock-across-await violation
 (invariant 8 is enforced by `clippy::await_holding_lock = "deny"` and would not
@@ -643,17 +643,17 @@ to MCP — the real cost of the feature, and it is not small.
 `SipnabMcp` is cloned per HTTP session — [`transport.rs:124`](../../src/mcp/transport.rs)
 documents *"the tool server; cloned per HTTP session"* and
 [`:192-193`](../../src/mcp/transport.rs) does it. `capture: Option<CaptureContext>`
-([`server.rs:64`](../../src/mcp/server.rs)) is a plain field, not an `Arc`,
+([`server.rs:82`](../../src/mcp/server.rs)) is a plain field, not an `Arc`,
 built once at startup ([`servers.rs:224-249`](../../src/app/servers.rs)) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
 argument ([`cli.rs:1363-1365`](../../src/cli.rs)). So after an `open_capture`,
-`capture_status` ([`server.rs:1548`](../../src/mcp/server.rs)) would keep naming
+`capture_status` ([`server.rs:1829`](../../src/mcp/server.rs)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
 
 **Nothing on the wire would reveal the swap.** `DialogStore::generation`
-([`dialog_store.rs:163`](../../src/sip/dialog_store.rs)) is bumped by every
+([`dialog_store.rs:164`](../../src/sip/dialog_store.rs)) is bumped by every
 mutating method and is exposed nowhere: not in `DialogSummary`
 ([`model.rs`](../../src/output/model.rs)), not in any REST response
 ([`api.rs:204-211`](../../src/output/api.rs), all `GET`), not in any MCP payload.
@@ -712,17 +712,21 @@ rather than by an operator hitting the dead end first.
 
 None of the three cost findings above is retracted, because none of them was
 what the argument turned on. They are the build requirements, and each names the
-file that has to change:
+file that has to change. **All three shipped on 2026-08-02**, and the two
+primitives they produced are written up in
+[`capture-identity-and-async-load.md`](capture-identity-and-async-load.md) —
+each requirement below therefore describes the tree as it stood when the
+decision was taken, not as it stands now:
 
 1. **`CaptureContext` must become shared, not per-session.** It is a plain
-   `Option<CaptureContext>` field ([`server.rs:64`](../../src/mcp/server.rs)) on
+   `Option<CaptureContext>` field ([`server.rs:82`](../../src/mcp/server.rs)) on
    a `SipnabMcp` cloned per HTTP session
-   ([`transport.rs:192-193`](../../src/mcp/transport.rs)). Until it moves behind
+   ([`transport.rs:192`](../../src/mcp/transport.rs)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:1548`](../../src/mcp/server.rs)) naming the old file in the
+   ([`server.rs:1829`](../../src/mcp/server.rs)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
-   ([`dialog_store.rs:163`](../../src/sip/dialog_store.rs)) is bumped by every
+   ([`dialog_store.rs:164`](../../src/sip/dialog_store.rs)) is bumped by every
    mutating method and exposed nowhere, so a `/v1/dialogs` poller cannot tell the
    dataset changed underneath it. This is the same primitive §2 requires;
    building it once settles both.
@@ -733,8 +737,19 @@ file that has to change:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:2226`](../../src/mcp/server.rs)), and `--mcp-file-root` with
-`resolve_in_root` ([`server.rs:150`](../../src/mcp/server.rs)).
+([`server.rs:2734`](../../src/mcp/server.rs)), and `--mcp-file-root` with
+`resolve_in_root` ([`server.rs:230`](../../src/mcp/server.rs)).
+
+**What shipped**, against those three:
+
+| Requirement | Built as |
+|---|---|
+| 1. Shared `CaptureContext` | `CaptureState` behind one `Arc<RwLock<..>>` on `SipnabMcp`, holding the identity, the description and the in-flight load together, with the lock order written down |
+| 2. Wire-visible identity | [`src/provenance.rs`](../../src/provenance.rs): a capture-instance id plus both store generations, stamped on `capture_status`, `stats` and every paged whole-store response. §2's write-back tools consume the same `CaptureEtag` |
+| 3. Non-blocking load | [`src/mcp/load.rs`](../../src/mcp/load.rs): an `mcp-pcap-load` thread the runtime never waits on, polled through `capture_status.load` |
+
+The REST half of requirement 2 is still open: `/v1/dialogs` carries no etag, for
+the reason the design note records.
 
 A narrower tool is worth building alongside it, and carries none of the above:
 **`capture_sources` (read-only)** — report the *full* resolved `-I` set
@@ -757,7 +772,7 @@ cannot see its own context"* — and it mutates nothing.
 | §1 Multi-capture comparison | Reopens when per-dialog capture provenance exists for another reason (most likely multi-device attribution reaching `SipDialog`) |
 | §2 Write-back MCP tools | Approved. **Both** a wire-visible store generation/etag *and* an annotation store no analysis reads are build requirements — see §2 |
 | §3 Threat-mitigation ledger | Reopens when sipnab gains durable cross-run state — and only after the three blind spots in §3 are closed as ordinary defects |
-| §4 `open_capture` | Approved. **Both** a shared, wire-visible `CaptureContext` *and* a load that does not block the handler are build requirements — see §4 |
+| §4 `open_capture` | **Built 2026-08-02.** The three build requirements shipped with it; the REST etag is the one piece still open — see §4 |
 
 The two still open, §1 and §3, do not move on "someone asked again"; they move on
 the facts named above.
