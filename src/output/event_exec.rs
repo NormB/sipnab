@@ -15,6 +15,7 @@ use tracing::warn;
 
 use crate::rtp::quality;
 use crate::rtp::stream::RtpStream;
+use crate::security::alerting::TumblingWindow;
 use crate::sip::dialog::SipDialog;
 
 /// Maximum number of pending child processes before dropping events.
@@ -39,14 +40,15 @@ pub struct EventExecEngine {
     /// Command template for quality events. `None` disables quality hooks.
     /// Stored as `Arc<str>` so cloning for the child process is cheap (pointer bump).
     on_quality_cmd: Option<Arc<str>>,
-    /// Maximum command executions per second.
-    rate_limit: u32,
     /// MOS threshold below which quality events fire.
     quality_threshold: f64,
-    /// Timestamp of the start of the current rate-limit window.
-    window_start: Instant,
-    /// Number of execs in the current one-second window.
-    exec_count_this_second: u32,
+    /// Maximum command executions per second (0 = unlimited).
+    ///
+    /// The window itself lives in [`TumblingWindow`], shared with the
+    /// `--alert-exec` path in [`crate::security::alerting`] so the two
+    /// process-spawning surfaces cannot drift apart. This one runs on the wall
+    /// clock; alerting runs on capture time. Same rule, different clock.
+    rate_window: TumblingWindow<Instant>,
     /// Tracked child processes for reaping.
     children: Vec<std::process::Child>,
 }
@@ -95,10 +97,8 @@ impl EventExecEngine {
         Self {
             on_dialog_cmd: on_dialog_cmd.map(|c| Arc::from(migrate_template_vars(&c))),
             on_quality_cmd: on_quality_cmd.map(|c| Arc::from(migrate_template_vars(&c))),
-            rate_limit,
             quality_threshold,
-            window_start: Instant::now(),
-            exec_count_this_second: 0,
+            rate_window: TumblingWindow::new(rate_limit, 1),
             children: Vec::new(),
         }
     }
@@ -212,32 +212,16 @@ impl EventExecEngine {
     }
 
     /// Check and update rate limiting. Returns `true` if execution is allowed
-    /// (always `true` when `rate_limit` is 0).
+    /// (always `true` when the configured limit is 0).
     ///
     /// # Side effects
     ///
-    /// Resets the one-second window (and its exec count) when more than a
-    /// second has elapsed. The count itself is incremented by
-    /// `spawn_command` on successful spawn, not here.
+    /// Resets the one-second window (and its exec count) when a second or more
+    /// has elapsed. The count itself is booked by `spawn_command` on
+    /// successful spawn, not here, so an allowed-but-failed spawn does not
+    /// spend budget it never used.
     fn check_rate_limit(&mut self) -> bool {
-        if self.rate_limit == 0 {
-            return true;
-        }
-
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.window_start);
-
-        // Reset window if more than 1 second has passed
-        if elapsed.as_secs() >= 1 {
-            self.window_start = now;
-            self.exec_count_this_second = 0;
-        }
-
-        if self.exec_count_this_second >= self.rate_limit {
-            return false;
-        }
-
-        true
+        self.rate_window.allows(Instant::now())
     }
 
     /// Reap completed child processes to prevent zombies and update queue depth.
@@ -302,7 +286,7 @@ impl EventExecEngine {
 
         match command.spawn() {
             Ok(child) => {
-                self.exec_count_this_second += 1;
+                self.rate_window.record();
                 self.children.push(child);
             }
             Err(e) => {
@@ -496,7 +480,7 @@ mod tests {
 
         for _ in 0..15 {
             if engine.check_rate_limit() {
-                engine.exec_count_this_second += 1;
+                engine.rate_window.record();
                 fired += 1;
             }
         }
