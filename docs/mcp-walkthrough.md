@@ -216,8 +216,8 @@ it with `claude mcp add --transport http sipnab http://127.0.0.1:8731/mcp`.
 
 ## Use Claude Code on your laptop against a remote server
 
-A designed-for use case, not a workaround: the MCP surface is **read-only
-by construction** (no tool sends SIP or mutates capture state), every
+A designed-for use case, not a workaround: **no tool alters the analysis**
+(none sends SIP, none mutates the dialog, stream and alert stores), every
 response has a ceiling, and non-loopback HTTP binds refuse to start without a
 bearer token. Three wirings, in increasing order of setup.
 
@@ -1236,9 +1236,14 @@ HEP mirroring and sipnab lives elsewhere.
 What the design already gives you (details in
 [mcp.md § Security model](mcp.md#security-model)):
 
-- **Read-only, no control plane.** No MCP tool sends SIP, writes files, or
-  changes capture state — a compromised or confused agent can disclose
-  data, not take over the server. Capture lifecycle belongs to systemd.
+- **No control plane, and no tool alters the analysis.** No MCP tool sends SIP
+  or mutates the dialog, stream and alert stores, so a compromised or confused
+  agent can disclose data rather than take over the server. Two tools reach
+  past the query surface, and both stay off until you enable them.
+  `export_capture` and `export_audio` write files, and only under the directory
+  `--mcp-file-root` names — name no root and they refuse. `shutdown_server`
+  ends the run only under `--mcp-allow-shutdown`. Otherwise the capture
+  lifecycle belongs to systemd.
 - **Fail-closed remote access.** Non-loopback HTTP binds refuse to start
   without a bearer token; tokens compare in constant time; DNS-rebind
   protection rejects unexpected `Host:` headers; the listener binds after

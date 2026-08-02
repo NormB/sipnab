@@ -542,7 +542,7 @@ curl -sS http://capture.example.com:8731/mcp \
                     "clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-List the 11 read-only tools:
+List all 24 tools:
 
 ```bash
 curl -sS http://capture.example.com:8731/mcp \
@@ -574,7 +574,14 @@ The `tools/list` response is a standard JSON-RPC envelope with a `result.tools` 
 ]}}
 ```
 
-The 11 read-only tools you should see listed: `list_dialogs`, `get_dialog_report`, `find_problems`, `get_dialog`, `get_message`, `render_ladder`, `rtp_stats`, `search_messages`, `tail_dialogs`, `security_findings`, `stats`.
+All 24 tools appear, grouped here by what they do:
+
+- **Browse and quote the capture** — `list_dialogs`, `get_dialog`, `get_dialog_report`, `get_message`, `search_messages`, `search_by_time`, `tail_dialogs`, `render_ladder`, `compare_dialogs`
+- **Diagnose** — `find_problems`, `triage_call`, `diagnose_registration`, `check_codec_negotiation`, `explain_response_code`, `get_sdp_timeline`, `rtp_stats`, `security_findings`
+- **Ask about the session itself** — `stats`, `capture_status`, `server_capabilities`, `list_captures`
+- **Write a file or end the run** — `export_capture`, `export_audio`, `shutdown_server`
+
+Only that last group reaches past the query surface, and each member needs a flag you passed at startup: the two exports write only under `--mcp-file-root`, and `shutdown_server` acts only under `--mcp-allow-shutdown`. All three still appear in `tools/list` when you omit those flags, because sipnab registers the tools unconditionally and refuses the call instead. Seeing `shutdown_server` listed does not mean an agent can stop your capture.
 
 **Pitfalls:**
 

@@ -2,10 +2,18 @@
 
 //! Model Context Protocol (MCP) server mode for sipnab.
 //!
-//! This module exposes sipnab's read-only analysis surface (dialogs, streams,
+//! This module exposes sipnab's analysis surface (dialogs, streams,
 //! diagnostics, security findings, call reports) as MCP tools so a local AI
 //! agent (Claude Code, Claude Desktop, or any MCP-capable client) can drive
 //! sipnab as a debugging instrument against a live capture or pcap file.
+//!
+//! **No tool mutates a store.** That is the invariant, and it is narrower than
+//! "read-only", which this doc used to claim: `export_capture` and
+//! `export_audio` write files under `--mcp-file-root`, and `shutdown_server`
+//! ends the run when `--mcp-allow-shutdown` permits it. What no tool can do is
+//! alter the analysis an operator is reading while leaving them reading it.
+//! Ending a session is not the hazard; silently rewriting the evidence
+//! underneath someone mid-incident is. See `docs/internals/invariants.md` §7.
 //!
 //! # Output mode parity
 //!
