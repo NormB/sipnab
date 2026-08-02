@@ -13,7 +13,9 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
 
 #[cfg(feature = "native")]
 use tracing::warn;
@@ -151,12 +153,39 @@ pub struct Finding {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// Key an alert is tracked under: the source and the rule it matched.
+type AlertKey = (IpAddr, String);
+
+/// Recent event times for one key, newest last, with its LRU tick.
+type EventWindow = (std::collections::VecDeque<DateTime<Utc>>, u64);
+
 /// Alerting engine that manages rules, cooldowns, and command execution.
 pub struct AlertEngine {
     /// Configured alert rules.
     rules: Vec<AlertRule>,
-    /// Per (source IP, rule name) cooldown tracking.
-    cooldowns: HashMap<(IpAddr, String), Instant>,
+    /// Per (source IP, rule name) cooldown tracking, in CAPTURE time.
+    ///
+    /// Packet time, not `Instant::now()`. Offline a whole capture elapses in
+    /// milliseconds of wall time, so a wall-clock cooldown never expires and a
+    /// wall-clock window never closes — the same defect that made the scanner
+    /// detectors treat a replayed trunk as a flood.
+    /// Value is `(last fired in capture time, LRU sequence)`. The sequence
+    /// exists because capture stamps TIE — the same microsecond, or a
+    /// replayed message — and evicting by `min_by_key` on a tied timestamp
+    /// makes which source loses its state depend on hash order. The same
+    /// defect was found and fixed in the scanner detector; this is the
+    /// counter, not a second scheme.
+    cooldowns: HashMap<AlertKey, (DateTime<Utc>, u64)>,
+    /// Recent event times per (source IP, rule name), newest last.
+    ///
+    /// Only the most recent `threshold` stamps are kept: if the oldest of those
+    /// still falls inside the window then the threshold is met, and any older
+    /// event cannot change that. That caps the memory a noisy source can cost
+    /// at the threshold it configured.
+    events: HashMap<AlertKey, EventWindow>,
+    /// Monotonic tick handed out on every touch, so eviction is true LRU
+    /// and never depends on iteration order when capture stamps tie.
+    lru: u64,
     /// Optional external command template to execute on alert.
     /// After construction, legacy `%variable` placeholders are rewritten to
     /// `$SIPNAB_*` env var references. Values are passed via environment
@@ -192,6 +221,8 @@ impl AlertEngine {
         Self {
             rules,
             cooldowns: HashMap::new(),
+            events: HashMap::new(),
+            lru: 0,
             exec_cmd: exec_cmd.map(|c| migrate_alert_template(&c)),
             syslog_enabled: false,
             json_output: false,
@@ -263,21 +294,69 @@ impl AlertEngine {
     /// configured command.
     ///
     /// Returns `true` if the alert was actually fired (not suppressed).
-    pub fn fire(&mut self, alert_type: &str, src_ip: IpAddr, detail: &str) -> bool {
-        let now = Instant::now();
+    ///
+    /// `now` is the CAPTURE time of the event, not wall time. Every threshold
+    /// and cooldown below is measured against it, so replaying a capture gives
+    /// the same answer as watching it live.
+    pub fn fire(
+        &mut self,
+        alert_type: &str,
+        src_ip: IpAddr,
+        detail: &str,
+        now: DateTime<Utc>,
+    ) -> bool {
         let key = (src_ip, alert_type.to_string());
 
-        // Find the matching rule's cooldown, or use a default
-        let cooldown = self
-            .rules
-            .iter()
-            .find(|r| r.name == alert_type)
-            .map(|r| r.cooldown)
-            .unwrap_or(Duration::from_secs(60));
+        // The rule's own threshold/window/cooldown, or the defaults for a type
+        // nobody wrote a rule for: fire on the first event, then stay quiet for
+        // a minute. A threshold of 1 keeps an unruled type behaving as it did.
+        let rule = self.rules.iter().find(|r| r.name == alert_type);
+        let threshold = rule.map_or(1, |r| r.threshold.max(1));
+        let window = rule.map_or(Duration::ZERO, |r| r.window);
+        let cooldown = rule.map_or(Duration::from_secs(60), |r| r.cooldown);
+
+        // Record the event, keeping at most `threshold` stamps: if the oldest
+        // of those is inside the window the threshold is met, and an older one
+        // could not change that. Bounded by the operator's own threshold.
+        self.lru = self.lru.wrapping_add(1);
+        let tick = self.lru;
+        let entry = self.events.entry(key.clone()).or_default();
+        entry.1 = tick;
+        let seen = &mut entry.0;
+        seen.push_back(now);
+        while seen.len() > threshold as usize {
+            seen.pop_front();
+        }
+        let reached = seen.len() >= threshold as usize
+            && seen.front().is_some_and(|oldest| {
+                window.is_zero()
+                    || now.signed_duration_since(*oldest)
+                        <= chrono::Duration::from_std(window).unwrap_or(chrono::Duration::MAX)
+            });
+        if !reached {
+            // Counted, not fired. The threshold is the operator's statement of
+            // how much evidence is worth an alert, and honouring it is the
+            // whole point of the field.
+            return false;
+        }
+
+        // Bound the events map the same way the cooldowns map is bounded — a
+        // source per key is attacker-influenced on a live interface.
+        if self.events.len() >= MAX_COOLDOWN_ENTRIES
+            && let Some(oldest_key) = self
+                .events
+                .iter()
+                .filter(|(k, _)| **k != key)
+                .min_by_key(|(_, (_, tick))| *tick)
+                .map(|(k, _)| k.clone())
+        {
+            self.events.remove(&oldest_key);
+        }
 
         // Check cooldown
-        if let Some(last_fired) = self.cooldowns.get(&key)
-            && now.duration_since(*last_fired) < cooldown
+        if let Some((last_fired, _)) = self.cooldowns.get(&key)
+            && now.signed_duration_since(*last_fired)
+                < chrono::Duration::from_std(cooldown).unwrap_or(chrono::Duration::MAX)
         {
             return false; // Still in cooldown
         }
@@ -287,14 +366,14 @@ impl AlertEngine {
             && let Some(oldest_key) = self
                 .cooldowns
                 .iter()
-                .min_by_key(|(_, instant)| **instant)
+                .min_by_key(|(_, (_, tick))| *tick)
                 .map(|(k, _)| k.clone())
         {
             self.cooldowns.remove(&oldest_key);
         }
 
         // Record this firing
-        self.cooldowns.insert(key, now);
+        self.cooldowns.insert(key, (now, tick));
 
         // Sanitize attacker-controlled values for log output (M3)
         let sanitized_detail = sanitize_log_value(detail);
@@ -457,11 +536,22 @@ pub fn send_to_syslog(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::net::Ipv4Addr;
 
     /// A fixed source IP used across the alerting tests.
     fn test_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+
+    /// Capture time `secs` seconds after a fixed base.
+    ///
+    /// Every threshold, window and cooldown is measured against the packet
+    /// timestamp, so a test drives time by choosing stamps rather than by
+    /// sleeping. That is what makes these deterministic and what makes the
+    /// engine give the same answer on a replay as it did live.
+    fn at(secs: i64) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap() + chrono::Duration::seconds(secs)
     }
 
     /// A multibyte final character is rejected as an invalid suffix instead
@@ -546,10 +636,10 @@ mod tests {
         let rule = AlertRule::parse("test:1/1s:10m").expect("parse");
         let mut engine = AlertEngine::new(vec![rule], None);
 
-        let first = engine.fire("test", test_ip(), "first alert");
+        let first = engine.fire("test", test_ip(), "first alert", at(0));
         assert!(first, "first alert should fire");
 
-        let second = engine.fire("test", test_ip(), "second alert");
+        let second = engine.fire("test", test_ip(), "second alert", at(0));
         assert!(!second, "second alert within cooldown should be suppressed");
     }
 
@@ -562,10 +652,86 @@ mod tests {
         let ip1 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
 
-        assert!(engine.fire("test", ip1, "alert from ip1"));
+        assert!(engine.fire("test", ip1, "alert from ip1", at(0)));
         assert!(
-            engine.fire("test", ip2, "alert from ip2"),
+            engine.fire("test", ip2, "alert from ip2", at(0)),
             "different source should fire independently"
+        );
+    }
+
+    /// A threshold of five needs five events before anything fires.
+    ///
+    /// The grammar is `<name>:<threshold>/<window>[:<cooldown>]` and the
+    /// threshold field is documented as "number of events required to trigger
+    /// within the window". It was parsed, validated, stored — and never read,
+    /// so `fraud:1000000/1h` produced byte-identical output to passing no rule
+    /// at all. An operator tuning sensitivity in either direction got no effect
+    /// and no error, and concluded the tuning had taken.
+    ///
+    /// The cooldown is zero here so that suppression cannot be what makes this
+    /// pass: every event is eligible to fire, and only the threshold can hold
+    /// the first four back.
+    #[test]
+    fn a_threshold_of_five_needs_five_events() {
+        let rule = AlertRule::parse("test:5/60s:0s").expect("parse");
+        let mut engine = AlertEngine::new(vec![rule], None);
+
+        for i in 1..=4 {
+            assert!(
+                !engine.fire("test", test_ip(), "event", at(i)),
+                "event {i} of 5 must not fire: the threshold is not reached"
+            );
+        }
+        assert!(
+            engine.fire("test", test_ip(), "event", at(5)),
+            "the fifth event reaches the threshold and must fire"
+        );
+    }
+
+    /// Events that fall outside the window do not accumulate toward it.
+    ///
+    /// This is the half of the grammar the threshold alone cannot express: five
+    /// events spread across an hour are not "five events in a minute", and a
+    /// rule that counted them would alert on ordinary traffic given enough time.
+    #[test]
+    fn events_older_than_the_window_do_not_count() {
+        let rule = AlertRule::parse("test:3/60s:0s").expect("parse");
+        let mut engine = AlertEngine::new(vec![rule], None);
+
+        // Three events, but 100 seconds apart — never three inside any minute.
+        assert!(!engine.fire("test", test_ip(), "event", at(0)));
+        assert!(!engine.fire("test", test_ip(), "event", at(100)));
+        assert!(
+            !engine.fire("test", test_ip(), "event", at(200)),
+            "three events spread over 200s are not three events in 60s"
+        );
+
+        // Two more inside the window with the last one closes it.
+        assert!(!engine.fire("test", test_ip(), "event", at(210)));
+        assert!(
+            engine.fire("test", test_ip(), "event", at(220)),
+            "at(200), at(210) and at(220) are three events inside 60s"
+        );
+    }
+
+    /// The window is measured in capture time, so a replay behaves like live.
+    ///
+    /// Offline an entire capture arrives within milliseconds of wall time. A
+    /// window on `Instant::now()` would therefore never close, and every event
+    /// in a file would count toward every threshold — which is exactly the
+    /// defect that made the scanner detectors read a replayed trunk as a flood.
+    #[test]
+    fn the_window_follows_packet_time_not_wall_time() {
+        let rule = AlertRule::parse("test:2/10s:0s").expect("parse");
+        let mut engine = AlertEngine::new(vec![rule], None);
+
+        // Two events an hour apart in CAPTURE time, delivered back to back in
+        // wall time. A wall-clock window would call this two events in 10s.
+        assert!(!engine.fire("test", test_ip(), "event", at(0)));
+        assert!(
+            !engine.fire("test", test_ip(), "event", at(3600)),
+            "an hour apart in the capture is not two events in ten seconds, \
+             however fast the file was read"
         );
     }
 
@@ -574,10 +740,10 @@ mod tests {
     fn unknown_rule_uses_default_cooldown() {
         let mut engine = AlertEngine::new(vec![], None);
 
-        let first = engine.fire("unknown-rule", test_ip(), "test");
+        let first = engine.fire("unknown-rule", test_ip(), "test", at(0));
         assert!(first, "first alert for unknown rule should fire");
 
-        let second = engine.fire("unknown-rule", test_ip(), "test");
+        let second = engine.fire("unknown-rule", test_ip(), "test", at(0));
         assert!(
             !second,
             "second alert should be suppressed by default cooldown"
@@ -595,9 +761,15 @@ mod tests {
             "scanner",
             "10.0.0.1".parse().unwrap(),
             "ua=friendly-scanner",
+            at(0),
         );
-        engine.fire("scanner", "10.0.0.2".parse().unwrap(), "ua=sipvicious");
-        engine.fire("fraud", "10.0.0.3".parse().unwrap(), "irsf");
+        engine.fire(
+            "scanner",
+            "10.0.0.2".parse().unwrap(),
+            "ua=sipvicious",
+            at(0),
+        );
+        engine.fire("fraud", "10.0.0.3".parse().unwrap(), "irsf", at(0));
         let all = engine.iter_findings(&[], None, 100);
         assert_eq!(all.len(), 3);
         // Newest first
@@ -609,9 +781,9 @@ mod tests {
     #[test]
     fn findings_history_filter_by_kind() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", "10.0.0.1".parse().unwrap(), "a");
-        engine.fire("fraud", "10.0.0.2".parse().unwrap(), "b");
-        engine.fire("scanner", "10.0.0.3".parse().unwrap(), "c");
+        engine.fire("scanner", "10.0.0.1".parse().unwrap(), "a", at(0));
+        engine.fire("fraud", "10.0.0.2".parse().unwrap(), "b", at(0));
+        engine.fire("scanner", "10.0.0.3".parse().unwrap(), "c", at(0));
         let scanner_only = engine.iter_findings(&["scanner"], None, 100);
         assert_eq!(scanner_only.len(), 2);
         assert!(scanner_only.iter().all(|f| f.rule_name == "scanner"));
@@ -632,6 +804,7 @@ mod tests {
                     (i % 256) as u8,
                 )),
                 &format!("seq={i}"),
+                at(0),
             );
         }
         let all = engine.iter_findings(&[], None, 100);
@@ -646,8 +819,8 @@ mod tests {
         let rule = AlertRule::parse("scanner:1/1s:10m").expect("parse");
         let mut engine = AlertEngine::new(vec![rule], None);
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        let first = engine.fire("scanner", ip, "first");
-        let second = engine.fire("scanner", ip, "second");
+        let first = engine.fire("scanner", ip, "first", at(0));
+        let second = engine.fire("scanner", ip, "second", at(0));
         assert!(first);
         assert!(!second, "cooldown should suppress");
         let all = engine.iter_findings(&[], None, 100);
@@ -664,7 +837,7 @@ mod tests {
     fn findings_history_zero_capacity_disables_retention() {
         let mut engine = AlertEngine::new(vec![], None);
         engine.set_findings_capacity(0);
-        engine.fire("scanner", "10.0.0.1".parse().unwrap(), "x");
+        engine.fire("scanner", "10.0.0.1".parse().unwrap(), "x", at(0));
         let all = engine.iter_findings(&[], None, 100);
         assert_eq!(all.len(), 0);
     }

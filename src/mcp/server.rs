@@ -3265,7 +3265,12 @@ mod tests {
     #[tokio::test]
     async fn security_findings_with_engine_returns_recorded_finding() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", localhost(), "probe from scanner");
+        engine.fire(
+            "scanner",
+            localhost(),
+            "probe from scanner",
+            chrono::Utc::now(),
+        );
         let engine = Arc::new(RwLock::new(engine));
 
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -3287,7 +3292,7 @@ mod tests {
     #[tokio::test]
     async fn security_findings_kinds_filter_excludes_other_rules() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", localhost(), "scan");
+        engine.fire("scanner", localhost(), "scan", chrono::Utc::now());
         let engine = Arc::new(RwLock::new(engine));
 
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
