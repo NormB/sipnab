@@ -22,6 +22,25 @@ use sipnab::capture::reassembly::{FragmentReassembler, TcpReassembler, reassembl
 use sipnab::capture::{Packet, PacketProcessor, captured_packets};
 use sipnab::output::prometheus::{PrometheusMetrics, format_metrics};
 
+/// Serialises the tests that assert a DELTA on a process-global counter.
+///
+/// These counters are process-wide by design — a scrape reports one number for
+/// the whole run. cargo runs the tests in a file on parallel threads, so two
+/// tests each measuring "before, act, after" interleave and each sees the
+/// other's increments. CI caught it on macOS with `left: 3, right: 1`, and
+/// Linux had been passing on scheduling luck rather than on correctness.
+///
+/// A mutex rather than looser assertions: `+1` and "unchanged" are the whole
+/// point of these tests, and `>=` would let a counter that moved for the wrong
+/// reason pass. Poisoning is absorbed, so one failing test reports itself
+/// rather than cascading into misleading failures in its siblings.
+static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take [`COUNTER_LOCK`], ignoring poisoning from an unrelated failure.
+fn serialised() -> std::sync::MutexGuard<'static, ()> {
+    COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// An IP fragment that is never completed: offset 0 with More-Fragments set.
 ///
 /// # Arguments
@@ -86,6 +105,7 @@ fn idle_tcp_segment(src_port: u16) -> ParsedPacket {
 /// dropped it would understate a capture full of junk.
 #[test]
 fn processing_a_packet_moves_the_capture_counter() {
+    let _guard = serialised();
     let before = captured_packets();
 
     let mut processor = PacketProcessor::new();
@@ -110,6 +130,7 @@ fn processing_a_packet_moves_the_capture_counter() {
 /// timeout, and moves the counter by exactly the number of entries dropped.
 #[test]
 fn fragment_ttl_sweep_moves_the_reassembly_counter() {
+    let _guard = serialised();
     let mut r = FragmentReassembler::with_limits(100, Duration::from_millis(20));
     assert!(r.insert(&incomplete_fragment(0x4242)).is_none());
     assert!(r.insert(&incomplete_fragment(0x4343)).is_none());
@@ -130,6 +151,7 @@ fn fragment_ttl_sweep_moves_the_reassembly_counter() {
 /// metric would climb on every idle sweep tick and mean nothing.
 #[test]
 fn sweep_with_nothing_stale_leaves_the_counter_alone() {
+    let _guard = serialised();
     let mut r = FragmentReassembler::with_limits(100, Duration::from_secs(300));
     assert!(r.insert(&incomplete_fragment(0x5151)).is_none());
 
@@ -148,6 +170,7 @@ fn sweep_with_nothing_stale_leaves_the_counter_alone() {
 /// the metric names reassembly, not IP fragments alone.
 #[test]
 fn tcp_ttl_sweep_moves_the_reassembly_counter() {
+    let _guard = serialised();
     let mut r = TcpReassembler::with_limits(100, Duration::from_millis(20));
     r.insert(&idle_tcp_segment(41001));
 
@@ -168,6 +191,7 @@ fn tcp_ttl_sweep_moves_the_reassembly_counter() {
 /// `PrometheusMetrics::default` printed `0` here forever.
 #[test]
 fn scrape_carries_the_process_counters_into_the_exposition() {
+    let _guard = serialised();
     let mut processor = PacketProcessor::new();
     let packet = Packet::new(chrono::Utc::now(), vec![0x00; 14], 14, 14, None, 1);
     let _ = processor.process(&packet);
@@ -214,6 +238,7 @@ fn scrape_initialises_closed_label_sets() {
 /// by the rule that fired.
 #[test]
 fn recording_a_security_alert_moves_the_family() {
+    let _guard = serialised();
     // A rule name no other test uses, so the delta is this test's alone.
     let kind = "metrics_counters_test_rule";
     let before = sipnab::security::alerts_by_type()
