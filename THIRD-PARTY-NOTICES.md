@@ -383,11 +383,11 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-encoder | 0.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmi | 0.51.5 | MIT/Apache-2.0 |
-| wasmi_collections | 0.51.5 | MIT/Apache-2.0 |
-| wasmi_core | 0.51.5 | MIT/Apache-2.0 |
-| wasmi_ir | 0.51.5 | MIT/Apache-2.0 |
-| wasmparser | 0.228.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmi | 1.1.0 | MIT/Apache-2.0 |
+| wasmi_collections | 1.1.0 | MIT/Apache-2.0 |
+| wasmi_core | 1.1.0 | MIT/Apache-2.0 |
+| wasmi_ir | 1.1.0 | MIT/Apache-2.0 |
+| wasmparser | 0.239.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmparser | 0.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wast | 255.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wat | 1.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
