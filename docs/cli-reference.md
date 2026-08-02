@@ -310,14 +310,23 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 |------|-------|---------|-------------|
 | `-N`, `--no-tui` | -- | off | Non-interactive mode (no TUI). Required for batch/output flags |
 | `-c`, `--calls-only` | -- | off | Show only SIP dialogs (calls), not standalone messages |
-| `-t`, `--telephone-event` | -- | off | Capture and display telephone-event (DTMF) RTP payloads |
+| `-t`, `--telephone-event` | -- | off | Decode telephone-event (DTMF) RTP payloads and log each digit at `info` |
 | `-q`, `--quiet` | -- | off | Suppress informational output; only show results |
 
 **Examples**
 
 - `sipnab --no-tui -I capture.pcap --calls-only` — analyze a pcap headlessly, showing only complete SIP dialogs (calls), not standalone messages
-- `sudo sipnab -d eth0 --calls-only --telephone-event` — watch live calls in the TUI with telephone-event (DTMF) RTP payloads captured and displayed
-- `sudo sipnab --no-tui -d eth0 --telephone-event --quiet` — headless live capture that decodes DTMF and suppresses informational output
+- `sudo sipnab --no-tui -d eth0 --telephone-event` — headless live capture that decodes DTMF and logs each digit with its duration and SSRC
+- `sipnab --no-tui -I capture.pcap --calls-only --telephone-event` — read a capture headlessly, report only complete dialogs, and log the DTMF digits each one carried
+
+**Where the digits go.** sipnab writes each decoded digit to the log at `info`
+level and keeps a count. Nothing else carries them: no report, no JSON field, no
+MCP tool. Two consequences follow, and both bite the obvious command lines.
+Adding `-t` to a TUI session shows you nothing, because TUI mode floors the log
+level at `error` to keep the alternate screen intact. Adding `--quiet` also
+hides them, because it floors the level at `warn`. Use `-N` without `--quiet`.
+`SIPNAB_LOG=info` does override the TUI floor, but sipnab sets that floor to
+stop log lines corrupting the alternate screen, so redirect stderr if you do.
 
 
 ## Matching
@@ -480,14 +489,14 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--rtp-interval` | `<SECS>` | `1` | RTP statistics reporting interval in seconds |
+| `--rtp-interval` | `<SECS>` | `1` | **Accepted and ignored.** Periodic RTP statistics reporting is not implemented, so no interval report appears. sipnab warns when you pass a non-default value, and reports stream statistics once, at end of capture |
 | `--max-streams` | `<N>` | `50000` | Maximum number of RTP streams to track simultaneously |
 | `--quality-threshold` | `<MOS>` | `3.0` | MOS quality threshold for alerts (1.0-5.0 scale) |
 
 **Examples**
 
-- `sudo sipnab -d eth0 --rtp-interval 5 --quality-threshold 3.5 --max-streams 10000` — monitor live RTP with 5-second statistics reports and MOS alerts below 3.5
-- `sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000` — batch-analyze RTP streams in a capture, reporting stats every 2 seconds with a raised stream cap
+- `sudo sipnab -d eth0 --rtp-interval 5 --quality-threshold 3.5 --max-streams 10000` — monitor live RTP with MOS alerts below 3.5. sipnab accepts `--rtp-interval 5`, ignores it, and says so: expect no 5-second reports, only the end-of-capture statistics
+- `sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000` — batch-analyse RTP streams with a raised stream cap. Again `--rtp-interval 2` changes nothing; the statistics arrive once, when the capture ends
 
 
 ## Security
@@ -549,7 +558,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
 | `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
-| `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. Feature: `hep` |
+| `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. **On `-I <file>` this forwards the file's contents**: every SIP message sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). Feature: `hep` |
 | `--hep-id` | `<ID>` | `1` | Capture-agent id (HEP `0x000c` chunk) stamped on packets sent via `--hep-send`. Feature: `hep` |
 | `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` sipnab stamps it on every outgoing packet; on `--hep-listen` it **enables receiver-side authentication** — incoming packets must carry a matching key, which sipnab compares in constant time, or it drops them. Also read from `SIPNAB_HEP_AUTH`. **Security note:** the key travels in cleartext inside the HEP datagram, so it defeats blind/off-path spoofing but an on-path sniffer can capture and replay it. Over an untrusted path, tunnel HEP through WireGuard/IPsec/stunnel (the same posture as terminating API TLS in a reverse proxy) rather than relying on the key alone. Feature: `hep` |
 | `--hep-auth-file` | `<FILE>` | -- | Read the HEP shared secret from a file (contents trimmed), keeping it out of the process list. Takes precedence over `--hep-auth`. Feature: `hep` |
@@ -573,6 +582,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9060 --hep-id 42 --hep-auth s3cr3t-homer-key` — forward captured packets to a Homer collector, stamping capture-agent id 42 and an authenticate key
 - `sudo sipnab -N -d eth0 --hep-send 198.51.100.20:9060 --hep-id 7 --hep-auth homerkey2` — forward to a second collector under a different agent id and auth key
 - `sudo sipnab -N -d eth0 --hep-send 198.51.100.30:9060 --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac` — replay-resistant forwarding to another sipnab: HMAC-token auth over an untrusted path (both ends must set --hep-auth-mode hmac)
+- `sipnab -N -I archive.pcap --hep-send 127.0.0.1:9060 --hep-id 9` — replay an archived capture into a collector on this host. sipnab warns at startup that the file's signalling leaves the machine, then forwards it
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac` — the matching sipnab-to-sipnab HMAC collector: verifies the per-message token and rejects replays
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-allow 192.0.2.0/24 --hep-allow 198.51.100.20/32 --hep-rate-limit 20000` — run a HEP collector that parses incoming packets, only from two allowed CIDRs, capped at 20k pkts/sec
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-rate-limit 40000 --hep-rate-limit-per-peer 5000` — authenticated HEP collector on a routable address: incoming packets must carry the shared secret, with a 5k/s per-peer fairness cap
@@ -584,6 +594,42 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab --mint-token --token-scope metrics --token-id prom-scraper --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 86400` — mint a scrape-only token for Prometheus: it reaches `/metrics`, and every `/v1/` route refuses it
 - `sipnab --mint-token --token-scope full --token-id ops-oncall --api-signing-key-file /etc/sipnab/signing.key` — the default scope, stated explicitly: full access to the REST API surface
 
+### What `--hep-send` sends
+
+`--hep-send <ADDR>` forwards every SIP message sipnab reads to the collector at
+`<ADDR>`, byte for byte as the capture holds it. On a live capture that matches
+what the flag sounds like. Traffic passes the interface, and a copy reaches
+Homer.
+
+On `-I <file>` the same sentence carries a sharper meaning. The messages sipnab
+reads come out of the capture file, so that file's signalling leaves the
+machine: request lines, headers, URIs, and any message bodies it holds. sipnab
+redacts nothing and drops nothing beyond what `--portrange` and the matching
+flags already exclude. Testing a HEP pipeline against a customer capture
+therefore ships that customer's signalling to whatever `<ADDR>` names.
+
+sipnab announces this before it reads the first packet:
+
+```text
+WARN sipnab::app::bootstrap: --hep-send collector.example:9060 forwards every
+SIP message this run reads to that address, and this run is reading a capture
+FILE (customer.pcap). The signalling in those captures leaves this machine ...
+```
+
+That line is a warning rather than a refusal, because you chose the
+destination. Replaying an archive into your own collector stays a supported
+workflow. Two habits keep it uneventful:
+
+- Name a collector you control. sipnab never takes the destination from the
+  capture. The address always comes from your command line or your config file,
+  and no code path exists that turns a recorded address into an export target.
+- Read the startup warning before you walk away. It names the flag, the
+  destination, and the capture files.
+
+The scanner-kill path works the other way round and refuses to run offline. It
+aims at addresses recorded *inside* the capture, which belong to third parties
+who have nothing to do with your analysis, so `-I file` grants it nothing at
+all. See [Security](#security).
 
 ## MCP server
 
@@ -605,6 +651,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
 | `--mcp-file-root` | `<DIR>` | -- | Directory the MCP file tools (`export_capture`, `export_audio`, `list_captures`) may read and write. Without it those tools refuse to run. They take a bare FILENAME, never a path — an agent cannot escape this directory. Feature: `mcp` |
 | `--mcp-allow-shutdown` | -- | off | Permit the `shutdown_server` MCP tool to stop this process. Off by default, so an agent cannot stop a stock server. Even enabled, the tool dry-runs unless told otherwise and refuses to discard an unsaved live capture. Feature: `mcp` |
+| `--mcp-allow-open-capture` | -- | off | Permit the `open_capture` MCP tool to load a different capture from `--mcp-file-root`, discarding every dialog and stream held. Off by default, so a stock server keeps the capture the command line named. The tool refuses while the source is live or still filling the stores, loads in the background, and mints a new capture identity every later answer carries. Feature: `mcp` |
 
 ## TLS / decryption
 
@@ -623,6 +670,8 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab-exports` — let an agent save captures and audio, confined to one directory
 - `sudo sipnab -N -d eth0 --mcp --mcp-file-root /var/spool/sipnab-exports --mcp-allow-shutdown` — a live capture an agent may export from and, deliberately, stop
 - `sipnab -N -I capture.pcap --mcp --mcp-allow-shutdown` — a replay session an agent may end when it has finished; nothing to lose, since the file is already on disk
+- `sipnab -N -I first.pcap --mcp --mcp-transport http --mcp-file-root /var/spool/sipnab-captures --mcp-allow-open-capture` — a long-lived service an agent may move through a corpus with, one capture at a time
+- `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab-captures --mcp-allow-open-capture --mcp-allow-shutdown` — the same, plus the ability to end the session; both opt-ins are separate on purpose
 - `sipnab -N -I capture.pcap --tls-key /etc/sipnab/tls-rsa.key --keylog /etc/sipnab/keys.log --allow-coredump` — decrypt TLS 1.2 RSA-key-exchange SIP from a pcap using an RSA private key, with core dumps left enabled
 - `sipnab -N -I capture.pcap --srtp-keys /etc/sipnab/srtp.keys --dtls-keylog /etc/sipnab/dtls.log` — decrypt SRTP media in an offline pcap from an SRTP master-keys file plus DTLS-SRTP handshake keys
 - `sudo sipnab -d eth0 --tls-key /etc/sipnab/tls-rsa.key --srtp-keys /etc/sipnab/srtp.keys --keylog /etc/sipnab/keys.log --keylog-watch --allow-coredump` — live decrypt both SIP (RSA key) and SRTP media, watching the key log for new PFS session keys

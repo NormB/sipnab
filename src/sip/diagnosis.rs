@@ -102,6 +102,12 @@ pub struct Retransmissions {
     pub span_sec: f64,
     /// Indices of every transmission, in order.
     pub evidence: Vec<usize>,
+    /// The network's own words for why nothing came back, when an ICMP error
+    /// against this dialog said so — `port unreachable`, `host unreachable`.
+    /// `None` means no ICMP error was recorded for the dialog, which is the
+    /// ordinary case and leaves the finding an inference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icmp_cause: Option<String>,
 }
 
 /// A `2xx` answer to an `INVITE` that was never acknowledged.
@@ -459,7 +465,7 @@ pub fn diagnose_signaling_with_evidence(
 
     detect_final_failure(messages, &mut diag);
     detect_auth_loop(messages, &mut diag);
-    detect_retransmissions(messages, &mut diag);
+    detect_retransmissions(messages, &mut diag, icmp);
     detect_ack_missing(messages, &mut diag, thresholds);
     detect_abandoned(messages, &mut diag, thresholds);
     detect_post_dial_delay(messages, &mut diag, thresholds);
@@ -467,6 +473,79 @@ pub fn diagnose_signaling_with_evidence(
     detect_icmp_unreachable(messages, &mut diag, icmp);
 
     diag
+}
+
+/// What one ICMP type/code actually asks the reader to go and fix.
+///
+/// The description alone (`host unreachable`, `communication administratively
+/// prohibited`) is the network's wording, not an instruction, and the three
+/// commonest codes in real captures send an operator to three different
+/// devices:
+///
+/// * **port unreachable** — the host answered. It is up, and nothing was bound
+///   to that port. The fault is the service.
+/// * **administratively prohibited** — a firewall or router ACL rejected the
+///   packet. The peer may be entirely healthy and reporting it as unreachable
+///   sends someone to debug a working device. The fault is the filter.
+/// * **host unreachable** — nothing reached the host at all, so nothing is
+///   known about its ports. The fault is routing, addressing, or power.
+///
+/// Measured on one real corpus, a single file held 433 host-unreachable, 262
+/// administratively-prohibited and 63 port-unreachable errors. One sentence
+/// for all three would have been wrong for at least 695 of them.
+///
+/// # Arguments
+///
+/// * `icmp_type` / `icmp_code` — the raw bytes, so an unrecognised pair still
+///   renders something rather than a claim.
+/// * `v6` — the numbering is different between RFC 792 and RFC 4443: v4 type 3
+///   code 1 is "host unreachable", v6 type 3 code 1 is a reassembly timeout.
+pub fn icmp_remedy(icmp_type: u8, icmp_code: u8, v6: bool) -> &'static str {
+    const PORT: &str = "The host answered, so it is reachable — nothing was listening on that \
+                        port. Check the service and the address it binds, not the network.";
+    const FILTER: &str = "A filtering device — a firewall or a router ACL — refused the packet. \
+                          The peer itself may be perfectly healthy, so the fix is on whatever is \
+                          filtering rather than on the endpoint.";
+    const NO_ROUTE: &str = "Nothing reached the host, so nothing is known about its ports: it is \
+                            powered off, at a different address, or the route to it is gone.";
+    const PMTU: &str = "A link on the path has a smaller MTU and the datagram could not be \
+                        fragmented — the black hole behind \"large INVITEs vanish, small \
+                        requests work\". Lower the path MTU or fragment at the sender.";
+    const LOOP_: &str = "The datagram ran out of hops before arriving — a routing loop, or a TTL \
+                         set too low for the path.";
+    const REASSEMBLY: &str = "The host received some fragments of the datagram and never the \
+                              rest, so it gave up reassembling. Fragments are being lost or \
+                              filtered on the path.";
+    const MALFORMED: &str = "The receiver rejected a header field as malformed, so the datagram \
+                             never reached the application.";
+    const CONGESTION: &str = "A device on the path reported congestion (deprecated by RFC 6633, \
+                              still emitted by some stacks).";
+    const GENERIC: &str = "The network could not deliver the datagram; this is a stated failure, \
+                           not a timeout.";
+
+    if v6 {
+        return match (icmp_type, icmp_code) {
+            (1, 4) => PORT,
+            (1, 1 | 5 | 6) => FILTER,
+            (1, 0 | 2 | 3) => NO_ROUTE,
+            (2, _) => PMTU,
+            (3, 0) => LOOP_,
+            (3, 1) => REASSEMBLY,
+            (4, _) => MALFORMED,
+            _ => GENERIC,
+        };
+    }
+    match (icmp_type, icmp_code) {
+        (3, 3) => PORT,
+        (3, 9 | 10 | 13) => FILTER,
+        (3, 0 | 1) => NO_ROUTE,
+        (3, 4) => PMTU,
+        (4, _) => CONGESTION,
+        (11, 0) => LOOP_,
+        (11, 1) => REASSEMBLY,
+        (12, _) => MALFORMED,
+        _ => GENERIC,
+    }
 }
 
 /// Detection 8 — the network reported that a request could not be delivered.
@@ -529,9 +608,10 @@ fn detect_icmp_unreachable(
         None => format!("a request sent to {endpoint}"),
     };
     diag.hints.push(format!(
-        "ICMP {}: the network could not deliver {what}{occurrences}, reported by {}. \
-         The endpoint was not reachable on that port — this is not a timeout.",
-        last.description, last.reported_by,
+        "ICMP {}: the network could not deliver {what}{occurrences}, reported by {}. {}",
+        last.description,
+        last.reported_by,
+        icmp_remedy(last.icmp_type, last.icmp_code, last.reported_by.is_ipv6()),
     ));
 
     diag.icmp_unreachable = Some(IcmpUnreachable {
@@ -1140,7 +1220,28 @@ fn detect_auth_loop(messages: &[SipMessage], diag: &mut SignalingDiagnosis) {
 /// "No response" is scoped to the transaction, not the dialog: the point is a
 /// request that got nothing back, which is what distinguishes a broken path from
 /// a client that retransmitted once because a response was slow.
-fn detect_retransmissions(messages: &[SipMessage], diag: &mut SignalingDiagnosis) {
+///
+/// # Annotated, not suppressed, when ICMP proves the cause
+///
+/// This detection used to close with "a one-way path or an unreachable peer" —
+/// an inference drawn from silence. Detection 8 replaces that silence with a
+/// router's own statement, and both used to fire on the same dialog, so a
+/// reader saw a guess and a fact side by side with equal weight.
+///
+/// The fix is to annotate rather than to suppress, and the reason is that the
+/// two findings measure different things. The ICMP error says *why* nothing
+/// came back. The transmission count and span say *how hard the sender tried*
+/// before giving up — 3 INVITEs over 3 s and 11 OPTIONS over 300 s are the
+/// same cause and a very different operational picture, and neither is
+/// recoverable from the ICMP finding. Suppressing detection 3 would delete a
+/// measurement to remove a sentence; keeping it and deleting the sentence
+/// costs nothing. So the finding survives with `icmp_cause` set, and only the
+/// guess at the end of the hint gives way.
+fn detect_retransmissions(
+    messages: &[SipMessage],
+    diag: &mut SignalingDiagnosis,
+    icmp: &crate::capture::parse::DialogIcmpEvidence,
+) {
     // Group requests by (CSeq number, CSeq method, branch).
     let mut groups: Vec<(TransactionKey, Vec<usize>)> = Vec::new();
 
@@ -1213,16 +1314,39 @@ fn detect_retransmissions(messages: &[SipMessage], diag: &mut SignalingDiagnosis
         / 1000.0;
 
     let method = key.1.clone();
-    diag.hints.push(format!(
-        "No response to {method}: {count} transmissions over {span_sec:.1}s with nothing \
-         received — a one-way path or an unreachable peer."
-    ));
+
+    // Prefer a quote of this very method: it is then the same request, not
+    // merely the same dialog. Otherwise the most recent quote still applies —
+    // the evidence is filed per `Call-ID`, so it is about this dialog either
+    // way — and saying so is better than withholding a stated cause because
+    // the router happened to quote a different request on the same call.
+    let cause = icmp
+        .samples
+        .iter()
+        .rev()
+        .find(|e| e.method.as_deref() == Some(method.as_str()))
+        .or_else(|| icmp.samples.last());
+
+    match cause {
+        Some(e) => diag.hints.push(format!(
+            "No response to {method}: {count} transmissions over {span_sec:.1}s with nothing \
+             received — and ICMP says why: {}. The count is how hard the sender tried; the \
+             ICMP finding is the cause.",
+            e.description
+        )),
+        // Nothing better is available, so the inference is the honest answer.
+        None => diag.hints.push(format!(
+            "No response to {method}: {count} transmissions over {span_sec:.1}s with nothing \
+             received — a one-way path or an unreachable peer."
+        )),
+    }
 
     diag.retransmissions = Some(Retransmissions {
         method,
         count,
         span_sec,
         evidence: idxs.clone(),
+        icmp_cause: cause.map(|e| e.description.to_string()),
     });
 }
 
@@ -2186,5 +2310,161 @@ mod tests {
             evidence: vec![0, 1],
         });
         assert!(!d.is_empty(), "registration_failure");
+    }
+
+    // -- detection 8, and what it does to detection 3 ---------------------
+
+    /// One ICMP error against this dialog, with the given type/code.
+    fn icmp_evidence(
+        icmp_type: u8,
+        icmp_code: u8,
+        description: &'static str,
+        errors: u64,
+    ) -> crate::capture::parse::DialogIcmpEvidence {
+        crate::capture::parse::DialogIcmpEvidence {
+            errors,
+            samples: vec![crate::capture::parse::IcmpEvidence {
+                timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .expect("valid fixture timestamp"),
+                unreachable_addr: DST,
+                unreachable_port: Some(5060),
+                reported_by: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 254)),
+                icmp_type,
+                icmp_code,
+                description,
+                call_id: Some("c1@example.com".to_string()),
+                method: Some("INVITE".to_string()),
+                cseq: Some("1 INVITE".to_string()),
+                truncated: true,
+                quoted_bytes: 60,
+            }],
+        }
+    }
+
+    /// Three INVITEs into silence, and a router that said why.
+    fn storm_with(icmp: &crate::capture::parse::DialogIcmpEvidence) -> SignalingDiagnosis {
+        let msgs: Vec<SipMessage> = [0i64, 1, 3]
+            .iter()
+            .map(|s| msg_at(&invite("z9hG4bK1", 1), *s))
+            .collect();
+        diagnose_signaling_with_evidence(&msgs, &SignalingThresholds::default(), icmp)
+    }
+
+    /// The ICMP fact annotates the retransmission finding; it does not delete
+    /// it. The count and span are the measurement of how hard the sender tried
+    /// and are lost by suppression, so both findings survive — but the
+    /// retransmission hint stops offering an inference the ICMP error has
+    /// already settled.
+    #[test]
+    fn icmp_annotates_the_retransmission_finding_rather_than_replacing_it() {
+        let d = storm_with(&icmp_evidence(3, 1, "host unreachable", 4));
+
+        let r = d
+            .retransmissions
+            .as_ref()
+            .expect("the storm is still reported: the count is the measurement");
+        assert_eq!(r.count, 3, "suppression would have lost this");
+        assert_eq!(
+            r.icmp_cause.as_deref(),
+            Some("host unreachable"),
+            "the finding must carry the network's own words, not only the prose hint"
+        );
+
+        let hint = d
+            .hints
+            .iter()
+            .find(|h| h.starts_with("No response to "))
+            .expect("the retransmission hint is still rendered");
+        assert!(
+            !hint.contains("a one-way path or an unreachable peer"),
+            "the guess must not stand beside the fact that replaced it: {hint}"
+        );
+        assert!(
+            hint.contains("host unreachable"),
+            "the annotation must name what ICMP said: {hint}"
+        );
+        assert!(
+            hint.contains("3 transmissions"),
+            "annotating must not cost the count: {hint}"
+        );
+    }
+
+    /// With no ICMP evidence the retransmission hint is exactly what it always
+    /// was — the inference is honest when nothing better is available.
+    #[test]
+    fn without_icmp_the_retransmission_hint_still_infers() {
+        let d = storm_with(&Default::default());
+        let r = d.retransmissions.as_ref().expect("storm detected");
+        assert_eq!(r.icmp_cause, None);
+        let hint = d
+            .hints
+            .iter()
+            .find(|h| h.starts_with("No response to "))
+            .expect("hint rendered");
+        assert!(
+            hint.contains("a one-way path or an unreachable peer"),
+            "with nothing better, the inference is the honest answer: {hint}"
+        );
+    }
+
+    /// "Administratively prohibited" is a filter, not a dead host, and the two
+    /// send an operator to different devices. The finding must not tell them
+    /// the peer is down when a firewall rejected the packet.
+    #[test]
+    fn administratively_prohibited_names_a_filter_not_a_dead_peer() {
+        let d = storm_with(&icmp_evidence(
+            3,
+            13,
+            "communication administratively prohibited",
+            2,
+        ));
+        let hint = d
+            .hints
+            .iter()
+            .find(|h| h.starts_with("ICMP "))
+            .expect("the ICMP hint is rendered");
+        assert!(
+            hint.contains("filtering") || hint.contains("firewall"),
+            "a prohibition is a policy device's decision, and that is the fix: {hint}"
+        );
+        assert!(
+            !hint.contains("not reachable on that port"),
+            "a filter says nothing about whether the port is open: {hint}"
+        );
+    }
+
+    /// A port-unreachable is the opposite case: the host answered, so the
+    /// service is the fault and the network is not.
+    #[test]
+    fn port_unreachable_names_the_service_not_the_network() {
+        let d = storm_with(&icmp_evidence(3, 3, "port unreachable", 1));
+        let hint = d
+            .hints
+            .iter()
+            .find(|h| h.starts_with("ICMP "))
+            .expect("the ICMP hint is rendered");
+        assert!(
+            hint.contains("nothing was listening"),
+            "port-unreachable means the host is up and the port is not: {hint}"
+        );
+    }
+
+    /// A host-unreachable is a routing or power question, not a port one.
+    #[test]
+    fn host_unreachable_does_not_claim_anything_about_a_port() {
+        let d = storm_with(&icmp_evidence(3, 1, "host unreachable", 1));
+        let hint = d
+            .hints
+            .iter()
+            .find(|h| h.starts_with("ICMP "))
+            .expect("the ICMP hint is rendered");
+        assert!(
+            !hint.contains("nothing was listening"),
+            "nothing reached the host, so nothing is known about its ports: {hint}"
+        );
+        assert!(
+            hint.contains("route") && hint.contains("powered off"),
+            "the fix is routing, addressing or the host itself: {hint}"
+        );
     }
 }

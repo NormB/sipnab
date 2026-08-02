@@ -1,3 +1,10 @@
+[Bb]itrate
+[Bb]itrates
+[Dd]iotic
+[Ff]ullband
+[Mm]onotic
+[Nn]arrowband
+[Ww]ideband
 _code_b
 accessor
 accessors
@@ -15,6 +22,8 @@ allocs
 allowlist
 allowlist_len
 allowlisted
+ANDed
+ANDs
 api
 api_request_duration
 APIs
@@ -131,6 +140,7 @@ deliverables
 Denylist
 denylist
 denylists
+Dependabot
 deps
 derefs
 deserialize
@@ -202,6 +212,7 @@ Grafana
 greppable
 Gruvbox
 gunzip
+gzip
 gzipped
 HAProxy
 hardcode
@@ -309,6 +320,7 @@ mlock
 mockup
 mod_sofia
 modparams
+monaural
 mos_below
 Msg
 msg_sdp
@@ -342,6 +354,8 @@ offerless
 onboarding
 openssl
 OR
+ORed
+ORing
 ORs
 OTel
 otel
@@ -406,6 +420,8 @@ READMEs
 Realloc
 reassembler
 reassemblies
+rebase
+rebased
 recv
 refcount
 refcounted
@@ -616,6 +632,7 @@ updated_at
 URIs
 userspace
 Userspace
+usize
 utoipa
 validator
 Vec
@@ -654,17 +671,3 @@ zeroized
 zeroizes
 zeroizing
 zsh
-[Nn]arrowband
-[Ww]ideband
-[Ff]ullband
-[Mm]onotic
-[Dd]iotic
-[Bb]itrate
-[Bb]itrates
-monaural
-gzip
-usize
-ANDed
-ANDs
-ORing
-ORed

@@ -33,7 +33,7 @@ use super::wav::write_wav;
 /// - The WAV file cannot be written
 pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
     if stream.payload_buffer.is_empty() {
-        bail!("No audio payload captured for this stream.");
+        bail!("{}", nothing_to_decode(&[stream]));
     }
 
     let (pcm_samples, sample_rate, codec_label) = decode_stream_pcm(stream)?;
@@ -77,7 +77,7 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         .collect();
 
     if exportable.is_empty() {
-        bail!("No audio streams with captured data found");
+        bail!("{}", nothing_to_decode(streams));
     }
 
     if exportable.len() == 1 {
@@ -120,6 +120,67 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         output_rate,
         path.display(),
     ))
+}
+
+/// Explain a failed export in terms of what sipnab actually observed.
+///
+/// Both failures used to read "No audio streams with captured data found" /
+/// "No audio payload captured for this stream", and a reader — an operator, or
+/// an agent relaying to one — takes that as a statement about the CALL: it had
+/// no audio. Two quite different situations produce it, and neither is that:
+///
+/// - **Nothing decodable.** Every stream carries a codec sipnab cannot turn
+///   into PCM (G.729, video). Naming the codecs found is the whole answer.
+/// - **Nothing retained.** The streams carry PCMU/PCMA/Opus and sipnab counted
+///   their packets, but the payload was never copied into the ring buffer that
+///   export decodes from. Retention is a per-run setting; when it is off, the
+///   buffers are empty for every call in the capture regardless of what the
+///   calls carried. Saying "no audio" there asserts something about the media
+///   from evidence that says nothing about it.
+///
+/// So the message reports the measurement — packet count and codecs — and
+/// names retention as the reason nothing is decodable, without claiming the
+/// call was silent.
+fn nothing_to_decode(streams: &[&RtpStream]) -> String {
+    let decodable: Vec<&&RtpStream> = streams
+        .iter()
+        .filter(|s| is_exportable_codec(s.codec.as_deref()))
+        .collect();
+
+    if decodable.is_empty() {
+        let mut found: Vec<&str> = streams
+            .iter()
+            .map(|s| s.codec.as_deref().unwrap_or("unidentified"))
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        return format!(
+            "No stream on this call carries a codec that decodes to WAV (found: {}). \
+             Supported: PCMU, PCMA, Opus.",
+            found.join(", "),
+        );
+    }
+
+    let packets: u64 = decodable.iter().map(|s| s.packet_count).sum();
+    let mut codecs: Vec<&str> = decodable
+        .iter()
+        .filter_map(|s| s.codec.as_deref())
+        .collect();
+    codecs.sort_unstable();
+    codecs.dedup();
+    format!(
+        "No audio payload retained: sipnab measured {packets} RTP packet(s) of {} on {} \
+         decodable {}, but kept none of their payload, so there is nothing to decode. \
+         Audio payload retention was off for this run — that is a capture setting, not a \
+         finding that the call was silent.",
+        codecs.join("/"),
+        decodable.len(),
+        if decodable.len() == 1 {
+            "stream"
+        } else {
+            "streams"
+        },
+    )
 }
 
 /// Check whether a codec name represents a decodable audio codec.
@@ -438,5 +499,90 @@ mod tests {
 
         let result = export_dialog_to_wav(&[], &path);
         assert!(result.is_err());
+    }
+
+    /// A call whose media sipnab measured but whose payload it never retained
+    /// must not be reported as a call with no audio.
+    ///
+    /// This is the state every MCP `export_audio` call meets: batch mode
+    /// switches payload retention off, so the streams carry full packet
+    /// counts, a decodable codec and an empty ring buffer. Reporting that as
+    /// "no audio streams with captured data found" tells the reader the call
+    /// was silent — a claim about the evidence that the evidence does not
+    /// support, and one an agent will repeat to an operator. The error has to
+    /// say what was observed and that the payload was not kept.
+    #[test]
+    fn export_dialog_unretained_payload_does_not_deny_the_media() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unretained.wav");
+
+        // Two PCMU streams, thousands of packets measured, nothing retained.
+        let mut a = make_stream(Some("PCMU"), vec![]);
+        a.packet_count = 1200;
+        let mut b = make_stream(Some("PCMU"), vec![]);
+        b.packet_count = 1198;
+
+        let err = export_dialog_to_wav(&[&a, &b], &path)
+            .expect_err("nothing to decode, so the export must fail");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("2398") && msg.contains("PCMU"),
+            "the error must say what sipnab DID observe: {msg}"
+        );
+        assert!(
+            msg.contains("retain") || msg.contains("retention"),
+            "the error must say the payload was not retained: {msg}"
+        );
+        assert!(
+            !msg.contains("No audio streams with captured data"),
+            "the old wording asserts the call had no audio: {msg}"
+        );
+        assert!(!path.exists(), "no file may be left behind: {msg}");
+    }
+
+    /// A call carrying only codecs sipnab cannot decode names them, rather
+    /// than reporting the same "no captured data" as an unretained buffer —
+    /// the two are different facts and lead to different next steps.
+    #[test]
+    fn export_dialog_undecodable_codecs_are_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g729.wav");
+
+        let mut s = make_stream(Some("G729"), vec![(0, vec![0; 10])]);
+        s.packet_count = 500;
+
+        let err = export_dialog_to_wav(&[&s], &path).expect_err("G729 is not decodable");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("G729"),
+            "the error must name the codec found: {msg}"
+        );
+        assert!(
+            msg.contains("PCMU"),
+            "the error must name what IS supported: {msg}"
+        );
+    }
+
+    /// The single-stream export says the same thing: packets measured, payload
+    /// not retained.
+    #[test]
+    fn export_stream_unretained_payload_does_not_deny_the_media() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("one.wav");
+
+        let mut s = make_stream(Some("PCMA"), vec![]);
+        s.packet_count = 4242;
+
+        let err = export_stream_to_wav(&s, &path).expect_err("nothing to decode");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("4242") && msg.contains("PCMA"),
+            "the error must say what was observed: {msg}"
+        );
+        assert!(
+            msg.contains("retain") || msg.contains("retention"),
+            "the error must say the payload was not retained: {msg}"
+        );
     }
 }

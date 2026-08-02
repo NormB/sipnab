@@ -14,10 +14,49 @@ use indexmap::IndexMap;
 use chrono::{DateTime, Utc};
 
 use super::parser::RtpHeader;
-use super::rtcp::{ReceptionReport, RtcpPacket};
+use super::rtcp::{ExtendedReport, ReceptionReport, RtcpPacket, VoipMetrics, XrBlock};
 use super::stream::{RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
 use crate::sip::sdp::SdpMedia;
+
+/// How an ICMP error's quoted datagram was tied to tracked media.
+///
+/// Ordered by how much the tie proves, strongest first. The variant is carried
+/// into every surface rather than collapsed to a boolean because the tiers are
+/// not equally strong: [`Flow`](Self::Flow) means sipnab watched that exact
+/// datagram's stream, while [`SdpEndpoint`](Self::SdpEndpoint) means only that
+/// a call negotiated that address. A reader deciding whether to act on a
+/// finding needs to know which of those they have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaMatch {
+    /// The quoted datagram's directed 5-tuple is exactly a tracked stream.
+    Flow,
+    /// The SSRC in the quoted payload names a tracked stream. The tie that
+    /// carries RTCP, which runs on a port no stream is keyed on.
+    Ssrc,
+    /// One of the two sockets is an endpoint of a tracked stream.
+    Endpoint,
+    /// One of the two sockets was advertised in SDP, or is the RTCP companion
+    /// port of one. Works when no media was captured at all.
+    SdpEndpoint,
+    /// Nothing matched. The evidence is still real — only the stream is
+    /// unknown — so callers count it rather than dropping it.
+    #[default]
+    None,
+}
+
+/// What a media ICMP quote was tied to, and by which rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MediaAttribution {
+    /// The strongest tier that matched.
+    pub matched: MediaMatch,
+    /// How many tracked streams the tier matched. Zero for an SDP-only match,
+    /// which by definition has no stream behind it.
+    pub streams: usize,
+    /// `Call-ID`s of the dialogs the matched media belongs to, deduplicated.
+    /// Empty when the streams matched were never linked to a dialog.
+    pub call_ids: Vec<String>,
+}
 
 /// A media endpoint negotiated in SDP, retained so an RTP stream that appears
 /// *after* its SDP (the usual order — INVITE/200 precede the first RTP packet,
@@ -111,6 +150,45 @@ impl RemoteReceptionReport {
     }
 }
 
+/// What an endpoint asserted about a stream in an RTCP XR VoIP Metrics block
+/// (RFC 3611 Section 4.7) — never sipnab's own measurement.
+///
+/// This is the far end telling you what *it* experienced: its own R factor,
+/// its own MOS-LQ and MOS-CQ, its burst and gap loss densities, its round-trip
+/// and end-system delay, its jitter buffer sizing. Some of that sipnab cannot
+/// measure from a capture at any vantage point — discard rate counts packets
+/// that arrived and were then thrown away by the jitter buffer, and end-system
+/// delay is entirely inside the endpoint.
+///
+/// Kept beside sipnab's own figures for the same two reasons
+/// [`RemoteReceptionReport`] is:
+///
+/// - **Provenance.** RTCP is unauthenticated. An endpoint-asserted MOS of 4.4
+///   and a sipnab-estimated MOS of 2.1 are different kinds of fact, and an
+///   operator has to be able to tell which they are reading.
+/// - **Vantage.** These metrics describe the path as far as *the reporter*. On
+///   a mid-path capture that is a different segment, so the two disagreeing is
+///   the finding, not a problem to resolve by overwrite.
+///
+/// Nothing here feeds [`estimate_mos`](crate::rtp::quality::estimate_mos), the
+/// stream's `jitter`, its `lost_packets`, or any quality interval. A forged XR
+/// cannot move a single number sipnab computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RemoteVoipMetrics {
+    /// SSRC of the endpoint that sent the XR — the reporter, not the source
+    /// being reported on.
+    pub reporter_ssrc: u32,
+    /// The block exactly as it arrived. Read it through the accessors on
+    /// [`VoipMetrics`], which apply RFC 3611's "unavailable" sentinels and the
+    /// two's-complement signal and noise levels.
+    pub metrics: VoipMetrics,
+    /// How many VoIP Metrics blocks about this stream have been folded in.
+    /// [`Self::metrics`] holds the most recent; this says whether that is a
+    /// single sample or a long-running report.
+    pub reports_seen: u64,
+}
+
 /// Per-stream facts that are about the *provenance* of a stream's numbers
 /// rather than about the media, kept in the store so `RtpStream` stays a
 /// record of what was observed.
@@ -118,6 +196,8 @@ impl RemoteReceptionReport {
 struct StreamProvenance {
     /// The most recent RTCP reception report about this stream, if any.
     remote: Option<RemoteReceptionReport>,
+    /// The most recent RTCP XR VoIP Metrics block about this stream, if any.
+    voip_metrics: Option<RemoteVoipMetrics>,
     /// `packet_count` at which the jitter estimator was restarted because the
     /// clock rate was corrected after packets had already been folded in at
     /// the wrong one. `None` means it was never restarted.
@@ -382,12 +462,14 @@ impl StreamStore {
         }
     }
 
-    /// Record RTCP reception reports **beside** each stream's own measurement.
+    /// Record what RTCP asserted **beside** each stream's own measurement.
     ///
-    /// Reports are filed in the provenance side-table, readable via
-    /// [`Self::remote_report`]. They do not touch `RtpStream::jitter` or
-    /// `RtpStream::lost_packets`, which stay what sipnab measured from the
-    /// media it observed, and they therefore cannot move MOS.
+    /// Reception reports (SR/RR) are filed in the provenance side-table,
+    /// readable via [`Self::remote_report`]; XR VoIP Metrics blocks are filed
+    /// alongside them, readable via [`Self::remote_voip_metrics`]. Neither
+    /// touches `RtpStream::jitter` or `RtpStream::lost_packets`, which stay
+    /// what sipnab measured from the media it observed, and neither can
+    /// therefore move MOS.
     ///
     /// This used to assign `stream.lost_packets = report.cumulative_lost` and
     /// `stream.jitter` from the report. Both were wrong twice over:
@@ -413,11 +495,17 @@ impl StreamStore {
     /// against **every** tracked stream carrying the reported SSRC (a source
     /// relayed through the capture point appears under more than one 5-tuple;
     /// filing the report against an arbitrary one of them was itself a
-    /// misattribution), incrementing that stream's `reports_seen`. Other RTCP
-    /// packet types and unknown SSRCs are ignored. Does not bump the
-    /// generation — no stream's identity, dialog or codec changes.
+    /// misattribution), incrementing that stream's `reports_seen`. For every
+    /// VoIP Metrics block inside an XR, the same treatment against the same
+    /// index, readable via [`Self::remote_voip_metrics`]. Other RTCP packet
+    /// types and unknown SSRCs are ignored. Does not bump the generation — no
+    /// stream's identity, dialog or codec changes.
     pub fn process_rtcp(&mut self, packets: &[RtcpPacket]) {
         for pkt in packets {
+            if let RtcpPacket::ExtendedReport(xr) = pkt {
+                self.record_extended_report(xr);
+                continue;
+            }
             let reports: &[ReceptionReport] = match pkt {
                 RtcpPacket::SenderReport(sr) => &sr.reports,
                 RtcpPacket::ReceiverReport(rr) => &rr.reports,
@@ -464,11 +552,64 @@ impl StreamStore {
         }
     }
 
+    /// File an XR's VoIP Metrics blocks in the provenance side-table.
+    ///
+    /// The same rule as [`Self::process_rtcp`]: filed **beside** the stream's
+    /// own numbers, never into them. RFC 3611 lets one XR carry several block
+    /// types; only VoIP Metrics (BT=7) names a source SSRC whose reception it
+    /// describes in figures comparable with sipnab's own, so it is the only
+    /// one recorded here. The rest are decoded by
+    /// [`parse_rtcp`](crate::rtp::rtcp::parse_rtcp) and go unrecorded, which
+    /// is the honest state until something consumes them.
+    ///
+    /// # Side effects
+    ///
+    /// Records each block against **every** tracked stream carrying the
+    /// reported SSRC — one source relayed through the capture point appears
+    /// under more than one 5-tuple, and picking an arbitrary one of them is a
+    /// misattribution. Unknown SSRCs are ignored. Does not bump the
+    /// generation: no stream's identity, dialog or codec changes.
+    fn record_extended_report(&mut self, xr: &ExtendedReport) {
+        for block in &xr.blocks {
+            let XrBlock::VoipMetrics(metrics) = block else {
+                continue;
+            };
+            let Some(keys) = self.ssrc_index.get(&metrics.ssrc) else {
+                continue;
+            };
+            let keys = keys.clone();
+            for key in &keys {
+                if !self.streams.contains_key(key) {
+                    continue;
+                }
+                let entry = self.provenance.entry(key.clone()).or_default();
+                let reports_seen = entry
+                    .voip_metrics
+                    .map_or(0, |m| m.reports_seen)
+                    .saturating_add(1);
+                entry.voip_metrics = Some(RemoteVoipMetrics {
+                    reporter_ssrc: xr.ssrc,
+                    metrics: *metrics,
+                    reports_seen,
+                });
+            }
+        }
+    }
+
     /// What a remote endpoint most recently asserted about this stream, if
     /// anything — never sipnab's own measurement. See
     /// [`RemoteReceptionReport`] for why the two are kept apart.
     pub fn remote_report(&self, key: &StreamKey) -> Option<&RemoteReceptionReport> {
         self.provenance.get(key).and_then(|p| p.remote.as_ref())
+    }
+
+    /// What an endpoint most recently asserted about this stream in an RTCP XR
+    /// VoIP Metrics block, if anything — never sipnab's own measurement. See
+    /// [`RemoteVoipMetrics`] for why the two are kept apart.
+    pub fn remote_voip_metrics(&self, key: &StreamKey) -> Option<&RemoteVoipMetrics> {
+        self.provenance
+            .get(key)
+            .and_then(|p| p.voip_metrics.as_ref())
     }
 
     /// How a stream's RTP clock rate came to be known, or `None` if the stream
@@ -768,6 +909,146 @@ impl StreamStore {
     /// Look up a stream by its key.
     pub fn get(&self, key: &StreamKey) -> Option<&RtpStream> {
         self.streams.get(key)
+    }
+
+    /// Tie an ICMP error's quoted datagram to the media this store tracked.
+    ///
+    /// An ICMP error about media carries no `Call-ID` — a media datagram has
+    /// none to carry — so the signalling side's association key does not exist
+    /// here. What the quote does carry is the failed datagram's own 5-tuple
+    /// and, when the router quoted more than RFC 792's 8-byte minimum, an RTP
+    /// or RTCP header with an SSRC. Those are matched here, most specific
+    /// first, and the tier that succeeded is returned so a reader can see how
+    /// strong the tie is rather than being handed a bare "matched".
+    ///
+    /// The tiers, and why each exists:
+    ///
+    /// 1. [`MediaMatch::Flow`] — the quoted directed 5-tuple is exactly a
+    ///    tracked stream. The quote describes a datagram sipnab itself saw as
+    ///    RTP; nothing weaker is needed and nothing stronger exists.
+    /// 2. [`MediaMatch::Ssrc`] — the quoted payload named a tracked stream's
+    ///    SSRC. This is what carries the commonest real case: RTCP runs one
+    ///    port above RTP (RFC 3550 §11), so an error about RTCP can never
+    ///    match a stream's 5-tuple, and in one real corpus the media errors
+    ///    were predominantly RTCP.
+    /// 3. [`MediaMatch::Endpoint`] — one of the two sockets is an endpoint of
+    ///    a tracked stream, in either direction. Covers a capture that saw
+    ///    only one half of the media.
+    /// 4. [`MediaMatch::SdpEndpoint`] — the socket was advertised in SDP, or
+    ///    is the RTCP companion (one port above) of one. This is the only tier
+    ///    that works when no media was captured at all, which is exactly the
+    ///    case an operator asks about when they say "the call connected and
+    ///    there was no audio".
+    /// 5. [`MediaMatch::None`] — nothing matched. The caller counts it as
+    ///    unattributed; it is never discarded, because the endpoint it names
+    ///    is real whether or not this capture holds its stream.
+    ///
+    /// Both sockets are tried at tiers 3 and 4, destination first: the ICMP
+    /// error is *about* the destination, but the source is our own media port
+    /// and identifies the call just as well when the destination is unknown.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` — the quoted datagram's source: the socket that sent the media.
+    /// * `dst` — the quoted datagram's destination: the socket that did not
+    ///   answer.
+    /// * `ssrc` — SSRC read out of the quoted payload, when the quote reached
+    ///   it. `None` is the RFC 792 case, not a failure.
+    ///
+    /// # Returns
+    ///
+    /// The strongest tier that matched, with the `Call-ID`s it named
+    /// (deduplicated, in stream insertion order). `MediaMatch::None` with no
+    /// call IDs when nothing matched.
+    pub fn attribute_media_quote(
+        &self,
+        src: SocketAddr,
+        dst: SocketAddr,
+        ssrc: Option<u32>,
+    ) -> MediaAttribution {
+        let dst_ep = (dst.ip(), dst.port());
+        let src_ep = (src.ip(), src.port());
+
+        // 1. The quoted 5-tuple is a stream, exactly and directionally.
+        if let Some(keys) = self.endpoint_index.get(&dst_ep) {
+            let exact: Vec<&StreamKey> = keys
+                .iter()
+                .filter(|k| k.src == src && k.dst == dst)
+                .collect();
+            if !exact.is_empty() {
+                return self.attribution(MediaMatch::Flow, exact.into_iter());
+            }
+        }
+
+        // 2. The quoted payload named a tracked SSRC.
+        if let Some(keys) = ssrc.and_then(|s| self.ssrc_index.get(&s))
+            && !keys.is_empty()
+        {
+            return self.attribution(MediaMatch::Ssrc, keys.iter());
+        }
+
+        // 3. Either socket is an endpoint of a tracked stream.
+        for ep in [&dst_ep, &src_ep] {
+            if let Some(keys) = self.endpoint_index.get(ep)
+                && !keys.is_empty()
+            {
+                return self.attribution(MediaMatch::Endpoint, keys.iter());
+            }
+        }
+
+        // 4. Either socket was advertised in SDP, or is its RTCP companion.
+        //    RFC 3550 §11: when the media port is even, RTCP uses the next
+        //    port up, and no SDP line ever mentions it.
+        for sock in [dst, src] {
+            let companion = sock.port().checked_sub(1).filter(|p| p % 2 == 0);
+            for port in [Some(sock.port()), companion].into_iter().flatten() {
+                if let Some(ep) = self.sdp_endpoints.get(&(sock.ip(), port)) {
+                    return MediaAttribution {
+                        matched: MediaMatch::SdpEndpoint,
+                        streams: 0,
+                        call_ids: vec![ep.call_id.clone()],
+                    };
+                }
+            }
+        }
+
+        MediaAttribution::default()
+    }
+
+    /// Collect the dialogs behind a set of matched stream keys.
+    ///
+    /// Split out so each tier above states only its own matching rule; the
+    /// answer they all produce — how many streams, and which calls — is built
+    /// once here and cannot drift between tiers.
+    fn attribution<'a>(
+        &self,
+        matched: MediaMatch,
+        keys: impl Iterator<Item = &'a StreamKey>,
+    ) -> MediaAttribution {
+        let mut streams = 0usize;
+        let mut call_ids: Vec<String> = Vec::new();
+        for key in keys {
+            let Some(stream) = self.streams.get(key) else {
+                continue;
+            };
+            streams += 1;
+            if let Some(id) = &stream.associated_dialog
+                && !call_ids.iter().any(|c| c == id)
+            {
+                call_ids.push(id.clone());
+            }
+        }
+        // Every key came from an index this store maintains, so a zero here
+        // would mean the index outlived its streams. Report no match rather
+        // than a match onto nothing.
+        if streams == 0 {
+            return MediaAttribution::default();
+        }
+        MediaAttribution {
+            matched,
+            streams,
+            call_ids,
+        }
     }
 
     /// Insert a pre-built stream directly (unit tests only) — bypasses
@@ -1732,6 +2013,173 @@ a=rtpmap:96 H264/90000\r\n";
         assert!((remote.fraction_lost_pct() - 25.0 * 100.0 / 256.0).abs() < 1e-9);
     }
 
+    /// A VoIP Metrics block whose every field disagrees with the fixture, so
+    /// any leak into a measured field is unmistakable.
+    fn hostile_metrics(ssrc: u32) -> VoipMetrics {
+        VoipMetrics {
+            ssrc,
+            loss_rate: 128,   // "50% of my packets are gone"
+            discard_rate: 64, // "and I threw away another 25%"
+            burst_density: 200,
+            gap_density: 4,
+            burst_duration: 3_000,
+            gap_duration: 100,
+            round_trip_delay: 450,
+            end_system_delay: 90,
+            signal_level: 0xEC, // -20 dBm0
+            noise_level: 0xB0,  // -80 dBm0
+            rerl: 30,
+            gmin: 16,
+            r_factor: 32,
+            ext_r_factor: 127, // unavailable
+            mos_lq: 15,        // 1.5
+            mos_cq: 13,        // 1.3
+            jb_nominal: 40,
+            jb_maximum: 120,
+            jb_abs_max: 65_535,
+        }
+    }
+
+    /// Build a two-packet PCMU stream and return its key, for the XR tests.
+    fn xr_fixture(store: &mut StreamStore, ssrc: u32) -> StreamKey {
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(ssrc, 1), ts(0));
+        store.process_rtp(&parsed, &make_rtp_header(ssrc, 2), ts(1));
+        StreamKey {
+            ssrc,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        }
+    }
+
+    /// An XR VoIP Metrics block is retained, not discarded.
+    ///
+    /// The whole of RTCP XR used to reach `process_rtcp` fully decoded and fall
+    /// through its `_ => continue`, so the far end's own R factor, MOS and
+    /// burst/gap densities were parsed and then dropped on the floor.
+    #[test]
+    fn process_rtcp_retains_xr_voip_metrics() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0xABCD);
+
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x2222,
+            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xABCD))],
+        })]);
+
+        let xr = store
+            .remote_voip_metrics(&key)
+            .expect("XR VoIP Metrics must be retained, not dropped");
+        assert_eq!(xr.reporter_ssrc, 0x2222);
+        assert_eq!(xr.reports_seen, 1);
+        assert_eq!(xr.metrics.r_factor(), Some(32));
+        assert_eq!(xr.metrics.mos_lq(), Some(1.5));
+        assert_eq!(xr.metrics.mos_cq(), Some(1.3));
+        assert_eq!(xr.metrics.ext_r_factor(), None, "127 means unavailable");
+        assert_eq!(xr.metrics.signal_level_dbm0(), Some(-20));
+        assert_eq!(xr.metrics.round_trip_delay, 450);
+    }
+
+    /// The far end's XR figures never become sipnab's.
+    ///
+    /// This is the #61 rule applied to XR: a block claiming 50% loss, 25%
+    /// discard and a MOS of 1.5 must leave the stream's measured jitter, its
+    /// measured loss and the MOS scored from them exactly where they were.
+    /// Merging the two would replace a measurement with a claim, and an
+    /// unauthenticated one.
+    #[test]
+    fn xr_voip_metrics_never_overwrite_the_measurement() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0xBEEF);
+
+        let mos_of = |store: &StreamStore| {
+            let s = store.get(&key).unwrap();
+            let total = s.packet_count + s.lost_packets;
+            let loss_pct = s.lost_packets as f64 / total as f64 * 100.0;
+            crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref())
+        };
+        let measured_jitter = store.get(&key).unwrap().jitter;
+        let measured_lost = store.get(&key).unwrap().lost_packets;
+        let measured_mos = mos_of(&store);
+        assert_eq!(measured_lost, 0, "the fixture stream has no sequence gaps");
+
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x2222,
+            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xBEEF))],
+        })]);
+
+        let stream = store.get(&key).expect("stream should exist");
+        assert_eq!(
+            stream.lost_packets, measured_lost,
+            "an endpoint's claimed loss rate must not become sipnab's loss count"
+        );
+        assert!(
+            (stream.jitter - measured_jitter).abs() < f64::EPSILON,
+            "an endpoint's claimed delay must not become sipnab's jitter"
+        );
+        assert!(
+            (mos_of(&store) - measured_mos).abs() < f64::EPSILON,
+            "an endpoint asserting MOS 1.5 must not move the MOS sipnab scored"
+        );
+    }
+
+    /// Successive XRs replace the figures and count up, so a reader can tell a
+    /// single sample from a long-running report.
+    #[test]
+    fn xr_voip_metrics_count_reports_and_keep_the_latest() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0xC0DE);
+
+        for r in [40u8, 80u8] {
+            let mut m = hostile_metrics(0xC0DE);
+            m.r_factor = r;
+            store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x2222,
+                blocks: vec![XrBlock::VoipMetrics(m)],
+            })]);
+        }
+
+        let xr = store.remote_voip_metrics(&key).expect("XR recorded");
+        assert_eq!(xr.reports_seen, 2, "both blocks counted");
+        assert_eq!(xr.metrics.r_factor(), Some(80), "the latest block wins");
+    }
+
+    /// An XR about an SSRC no stream carries is ignored rather than filed
+    /// against an arbitrary stream.
+    #[test]
+    fn xr_for_an_unknown_ssrc_is_ignored() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0x1234);
+
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x2222,
+            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0x9999))],
+        })]);
+
+        assert!(
+            store.remote_voip_metrics(&key).is_none(),
+            "a report about another SSRC must not attach to this stream"
+        );
+    }
+
+    /// An XR carrying only block types sipnab does not record leaves no trace,
+    /// and does not invent an empty entry that reads as "the far end reported".
+    #[test]
+    fn xr_without_voip_metrics_records_nothing() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0x4321);
+
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x2222,
+            blocks: vec![
+                XrBlock::ReceiverReferenceTime { ntp_timestamp: 7 },
+                XrBlock::Unknown { block_type: 6 },
+            ],
+        })]);
+
+        assert!(store.remote_voip_metrics(&key).is_none());
+    }
+
     /// MOS is scored from sipnab's own measurement, so a forged RTCP report
     /// cannot move it. RTCP is unauthenticated; before this, a single spoofed
     /// datagram claiming heavy loss dropped a clean stream to the MOS floor.
@@ -2173,5 +2621,201 @@ a=rtpmap:96 H264/90000\r\n";
         }
 
         assert_eq!(store.iter().count(), 5);
+    }
+
+    // -- attributing an ICMP quote to media ------------------------------
+
+    /// The sender of the media in `make_parsed`.
+    fn a() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+    /// The receiver in `make_parsed` — the one an ICMP error is about.
+    fn b() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
+    }
+
+    /// A store holding one stream `a:20000 -> b:30000` with SSRC `0xC0FFEE`,
+    /// linked to `call-1`.
+    fn store_with_one_stream() -> StreamStore {
+        let mut store = StreamStore::new(100);
+        store.link_endpoint(b(), 30000, "call-1", &[]);
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0x00C0_FFEE, 1),
+            ts(0),
+        );
+        store
+    }
+
+    /// Tier 1: the quoted 5-tuple is exactly a tracked stream. Strongest tie
+    /// available, and it names the call.
+    #[test]
+    fn an_exact_five_tuple_matches_the_stream_it_names() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20000),
+            SocketAddr::new(b(), 30000),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::Flow);
+        assert_eq!(att.streams, 1);
+        assert_eq!(att.call_ids, vec!["call-1".to_string()]);
+    }
+
+    /// Both halves of the 5-tuple are part of the key. Two senders can be
+    /// aiming at one media port — a re-INVITE, a second leg, a stray sender —
+    /// and only the one whose source socket matches is the tracked flow.
+    /// Matching on the destination alone would report the wrong stream, and
+    /// with it the wrong call, for the other.
+    #[test]
+    fn a_different_sender_to_the_same_socket_is_not_the_same_flow() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            // Same destination socket, a different source port.
+            SocketAddr::new(a(), 20002),
+            SocketAddr::new(b(), 30000),
+            None,
+        );
+        assert_ne!(
+            att.matched,
+            MediaMatch::Flow,
+            "the source socket is half the key: this is not that stream's flow"
+        );
+        assert_eq!(att.matched, MediaMatch::Endpoint);
+    }
+
+    /// The same, the other way round: the tracked source socket aiming at a
+    /// destination no stream ever used is not the tracked flow either.
+    #[test]
+    fn the_same_sender_to_a_different_socket_is_not_the_same_flow() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20000),
+            SocketAddr::new(b(), 30002),
+            None,
+        );
+        assert_ne!(
+            att.matched,
+            MediaMatch::Flow,
+            "the destination socket is the other half of the key"
+        );
+        assert_eq!(att.matched, MediaMatch::Endpoint);
+    }
+
+    /// Direction is part of the key. A quote of the reverse datagram describes
+    /// a different flow, and reporting it as the same one would claim the
+    /// wrong socket failed. It still matches — both sockets belong to the same
+    /// media — but at the weaker endpoint tier, which says so.
+    #[test]
+    fn the_reverse_direction_is_not_an_exact_flow_match() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(b(), 30000),
+            SocketAddr::new(a(), 20000),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::Endpoint);
+    }
+
+    /// Tier 2: RTCP runs one port above RTP, so its 5-tuple can never be a
+    /// stream's. The SSRC in the quoted report is the tie that survives, and
+    /// it is what carries the commonest real case.
+    #[test]
+    fn an_rtcp_port_pair_matches_on_ssrc_alone() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20001),
+            SocketAddr::new(b(), 30001),
+            Some(0x00C0_FFEE),
+        );
+        assert_eq!(att.matched, MediaMatch::Ssrc);
+        assert_eq!(att.call_ids, vec!["call-1".to_string()]);
+    }
+
+    /// Tier 4: with no media captured at all, the SDP-advertised port one
+    /// below still places an RTCP failure on the call. This is the case an
+    /// operator is describing when they say the call connected silently.
+    #[test]
+    fn an_rtcp_port_falls_back_to_the_sdp_port_one_below() {
+        let mut store = StreamStore::new(100);
+        store.link_endpoint(b(), 30000, "call-2", &[]);
+        assert_eq!(store.len(), 0, "an SDP link creates no stream");
+
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20001),
+            SocketAddr::new(b(), 30001),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::SdpEndpoint);
+        assert_eq!(att.streams, 0, "an SDP match has no stream behind it");
+        assert_eq!(att.call_ids, vec!["call-2".to_string()]);
+    }
+
+    /// The companion rule is one port up from an EVEN media port, per RFC 3550
+    /// §11. Reading it as "any port, minus one" would attach an error on an
+    /// even port to whatever odd port happened to be advertised below it.
+    #[test]
+    fn the_rtcp_companion_rule_only_applies_above_an_even_port() {
+        let mut store = StreamStore::new(100);
+        // An odd advertised port: nothing may be inferred one above it.
+        store.link_endpoint(b(), 30001, "call-3", &[]);
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20002),
+            SocketAddr::new(b(), 30002),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::None);
+    }
+
+    /// Nothing matched is a real answer, not a failure: the caller counts it
+    /// as unattributed and still reports the endpoint.
+    #[test]
+    fn an_unrelated_flow_matches_nothing() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 41000),
+            SocketAddr::new(b(), 51000),
+            Some(0xDEAD_BEEF),
+        );
+        assert_eq!(att.matched, MediaMatch::None);
+        assert_eq!(att.streams, 0);
+        assert!(att.call_ids.is_empty());
+    }
+
+    /// A stream never linked to a dialog still matches — the flow is real —
+    /// but names no call, and must not invent one.
+    #[test]
+    fn a_stream_without_a_dialog_matches_but_names_no_call() {
+        let mut store = StreamStore::new(100);
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0x00C0_FFEE, 1),
+            ts(0),
+        );
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20000),
+            SocketAddr::new(b(), 30000),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::Flow);
+        assert_eq!(att.streams, 1);
+        assert!(
+            att.call_ids.is_empty(),
+            "an unlinked stream has no call to name"
+        );
+    }
+
+    /// An empty store matches nothing, which is the answer for a capture that
+    /// holds no media — and it must not panic reaching for indexes that are
+    /// empty.
+    #[test]
+    fn an_empty_store_matches_nothing() {
+        let store = StreamStore::new(100);
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20000),
+            SocketAddr::new(b(), 30000),
+            Some(1),
+        );
+        assert_eq!(att, MediaAttribution::default());
     }
 }

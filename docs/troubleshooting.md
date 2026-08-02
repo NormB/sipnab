@@ -147,10 +147,12 @@ Signalling Issues:
 
 **Next steps:**
 
-1. `port unreachable` means the host is up and nothing is listening on that port. Check that the SIP service is running and bound where you think, and that the port in the `Contact`/`Via` matches what it actually listens on.
-2. `host unreachable` or `network unreachable` is a routing problem short of the destination -- the reporter names the hop that gave up.
-3. `administratively prohibited` is a firewall saying no, on purpose. Someone configured that.
+1. `port unreachable` means the host is up and nothing is listening on that port. Check that the SIP service is running and bound where you think, and that the port in the `Contact`/`Via` matches what it actually listens on. **This is not a network fault.**
+2. `host unreachable` or `network unreachable` is a routing problem short of the destination -- the reporter names the hop that gave up. Nothing reached the host, so the capture says nothing about its ports.
+3. `administratively prohibited` (v4 codes 9, 10, 13; v6 type 1 code 1) is a **firewall or router ACL, not a dead host**. The peer may be perfectly healthy and answering everyone else. The fix is on the filtering device, and it is a different team from the one you call about an unreachable host. On one real corpus a single capture held 433 host-unreachable and 262 administratively prohibited errors -- treating them the same would have sent an engineer to the wrong device 262 times.
 4. No ICMP at all does **not** clear the network: most firewalls drop ICMP errors outright, and the summary can only report what the capture holds.
+
+When a call shows both `retransmissions` and `icmp_unreachable`, read them together rather than as two problems. The retransmission count is how hard the sender tried. The ICMP error is why nothing came back. sipnab annotates the retransmission finding with `icmp_cause` and stops offering its own guess at the reason, but keeps the count -- "11 OPTIONS over 300 s" and "3 INVITEs over 3 s" are the same cause and a very different operational picture.
 
 There is no `icmp` field in the Filter DSL, so select these calls with `jq` on `--json-dialogs` as above rather than with `--filter`.
 
@@ -252,17 +254,32 @@ sipnab -N -I capture.pcap --filter "one_way == true" --json
 
 Get the diagnosis detail (`one_way_audio`, `nat_mismatch`, hints) per call with `--call-report <call-id>`.
 
+### First: check whether the network already answered
+
+Before reasoning about NAT, look at the end of the run. If anything sent an ICMP error about the media itself, the network has already stated the cause and there is nothing to infer:
+
+```text
+ICMP: 27 error(s) quoting non-SIP traffic, 27 of them media, across 6 flow(s). Attributed to a stream or SDP endpoint: 27; matched nothing this capture holds: 0.
+  ICMP port unreachable: RTP (payload type 0) from 192.0.2.5:42180 to 198.51.100.9:21750 could not be delivered (11 times), reported by 198.51.100.9. This is one of the media streams in this capture (1 call(s) affected). Audio sent that way is discarded before it arrives, which is heard as one-way or missing audio. The host answered, so it is reachable -- nothing was listening on that port. Check the service and the address it binds, not the network.
+```
+
+A media ICMP error has no `Call-ID` to file itself under, so sipnab matches the quoted datagram's own 5-tuple against the streams it tracked, then the SSRC inside the quote, then either socket against a tracked stream endpoint, then against an SDP-advertised media address (or the RTCP port one above it, per RFC 3550 Section 11). Each line says which rule matched, because they are not equally strong.
+
+A quote that matches nothing is still counted and still printed -- the endpoint it names is real whether or not this capture holds the stream, and "matched nothing this capture holds" is a prompt to widen the capture, not a reason to hide the evidence.
+
 **What to look for:**
 
+- ICMP errors against the media ports (above) -- a stated cause, not an inference. Read these before anything else in this section.
 - `nat_mismatch == true` alongside `one_way` -- RTP reached the capture point from an address no SDP in the dialog advertised, which is what a NAT rewriting the media source looks like. This is the most common cause.
 - Codec asymmetry in the SDP offer/answer (one side offers a codec the other doesn't support).
 - RTP ports in the SDP that never receive traffic (firewall blocking the return path).
 
 **Next steps:**
 
-1. Check NAT: `sipnab -N -I capture.pcap --filter "one_way == true AND nat_mismatch == true" --json`
-2. If NAT is the cause: enable `fix_nated_contact` / `fix_nated_register` on the proxy, or deploy a TURN server.
-3. If NAT is clean: verify symmetric RTP, check for SIP ALG on intermediate firewalls (disable it), and confirm both endpoints negotiate a common codec.
+1. If the run printed a media ICMP line, act on that first: it names the socket that rejected the audio and the device that reported it. Nothing below can improve on a router's own statement.
+2. Check NAT: `sipnab -N -I capture.pcap --filter "one_way == true AND nat_mismatch == true" --json`
+3. If NAT is the cause: enable `fix_nated_contact` / `fix_nated_register` on the proxy, or deploy a TURN server.
+4. If NAT is clean: verify symmetric RTP, check for SIP ALG on intermediate firewalls (disable it), and confirm both endpoints negotiate a common codec.
 
 ---
 

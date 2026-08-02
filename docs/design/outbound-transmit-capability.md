@@ -139,6 +139,38 @@ when the operator adds a flag that says they mean it (section 5 names it
 `--replay-to`). That is a small change and it does not need the rest of this
 design to land.
 
+### 3.1 Resolved — announce, do not refuse
+
+The paragraph above proposed a refusal. The shipped fix announces instead, on
+the project owner's standing rule that HEP and OpenTelemetry transmit are
+permitted. Read section 3 with that correction in mind. The word
+"exfiltrate" above also overstates the case, because the operator chose the
+destination.
+
+Refusing would break replaying an archived capture into a Homer instance, which
+section 4 itself lists as a legitimate want. What was actually wrong was
+narrower, and all three parts now have a fix:
+
+1. **Nothing said a file source forwards the file's contents.**
+   `capture::hep::file_export_notice` now says exactly that, and
+   `bootstrap::plan` logs it beside the kill-path refusal, before the capture
+   thread opens anything. It names the flag, the destination, and the capture
+   files. `docs/cli-reference.md` carries the same warning under
+   "What `--hep-send` sends".
+2. **The run described the socket, not the consequence.** "HEP sender targeting
+   `<addr>`" stays, and the announcement above it supplies the meaning.
+3. **The export sat outside the permit system.** It now has
+   `capture::hep::HepExportPermit`, minted from a
+   `capture::hep::OperatorDestination` and required by the one function that
+   touches the socket. Per section 5.1 this is a second permit rather than a
+   wider `TransmitPermit`, and neither converts into the other.
+   `tests/hep_send_file_export_test.rs` pins the absence of every conversion
+   that would let a recorded address become a destination.
+
+`OperatorDestination` lives in `capture/hep.rs` rather than in `security/`
+because HEP export is its only caller today, which is recommendation 2 of
+section 7. Promote it when a second capability needs it.
+
 **A related, smaller one.** `--reverse-dns` calls `reverse_dns`
 ([`names.rs:530`](../../src/names.rs)), whose own doc comment says *"Emits DNS
 queries on the network"*. On a file source the addresses queried are the

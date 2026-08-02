@@ -248,16 +248,29 @@ wildcard and discarded. sipnab runs `sh -c <operator command>` and never learns
 whether the ban it asked for happened. A failing hook and a succeeding one are
 indistinguishable.
 
-**A fourth, not previously recorded.** `--alert-exec` has **no rate limit at
-all.** It lives in `alerting.rs`, not `event_exec.rs`, and shares none of that
-module's limiting: its only bound is a hardcoded cap of 100 concurrent children
-([`alerting.rs:353`](../../src/security/alerting.rs)), over which the alert is
-dropped with a warning. The cooldown in `AlertRule` is per `(source IP, rule
-name)` and defaults to twice the window
-([`alerting.rs:99`](../../src/security/alerting.rs)), which bounds repeats
-against *one* source and does nothing against many. `--exec-rate-limit` does not
-apply. A detector that names 180 peers therefore spawns against all 180 —
-precisely the shape of both defects in section 2.
+**A fourth, not previously recorded — now fixed.** `--alert-exec` had **no rate
+limit at all.** It lives in `alerting.rs`, not `event_exec.rs`, and shared none
+of that module's limiting. Its only bound was a hardcoded cap of 100 concurrent
+children, over which the alert dropped with a warning. The cooldown in
+`AlertRule` is per `(source IP, rule name)`, which bounds repeats against *one*
+source and does nothing against many, and `--exec-rate-limit` did not reach this
+path. A detector naming 180 peers therefore spawned against all 180 — precisely
+the shape of both defects in section 2.
+
+It now carries two budgets, both in capture time: 10 per second globally, which
+is `--exec-rate-limit`'s own default and the kill worker's `DEFAULT_RATE_LIMIT`,
+and 3 per minute per source IP, which is the kill path's
+`MAX_PER_DST_PER_MINUTE` that section 5(c) below already named as the model. The
+per-source check runs first, so a noisy source never spends the shared window.
+Every alert still fires. Only the command is held back, and the teardown line
+counts the suppressions by reason.
+
+**Keep this measurement when designing the next limiter.** On `tg.pcap0` —
+43,300 messages over 11.165 s — the fix took 231 spawns down to 24. All 207
+suppressions came from the **per-source** cap and none from the global one. The
+obvious fix, a single global rate limit, would have changed nothing on that
+traffic. Only a real capture showed that. A synthetic flood from one address
+would have made the global limiter look sufficient.
 
 **And the record itself cannot answer the question.** `Finding`
 ([`alerting.rs:143-152`](../../src/security/alerting.rs)) carries `rule_name`,
@@ -270,11 +283,16 @@ from its own state.
 ## 7. Recommendation
 
 **Close the blind spots first, as ordinary defects, before building anything
-new.** Log the event-exec rate-limit drop; check the child's exit status; expose
-the kill tally during a run rather than only at shutdown; give `--alert-exec` the
-same rate limit `--on-dialog-exec` has. These are small, they improve today's
-`tracing` output on their own, and until they are done no threshold in section 5
-can be verified from the outside.
+new.** Log the event-exec rate-limit drop. Check the child's exit status. Expose
+the kill tally during a run rather than only at shutdown. These are small, they
+improve today's `tracing` output on their own, and until they are done no
+threshold in section 5 can be verified from the outside.
+
+The fourth item on that list — giving `--alert-exec` a real rate limit — is
+**done**, and section 6 records both what shipped and the measurement that
+picked per-source over global. One wiring remains: `--exec-rate-limit` still
+does not reach the alert path, so the global budget sits at its default and the
+flag stays inert there.
 
 **Do not add new automated-response wiring in the meantime.** Specifically: do
 not arm the behavioural scanner detector from `--fail2ban`, and do not add a

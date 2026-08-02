@@ -25,7 +25,7 @@ use std::sync::Arc;
 use sipnab::capture::parse::parse_packet;
 use sipnab::pipeline::{self, PacketAction, PipelineOptions};
 use sipnab::rtp::heuristic::RtpHeuristic;
-use sipnab::rtp::rtcp::{is_rtcp_packet_type, looks_like_rtcp, parse_rtcp};
+use sipnab::rtp::rtcp::{RtcpPacket, XrBlock, is_rtcp_packet_type, looks_like_rtcp, parse_rtcp};
 use sipnab::rtp::stream::StreamKey;
 use sipnab::rtp::stream_store::{ClockGrounding, StreamStore};
 use sipnab::sip::dialog_store::DialogStore;
@@ -284,6 +284,156 @@ fn corpus_rtcp_is_recognized_by_content_not_by_port() {
          outside 200-204 (XR is 207); saw types {types:?}"
     );
     eprintln!("corpus: {rtcp_seen} RTCP datagrams, types {types:?}, {undecodable} with no decoder");
+}
+
+/// On real traffic, no XR VoIP Metrics block about a tracked stream is
+/// discarded.
+///
+/// RTCP XR was decoded in full — the far end's own R factor, MOS-LQ, MOS-CQ,
+/// burst and gap densities, round-trip and end-system delay — and then dropped
+/// on the floor by a `_ => continue` in `process_rtcp` that matched only SR and
+/// RR. The docs meanwhile described the metrics as reaching the detail panel
+/// and the report output. This is the property that closes that: replay the
+/// corpus, count the VoIP Metrics blocks naming an SSRC the store tracks, and
+/// require every one of those streams to be able to show it.
+///
+/// Asserts a property, not a threshold. Counts are printed, never values.
+#[test]
+fn corpus_xr_voip_metrics_are_retained_not_discarded() {
+    let Some(paths) = corpus() else {
+        eprintln!("SIPNAB_CORPUS not set — skipping");
+        return;
+    };
+
+    let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
+    let owned = paths.clone();
+    let reader = std::thread::spawn(move || {
+        let cfg = sipnab::capture::CaptureConfig::default();
+        let _ = sipnab::capture::file::capture_files(&owned, &cfg, tx, None);
+    });
+
+    let dialogs = Arc::new(RwLock::new(DialogStore::new(200_000, false)));
+    let mut streams = StreamStore::new(200_000);
+    let mut heuristic = RtpHeuristic::new();
+    let opts = PipelineOptions::default();
+
+    let mut xr_packets = 0u64;
+    let mut voip_blocks = 0u64;
+    let mut other_blocks = 0u64;
+    // SSRCs named by a VoIP Metrics block, so the retention check runs against
+    // exactly the streams a block was about.
+    let mut reported_ssrcs = std::collections::BTreeSet::new();
+
+    while let Ok(pkt) = rx.recv_timeout(std::time::Duration::from_secs(120)) {
+        let Ok(pp) = parse_packet(&pkt) else { continue };
+        let mut decrypt = pipeline::MediaDecrypt::default();
+        match pipeline::classify_packet(&pp, &mut heuristic, &opts, &mut decrypt) {
+            PacketAction::Sip { msg, sdp_links } => {
+                dialogs.write().process_message(msg);
+                for (ip, port, call_id, media) in &sdp_links {
+                    streams.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                }
+            }
+            PacketAction::Rtcp(pkts) => {
+                for p in &pkts {
+                    if let RtcpPacket::ExtendedReport(xr) = p {
+                        xr_packets += 1;
+                        for b in &xr.blocks {
+                            match b {
+                                XrBlock::VoipMetrics(m) => {
+                                    voip_blocks += 1;
+                                    reported_ssrcs.insert(m.ssrc);
+                                }
+                                _ => other_blocks += 1,
+                            }
+                        }
+                    }
+                }
+                streams.process_rtcp(&pkts);
+            }
+            PacketAction::Rtp { hdr, .. } => streams.process_rtp(&pp, &hdr, pp.timestamp),
+            PacketAction::None => {}
+        }
+    }
+    let _ = reader.join();
+
+    let keys: Vec<StreamKey> = streams.iter().map(|s| s.key.clone()).collect();
+    let mut tracked_and_reported = 0u64;
+    let mut retained = 0u64;
+    for key in &keys {
+        if !reported_ssrcs.contains(&key.ssrc) {
+            continue;
+        }
+        tracked_and_reported += 1;
+        if streams.remote_voip_metrics(key).is_some() {
+            retained += 1;
+        }
+    }
+
+    eprintln!(
+        "corpus: {xr_packets} XR packets, {voip_blocks} VoIP Metrics blocks, \
+         {other_blocks} other XR blocks, {} distinct reported SSRCs, \
+         {tracked_and_reported} tracked streams a block was about, {retained} retained",
+        reported_ssrcs.len()
+    );
+
+    assert!(
+        voip_blocks > 0,
+        "this guard is only meaningful if the corpus carries XR VoIP Metrics; \
+         saw {xr_packets} XR packets carrying none"
+    );
+    assert_eq!(
+        retained,
+        tracked_and_reported,
+        "every VoIP Metrics block naming a tracked stream must be retrievable; \
+         {} were parsed and then discarded",
+        tracked_and_reported - retained
+    );
+    assert!(
+        tracked_and_reported > 0,
+        "the corpus carries VoIP Metrics blocks but none named a tracked \
+         stream — the SSRC index or the RTP path regressed"
+    );
+}
+
+/// On real traffic, an endpoint's XR figures never become sipnab's.
+///
+/// The sibling of `corpus_rtcp_never_moves_the_measurement`, aimed squarely at
+/// XR: for every stream the far end reported on, the number sipnab measured and
+/// the number the endpoint claimed stay separately addressable, and the MOS
+/// sipnab scores comes only from its own.
+#[test]
+fn corpus_xr_never_becomes_the_local_measurement() {
+    let Some(paths) = corpus() else {
+        eprintln!("SIPNAB_CORPUS not set — skipping");
+        return;
+    };
+
+    let with_rtcp = replay(&paths, true);
+    let without = replay(&paths, false);
+    let by_key: std::collections::HashMap<_, _> = without
+        .iter()
+        .map(|(k, o, g)| (k.clone(), (*o, *g)))
+        .collect();
+
+    let mut compared = 0u64;
+    for (key, observed, grounding) in &with_rtcp {
+        let Some((baseline, base_grounding)) = by_key.get(key) else {
+            continue;
+        };
+        compared += 1;
+        assert_eq!(
+            observed, baseline,
+            "RTCP — XR included — moved a measured figure"
+        );
+        assert_eq!(grounding, base_grounding, "RTCP moved a clock grounding");
+    }
+
+    eprintln!("corpus: {compared} streams compared with and without RTCP applied");
+    assert!(
+        compared > 0,
+        "no stream was comparable across the two replays"
+    );
 }
 
 /// A synthesised XR on an odd port, for the case where no corpus is available.
