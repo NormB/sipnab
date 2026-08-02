@@ -408,14 +408,36 @@ sipnab -N -I capture.pcap --filter "rtp.ssrc == '0x12345678'" --json
 
 ### RTCP extended reports
 
-When RTCP XR (PT=207) is present in the capture, sipnab extracts VoIP Metrics (RFC 3611 Section 4.7) including:
-- Round-trip delay, end-system delay
-- Signal/noise levels
-- R-factor, external R-factor
-- MOS-LQ, MOS-CQ
-- Burst/gap loss metrics
+When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
+(RFC 3611 Section 4.7) and keeps it beside the stream the block names:
 
-These metrics appear in the call flow detail panel and in JSON/report output, augmenting the RTP-derived MOS calculation with endpoint-reported quality data.
+- Round-trip delay and end-system delay
+- Signal level, noise level and residual echo return loss
+- R-factor and external R-factor
+- MOS-LQ and MOS-CQ
+- Burst and gap loss densities and durations
+- Jitter buffer nominal, maximum and absolute maximum delay
+
+**Every figure above belongs to the endpoint that sent it, not to sipnab.** The
+TUI Stream Detail view shows them in a **Reported by Far End (RTCP XR)** section
+of their own, below everything sipnab measured. Nothing there feeds the MOS,
+jitter or loss sipnab computes. RTCP carries no authentication, and a mid-path
+capture watches a different path segment than the endpoint reports on, so the
+two disagreeing is the finding rather than a conflict to resolve. This is the
+same rule the reception-report figures follow -- see
+[mos-and-codecs.md](@/docs/mos-and-codecs.md).
+
+RFC 3611 reserves the value 127 for "this parameter is unavailable" on the
+R-factor, both MOS fields, the signal and noise levels and the echo return loss.
+sipnab renders each of those as `n/a`. A raw render would put an R-factor of 127
+on a scale that stops at 100, and a MOS of 12.7 on a scale that stops at 5.0.
+
+The other XR block types -- Loss RLE, Duplicate RLE, Packet Receipt Times,
+Receiver Reference Time, DLRR and Statistics Summary -- reach the parser, and no
+surface reads them yet.
+
+`--json`, `--report`, the REST API and the Prometheus exporter carry sipnab's own
+measurements only. No filter DSL field matches an XR value.
 
 ## Parser constraints
 

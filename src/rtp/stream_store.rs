@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 use chrono::{DateTime, Utc};
 
 use super::parser::RtpHeader;
-use super::rtcp::{ReceptionReport, RtcpPacket};
+use super::rtcp::{ExtendedReport, ReceptionReport, RtcpPacket, VoipMetrics, XrBlock};
 use super::stream::{RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
 use crate::sip::sdp::SdpMedia;
@@ -150,6 +150,45 @@ impl RemoteReceptionReport {
     }
 }
 
+/// What an endpoint asserted about a stream in an RTCP XR VoIP Metrics block
+/// (RFC 3611 Section 4.7) — never sipnab's own measurement.
+///
+/// This is the far end telling you what *it* experienced: its own R factor,
+/// its own MOS-LQ and MOS-CQ, its burst and gap loss densities, its round-trip
+/// and end-system delay, its jitter buffer sizing. Some of that sipnab cannot
+/// measure from a capture at any vantage point — discard rate counts packets
+/// that arrived and were then thrown away by the jitter buffer, and end-system
+/// delay is entirely inside the endpoint.
+///
+/// Kept beside sipnab's own figures for the same two reasons
+/// [`RemoteReceptionReport`] is:
+///
+/// - **Provenance.** RTCP is unauthenticated. An endpoint-asserted MOS of 4.4
+///   and a sipnab-estimated MOS of 2.1 are different kinds of fact, and an
+///   operator has to be able to tell which they are reading.
+/// - **Vantage.** These metrics describe the path as far as *the reporter*. On
+///   a mid-path capture that is a different segment, so the two disagreeing is
+///   the finding, not a problem to resolve by overwrite.
+///
+/// Nothing here feeds [`estimate_mos`](crate::rtp::quality::estimate_mos), the
+/// stream's `jitter`, its `lost_packets`, or any quality interval. A forged XR
+/// cannot move a single number sipnab computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RemoteVoipMetrics {
+    /// SSRC of the endpoint that sent the XR — the reporter, not the source
+    /// being reported on.
+    pub reporter_ssrc: u32,
+    /// The block exactly as it arrived. Read it through the accessors on
+    /// [`VoipMetrics`], which apply RFC 3611's "unavailable" sentinels and the
+    /// two's-complement signal and noise levels.
+    pub metrics: VoipMetrics,
+    /// How many VoIP Metrics blocks about this stream have been folded in.
+    /// [`Self::metrics`] holds the most recent; this says whether that is a
+    /// single sample or a long-running report.
+    pub reports_seen: u64,
+}
+
 /// Per-stream facts that are about the *provenance* of a stream's numbers
 /// rather than about the media, kept in the store so `RtpStream` stays a
 /// record of what was observed.
@@ -157,6 +196,8 @@ impl RemoteReceptionReport {
 struct StreamProvenance {
     /// The most recent RTCP reception report about this stream, if any.
     remote: Option<RemoteReceptionReport>,
+    /// The most recent RTCP XR VoIP Metrics block about this stream, if any.
+    voip_metrics: Option<RemoteVoipMetrics>,
     /// `packet_count` at which the jitter estimator was restarted because the
     /// clock rate was corrected after packets had already been folded in at
     /// the wrong one. `None` means it was never restarted.
@@ -421,12 +462,14 @@ impl StreamStore {
         }
     }
 
-    /// Record RTCP reception reports **beside** each stream's own measurement.
+    /// Record what RTCP asserted **beside** each stream's own measurement.
     ///
-    /// Reports are filed in the provenance side-table, readable via
-    /// [`Self::remote_report`]. They do not touch `RtpStream::jitter` or
-    /// `RtpStream::lost_packets`, which stay what sipnab measured from the
-    /// media it observed, and they therefore cannot move MOS.
+    /// Reception reports (SR/RR) are filed in the provenance side-table,
+    /// readable via [`Self::remote_report`]; XR VoIP Metrics blocks are filed
+    /// alongside them, readable via [`Self::remote_voip_metrics`]. Neither
+    /// touches `RtpStream::jitter` or `RtpStream::lost_packets`, which stay
+    /// what sipnab measured from the media it observed, and neither can
+    /// therefore move MOS.
     ///
     /// This used to assign `stream.lost_packets = report.cumulative_lost` and
     /// `stream.jitter` from the report. Both were wrong twice over:
@@ -452,11 +495,17 @@ impl StreamStore {
     /// against **every** tracked stream carrying the reported SSRC (a source
     /// relayed through the capture point appears under more than one 5-tuple;
     /// filing the report against an arbitrary one of them was itself a
-    /// misattribution), incrementing that stream's `reports_seen`. Other RTCP
-    /// packet types and unknown SSRCs are ignored. Does not bump the
-    /// generation — no stream's identity, dialog or codec changes.
+    /// misattribution), incrementing that stream's `reports_seen`. For every
+    /// VoIP Metrics block inside an XR, the same treatment against the same
+    /// index, readable via [`Self::remote_voip_metrics`]. Other RTCP packet
+    /// types and unknown SSRCs are ignored. Does not bump the generation — no
+    /// stream's identity, dialog or codec changes.
     pub fn process_rtcp(&mut self, packets: &[RtcpPacket]) {
         for pkt in packets {
+            if let RtcpPacket::ExtendedReport(xr) = pkt {
+                self.record_extended_report(xr);
+                continue;
+            }
             let reports: &[ReceptionReport] = match pkt {
                 RtcpPacket::SenderReport(sr) => &sr.reports,
                 RtcpPacket::ReceiverReport(rr) => &rr.reports,
@@ -503,11 +552,64 @@ impl StreamStore {
         }
     }
 
+    /// File an XR's VoIP Metrics blocks in the provenance side-table.
+    ///
+    /// The same rule as [`Self::process_rtcp`]: filed **beside** the stream's
+    /// own numbers, never into them. RFC 3611 lets one XR carry several block
+    /// types; only VoIP Metrics (BT=7) names a source SSRC whose reception it
+    /// describes in figures comparable with sipnab's own, so it is the only
+    /// one recorded here. The rest are decoded by
+    /// [`parse_rtcp`](crate::rtp::rtcp::parse_rtcp) and go unrecorded, which
+    /// is the honest state until something consumes them.
+    ///
+    /// # Side effects
+    ///
+    /// Records each block against **every** tracked stream carrying the
+    /// reported SSRC — one source relayed through the capture point appears
+    /// under more than one 5-tuple, and picking an arbitrary one of them is a
+    /// misattribution. Unknown SSRCs are ignored. Does not bump the
+    /// generation: no stream's identity, dialog or codec changes.
+    fn record_extended_report(&mut self, xr: &ExtendedReport) {
+        for block in &xr.blocks {
+            let XrBlock::VoipMetrics(metrics) = block else {
+                continue;
+            };
+            let Some(keys) = self.ssrc_index.get(&metrics.ssrc) else {
+                continue;
+            };
+            let keys = keys.clone();
+            for key in &keys {
+                if !self.streams.contains_key(key) {
+                    continue;
+                }
+                let entry = self.provenance.entry(key.clone()).or_default();
+                let reports_seen = entry
+                    .voip_metrics
+                    .map_or(0, |m| m.reports_seen)
+                    .saturating_add(1);
+                entry.voip_metrics = Some(RemoteVoipMetrics {
+                    reporter_ssrc: xr.ssrc,
+                    metrics: *metrics,
+                    reports_seen,
+                });
+            }
+        }
+    }
+
     /// What a remote endpoint most recently asserted about this stream, if
     /// anything — never sipnab's own measurement. See
     /// [`RemoteReceptionReport`] for why the two are kept apart.
     pub fn remote_report(&self, key: &StreamKey) -> Option<&RemoteReceptionReport> {
         self.provenance.get(key).and_then(|p| p.remote.as_ref())
+    }
+
+    /// What an endpoint most recently asserted about this stream in an RTCP XR
+    /// VoIP Metrics block, if anything — never sipnab's own measurement. See
+    /// [`RemoteVoipMetrics`] for why the two are kept apart.
+    pub fn remote_voip_metrics(&self, key: &StreamKey) -> Option<&RemoteVoipMetrics> {
+        self.provenance
+            .get(key)
+            .and_then(|p| p.voip_metrics.as_ref())
     }
 
     /// How a stream's RTP clock rate came to be known, or `None` if the stream
@@ -1909,6 +2011,173 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(remote.jitter_ms, Some(5.25));
         assert_eq!(remote.reports_seen, 1);
         assert!((remote.fraction_lost_pct() - 25.0 * 100.0 / 256.0).abs() < 1e-9);
+    }
+
+    /// A VoIP Metrics block whose every field disagrees with the fixture, so
+    /// any leak into a measured field is unmistakable.
+    fn hostile_metrics(ssrc: u32) -> VoipMetrics {
+        VoipMetrics {
+            ssrc,
+            loss_rate: 128,   // "50% of my packets are gone"
+            discard_rate: 64, // "and I threw away another 25%"
+            burst_density: 200,
+            gap_density: 4,
+            burst_duration: 3_000,
+            gap_duration: 100,
+            round_trip_delay: 450,
+            end_system_delay: 90,
+            signal_level: 0xEC, // -20 dBm0
+            noise_level: 0xB0,  // -80 dBm0
+            rerl: 30,
+            gmin: 16,
+            r_factor: 32,
+            ext_r_factor: 127, // unavailable
+            mos_lq: 15,        // 1.5
+            mos_cq: 13,        // 1.3
+            jb_nominal: 40,
+            jb_maximum: 120,
+            jb_abs_max: 65_535,
+        }
+    }
+
+    /// Build a two-packet PCMU stream and return its key, for the XR tests.
+    fn xr_fixture(store: &mut StreamStore, ssrc: u32) -> StreamKey {
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(ssrc, 1), ts(0));
+        store.process_rtp(&parsed, &make_rtp_header(ssrc, 2), ts(1));
+        StreamKey {
+            ssrc,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        }
+    }
+
+    /// An XR VoIP Metrics block is retained, not discarded.
+    ///
+    /// The whole of RTCP XR used to reach `process_rtcp` fully decoded and fall
+    /// through its `_ => continue`, so the far end's own R factor, MOS and
+    /// burst/gap densities were parsed and then dropped on the floor.
+    #[test]
+    fn process_rtcp_retains_xr_voip_metrics() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0xABCD);
+
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x2222,
+            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xABCD))],
+        })]);
+
+        let xr = store
+            .remote_voip_metrics(&key)
+            .expect("XR VoIP Metrics must be retained, not dropped");
+        assert_eq!(xr.reporter_ssrc, 0x2222);
+        assert_eq!(xr.reports_seen, 1);
+        assert_eq!(xr.metrics.r_factor(), Some(32));
+        assert_eq!(xr.metrics.mos_lq(), Some(1.5));
+        assert_eq!(xr.metrics.mos_cq(), Some(1.3));
+        assert_eq!(xr.metrics.ext_r_factor(), None, "127 means unavailable");
+        assert_eq!(xr.metrics.signal_level_dbm0(), Some(-20));
+        assert_eq!(xr.metrics.round_trip_delay, 450);
+    }
+
+    /// The far end's XR figures never become sipnab's.
+    ///
+    /// This is the #61 rule applied to XR: a block claiming 50% loss, 25%
+    /// discard and a MOS of 1.5 must leave the stream's measured jitter, its
+    /// measured loss and the MOS scored from them exactly where they were.
+    /// Merging the two would replace a measurement with a claim, and an
+    /// unauthenticated one.
+    #[test]
+    fn xr_voip_metrics_never_overwrite_the_measurement() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0xBEEF);
+
+        let mos_of = |store: &StreamStore| {
+            let s = store.get(&key).unwrap();
+            let total = s.packet_count + s.lost_packets;
+            let loss_pct = s.lost_packets as f64 / total as f64 * 100.0;
+            crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref())
+        };
+        let measured_jitter = store.get(&key).unwrap().jitter;
+        let measured_lost = store.get(&key).unwrap().lost_packets;
+        let measured_mos = mos_of(&store);
+        assert_eq!(measured_lost, 0, "the fixture stream has no sequence gaps");
+
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x2222,
+            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xBEEF))],
+        })]);
+
+        let stream = store.get(&key).expect("stream should exist");
+        assert_eq!(
+            stream.lost_packets, measured_lost,
+            "an endpoint's claimed loss rate must not become sipnab's loss count"
+        );
+        assert!(
+            (stream.jitter - measured_jitter).abs() < f64::EPSILON,
+            "an endpoint's claimed delay must not become sipnab's jitter"
+        );
+        assert!(
+            (mos_of(&store) - measured_mos).abs() < f64::EPSILON,
+            "an endpoint asserting MOS 1.5 must not move the MOS sipnab scored"
+        );
+    }
+
+    /// Successive XRs replace the figures and count up, so a reader can tell a
+    /// single sample from a long-running report.
+    #[test]
+    fn xr_voip_metrics_count_reports_and_keep_the_latest() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0xC0DE);
+
+        for r in [40u8, 80u8] {
+            let mut m = hostile_metrics(0xC0DE);
+            m.r_factor = r;
+            store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x2222,
+                blocks: vec![XrBlock::VoipMetrics(m)],
+            })]);
+        }
+
+        let xr = store.remote_voip_metrics(&key).expect("XR recorded");
+        assert_eq!(xr.reports_seen, 2, "both blocks counted");
+        assert_eq!(xr.metrics.r_factor(), Some(80), "the latest block wins");
+    }
+
+    /// An XR about an SSRC no stream carries is ignored rather than filed
+    /// against an arbitrary stream.
+    #[test]
+    fn xr_for_an_unknown_ssrc_is_ignored() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0x1234);
+
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x2222,
+            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0x9999))],
+        })]);
+
+        assert!(
+            store.remote_voip_metrics(&key).is_none(),
+            "a report about another SSRC must not attach to this stream"
+        );
+    }
+
+    /// An XR carrying only block types sipnab does not record leaves no trace,
+    /// and does not invent an empty entry that reads as "the far end reported".
+    #[test]
+    fn xr_without_voip_metrics_records_nothing() {
+        let mut store = StreamStore::new(100);
+        let key = xr_fixture(&mut store, 0x4321);
+
+        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
+            ssrc: 0x2222,
+            blocks: vec![
+                XrBlock::ReceiverReferenceTime { ntp_timestamp: 7 },
+                XrBlock::Unknown { block_type: 6 },
+            ],
+        })]);
+
+        assert!(store.remote_voip_metrics(&key).is_none());
     }
 
     /// MOS is scored from sipnab's own measurement, so a forged RTCP report

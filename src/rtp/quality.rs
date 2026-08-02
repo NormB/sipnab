@@ -760,3 +760,107 @@ pub fn mos_grounding(codec: Option<&str>) -> MosGrounding {
         _ => MosGrounding::Unpublished,
     }
 }
+
+/// Where a MOS shown beside a stream came from.
+///
+/// [`MosGrounding`] answers a narrower question — whether *sipnab's own*
+/// E-model score rests on a published impairment factor — and it has no way to
+/// describe a MOS sipnab did not compute. RTCP XR VoIP Metrics blocks
+/// (RFC 3611 Section 4.7) carry exactly that: the endpoint's own MOS-LQ and
+/// MOS-CQ, which are neither an estimate sipnab made nor a placeholder it
+/// substituted, but a third thing. Collapsing that third thing into either of
+/// the other two is the mistake this enum exists to prevent, because the
+/// remedies differ. An [`Estimated`](Self::Estimated) MOS that looks wrong
+/// means suspecting sipnab's vantage point; a
+/// [`ReportedByEndpoint`](Self::ReportedByEndpoint) MOS that looks wrong means
+/// suspecting the endpoint, or whoever forged its datagram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MosProvenance {
+    /// sipnab scored it with [`estimate_mos`] from the media it observed, on a
+    /// codec G.113 publishes an equipment impairment factor for.
+    Estimated,
+    /// sipnab scored it with [`estimate_mos`] on a codec with no published
+    /// impairment factor on this scale. A placeholder meaning "unknown", not a
+    /// measurement — see [`MosGrounding::Unpublished`].
+    Placeholder,
+    /// An endpoint asserted it in an RTCP XR VoIP Metrics block. sipnab
+    /// measured nothing here and vouches for nothing: the number describes the
+    /// reporter's own reception on the reporter's own path segment, and RTCP
+    /// carries no authentication.
+    ReportedByEndpoint,
+}
+
+impl From<MosGrounding> for MosProvenance {
+    /// Lift sipnab's own grounding into the wider provenance scale. There is
+    /// deliberately no inverse: [`MosProvenance::ReportedByEndpoint`] has no
+    /// [`MosGrounding`] to map back to, which is the whole point.
+    fn from(grounding: MosGrounding) -> Self {
+        match grounding {
+            MosGrounding::Published => Self::Estimated,
+            MosGrounding::Unpublished => Self::Placeholder,
+        }
+    }
+}
+
+impl MosProvenance {
+    /// A short label for a reader, suitable for putting beside the number.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Estimated => "estimated by sipnab",
+            Self::Placeholder => "placeholder — codec has no published impairment factor",
+            Self::ReportedByEndpoint => "reported by the far end (RTCP XR)",
+        }
+    }
+
+    /// Whether sipnab computed this number from media it observed. False for
+    /// anything an endpoint asserted.
+    #[must_use]
+    pub fn is_measured_here(self) -> bool {
+        matches!(self, Self::Estimated | Self::Placeholder)
+    }
+}
+
+/// Unit tests for the MOS provenance scale.
+#[cfg(test)]
+mod provenance_tests {
+    use super::{MosGrounding, MosProvenance};
+
+    /// sipnab's two groundings lift into the two sipnab-side provenances, and
+    /// neither can become the endpoint-reported one.
+    #[test]
+    fn grounding_lifts_into_the_sipnab_side_of_the_scale() {
+        assert_eq!(
+            MosProvenance::from(MosGrounding::Published),
+            MosProvenance::Estimated
+        );
+        assert_eq!(
+            MosProvenance::from(MosGrounding::Unpublished),
+            MosProvenance::Placeholder
+        );
+        for g in [MosGrounding::Published, MosGrounding::Unpublished] {
+            assert_ne!(
+                MosProvenance::from(g),
+                MosProvenance::ReportedByEndpoint,
+                "no sipnab grounding may masquerade as an endpoint's claim"
+            );
+        }
+    }
+
+    /// The endpoint's claim is not something sipnab measured, and the label
+    /// says whose number it is. A reader who cannot tell the two apart is the
+    /// failure this enum exists to prevent.
+    #[test]
+    fn an_endpoint_claim_is_not_a_local_measurement() {
+        assert!(!MosProvenance::ReportedByEndpoint.is_measured_here());
+        assert!(MosProvenance::Estimated.is_measured_here());
+        assert!(MosProvenance::Placeholder.is_measured_here());
+        assert!(
+            MosProvenance::ReportedByEndpoint
+                .label()
+                .contains("far end"),
+            "the label must attribute the number to its source"
+        );
+    }
+}

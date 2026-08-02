@@ -93,7 +93,11 @@ media stream with codec, packet count, jitter, loss, and MOS. Streams flagged
 
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --
 to open **Stream Detail**: MOS, jitter statistics, quality intervals, burst/gap
-analysis, silence detection, and MOS/jitter sparklines. With an `audio` build,
+analysis, silence detection, and MOS/jitter sparklines. A stream whose far end
+sent RTCP XR gains a **Reported by Far End (RTCP XR)** section at the bottom,
+holding that endpoint's own R-factor, MOS-LQ, MOS-CQ, delays and discard rate.
+Everything above that section is what sipnab measured, and nothing in it moves
+those numbers. With an `audio` build,
 `Shift+P` plays the stream (G.711). `Tab` switches back to the Call List.
 
 ## 8. Trace a call through proxies (multi-leg)
