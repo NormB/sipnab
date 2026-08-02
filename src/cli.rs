@@ -405,7 +405,12 @@ pub struct Cli {
     #[arg(help_heading = "Mode", short = 'r', hide = true)]
     pub _sngrep_r: bool,
 
-    /// Capture and display telephone-event (DTMF) RTP payloads.
+    /// Decode telephone-event (DTMF) RTP payloads and log each digit.
+    ///
+    /// Digits go to the log at `info` level, so `-N` shows them and the TUI does
+    /// not (TUI mode floors the level at `error` to protect the alternate
+    /// screen). `--quiet` floors it at `warn` and hides them too. No report,
+    /// JSON field or MCP tool carries the digits — only the count is retained.
     #[arg(help_heading = "Mode", short = 't', long = "telephone-event")]
     pub telephone_event: bool,
 

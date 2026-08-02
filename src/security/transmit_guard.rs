@@ -34,6 +34,30 @@
 //! defence is not armed. Neither substitutes for the other — a type-only guard
 //! leaves someone believing the kill fired, and a message-only guard is one
 //! forgetful call site away from being no guard at all.
+//!
+//! # This permit is not the whole inventory
+//!
+//! Read on its own, [`TransmitPermit`] reads like the complete answer to "what
+//! can put a packet on the network". It is not, and the second answer is a
+//! different question rather than a hole in this one.
+//!
+//! `--hep-send <ADDR>` exports captured SIP to a collector **the operator
+//! named on the command line**. That destination never comes out of a packet,
+//! so the reasoning above does not apply to it: exporting an archived capture
+//! into a Homer instance is a supported workflow, and this permit deliberately
+//! does not gate it. It has its own type — `capture::hep::HepExportPermit`,
+//! obtainable only from a `capture::hep::OperatorDestination`, which has no
+//! constructor taking an address read out of captured traffic — and its own
+//! operator-facing message, `capture::hep::file_export_notice`, which says
+//! before the first packet is read that a capture FILE's contents are what
+//! leaves.
+//!
+//! The two never convert into each other, in either direction. Watching a live
+//! source does not license exporting to an operator's collector, and an
+//! operator naming a collector does not license answering a scanner recorded
+//! in a file. `docs/design/outbound-transmit-capability.md` records why
+//! collapsing them would lose that distinction with no compile error to mark
+//! it.
 
 use crate::capture::CaptureSource;
 

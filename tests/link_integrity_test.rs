@@ -388,9 +388,13 @@ fn wiki_intra_docs_links_resolve() {
     // against the previous revision and confirm which one disappeared — a drop
     // that nobody can name is the regex breaking, which is exactly what this
     // pin is here to catch, and editing the number is how it gets missed.
+    // Raised 246 -> 248 when `docs/cli-reference.md` gained two links into its
+    // new "What `--hep-send` sends" section: one from the `--hep-send` table
+    // row, one from that section back to `#security`. Both are same-page
+    // anchors and both resolve.
     assert_eq!(
-        seen, 246,
-        "extractor found {seen} wiki links, expected 246. More is fine — bump \
+        seen, 248,
+        "extractor found {seen} wiki links, expected 248. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

@@ -262,6 +262,28 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         );
     }
 
+    // `--hep-send` is the other way a packet leaves, and it is not the same
+    // question. Its destination is one the operator typed, so it is not
+    // refused on a file the way the kill path is — replaying an archive into a
+    // collector is a supported workflow. What it owes them is a sentence:
+    // pointed at `-I customer.pcap`, the flag forwards that capture's
+    // signalling off the machine, and its name says nothing about files.
+    // Emitted here, beside the refusal above, so the operator reads it before
+    // the capture thread opens anything.
+    #[cfg(feature = "hep")]
+    if let Some(ref addr) = cli.hep_send
+        && let Some(CaptureSource::File { ref paths }) = source
+        && let Some(notice) = crate::capture::hep::file_export_notice(
+            &crate::capture::hep::OperatorDestination::from_cli_flag(
+                crate::capture::hep::HEP_SEND_FLAG,
+                addr,
+            ),
+            paths,
+        )
+    {
+        tracing::warn!("{notice}");
+    }
+
     // Capture config from CLI + config file.
     let mut capture_config = build_capture_config(cli, config)?;
 
