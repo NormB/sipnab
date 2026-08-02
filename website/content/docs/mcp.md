@@ -297,8 +297,11 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 
 ## Tool reference
 
-The v0.5 sipnab MCP tool surface. No tool mutates anything, and every response
-carries a default ceiling (HARD_LIMIT = 1000).
+The v0.5 sipnab MCP tool surface. No tool edits the analysis in place, and
+every response carries a default ceiling (HARD_LIMIT = 1000). One tool replaces
+the analysis outright — `open_capture`, off unless you enable it — and it mints
+a new capture identity so the replacement cannot reach a consumer as an
+ordinary update.
 
 | Tool | Parameters | Returns |
 |---|---|---|
@@ -325,6 +328,7 @@ carries a default ceiling (HARD_LIMIT = 1000).
 | `export_capture` | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root` |
 | `shutdown_server` | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
+| `open_capture` | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | `server_capabilities` | -- | sipnab version and the optional features this binary carries |
 
 ### `list_dialogs`
@@ -1113,6 +1117,60 @@ capture holding packets written nowhere, it refuses outright unless you pass
 `save_to` or `discard_unsaved: true` — losing a capture to a misread sentence
 is the failure worth engineering against.
 
+### `open_capture`
+
+**Destructive.** Requires `--mcp-allow-open-capture`, which is off by default.
+It loads another capture from `--mcp-file-root` and throws away every dialog and
+stream the server holds.
+
+Use it on a long-lived HTTP server working through a corpus, where a restart
+costs an operator their session. In either stdio shape, starting sipnab again
+with a different `-I` does the same job and leaves a clean store behind, so
+prefer that.
+
+```jsonc
+// open_capture { "filename": "outage-0722.pcap" }
+{
+  "schema_version": 1,
+  "status": "loading",
+  "filename": "outage-0722.pcap",
+  "path": "/var/spool/sipnab-captures/outage-0722.pcap",
+  "capture_identity": {
+    "instance": "1f4a17c8e2b91d40-2",
+    "dialog_generation": 1,
+    "stream_generation": 1
+  },
+  "discarded_dialogs": 128,
+  "note": "the previous capture is gone; poll capture_status until load.done is true, and treat every answer carrying a different capture_identity.instance as a different capture"
+}
+```
+
+The call returns as soon as the background read starts, not when it finishes.
+That is deliberate: the REST API and the MCP server share one runtime thread, so
+a multi-gigabyte read inside the handler stops every other client for its
+duration. Poll `capture_status` and watch `load.packets` climb until
+`load.done` turns true.
+
+**Every answer afterwards carries a new `capture_identity.instance`.** Treat any
+cursor, message index or Call-ID from before the swap as void — they addressed a
+different capture. `discarded_dialogs` says how much analysis the call threw
+away, so an agent can report the cost rather than discover it.
+
+Four refusals, each naming what to do instead:
+
+| Refusal | Why |
+|---|---|
+| `--mcp-allow-open-capture` missing | The operator did not enable it. The tool is still listed, because "not permitted here" and "this build cannot" are different answers |
+| The source is a live interface | A live capture's writer never stops, so a second writer would race it for the life of the process. No opt-out |
+| The source has not drained | The original reader is still filling the stores. Poll `capture_status` until `source_exhausted` is true |
+| A load is already running | Poll `capture_status` until `load.done` is true |
+
+A filename must be a bare name inside the root, under the same rule every file
+tool applies. sipnab also refuses a capture that belongs to this run's own `-I`
+set, with the output guard's wording about overwriting — that file is already
+loaded, and reading it again under a new identity would duplicate what the store
+holds.
+
 ### `capture_status`
 
 **Ask this first.** It answers what the server is actually attached to — a live
@@ -1130,7 +1188,13 @@ No parameters. Returns:
   "stream_count": 64,
   "source_exhausted": false,     // true once a file is read to the end
   "writing_to": null,            // path packets are being saved to, if any
-  "unsaved": true                // stopping now would lose packets
+  "unsaved": true,               // stopping now would lose packets
+  "capture_identity": {
+    "instance": "1f4a17c8e2b91d40-1",
+    "dialog_generation": 412,
+    "stream_generation": 96
+  },
+  "load": null                   // an open_capture load in flight, if any
 }
 ```
 
@@ -1142,10 +1206,36 @@ already on disk, so it is never unsaved.
 reports that rather than guessing, because a wrong `"live"` would be worse than
 an admission of ignorance.
 
+`capture_identity` says which capture this is and how many times its stores have
+changed. Compare it across calls: a higher generation on the same instance means
+the capture grew, and a different instance means `open_capture` loaded a
+different file and every cursor you hold is void. The same object appears on
+`stats`, `list_dialogs`, `find_problems`, `search_by_time`, `tail_dialogs` and
+the capture-wide `rtp_stats` sweep — every response whose meaning depends on the
+whole store.
+
+`load` is null except while an `open_capture` read runs. During one:
+
+```jsonc
+"load": {
+  "filename": "outage-0722.pcap",
+  "instance": "1f4a17c8e2b91d40-2",
+  "packets": 184320,             // climbing
+  "elapsed_sec": 4,
+  "done": false,
+  "error": null                  // set when a load stopped early
+}
+```
+
+The stores fill as the read goes, so dialogs appear before `done`. Wait for
+`done` before concluding anything about how many calls the capture holds — a
+partial answer looks exactly like a complete one.
+
 ### `server_capabilities`
 
-The optional features this binary carries. Ask before requesting
-decryption or HEP: a build without the feature fails confusingly otherwise.
+What this binary can do and what this server permits. Ask before requesting
+decryption, HEP, a file export or a capture swap: a build without the feature,
+or a server without the flag, fails confusingly otherwise.
 
 No parameters. Returns:
 
@@ -1156,12 +1246,21 @@ No parameters. Returns:
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
-  "can_plugins": false           // plugins
+  "can_plugins": false,          // plugins
+  "runtime": {
+    "mcp_file_root": "/var/spool/sipnab-captures",  // null when unset
+    "mcp_allow_shutdown": false,
+    "mcp_allow_open_capture": true
+  }
 }
 ```
 
-Read from `cfg!` at compile time, so it cannot claim a feature the binary does
-not have.
+`features` comes from `cfg!` at compile time, so it cannot claim a feature the
+binary does not have. `runtime` is a different question — what the **operator**
+turned on — and no compile-time check can answer it. Without it an agent
+discovers the setup by calling a tool and collecting a refusal, and a refusal
+mid-investigation reads as a dead end rather than as a server it was never
+allowed to use that way.
 
 ### `stats`
 
@@ -1180,7 +1279,12 @@ No parameters. Returns:
   "unanalysed_busiest_ports": [
     { "port": 8090, "messages": 2430 },
     { "port": 5080, "messages": 598 }
-  ]
+  ],
+  "capture_identity": {
+    "instance": "1f4a17c8e2b91d40-1",
+    "dialog_generation": 412,
+    "stream_generation": 96
+  }
 }
 ```
 
@@ -1252,14 +1356,17 @@ past 1000 does nothing: the cap clamps it. Page instead.
 
 ## Security model
 
-- **No tool mutates a store, and no tool sends SIP.** That is the rule, and it
-  is narrower than "read-only": `export_capture` and `export_audio` write files
-  under `--mcp-file-root`, and `shutdown_server` ends the run where
-  `--mcp-allow-shutdown` permits it. What an agent cannot do is change the
-  analysis you are reading while you read it. Ending a session is visible.
-  Rewriting the evidence underneath someone mid-incident would not be.
-  Otherwise the capture lifecycle belongs to systemd or the CLI flags, not to
-  the LLM.
+- **No tool edits the analysis in place, and no tool sends SIP.** That is the
+  rule, and it is narrower than "read-only": `export_capture` and
+  `export_audio` write files under `--mcp-file-root`, `shutdown_server` ends
+  the run where `--mcp-allow-shutdown` permits it, and `open_capture` replaces
+  the loaded capture where `--mcp-allow-open-capture` does. What an agent
+  cannot do is change the analysis you are reading and leave it looking like
+  the one you were reading. Ending a session is visible; a swap mints a new
+  `capture_identity` that every later answer carries. Rewriting the evidence
+  underneath someone mid-incident is the failure both of those exist to make
+  impossible. Otherwise the capture lifecycle belongs to systemd or the CLI
+  flags, not to the LLM.
 - **Localhost-default.** HTTP transport binds `127.0.0.1:8731` unless
   explicitly overridden.
 - **Bearer auth on non-loopback.** Tokens compared in constant time
