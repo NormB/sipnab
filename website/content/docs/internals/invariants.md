@@ -362,3 +362,48 @@ this: it documents the zero-copy spine and then records that the predicted
 the workload. The architecture is still right for other reasons, and the reader
 gets to see both. A doc tree that only ever records wins is a doc tree nobody
 can use to make a decision.
+
+## Who reads this?
+
+<a id="who-reads-this"></a>
+
+**Rule.** A caveat, a limit or a disclosure belongs where its consumer looks.
+Writing it somewhere else is not disclosure, and it reads as one.
+
+**Why.** Four defects in a single week shared this shape and nothing else:
+
+- `--portrange` dropped a third of the SIP in a capture. The fix printed the
+  loss beside the CLI summary, so a human saw it. `stats` and `capture_status`
+  returned a byte-identical key set whether the run dropped a third of it or
+  none of it — so a model driving the MCP tools answered from two thirds of the
+  capture with full confidence, and had no way to learn otherwise.
+- `export_capture` re-synthesises a frame per SIP message rather than writing
+  the packets it read. The function's own doc comment said so plainly and
+  called the result "honest about the rest". The tool description an MCP client
+  reads said "writes the packets sipnab is holding to a pcap file".
+- `the_reporter_is_never_the_unreachable_endpoint` asserted its invariant
+  against the parser, where the router and the dead host arrive already
+  separated. Swapping them one layer later, in the code that fills the evidence
+  a reader sees, left the test green.
+- `--hep-send` forwards a whole capture to an operator-named collector. That is
+  a legitimate feature. Nothing said it happens, and it sits outside the permit
+  system, so an audit of "what can transmit" finds `TransmitPermit` and stops.
+
+None of these were oversights in implementation. In three of the four, someone
+had written the truth down carefully — in a code comment, in a doc paragraph below the
+example, in a test whose name matched the invariant exactly. The reader who
+needed it never saw it.
+
+**In practice.** Ask it of the specific consumer, not of "the docs":
+
+| The consumer | Reads | Does not read |
+|---|---|---|
+| An MCP client | the tool description, once | `docs/`, code comments, stderr |
+| A pcap forwarded to a carrier | the bytes | anything sipnab printed |
+| An operator scanning a summary | stdout/stderr of that run | the manual |
+| A future reviewer | the diff and the test name | your reasoning |
+| A test | the layer it asserts against | the layer the bug lives in |
+
+The last row is the one that catches people: a test named after an invariant is
+no evidence that anything guards it. Mutation testing tells the two apart — and
+apply the mutation where the code USES the value, not only where it computes it.
