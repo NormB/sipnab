@@ -54,16 +54,18 @@ fn cli_fields(src: &str) -> Vec<String> {
     for line in src.lines() {
         let t = line.trim_start();
         // Struct fields sit at one indent level; `pub fn` and nested types do not.
-        if line.starts_with("    pub ") && !t.starts_with("pub fn") && t.contains(':') {
-            if let Some(name) = t
-                .strip_prefix("pub ")
-                .and_then(|r| r.split(':').next())
-                .map(str::trim)
-            {
-                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    out.push(name.to_string());
-                }
-            }
+        if !line.starts_with("    pub ") || t.starts_with("pub fn") || !t.contains(':') {
+            continue;
+        }
+        let Some(name) = t
+            .strip_prefix("pub ")
+            .and_then(|r| r.split(':').next())
+            .map(str::trim)
+        else {
+            continue;
+        };
+        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            out.push(name.to_string());
         }
     }
     out
