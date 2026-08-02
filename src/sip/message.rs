@@ -183,43 +183,15 @@ impl SipMessage {
     /// than the body actually present (truncated/lying length), and control/NUL
     /// bytes in a header name or value (injection / parser-abuse). Tab (LWS) is
     /// allowed; CR/LF cannot survive line parsing.
+    /// The wording is a documented `--json` output format and is unchanged.
+    /// The *detection* now lives once, in
+    /// [`crate::sip::lint::message`], where the conformance rules read the same
+    /// predicates — two detectors for one defect is one detector too many, and
+    /// the day they disagreed neither would be trustworthy. For structured
+    /// findings with an RFC citation attached, use
+    /// [`crate::sip::lint::Linter::lint_message`].
     pub fn malformations(&self) -> Vec<String> {
-        let mut reasons = Vec::new();
-
-        for (name, present) in [
-            ("Call-ID", self.header("Call-ID").is_some()),
-            ("CSeq", self.header("CSeq").is_some()),
-            ("From", self.header("From").is_some()),
-            ("To", self.header("To").is_some()),
-            ("Via", !self.via_headers().is_empty()),
-        ] {
-            if !present {
-                reasons.push(format!("missing mandatory header: {name}"));
-            }
-        }
-
-        if self.header("CSeq").is_some() && self.cseq().is_none() {
-            reasons.push("malformed CSeq header (not '<number> <method>')".to_string());
-        }
-
-        if let Some(declared) = self
-            .header("Content-Length")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            && declared > self.body.len()
-        {
-            reasons.push(format!(
-                "content-length mismatch: declared {declared}, body {} bytes present",
-                self.body.len()
-            ));
-        }
-
-        for h in &self.headers {
-            if has_control_bytes(&h.name) || has_control_bytes(&h.value) {
-                reasons.push(format!("control character in header: {}", h.name));
-            }
-        }
-
-        reasons
+        super::lint::malformation_reasons(self)
     }
 
     /// Extract the user part from the `From` URI.
@@ -279,13 +251,6 @@ impl SipMessage {
     pub fn to_display(&self) -> Option<String> {
         extract_display_name(self.to_header()?)
     }
-}
-
-/// True if `s` contains a C0 control byte or DEL — excluding tab (`\t`), which
-/// is legal linear whitespace in a header value. CR/LF never survive line
-/// parsing, so their presence here would also be anomalous.
-fn has_control_bytes(s: &str) -> bool {
-    s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f)
 }
 
 /// Extract the user part from a SIP URI inside a header value.

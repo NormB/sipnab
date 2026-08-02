@@ -179,8 +179,8 @@ pub struct PcapWriter {
     /// pcapng interface table: index = the `interface_id` stamped on EPBs.
     /// Entry 0 is the constructor-supplied capture source; a further entry
     /// is appended (with an IDB written mid-stream) the first time a packet
-    /// arrives tagged with a not-yet-seen interface name. Carried across
-    /// rotation so every split file re-emits the full set of IDBs.
+    /// arrives from a not-yet-seen (interface name, link type) pair. Carried
+    /// across rotation so every split file re-emits the full set of IDBs.
     interfaces: Vec<InterfaceEntry>,
 }
 
@@ -188,7 +188,8 @@ pub struct PcapWriter {
 /// the source name recorded as the IDB `if_name` option (`None` for the
 /// unnamed default interface) and the link type its IDB declares. Devices
 /// can report different link types (e.g. `eth0` = Ethernet, `any` = Linux
-/// SLL), so each interface keeps the one its first packet carried.
+/// SLL), and so can the members of a multi-file input set, so an entry is
+/// identified by BOTH — one IDB declares exactly one link type.
 struct InterfaceEntry {
     /// Interface name recorded in the IDB `if_name` option, if known.
     name: Option<String>,
@@ -328,8 +329,12 @@ impl PcapWriter {
     ///
     /// # Errors
     ///
-    /// Fails when rotation cannot open the new file or the backend write
-    /// fails (e.g. disk full).
+    /// Fails when rotation cannot open the new file, the backend write fails
+    /// (e.g. disk full), or — on the classic-pcap backend only — the packet's
+    /// link type is not the one the file's global header declares. Classic
+    /// pcap has a single link type per file, so such a frame cannot be
+    /// recorded truthfully; the error names both link types and `--pcapng`,
+    /// which can carry them together.
     ///
     /// # Side effects
     ///
@@ -337,8 +342,8 @@ impl PcapWriter {
     /// advances the `bytes_written` counter by the on-disk record size
     /// (framing + payload, so `--split filesize:N` rotates at the real file
     /// size). On the pcapng backend, the first packet from a not-yet-seen
-    /// source interface also appends that interface's IDB (and counts its
-    /// bytes) before the packet's EPB.
+    /// (interface, link type) pair also appends that interface's IDB (and
+    /// counts its bytes) before the packet's EPB.
     pub fn write(&mut self, packet: &Packet) -> Result<()> {
         // Check if rotation is needed before writing
         if self.should_rotate() {
@@ -347,6 +352,27 @@ impl PcapWriter {
 
         match &mut self.backend {
             WriterBackend::Pcap(w) => {
+                // A classic pcap file states ONE link type, in its global
+                // header, and every reader decodes every record with it.
+                // A packet captured on a different link layer cannot be
+                // written here truthfully: it would arrive at a carrier, a
+                // regulator or a court as bytes that decode cleanly into
+                // packets nobody sent. Refuse. `--pcapng` carries the same
+                // set faithfully, one interface per link type, so the
+                // remedy is named in the error rather than left to be
+                // guessed.
+                if packet.link_type != self.link_type_raw {
+                    anyhow::bail!(
+                        "link type mismatch: this frame is {}, but '{}' declares {} in its \
+                         header. Classic pcap records one link-layer type for the whole \
+                         file, so writing it would present these frames as {}. Re-run with \
+                         --pcapng, which records a link type per interface.",
+                        describe_link_type(packet.link_type),
+                        self.base_path.display(),
+                        describe_link_type(self.link_type_raw),
+                        describe_link_type(self.link_type_raw),
+                    );
+                }
                 let ts = packet.timestamp;
                 w.write_record(
                     ts.timestamp(),
@@ -358,36 +384,40 @@ impl PcapWriter {
                 self.bytes_written += 16 + packet.data.len() as u64;
             }
             WriterBackend::PcapNg(writer) => {
-                // Resolve the packet's source interface to its pcapng
-                // interface_id, appending an IDB the first time an unseen
-                // interface name appears (the format allows IDBs interleaved
-                // with packet blocks). Packets with no interface identity
-                // (file replay, synthetic) map to interface 0, as does the
-                // constructor-named capture source. The table stays tiny
-                // (one entry per device), so a linear scan per packet is
+                // Resolve the packet to its pcapng interface_id, appending an
+                // IDB the first time an unseen interface appears (the format
+                // allows IDBs interleaved with packet blocks).
+                //
+                // Interface identity is (name, LINK TYPE), not name alone. An
+                // IDB declares exactly one link type and every EPB is decoded
+                // with its interface's, so a packet whose link layer differs
+                // from an entry's needs an entry of its own — matching on the
+                // name alone silently decoded it as the other link type.
+                //
+                // Packets with no source identity (file replay, synthetic)
+                // belong to the constructor-supplied entry 0 as long as its
+                // link type agrees; a multi-file input set whose members were
+                // captured on different link layers is exactly the case where
+                // it does not. The table stays tiny (one entry per
+                // interface/link-type pair), so a linear scan per packet is
                 // cheap — the common single-interface case matches entry 0.
-                let interface_id = match packet.interface.as_deref().filter(|n| !n.is_empty()) {
-                    None => 0,
-                    Some(name) => {
-                        match self
-                            .interfaces
-                            .iter()
-                            .position(|e| e.name.as_deref() == Some(name))
-                        {
-                            Some(id) => id as u32,
-                            None => {
-                                let idb = build_idb(packet.link_type, Some(name));
-                                let idb_bytes = writer
-                                    .write_pcapng_block(idb)
-                                    .map_err(|e| anyhow::anyhow!("PCAP-NG IDB write error: {e}"))?;
-                                self.bytes_written += idb_bytes as u64;
-                                self.interfaces.push(InterfaceEntry {
-                                    name: Some(name.to_string()),
-                                    link_type: packet.link_type,
-                                });
-                                (self.interfaces.len() - 1) as u32
-                            }
-                        }
+                let name = packet.interface.as_deref().filter(|n| !n.is_empty());
+                let existing = self.interfaces.iter().position(|e| {
+                    e.link_type == packet.link_type && (name.is_none() || e.name.as_deref() == name)
+                });
+                let interface_id = match existing {
+                    Some(id) => id as u32,
+                    None => {
+                        let idb = build_idb(packet.link_type, name);
+                        let idb_bytes = writer
+                            .write_pcapng_block(idb)
+                            .map_err(|e| anyhow::anyhow!("PCAP-NG IDB write error: {e}"))?;
+                        self.bytes_written += idb_bytes as u64;
+                        self.interfaces.push(InterfaceEntry {
+                            name: name.map(str::to_string),
+                            link_type: packet.link_type,
+                        });
+                        (self.interfaces.len() - 1) as u32
                     }
                 };
 
@@ -750,6 +780,23 @@ fn build_idb(link_type: i32, name: Option<&str>) -> InterfaceDescriptionBlock<'s
         linktype: DataLink::from(link_type as u32),
         snaplen: 0xFFFF,
         options,
+    }
+}
+
+/// Name a pcap link-layer type for an error an operator has to act on.
+///
+/// The number alone ("1" vs "113") says nothing to someone holding two
+/// captures and wondering which one disagrees, so the four link types sipnab
+/// decodes are named; anything else is reported as its bare DLT value, which
+/// is still what `capinfos` and Wireshark will show.
+fn describe_link_type(link_type: i32) -> String {
+    match link_type {
+        0 => "NULL/loopback (DLT 0)".to_string(),
+        1 => "Ethernet (DLT 1)".to_string(),
+        12 => "raw IP (DLT 12)".to_string(),
+        113 => "Linux SLL (DLT 113)".to_string(),
+        276 => "Linux SLL2 (DLT 276)".to_string(),
+        other => format!("DLT {other}"),
     }
 }
 
@@ -1647,6 +1694,155 @@ mod tests {
                     NgBlock::Epb { interface_id: 1 },
                 ],
                 "eth1's IDB appears mid-stream, before its first EPB"
+            );
+        }
+
+        /// Build a `len`-byte packet with NO source interface name (file
+        /// replay, synthetic) on the given link type, stamped "now".
+        fn pkt_unnamed(link_type: i32, len: usize) -> Packet {
+            Packet::new(
+                chrono::Utc::now(),
+                vec![0u8; len],
+                len,
+                len,
+                None,
+                link_type,
+            )
+        }
+
+        /// Classic pcap states ONE link type for the whole file, so a frame
+        /// captured on a different link layer must be refused, not written.
+        ///
+        /// Writing it produces a file that opens cleanly and decodes every
+        /// such frame with the wrong link layer — the failure mode is a
+        /// plausible-looking capture of packets nobody sent, which is worse
+        /// than no capture at all. The error has to name both link types and
+        /// the format that can carry them.
+        #[test]
+        fn plain_pcap_refuses_a_foreign_link_type() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("mixed.pcap");
+            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+
+            // The declared link type is written without complaint.
+            w.write(&pkt_unnamed(1, 60)).unwrap();
+            let after_first = w.bytes_written();
+
+            // A Linux SLL2 frame is not an Ethernet frame.
+            let err = w
+                .write(&pkt_unnamed(276, 60))
+                .expect_err("a foreign link type must be refused");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("276") && msg.contains("Ethernet"),
+                "the error must name both link types: {msg}"
+            );
+            assert!(
+                msg.contains("--pcapng"),
+                "the error must name the format that can carry both: {msg}"
+            );
+            assert_eq!(
+                w.bytes_written(),
+                after_first,
+                "the refused frame must not reach the file"
+            );
+        }
+
+        /// A pcapng interface is identified by (name, link type), not name
+        /// alone: sources with no name at all — a multi-file input set, whose
+        /// packets carry a per-file link type and no interface — still get one
+        /// IDB per link type, and each EPB references the interface whose link
+        /// type decodes it.
+        ///
+        /// Keyed on name alone, every unnamed packet landed on interface 0 and
+        /// was decoded as the FIRST file's link layer.
+        #[test]
+        fn pcapng_unnamed_sources_get_an_interface_per_link_type() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("unnamed.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    113,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("first.pcap"),
+                )
+                .unwrap();
+                w.write(&pkt_unnamed(113, 40)).unwrap();
+                w.write(&pkt_unnamed(1, 40)).unwrap();
+                w.write(&pkt_unnamed(113, 40)).unwrap();
+                w.write(&pkt_unnamed(1, 40)).unwrap();
+                w.finish().unwrap();
+            }
+
+            let blocks = read_ng_blocks(&path);
+            let linktypes: Vec<_> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    NgBlock::Idb { linktype, .. } => Some(*linktype),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                linktypes,
+                vec![113, 1],
+                "one IDB per link type, in first-appearance order"
+            );
+            let epb_ids: Vec<_> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    NgBlock::Epb { interface_id } => Some(*interface_id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                epb_ids,
+                vec![0, 1, 0, 1],
+                "each frame references the interface whose link type decodes it"
+            );
+        }
+
+        /// One named interface that changes link type mid-capture (a device
+        /// re-opened as `any`, a bonded link) gets a second IDB under the same
+        /// name rather than having its frames decoded as the old link layer.
+        #[test]
+        fn pcapng_same_interface_new_link_type_gets_its_own_idb() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relink.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("eth0"),
+                )
+                .unwrap();
+                w.write(&pkt_on("eth0", 1, 40)).unwrap();
+                w.write(&pkt_on("eth0", 113, 40)).unwrap();
+                w.finish().unwrap();
+            }
+
+            assert_eq!(
+                read_ng_blocks(&path),
+                vec![
+                    NgBlock::Idb {
+                        name: Some("eth0".to_string()),
+                        linktype: 1,
+                    },
+                    NgBlock::Epb { interface_id: 0 },
+                    NgBlock::Idb {
+                        name: Some("eth0".to_string()),
+                        linktype: 113,
+                    },
+                    NgBlock::Epb { interface_id: 1 },
+                ],
+                "same name, new link type => its own interface"
             );
         }
 

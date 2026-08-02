@@ -11,6 +11,29 @@ entry that carries them.
 ## [0.5.73] - 2026-08-02
 
 ### Added
+- **An agent can open a different capture, and every answer says which capture
+  it came from.** The `open_capture` MCP tool loads another file from
+  `--mcp-file-root` and replaces the dialogs and streams the server holds. It
+  needs `--mcp-allow-open-capture`, off by default, and the tool is registered
+  either way so a refusal names the flag rather than the tool going missing.
+
+  Two things had to exist first, and both are reusable rather than particular to
+  this tool. `capture_status`, `stats` and every paged whole-store response now
+  carry a `capture_identity`: a capture-instance id plus the dialog and stream
+  generation counters, which were bumped on every mutation and exposed nowhere.
+  A poller can finally tell "the capture grew" from "this is a different
+  capture, throw away your cursor". And the read runs on its own thread rather
+  than inside the handler — the REST API and MCP share one runtime thread, so a
+  multi-gigabyte pcap read in a tool handler stopped every other client for its
+  duration. `capture_status.load` reports the packet count while it runs.
+
+  The tool refuses a live source outright, because a live capture's writer never
+  finishes and a second writer would race it for the life of the process. It
+  also refuses while the current source is still filling the stores, or while
+  another load is running. `server_capabilities` gained a `runtime` object
+  reporting `--mcp-file-root`, `--mcp-allow-shutdown` and
+  `--mcp-allow-open-capture`, so an agent can check what a server permits
+  instead of discovering it by being refused.
 - **ICMP errors quoting a SIP request are now evidence, not invisible.** A
   router answering "host unreachable" for an INVITE is the most diagnostic
   packet a capture can hold — it is a categorical statement that the far end is

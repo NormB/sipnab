@@ -7,13 +7,17 @@
 //! agent (Claude Code, Claude Desktop, or any MCP-capable client) can drive
 //! sipnab as a debugging instrument against a live capture or pcap file.
 //!
-//! **No tool mutates a store.** That is the invariant, and it is narrower than
-//! "read-only", which this doc used to claim: `export_capture` and
-//! `export_audio` write files under `--mcp-file-root`, and `shutdown_server`
-//! ends the run when `--mcp-allow-shutdown` permits it. What no tool can do is
-//! alter the analysis an operator is reading while leaving them reading it.
-//! Ending a session is not the hazard; silently rewriting the evidence
-//! underneath someone mid-incident is. See `docs/internals/invariants.md` §7.
+//! **No tool changes the analysis without changing its identity.** That is the
+//! invariant, and it is narrower than "read-only", which this doc used to
+//! claim: `export_capture` and `export_audio` write files under
+//! `--mcp-file-root`, `shutdown_server` ends the run when
+//! `--mcp-allow-shutdown` permits it, and `open_capture` replaces the loaded
+//! capture when `--mcp-allow-open-capture` does. What no tool can do is edit
+//! the analysis in place. Ending a session is not the hazard; silently
+//! rewriting the evidence underneath someone mid-incident is, and a swap
+//! rotates the capture instance every answer carries
+//! ([`crate::provenance`]) so the rewrite cannot be silent. See
+//! `docs/internals/invariants.md` §7.
 //!
 //! # Output mode parity
 //!
@@ -31,8 +35,9 @@
 //! The workspace-wide `clippy::await_holding_lock = "deny"` (Cargo.toml
 //! `[workspace.lints]`) enforces this mechanically.
 
+pub mod load;
 pub mod server;
 pub mod shape;
 pub mod transport;
 
-pub use server::{CaptureContext, SipnabMcp};
+pub use server::{CaptureContext, CaptureState, SipnabMcp};

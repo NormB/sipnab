@@ -4,7 +4,8 @@
 implementing only the first of five parts.
 **Verified against:** `63b771b`, working tree.
 **Relationship to [`deferred-and-declined.md`](deferred-and-declined.md) §1.**
-That page declined the side-by-side view as specified and named the blocker:
+That page re-scoped the side-by-side view rather than building it as specified,
+and named the blocker:
 sipnab retains no record of which capture anything came from, so the comparison
 column has no field to read. This page accepts that finding and does not re-argue
 it. It answers the question §1 left open — *what is this feature, exactly, if the

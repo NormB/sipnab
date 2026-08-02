@@ -1,13 +1,13 @@
 # Write-back MCP tools against the read-only invariant
 
-**Status:** DECIDED — declined, 2026-08-02. Nothing here is scheduled for
-implementation except the narrower tool named in section 7.
+**Status:** DECIDED — approved to move forward, 2026-08-02. Write-back tools are
+accepted for managing the MCP server; section 7 records what has to be true.
 **Verified against:** `63b771b`, working tree. Every file:line below was read at
 that revision.
 **Relationship to [`deferred-and-declined.md`](deferred-and-declined.md) §2.**
-That page declined write-back on one argument: silent divergence between what an
-agent did and what an operator sees. This page does not repeat it. It exists
-because the request came back asking for the *pros and cons*, and a decline with
+That page argued against write-back on one point: silent divergence between what
+an agent did and what an operator sees. This page does not repeat it. It exists
+because the request came back asking for the *pros and cons*, and a verdict with
 only the cons written down is the kind of decision that gets re-litigated every
 quarter. So section 2 argues the other side properly, section 6 costs the four
 middle options nobody had priced, and section 5 supplies evidence that did not
@@ -99,8 +99,8 @@ off unless `--mcp-allow-shutdown` is passed (`allow_shutdown` at `server.rs:70`,
 `false` in `new()` at `:112`, set only by `with_shutdown()` at `:158`), dry run
 by default, and a refusal to discard an unsaved live capture unless the caller
 names the discard. "It writes" is therefore not, on its own, a reason to refuse.
-Anyone declining write-back has to say what is different, not merely that it
-mutates.
+Anyone arguing against write-back has to say what is different, not merely that
+it mutates.
 
 There is a fourth motivation that does *not* survive, and it should be named so
 it stops being offered. "The agent could set a filter" — `set_filter`,
@@ -299,9 +299,11 @@ decidable from the code.
 
 ## 7. Decision
 
-**Declined.** Not deferred, and not "not yet". The shape is wrong.
+**Approved to move forward, 2026-08-02.** The argument that ran the other way is
+kept below in full, because it names the failure the implementation has to design
+against — not a reason to stop.
 
-The reasoning that decides it, in one paragraph. Guards work here when they make
+The reasoning as it stood, in one paragraph. Guards work here when they make
 a failure impossible rather than unlikely, and the two failures fixed this
 session were both *authorised* actions that landed somewhere precious — which is
 why the fixes were a type with a private constructor and a precondition
@@ -334,7 +336,7 @@ touching the analysis at all.
   true description of what the tools return.
 
 This is the same conclusion [`deferred-and-declined.md`](deferred-and-declined.md)
-§2 reached by a different route — its reopening condition 2 asks for "an
+§2 reached by a different route — its build requirement 2 asks for "an
 annotation store that a tool may edit and that no analysis reads". A file that
 nothing reads back is the cheapest possible instance of that, and it needs no
 store, no schema migration and no wire-visible generation counter.

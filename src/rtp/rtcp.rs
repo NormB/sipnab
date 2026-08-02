@@ -254,7 +254,21 @@ pub enum XrBlock {
 }
 
 /// VoIP Metrics Report Block (RFC 3611 Section 4.7).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Every field here is the *reporting endpoint's* claim about its own
+/// reception, carried on an unauthenticated datagram. None of it is a sipnab
+/// measurement, and nothing in this struct feeds MOS or any other figure
+/// sipnab computes — see
+/// [`RemoteVoipMetrics`](crate::rtp::stream_store::RemoteVoipMetrics) for why
+/// the two are kept apart.
+///
+/// The fields below are the wire values, byte for byte. Prefer the accessors
+/// ([`Self::mos_lq`], [`Self::r_factor`], [`Self::signal_level_dbm0`], …):
+/// RFC 3611 gives several of these fields a sentinel meaning "unavailable",
+/// and two of them are two's-complement signed while the wire type is not.
+/// Reading the raw field and formatting it publishes 127 as an R factor and
+/// 12.7 as a MOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoipMetrics {
     /// SSRC of the source being reported.
     pub ssrc: u32,
@@ -295,7 +309,143 @@ pub struct VoipMetrics {
     /// Maximum jitter buffer delay (ms).
     pub jb_maximum: u16,
     /// Absolute maximum jitter buffer delay (ms).
+    ///
+    /// RFC 3611 Section 4.7 caps the field: "If this value exceeds 65535
+    /// milliseconds, then this field SHALL convey the value 65535." So 65535
+    /// is a floor, not a measurement — see [`Self::jb_abs_max_is_capped`].
     pub jb_abs_max: u16,
+}
+
+/// The value RFC 3611 Section 4.7 reserves for "this parameter is unavailable"
+/// on the seven single-byte fields that define one: signal level, noise level,
+/// RERL, R factor, ext. R factor, MOS-LQ and MOS-CQ.
+const XR_UNAVAILABLE: u8 = 127;
+
+/// Lowest MOS x10 RFC 3611 Section 4.7 admits ("an integer in the range 10 to
+/// 50, corresponding to MOS x 10").
+const XR_MOS_MIN: u8 = 10;
+
+/// Highest MOS x10 RFC 3611 Section 4.7 admits.
+const XR_MOS_MAX: u8 = 50;
+
+/// Highest R factor RFC 3611 Section 4.7 admits (0 to 100).
+const XR_R_MAX: u8 = 100;
+
+impl VoipMetrics {
+    /// [`Self::loss_rate`] as a percentage.
+    ///
+    /// RFC 3611 defines the field as the loss fraction "expressed as a fixed
+    /// point number with the binary point at the left edge", so the divisor is
+    /// 256 and not 255. No sentinel: the RFC caps the computation at 255
+    /// rather than reserving a value, so every byte here is a rate.
+    #[must_use]
+    pub fn loss_rate_pct(&self) -> f64 {
+        f64::from(self.loss_rate) * 100.0 / 256.0
+    }
+
+    /// [`Self::discard_rate`] as a percentage, on the same fixed-point scale
+    /// as [`Self::loss_rate_pct`].
+    ///
+    /// Discards are packets that arrived and were thrown away — late, early or
+    /// buffer-overflowing. They are invisible to a capture, which sees them
+    /// arrive, so this is the one impairment sipnab cannot measure for itself
+    /// at any vantage point.
+    #[must_use]
+    pub fn discard_rate_pct(&self) -> f64 {
+        f64::from(self.discard_rate) * 100.0 / 256.0
+    }
+
+    /// [`Self::burst_density`] as a percentage, on the same fixed-point scale
+    /// as [`Self::loss_rate_pct`].
+    #[must_use]
+    pub fn burst_density_pct(&self) -> f64 {
+        f64::from(self.burst_density) * 100.0 / 256.0
+    }
+
+    /// [`Self::gap_density`] as a percentage, on the same fixed-point scale as
+    /// [`Self::loss_rate_pct`].
+    #[must_use]
+    pub fn gap_density_pct(&self) -> f64 {
+        f64::from(self.gap_density) * 100.0 / 256.0
+    }
+
+    /// Voice quality R factor, or `None` when the endpoint marked it
+    /// unavailable.
+    ///
+    /// RFC 3611 puts the R factor in 0 to 100 and reserves 127 for "this
+    /// parameter is unavailable". Anything above 100 is outside the scale, so
+    /// it is reported as absent rather than as a very good call.
+    #[must_use]
+    pub fn r_factor(&self) -> Option<u8> {
+        (self.r_factor <= XR_R_MAX).then_some(self.r_factor)
+    }
+
+    /// External R factor — the R factor for the network segment *beyond* the
+    /// reporting endpoint — or `None` when marked unavailable.
+    #[must_use]
+    pub fn ext_r_factor(&self) -> Option<u8> {
+        (self.ext_r_factor <= XR_R_MAX).then_some(self.ext_r_factor)
+    }
+
+    /// Listening-quality MOS on the 1.0 to 5.0 scale, or `None` when the
+    /// endpoint marked it unavailable.
+    ///
+    /// RFC 3611 carries it as "an integer in the range 10 to 50, corresponding
+    /// to MOS x 10", with 127 meaning unavailable. Both the sentinel and any
+    /// other out-of-range byte give `None`: a 0 in this field is an endpoint
+    /// that never scored the call, and publishing it as a MOS of 0.0 would put
+    /// a worse-than-worst-case score beside a healthy stream.
+    #[must_use]
+    pub fn mos_lq(&self) -> Option<f64> {
+        Self::decode_mos(self.mos_lq)
+    }
+
+    /// Conversational-quality MOS on the 1.0 to 5.0 scale, or `None` when the
+    /// endpoint marked it unavailable. Unlike [`Self::mos_lq`] this one folds
+    /// in round-trip delay, so it is the number that moves when a call is
+    /// clear but hard to hold a conversation on.
+    #[must_use]
+    pub fn mos_cq(&self) -> Option<f64> {
+        Self::decode_mos(self.mos_cq)
+    }
+
+    /// Shared MOS-x10 decode for [`Self::mos_lq`] and [`Self::mos_cq`], so the
+    /// two cannot drift apart on the range check.
+    fn decode_mos(raw: u8) -> Option<f64> {
+        (XR_MOS_MIN..=XR_MOS_MAX)
+            .contains(&raw)
+            .then(|| f64::from(raw) / 10.0)
+    }
+
+    /// Voice signal relative level in dBm0, or `None` when marked unavailable.
+    ///
+    /// RFC 3611 carries this as a "signed integer in two's complement form"
+    /// over a range of 0 to -127 dBm0, so reading the wire byte as the `u8` it
+    /// is declared as turns every real speech level into a number in the 130s.
+    #[must_use]
+    pub fn signal_level_dbm0(&self) -> Option<i8> {
+        (self.signal_level != XR_UNAVAILABLE).then_some(self.signal_level as i8)
+    }
+
+    /// Noise level in dBm0, or `None` when marked unavailable. Two's
+    /// complement on the wire, exactly as [`Self::signal_level_dbm0`].
+    #[must_use]
+    pub fn noise_level_dbm0(&self) -> Option<i8> {
+        (self.noise_level != XR_UNAVAILABLE).then_some(self.noise_level as i8)
+    }
+
+    /// Residual echo return loss in dB, or `None` when marked unavailable.
+    #[must_use]
+    pub fn rerl_db(&self) -> Option<u8> {
+        (self.rerl != XR_UNAVAILABLE).then_some(self.rerl)
+    }
+
+    /// Whether [`Self::jb_abs_max`] hit the field's ceiling, in which case the
+    /// real absolute maximum is 65535 ms *or more* and the number is a floor.
+    #[must_use]
+    pub fn jb_abs_max_is_capped(&self) -> bool {
+        self.jb_abs_max == u16::MAX
+    }
 }
 
 // ── Parser ───────────────────────────────────────────────────────────
@@ -882,6 +1032,131 @@ mod tests {
             &packets[0],
             RtcpPacket::Unknown { packet_type: 210 }
         ));
+    }
+
+    /// A VoIP Metrics block with every field set to a plain in-range value,
+    /// for the accessor tests to mutate one field at a time.
+    fn plain_metrics() -> VoipMetrics {
+        VoipMetrics {
+            ssrc: 1,
+            loss_rate: 0,
+            discard_rate: 0,
+            burst_density: 0,
+            gap_density: 0,
+            burst_duration: 0,
+            gap_duration: 0,
+            round_trip_delay: 0,
+            end_system_delay: 0,
+            signal_level: 0,
+            noise_level: 0,
+            rerl: 0,
+            gmin: 16,
+            r_factor: 90,
+            ext_r_factor: 90,
+            mos_lq: 40,
+            mos_cq: 40,
+            jb_nominal: 0,
+            jb_maximum: 0,
+            jb_abs_max: 0,
+        }
+    }
+
+    /// The four fixed-point fraction fields divide by 256, not 255: RFC 3611
+    /// puts the binary point at the left edge of the byte. Dividing by 255
+    /// would report 100% for a value that means 99.6%.
+    #[test]
+    fn xr_fraction_fields_use_the_binary_point_scale() {
+        let mut m = plain_metrics();
+        m.loss_rate = 128;
+        m.discard_rate = 64;
+        m.burst_density = 32;
+        m.gap_density = 255;
+        assert!((m.loss_rate_pct() - 50.0).abs() < 1e-9);
+        assert!((m.discard_rate_pct() - 25.0).abs() < 1e-9);
+        assert!((m.burst_density_pct() - 12.5).abs() < 1e-9);
+        assert!(
+            m.gap_density_pct() < 100.0,
+            "255/256 is not 100%: {}",
+            m.gap_density_pct()
+        );
+    }
+
+    /// 127 is RFC 3611's "this parameter is unavailable" on all seven
+    /// single-byte fields that define it. Publishing it raw puts an R factor
+    /// of 127 and a MOS of 12.7 on screen, both off their own scales.
+    #[test]
+    fn xr_unavailable_sentinel_reads_as_absent() {
+        let mut m = plain_metrics();
+        m.r_factor = 127;
+        m.ext_r_factor = 127;
+        m.mos_lq = 127;
+        m.mos_cq = 127;
+        m.signal_level = 127;
+        m.noise_level = 127;
+        m.rerl = 127;
+        assert_eq!(m.r_factor(), None);
+        assert_eq!(m.ext_r_factor(), None);
+        assert_eq!(m.mos_lq(), None);
+        assert_eq!(m.mos_cq(), None);
+        assert_eq!(m.signal_level_dbm0(), None);
+        assert_eq!(m.noise_level_dbm0(), None);
+        assert_eq!(m.rerl_db(), None);
+    }
+
+    /// MOS is carried as MOS x 10 over 10..=50. A byte outside that range is
+    /// not a low MOS, it is not a MOS — an endpoint that never scored the call
+    /// commonly sends 0, and rendering that as 0.0 puts a below-floor score
+    /// beside a healthy stream.
+    #[test]
+    fn xr_mos_outside_the_rfc_range_is_absent() {
+        let mut m = plain_metrics();
+        m.mos_lq = 0;
+        m.mos_cq = 51;
+        assert_eq!(m.mos_lq(), None, "0 is below the RFC 3611 floor of 10");
+        assert_eq!(m.mos_cq(), None, "51 is above the RFC 3611 ceiling of 50");
+
+        m.mos_lq = XR_MOS_MIN;
+        m.mos_cq = XR_MOS_MAX;
+        assert_eq!(m.mos_lq(), Some(1.0), "the range is inclusive at the floor");
+        assert_eq!(
+            m.mos_cq(),
+            Some(5.0),
+            "the range is inclusive at the ceiling"
+        );
+    }
+
+    /// R factor runs 0 to 100. 101 through 126 are off the scale and are
+    /// reported absent rather than as a better-than-perfect call.
+    #[test]
+    fn xr_r_factor_above_the_scale_is_absent() {
+        let mut m = plain_metrics();
+        m.r_factor = 100;
+        m.ext_r_factor = 101;
+        assert_eq!(m.r_factor(), Some(100), "100 is the top of the scale");
+        assert_eq!(m.ext_r_factor(), None, "101 is off the scale");
+    }
+
+    /// Signal and noise levels are two's complement on the wire, over 0 to
+    /// -127 dBm0. Read as the declared `u8` a normal speech level of -20 dBm0
+    /// prints as 236.
+    #[test]
+    fn xr_levels_decode_as_twos_complement() {
+        let mut m = plain_metrics();
+        m.signal_level = 0xEC; // -20 dBm0
+        m.noise_level = 0xB0; // -80 dBm0
+        assert_eq!(m.signal_level_dbm0(), Some(-20));
+        assert_eq!(m.noise_level_dbm0(), Some(-80));
+    }
+
+    /// RFC 3611 clamps `jb_abs_max` at 65535, so that value is a floor rather
+    /// than a measurement and must be flagged as such.
+    #[test]
+    fn xr_jb_abs_max_ceiling_is_flagged() {
+        let mut m = plain_metrics();
+        m.jb_abs_max = 65_534;
+        assert!(!m.jb_abs_max_is_capped());
+        m.jb_abs_max = 65_535;
+        assert!(m.jb_abs_max_is_capped());
     }
 
     /// An XR carrying a VoIP Metrics block (BT=7) decodes its SSRC and
