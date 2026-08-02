@@ -1827,7 +1827,11 @@ fn process_parsed_packet<W: std::io::Write>(
                     if let Some(dialog) = dialog_store.get(call_id) {
                         let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                             stream_store.streams_for(call_id).collect();
-                        expr.matches_dialog(dialog, &dialog_streams)
+                        expr.matches_dialog(
+                            dialog,
+                            &dialog_streams,
+                            crate::rtp::diagnosis::CaptureMedia::of_store(stream_store),
+                        )
                     } else {
                         false
                     }
@@ -2394,9 +2398,11 @@ pub fn generate_reports(
         // Groups the streams by Call-ID once, where the loop below used to
         // rescan the whole stream store per dialog.
         let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
+        let capture = crate::rtp::diagnosis::CaptureMedia::of_store(stream_store);
         let mut out = String::new();
         for (dialog, dialog_streams) in &selection.dialogs {
-            let mut diagnosis = crate::rtp::diagnosis::diagnose_media(dialog_streams, None);
+            let media = crate::rtp::diagnosis::MediaContext::for_dialog(dialog, capture);
+            let mut diagnosis = crate::rtp::diagnosis::diagnose_media(dialog_streams, &media);
             crate::rtp::diagnosis::diagnose_asymmetry(
                 &mut diagnosis,
                 Some(dialog),
@@ -2423,7 +2429,11 @@ pub fn generate_reports(
         if let Some(dialog) = dialog_store.get(call_id) {
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 stream_store.streams_for(call_id).collect();
-            let mut diagnosis = crate::rtp::diagnosis::diagnose_media(&dialog_streams, None);
+            let media = crate::rtp::diagnosis::MediaContext::for_dialog(
+                dialog,
+                crate::rtp::diagnosis::CaptureMedia::of_store(stream_store),
+            );
+            let mut diagnosis = crate::rtp::diagnosis::diagnose_media(&dialog_streams, &media);
             crate::rtp::diagnosis::diagnose_asymmetry(
                 &mut diagnosis,
                 Some(dialog),

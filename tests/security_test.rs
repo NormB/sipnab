@@ -588,6 +588,76 @@ fn victim_ip() -> IpAddr {
     IpAddr::V4(Ipv4Addr::from(u32::MAX))
 }
 
+/// One probe transaction `n` from `src`, and the `403` that refuses it.
+///
+/// Scaffolding for [`scanner_detector_caps_behavioral_entries`], whose subject
+/// is the H4 entry cap rather than the signature. All it has to do is
+/// accumulate per-source state the cap can then be seen to evict — but it can
+/// only do that by satisfying whatever arms the detector, so it is worth being
+/// explicit about what that now is.
+///
+/// A rate alone arms nothing. The behavioural signature reports a source once
+/// the capture shows an OUTCOME: its probes refused, or going unanswered. This
+/// pair takes the refusal route, which needs no clock — every message here
+/// carries the same timestamp, so no window expires and no probe ever ages
+/// past the answer grace, leaving the refusals as the only thing in play and
+/// the arming exactly countable.
+///
+/// Two details are load-bearing, and both were missing from the single reused
+/// message this replaced:
+///
+/// * the top `Via` **branch** is unique per probe, because that is the
+///   transaction identifier. Repeat one — or omit it, as the old fixture did —
+///   and the detector cannot tie the refusal back to the probe it answers.
+/// * the refusal **echoes that branch**, which is what makes it evidence about
+///   this probe rather than an unrelated response to the same peer.
+///
+/// `403` rather than `401`: an auth challenge is what every registration
+/// begins with, so it carries no reconnaissance signal and is not counted.
+fn refused_probe(n: u32, src: IpAddr) -> (sipnab::sip::SipMessage, sipnab::sip::SipMessage) {
+    let via = format!("Via: SIP/2.0/UDP scanner.example.com;branch=z9hG4bK-cap-{n}");
+    let call_id = format!("Call-ID: cap-{n}@test");
+    let cseq = format!("CSeq: {n} OPTIONS");
+    let parse = |raw: &[u8], from: IpAddr, to: IpAddr| {
+        sipnab::sip::parse_sip(raw, ts(), from, to, 5060, 5060, TransportProto::Udp).expect("parse")
+    };
+    let probe = parse(
+        &build_sip(
+            "OPTIONS sip:target@example.com SIP/2.0",
+            &[
+                &via,
+                "From: <sip:scanner@example.com>;tag=s1",
+                "To: <sip:target@example.com>",
+                &call_id,
+                &cseq,
+                "Content-Length: 0",
+            ],
+            b"",
+        ),
+        src,
+        localhost(),
+    );
+    // A response travels back the way the request came, so its DESTINATION is
+    // the source whose probe it settles.
+    let refusal = parse(
+        &build_sip(
+            "SIP/2.0 403 Forbidden",
+            &[
+                &via,
+                "From: <sip:scanner@example.com>;tag=s1",
+                "To: <sip:target@example.com>;tag=t1",
+                &call_id,
+                &cseq,
+                "Content-Length: 0",
+            ],
+            b"",
+        ),
+        localhost(),
+        src,
+    );
+    (probe, refusal)
+}
+
 /// The H4 caps are enforced by evicting the *oldest* entry once the map is
 /// full. These tests prove that directly and deterministically, with no
 /// dependence on allocator/RSS behavior:
@@ -603,35 +673,20 @@ fn victim_ip() -> IpAddr {
 ///
 /// H4: Scanner detector behavioral tracking must be capped to prevent memory
 /// exhaustion from diverse source IPs. Rate alert fires when probe count
-/// exceeds `BEHAVIORAL_THRESHOLD` (10) within the 5s window.
+/// exceeds `BEHAVIORAL_THRESHOLD` (10) within the 5s window **and** the
+/// capture shows the source being refused — see [`refused_probe`].
 #[test]
 #[serial_test::serial]
 fn scanner_detector_caps_behavioral_entries() {
-    let raw = build_sip(
-        "OPTIONS sip:target@example.com SIP/2.0",
-        &[
-            "From: <sip:scanner@example.com>;tag=s1",
-            "To: <sip:target@example.com>",
-            "Call-ID: cap@test",
-            "CSeq: 1 OPTIONS",
-            "Content-Length: 0",
-        ],
-        b"",
-    );
-    let base = sipnab::sip::parse_sip(
-        &raw,
-        ts(),
-        localhost(),
-        localhost(),
-        5060,
-        5060,
-        TransportProto::Udp,
-    )
-    .expect("parse");
-    let probe = |detector: &mut ScannerDetector, ip: IpAddr| {
-        let mut msg = base.clone();
-        msg.src_addr = ip;
-        detector.check(&msg)
+    // Each call is one probe transaction and the refusal that answers it. The
+    // alert under test belongs to the probe; the refusal never alerts.
+    let mut seq = 0u32;
+    let mut probe = |detector: &mut ScannerDetector, ip: IpAddr| {
+        seq += 1;
+        let (probe, refusal) = refused_probe(seq, ip);
+        let alert = detector.check(&probe);
+        let _ = detector.check(&refusal);
+        alert
     };
 
     // Control: the 11th probe from a single source alerts (10 do not).

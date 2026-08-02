@@ -80,7 +80,7 @@ Understanding-oriented. Read these when you want to know *why*, not *how*.
   the design decisions that still hold.
 - [Fault model](fault-model.md) — what sipnab does when things go wrong, and
   what it deliberately does not do.
-- [Benchmarks](benchmarks.md) — measured throughput and memory, how the
+- [Benchmarks](benchmarks.md) — measured throughput and memory, where the
   numbers came from, and how to reproduce them.
 
 ## Contributing

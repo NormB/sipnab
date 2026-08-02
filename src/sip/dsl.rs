@@ -27,7 +27,7 @@ use nom::{
 };
 
 use super::dialog::{DialogState, SipDialog};
-use crate::rtp::diagnosis::{self, MediaDiagnosis};
+use crate::rtp::diagnosis::{self, CaptureMedia, MediaDiagnosis};
 use crate::rtp::stream::RtpStream;
 
 // ── Maximum nesting depth (D17) ─────────────────────────────────────
@@ -53,7 +53,7 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 ///
 /// let filter = FilterExpr::parse("from.user == '1001' AND rtp.loss > 2.0")?;
 /// // Evaluate against tracked calls with
-/// // `filter.matches_dialog(&dialog, &streams)`.
+/// // `filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed)`.
 ///
 /// // Malformed expressions fail to parse:
 /// assert!(FilterExpr::parse("from.user ==").is_err());
@@ -139,9 +139,6 @@ enum Field {
     RtpLoss,
     /// `rtp.packets` — total packet count summed across streams.
     RtpPackets,
-    /// `rtp.orphaned` — true when any associated stream is marked
-    /// orphaned.
-    RtpOrphaned,
     /// `rtp.codec` — first known stream codec name.
     RtpCodec,
     /// `rtp.ssrc` — first stream's SSRC as 0x-prefixed lowercase hex.
@@ -242,7 +239,7 @@ pub fn expand_alias(alias: &str) -> Option<&'static str> {
         "problems" => Some(
             "state == 'Failed' OR one_way == true OR rtp.loss > 2.0 \
              OR rtp.jitter > 50.0 OR nat_mismatch == true \
-             OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true \
+             OR retransmits > 3 OR pdd > 32.0 \
              OR codec_asymmetry == true OR ptime_asymmetry == true \
              OR payload_asymmetry == true OR duration_asymmetry == true \
              OR late_media == true",
@@ -377,16 +374,30 @@ impl FilterExpr {
     /// * `dialog` — The SIP dialog to test.
     /// * `streams` — RTP streams associated with the dialog (may be empty;
     ///   RTP fields then compare as zero/empty values).
+    /// * `capture` — whether the capture recorded any RTP at all. `no_media`
+    ///   is a claim that a call carried no audio, and on a signalling-only
+    ///   capture no call carries any, so the flag would describe the tap
+    ///   rather than the call. Callers holding a stream store pass
+    ///   [`CaptureMedia::of_store`]; the surfaces that filter dialogs with no
+    ///   media data at all pass [`CaptureMedia::Absent`], which is the honest
+    ///   reading of what they know.
     ///
     /// # Returns
     ///
     /// `true` when the dialog and its streams satisfy the expression.
-    pub fn matches_dialog(&self, dialog: &SipDialog, streams: &[&RtpStream]) -> bool {
+    pub fn matches_dialog(
+        &self,
+        dialog: &SipDialog,
+        streams: &[&RtpStream],
+        capture: CaptureMedia,
+    ) -> bool {
         // Only run the media/asymmetry diagnosis when the expression actually
         // reads a diagnosis field; otherwise a default (all-clear) diagnosis
-        // suffices and is never consulted.
+        // suffices and is never consulted. Building the media context reparses
+        // the dialog's SDP bodies, so it belongs inside this branch too.
         let diag = if self.needs_diagnosis {
-            let mut diag = diagnosis::diagnose_media(streams, None);
+            let media = diagnosis::MediaContext::for_dialog(dialog, capture);
+            let mut diag = diagnosis::diagnose_media(streams, &media);
             diagnosis::diagnose_asymmetry(
                 &mut diag,
                 Some(dialog),
@@ -456,6 +467,8 @@ pub fn select_dialogs<'a>(
         }
     }
 
+    // One run-level fact, read once rather than per dialog.
+    let capture = CaptureMedia::of_store(stream_store);
     let dialogs: Vec<(&'a SipDialog, Vec<&'a RtpStream>)> = dialog_store
         .iter()
         .filter_map(|dialog| {
@@ -464,7 +477,7 @@ pub fn select_dialogs<'a>(
                 .cloned()
                 .unwrap_or_default();
             match filter {
-                Some(expr) if !expr.matches_dialog(dialog, &streams) => None,
+                Some(expr) if !expr.matches_dialog(dialog, &streams, capture) => None,
                 _ => Some((dialog, streams)),
             }
         })
@@ -688,7 +701,6 @@ pub const FIELD_NAMES: &[&str] = &[
     "rtp.jitter",
     "rtp.loss",
     "rtp.packets",
-    "rtp.orphaned",
     "rtp.codec",
     "rtp.ssrc",
     "one_way",
@@ -744,7 +756,6 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
         "rtp.jitter" => Field::RtpJitter,
         "rtp.loss" => Field::RtpLoss,
         "rtp.packets" => Field::RtpPackets,
-        "rtp.orphaned" => Field::RtpOrphaned,
         "rtp.codec" => Field::RtpCodec,
         "rtp.ssrc" => Field::RtpSsrc,
         "one_way" => Field::OneWay,
@@ -1244,10 +1255,6 @@ fn eval_compare(
         }
 
         // ── Boolean fields ─────────────────────────────────────────
-        Field::RtpOrphaned => {
-            let orphaned = streams.iter().any(|s| s.orphaned);
-            compare_bool(orphaned, op, value)
-        }
         Field::OneWay => compare_bool(diag.one_way_audio, op, value),
         Field::NatMismatch => compare_bool(diag.nat_mismatch, op, value),
         Field::NoMedia => compare_bool(diag.no_media, op, value),
@@ -1493,7 +1500,7 @@ mod tests {
     fn from_user_equals_match() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("from.user == '1001'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     /// `payload` greps the raw text of every message: regex matches
@@ -1504,13 +1511,13 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         // The raw INVITE contains the To URI.
         let f = FilterExpr::parse("payload =~ '2002@example'").expect("should parse");
-        assert!(f.matches_dialog(&dialog, &[]));
+        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
         let f = FilterExpr::parse("payload =~ 'not-there'").expect("should parse");
-        assert!(!f.matches_dialog(&dialog, &[]));
+        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
         // Equality against a whole raw message: never matches here, must not
         // panic (raw bytes are lossily decoded).
         let f = FilterExpr::parse("payload == 'x'").expect("should parse");
-        assert!(!f.matches_dialog(&dialog, &[]));
+        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     /// Build a dialog whose sole INVITE carries `body` verbatim (so
@@ -1570,7 +1577,7 @@ mod tests {
         // matches. The escaped `\'` here proves the delimiter is expressible
         // inside a regex too (matches nothing, but must parse).
         let f = FilterExpr::parse(r"from.user =~ '^\d\d\d\d$'").expect("should parse");
-        assert!(f.matches_dialog(&dialog, &[])); // from.user == "1001"
+        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent)); // from.user == "1001"
 
         // `\\` is preserved as two characters, so the regex engine sees one
         // literal backslash. This keeps `regex::escape`-produced text (e.g.
@@ -1595,15 +1602,15 @@ mod tests {
 
         // U+FFFD is absent from the true bytes → no match.
         let f = FilterExpr::parse(r"payload =~ '\x{FFFD}'").expect("should parse");
-        assert!(!f.matches_dialog(&dialog, &[]));
+        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
 
         // ASCII content around the invalid byte still greps fine and never
         // panics on the non-UTF-8 message.
         let dialog2 = make_dialog_with_body(b"MARK\xffER");
         let f = FilterExpr::parse("payload =~ 'MARK'").expect("should parse");
-        assert!(f.matches_dialog(&dialog2, &[]));
+        assert!(f.matches_dialog(&dialog2, &[], CaptureMedia::Absent));
         let f = FilterExpr::parse("payload == 'nope'").expect("should parse");
-        assert!(!f.matches_dialog(&dialog2, &[]));
+        assert!(!f.matches_dialog(&dialog2, &[], CaptureMedia::Absent));
     }
 
     /// `from.user ==` rejects a dialog with a different From user.
@@ -1611,7 +1618,7 @@ mod tests {
     fn from_user_equals_no_match() {
         let dialog = make_dialog("2002", "1001", "INVITE");
         let filter = FilterExpr::parse("from.user == '1001'").expect("should parse");
-        assert!(!filter.matches_dialog(&dialog, &[]));
+        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── AND + NOT ───────────────────────────────────────────────────
@@ -1624,7 +1631,7 @@ mod tests {
         let filter =
             FilterExpr::parse("method == 'INVITE' AND NOT ua =~ 'scanner'").expect("should parse");
         // UA is "TestUA/1.0", does not match 'scanner', so NOT flips to true
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── PDD in seconds ─────────────────────────────────────────────
@@ -1635,7 +1642,7 @@ mod tests {
         // PDD of 4000ms = 4.0 seconds, filter asks > 3.0
         let dialog = make_dialog_with_timing(4000);
         let filter = FilterExpr::parse("pdd > 3.0").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     /// A 2000 ms PDD does not satisfy `pdd > 3.0`.
@@ -1644,31 +1651,44 @@ mod tests {
         // PDD of 2000ms = 2.0 seconds, filter asks > 3.0
         let dialog = make_dialog_with_timing(2000);
         let filter = FilterExpr::parse("pdd > 3.0").expect("should parse");
-        assert!(!filter.matches_dialog(&dialog, &[]));
+        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
-    // ── RTP orphaned boolean ────────────────────────────────────────
+    // ── rtp.orphaned, withdrawn ─────────────────────────────────────
 
-    /// `rtp.orphaned == true` matches when an associated stream is
-    /// orphaned.
+    /// `rtp.orphaned` is no longer a field, and asking for it says so.
+    ///
+    /// It asked whether a stream *belonging to this dialog* belongs to no
+    /// dialog. A stream is flagged orphaned only while `associated_dialog` is
+    /// `None`, and the dialog's streams are exactly those whose
+    /// `associated_dialog` is set — all three linking paths in `StreamStore`
+    /// clear the flag as they set the association — so the predicate was
+    /// unsatisfiable by construction, not merely unobserved. Silently matching
+    /// nothing is the worst of the options: `NOT rtp.orphaned` matched
+    /// everything and the `problems` alias carried a disjunct that could never
+    /// contribute. A parse error tells the operator; orphaned media is
+    /// reachable through `--report` and `/v1/streams?orphaned=true`, which
+    /// model streams rather than dialogs.
     #[test]
-    fn rtp_orphaned_true() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let stream = make_rtp_stream(true);
-        let streams: Vec<&RtpStream> = vec![&stream];
-        let filter = FilterExpr::parse("rtp.orphaned == true").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &streams));
+    fn rtp_orphaned_is_no_longer_a_field() {
+        let err = FilterExpr::parse("rtp.orphaned == true")
+            .expect_err("rtp.orphaned must not parse as a field");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("rtp.orphaned") || msg.contains("field"),
+            "the error should name what was rejected, got: {msg}"
+        );
     }
 
-    /// `rtp.orphaned == true` rejects when no associated stream is
-    /// orphaned.
+    /// The `problems` alias no longer carries the unsatisfiable disjunct.
     #[test]
-    fn rtp_orphaned_false() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let stream = make_rtp_stream(false);
-        let streams: Vec<&RtpStream> = vec![&stream];
-        let filter = FilterExpr::parse("rtp.orphaned == true").expect("should parse");
-        assert!(!filter.matches_dialog(&dialog, &streams));
+    fn problems_alias_drops_the_unsatisfiable_disjunct() {
+        let expr = expand_alias("problems").expect("alias exists");
+        assert!(
+            !expr.contains("orphaned"),
+            "problems must not include a term that can never be true: {expr}"
+        );
+        FilterExpr::parse(expr).expect("the alias must still parse");
     }
 
     // ── Boolean operator precedence ─────────────────────────────────
@@ -1690,12 +1710,12 @@ mod tests {
         let filter_grouped_or =
             FilterExpr::parse("(from.user == '1001' OR from.user == '9999') AND method == 'BYE'")
                 .expect("should parse");
-        assert!(!filter_grouped_or.matches_dialog(&dialog, &[]));
+        assert!(!filter_grouped_or.matches_dialog(&dialog, &[], CaptureMedia::Absent));
 
         let filter_grouped_and =
             FilterExpr::parse("from.user == '1001' OR (from.user == '9999' AND method == 'BYE')")
                 .expect("should parse");
-        assert!(filter_grouped_and.matches_dialog(&dialog, &[]));
+        assert!(filter_grouped_and.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     /// Without parentheses, `AND` binds tighter than `OR`.
@@ -1711,7 +1731,7 @@ mod tests {
         let filter =
             FilterExpr::parse("from.user == '1001' OR from.user == '9999' AND method == 'BYE'")
                 .expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── Regex matching ──────────────────────────────────────────────
@@ -1721,7 +1741,7 @@ mod tests {
     fn regex_match_accepts() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("from.user =~ '100[0-9]'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     /// `=~` rejects when the field value does not satisfy the regex.
@@ -1729,7 +1749,7 @@ mod tests {
     fn regex_match_rejects() {
         let dialog = make_dialog("2001", "3003", "INVITE");
         let filter = FilterExpr::parse("from.user =~ '100[0-9]'").expect("should parse");
-        assert!(!filter.matches_dialog(&dialog, &[]));
+        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── Nesting depth limit ─────────────────────────────────────────
@@ -1936,7 +1956,7 @@ mod tests {
     fn double_quoted_string() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse(r#"from.user == "1001""#).expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── State comparison ────────────────────────────────────────────
@@ -1948,10 +1968,10 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         // Initial state for INVITE is Trying
         let filter = FilterExpr::parse("state == 'Trying'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
 
         let filter_fail = FilterExpr::parse("state == 'Failed'").expect("should parse");
-        assert!(!filter_fail.matches_dialog(&dialog, &[]));
+        assert!(!filter_fail.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── Dialog state with Failed ────────────────────────────────────
@@ -1985,7 +2005,7 @@ mod tests {
         crate::sip::dialog::update_state(&mut dialog, &fail_msg);
         assert_eq!(*dialog.state(), DialogState::Failed);
         let filter = FilterExpr::parse("state == 'Failed'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── Complex compound expression ─────────────────────────────────
@@ -1997,7 +2017,7 @@ mod tests {
         let dialog = make_dialog_with_timing(4000);
         let filter = FilterExpr::parse("from.user == '1001' AND (pdd > 3.0 OR state == 'Failed')")
             .expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── Msg count ───────────────────────────────────────────────────
@@ -2008,10 +2028,10 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         // Dialog has exactly 1 message (the initial INVITE)
         let filter = FilterExpr::parse("msg_count == 1").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
 
         let filter_more = FilterExpr::parse("msg_count > 5").expect("should parse");
-        assert!(!filter_more.matches_dialog(&dialog, &[]));
+        assert!(!filter_more.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── RTP packets count ───────────────────────────────────────────
@@ -2024,7 +2044,7 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
         // Stream has 1 packet from construction
         let filter = FilterExpr::parse("rtp.packets >= 1").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &streams));
+        assert!(filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
     }
 
     // ── Retransmits ─────────────────────────────────────────────────
@@ -2038,7 +2058,7 @@ mod tests {
             .retransmit_counts
             .insert("1 INVITE".to_string(), 5);
         let filter = FilterExpr::parse("retransmits > 3").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── Not-equal operator ──────────────────────────────────────────
@@ -2048,7 +2068,7 @@ mod tests {
     fn not_equal_operator() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("method != 'BYE'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── Integer numeric values ──────────────────────────────────────
@@ -2058,7 +2078,7 @@ mod tests {
     fn integer_numeric_value() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("msg_count == 1").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── expand_alias: every alias maps to its documented expression ─────
@@ -2232,7 +2252,7 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         // one_way is false with no streams, so == false matches.
         let filter = FilterExpr::parse("one_way == false").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[]));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     /// A partial method selection (OR of method equalities) hides dialogs
@@ -2247,12 +2267,12 @@ mod tests {
         let partial = FilterExpr::parse("(method == 'REGISTER' OR method == 'INVITE')")
             .expect("should parse");
         assert!(
-            !partial.matches_dialog(&bye, &[]),
+            !partial.matches_dialog(&bye, &[], CaptureMedia::Absent),
             "a partial method selection must not match an unlisted-method dialog"
         );
         // And it does match a dialog whose method IS in the selection.
         let invite = make_dialog("1001", "2002", "INVITE");
-        assert!(partial.matches_dialog(&invite, &[]));
+        assert!(partial.matches_dialog(&invite, &[], CaptureMedia::Absent));
     }
 
     /// FilterExpr::never() rejects every dialog regardless of method.
@@ -2264,7 +2284,7 @@ mod tests {
         for method in ["INVITE", "REGISTER", "BYE", "OPTIONS"] {
             let dialog = make_dialog("1001", "2002", method);
             assert!(
-                !never.matches_dialog(&dialog, &[]),
+                !never.matches_dialog(&dialog, &[], CaptureMedia::Absent),
                 "never() must not match a {method} dialog"
             );
         }
@@ -2344,10 +2364,10 @@ mod tests {
         stream.jitter = 30.0 + 1e-7;
         let streams: Vec<&RtpStream> = vec![&stream];
         let f = FilterExpr::parse("rtp.jitter == 30").expect("parse");
-        assert!(f.matches_dialog(&dialog, &streams));
+        assert!(f.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
         stream.jitter = 30.6;
         let streams: Vec<&RtpStream> = vec![&stream];
-        assert!(!f.matches_dialog(&dialog, &streams));
+        assert!(!f.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
     }
 
     // ── src.port/dst.port: stable across idle compaction ────────────────
@@ -2410,8 +2430,8 @@ mod tests {
 
         let src = FilterExpr::parse("src.port == 5060").expect("parse");
         let dst = FilterExpr::parse("dst.port == 5080").expect("parse");
-        assert!(src.matches_dialog(&dialog, &[]));
-        assert!(dst.matches_dialog(&dialog, &[]));
+        assert!(src.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(dst.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     // ── compare_bool: operators + type mismatch ─────────────────────────
@@ -2527,15 +2547,15 @@ mod tests {
 
         // MOS should be degraded below 4.0.
         let mos_filter = FilterExpr::parse("rtp.mos < 4.0").expect("parse");
-        assert!(mos_filter.matches_dialog(&dialog, &streams));
+        assert!(mos_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
 
         // Jitter worst-case across streams is 60.0.
         let jitter_filter = FilterExpr::parse("rtp.jitter > 50.0").expect("parse");
-        assert!(jitter_filter.matches_dialog(&dialog, &streams));
+        assert!(jitter_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
 
         // Loss percentage is high.
         let loss_filter = FilterExpr::parse("rtp.loss > 50.0").expect("parse");
-        assert!(loss_filter.matches_dialog(&dialog, &streams));
+        assert!(loss_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
     }
 
     /// rtp.codec matches a stream's codec; rtp.ssrc matches the
@@ -2548,11 +2568,11 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
 
         let codec_filter = FilterExpr::parse("rtp.codec == 'PCMU'").expect("parse");
-        assert!(codec_filter.matches_dialog(&dialog, &streams));
+        assert!(codec_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
 
         // SSRC is rendered as 0x-prefixed 10-char hex of 0xDEADBEEF.
         let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0xdeadbeef'").expect("parse");
-        assert!(ssrc_filter.matches_dialog(&dialog, &streams));
+        assert!(ssrc_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
     }
 
     /// Item 3: the parse-time `needs_diagnosis` flag is set iff the
@@ -2567,7 +2587,7 @@ mod tests {
                 .needs_diagnosis
         );
         assert!(
-            !FilterExpr::parse("rtp.mos < 3.0 AND rtp.orphaned == true")
+            !FilterExpr::parse("rtp.mos < 3.0 AND rtp.packets > 0")
                 .unwrap()
                 .needs_diagnosis
         );
@@ -2601,7 +2621,7 @@ mod tests {
         // streams are present (the skipped diagnosis changes nothing).
         let dialog = make_dialog("1001", "2002", "INVITE");
         let f = FilterExpr::parse("from.user == '1001'").unwrap();
-        assert!(f.matches_dialog(&dialog, &[]));
+        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
     }
 
     /// Item 2: `rtp.codec` / `rtp.ssrc` match if ANY linked stream matches,
@@ -2623,15 +2643,15 @@ mod tests {
 
         // Codec carried only by the second stream matches.
         let codec_filter = FilterExpr::parse("rtp.codec == 'G722'").expect("parse");
-        assert!(codec_filter.matches_dialog(&dialog, &streams));
+        assert!(codec_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
 
         // SSRC carried only by the second stream matches.
         let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0x00000001'").expect("parse");
-        assert!(ssrc_filter.matches_dialog(&dialog, &streams));
+        assert!(ssrc_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
 
         // A codec present on no stream still does not match.
         let miss = FilterExpr::parse("rtp.codec == 'opus'").expect("parse");
-        assert!(!miss.matches_dialog(&dialog, &streams));
+        assert!(!miss.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
     }
 
     // ── select_dialogs ──────────────────────────────────────────────

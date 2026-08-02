@@ -560,8 +560,11 @@ Call-flow ladder for one Call-ID.
 | `call_id` | string | Required. |
 | `format` | "markdown" \| "text" | Default `"markdown"`. |
 
-Output is byte-identical to `sipnab --call-report <id> --markdown` /
-`--call-report <id>` for the same dialog.
+Output is byte-identical to the report
+`sipnab -N --call-report <id> --markdown --no-cli-print` /
+`sipnab -N --call-report <id> --no-cli-print` writes for the same dialog.
+`--no-cli-print` matters for the comparison: without it the CLI writes the whole
+capture's per-message dump ahead of the report, and the tool never does.
 
 ```text
 # Call Report: 1-1966@10.0.2.20

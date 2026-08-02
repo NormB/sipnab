@@ -37,7 +37,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 31 addressable fields, organized by type.
+All 30 addressable fields, organized by type.
 
 ### String fields
 
@@ -92,33 +92,48 @@ All 31 addressable fields, organized by type.
 
 | Field | Description |
 |-------|-------------|
-| `rtp.orphaned` | True if any associated RTP stream has no matching SIP dialog — see the note below |
 | `one_way` | True if one-way audio detected (via diagnosis engine) |
-| `nat_mismatch` | True if NAT mismatch detected (Contact/Via IP discrepancy) — see the note below |
-| `no_media` | True if no media detected for established call — see the note below |
+| `nat_mismatch` | True if RTP arrived from an address no SDP in the dialog advertised — see the note below |
+| `no_media` | True if an answered call negotiated media that never arrived — see the note below |
 | `codec_asymmetry` | True if A and B legs negotiated different RTP codecs |
 | `ptime_asymmetry` | True if the two legs use different `ptime` (packetization interval) |
 | `payload_asymmetry` | True if dynamic payload type numbers differ across legs (with the same codec) |
 | `duration_asymmetry` | True if one leg's media duration is materially shorter than the other's |
 | `late_media` | True if RTP starts noticeably later than the answering 200 OK |
 
-> **Three of these never fire today.** They parse, they evaluate, and they
-> always come out `false` — for structural reasons, not because your capture is
-> clean. Filtering on them selects nothing, and `NOT` on them selects
-> everything.
+> **What `nat_mismatch` compares.** A dialog advertises a media address on each
+> side — the caller's in the offer, the callee's in the answer — and a
+> re-INVITE may add more. `nat_mismatch` is true when a stream carries a source
+> address that **none** of them named. Set membership, not equality against one
+> `c=` line: a healthy two-way call sources RTP from two different advertised
+> addresses, so comparing each stream against a single `c=` would flag one
+> direction of every call in the capture. Addresses only, never ports, because
+> NAT and RTP proxies rewrite the port on ordinary calls without breaking
+> anything.
 >
-> * `no_media` and `nat_mismatch` only become true when the media diagnosis
->   receives the dialog's negotiated SDP, and every caller — CLI, MCP, REST API,
->   and this DSL — currently passes none. Measured across four real capture
->   sets (5521 dialogs): zero matches.
-> * `rtp.orphaned` asks whether a stream *belonging to this dialog* has no
->   dialog. A stream counts as orphaned only while it belongs to none, so the
->   two conditions exclude each other. To find orphaned media, read the
->   "Orphaned Streams" section of `--report`, or the REST API's
->   `/streams?orphaned=true`, instead.
+> **What `no_media` requires.** All four: the far end answered an offer, the
+> dialog reached a 2xx, at least one exchange described media that should carry
+> audio, and no RTP arrived for the call. "Should carry audio" excludes the
+> forms that ask for silence —
+> `a=inactive`, `m=` port `0`, a black-holed `c=0.0.0.0`, and non-RTP transports
+> such as T.38 `m=image ... udptl` — so a call held for its whole life is not
+> reported as a media failure.
 >
-> `one_way` does work: it follows from the stream directions sipnab observed and
-> needs no SDP (10 matches in the same corpus).
+> **`no_media` is silent on a capture that holds no RTP.** A signalling-only
+> tap, a HEP feed or `--no-rtp` cannot show that one call had no audio, because
+> no call in it has any. On such a capture the flag stays false by design rather
+> than selecting every answered dialog. Pair `no_media` with the knowledge of
+> where your tap sits: if media does not traverse it, the question is
+> unanswerable and sipnab declines to answer it.
+>
+> **`rtp.orphaned` was withdrawn.** It asked whether a stream *belonging to this
+> dialog* belongs to no dialog, and sipnab flags a stream orphaned only while it
+> belongs to none — the two halves excluded each other, so the field matched
+> nothing on any capture while `NOT rtp.orphaned` matched everything. It is now
+> a parse error rather than a silent falsehood. Orphaned media is real and still
+> reachable: read the "Orphaned Streams" section of `--report`, or the REST
+> API's `/v1/streams?orphaned=true`, both of which model streams rather than
+> dialogs.
 
 ## Operators
 
@@ -176,7 +191,7 @@ tool. They expand to DSL expressions internally.
 
 | Alias | Dedicated CLI Flag | Expansion |
 |-------|--------------------|-----------|
-| `problems` | `--problems` | `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true` |
+| `problems` | `--problems` | `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true` |
 | `slow-setup` | `--slow-setup` | `pdd > 3.0` |
 | `short-calls` | `--short-calls` | `duration < 5.0 AND state == 'Completed'` |
 | `one-way` | `--one-way` | `one_way == true` |
@@ -200,10 +215,9 @@ are three names for one expression: `sipnab --short-calls`,
 `sipnab --filter "duration < 5.0 AND state == 'Completed'"` all select the same
 dialogs. Combining several flags ORs their expansions together.
 
-Because `nat_mismatch` never fires (see the boolean-field note above),
-`--nat-issues` / `--filter nat-issues` selects nothing today, and the
-`nat_mismatch` and `rtp.orphaned` terms inside `problems` contribute nothing to
-it.
+`--nat-issues` / `--filter nat-issues` selects the calls whose RTP arrived from
+an address the SDP never advertised. The boolean-field note above says what that
+means and what it deliberately ignores.
 
 ## Examples
 
@@ -236,7 +250,6 @@ these are catalogs to pick a line from, not blocks to copy whole.
 
 - `one_way == true`
 - `nat_mismatch == true`
-- `rtp.orphaned == true`
 - `no_media == true`
 - `codec_asymmetry == true`
 - `late_media == true`
@@ -296,7 +309,11 @@ The duration check avoids false positives during early call setup when RTP hasn'
 sipnab -N -I capture.pcap --filter "nat_mismatch == true AND method == 'INVITE'" --json
 ```
 
-NAT mismatch means the Contact header IP/port doesn't match the actual packet source. This is a common cause of one-way audio and call setup failures behind NAT -- combine with the `one_way` field to catch the classic case.
+NAT mismatch means RTP reached the capture point from an address that no SDP in
+the dialog advertised, which is what a NAT rewriting the media source looks
+like from the wire. It is a common cause of one-way audio and of call setup
+failures behind NAT -- combine it with the `one_way` field to catch the classic
+case.
 
 ### High jitter or packet loss
 
@@ -345,10 +362,17 @@ Filter for failures targeting a specific SIP trunk IP.
 ### Orphaned RTP streams
 
 ```bash
-sipnab -N -I capture.pcap --filter "rtp.orphaned == true" --json
+sipnab -N -I capture.pcap --report
 ```
 
-Orphaned streams have no matching SIP dialog/SDP. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.
+Orphaned streams have no matching SIP dialog or SDP, so no dialog filter can
+select them and the DSL offers no field for them. The boolean-field note above
+covers the withdrawn `rtp.orphaned`. The `--report`
+output carries an "Orphaned Streams" section, and the [REST
+API](@/docs/api.md#get-v1-streams) answers the same question at
+`/v1/streams?orphaned=true` when you run sipnab with `--api`. Orphans usually
+mean RTP arriving on unexpected ports (check your NAT/ALG config) or calls that
+started before capture began.
 
 ### Track one user's packet loss (B2BUA debugging)
 

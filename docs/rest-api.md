@@ -462,10 +462,11 @@ console.log(`State: ${dialog.state}`);
   "from_display": "Alice Smith",
   "to_display": "Bob Jones",
   "state": "Completed",
+  "final_status_code": 200,
+  "final_status_reason": "OK",
   "method": "INVITE",
   "msg_count": 8,
   "duration_sec": 45.2,
-  "tags": [],
   "timing": {
     "pdd_ms": 847,
     "setup_ms": 2134,
@@ -522,8 +523,66 @@ console.log(`State: ${dialog.state}`);
 }
 ```
 
+**Fields drop out rather than reading `null`.** The example above is a healthy,
+answered call, so it shows the fields such a call has. Anything sipnab did not
+find is **absent from the object**, not present with a null value: `tags` when
+empty, `from_display` / `to_display` when the headers carried no display name,
+`final_status_code` / `final_status_reason` when there was no final INVITE
+response, and `signaling_diagnosis` when the signalling detections found
+nothing. Decode into a type with optional fields: a strict decoder that requires every
+key above rejects most real dialogs.
+
+A failed call adds the `signaling_diagnosis` object, which is where the answer
+to "why" lives:
+
+```json
+{
+  "call_id": "abc123@203.0.113.195",
+  "state": "Failed",
+  "final_status_code": 408,
+  "final_status_reason": "Request Timeout",
+  "signaling_diagnosis": {
+    "final_failure": {
+      "code": 408,
+      "reason_phrase": "Request Timeout",
+      "reason_header": null,
+      "warning": null,
+      "evidence": [2]
+    },
+    "auth_loop": null,
+    "retransmissions": { "method": "INVITE", "count": 7, "span_sec": 32.0, "evidence": [0, 1, 3] },
+    "ack_missing": null,
+    "abandoned": null,
+    "post_dial_delay": null,
+    "registration_failure": null,
+    "icmp_unreachable": {
+      "description": "port unreachable",
+      "icmp_type": 3,
+      "icmp_code": 3,
+      "unreachable_endpoint": "192.0.2.10:5060",
+      "reported_by": "198.51.100.1",
+      "method": "INVITE",
+      "errors": 2,
+      "truncated": true,
+      "evidence": [0, 1]
+    },
+    "hints": [
+      "Call failed: 408 Request Timeout.",
+      "ICMP port unreachable: the network could not deliver the INVITE sent to 192.0.2.10:5060 (2 times), reported by 198.51.100.1. The endpoint was not reachable on that port — this is not a timeout."
+    ]
+  }
+}
+```
+
+Inside `signaling_diagnosis` the convention inverts: the seven always-checked
+detections are present as `null` when they found nothing, so `null` there means
+"checked, nothing found". `icmp_unreachable` is the one exception and drops out
+entirely, because it cannot run at all unless the capture holds ICMP. [Output Formats](output-formats.md#one-object-per-dialog) covers every field
+and the detection threshold behind each.
+
 **Additional dialog fields:**
 
+- **`final_status_code` / `final_status_reason`** -- read INVITE transactions only. A `REGISTER`, `OPTIONS` or `SUBSCRIBE` dialog omits both however it ended; `signaling_diagnosis.final_failure.code` carries the status for any dialog.
 - **`diagnosis.hints`** -- Free-text diagnostic strings from the media analyzer: one-way audio, NAT mismatch (SDP `c=` address vs. actual RTP source), comfort-noise asymmetry (shown in the example above), codec / payload-type / ptime / duration asymmetry, and late media. Empty array when the analyzer found nothing.
 - **STIR/SHAKEN** -- With `--stir-shaken` validation active (requires the `tls` build feature), sipnab writes the attestation level, orig/dest TNs, and verification status to the capture log. They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`. sipnab marks a token `Expired` per RFC 8224 Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the current time.
 

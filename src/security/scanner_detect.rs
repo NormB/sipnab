@@ -5,10 +5,36 @@
 //! Detects SIP scanning activity through two methods:
 //! - **User-Agent pattern matching** against known scanner signatures
 //!   (friendly-scanner, sipvicious, etc.) and user-defined patterns.
-//! - **Behavioral analysis** detecting high-rate REGISTER/OPTIONS/INVITE probing
-//!   from a single source, and **extension enumeration** — many *distinct*
-//!   target users from one source — which catches a UA-randomized, INVITE-based,
-//!   or low-and-slow sweep that signature/rate detection alone would miss.
+//! - **Behavioral analysis** detecting high-rate REGISTER/OPTIONS/INVITE
+//!   probing from a single source, and **extension enumeration** — many
+//!   *distinct* target users from one source — which catches a UA-randomized,
+//!   INVITE-based, or low-and-slow sweep that signature detection alone would
+//!   miss.
+//!
+//! # What separates a probe from a request
+//!
+//! Neither behavioural signal is a rate on its own, because rate does not
+//! separate reconnaissance from operation. A SIP trunk sends OPTIONS
+//! continuously by design — that is how each end learns the other is alive —
+//! and an SBC fronting a hunt group reaches dozens of distinct extensions a
+//! second. Measured on volume alone, an ordinary eleven-second carrier trunk
+//! produced 2719 detections across 14 peers, every one of them the carrier's
+//! own PBX or a customer's desk phone, and `--kill-scanner` behind a fail2ban
+//! jail bans all of them.
+//!
+//! What separates the two is the OUTCOME, which the capture already holds:
+//!
+//! - A keepalive is **answered**. An enumeration sweep is answered with `404`,
+//!   `403` — or with nothing at all.
+//! - A peer that has completed a registration or a call with us has proved a
+//!   relationship no scanner has, and needs four times the evidence before
+//!   either signal applies to it.
+//!
+//! So both behavioural signals are gated on the same probing test: the rate
+//! and the spread decide *how much* is happening, and the outcomes decide
+//! *whether any of it is reconnaissance*. Raising the thresholds instead would
+//! have traded these false positives for false negatives on the same axis, and
+//! a scanner that paced itself would walk through untouched.
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -29,37 +55,147 @@ const KNOWN_SCANNER_PATTERNS: &[&str] = &[
     "sip-scan",
 ];
 
-/// Number of requests from the same source within the behavioral window
-/// that triggers a behavioral detection alert.
+/// Number of probe transactions from the same source within the behavioral
+/// window that, **together with** [`BehavioralState::is_probing`], triggers a
+/// behavioral detection alert.
 const BEHAVIORAL_THRESHOLD: u32 = 10;
 
 /// Number of DISTINCT target extensions probed by one source within the window
-/// that triggers an enumeration alert. Lower than the rate threshold because
-/// hitting many *different* users is a far more specific recon signal than
-/// volume alone (svwar's signature) — and it catches a UA-randomized, INVITE-
-/// based, or low-and-slow sweep that the rate counter misses.
+/// that, **together with** [`BehavioralState::is_probing`], triggers an
+/// enumeration alert. Lower than the rate threshold because hitting many
+/// *different* users is a far more specific recon signal than volume alone
+/// (svwar's signature) — and it catches a UA-randomized, INVITE-based, or
+/// low-and-slow sweep that the rate counter misses.
 const ENUMERATION_THRESHOLD: usize = 5;
+
+/// Probe transactions in one window that were rejected, at which a source
+/// reads as probing rather than operating.
+///
+/// Five in [`BEHAVIORAL_WINDOW_SECS`] seconds is one refusal a second. A
+/// working peer earns the odd `404` from a wrong number, but not at that rate
+/// and not sustained: on an eleven-second carrier trunk carrying 5504
+/// requests, the busiest peer's worst window held a single rejected probe.
+const REJECTED_PROBE_MIN: u32 = 5;
+
+/// Probe transactions in one window that drew no response of any kind, at
+/// which a source reads as sweeping — provided they are also the MAJORITY of
+/// what it sent.
+///
+/// The majority test is what makes this safe on a busy peer: a trunk running
+/// hundreds of keepalives a second always has a few transactions outstanding
+/// at the edge of the window, and an absolute count alone would eventually
+/// catch every one of them.
+const UNANSWERED_PROBE_MIN: u32 = 5;
+
+/// How long a probe must go without any response before it counts as
+/// unanswered, in milliseconds.
+///
+/// RFC 3261's T1, the round-trip estimate at which SIP itself gives up waiting
+/// and retransmits. Without it "unanswered" meant "not answered YET", which is
+/// a fact about the order of the capture rather than about the peer: a source
+/// that pipelines faster than the round trip has every request outstanding at
+/// the moment the next one arrives, so a client bursting registrations for
+/// fifty extensions at boot looked exactly like a sweep into a hole. Whether
+/// it tripped came down to link latency and how deeply the peer pipelined —
+/// the same kind of accident as measuring the window on the wall clock.
+const PROBE_ANSWER_GRACE_MS: i64 = 500;
+
+/// How much more evidence a source needs once it has completed a registration
+/// or a call with us.
+///
+/// A registered endpoint that starts probing is a compromised phone and is
+/// worth reporting — but it is also the peer whose ordinary working traffic
+/// looks most like probing, and it is the peer a false positive costs most.
+const ESTABLISHED_EVIDENCE_FACTOR: u32 = 4;
+
+/// Final-response codes that answer a request without saying anything about
+/// whether its sender belongs here.
+///
+/// `401` and `407` open every registration and most calls, so counting a
+/// challenge as a refusal would make every phone in the building a scanner.
+/// The rest are the ordinary outcomes of a call that rang out, was cancelled,
+/// went to a busy or unavailable extension, or could not agree a codec —
+/// `600` and `603` are the same answers given globally. A `5xx` blames the
+/// server rather than the sender, so that whole class is excluded too, in
+/// [`is_rejection`].
+const BENIGN_RESPONSE_CODES: &[u16] = &[401, 407, 408, 480, 486, 487, 488, 491, 600, 603];
+
+/// Whether a final response tells its recipient that what it asked for does
+/// not exist or is not allowed.
+fn is_rejection(status: u16) -> bool {
+    (400..700).contains(&status)
+        && !(500..600).contains(&status)
+        && !BENIGN_RESPONSE_CODES.contains(&status)
+}
 
 /// Cap on tracked distinct targets per source (bounds memory under a flood that
 /// also randomizes the target user-part).
 const MAX_TARGETS_PER_SOURCE: usize = 1024;
 
+/// Cap on tracked probe transactions per source. Past it the window keeps
+/// counting probes but stops keying them, which costs correlation and never
+/// costs the count — see [`BehavioralState::unkeyed_probes`].
+///
+/// Reaching it degrades toward reporting nothing, which is the right
+/// direction: a source only gets this far without alerting if its probes are
+/// being answered, because a refused or ignored one fires at
+/// [`BEHAVIORAL_THRESHOLD`] — two orders of magnitude below the cap.
+const MAX_TRANSACTIONS_PER_SOURCE: usize = 1024;
+
 /// Behavioral detection window in seconds.
 const BEHAVIORAL_WINDOW_SECS: u64 = 5;
+
+/// What became of one probe transaction inside the current window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// Nothing has come back yet, not even a provisional.
+    Pending,
+    /// A response came back that carries no reconnaissance signal — a
+    /// provisional, a success, a redirect, or one of
+    /// [`BENIGN_RESPONSE_CODES`].
+    Answered,
+    /// A final response told the sender no. See [`is_rejection`].
+    Rejected,
+}
 
 /// Tracks per-source behavioral state for probe detection.
 ///
 /// Both timestamps are CAPTURE time — the timestamp the packet carries — not
 /// wall time. See [`ScannerDetector::latest_packet`] for why.
 struct BehavioralState {
-    /// REGISTER requests seen from this source in the current window.
-    register_count: u32,
-    /// OPTIONS requests seen from this source in the current window.
-    options_count: u32,
-    /// INVITE requests seen from this source in the current window.
-    invite_count: u32,
+    /// Probe transactions this source opened in the current window, keyed by
+    /// the top `Via` branch — RFC 3261's transaction identifier, which a
+    /// response echoes back.
+    ///
+    /// Keyed rather than counted so that a RETRANSMISSION is one probe. UDP
+    /// resends an unanswered INVITE at 500ms, 1s, 2s and 4s, so two calls into
+    /// a peer that is slow to answer reach a rate threshold of ten on their
+    /// own — and every one of those copies would also have counted as a
+    /// separate unanswered probe, which is the evidence the rate test now
+    /// rests on.
+    ///
+    /// The value carries when the probe opened, so a transaction still inside
+    /// [`PROBE_ANSWER_GRACE_MS`] counts as awaiting an answer rather than as
+    /// having gone without one.
+    transactions: HashMap<String, (DateTime<Utc>, Outcome)>,
+    /// Probes this window whose top `Via` carried no branch, or that arrived
+    /// once [`MAX_TRANSACTIONS_PER_SOURCE`] was reached.
+    ///
+    /// They count toward the rate and never toward the evidence: a probe that
+    /// cannot be tied to a response cannot be SHOWN unanswered, and inferring
+    /// it would hand a source that strips its own `Via` branch a way to look
+    /// like a sweep.
+    unkeyed_probes: u32,
     /// Distinct target extensions (To/R-URI user-part) seen this window.
     targets: HashSet<String>,
+    /// Whether this source has ever completed a registration or a call with
+    /// us: a `2xx` to a REGISTER or an INVITE it sent.
+    ///
+    /// Sticky across window resets — the point of it is that the relationship
+    /// outlives any five seconds. A `2xx` to an OPTIONS deliberately does not
+    /// count: answering a keepalive is something we do for anyone who asks,
+    /// so trusting it would let a scanner earn the exemption with one packet.
+    established: bool,
     /// Start of the current behavioral window, in capture time.
     first_seen: DateTime<Utc>,
     /// Most recent activity from this source, in capture time (used for
@@ -75,6 +211,96 @@ struct BehavioralState {
     /// evicted became unpredictable — and the source being evicted is the one
     /// whose detection state is discarded.
     last_used: u64,
+}
+
+impl BehavioralState {
+    /// An empty window opened at `now`, stamped with the use counter.
+    fn new(now: DateTime<Utc>, last_used: u64) -> Self {
+        Self {
+            transactions: HashMap::new(),
+            unkeyed_probes: 0,
+            targets: HashSet::new(),
+            established: false,
+            first_seen: now,
+            last_seen: now,
+            last_used,
+        }
+    }
+
+    /// Start a fresh window at `now`, keeping what outlives it.
+    ///
+    /// [`Self::established`] survives: it is a fact about the relationship,
+    /// not about the last five seconds.
+    fn reset_window(&mut self, now: DateTime<Utc>) {
+        self.transactions.clear();
+        self.unkeyed_probes = 0;
+        self.targets.clear();
+        self.first_seen = now;
+    }
+
+    /// Probes this source sent in the window: one per transaction, plus the
+    /// ones that could not be keyed.
+    fn probe_count(&self) -> u32 {
+        (self.transactions.len() as u32).saturating_add(self.unkeyed_probes)
+    }
+
+    /// Probe transactions in the window that were rejected.
+    fn rejected_count(&self) -> u32 {
+        self.transactions
+            .values()
+            .filter(|(_, outcome)| *outcome == Outcome::Rejected)
+            .count() as u32
+    }
+
+    /// Probes in the window that have now gone without any response for
+    /// longer than [`PROBE_ANSWER_GRACE_MS`].
+    ///
+    /// Probes still inside the grace are excluded rather than counted, so a
+    /// peer that pipelines faster than the round trip is not mistaken for one
+    /// nothing is answering.
+    fn unanswered_count(&self, now: DateTime<Utc>) -> u32 {
+        let grace = TimeDelta::milliseconds(PROBE_ANSWER_GRACE_MS);
+        self.transactions
+            .values()
+            .filter(|(opened, outcome)| {
+                *outcome == Outcome::Pending && now.signed_duration_since(*opened) >= grace
+            })
+            .count() as u32
+    }
+
+    /// How much evidence this source needs before its rate or its spread reads
+    /// as reconnaissance.
+    fn evidence_factor(&self) -> u32 {
+        if self.established {
+            ESTABLISHED_EVIDENCE_FACTOR
+        } else {
+            1
+        }
+    }
+
+    /// Whether this source is probing rather than operating.
+    ///
+    /// True when we are telling it no, or when its probes are going into a
+    /// hole — the two things that separate an enumeration sweep from a trunk
+    /// running keepalives at exactly the same rate.
+    ///
+    /// `responses_seen` is whether the detector has seen ANY SIP response at
+    /// all. The unanswered test is a claim about the other direction, and in a
+    /// capture that holds one direction only — a `sip.request` filter, a tap
+    /// on one leg — every probe ever sent looks unanswered and the peer
+    /// reported would be whichever was busiest. That is precisely the failure
+    /// this signature replaced, so the test stands down until the other
+    /// direction is known to be present.
+    fn is_probing(&self, now: DateTime<Utc>, responses_seen: bool) -> bool {
+        let factor = self.evidence_factor();
+        if self.rejected_count() >= REJECTED_PROBE_MIN.saturating_mul(factor) {
+            return true;
+        }
+        let unanswered = self.unanswered_count(now);
+        responses_seen
+            && unanswered >= UNANSWERED_PROBE_MIN.saturating_mul(factor)
+            && unanswered.saturating_mul(2) > self.probe_count()
+    }
 }
 
 /// Alert produced when scanner activity is detected.
@@ -139,6 +365,12 @@ pub struct ScannerDetector {
     /// Never moves backwards. Captures do contain out-of-order timestamps, and
     /// one reordered packet must not rewind the sweep horizon.
     latest_packet: Option<DateTime<Utc>>,
+    /// Whether any SIP response has been checked yet.
+    ///
+    /// Gates the unanswered half of [`BehavioralState::is_probing`]; see there
+    /// for why a capture of requests alone must not be read as a capture of
+    /// probes nobody answered.
+    responses_seen: bool,
     /// Ticks once per tracked source touched; the value stamped into
     /// [`BehavioralState::last_used`] to order eviction.
     use_counter: u64,
@@ -181,6 +413,7 @@ impl ScannerDetector {
             known_patterns: patterns,
             behavioral: HashMap::new(),
             latest_packet: None,
+            responses_seen: false,
             use_counter: 0,
         }
     }
@@ -207,7 +440,11 @@ impl ScannerDetector {
         let method = if msg.is_request {
             msg.method.as_ref().map(|m| m.as_str())
         } else {
-            return None; // Only check requests
+            // A response is never itself an alert — it is the OUTCOME of an
+            // earlier probe, and the outcomes are what the behavioural
+            // signals now rest on.
+            self.observe_response(msg);
+            return None;
         };
 
         let ua = msg.user_agent().map(str::to_string);
@@ -251,18 +488,11 @@ impl ScannerDetector {
 
             self.use_counter += 1;
             let use_counter = self.use_counter;
+            let responses_seen = self.responses_seen;
             let state = self
                 .behavioral
                 .entry(msg.src_addr)
-                .or_insert(BehavioralState {
-                    register_count: 0,
-                    options_count: 0,
-                    invite_count: 0,
-                    targets: HashSet::new(),
-                    first_seen: now,
-                    last_seen: now,
-                    last_used: use_counter,
-                });
+                .or_insert_with(|| BehavioralState::new(now, use_counter));
             state.last_used = use_counter;
 
             // Reset window if expired. `signed_duration_since` rather than a
@@ -273,19 +503,21 @@ impl ScannerDetector {
             if now.signed_duration_since(state.first_seen)
                 > TimeDelta::seconds(BEHAVIORAL_WINDOW_SECS as i64)
             {
-                state.register_count = 0;
-                state.options_count = 0;
-                state.invite_count = 0;
-                state.targets.clear();
-                state.first_seen = now;
+                state.reset_window(now);
             }
 
-            match method {
-                Some("REGISTER") => state.register_count += 1,
-                Some("OPTIONS") => state.options_count += 1,
-                Some("INVITE") => state.invite_count += 1,
-                _ => {}
+            // Open the transaction this probe belongs to. A branch already
+            // present is a retransmission and must not count twice.
+            match msg.top_via_branch() {
+                Some(branch) if state.transactions.contains_key(branch) => {}
+                Some(branch) if state.transactions.len() < MAX_TRANSACTIONS_PER_SOURCE => {
+                    state
+                        .transactions
+                        .insert(branch.to_string(), (now, Outcome::Pending));
+                }
+                _ => state.unkeyed_probes = state.unkeyed_probes.saturating_add(1),
             }
+
             // Track distinct probed extensions (To user, falling back to R-URI).
             if let Some(target) = msg.to_user().or_else(|| {
                 msg.request_uri
@@ -297,9 +529,17 @@ impl ScannerDetector {
             }
             state.last_seen = now;
 
-            // Enumeration: many DISTINCT targets from one source — catches a
-            // UA-randomized, INVITE-based, or low-and-slow sweep the rate path
-            // misses. Checked first as the more specific (lower-FP) signal.
+            // Neither rate nor spread is reconnaissance on its own: a trunk
+            // running keepalives and an enumeration sweep produce the same
+            // numbers, and only the outcomes tell them apart.
+            if !state.is_probing(now, responses_seen) {
+                return None;
+            }
+
+            // Enumeration: many DISTINCT targets from one source, none of them
+            // resolving — catches a UA-randomized, INVITE-based, or
+            // low-and-slow sweep the rate path misses. Checked first as the
+            // more specific signal.
             if state.targets.len() > ENUMERATION_THRESHOLD {
                 return Some(ScannerAlert {
                     src_ip: msg.src_addr,
@@ -309,10 +549,9 @@ impl ScannerDetector {
                 });
             }
 
-            // Rate: high volume of REGISTER/OPTIONS probes (now incl. INVITE) in
-            // the window — a same-target flood the enumeration signal won't see.
-            let probe_count = state.register_count + state.options_count + state.invite_count;
-            if probe_count > BEHAVIORAL_THRESHOLD {
+            // Rate: high volume of REGISTER/OPTIONS/INVITE probes in the
+            // window — a same-target flood the enumeration signal won't see.
+            if state.probe_count() > BEHAVIORAL_THRESHOLD {
                 return Some(ScannerAlert {
                     src_ip: msg.src_addr,
                     ua,
@@ -323,6 +562,59 @@ impl ScannerDetector {
         }
 
         None
+    }
+
+    /// Fold a response into the behavioural state of the peer it answers.
+    ///
+    /// The peer is the response's DESTINATION: a response travels back the way
+    /// the request came, so `dst_addr` is the source whose probe this settles.
+    ///
+    /// Only an existing entry is updated — a response never creates one. A
+    /// response whose request was never seen anchors nothing, and letting
+    /// responses populate the map would give a flood of them a way to evict
+    /// the tracking of a scanner that is mid-sweep.
+    fn observe_response(&mut self, msg: &SipMessage) {
+        self.responses_seen = true;
+
+        // A PROVISIONAL answers the probe too, and this is not a detail. The
+        // unanswered test asks whether anything is there at all, and `100
+        // Trying` settles that — while the FINAL response to an INVITE does
+        // not arrive until the callee picks up or gives up, which is seconds
+        // or minutes later. Waiting for it made every ringing call an
+        // unanswered probe: on a real 1900-message customer capture that
+        // reported one peer with 47 of 64 "unanswered" probes in five
+        // seconds, which was a phone ringing.
+        //
+        // A scanner sweeping dead space gets no `100` either, and one
+        // sweeping a live dialplan is caught by the refusals its `404`s make.
+        let Some(status) = msg.status_code else {
+            return;
+        };
+        // A 2xx to a REGISTER or an INVITE is the relationship a scanner does
+        // not have; read the CSeq rather than trust the response alone,
+        // because a 2xx to an OPTIONS is something we grant anyone.
+        let completed = (200..300).contains(&status)
+            && msg
+                .cseq()
+                .is_some_and(|(_, m)| matches!(m, "REGISTER" | "INVITE"));
+        let branch = msg.top_via_branch();
+
+        let Some(state) = self.behavioral.get_mut(&msg.dst_addr) else {
+            return;
+        };
+        state.established |= completed;
+        // A response whose branch names no probe transaction settles the
+        // peer's BYEs, NOTIFYs and SUBSCRIBEs, and is dropped. Only a
+        // rejection ON A PROBE is evidence about probing: a `481` refusing a
+        // stray NOTIFY is ordinary traffic, and the real corpus is full of
+        // them.
+        if let Some((_, outcome)) = branch.and_then(|b| state.transactions.get_mut(b)) {
+            *outcome = if is_rejection(status) {
+                Outcome::Rejected
+            } else {
+                Outcome::Answered
+            };
+        }
     }
 
     /// Remove behavioral tracking entries whose last activity is older than
@@ -401,31 +693,6 @@ mod tests {
         .expect("should parse")
     }
 
-    /// Build a request of `method` with no User-Agent header from `src`.
-    fn make_request_no_ua(method: &str, src: IpAddr, call_id: &str) -> SipMessage {
-        let raw = build_sip(
-            &format!("{method} sip:target@example.com SIP/2.0"),
-            &[
-                "From: <sip:scanner@example.com>;tag=s1",
-                "To: <sip:target@example.com>",
-                &format!("Call-ID: {call_id}"),
-                &format!("CSeq: 1 {method}"),
-                "Content-Length: 0",
-            ],
-            b"",
-        );
-        parse_sip(
-            &raw,
-            ts(),
-            src,
-            localhost(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("should parse")
-    }
-
     /// A friendly-scanner User-Agent is detected via signature match.
     #[test]
     fn detect_friendly_scanner_ua() {
@@ -461,37 +728,56 @@ mod tests {
         assert!(alert.is_none(), "normal UA should not trigger alert");
     }
 
-    /// A high REGISTER rate from one source triggers a behavioral alert.
+    /// The rate threshold still bounds the behavioral signal.
+    ///
+    /// Probing evidence is what makes a rate reportable; it does not replace
+    /// the rate. Every probe here is refused, so the evidence is as strong as
+    /// it gets, and the only thing separating the two halves of this test is
+    /// whether the source crossed [`BEHAVIORAL_THRESHOLD`].
     #[test]
     fn behavioral_detection_high_rate() {
-        let mut detector = ScannerDetector::new(&[]);
         let src = scanner_ip();
-
-        // Send 15 REGISTERs from same IP — should trigger after >10
-        for i in 0..15 {
-            let msg = make_request_no_ua("REGISTER", src, &format!("reg-{i}@test"));
-            let alert = detector.check(&msg);
-            if i > BEHAVIORAL_THRESHOLD as usize {
-                assert!(
-                    alert.is_some(),
-                    "should detect behavioral scanning at message {i}"
-                );
-                if let Some(a) = alert {
-                    assert_eq!(a.detection_method, "behavioral");
-                }
+        let refused_registers = |n: i64| {
+            let mut msgs = Vec::new();
+            for i in 0..n {
+                let branch = format!("z9hG4bK-rate-{i}");
+                msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 100)));
+                msgs.push(answer_at(
+                    403,
+                    "REGISTER",
+                    "1001",
+                    src,
+                    &branch,
+                    ms(i * 100),
+                ));
             }
-        }
+            replay(&msgs)
+        };
+
+        let at_threshold = refused_registers(BEHAVIORAL_THRESHOLD as i64);
+        assert!(
+            at_threshold.is_empty(),
+            "the alert needs strictly more than {BEHAVIORAL_THRESHOLD} probes — got {at_threshold:?}"
+        );
+
+        let over = refused_registers(BEHAVIORAL_THRESHOLD as i64 + 1);
+        assert_eq!(
+            over.first().map(String::as_str),
+            Some("behavioral"),
+            "one probe past the threshold, all of them refused, must fire — got {over:?}"
+        );
     }
 
-    /// Build a request that enumerates a specific target extension, with an
-    /// arbitrary (attacker-chosen, here randomized-looking) User-Agent — the
-    /// evasion: no known scanner UA, so ua_pattern can never fire.
-    /// Build a request probing extension `target` with an arbitrary UA (the
-    /// evasion: no known scanner signature) from `src`.
+    /// Build a request probing extension `target` with an arbitrary
+    /// (attacker-chosen, here randomized-looking) User-Agent from `src` — the
+    /// evasion: no known scanner UA, so `ua_pattern` can never fire.
+    ///
+    /// `n` names the transaction, so [`answer_at`] can settle it.
     fn enum_request(method: &str, target: &str, ua: &str, src: IpAddr, n: usize) -> SipMessage {
         let raw = build_sip(
             &format!("{method} sip:{target}@example.com SIP/2.0"),
             &[
+                &format!("Via: SIP/2.0/UDP probe.example.com;branch={}", enum_txn(n)),
                 &format!("From: <sip:probe@example.com>;tag=t{n}"),
                 &format!("To: <sip:{target}@example.com>"),
                 &format!("Call-ID: enum-{n}@example.com"),
@@ -513,6 +799,11 @@ mod tests {
         .expect("should parse")
     }
 
+    /// The transaction branch [`enum_request`] number `n` opens.
+    fn enum_txn(n: usize) -> String {
+        format!("z9hG4bK-enum-{n}")
+    }
+
     /// INVITE-based extension enumeration with a randomized UA is caught by the
     /// distinct-target signal.
     #[test]
@@ -521,7 +812,6 @@ mod tests {
         // innocuous UA each probe. ua_pattern never fires; the old behavioral
         // path only summed REGISTER+OPTIONS, so INVITE enumeration slipped
         // through entirely. The distinct-target signal must catch it.
-        let mut det = ScannerDetector::new(&[]);
         let src = scanner_ip();
         let uas = [
             "PolyUA/1",
@@ -533,15 +823,19 @@ mod tests {
             "Baresip/7",
             "Csip/8",
         ];
-        let mut fired = None;
+        let mut msgs = Vec::new();
         for (i, ua) in uas.iter().enumerate() {
-            let msg = enum_request("INVITE", &format!("ext{i:04}"), ua, src, i);
-            if let Some(a) = det.check(&msg) {
-                fired = Some(a);
-            }
+            let target = format!("ext{i:04}");
+            msgs.push(enum_request("INVITE", &target, ua, src, i));
+            // None of those extensions exists — which is the whole point of
+            // walking them, and the evidence that this is a walk.
+            msgs.push(answer_at(404, "INVITE", &target, src, &enum_txn(i), ts()));
         }
-        let a = fired.expect("extension enumeration over INVITE must be detected");
-        assert_eq!(a.detection_method, "enumeration");
+        let fired = replay(&msgs);
+        assert!(
+            fired.contains(&"enumeration".to_string()),
+            "extension enumeration over INVITE must be detected — got {fired:?}"
+        );
     }
 
     /// Six distinct targets under the rate threshold still trigger enumeration.
@@ -550,20 +844,20 @@ mod tests {
         // EVASION: stay UNDER the rate threshold (only 6 probes), but hit 6
         // DISTINCT extensions — a rate-only detector misses it; distinct-target
         // enumeration does not.
-        let mut det = ScannerDetector::new(&[]);
         let src = scanner_ip();
-        let mut fired = None;
+        let mut msgs = Vec::new();
         for i in 0..6 {
-            let msg = enum_request("OPTIONS", &format!("user{i:04}"), "Normalish/9.0", src, i);
-            if let Some(a) = det.check(&msg) {
-                fired = Some(a);
-            }
+            let target = format!("user{i:04}");
+            msgs.push(enum_request("OPTIONS", &target, "Normalish/9.0", src, i));
+            msgs.push(answer_at(404, "OPTIONS", &target, src, &enum_txn(i), ts()));
         }
-        assert!(
-            fired.is_some(),
-            "6 distinct extensions from one source is enumeration"
+        let fired = replay(&msgs);
+        assert_eq!(
+            fired.first().map(String::as_str),
+            Some("enumeration"),
+            "6 distinct extensions from one source, none of them found, is \
+             enumeration — got {fired:?}"
         );
-        assert_eq!(fired.unwrap().detection_method, "enumeration");
     }
 
     /// Repeated requests to only one or two targets are not flagged as
@@ -604,6 +898,8 @@ mod tests {
 
     /// Build a request of `method` probing `target` from `src`, stamped with
     /// the capture time `at` — the knob these tests turn.
+    ///
+    /// `n` names the transaction, so [`answer_at`] can settle it.
     fn request_at(
         method: &str,
         target: &str,
@@ -614,6 +910,7 @@ mod tests {
         let raw = build_sip(
             &format!("{method} sip:{target}@example.com SIP/2.0"),
             &[
+                &format!("Via: SIP/2.0/UDP probe.example.com;branch={}", clock_txn(n)),
                 &format!("From: <sip:probe@example.com>;tag=t{n}"),
                 &format!("To: <sip:{target}@example.com>"),
                 &format!("Call-ID: clock-{n}@example.com"),
@@ -624,6 +921,11 @@ mod tests {
         );
         parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse")
+    }
+
+    /// The transaction branch [`request_at`] number `n` opens.
+    fn clock_txn(n: usize) -> String {
+        format!("z9hG4bK-clock-{n}")
     }
 
     /// Capture time `secs` seconds after the fixed base timestamp.
@@ -687,46 +989,48 @@ mod tests {
     /// must not become a way to never detect anything.
     #[test]
     fn a_real_burst_inside_one_packet_time_window_still_fires() {
-        let mut det = ScannerDetector::new(&[]);
         let src = scanner_ip();
-        let mut fired = None;
+        let mut msgs = Vec::new();
         for i in 0..15 {
             // 100ms apart: all fifteen inside one BEHAVIORAL_WINDOW_SECS window.
-            let msg = request_at(
+            let at = ms(i as i64 * 100);
+            msgs.push(request_at("REGISTER", "sameuser", src, i, at));
+            msgs.push(answer_at(
+                403,
                 "REGISTER",
                 "sameuser",
                 src,
-                i,
-                ts() + chrono::TimeDelta::milliseconds(i as i64 * 100),
-            );
-            if let Some(a) = det.check(&msg) {
-                fired = Some(a);
-            }
+                &clock_txn(i),
+                at,
+            ));
         }
-        let a = fired.expect("15 REGISTERs in 1.5s of capture time is a flood and must fire");
-        assert_eq!(a.detection_method, "behavioral");
+        let fired = replay(&msgs);
+        assert_eq!(
+            fired.first().map(String::as_str),
+            Some("behavioral"),
+            "15 refused REGISTERs in 1.5s of capture time is a flood and must \
+             fire — got {fired:?}"
+        );
     }
 
     /// A genuine sweep inside one window still fires as enumeration.
     #[test]
     fn a_real_sweep_inside_one_packet_time_window_still_fires() {
-        let mut det = ScannerDetector::new(&[]);
         let src = scanner_ip();
-        let mut fired = None;
+        let mut msgs = Vec::new();
         for i in 0..8 {
-            let msg = request_at(
-                "OPTIONS",
-                &format!("ext{i:04}"),
-                src,
-                i,
-                ts() + chrono::TimeDelta::milliseconds(i as i64 * 100),
-            );
-            if let Some(a) = det.check(&msg) {
-                fired = Some(a);
-            }
+            let target = format!("ext{i:04}");
+            let at = ms(i as i64 * 100);
+            msgs.push(request_at("OPTIONS", &target, src, i, at));
+            msgs.push(answer_at(404, "OPTIONS", &target, src, &clock_txn(i), at));
         }
-        let a = fired.expect("8 distinct targets in 0.8s of capture time is enumeration");
-        assert_eq!(a.detection_method, "enumeration");
+        let fired = replay(&msgs);
+        assert_eq!(
+            fired.first().map(String::as_str),
+            Some("enumeration"),
+            "8 distinct targets in 0.8s of capture time, none of them found, is \
+             enumeration — got {fired:?}"
+        );
     }
 
     /// `sweep` ages entries out on capture time as well — in both directions.
@@ -758,6 +1062,411 @@ mod tests {
             "the source that sent the most recent packet is 0s idle in capture time and \
              must survive — a sweep aged against `Utc::now()` drops it, because a capture \
              recorded before today is already older than any max_age"
+        );
+    }
+
+    // ── Probing evidence, not volume ─────────────────────────────────
+
+    /// A probe of `method` towards `target` from `src`, opening the
+    /// transaction named by `branch` at capture time `at`.
+    ///
+    /// Carries a `Via` because the branch is what ties a response back to the
+    /// request it answers — the tie the whole signature rests on.
+    fn probe_at(
+        method: &str,
+        target: &str,
+        src: IpAddr,
+        branch: &str,
+        at: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            &format!("{method} sip:{target}@example.com SIP/2.0"),
+            &[
+                &format!("Via: SIP/2.0/UDP peer.example.com;branch={branch}"),
+                &format!("From: <sip:peer@example.com>;tag=f-{branch}"),
+                &format!("To: <sip:{target}@example.com>"),
+                &format!("Call-ID: {branch}@example.com"),
+                &format!("CSeq: 1 {method}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse")
+    }
+
+    /// The response `status` we send back to `dst` on transaction `branch`,
+    /// answering a `cseq_method` request that was aimed at `target`.
+    fn answer_at(
+        status: u16,
+        cseq_method: &str,
+        target: &str,
+        dst: IpAddr,
+        branch: &str,
+        at: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            &format!("SIP/2.0 {status} Whatever"),
+            &[
+                &format!("Via: SIP/2.0/UDP peer.example.com;branch={branch}"),
+                &format!("From: <sip:peer@example.com>;tag=f-{branch}"),
+                &format!("To: <sip:{target}@example.com>;tag=t-{branch}"),
+                &format!("Call-ID: {branch}@example.com"),
+                &format!("CSeq: 1 {cseq_method}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, at, localhost(), dst, 5060, 5060, TransportProto::Udp)
+            .expect("should parse")
+    }
+
+    /// Capture time `ms` milliseconds after the fixed base timestamp.
+    fn ms(ms: i64) -> DateTime<Utc> {
+        ts() + chrono::TimeDelta::milliseconds(ms)
+    }
+
+    /// Feed `msgs` to a fresh detector and collect the detection methods it
+    /// reported, in order.
+    fn replay(msgs: &[SipMessage]) -> Vec<String> {
+        let mut det = ScannerDetector::new(&[]);
+        msgs.iter()
+            .filter_map(|m| det.check(m))
+            .map(|a| a.detection_method)
+            .collect()
+    }
+
+    /// The registration that makes `src` a peer we serve: a REGISTER, its
+    /// challenge, the authenticated retry, and the `200 OK`.
+    fn register_exchange(src: IpAddr, at: DateTime<Utc>) -> Vec<SipMessage> {
+        vec![
+            probe_at("REGISTER", "1001", src, "z9hG4bK-reg-a", at),
+            answer_at(401, "REGISTER", "1001", src, "z9hG4bK-reg-a", at),
+            probe_at("REGISTER", "1001", src, "z9hG4bK-reg-b", at),
+            answer_at(200, "REGISTER", "1001", src, "z9hG4bK-reg-b", at),
+        ]
+    }
+
+    /// A trunk's answered OPTIONS keepalives are not reconnaissance.
+    ///
+    /// This is the defect the signature was rebuilt for. A SIP trunk sends
+    /// OPTIONS continuously by design — it is how each end learns the other is
+    /// alive — and a rate counter that treats every OPTIONS as a probe reports
+    /// the carrier's own SBC as a scanner within one window. Fed to fail2ban
+    /// that bans the trunk, which is every call the box carries.
+    ///
+    /// What separates the keepalive from a probe is not how many there are: it
+    /// is that each one is ANSWERED, by a peer we already registered.
+    #[test]
+    fn answered_options_keepalives_are_not_a_scanner() {
+        let src = scanner_ip();
+        let mut msgs = register_exchange(src, ms(0));
+        for i in 0..60 {
+            // Twelve keepalives a second — a rate no threshold survives.
+            let branch = format!("z9hG4bK-ka-{i}");
+            let at = ms(100 + i * 80);
+            msgs.push(probe_at("OPTIONS", "trunk", src, &branch, at));
+            msgs.push(answer_at(200, "OPTIONS", "trunk", src, &branch, at));
+        }
+        let fired = replay(&msgs);
+        assert!(
+            fired.is_empty(),
+            "60 OPTIONS keepalives that were all answered, from a peer already \
+             registered with us, are a working trunk — got {fired:?}"
+        );
+    }
+
+    /// A trunk delivering calls to many distinct extensions is not
+    /// enumeration.
+    ///
+    /// The distinct-target count is the same whether an SBC fronts a hunt
+    /// group or a scanner walks the dialplan. What differs is the outcome: the
+    /// SBC's calls are answered, the scanner's are not.
+    #[test]
+    fn calls_delivered_to_many_distinct_extensions_are_not_enumeration() {
+        let src = scanner_ip();
+        let mut msgs = register_exchange(src, ms(0));
+        for i in 0..12 {
+            let branch = format!("z9hG4bK-call-{i}");
+            let target = format!("ext{i:04}");
+            let at = ms(100 + i * 100);
+            msgs.push(probe_at("INVITE", &target, src, &branch, at));
+            msgs.push(answer_at(200, "INVITE", &target, src, &branch, at));
+        }
+        let fired = replay(&msgs);
+        assert!(
+            fired.is_empty(),
+            "twelve calls to twelve extensions, every one answered, is an SBC \
+             fronting a hunt group — got {fired:?}"
+        );
+    }
+
+    /// A flood that nothing answers still fires.
+    ///
+    /// The evidence gate must not become a way to never detect anything: a
+    /// source whose probes go into a hole is exactly what the rate test is
+    /// for.
+    #[test]
+    fn an_unanswered_flood_still_fires() {
+        let src = scanner_ip();
+        // A capture with no responses at all cannot tell "unanswered" from "we
+        // captured one direction", so the other direction has to exist
+        // somewhere in it: here, one working peer's answered keepalive.
+        let mut msgs = vec![
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+        ];
+        for i in 0..15 {
+            let branch = format!("z9hG4bK-flood-{i}");
+            msgs.push(probe_at("REGISTER", "victim", src, &branch, ms(i * 100)));
+        }
+        let fired = replay(&msgs);
+        assert!(
+            fired.contains(&"behavioral".to_string()),
+            "15 REGISTERs in 1.5s that nothing answered is a flood — got {fired:?}"
+        );
+    }
+
+    /// A registration sweep we keep rejecting still fires.
+    #[test]
+    fn a_rejected_registration_sweep_still_fires() {
+        let src = scanner_ip();
+        let mut msgs = Vec::new();
+        for i in 0..15 {
+            let branch = format!("z9hG4bK-crack-{i}");
+            let at = ms(i * 100);
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, at));
+            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at));
+        }
+        let fired = replay(&msgs);
+        assert!(
+            fired.contains(&"behavioral".to_string()),
+            "15 REGISTERs for one extension, every one forbidden, is a password \
+             attack — got {fired:?}"
+        );
+    }
+
+    /// Extension enumeration we answer `404` to still fires.
+    #[test]
+    fn enumeration_of_extensions_we_reject_still_fires() {
+        let src = scanner_ip();
+        let mut msgs = Vec::new();
+        for i in 0..8 {
+            let branch = format!("z9hG4bK-svwar-{i}");
+            let target = format!("ext{i:04}");
+            let at = ms(i * 100);
+            msgs.push(probe_at("INVITE", &target, src, &branch, at));
+            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at));
+        }
+        let fired = replay(&msgs);
+        assert!(
+            fired.contains(&"enumeration".to_string()),
+            "eight extensions probed and eight not found is a dialplan sweep — got {fired:?}"
+        );
+    }
+
+    /// A source that completed a registration needs far more evidence.
+    ///
+    /// A registered endpoint that starts probing is a compromised phone, which
+    /// is worth reporting — but it is also the peer whose ordinary working
+    /// traffic looks most like probing, so the bar is
+    /// [`ESTABLISHED_EVIDENCE_FACTOR`] times higher.
+    #[test]
+    fn an_established_peer_needs_far_more_evidence() {
+        let src = scanner_ip();
+        let sweep = |n: i64| {
+            let mut msgs = register_exchange(src, ms(0));
+            for i in 0..n {
+                let branch = format!("z9hG4bK-comp-{i}");
+                let target = format!("ext{i:04}");
+                let at = ms(10 + i * 10);
+                msgs.push(probe_at("INVITE", &target, src, &branch, at));
+                msgs.push(answer_at(404, "INVITE", &target, src, &branch, at));
+            }
+            replay(&msgs)
+        };
+
+        let modest = sweep(REJECTED_PROBE_MIN as i64 * 2);
+        assert!(
+            modest.is_empty(),
+            "{} rejected probes would report an unknown source, but a registered \
+             peer needs {ESTABLISHED_EVIDENCE_FACTOR} times that — got {modest:?}",
+            REJECTED_PROBE_MIN * 2
+        );
+
+        let blatant = sweep(REJECTED_PROBE_MIN as i64 * ESTABLISHED_EVIDENCE_FACTOR as i64 * 2);
+        assert!(
+            !blatant.is_empty(),
+            "a registered peer walking the dialplan {} times over the bar is a \
+             compromised phone and must still be reported",
+            2
+        );
+    }
+
+    /// Retransmissions of one request are one probe, not many.
+    ///
+    /// UDP retransmits an unanswered INVITE at 500ms, 1s, 2s and 4s, so a
+    /// couple of calls into a peer that is slow to answer reach the rate
+    /// threshold on their own. They are one transaction each, which is what
+    /// the top `Via` branch says.
+    #[test]
+    fn retransmissions_of_one_request_are_one_probe() {
+        let src = scanner_ip();
+        // Another source's answered probe FIRST, so the unanswered test is
+        // armed before the retransmissions start. Ordered the other way the
+        // test passes for the wrong reason, whatever the dedup does.
+        let mut msgs = vec![
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-o", ms(0)),
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-o", ms(0)),
+        ];
+        for i in 0..20 {
+            // Twenty copies of one transaction, over two seconds — well past
+            // the answer grace, so each copy would count if they were counted.
+            msgs.push(probe_at("INVITE", "1001", src, "z9hG4bK-retx", ms(i * 100)));
+        }
+        let fired = replay(&msgs);
+        assert!(
+            fired.is_empty(),
+            "twenty retransmissions of one INVITE are one unanswered transaction, \
+             not twenty probes — got {fired:?}"
+        );
+    }
+
+    /// A peer that pipelines faster than the round trip is not a sweep.
+    ///
+    /// "Unanswered" has to mean "we did not answer it", not "we have not
+    /// answered it yet". A client that puts fifteen registrations on the wire
+    /// before the first reply comes back — a PBX booting, a phone with a long
+    /// account list — has every one of them outstanding at the moment the next
+    /// is sent, and without a grace period that reads identically to fifteen
+    /// probes into a hole. Whether it tripped would come down to link latency
+    /// and pipelining depth rather than to anything the peer meant.
+    #[test]
+    fn a_peer_that_pipelines_faster_than_the_round_trip_is_not_a_sweep() {
+        let src = scanner_ip();
+        // Another peer's answered keepalive, so the unanswered test is armed.
+        let mut msgs = vec![
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+        ];
+        // Fifteen registrations in 150ms, each answered 100ms after it was
+        // sent — so every one is still in flight when the next goes out.
+        for i in 0..15 {
+            let branch = format!("z9hG4bK-boot-{i}");
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 10)));
+        }
+        for i in 0..15 {
+            let branch = format!("z9hG4bK-boot-{i}");
+            msgs.push(answer_at(
+                200,
+                "REGISTER",
+                "1001",
+                src,
+                &branch,
+                ms(100 + i * 10),
+            ));
+        }
+        let fired = replay(&msgs);
+        assert!(
+            fired.is_empty(),
+            "fifteen registrations answered within {PROBE_ANSWER_GRACE_MS}ms each were \
+             never unanswered, only in flight — got {fired:?}"
+        );
+    }
+
+    /// Calls that are ringing are not unanswered probes.
+    ///
+    /// The final response to an INVITE does not arrive until the callee picks
+    /// up or gives up. Counting a probe unanswered until then makes every
+    /// ringing call evidence of a sweep, and a busy PBX has a dozen ringing at
+    /// once: measured on a real 1900-message customer capture, one peer showed
+    /// 47 of 64 probes "unanswered" in five seconds, and all of it was phones
+    /// ringing. A `100 Trying` settles the only question the unanswered test
+    /// asks — whether anything is there.
+    #[test]
+    fn calls_that_are_ringing_are_not_unanswered_probes() {
+        let src = scanner_ip();
+        let mut msgs = register_exchange(src, ms(0));
+        for i in 0..20 {
+            let branch = format!("z9hG4bK-ring-{i}");
+            let target = format!("ext{i:04}");
+            let at = ms(100 + i * 100);
+            msgs.push(probe_at("INVITE", &target, src, &branch, at));
+            // Answered at once by the proxy, then ringing. The `200 OK` comes
+            // thirty seconds later, when somebody picks up.
+            msgs.push(answer_at(100, "INVITE", &target, src, &branch, at));
+            msgs.push(answer_at(180, "INVITE", &target, src, &branch, at));
+            msgs.push(answer_at(
+                200,
+                "INVITE",
+                &target,
+                src,
+                &branch,
+                at + chrono::TimeDelta::seconds(30),
+            ));
+        }
+        msgs.sort_by_key(|m| m.timestamp);
+        let fired = replay(&msgs);
+        assert!(
+            fired.is_empty(),
+            "twenty calls that rang for thirty seconds each are calls, not probes \
+             into a hole — got {fired:?}"
+        );
+    }
+
+    /// A capture holding no responses at all raises no unanswered alert.
+    ///
+    /// "Unanswered" is a claim about the other direction. In a capture that
+    /// holds one direction only — a `sip.request` filter, or a tap on one leg
+    /// — every probe ever sent looks unanswered, and the peer reported would
+    /// be whichever one was busiest. That is the defect this signature
+    /// replaced, so the unanswered test stands down until the detector has
+    /// seen a response exist.
+    #[test]
+    fn a_capture_of_requests_alone_raises_no_unanswered_alert() {
+        let src = scanner_ip();
+        let msgs: Vec<SipMessage> = (0..40)
+            .map(|i| {
+                probe_at(
+                    "OPTIONS",
+                    "trunk",
+                    src,
+                    &format!("z9hG4bK-1w-{i}"),
+                    ms(i * 100),
+                )
+            })
+            .collect();
+        let fired = replay(&msgs);
+        assert!(
+            fired.is_empty(),
+            "a capture with no responses in it cannot show anything unanswered — got {fired:?}"
+        );
+    }
+
+    /// A rejection on an unrelated transaction is not evidence.
+    ///
+    /// A `481 Call/Transaction Does Not Exist` answering a stray `NOTIFY` or a
+    /// late `BYE` is ordinary traffic — the real corpus is full of them — and
+    /// says nothing about the OPTIONS keepalives running alongside. Only a
+    /// rejection on a probe transaction the detector opened counts.
+    #[test]
+    fn a_rejection_on_an_unrelated_transaction_is_not_evidence() {
+        let src = scanner_ip();
+        let mut msgs = Vec::new();
+        for i in 0..20 {
+            let branch = format!("z9hG4bK-ka-{i}");
+            let at = ms(i * 100);
+            msgs.push(probe_at("OPTIONS", "trunk", src, &branch, at));
+            msgs.push(answer_at(200, "OPTIONS", "trunk", src, &branch, at));
+            // A subscription this peer no longer holds, refused every time.
+            let stray = format!("z9hG4bK-notify-{i}");
+            msgs.push(probe_at("NOTIFY", "trunk", src, &stray, at));
+            msgs.push(answer_at(481, "NOTIFY", "trunk", src, &stray, at));
+        }
+        let fired = replay(&msgs);
+        assert!(
+            fired.is_empty(),
+            "481s to stray NOTIFYs are not rejected probes — got {fired:?}"
         );
     }
 

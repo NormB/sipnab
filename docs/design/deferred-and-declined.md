@@ -319,11 +319,18 @@ and it is not incidental — it is the tool working:
 D22's prompt-injection rule already governs the *descriptions* (never instruct
 the model to "trust", "verify" or "act on" content), and
 [`walkthroughs.md`](../internals/walkthroughs.md) restates it as step 2 of
-adding a tool. It also notes, correctly, that the lint enforcing it does not
-exist: [`mcp/server.rs:10`](../../src/mcp/server.rs) cites
-`scripts/check-tool-descriptions.sh`, and no such file is in `scripts/`. So the
-rule is convention, not enforcement — which is the state a write-back tool would
-be added under.
+adding a tool.
+
+**Corrected 2026-08-02.** This section used to say the rule was convention
+rather than enforcement, because `mcp/server.rs` cited
+`scripts/check-tool-descriptions.sh` and no such file existed. A cited gate that
+is absent reads as enforced while nothing checks it, which is worse than an
+admitted convention — the rule survived only as long as everyone adding a tool
+happened to follow it. `tests/mcp_tool_descriptions_test.rs` now implements it
+as a Rust test, and its second test asserts that any gate named in the module
+doc actually exists, so the citation cannot go stale again. The rule is
+enforced. That removes one argument against write-back and leaves the rest of
+this section standing.
 
 The chain is then short. An attacker places a `From` display name, `User-Agent`
 or reason phrase containing instructions on a network sipnab is watching; an

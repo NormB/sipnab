@@ -266,7 +266,10 @@ pub fn displayed_streams<'a>(
                 return true;
             };
             match ds.get(cid) {
-                Some(dialog) => f.matches_dialog(dialog, &[s]),
+                // Holding a stream IS the capture having observed RTP.
+                Some(dialog) => {
+                    f.matches_dialog(dialog, &[s], crate::rtp::diagnosis::CaptureMedia::Observed)
+                }
                 None => true,
             }
         })

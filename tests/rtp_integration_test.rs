@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use sipnab::capture::packet::Packet;
 use sipnab::capture::parse::{ParsedPacket, TransportProto, parse_packet};
 use sipnab::capture::pcap_reader::PcapReader;
-use sipnab::rtp::diagnosis::diagnose_media;
+use sipnab::rtp::diagnosis::{CaptureMedia, MediaContext, diagnose_media};
 use sipnab::rtp::parser::{RtpHeader, parse_rtp_header};
 use sipnab::rtp::quality::estimate_mos;
 use sipnab::rtp::rtcp::{RtcpPacket, parse_rtcp};
@@ -941,7 +941,7 @@ fn diagnose_one_way_audio() {
     }
 
     let streams: Vec<&RtpStream> = vec![&stream];
-    let diag = diagnose_media(&streams, None);
+    let diag = diagnose_media(&streams, &MediaContext::default());
 
     assert!(
         diag.one_way_audio,
@@ -984,7 +984,7 @@ fn diagnose_bidirectional_no_one_way() {
     }
 
     let streams: Vec<&RtpStream> = vec![&fwd, &rev];
-    let diag = diagnose_media(&streams, None);
+    let diag = diagnose_media(&streams, &MediaContext::default());
 
     assert!(
         !diag.one_way_audio,
@@ -1002,16 +1002,28 @@ fn diagnose_no_media_with_sdp() {
     let streams: Vec<&RtpStream> = vec![];
     let sdp = make_sdp("10.0.0.1", 20000);
 
-    let diag = diagnose_media(&streams, Some(&sdp));
-
-    assert!(
-        diag.no_media,
-        "Empty stream list with SDP should flag no_media"
+    let diag = diagnose_media(
+        &streams,
+        &MediaContext::from_session(&sdp, CaptureMedia::Observed),
     );
+
+    // A bare SDP session is NOT a negotiation, so this can never flag no_media
+    // however much media it describes and however little RTP arrived.
+    //
+    // This test used to assert the opposite — that one SDP plus zero streams
+    // was enough. That was the shape of the old bug: an offer nobody answered,
+    // or an INVITE seen twice, would have read as an answered call whose audio
+    // never came. `no_media` now requires SDP in BOTH a request and a response,
+    // and `from_session` has only one body and no dialog, so it withholds the
+    // finding by construction rather than by threshold.
+    //
+    // The positive case is covered where it can be stated honestly:
+    // `media_diagnosis_wiring_test::answered_call_with_no_rtp_is_selected_by_no_media`
+    // end to end, and `rtp::diagnosis::answered_negotiation_with_no_rtp_flags_no_media`
+    // as a unit.
     assert!(
-        diag.hints.iter().any(|h| h.contains("zero RTP")),
-        "Should hint about zero RTP packets: {:?}",
-        diag.hints
+        !diag.no_media,
+        "a bare SDP session is not a negotiation and must not flag no_media"
     );
 }
 
@@ -1019,7 +1031,7 @@ fn diagnose_no_media_with_sdp() {
 #[test]
 fn diagnose_no_streams_no_sdp_is_clean() {
     let streams: Vec<&RtpStream> = vec![];
-    let diag = diagnose_media(&streams, None);
+    let diag = diagnose_media(&streams, &MediaContext::default());
 
     assert!(
         !diag.no_media,
@@ -1428,7 +1440,10 @@ fn diagnose_nat_mismatch() {
     // SDP says 192.168.1.100 but actual source is 10.0.0.1
     let sdp = make_sdp("192.168.1.100", 20000);
 
-    let diag = diagnose_media(&streams, Some(&sdp));
+    let diag = diagnose_media(
+        &streams,
+        &MediaContext::from_session(&sdp, CaptureMedia::Observed),
+    );
 
     assert!(
         diag.nat_mismatch,

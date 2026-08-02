@@ -25,6 +25,11 @@ const VOLUME_SPIKE_MULTIPLIER: u32 = 5;
 /// Minimum calls before a volume spike can be detected.
 const VOLUME_SPIKE_MIN_CALLS: u32 = 6;
 
+/// Weight the rolling baseline keeps on its previous value when a new window
+/// is folded in. Ten windows of history, so a minute of traffic moves it a
+/// little and an hour of it moves it entirely.
+const BASELINE_DECAY: f64 = 0.9;
+
 /// Window for wangiri pattern detection (seconds).
 const WANGIRI_WINDOW_SECS: u64 = 60;
 
@@ -59,8 +64,36 @@ struct CallPattern {
     /// PREFIX, which a bare counter cannot support: the count that went into
     /// the alert text has to come from the short calls themselves.
     short_calls: HashMap<String, (DateTime<Utc>, String)>,
-    /// Baseline rate (calls per minute, rolling average).
-    baseline_rate: f64,
+    /// Calls the network REFUSED, keyed by Call-ID:
+    /// `call_id -> (capture time the call failed, destination)`.
+    ///
+    /// A run of consecutive numbers is only a scan when the numbers are not
+    /// there. A DID block is contiguous by definition, so a carrier delivering
+    /// into one walks consecutive numbers all day, and counting every call
+    /// whatever became of it reported 39 sequential scans over an ordinary
+    /// eleven-second trunk capture. Keyed for the same reason as
+    /// [`Self::short_calls`]: a terminal dialog keeps receiving messages.
+    refused_calls: HashMap<String, (DateTime<Utc>, String)>,
+    /// This source's ordinary call rate, in calls per
+    /// [`VOLUME_WINDOW_SECS`]-second window: a rolling average over the
+    /// windows it has completed.
+    ///
+    /// `None` until it has completed one. It used to start at 1.0 — a number
+    /// the constructor guessed rather than one the source established — so the
+    /// [`VOLUME_SPIKE_MIN_CALLS`]th call any source ever placed was already
+    /// [`VOLUME_SPIKE_MULTIPLIER`] times "its baseline", and an ordinary
+    /// carrier trunk cleared that in the first minute of every hour it
+    /// carried. A rate can only be a departure from what a source normally
+    /// does once something is known about what it normally does.
+    baseline_rate: Option<f64>,
+    /// Capture time the baseline last took a sample.
+    ///
+    /// Sampled once per window rather than once per call, because a baseline
+    /// has to be slower than the thing it baselines. Folded in per call, its
+    /// time constant was ten calls — shorter than a burst — so the average
+    /// chased the burst upward and suppressed the very alert it exists to
+    /// raise.
+    baseline_sampled_at: DateTime<Utc>,
     /// Monotonic counter of when this source was last touched, used to pick
     /// the eviction victim.
     ///
@@ -72,14 +105,35 @@ struct CallPattern {
 }
 
 impl CallPattern {
-    /// An empty pattern, stamped with the current use counter.
-    fn new(last_used: u64) -> Self {
+    /// An empty pattern first seen at `now`, stamped with the use counter.
+    fn new(now: DateTime<Utc>, last_used: u64) -> Self {
         Self {
             calls: Vec::new(),
             short_calls: HashMap::new(),
-            baseline_rate: 1.0,
+            refused_calls: HashMap::new(),
+            baseline_rate: None,
+            baseline_sampled_at: now,
             last_used,
         }
+    }
+
+    /// Fold the window that has just elapsed into the baseline, if one has.
+    ///
+    /// Runs before any alert is raised and whatever that alert turns out to
+    /// be. The update used to sit below every early return, so the first alert
+    /// a source raised froze its baseline at the value that produced it — and
+    /// with the baseline frozen, every call it placed afterwards raised the
+    /// alert again.
+    fn sample_baseline(&mut self, now: DateTime<Utc>) {
+        if now.signed_duration_since(self.baseline_sampled_at) < volume_window() {
+            return;
+        }
+        let observed = self.calls.len() as f64;
+        self.baseline_rate = Some(match self.baseline_rate {
+            Some(previous) => previous * BASELINE_DECAY + observed * (1.0 - BASELINE_DECAY),
+            None => observed,
+        });
+        self.baseline_sampled_at = now;
     }
 }
 
@@ -160,9 +214,10 @@ impl FraudDetector {
         }
     }
 
-    /// The per-source pattern for `src`, creating it if needed and enforcing
-    /// the entry cap (H4) by evicting the least recently used source.
-    fn pattern_for(&mut self, src: IpAddr) -> &mut CallPattern {
+    /// The per-source pattern for `src`, first seen at `now`, creating it if
+    /// needed and enforcing the entry cap (H4) by evicting the least recently
+    /// used source.
+    fn pattern_for(&mut self, src: IpAddr, now: DateTime<Utc>) -> &mut CallPattern {
         if self.call_patterns.len() >= MAX_PATTERN_ENTRIES
             && !self.call_patterns.contains_key(&src)
             && let Some(oldest) = self
@@ -178,7 +233,7 @@ impl FraudDetector {
         let pattern = self
             .call_patterns
             .entry(src)
-            .or_insert_with(|| CallPattern::new(use_counter));
+            .or_insert_with(|| CallPattern::new(now, use_counter));
         pattern.last_used = use_counter;
         pattern
     }
@@ -201,14 +256,19 @@ impl FraudDetector {
     /// the end of an INVITE dialog, and for a call already recorded — the
     /// `200 OK` to a `BYE` arrives after the dialog is already terminal and
     /// must not count the call twice.
+    ///
+    /// Only `Completed` and `Cancelled` count. Wangiri is a call that CONNECTED
+    /// and was cut, or rang and was pulled — the caller's choice either way,
+    /// which is what makes it a lure. A `Failed` dialog is one the NETWORK
+    /// refused, and a `404` comes back in milliseconds, so counting those made
+    /// every run of wrong numbers three short calls to a prefix. It also
+    /// masked the sequential-scanning signal, which is what a run of wrong
+    /// numbers actually is.
     fn record_if_short_call(&mut self, msg: &SipMessage, dialog: &SipDialog) -> Option<FraudAlert> {
         if dialog.method != crate::sip::SipMethod::Invite
             || !matches!(
                 dialog.state(),
-                DialogState::Completed
-                    | DialogState::Cancelled
-                    | DialogState::Failed
-                    | DialogState::Redirected
+                DialogState::Completed | DialogState::Cancelled
             )
         {
             return None;
@@ -224,7 +284,7 @@ impl FraudDetector {
         }
         let destination = dialog.to_user.clone().unwrap_or_default();
 
-        let pattern = self.pattern_for(src);
+        let pattern = self.pattern_for(src, now);
         pattern
             .short_calls
             .retain(|_, (t, _)| now.signed_duration_since(*t) < wangiri_window());
@@ -239,6 +299,51 @@ impl FraudDetector {
             .insert(call_id.to_string(), (now, destination));
 
         check_wangiri(src, pattern, now)
+    }
+
+    /// Record a call the network refused, and report sequential scanning if
+    /// that completed a run of consecutive numbers.
+    ///
+    /// Whether a number is there is knowable only once the call ends, which is
+    /// the same reason [`Self::record_if_short_call`] waits: at the moment the
+    /// INVITE is analysed the dialog has no outcome yet. A `Failed` dialog is
+    /// one a final `4xx`, `5xx` or `6xx` ended. `Cancelled` deliberately does
+    /// not count — the CALLER gave up, which says nothing about the number —
+    /// and neither does `Redirected`, where a `3xx` sent the call somewhere
+    /// else rather than saying it did not exist.
+    ///
+    /// # Returns
+    ///
+    /// A sequential-scanning alert when this refusal completed a run of
+    /// [`SEQUENTIAL_THRESHOLD`] consecutive numbers, else `None`.
+    fn record_if_refused_call(
+        &mut self,
+        msg: &SipMessage,
+        dialog: &SipDialog,
+    ) -> Option<FraudAlert> {
+        if dialog.method != crate::sip::SipMethod::Invite || dialog.state() != &DialogState::Failed
+        {
+            return None;
+        }
+        let call_id = dialog.call_id.as_str();
+        let src = dialog.src_addr;
+        let now = msg.timestamp;
+        let destination = dialog.to_user.clone().unwrap_or_default();
+
+        let pattern = self.pattern_for(src, now);
+        pattern
+            .refused_calls
+            .retain(|_, (t, _)| now.signed_duration_since(*t) < volume_window());
+        if pattern.refused_calls.contains_key(call_id)
+            || pattern.refused_calls.len() >= MAX_SHORT_CALLS_PER_SOURCE
+        {
+            return None;
+        }
+        pattern
+            .refused_calls
+            .insert(call_id.to_string(), (now, destination));
+
+        check_sequential(src, pattern)
     }
 
     /// Check a SIP message and its associated dialog for fraud indicators.
@@ -261,6 +366,10 @@ impl FraudDetector {
         if let Some(alert) = self.record_if_short_call(msg, dialog) {
             return Some(alert);
         }
+        // Whether a number is there is knowable only once the call ends too.
+        if let Some(alert) = self.record_if_refused_call(msg, dialog) {
+            return Some(alert);
+        }
 
         // Only analyze INVITE requests
         if !msg.is_request || msg.method.as_ref() != Some(&crate::sip::SipMethod::Invite) {
@@ -270,7 +379,7 @@ impl FraudDetector {
         let destination = msg.to_user().unwrap_or_default();
         let now = msg.timestamp;
         let business_hours = self.business_hours;
-        let pattern = self.pattern_for(msg.src_addr);
+        let pattern = self.pattern_for(msg.src_addr, now);
 
         // Record the call
         pattern.calls.push((now, destination.clone()));
@@ -285,6 +394,9 @@ impl FraudDetector {
         pattern
             .short_calls
             .retain(|_, (t, _)| now.signed_duration_since(*t) < wangiri_window());
+
+        // Whatever this call turns out to raise, the baseline moves first.
+        pattern.sample_baseline(now);
 
         // Off-hours detection
         if let Some((start, end)) = business_hours {
@@ -307,35 +419,28 @@ impl FraudDetector {
             }
         }
 
-        // Volume spike detection
-        let current_count = pattern.calls.len() as u32;
-        if current_count >= VOLUME_SPIKE_MIN_CALLS
-            && current_count > (pattern.baseline_rate as u32) * VOLUME_SPIKE_MULTIPLIER
-        {
-            return Some(FraudAlert {
-                src_ip: msg.src_addr,
-                alert_type: FraudType::VolumeSpike,
-                detail: format!(
-                    "{current_count} calls in {VOLUME_WINDOW_SECS}s (baseline: {:.1}/min)",
-                    pattern.baseline_rate
-                ),
-            });
+        // Volume spike detection. A spike is a departure from what this source
+        // normally does, so it needs a baseline the source itself established:
+        // no window completed, nothing to depart from. The comparison is in
+        // f64 because truncating the baseline to a `u32` judged a source that
+        // had worked its way up to 4.9 calls a minute against 4.
+        if let Some(baseline) = pattern.baseline_rate {
+            let current_count = pattern.calls.len() as u32;
+            if current_count >= VOLUME_SPIKE_MIN_CALLS
+                && f64::from(current_count) > baseline * f64::from(VOLUME_SPIKE_MULTIPLIER)
+            {
+                return Some(FraudAlert {
+                    src_ip: msg.src_addr,
+                    alert_type: FraudType::VolumeSpike,
+                    detail: format!(
+                        "{current_count} calls in {VOLUME_WINDOW_SECS}s (baseline: {baseline:.1}/min)"
+                    ),
+                });
+            }
         }
 
         // Wangiri detection: short calls to same prefix
-        if let Some(alert) = check_wangiri(msg.src_addr, pattern, now) {
-            return Some(alert);
-        }
-
-        // Sequential scanning detection
-        if let Some(alert) = check_sequential(msg.src_addr, pattern) {
-            return Some(alert);
-        }
-
-        // Update baseline (exponential moving average)
-        pattern.baseline_rate = pattern.baseline_rate * 0.9 + current_count as f64 * 0.1;
-
-        None
+        check_wangiri(msg.src_addr, pattern, now)
     }
 
     /// Remove call pattern entries whose calls are older than `max_age` **in
@@ -362,10 +467,14 @@ impl FraudDetector {
             pattern
                 .short_calls
                 .retain(|_, (t, _)| now.signed_duration_since(*t) < max_age);
+            pattern
+                .refused_calls
+                .retain(|_, (t, _)| now.signed_duration_since(*t) < max_age);
         }
         // Drop sources with nothing left to remember.
-        self.call_patterns
-            .retain(|_, p| !p.calls.is_empty() || !p.short_calls.is_empty());
+        self.call_patterns.retain(|_, p| {
+            !p.calls.is_empty() || !p.short_calls.is_empty() || !p.refused_calls.is_empty()
+        });
     }
 }
 
@@ -432,15 +541,19 @@ fn check_wangiri(src_ip: IpAddr, pattern: &CallPattern, now: DateTime<Utc>) -> O
 }
 
 /// Check for sequential number scanning (N, N+1, N+2, ...).
+///
+/// The run is taken over the calls the network REFUSED, not over every call in
+/// the window. A hunt group, a DID block and a dial-plan walk all produce the
+/// same consecutive numbers; only the walk's numbers are not there.
 fn check_sequential(src_ip: IpAddr, pattern: &CallPattern) -> Option<FraudAlert> {
-    if pattern.calls.len() < SEQUENTIAL_THRESHOLD {
+    if pattern.refused_calls.len() < SEQUENTIAL_THRESHOLD {
         return None;
     }
 
     // Extract numeric destinations and sort
     let mut numbers: Vec<u64> = pattern
-        .calls
-        .iter()
+        .refused_calls
+        .values()
         .filter_map(|(_, dest)| {
             // Strip any leading '+' and parse as integer
             let cleaned: String = dest.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -595,27 +708,21 @@ mod tests {
         );
     }
 
-    /// Calls to consecutive numbers trigger a sequential-scanning alert.
+    /// Calls to consecutive numbers that do not exist trigger a
+    /// sequential-scanning alert.
+    ///
+    /// The calls are refused rather than merely placed, because a run of
+    /// consecutive numbers is only a scan when the numbers are not there — see
+    /// [`a_hunt_group_answered_in_order_is_not_sequential_scanning`]. This test
+    /// used to hand the detector a dialog whose duration it had set by hand,
+    /// which no capture produces at the moment an INVITE is analysed.
     #[test]
     fn sequential_scanning_detected() {
-        let mut detector = FraudDetector::new(None);
-        let src = attacker_ip();
-
-        let mut alert = None;
-        for i in 1..=5 {
-            let dest = format!("+155500{i}");
-            let call_id = format!("seq-{i}@test");
-            let msg = make_invite(&dest, src, &call_id);
-            let mut dialog = make_dialog_from_msg(&msg);
-            // Give the dialog a non-short duration so it doesn't
-            // trigger wangiri detection before sequential scanning
-            dialog.updated_at = dialog.created_at + TimeDelta::seconds(30);
-            alert = detector.check(&msg, &dialog);
-        }
-
-        assert!(alert.is_some(), "should detect sequential scanning");
-        let alert = alert.unwrap();
-        assert_eq!(alert.alert_type, FraudType::SequentialScanning);
+        let alerts = replay_refused(&DIDS[..5], attacker_ip());
+        let alert = alerts
+            .iter()
+            .find(|a| a.alert_type == FraudType::SequentialScanning)
+            .expect("should detect sequential scanning");
         assert!(alert.detail.contains("sequential dialing"));
     }
 
@@ -805,6 +912,56 @@ mod tests {
         alerts
     }
 
+    /// A block of consecutive DIDs, the shape a hunt group and a dial-plan
+    /// walk both have.
+    const DIDS: &[&str] = &[
+        "+15551000",
+        "+15551001",
+        "+15551002",
+        "+15551003",
+        "+15551004",
+        "+15551005",
+        "+15551006",
+        "+15551007",
+    ];
+
+    /// The callee's final refusal of `call_id`.
+    fn refused_at(status: u16, to_user: &str, call_id: &str, when: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            &format!("SIP/2.0 {status} Not Found"),
+            &[
+                "From: <sip:caller@example.com>;tag=f1",
+                &format!("To: <sip:{to_user}@example.com>;tag=t1"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_at(&raw, localhost(), when)
+    }
+
+    /// Replay one INVITE per destination, each refused with `404`, and return
+    /// every alert raised.
+    fn replay_refused(dests: &[&str], src: IpAddr) -> Vec<FraudAlert> {
+        let mut store = crate::sip::dialog_store::DialogStore::new(1000, false);
+        let mut det = FraudDetector::new(None);
+        let mut alerts = Vec::new();
+        for (i, dest) in dests.iter().enumerate() {
+            let call_id = format!("refused-{i}@test");
+            let start = at(i as i64 * 2);
+            for msg in [
+                invite_at(dest, src, &call_id, start),
+                refused_at(404, dest, &call_id, start + TimeDelta::milliseconds(80)),
+            ] {
+                if let Some(a) = feed(&mut store, &mut det, &msg) {
+                    alerts.push(a);
+                }
+            }
+        }
+        alerts
+    }
+
     /// The alerts of `kind` in `alerts`, as their detail strings.
     fn details(alerts: &[FraudAlert], kind: &FraudType) -> Vec<String> {
         alerts
@@ -956,23 +1113,165 @@ mod tests {
         );
     }
 
-    /// A genuine burst inside one window still alerts, and reports a count the
-    /// capture can account for.
+    // ── A run of numbers is a scan only when the numbers are not there ──
+
+    /// A hunt group answered in order is not sequential scanning.
+    ///
+    /// A DID block is contiguous by definition, so a carrier delivering to it
+    /// walks consecutive numbers all day. What makes a run reconnaissance is
+    /// the same thing that makes a rate reconnaissance: the numbers were not
+    /// there. Counted over every call whatever became of it, an ordinary
+    /// eleven-second trunk capture reported 39 sequential scans.
     #[test]
-    fn a_real_burst_inside_one_minute_still_alerts() {
-        let dests: Vec<String> = (0..VOLUME_SPIKE_MIN_CALLS)
+    fn a_hunt_group_answered_in_order_is_not_sequential_scanning() {
+        let calls: Vec<Call<'_>> = (0..8)
+            .map(|i| Call {
+                dest: DIDS[i],
+                start: i as i64 * 2,
+                secs: 30,
+            })
+            .collect();
+        let alerts = replay(&calls, attacker_ip());
+        let seq = details(&alerts, &FraudType::SequentialScanning);
+        assert!(
+            seq.is_empty(),
+            "eight consecutive DIDs, every call answered and held for 30 seconds, \
+             is a hunt group — got {seq:?}"
+        );
+    }
+
+    /// Consecutive numbers the network refused are still sequential scanning.
+    #[test]
+    fn consecutive_numbers_the_network_refused_are_still_a_scan() {
+        let alerts = replay_refused(&DIDS[..5], attacker_ip());
+        let seq = details(&alerts, &FraudType::SequentialScanning);
+        assert!(
+            !seq.is_empty(),
+            "five consecutive numbers, none of which exists, is a dial-plan walk — \
+             got {alerts:?}"
+        );
+    }
+
+    // ── A baseline has to be measured before it can be exceeded ──────
+
+    /// A source calling at a steady, ordinary rate is never a volume spike.
+    ///
+    /// `baseline_rate` started at 1.0 — a number the constructor guessed, not
+    /// one the source established — so the sixth call any source placed
+    /// cleared `1 * VOLUME_SPIKE_MULTIPLIER` and was reported as five times
+    /// its own baseline. A carrier trunk clears that in the first minute of
+    /// every hour it carries.
+    ///
+    /// Two more things kept it there. The comparison truncated the baseline to
+    /// a `u32`, so a source that had worked its way up to 4.9 calls a minute
+    /// was still judged against 4. And the moving average that would have
+    /// corrected the guess sat below every early return, so the first alert
+    /// froze the baseline at the value that produced it, and every later call
+    /// from that source alerted too.
+    #[test]
+    fn a_steady_ordinary_call_rate_is_not_a_spike() {
+        // Twelve calls a minute for ten minutes, flat. Destinations are
+        // non-consecutive and the calls last longer than SHORT_CALL_SECS, so
+        // neither sequential scanning nor wangiri can fire instead.
+        let dests: Vec<String> = (0..120)
             .map(|i| format!("+1800555{:04}", i * 7 + 1))
             .collect();
         let calls: Vec<Call<'_>> = dests
             .iter()
             .enumerate()
-            .map(|(i, d)| call(d, i as i64 * 2, 5))
+            .map(|(i, d)| call(d, i as i64 * 5, 4))
             .collect();
+        let alerts = replay(&calls, attacker_ip());
+        let spikes = details(&alerts, &FraudType::VolumeSpike);
+        assert!(
+            spikes.is_empty(),
+            "a source that has done twelve calls a minute for ten minutes has a \
+             baseline of twelve, and twelve is not {VOLUME_SPIKE_MULTIPLIER} times \
+             twelve — got {spikes:?}"
+        );
+    }
+
+    /// A source that was quiet and then bursts is still a volume spike.
+    ///
+    /// The baseline must be slow enough for a burst to exceed it: sampled once
+    /// per call, it chases the burst and suppresses the very alert it exists
+    /// to raise.
+    #[test]
+    fn a_quiet_source_that_bursts_is_still_a_spike() {
+        let mut calls: Vec<Call<'_>> = Vec::new();
+        let dests: Vec<String> = (0..30)
+            .map(|i| format!("+1800555{:04}", i * 7 + 1))
+            .collect();
+        // Ten minutes at one call a minute, then a dozen inside ten seconds.
+        for (i, d) in dests.iter().take(10).enumerate() {
+            calls.push(call(d, i as i64 * 60, 30));
+        }
+        for (i, d) in dests.iter().skip(10).take(12).enumerate() {
+            calls.push(call(d, 600 + i as i64, 4));
+        }
+        let alerts = replay(&calls, attacker_ip());
+        let spikes = details(&alerts, &FraudType::VolumeSpike);
+        assert!(
+            !spikes.is_empty(),
+            "a source that placed one call a minute for ten minutes and then twelve \
+             in ten seconds is a spike — got {alerts:?}",
+        );
+    }
+
+    /// Nothing is a spike before the source has completed a window.
+    ///
+    /// A baseline is a measurement, and there is none to be had until a full
+    /// [`VOLUME_WINDOW_SECS`] has passed. Whatever a source does in its first
+    /// window is the first thing known about it, so it cannot also be a
+    /// departure from what is known about it.
+    #[test]
+    fn a_source_cannot_spike_before_it_has_a_baseline() {
+        let dests: Vec<String> = (0..30)
+            .map(|i| format!("+1800555{:04}", i * 7 + 1))
+            .collect();
+        let calls: Vec<Call<'_>> = dests
+            .iter()
+            .enumerate()
+            .map(|(i, d)| call(d, i as i64, 4))
+            .collect();
+        let alerts = replay(&calls, attacker_ip());
+        let spikes = details(&alerts, &FraudType::VolumeSpike);
+        assert!(
+            spikes.is_empty(),
+            "30 calls inside the first {VOLUME_WINDOW_SECS}s window are the source's \
+             whole history, not a departure from it — got {spikes:?}"
+        );
+    }
+
+    /// A genuine burst inside one window still alerts, and reports a count the
+    /// capture can account for.
+    ///
+    /// The source spends two minutes at one call a minute first, because a
+    /// spike is a departure from an established rate and there is no departure
+    /// from a rate nobody has established.
+    #[test]
+    fn a_real_burst_inside_one_minute_still_alerts() {
+        let dests: Vec<String> = (0..VOLUME_SPIKE_MIN_CALLS + 2)
+            .map(|i| format!("+1800555{:04}", i * 7 + 1))
+            .collect();
+        let mut calls: Vec<Call<'_>> = dests
+            .iter()
+            .take(2)
+            .enumerate()
+            .map(|(i, d)| call(d, i as i64 * 60, 30))
+            .collect();
+        calls.extend(
+            dests
+                .iter()
+                .skip(2)
+                .enumerate()
+                .map(|(i, d)| call(d, 120 + i as i64 * 2, 5)),
+        );
         let alerts = replay(&calls, attacker_ip());
         let spikes = details(&alerts, &FraudType::VolumeSpike);
         let first = spikes
             .first()
-            .expect("6 calls in 10s of capture time is a volume spike");
+            .expect("6 calls in 10s of capture time, from a source that has been doing one a minute, is a volume spike");
         assert!(
             first.contains(&format!("{VOLUME_SPIKE_MIN_CALLS} calls")),
             "the count must be the calls actually inside the window, got {first:?}"
