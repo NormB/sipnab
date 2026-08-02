@@ -203,6 +203,35 @@ impl SipnabMcp {
         }
         let target = root.join(name);
 
+        // A bare name can still leave the root, because the escape is not in
+        // the string: a symlink someone already placed in the root is one
+        // normal component and passes every check above, and the kernel follows
+        // it at `open`. Measured before this: an export wrote 77,736 bytes
+        // through such a link to a path outside the root, exit 0, and returned
+        // the in-root path as though that were where the bytes went.
+        //
+        // `canonical_target` is the same resolver `-O` uses to catch different
+        // spellings of one file — reused rather than reimplemented, because two
+        // implementations of one rule is a defect pattern this tree has already
+        // been bitten by.
+        //
+        // The resolved path is what gets returned, so a caller is told where
+        // the bytes will actually land rather than where it asked for them.
+        let resolved = crate::capture::output_guard::canonical_target(&target);
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if !resolved.starts_with(&canonical_root) {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "'{name}' resolves outside the configured --mcp-file-root. \
+                     The name is a link to '{}', and these tools write only \
+                     inside the root.",
+                    resolved.display()
+                ),
+                None,
+            ));
+        }
+        let target = resolved;
+
         // Refuse before the caller opens anything: every file tool writes with
         // truncation, so a check made after the open has already destroyed the
         // capture. This is the same precondition `-O` enforces, applied at the
@@ -529,6 +558,32 @@ pub struct StatsResponse {
     pub orphaned_stream_count: usize,
     /// Dialogs currently in an active (non-terminated) state.
     pub active_call_count: usize,
+    /// SIP messages seen OUTSIDE `--portrange` and therefore analysed by
+    /// nothing: they are in no dialog, no stream and no count above.
+    ///
+    /// Always present, including when it is zero. A field that appears only
+    /// when something went wrong is a field the reader never learns exists,
+    /// and this reader is a model that cannot ask a follow-up question. The
+    /// CLI already prints this beside its summary; before this field the MCP
+    /// surface returned a byte-identical key set whether a third of the
+    /// capture had been dropped or none of it had.
+    pub unanalysed_sip_messages: u64,
+    /// The busiest ports carrying that unanalysed SIP, busiest first, capped
+    /// at five. Empty when nothing was skipped.
+    ///
+    /// The service port — destination of a request, source of a response —
+    /// never the ephemeral port, which differs per dialog and names nothing.
+    pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
+}
+
+/// One port carrying SIP that `--portrange` excluded from the analysis.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct UnanalysedPort {
+    /// The service port.
+    pub port: u16,
+    /// SIP messages skipped on it.
+    pub messages: u64,
 }
 
 /// Parameters for `security_findings`.
@@ -1560,18 +1615,31 @@ impl SipnabMcp {
     #[tool(
         name = "stats",
         description = "Returns aggregate counters: total dialogs, total \
-                       streams, orphaned-stream count, active-call count."
+                       streams, orphaned-stream count, active-call count, \
+                       and the count of SIP messages seen outside \
+                       --portrange that nothing analysed."
     )]
     pub async fn stats(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
+            let skipped = crate::pipeline::portrange_skip_report();
             let resp = StatsResponse {
                 schema_version: 1,
                 dialog_count: ds.len(),
                 stream_count: ss.len(),
                 orphaned_stream_count: ss.orphaned_count(),
                 active_call_count: ds.active_count(),
+                unanalysed_sip_messages: skipped.messages,
+                unanalysed_busiest_ports: skipped
+                    .ports
+                    .iter()
+                    .take(5)
+                    .map(|p| UnanalysedPort {
+                        port: p.port,
+                        messages: p.messages,
+                    })
+                    .collect(),
             };
             drop(ss);
             drop(ds);
@@ -2175,10 +2243,16 @@ impl SipnabMcp {
     /// Write the retained packets to a capture file.
     #[tool(
         name = "export_capture",
-        description = "Writes the packets sipnab is holding to a pcap file in \
-                       the configured file root and returns the path. Use it to \
-                       preserve a live capture before stopping it — otherwise \
-                       the packets end with the process."
+        description = "Writes the SIP signalling sipnab is holding to a pcap file \
+                       in the configured file root and returns the path. The \
+                       file is NOT a copy of the capture: sipnab keeps parsed \
+                       messages rather than the original frames, so each message \
+                       is written as a re-synthesised Ethernet/IP/UDP frame with \
+                       reconstructed link and IP headers. It contains no RTP, no \
+                       RTCP and no non-SIP traffic, and a SIP-over-TCP message \
+                       is written as UDP. Use it to preserve signalling before \
+                       stopping a live capture — otherwise the messages end with \
+                       the process."
     )]
     pub async fn export_capture(
         &self,
@@ -2488,6 +2562,73 @@ mod tests {
 
     /// A server whose dialog store holds one dialog (`call_id`) with an
     /// INVITE followed by a 200 OK (two messages).
+    /// A bare filename that is a symlink out of the root is refused.
+    ///
+    /// `resolve_in_root` rejected separators, `..` and anything that was not a
+    /// single normal component, then joined and returned. String validation
+    /// cannot see a symlink, because the escape is not in the string: the name
+    /// really is one bare component, and the kernel does the rest at `open`.
+    ///
+    /// Measured before this check existed: an export wrote 77,736 bytes through
+    /// an in-root symlink to a path outside the root, exit 0, and returned the
+    /// in-root path as though that were where the bytes went. The shipped
+    /// security model says "naming one directory means the worst an agent can
+    /// do is fill it", and that did not hold.
+    ///
+    /// The escape needs prior write access inside the root, so this is not a
+    /// remote break. It is listed and fixed because it is the STATED boundary of
+    /// an agent-facing surface, and a boundary documented as absolute should be.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_file_root_is_refused() {
+        let base = std::env::temp_dir().join("sipnab-mcp-root-symlink");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+
+        let escape = outside.join("secrets.pcap");
+        std::fs::write(&escape, b"original").expect("seed the file outside");
+        std::os::unix::fs::symlink(&escape, root.join("innocent.pcap")).expect("symlink");
+
+        let srv = server_with_dialog("sym@test").with_file_root(&root);
+        let err = srv
+            .resolve_in_root("innocent.pcap")
+            .expect_err("a name that resolves outside the root must be refused");
+
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("outside") || msg.contains("symlink") || msg.contains("root"),
+            "the refusal must say the name leaves the root, not merely that it \
+             failed: {msg}"
+        );
+        assert_eq!(
+            std::fs::read(&escape).expect("read"),
+            b"original",
+            "the file outside the root must be untouched"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// An ordinary name inside the root still resolves, so the check above is
+    /// not simply refusing everything.
+    #[cfg(unix)]
+    #[test]
+    fn a_plain_name_inside_the_file_root_still_resolves() {
+        let root = std::env::temp_dir().join("sipnab-mcp-root-plain");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+
+        let srv = server_with_dialog("plain@test").with_file_root(&root);
+        let path = srv
+            .resolve_in_root("out.pcap")
+            .expect("a bare name inside the root must resolve");
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("out.pcap"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn server_with_dialog(call_id: &str) -> SipnabMcp {
         let mut ds = DialogStore::new(100, false);
         ds.process_message(invite(call_id, base_ts()));
@@ -3259,7 +3400,12 @@ mod tests {
     #[tokio::test]
     async fn security_findings_with_engine_returns_recorded_finding() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", localhost(), "probe from scanner");
+        engine.fire(
+            "scanner",
+            localhost(),
+            "probe from scanner",
+            chrono::Utc::now(),
+        );
         let engine = Arc::new(RwLock::new(engine));
 
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -3281,7 +3427,7 @@ mod tests {
     #[tokio::test]
     async fn security_findings_kinds_filter_excludes_other_rules() {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", localhost(), "scan");
+        engine.fire("scanner", localhost(), "scan", chrono::Utc::now());
         let engine = Arc::new(RwLock::new(engine));
 
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -3512,6 +3658,40 @@ mod tests {
         assert_eq!(v["stream_count"], 0);
         assert_eq!(v["orphaned_stream_count"], 0);
         assert_eq!(v["active_call_count"], 0);
+    }
+
+    /// `stats` reports the SIP that `--portrange` excluded, always.
+    ///
+    /// The CLI has printed this beside its summary since the skip accounting
+    /// landed. The MCP surface did not, and returned a byte-identical key set
+    /// whether a third of the capture had been dropped or none of it had — so
+    /// a model driving the tools could answer questions about "the calls in
+    /// this capture" from two thirds of them with full confidence, and had no
+    /// way to learn otherwise. On one real capture that was 1,401 dialogs of
+    /// 3,712, and 4,247 of 13,455 messages.
+    ///
+    /// The field is asserted present at ZERO, not merely present when
+    /// something was skipped. A field that appears only when something went
+    /// wrong is a field the reader never learns exists, and this reader cannot
+    /// ask a follow-up question.
+    #[tokio::test]
+    async fn stats_reports_the_sip_left_outside_the_port_range() {
+        crate::pipeline::reset_portrange_skips();
+        let server = empty_server();
+        let result = server.stats().await.expect("stats should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert!(
+            v.get("unanalysed_sip_messages").is_some(),
+            "the skipped-SIP count must be present even when it is zero, or a \
+             model never learns the concept exists: {v}"
+        );
+        assert_eq!(v["unanalysed_sip_messages"], 0);
+        assert!(
+            v["unanalysed_busiest_ports"].is_array(),
+            "the per-port breakdown must be an array, empty when nothing was \
+             skipped: {v}"
+        );
     }
 
     /// A store with one dialog and no streams reports counts 1 and 0.

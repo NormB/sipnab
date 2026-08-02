@@ -322,7 +322,7 @@ carries a default ceiling (HARD_LIMIT = 1000).
 | `get_sdp_timeline` | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
 | `search_by_time` | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
 | `list_captures` | -- | Capture files in `--mcp-file-root`, with sizes |
-| `export_capture` | `filename` | Writes held packets to a pcap in `--mcp-file-root` |
+| `export_capture` | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root` |
 | `shutdown_server` | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | `server_capabilities` | -- | sipnab version and the optional features this binary carries |
@@ -1037,6 +1037,17 @@ sipnab refuses `../x`, `/etc/passwd` and `sub/dir.pcap` before any filesystem
 call. That is the whole security model and it is deliberately absolute: a tool
 accepting an agent-supplied path is an arbitrary file write, not an export.
 
+Name checking alone does not finish the job, so sipnab does one more thing. A
+symlink already sitting in the root is a single bare component — it passes every
+check above, and the kernel follows it when the file opens. sipnab therefore
+compares the resolved path against the root in its fully resolved form and refuses a name by
+where it points rather than by how someone spelled it. Each tool returns the
+resolved path, so a caller learns where the bytes actually went.
+
+That escape needed prior write access inside the root, so it never amounted to a
+remote break. sipnab closes it because this page calls the boundary absolute, and
+a boundary described that way ought to be.
+
 ### `list_captures`
 
 Capture files in the configured root, with sizes. It skips anything that is
@@ -1048,17 +1059,27 @@ not a capture.
 
 ### `export_capture`
 
-Writes the packets sipnab is holding to a pcap. Use it to preserve a live
-capture **before** stopping it — otherwise the packets end with the process.
+Writes the SIP signalling sipnab is holding to a pcap. Use it to preserve
+signalling **before** stopping a live capture — otherwise the messages end with
+the process.
+
+> **The file is not a copy of the capture.** sipnab keeps parsed messages, not
+> the frames that arrived, so the export rebuilds one Ethernet/IP/UDP frame
+> around each message. The SIP layer is faithful. Everything under it is
+> reconstructed from the addresses and ports sipnab recorded.
+>
+> Concretely, the file holds **no RTP, no RTCP and no non-SIP traffic**, and
+> writes a SIP-over-TCP message as UDP. On one measured export, 4,875 of the
+> 5,000 packets that had been on the wire were absent.
+>
+> That matters beyond the analysis, because the output is a pcap and people
+> forward pcaps. If the file is going to a carrier, a regulator or a court, say
+> what it is — nothing inside it announces that the frames were rebuilt.
 
 ```jsonc
 // export_capture { "filename": "demo.pcap" }
 { "path": "/var/spool/sipnab-exports/demo.pcap", "messages": 4, "bytes": 2373 }
 ```
-
-It re-synthesises a frame per held message, so the SIP layer is faithful while
-the link and IP headers come from the addresses sipnab recorded — not from the
-bytes originally on the wire.
 
 ### `export_audio`
 
@@ -1154,9 +1175,30 @@ No parameters. Returns:
   "dialog_count": 42,
   "stream_count": 18,
   "orphaned_stream_count": 2,
-  "active_call_count": 5
+  "active_call_count": 5,
+  "unanalysed_sip_messages": 4249,
+  "unanalysed_busiest_ports": [
+    { "port": 8090, "messages": 2430 },
+    { "port": 5080, "messages": 598 }
+  ]
 }
 ```
+
+> **`unanalysed_sip_messages` is the count the other numbers do not include.**
+> `--portrange` decides which ports sipnab parses as SIP, and its default is
+> `5060-5061`. SIP on 5070, 5080 and elsewhere is ordinary — carriers and SBCs
+> use those routinely — so on real traffic the counters above can describe a
+> fraction of the capture. On one carrier trunk that fraction was two thirds:
+> 2,311 dialogs reported against 3,712 present.
+>
+> The field is always there, including when it is zero, so nobody has to
+> read meaning into its absence. A non-zero value means the answer to "how many calls
+> are in this capture" is larger than `dialog_count`, and re-running with
+> `--portrange 1-65535` is what makes the difference visible.
+>
+> `unanalysed_busiest_ports` names the service port — destination of a request,
+> source of a response — never the ephemeral port, which differs on every
+> dialog and identifies nothing.
 
 ### Tool argument enums
 

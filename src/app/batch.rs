@@ -1855,6 +1855,7 @@ fn process_parsed_packet<W: std::io::Write>(
                         output::render_absent(alert.ua.as_deref()),
                         alert.detection_method
                     ),
+                    sip_msg.timestamp,
                 );
                 if cli.fail2ban {
                     let event = output::format_scanner_event(
@@ -1903,6 +1904,7 @@ fn process_parsed_packet<W: std::io::Write>(
                         output::render_absent(method),
                         output::render_absent(ua)
                     ),
+                    sip_msg.timestamp,
                 );
                 if cli.fail2ban {
                     let event =
@@ -1936,6 +1938,7 @@ fn process_parsed_packet<W: std::io::Write>(
                     "fraud",
                     alert.src_ip,
                     &format!("{:?}: {}", alert.alert_type, alert.detail),
+                    sip_msg.timestamp,
                 );
             }
 
@@ -1947,6 +1950,7 @@ fn process_parsed_packet<W: std::io::Write>(
                         "digest",
                         sip_msg.src_addr,
                         &format!("{:?}: {}", alert.vulnerability, alert.detail),
+                        sip_msg.timestamp,
                     );
                 }
             }
@@ -1962,6 +1966,7 @@ fn process_parsed_packet<W: std::io::Write>(
                         "count={} threshold={}",
                         alert.register_count, alert.threshold
                     ),
+                    sip_msg.timestamp,
                 );
                 if cli.fail2ban {
                     let event = output::format_reg_flood_event(
