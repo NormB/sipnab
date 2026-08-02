@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `SipnabMcp` server: the read-only MCP tools backed by the existing
+//! `SipnabMcp` server: the MCP tools backed by the existing
 //! dialog/stream stores (plus the optional alert engine).
 //!
 //! # Tool descriptions and prompt-injection defense (D22)
@@ -2435,9 +2435,16 @@ impl ServerHandler for SipnabMcp {
     /// instructions string shown to MCP clients.
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        // Every client reads this string, so it is a promise on the wire rather
+        // than documentation. It used to say "read-only access", which stopped
+        // being exactly true once file exports and an opt-in shutdown existed.
+        // The invariant that does hold is narrower and worth stating precisely:
+        // no tool changes the analysis being read.
         info.instructions = Some(
-            "sipnab MCP server — read-only access to captured SIP dialogs, \
-             RTP streams, diagnostics, and security findings."
+            "sipnab MCP server — queries captured SIP dialogs, RTP streams, \
+             diagnostics and security findings. No tool alters the analysis. \
+             File exports write only under the configured file root, and \
+             stopping the server requires an explicit server-side opt-in."
                 .to_string(),
         );
         info
