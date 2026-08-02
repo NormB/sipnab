@@ -541,7 +541,16 @@ fn a_quote_of_non_sip_traffic_is_not_attributed_to_a_dialog() {
 /// `parse_packet` still rejects ICMP, so an ICMP error can never reach the SIP
 /// counters. The quote is evidence *about* a message, and counting it as one
 /// would inflate every message total sipnab prints.
+///
+/// Serialised even though it asserts nothing about the store: rejecting the
+/// packet is only half of what `parse_packet` does with an ICMP error — it also
+/// FILES the quote in the process-global evidence store on its way to the
+/// `Err`. Unserialised, that write lands inside another test's reset-record-read
+/// window and inflates its totals by one. It did exactly that in CI while
+/// passing locally five runs in a row, because the race needs the right
+/// interleaving and one more serialised test was enough to produce it.
 #[test]
+#[serial_test::serial(icmp_evidence)]
 fn an_icmp_error_is_never_a_parsed_packet() {
     let quoted = quoted_ipv4_udp(
         sender(),
