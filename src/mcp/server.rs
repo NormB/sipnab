@@ -25,7 +25,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
@@ -2435,6 +2435,14 @@ impl ServerHandler for SipnabMcp {
     /// instructions string shown to MCP clients.
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        // Name ourselves. The default comes from `Implementation::from_build_env`,
+        // whose `env!("CARGO_CRATE_NAME")` expands when *rmcp* compiles, so a
+        // client asking what it is connected to was told "rmcp" and rmcp's
+        // version. That is both the wrong identity and a dependency's version
+        // number leaking onto the wire as though it were the application's — and
+        // it changed silently on every rmcp bump. `env!` here expands in this
+        // crate, so these are sipnab's own values.
+        info.server_info = Implementation::new("sipnab", env!("CARGO_PKG_VERSION"));
         // Every client reads this string, so it is a promise on the wire rather
         // than documentation. It used to say "read-only access", which stopped
         // being exactly true once file exports and an opt-in shutdown existed.
@@ -2634,6 +2642,32 @@ mod tests {
         assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("out.pcap"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The handshake must name sipnab, not whichever MCP crate we build on.
+    ///
+    /// `ServerInfo::new` fills `server_info` from `Implementation::default()`,
+    /// which is `from_build_env()`, whose `env!("CARGO_CRATE_NAME")` expands
+    /// when *rmcp* compiles. So the default is literally the string "rmcp" plus
+    /// rmcp's own version, and it moved on its own during the 2.2.0 -> 3.0.1
+    /// bump. Asserting the name is not "rmcp" is the half that catches a
+    /// regression: a future refactor that drops the explicit assignment would
+    /// still produce a well-formed handshake naming the wrong software.
+    #[test]
+    fn the_handshake_names_sipnab_and_not_the_transport_crate() {
+        let info = server_with_dialog("id@test").get_info();
+
+        assert_eq!(info.server_info.name, "sipnab");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+        assert_ne!(
+            info.server_info.name, "rmcp",
+            "server_info fell back to rmcp's build environment"
+        );
+        // The version must track this crate, so it cannot be a dependency's.
+        assert!(
+            !info.server_info.version.is_empty(),
+            "an empty version is not an identity"
+        );
     }
 
     fn server_with_dialog(call_id: &str) -> SipnabMcp {
