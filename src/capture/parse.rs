@@ -83,6 +83,561 @@ pub struct ParsedPacket {
     pub from_hep: bool,
 }
 
+// ── ICMP error quotes ─────────────────────────────────────────────────
+//
+// An ICMP error is the only packet in a SIP capture that states a cause
+// instead of implying one. A port-unreachable quoting an INVITE says the far
+// end was not listening on that port — categorically, from the network itself
+// — where the surrounding traffic says only that nothing came back. sipnab
+// dropped every ICMP packet at the transport switch, so a capture that
+// contained the answer produced a report that said "unanswered".
+//
+// Two facts govern everything below.
+//
+// **The quote is truncated by design.** RFC 792 obliges a router to return the
+// original IP header plus 8 bytes and nothing more; RFC 1812 §4.3.2.3 asks for
+// as much as will fit in 576 octets, and most stacks oblige, but nothing
+// guarantees it. So the quoted bytes are a PREFIX of a request. They are
+// evidence ABOUT a message, never a message: they are not parsed as SIP here,
+// never become a `ParsedPacket`, and can never reach a message count or a
+// dialog's message ladder. `parse_packet` still returns `CaptureError::Icmp`
+// for these packets, exactly as before.
+//
+// **There are two addresses and they mean opposite things.** The ICMP header's
+// own source is the router or host REPORTING the failure. The quoted
+// datagram's destination is the endpoint that DID NOT ANSWER. They are
+// frequently different hosts — a "host unreachable" comes from the last router
+// that could still forward — and naming the reporter as the failure would
+// send an operator to debug a device that is working. `IcmpQuote` keeps all
+// four addresses under names that cannot be confused.
+
+/// Which RFC 792 / RFC 4443 error an ICMP message reports.
+///
+/// Only the types that quote the datagram that provoked them are represented.
+/// ICMPv4 Redirect (type 5) quotes one too, but it reports a better route
+/// rather than a failure, and reading it as a failure would turn a working
+/// path into a reported fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IcmpErrorKind {
+    /// ICMPv4 type 3 / ICMPv6 type 1 — the datagram could not be delivered.
+    DestinationUnreachable,
+    /// ICMPv4 type 11 / ICMPv6 type 3 — TTL or reassembly time exceeded.
+    TimeExceeded,
+    /// ICMPv4 type 12 / ICMPv6 type 4 — a malformed header field.
+    ParameterProblem,
+    /// ICMPv4 type 4 — congestion. Deprecated by RFC 6633, still seen.
+    SourceQuench,
+    /// ICMPv6 type 2 — the datagram exceeded a link MTU. The PMTU black hole
+    /// behind "large INVITEs vanish, small requests work".
+    PacketTooBig,
+}
+
+/// An ICMP or ICMPv6 error and the datagram it quotes.
+///
+/// Produced by [`parse_icmp_error`]. Every field beginning `quoted_` describes
+/// the ORIGINAL datagram that failed; `reporter` / `reported_to` describe the
+/// ICMP message carrying the news. See the module-level note above for why
+/// that distinction is enforced by naming rather than left to the reader.
+#[derive(Debug, Clone)]
+pub struct IcmpQuote {
+    /// Capture time of the ICMP error itself.
+    pub timestamp: DateTime<Utc>,
+    /// Source of the ICMP message: the router or host REPORTING the failure.
+    /// Not necessarily — and for `host unreachable` usually not — the endpoint
+    /// that failed to answer.
+    pub reporter: IpAddr,
+    /// Destination of the ICMP message: the sender of the failed datagram,
+    /// being told that it failed.
+    pub reported_to: IpAddr,
+    /// Which error class this is.
+    pub kind: IcmpErrorKind,
+    /// Raw ICMP type byte, kept so an unrecognised code is still reportable.
+    pub icmp_type: u8,
+    /// Raw ICMP code byte.
+    pub icmp_code: u8,
+    /// Source address of the quoted datagram — who sent the request that
+    /// failed.
+    pub quoted_src: IpAddr,
+    /// Destination address of the quoted datagram — THE ENDPOINT THAT DID NOT
+    /// ANSWER. This is the address a finding should name.
+    pub quoted_dst: IpAddr,
+    /// IP protocol number of the quoted datagram.
+    pub quoted_protocol: u8,
+    /// Transport of the quoted datagram, when it is one sipnab carries SIP
+    /// over. `None` for anything else, and for a quoted non-first fragment,
+    /// which has no transport header at all.
+    pub quoted_transport: Option<TransportProto>,
+    /// Source port of the quoted datagram. `None` when the quote stopped
+    /// before the transport header.
+    pub quoted_src_port: Option<u16>,
+    /// Destination port of the quoted datagram — the port that was not
+    /// listening. `None` when the quote stopped before the transport header.
+    pub quoted_dst_port: Option<u16>,
+    /// A PREFIX of the original transport payload. May be empty (RFC 792's
+    /// 8-byte minimum covers only the UDP header) and may stop mid-header.
+    /// Never a complete message unless [`Self::quoted_truncated`] is false,
+    /// and not certainly one even then.
+    pub quoted_payload: bytes::Bytes,
+    /// True when the quoted datagram's own IP length field declares more bytes
+    /// than the quote carries. False means the quote is NOT KNOWN to be
+    /// truncated — for a zero or unreadable length field sipnab cannot tell,
+    /// and reporting "complete" on that basis would be a guess.
+    pub quoted_truncated: bool,
+}
+
+impl IcmpQuote {
+    /// Plain-language rendering of this error's type and code.
+    ///
+    /// Static strings from RFC 792 §Destination Unreachable / RFC 4443 §3, so
+    /// a finding can quote the network's own words instead of a bare `3/1`.
+    pub fn description(&self) -> &'static str {
+        let (t, c) = (self.icmp_type, self.icmp_code);
+        if self.reporter.is_ipv6() {
+            return match (t, c) {
+                (1, 0) => "no route to destination",
+                (1, 1) => "communication with destination administratively prohibited",
+                (1, 2) => "beyond scope of source address",
+                (1, 3) => "address unreachable",
+                (1, 4) => "port unreachable",
+                (1, 5) => "source address failed ingress/egress policy",
+                (1, 6) => "reject route to destination",
+                (1, _) => "destination unreachable",
+                (2, _) => "packet too big",
+                (3, 0) => "hop limit exceeded in transit",
+                (3, 1) => "fragment reassembly time exceeded",
+                (3, _) => "time exceeded",
+                (4, _) => "parameter problem",
+                _ => "ICMPv6 error",
+            };
+        }
+        match (t, c) {
+            (3, 0) => "network unreachable",
+            (3, 1) => "host unreachable",
+            (3, 2) => "protocol unreachable",
+            (3, 3) => "port unreachable",
+            (3, 4) => "fragmentation needed and DF set",
+            (3, 5) => "source route failed",
+            (3, 9) => "network administratively prohibited",
+            (3, 10) => "host administratively prohibited",
+            (3, 13) => "communication administratively prohibited",
+            (3, _) => "destination unreachable",
+            (4, _) => "source quench",
+            (11, 0) => "TTL exceeded in transit",
+            (11, 1) => "fragment reassembly time exceeded",
+            (11, _) => "time exceeded",
+            (12, _) => "parameter problem",
+            _ => "ICMP error",
+        }
+    }
+}
+
+/// Fields recovered from the quoted (original, failed) datagram.
+///
+/// Borrows the quote so the payload stays zero-copy; the caller turns it into
+/// refcounted [`bytes::Bytes`] against the capture buffer.
+struct QuotedDatagram<'a> {
+    /// Sender of the failed datagram.
+    src: IpAddr,
+    /// Intended recipient of the failed datagram: the endpoint that did not
+    /// answer.
+    dst: IpAddr,
+    /// IP protocol number.
+    protocol: u8,
+    /// Transport, when recognised.
+    transport: Option<TransportProto>,
+    /// Source port, when the quote reached it.
+    src_port: Option<u16>,
+    /// Destination port, when the quote reached it.
+    dst_port: Option<u16>,
+    /// Whatever of the transport payload the quote carried.
+    payload: &'a [u8],
+    /// The IP length field declared more than the quote carries.
+    truncated: bool,
+}
+
+/// Map an ICMP type to the error class it reports, or `None` when the message
+/// is not an error that quotes a datagram (echo, router advertisement,
+/// neighbour discovery, redirect).
+fn icmp_error_kind(icmp_type: u8, v6: bool) -> Option<IcmpErrorKind> {
+    if v6 {
+        return match icmp_type {
+            1 => Some(IcmpErrorKind::DestinationUnreachable),
+            2 => Some(IcmpErrorKind::PacketTooBig),
+            3 => Some(IcmpErrorKind::TimeExceeded),
+            4 => Some(IcmpErrorKind::ParameterProblem),
+            _ => None,
+        };
+    }
+    match icmp_type {
+        3 => Some(IcmpErrorKind::DestinationUnreachable),
+        4 => Some(IcmpErrorKind::SourceQuench),
+        11 => Some(IcmpErrorKind::TimeExceeded),
+        12 => Some(IcmpErrorKind::ParameterProblem),
+        _ => None,
+    }
+}
+
+/// Ports and payload from a quoted transport header, tolerating truncation.
+///
+/// Returns `(transport, src_port, dst_port, payload)`. Every step is
+/// length-checked separately: RFC 792's 8-byte minimum yields ports but no
+/// payload for UDP, and ports but no payload for TCP (whose data offset lives
+/// at byte 12). Reading past what is present is exactly how a header prefix
+/// gets mistaken for a message.
+fn quoted_transport_fields(
+    protocol: u8,
+    t: &[u8],
+) -> (Option<TransportProto>, Option<u16>, Option<u16>, &[u8]) {
+    let ports = if t.len() >= 4 {
+        (
+            Some(u16::from_be_bytes([t[0], t[1]])),
+            Some(u16::from_be_bytes([t[2], t[3]])),
+        )
+    } else {
+        (None, None)
+    };
+    let empty = &t[..0];
+    match protocol {
+        // UDP: fixed 8-byte header. The length field bounds the payload, but a
+        // truncated quote holds less than it claims, so take the smaller.
+        17 => {
+            let payload = if t.len() >= 8 {
+                let declared = usize::from(u16::from_be_bytes([t[4], t[5]])).saturating_sub(8);
+                &t[8..(8 + declared).min(t.len())]
+            } else {
+                empty
+            };
+            (Some(TransportProto::Udp), ports.0, ports.1, payload)
+        }
+        // TCP: variable header; the data offset is at byte 12, so a quote
+        // shorter than 20 bytes yields ports and nothing else.
+        6 => {
+            let payload = if t.len() >= 20 {
+                let off = usize::from(t[12] >> 4) * 4;
+                if off >= 20 && off <= t.len() {
+                    &t[off..]
+                } else {
+                    empty
+                }
+            } else {
+                empty
+            };
+            (Some(TransportProto::Tcp), ports.0, ports.1, payload)
+        }
+        // SCTP: the payload lives in a DATA chunk. `find_sctp_data_chunk`
+        // requires a complete chunk, so a truncated quote yields ports only —
+        // which is the honest answer.
+        132 => {
+            let payload = find_sctp_data_chunk(t, true)
+                .and_then(|c| t.get(c.payload))
+                .unwrap_or(empty);
+            (Some(TransportProto::Sctp), ports.0, ports.1, payload)
+        }
+        _ => (None, None, None, empty),
+    }
+}
+
+/// Parse the IPv4 datagram an ICMP error quotes, tolerating truncation.
+fn parse_quoted_ipv4(q: &[u8]) -> Option<QuotedDatagram<'_>> {
+    if q.len() < 20 {
+        return None;
+    }
+    let ihl = usize::from(q[0] & 0x0f) * 4;
+    if ihl < 20 {
+        return None;
+    }
+    let total_len = usize::from(u16::from_be_bytes([q[2], q[3]]));
+    let frag_offset = u16::from_be_bytes([q[6], q[7]]) & 0x1fff;
+    let protocol = q[9];
+    let src = IpAddr::from([q[12], q[13], q[14], q[15]]);
+    let dst = IpAddr::from([q[16], q[17], q[18], q[19]]);
+
+    // A zero Total Length says nothing (segmentation offload writes it), so it
+    // is reported as "not known to be truncated" rather than as complete.
+    let truncated = total_len > q.len() || ihl > q.len();
+    // Never read past what the datagram declared, even if the ICMP message
+    // carried trailing padding.
+    let end = if total_len >= ihl {
+        total_len.min(q.len())
+    } else {
+        q.len()
+    };
+    let after_ip = q.get(ihl.min(end)..end).unwrap_or(&q[..0]);
+
+    // A non-first fragment carries no transport header: its ports live in the
+    // first fragment, which this ICMP error is not about.
+    let (transport, src_port, dst_port, payload) = if frag_offset != 0 {
+        (None, None, None, &q[..0])
+    } else {
+        quoted_transport_fields(protocol, after_ip)
+    };
+
+    Some(QuotedDatagram {
+        src,
+        dst,
+        protocol,
+        transport,
+        src_port,
+        dst_port,
+        payload,
+        truncated,
+    })
+}
+
+/// IPv6 extension headers that use the `(next header, length in 8-octet units
+/// minus one)` shape, so they can be skipped without understanding them.
+const IPV6_EXT_SKIPPABLE: [u8; 6] = [
+    0,   // Hop-by-Hop Options
+    43,  // Routing
+    60,  // Destination Options
+    135, // Mobility
+    139, // Host Identity Protocol
+    140, // Shim6
+];
+
+/// Walk past IPv6 extension headers to the transport header.
+///
+/// Returns `(protocol, transport bytes)`, or `None` when the chain runs off
+/// the end of a truncated quote or reaches a header whose payload cannot be
+/// read (ESP, or a fragment that is not the first). Bounded at eight headers:
+/// a longer chain in an ICMP quote is a malformed packet, not a SIP call.
+fn skip_ipv6_extensions(first: u8, mut body: &[u8]) -> Option<(u8, &[u8])> {
+    let mut next = first;
+    for _ in 0..8 {
+        if IPV6_EXT_SKIPPABLE.contains(&next) {
+            let len = 8 + usize::from(*body.get(1)?) * 8;
+            next = *body.first()?;
+            body = body.get(len..)?;
+        } else if next == 44 {
+            // Fragment header: fixed 8 bytes. Only the first fragment carries
+            // the transport header the ports would come from.
+            let offset = u16::from_be_bytes([*body.get(2)?, *body.get(3)?]) & 0xfff8;
+            if offset != 0 {
+                return None;
+            }
+            next = *body.first()?;
+            body = body.get(8..)?;
+        } else if next == 51 {
+            // Authentication Header: length is in 4-octet units minus two.
+            let len = (usize::from(*body.get(1)?) + 2) * 4;
+            next = *body.first()?;
+            body = body.get(len..)?;
+        } else {
+            return Some((next, body));
+        }
+    }
+    None
+}
+
+/// Parse the IPv6 datagram an ICMPv6 error quotes, tolerating truncation.
+fn parse_quoted_ipv6(q: &[u8]) -> Option<QuotedDatagram<'_>> {
+    if q.len() < 40 {
+        return None;
+    }
+    let payload_len = usize::from(u16::from_be_bytes([q[4], q[5]]));
+    let next_header = q[6];
+    let mut src_octets = [0u8; 16];
+    let mut dst_octets = [0u8; 16];
+    src_octets.copy_from_slice(&q[8..24]);
+    dst_octets.copy_from_slice(&q[24..40]);
+
+    let truncated = 40 + payload_len > q.len();
+    let end = (40 + payload_len).min(q.len()).max(40);
+    let body = &q[40..end];
+
+    let (transport, src_port, dst_port, payload) = match skip_ipv6_extensions(next_header, body) {
+        Some((protocol, t)) => quoted_transport_fields(protocol, t),
+        None => (None, None, None, &q[..0]),
+    };
+
+    Some(QuotedDatagram {
+        src: IpAddr::from(src_octets),
+        dst: IpAddr::from(dst_octets),
+        protocol: next_header,
+        transport,
+        src_port,
+        dst_port,
+        payload,
+        truncated,
+    })
+}
+
+/// An ICMP message's own header fields and payload, read from either an
+/// [`etherparse::Icmpv4Slice`] or an [`etherparse::Icmpv6Slice`].
+///
+/// The two slices carry the same three facts under different types, and the
+/// decoder needs the same three from both; keeping them together is also what
+/// lets `icmp_quote` stay inside a readable argument count.
+struct IcmpMessage<'a> {
+    /// Raw ICMP type byte.
+    icmp_type: u8,
+    /// Raw ICMP code byte.
+    icmp_code: u8,
+    /// Bytes past the 8-byte ICMP header: the quoted datagram, for an error.
+    payload: &'a [u8],
+    /// ICMPv6 rather than ICMPv4 — the type numbers mean different things.
+    v6: bool,
+}
+
+/// Build an [`IcmpQuote`] from an ICMP message's own addresses and payload.
+///
+/// The single decoder behind both the public [`parse_icmp_error`] and the
+/// recording hook in [`extract_parsed_packet`], so the evidence sipnab records
+/// during a capture and the evidence a test reads back are produced by the
+/// same code.
+///
+/// Returns `None` when the message is not an error that quotes a datagram, or
+/// when the quote is too short to name both endpoints — an ICMP error that
+/// cannot say WHICH host failed is not evidence about anything.
+fn icmp_quote(
+    timestamp: DateTime<Utc>,
+    data: &bytes::Bytes,
+    reporter: IpAddr,
+    reported_to: IpAddr,
+    msg: &IcmpMessage<'_>,
+) -> Option<IcmpQuote> {
+    let kind = icmp_error_kind(msg.icmp_type, msg.v6)?;
+    let q = if msg.v6 {
+        parse_quoted_ipv6(msg.payload)
+    } else {
+        parse_quoted_ipv4(msg.payload)
+    }?;
+    Some(IcmpQuote {
+        timestamp,
+        reporter,
+        reported_to,
+        kind,
+        icmp_type: msg.icmp_type,
+        icmp_code: msg.icmp_code,
+        quoted_src: q.src,
+        quoted_dst: q.dst,
+        quoted_protocol: q.protocol,
+        quoted_transport: q.transport,
+        quoted_src_port: q.src_port,
+        quoted_dst_port: q.dst_port,
+        quoted_payload: slice_of(data, q.payload),
+        quoted_truncated: q.truncated,
+    })
+}
+
+/// The outer IP addresses of a sliced packet, or `None` for ARP.
+fn net_addresses(net: &NetSlice<'_>) -> Option<(IpAddr, IpAddr)> {
+    match net {
+        NetSlice::Ipv4(v4) => Some((
+            IpAddr::V4(v4.header().source_addr()),
+            IpAddr::V4(v4.header().destination_addr()),
+        )),
+        NetSlice::Ipv6(v6) => Some((
+            IpAddr::V6(v6.header().source_addr()),
+            IpAddr::V6(v6.header().destination_addr()),
+        )),
+        NetSlice::Arp(_) => None,
+    }
+}
+
+/// Read the ICMP/ICMPv6 error in a raw captured packet, with the datagram it
+/// quotes.
+///
+/// The read-only counterpart to [`parse_packet`], which still rejects these
+/// packets with [`CaptureError::Icmp`]: an ICMP error is evidence ABOUT a
+/// message, so it must never become a `ParsedPacket` and inflate a message
+/// count. Encapsulation (IP-in-IP, 6in4, GRE) is stripped the same way
+/// `parse_packet` strips it, so a tunnelled ICMP error is read too.
+///
+/// # Returns
+///
+/// `None` for a non-ICMP packet, for an ICMP message that is not an error
+/// (echo, neighbour discovery), for ICMPv4 Redirect (a routing hint, not a
+/// failure), for a pre-parsed HEP packet (which carries no IP header to read),
+/// and for a quote too short to name both endpoints.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::capture::packet::Packet;
+/// use sipnab::capture::parse::{IcmpErrorKind, parse_icmp_error};
+///
+/// // Raw-IP (DLT_RAW = 12) ICMPv4 port-unreachable quoting a UDP datagram
+/// // sent 10.0.0.1:5060 -> 10.0.0.2:5060.
+/// let quoted: Vec<u8> = vec![
+///     0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, // IPv4, proto 17 (UDP)
+///     10, 0, 0, 1, 10, 0, 0, 2, //
+///     0x13, 0xc4, 0x13, 0xc4, 0, 8, 0, 0, // 5060 -> 5060
+/// ];
+/// let mut icmp = vec![3u8, 3, 0, 0, 0, 0, 0, 0]; // type 3, code 3
+/// icmp.extend_from_slice(&quoted);
+/// let mut frame: Vec<u8> = vec![
+///     0x45, 0, 0, 0, 0, 0, 0, 0, 64, 1, 0, 0, // IPv4, proto 1 (ICMP)
+///     203, 0, 113, 1, 10, 0, 0, 1, // router -> sender
+/// ];
+/// frame.extend_from_slice(&icmp);
+/// let total = frame.len() as u16;
+/// frame[2..4].copy_from_slice(&total.to_be_bytes());
+///
+/// let len = frame.len();
+/// let pkt = Packet::new(chrono::Utc::now(), frame, len, len, None, 12);
+/// let q = parse_icmp_error(&pkt).expect("an ICMP error");
+/// assert_eq!(q.kind, IcmpErrorKind::DestinationUnreachable);
+/// assert_eq!(q.description(), "port unreachable");
+/// // The endpoint that did not answer — not the router that said so.
+/// assert_eq!(q.quoted_dst.to_string(), "10.0.0.2");
+/// assert_eq!(q.quoted_dst_port, Some(5060));
+/// assert_eq!(q.reporter.to_string(), "203.0.113.1");
+/// ```
+pub fn parse_icmp_error(packet: &Packet) -> Option<IcmpQuote> {
+    // A pre-parsed (HEP) packet delivers a transport payload with addressing
+    // asserted out of band; there is no IP header, so there is no quote.
+    if packet.pre_parsed.is_some() {
+        return None;
+    }
+    let sliced = slice_link_layer(packet.link_type, &packet.data).ok()?;
+    icmp_from_sliced(packet.timestamp, &packet.data, &sliced, 0)
+}
+
+/// Walk `sliced` (stripping encapsulation) to an ICMP transport and decode it.
+fn icmp_from_sliced(
+    timestamp: DateTime<Utc>,
+    data: &bytes::Bytes,
+    sliced: &SlicedPacket<'_>,
+    depth: u8,
+) -> Option<IcmpQuote> {
+    let net = sliced.net.as_ref()?;
+    let ip_payload = net.ip_payload_ref()?;
+
+    if depth < MAX_ENCAP_DEPTH && !ip_payload.fragmented {
+        let inner = match ip_payload.ip_number {
+            IpNumber::IPV4 | IpNumber::IPV6 => Some(ip_payload.payload),
+            IpNumber::GRE => match gre_inner_offset(ip_payload.payload) {
+                Ok((ETHERTYPE_IPV4 | ETHERTYPE_IPV6, off)) => ip_payload.payload.get(off..),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(inner) = inner {
+            let s = SlicedPacket::from_ip(inner).ok()?;
+            return icmp_from_sliced(timestamp, data, &s, depth + 1);
+        }
+    }
+
+    let (reporter, reported_to) = net_addresses(net)?;
+    let msg = match sliced.transport.as_ref()? {
+        TransportSlice::Icmpv4(icmp) => IcmpMessage {
+            icmp_type: icmp.type_u8(),
+            icmp_code: icmp.code_u8(),
+            payload: icmp.payload(),
+            v6: false,
+        },
+        TransportSlice::Icmpv6(icmp) => IcmpMessage {
+            icmp_type: icmp.type_u8(),
+            icmp_code: icmp.code_u8(),
+            payload: icmp.payload(),
+            v6: true,
+        },
+        _ => return None,
+    };
+    icmp_quote(timestamp, data, reporter, reported_to, &msg)
+}
+
 // ── DLT constants ─────────────────────────────────────────────────────
 
 /// Pcap link type for Ethernet II (DLT_EN10MB).
@@ -799,6 +1354,50 @@ fn parse_inner_ip(
     extract_parsed_packet(timestamp, data, net, &sliced.transport)
 }
 
+/// The inner protocol and the offset the inner packet starts at, from a GRE
+/// header's flags and its optional checksum / key / sequence fields.
+///
+/// Factored out of [`parse_gre`] because the ICMP walker needs to reach the
+/// same inner packet, and two copies of this arithmetic would be two places
+/// for a tunnelled packet's start offset to drift.
+///
+/// # Errors
+///
+/// `TooShort` for a header truncated before its base or its optional fields.
+fn gre_inner_offset(gre_data: &[u8]) -> Result<(u16, usize), CaptureError> {
+    if gre_data.len() < GRE_HEADER_MIN {
+        return Err(CaptureError::TooShort {
+            what: "GRE header",
+            need: GRE_HEADER_MIN,
+            got: gre_data.len(),
+        });
+    }
+
+    let flags = u16::from_be_bytes([gre_data[0], gre_data[1]]);
+    let protocol = u16::from_be_bytes([gre_data[2], gre_data[3]]);
+
+    // Calculate variable header length based on optional fields
+    let mut offset = GRE_HEADER_MIN;
+    if flags & GRE_FLAG_CHECKSUM != 0 {
+        offset += 4; // checksum (2) + reserved (2)
+    }
+    if flags & GRE_FLAG_KEY != 0 {
+        offset += 4;
+    }
+    if flags & GRE_FLAG_SEQ != 0 {
+        offset += 4;
+    }
+
+    if gre_data.len() < offset {
+        return Err(CaptureError::TooShort {
+            what: "GRE optional fields",
+            need: offset,
+            got: gre_data.len(),
+        });
+    }
+    Ok((protocol, offset))
+}
+
 /// Parse a GRE-encapsulated packet.
 ///
 /// Strips the GRE header (variable length based on flags) and re-parses
@@ -833,37 +1432,7 @@ fn parse_gre(
             limit: MAX_ENCAP_DEPTH,
         });
     }
-    if gre_data.len() < GRE_HEADER_MIN {
-        return Err(CaptureError::TooShort {
-            what: "GRE header",
-            need: GRE_HEADER_MIN,
-            got: gre_data.len(),
-        });
-    }
-
-    let flags = u16::from_be_bytes([gre_data[0], gre_data[1]]);
-    let protocol = u16::from_be_bytes([gre_data[2], gre_data[3]]);
-
-    // Calculate variable header length based on optional fields
-    let mut offset = GRE_HEADER_MIN;
-    if flags & GRE_FLAG_CHECKSUM != 0 {
-        offset += 4; // checksum (2) + reserved (2)
-    }
-    if flags & GRE_FLAG_KEY != 0 {
-        offset += 4;
-    }
-    if flags & GRE_FLAG_SEQ != 0 {
-        offset += 4;
-    }
-
-    if gre_data.len() < offset {
-        return Err(CaptureError::TooShort {
-            what: "GRE optional fields",
-            need: offset,
-            got: gre_data.len(),
-        });
-    }
-
+    let (protocol, offset) = gre_inner_offset(gre_data)?;
     let inner = &gre_data[offset..];
 
     match protocol {
@@ -886,6 +1455,13 @@ fn parse_gre(
 ///
 /// Returns `NotIp` for ARP, `NoTransport` when a non-fragment packet lacks
 /// a transport slice, and `Icmp` for ICMPv4/v6 traffic.
+///
+/// # Side effects
+///
+/// An ICMP/ICMPv6 *error* is recorded as evidence via
+/// [`crate::pipeline::record_icmp_error`] before the `Icmp` error is returned
+/// — see the comment on that arm for why the recording lives here. Nothing
+/// else in this function touches shared state.
 fn extract_parsed_packet(
     timestamp: DateTime<Utc>,
     data: &bytes::Bytes,
@@ -1058,7 +1634,54 @@ fn extract_parsed_packet(
             ip_protocol,
             from_hep: false,
         }),
-        TransportSlice::Icmpv4(_) | TransportSlice::Icmpv6(_) => Err(CaptureError::Icmp),
+        // ICMP is still not a `ParsedPacket` — it carries no message, and
+        // making one would put a header prefix into message counts and dialog
+        // ladders. But the error it reports is the most diagnostic thing in
+        // the capture, so the quoted datagram is recorded as EVIDENCE on the
+        // way past.
+        //
+        // Recording here, rather than at the call sites, is deliberate. Every
+        // path into the parser funnels through this arm — file, live, HEP,
+        // `--cores`, and each encapsulation layer — so this is the one place
+        // that cannot be forgotten. It is also the only place that is correct
+        // under `--cores`: sharding routes packets by outer host pair, and an
+        // ICMP error's outer pair is (router, sender), which is a different
+        // pair from the dialog it is evidence about. Per-worker state would
+        // scatter the evidence away from the dialog; the process-global store
+        // in `pipeline` does not care which worker saw it.
+        //
+        // The cost is confined to ICMP: the arm is only reached for IP
+        // protocol 1 and 58, so the UDP/TCP hot paths never touch the lock.
+        TransportSlice::Icmpv4(_) | TransportSlice::Icmpv6(_) => {
+            // Only the recording below consumes this, and wasm does not build
+            // the store it records into — so on wasm the binding is genuinely
+            // unused rather than accidentally so.
+            #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+            let msg = match transport_slice {
+                TransportSlice::Icmpv4(icmp) => IcmpMessage {
+                    icmp_type: icmp.type_u8(),
+                    icmp_code: icmp.code_u8(),
+                    payload: icmp.payload(),
+                    v6: false,
+                },
+                TransportSlice::Icmpv6(icmp) => IcmpMessage {
+                    icmp_type: icmp.type_u8(),
+                    icmp_code: icmp.code_u8(),
+                    payload: icmp.payload(),
+                    v6: true,
+                },
+                // Unreachable: the outer arm already matched only ICMP.
+                _ => return Err(CaptureError::Icmp),
+            };
+            // The evidence store lives in `pipeline`, which wasm does not
+            // build. Parsing the quote is not native-only: a wasm build still
+            // decodes it correctly, it just has nowhere to file it.
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(q) = icmp_quote(timestamp, data, src_addr, dst_addr, &msg) {
+                crate::pipeline::record_icmp_error(&q);
+            }
+            Err(CaptureError::Icmp)
+        }
         // IGMP (etherparse 0.21) is multicast group management, not ICMP, so it
         // reports as "not UDP/TCP" rather than borrowing the ICMP error.
         TransportSlice::Igmp(_) => Err(CaptureError::NoTransport),
@@ -2196,4 +2819,62 @@ mod tests {
         assert!(parsed.more_fragments);
         assert_eq!(parsed.ip_protocol, 17); // UDP, after the fragment header
     }
+}
+
+/// What one ICMP error says about one SIP request that went unanswered.
+///
+/// The two addresses are the point of the type. `unreachable_addr` is the
+/// quoted datagram's destination — the endpoint that did not answer, and the
+/// address a finding should name. `reported_by` is the ICMP message's own
+/// source — the router or host that noticed, which is frequently a different
+/// device and is not itself faulty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IcmpEvidence {
+    /// Capture time of the ICMP error.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// The endpoint that did not answer: the quoted datagram's destination.
+    pub unreachable_addr: std::net::IpAddr,
+    /// The port that was not listening, when the quote reached the transport
+    /// header. `None` for a quote truncated before it.
+    pub unreachable_port: Option<u16>,
+    /// Who reported the failure: the ICMP message's source. A router on the
+    /// path, not necessarily `unreachable_addr`.
+    pub reported_by: std::net::IpAddr,
+    /// Raw ICMP type byte.
+    pub icmp_type: u8,
+    /// Raw ICMP code byte.
+    pub icmp_code: u8,
+    /// The network's own words for this type/code, e.g. `port unreachable`.
+    pub description: &'static str,
+    /// `Call-ID` recovered from the quoted prefix. `None` when the quote
+    /// stopped before that header, which makes the evidence unattributable —
+    /// counted, never silently dropped.
+    pub call_id: Option<String>,
+    /// Method of the quoted request, when its start line was quoted.
+    pub method: Option<String>,
+    /// `CSeq` header of the quoted request, verbatim, when quoted.
+    pub cseq: Option<String>,
+    /// Whether the quote is known to be shorter than the datagram it quotes.
+    pub truncated: bool,
+    /// Bytes of the original SIP message the quote actually carried.
+    pub quoted_bytes: usize,
+}
+
+/// Every ICMP error recorded against one dialog.
+///
+/// `errors` is exact; `samples` is capped. Two fields rather than one `Vec`
+/// because a corpus run showed the difference mattering: 720 of 3,232 real
+/// errors fell past the per-dialog sample cap, and a finding that counted the
+/// retained samples would have reported "8 times" for a peer that failed
+/// thirty. The count is what a reader acts on; the samples are what shows
+/// them one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DialogIcmpEvidence {
+    /// How many ICMP errors quoted this dialog's requests. Exact, whatever the
+    /// retention cap.
+    pub errors: u64,
+    /// Retained errors, oldest first, capped by `pipeline::MAX_ICMP_PER_CALL_ID`
+    /// (not linkable from here: the cap lives with the store, this is the type
+    /// the store hands back, and wasm builds this without building that).
+    pub samples: Vec<IcmpEvidence>,
 }

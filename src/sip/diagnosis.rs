@@ -271,6 +271,52 @@ impl Default for SignalingThresholds {
     }
 }
 
+/// The network said, in so many words, that the far end was not there.
+///
+/// Every other detection in this module reads intent out of what the endpoints
+/// did or did not send. This one reads a statement: an ICMP error quoting one
+/// of this dialog's own requests is the network reporting that the datagram
+/// could not be delivered. It is the only evidence here that licenses a claim
+/// about reachability, which is why `registration_failure` and `abandoned` are
+/// careful never to make one on their own.
+///
+/// The two addresses are separate fields on purpose. `unreachable_endpoint` is
+/// the socket that did not answer — the thing to go and look at.
+/// `reported_by` is the router or host that noticed and said so, which is
+/// usually a working device on the path and must never be reported as the
+/// fault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IcmpUnreachable {
+    /// The network's own words, e.g. `port unreachable`.
+    pub description: String,
+    /// Raw ICMP type byte, so an unusual code is still traceable.
+    pub icmp_type: u8,
+    /// Raw ICMP code byte.
+    pub icmp_code: u8,
+    /// `address:port` of the endpoint that did not answer, or the bare address
+    /// when the quote stopped before the transport header.
+    pub unreachable_endpoint: String,
+    /// Address of the device that reported the failure. Not the fault.
+    pub reported_by: String,
+    /// Method of the quoted request, when its start line was quoted.
+    pub method: Option<String>,
+    /// How many such errors were seen for this dialog. Exact — not the number
+    /// of quotes retained, which is capped.
+    pub errors: usize,
+    /// Whether the quote sipnab read was shorter than the datagram it quoted.
+    /// True is the ordinary case — RFC 792 guarantees only 8 bytes past the IP
+    /// header — and is carried so a reader knows the quote is a prefix.
+    pub truncated: bool,
+    /// Indices of the dialog messages the quotes refer to, matched by `CSeq`
+    /// and destination. Empty when the quote carried too little to identify
+    /// one, which is a statement about the quote, not about the dialog.
+    ///
+    /// Drawn from the retained quotes only, so on a dialog hit more times than
+    /// the retention cap this names fewer messages than `errors` counts. That
+    /// under-states the evidence, which is the safe direction.
+    pub evidence: Vec<usize>,
+}
+
 /// One dialog's signalling diagnosis.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SignalingDiagnosis {
@@ -288,6 +334,15 @@ pub struct SignalingDiagnosis {
     pub post_dial_delay: Option<PostDialDelay>,
     /// Detection 7 — a `REGISTER` that failed or was cut short.
     pub registration_failure: Option<RegistrationFailure>,
+    /// Detection 8 — an ICMP error quoting one of this dialog's requests.
+    ///
+    /// Omitted from serialized output when absent, unlike the seven above:
+    /// those are always checked, so `null` means "checked, not found". This
+    /// one can only be checked when the capture holds ICMP at all, and a
+    /// `null` on a capture that had none would read as "checked" when nothing
+    /// was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icmp_unreachable: Option<IcmpUnreachable>,
     /// Plain-language lines, one per detection, so that surfaces rendering one
     /// line per problem do not each re-invent the phrasing.
     pub hints: Vec<String>,
@@ -310,6 +365,7 @@ impl SignalingDiagnosis {
             abandoned,
             post_dial_delay,
             registration_failure,
+            icmp_unreachable,
             hints: _,
         } = self;
         final_failure.is_none()
@@ -319,6 +375,7 @@ impl SignalingDiagnosis {
             && abandoned.is_none()
             && post_dial_delay.is_none()
             && registration_failure.is_none()
+            && icmp_unreachable.is_none()
     }
 }
 
@@ -340,8 +397,19 @@ type TransactionKey = (u32, String, String);
 /// Diagnose the signalling side of one dialog.
 ///
 /// Takes the dialog's messages in capture order; every evidence index returned
-/// points into that slice. Pure, like `diagnose_media`, so it can be called from
-/// any surface and tested without a capture.
+/// points into that slice. Detections 1-7 are pure functions of `messages`,
+/// like `diagnose_media`, so they can be called from any surface and tested
+/// without a capture.
+///
+/// Detection 8 additionally reads any ICMP error the capture held against this
+/// dialog's `Call-ID` (see [`crate::pipeline::icmp_evidence_for`]). That
+/// evidence is part of the same capture as the messages — an ICMP error is not
+/// a `ParsedPacket`, so it cannot arrive through the `messages` slice, and
+/// threading it through every caller would leave the most diagnostic packet in
+/// a capture unread by every existing surface. A run that recorded no ICMP —
+/// every unit test here, and any capture without ICMP — behaves exactly as it
+/// did before detection 8 existed. Use [`diagnose_signaling_with_evidence`]
+/// when the evidence should be supplied explicitly.
 pub fn diagnose_signaling(messages: &[SipMessage]) -> SignalingDiagnosis {
     diagnose_signaling_with(messages, &SignalingThresholds::default())
 }
@@ -356,6 +424,37 @@ pub fn diagnose_signaling_with(
     messages: &[SipMessage],
     thresholds: &SignalingThresholds,
 ) -> SignalingDiagnosis {
+    // One relaxed atomic load when the capture held no ICMP, which is the
+    // common case: no allocation and no lock. The store is not built for wasm,
+    // where a build diagnoses everything else exactly as before and simply has
+    // no ICMP evidence to draw on.
+    #[cfg(not(target_arch = "wasm32"))]
+    let icmp = messages
+        .iter()
+        .find_map(|m| m.call_id())
+        .map(crate::pipeline::icmp_evidence_for)
+        .unwrap_or_default();
+    #[cfg(target_arch = "wasm32")]
+    let icmp = Default::default();
+    diagnose_signaling_with_evidence(messages, thresholds, &icmp)
+}
+
+/// Diagnose one dialog against explicit thresholds and explicit ICMP evidence.
+///
+/// The pure form: given the same `messages` and `icmp`, the result is the
+/// same. `diagnose_signaling_with` is this with the evidence looked up from
+/// the capture-wide store.
+///
+/// # Arguments
+///
+/// * `messages` — the dialog's messages in capture order.
+/// * `thresholds` — protocol timers governing detections 4-6.
+/// * `icmp` — ICMP errors quoting this dialog's requests. Empty is normal.
+pub fn diagnose_signaling_with_evidence(
+    messages: &[SipMessage],
+    thresholds: &SignalingThresholds,
+    icmp: &crate::capture::parse::DialogIcmpEvidence,
+) -> SignalingDiagnosis {
     let mut diag = SignalingDiagnosis::default();
 
     detect_final_failure(messages, &mut diag);
@@ -365,8 +464,87 @@ pub fn diagnose_signaling_with(
     detect_abandoned(messages, &mut diag, thresholds);
     detect_post_dial_delay(messages, &mut diag, thresholds);
     detect_registration_failure(messages, &mut diag);
+    detect_icmp_unreachable(messages, &mut diag, icmp);
 
     diag
+}
+
+/// Detection 8 — the network reported that a request could not be delivered.
+///
+/// Unlike every detection above it, this one does not infer: an ICMP error is
+/// the network stating a cause. The finding therefore names the endpoint the
+/// quoted datagram was addressed to, and names the reporter separately — the
+/// two are frequently different hosts, and blaming the reporter would point an
+/// operator at a device that is working correctly.
+///
+/// All the evidence is about one dialog, so it collapses to one finding: the
+/// most recent error, with the total count. Message indices are matched by
+/// `CSeq` and destination address; a quote too short to carry a `CSeq` yields
+/// a finding with no indices rather than a guessed one.
+fn detect_icmp_unreachable(
+    messages: &[SipMessage],
+    diag: &mut SignalingDiagnosis,
+    icmp: &crate::capture::parse::DialogIcmpEvidence,
+) {
+    let Some(last) = icmp.samples.last() else {
+        return;
+    };
+
+    // Which of this dialog's messages the quotes were about. A quote carries
+    // the CSeq of the request that failed; the destination address rules out a
+    // same-CSeq message sent the other way.
+    let mut evidence: Vec<usize> = Vec::new();
+    for e in &icmp.samples {
+        let Some(cseq) = e.cseq.as_deref() else {
+            continue;
+        };
+        for (i, m) in messages.iter().enumerate() {
+            if m.is_request
+                && m.dst_addr == e.unreachable_addr
+                && m.header("CSeq").is_some_and(|v| v.trim() == cseq.trim())
+                && !evidence.contains(&i)
+            {
+                evidence.push(i);
+            }
+        }
+    }
+    evidence.sort_unstable();
+
+    let endpoint = match last.unreachable_port {
+        Some(port) => format!("{}:{}", last.unreachable_addr, port),
+        None => last.unreachable_addr.to_string(),
+    };
+    let truncated = icmp.samples.iter().any(|e| e.truncated);
+
+    // The exact count, not the number of retained samples: a peer that failed
+    // thirty times must not be reported as failing eight.
+    let errors = usize::try_from(icmp.errors).unwrap_or(usize::MAX);
+    let occurrences = if errors == 1 {
+        String::new()
+    } else {
+        format!(" ({errors} times)")
+    };
+    let what = match &last.method {
+        Some(m) => format!("the {m} sent to {endpoint}"),
+        None => format!("a request sent to {endpoint}"),
+    };
+    diag.hints.push(format!(
+        "ICMP {}: the network could not deliver {what}{occurrences}, reported by {}. \
+         The endpoint was not reachable on that port — this is not a timeout.",
+        last.description, last.reported_by,
+    ));
+
+    diag.icmp_unreachable = Some(IcmpUnreachable {
+        description: last.description.to_string(),
+        icmp_type: last.icmp_type,
+        icmp_code: last.icmp_code,
+        unreachable_endpoint: endpoint,
+        reported_by: last.reported_by.to_string(),
+        method: last.method.clone(),
+        errors,
+        truncated,
+        evidence,
+    });
 }
 
 /// Elapsed seconds between two messages, by index.

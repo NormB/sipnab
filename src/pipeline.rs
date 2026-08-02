@@ -234,6 +234,424 @@ pub fn reset_portrange_skips() {
     *PORTRANGE_SKIPS.lock() = PortrangeSkips::new();
 }
 
+// ── What ICMP said ───────────────────────────────────────────────────
+//
+// An ICMP error quoting a SIP request is the one packet in a capture that
+// states a cause rather than implying one. sipnab dropped all of them: across
+// five files of one real corpus, 3,232 SIP requests were quoted inside ICMP
+// errors and appeared in no output at all, while the calls they belonged to
+// were reported as "unanswered" with no explanation.
+//
+// This is where those quotes become evidence about a dialog. Three rules shape
+// it, and each exists because the obvious alternative is wrong:
+//
+//   * **A quote is not a message.** It is a prefix — RFC 792 guarantees only
+//     the original IP header plus 8 bytes — so it is never parsed as SIP,
+//     never counted, and never appended to a dialog's `messages`. The message
+//     totals sipnab prints are unchanged by this feature, which is what makes
+//     the `analysed + skipped` reconciliation still mean what it says.
+//   * **Unattributable evidence is reported, not dropped.** A quote that stops
+//     before the `Call-ID` header cannot name a dialog. Discarding it would
+//     hide the fact that the network answered; it is counted as unattributed
+//     and its unreachable endpoint is still named.
+//   * **The store is global.** Two closed doors and one open one: `--cores`
+//     shards packets by outer host pair, and an ICMP error's host pair is
+//     (router, sender) — a different pair from the dialog it describes, so
+//     per-worker state would file the evidence under the wrong worker. A
+//     process-global store keyed by `Call-ID` is indifferent to which thread
+//     saw the packet. It is the same reasoning, and the same `Mutex`-only-
+//     when-it-fires cost, as the portrange tally above.
+
+pub use crate::capture::parse::{DialogIcmpEvidence, IcmpEvidence};
+
+/// One endpoint that ICMP said was unreachable, with how often.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreachableEndpoint {
+    /// The endpoint that did not answer.
+    pub addr: std::net::IpAddr,
+    /// Its port, when any quote reached the transport header.
+    pub port: Option<u16>,
+    /// How many ICMP errors named it.
+    pub errors: u64,
+    /// The most recent error's description.
+    pub description: &'static str,
+}
+
+/// What ICMP reported about this run's SIP traffic.
+///
+/// Empty when no ICMP error quoting SIP was seen, which is the common case for
+/// a healthy capture. Report it beside dialog counts: an unanswered call with
+/// an ICMP error against its destination is not an unanswered call, it is a
+/// closed port, and only this report knows the difference.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IcmpEvidenceReport {
+    /// ICMP errors quoting a SIP request.
+    pub errors: u64,
+    /// How many named a `Call-ID` and were attributed to a dialog.
+    pub attributed: u64,
+    /// How many quoted too little to name a `Call-ID`. The evidence is real;
+    /// only the dialog is unknown.
+    ///
+    /// `attributed + unattributed == errors`, always.
+    pub unattributed: u64,
+    /// Errors whose `Call-ID` was never tracked, because the store already
+    /// held [`MAX_ICMP_CALL_IDS`] distinct dialogs. These reach no dialog's
+    /// diagnosis; a non-zero value here means some calls carry an ICMP cause
+    /// that is not shown against them.
+    pub untracked_dialogs: u64,
+    /// Errors whose unreachable endpoint was not tallied, because the store
+    /// already held [`MAX_ICMP_ENDPOINTS`] distinct endpoints. These are
+    /// missing from `endpoints`.
+    ///
+    /// `endpoints.map(errors).sum() + untallied_endpoints == errors`, always.
+    pub untallied_endpoints: u64,
+    /// Endpoints ICMP named unreachable, busiest first.
+    pub endpoints: Vec<UnreachableEndpoint>,
+}
+
+/// Retained ICMP evidence, plus the counters that stay exact past the caps.
+struct IcmpEvidenceStore {
+    /// Evidence that named a `Call-ID`, keyed by it.
+    by_call_id: std::collections::HashMap<String, DialogIcmpEvidence>,
+    /// Per-endpoint tally, so an unattributable quote still names the host
+    /// that failed.
+    endpoints: std::collections::HashMap<(std::net::IpAddr, Option<u16>), UnreachableEndpoint>,
+    /// Exact totals, unaffected by the retention caps below.
+    errors: u64,
+    /// Errors that named a `Call-ID`.
+    attributed: u64,
+    /// Errors whose quote stopped before the `Call-ID` header.
+    unattributed: u64,
+    /// Errors whose `Call-ID` was never tracked (dialog cap).
+    untracked_dialogs: u64,
+    /// Errors whose endpoint was never tallied (endpoint cap).
+    untallied_endpoints: u64,
+}
+
+/// Distinct `Call-ID`s the store retains evidence for.
+///
+/// A capture can hold millions of ICMP errors; the totals stay exact past
+/// this, and `IcmpEvidenceReport::untracked_dialogs` says how many dialogs
+/// were not tracked at all. 10,000 dialogs of evidence is roughly a megabyte
+/// and covers any capture a human reads.
+pub const MAX_ICMP_CALL_IDS: usize = 10_000;
+
+/// Errors retained per `Call-ID`. Past this the per-dialog COUNT still rises —
+/// only the retained detail stops, because the ninth quote against one dialog
+/// shows nothing the first eight did not.
+pub const MAX_ICMP_PER_CALL_ID: usize = 8;
+
+/// Distinct endpoints retained in the report.
+pub const MAX_ICMP_ENDPOINTS: usize = 4_096;
+
+impl IcmpEvidenceStore {
+    /// Empty store.
+    fn new() -> Self {
+        Self {
+            by_call_id: std::collections::HashMap::new(),
+            endpoints: std::collections::HashMap::new(),
+            errors: 0,
+            attributed: 0,
+            unattributed: 0,
+            untracked_dialogs: 0,
+            untallied_endpoints: 0,
+        }
+    }
+}
+
+/// Process-global ICMP evidence. See the note above for why it is global.
+static ICMP_EVIDENCE: parking_lot::Mutex<Option<Box<IcmpEvidenceStore>>> =
+    parking_lot::Mutex::new(None);
+
+/// Whether any ICMP evidence has been recorded, readable without the lock.
+///
+/// Every dialog diagnosis consults the store, and the overwhelming majority of
+/// captures hold no ICMP at all — so the common path must not take a mutex per
+/// dialog per render. One relaxed load answers it.
+static ICMP_EVIDENCE_SEEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// A SIP request start line and the headers an ICMP quote reached.
+///
+/// Deliberately not a [`sip::message::SipMessage`]: the input is a prefix that
+/// usually stops mid-message, and producing a `SipMessage` from it would
+/// create something that could be counted, matched, or appended to a dialog.
+/// This type cannot be mistaken for a message because it is not one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotedSipPrefix {
+    /// The request method from the start line.
+    pub method: String,
+    /// `Call-ID`, when the quote reached that header. `None` is the RFC 792
+    /// case, not a parse failure.
+    pub call_id: Option<String>,
+    /// `CSeq` header value, when quoted.
+    pub cseq: Option<String>,
+}
+
+/// Read what a truncated ICMP quote reveals about the SIP request it holds.
+///
+/// The quote is a prefix, so this reads what is there and stops: a start line
+/// that has not been terminated yet is still enough to know the method, and a
+/// `Call-ID` that has been terminated is safe to use even though the message
+/// itself never completes.
+///
+/// # Returns
+///
+/// `None` when `prefix` does not begin with a SIP request start line — an ICMP
+/// error about an RTP packet, a DNS query, or a SIP *response* (a response is
+/// not something an endpoint failed to receive on our behalf; the request it
+/// answers is what the capture already holds).
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::pipeline::quoted_sip_prefix;
+///
+/// // RFC 1812-sized quote: the request line and some headers survived.
+/// let q = b"OPTIONS sip:peer@example.net SIP/2.0\r\n\
+///           Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
+///           Call-ID: keepalive-7@192.0.2.1\r\n\
+///           CSeq: 4 OPTI";
+/// let p = quoted_sip_prefix(q).expect("a SIP request prefix");
+/// assert_eq!(p.method, "OPTIONS");
+/// assert_eq!(p.call_id.as_deref(), Some("keepalive-7@192.0.2.1"));
+/// // The CSeq line was cut before its terminator, so it is not claimed.
+/// assert_eq!(p.cseq, None);
+///
+/// // RFC 792 minimum: nothing of the message was quoted at all.
+/// assert!(quoted_sip_prefix(b"").is_none());
+/// ```
+pub fn quoted_sip_prefix(prefix: &[u8]) -> Option<QuotedSipPrefix> {
+    // The start line, terminated or not. A method is a token followed by a
+    // space and a URI; requiring the ` SIP/2.0` version token as
+    // `starts_sip_message` does would reject exactly the short quotes this
+    // exists to read.
+    let line_end = prefix
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .unwrap_or(prefix.len());
+    let start_line = prefix.get(..line_end)?;
+    let mut parts = start_line.splitn(3, |&b| b == b' ');
+    let method = parts.next()?;
+    let uri = parts.next().unwrap_or(b"");
+
+    // A method token is uppercase ASCII letters (RFC 3261 §7.1 permits an
+    // extension-method, which is still a token), and the request URI of a SIP
+    // request is a `sip:`, `sips:` or `tel:` URI. Both together are strict
+    // enough that RTP, DNS and TLS records do not qualify.
+    if method.is_empty()
+        || !method.iter().all(|b| b.is_ascii_uppercase())
+        || !(uri.starts_with(b"sip:") || uri.starts_with(b"sips:") || uri.starts_with(b"tel:"))
+    {
+        return None;
+    }
+
+    Some(QuotedSipPrefix {
+        method: String::from_utf8_lossy(method).into_owned(),
+        call_id: quoted_header(prefix, b"call-id", Some(b'i')),
+        cseq: quoted_header(prefix, b"cseq", None),
+    })
+}
+
+/// Read one header out of a truncated SIP prefix, or `None` if the quote ended
+/// before the header's own terminator.
+///
+/// The terminator matters: a `Call-ID` whose line was cut mid-value would
+/// otherwise be filed as a shorter, different `Call-ID` and attributed to no
+/// dialog — or worse, to the wrong one.
+fn quoted_header(prefix: &[u8], name: &[u8], compact: Option<u8>) -> Option<String> {
+    let mut at = 0usize;
+    while at < prefix.len() {
+        let rest = &prefix[at..];
+        let line_len = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .or_else(|| rest.iter().position(|&b| b == b'\n'))?;
+        let line = &rest[..line_len];
+        if let Some(colon) = line.iter().position(|&b| b == b':') {
+            let field = line[..colon].trim_ascii();
+            let matches_long = field.len() == name.len()
+                && field
+                    .iter()
+                    .zip(name)
+                    .all(|(a, b)| a.to_ascii_lowercase() == *b);
+            let matches_compact =
+                compact.is_some_and(|c| field.len() == 1 && field[0].to_ascii_lowercase() == c);
+            if matches_long || matches_compact {
+                let value = line[colon + 1..].trim_ascii();
+                if value.is_empty() {
+                    return None;
+                }
+                return Some(String::from_utf8_lossy(value).into_owned());
+            }
+        }
+        // Past the line and its CRLF. An empty line ends the headers.
+        if line.is_empty() {
+            return None;
+        }
+        at += line_len
+            + if rest.get(line_len) == Some(&b'\r') {
+                2
+            } else {
+                1
+            };
+    }
+    None
+}
+
+/// Record one ICMP error as evidence about a SIP request.
+///
+/// Called from the ICMP arm of the packet parser, which is the only place
+/// every capture path passes through. Errors whose quote is not a SIP request
+/// — media, DNS, anything else — are not SIP evidence and are ignored here;
+/// they remain visible to [`crate::capture::parse::parse_icmp_error`] for a
+/// caller that wants them.
+///
+/// # Returns
+///
+/// `true` when the error was recorded as SIP evidence.
+///
+/// # Side effects
+///
+/// Takes the process-global evidence lock, which is only ever contended by
+/// other ICMP errors.
+pub fn record_icmp_error(quote: &crate::capture::parse::IcmpQuote) -> bool {
+    let Some(sip) = quoted_sip_prefix(&quote.quoted_payload) else {
+        return false;
+    };
+
+    let evidence = IcmpEvidence {
+        timestamp: quote.timestamp,
+        // The quoted datagram's DESTINATION, never the ICMP source: the former
+        // did not answer, the latter is the device that noticed.
+        unreachable_addr: quote.quoted_dst,
+        unreachable_port: quote.quoted_dst_port,
+        reported_by: quote.reporter,
+        icmp_type: quote.icmp_type,
+        icmp_code: quote.icmp_code,
+        description: quote.description(),
+        call_id: sip.call_id.clone(),
+        method: Some(sip.method),
+        cseq: sip.cseq,
+        truncated: quote.quoted_truncated,
+        quoted_bytes: quote.quoted_payload.len(),
+    };
+
+    let mut guard = ICMP_EVIDENCE.lock();
+    let store = guard.get_or_insert_with(|| Box::new(IcmpEvidenceStore::new()));
+    store.errors += 1;
+
+    let endpoint_key = (evidence.unreachable_addr, evidence.unreachable_port);
+    let endpoints_full = store.endpoints.len() >= MAX_ICMP_ENDPOINTS;
+    if let Some(e) = store.endpoints.get_mut(&endpoint_key) {
+        e.errors += 1;
+        e.description = evidence.description;
+    } else if endpoints_full {
+        store.untallied_endpoints += 1;
+    } else {
+        store.endpoints.insert(
+            endpoint_key,
+            UnreachableEndpoint {
+                addr: evidence.unreachable_addr,
+                port: evidence.unreachable_port,
+                errors: 1,
+                description: evidence.description,
+            },
+        );
+    }
+
+    match &evidence.call_id {
+        Some(call_id) => {
+            store.attributed += 1;
+            let call_ids_full = store.by_call_id.len() >= MAX_ICMP_CALL_IDS;
+            if let Some(d) = store.by_call_id.get_mut(call_id) {
+                // The count is exact whatever the sample cap does — a dialog
+                // hit thirty times must not be reported as hit eight.
+                d.errors += 1;
+                if d.samples.len() < MAX_ICMP_PER_CALL_ID {
+                    d.samples.push(evidence);
+                }
+            } else if call_ids_full {
+                store.untracked_dialogs += 1;
+            } else {
+                store.by_call_id.insert(
+                    call_id.clone(),
+                    DialogIcmpEvidence {
+                        errors: 1,
+                        samples: vec![evidence],
+                    },
+                );
+            }
+        }
+        // The quote stopped before the Call-ID header. The endpoint tally
+        // above already holds what this error proves; only the dialog is
+        // unknown, and the report says so rather than the error vanishing.
+        None => store.unattributed += 1,
+    }
+
+    ICMP_EVIDENCE_SEEN.store(true, std::sync::atomic::Ordering::Release);
+    true
+}
+
+/// Every ICMP error recorded against one `Call-ID`.
+///
+/// All-zero when the dialog drew no ICMP error, which is the answer for almost
+/// every dialog — so this costs one relaxed atomic load and no lock until a
+/// capture actually contains ICMP.
+pub fn icmp_evidence_for(call_id: &str) -> DialogIcmpEvidence {
+    if !ICMP_EVIDENCE_SEEN.load(std::sync::atomic::Ordering::Acquire) {
+        return DialogIcmpEvidence::default();
+    }
+    let guard = ICMP_EVIDENCE.lock();
+    guard
+        .as_ref()
+        .and_then(|s| s.by_call_id.get(call_id))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// What ICMP reported about this run's SIP traffic.
+///
+/// # Returns
+///
+/// An [`IcmpEvidenceReport`] with exact totals and every unreachable endpoint,
+/// busiest first. All zeroes when no ICMP error quoted a SIP request.
+pub fn icmp_evidence_report() -> IcmpEvidenceReport {
+    let guard = ICMP_EVIDENCE.lock();
+    let Some(store) = guard.as_ref() else {
+        return IcmpEvidenceReport::default();
+    };
+    let mut endpoints: Vec<UnreachableEndpoint> = store.endpoints.values().cloned().collect();
+    // Busiest first; ties by address then port so the report is deterministic.
+    endpoints.sort_unstable_by(|a, b| {
+        b.errors
+            .cmp(&a.errors)
+            .then(a.addr.cmp(&b.addr))
+            .then(a.port.cmp(&b.port))
+    });
+    IcmpEvidenceReport {
+        errors: store.errors,
+        attributed: store.attributed,
+        unattributed: store.unattributed,
+        untracked_dialogs: store.untracked_dialogs,
+        untallied_endpoints: store.untallied_endpoints,
+        endpoints,
+    }
+}
+
+/// Discard all recorded ICMP evidence.
+///
+/// The store is process-global, so a process analysing several captures in
+/// sequence — and a test asserting on the counts — needs a way back to zero.
+///
+/// # Side effects
+///
+/// Frees the store and re-arms the no-evidence fast path.
+pub fn reset_icmp_evidence() {
+    *ICMP_EVIDENCE.lock() = None;
+    ICMP_EVIDENCE_SEEN.store(false, std::sync::atomic::Ordering::Release);
+}
+
 /// Extract the RTP-stream link tuples `(media_ip, media_port, call_id, media)`
 /// from an SDP offer/answer, one per `m=` line with a resolvable connection
 /// address (media-level `c=`, else the session `c=`). Media without an address
