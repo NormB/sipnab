@@ -222,7 +222,7 @@ messages it drew on as indices into the dialog's own message list:
 |---|---|
 | `final_failure` | The dialog ended on a `4xx`/`5xx`/`6xx`. Carries `code`, `reason_phrase`, and the `Reason:` (RFC 3326) and `Warning:` headers when present, which frequently hold the real cause behind a generic status code. |
 | `auth_loop` | Three or more `401`/`407` challenges with no `2xx`. `kind` is `credential_failure` when the client answers each challenge and is re-challenged, or `silent_drop` when it never sends `Authorization` at all — different faults with different fixes. |
-| `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `method`, `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. |
+| `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `method`, `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. `icmp_cause` is present only when the capture also held an ICMP error for the dialog, and carries the network's own words for the silence — see below. |
 | `ack_missing` | A `2xx` answer to an `INVITE` that no `ACK` followed, once the observation window passed RFC 3261 Timer H (32 s). Carries `waited_sec` and `answer_transmissions` — a UAS retransmits its answer until Timer H, so a count above one is the peer agreeing the `ACK` never arrived. |
 | `abandoned` | The dialog never reached a final response. `kind` separates the two cases, which are not the same claim: `cancelled` means someone sent a `CANCEL`, `no_final_response` means the wait outlived RFC 3261 Timer C (180 s) — a statement about the capture, **not** a failed call. Carries `elapsed_sec`. |
 | `post_dial_delay` | `INVITE` to first provisional response over 11 s, the ITU-T E.721 Table 2 ninety-fifth-percentile target for an international connection. Carries `delay_sec`, the `threshold_sec` it exceeded, and the `responded_with` code that ended the wait. |
@@ -256,6 +256,32 @@ far end is not reachable. Two fields repay attention:
 the quoted IP header, so most quotes are a prefix. The field exists so a reader
 knows the quote was partial rather than assuming the fields came from a whole
 datagram.
+
+The ICMP description is the network's wording, not an instruction, and the
+commonest codes send you to different devices. sipnab spells that out in the
+hint: `port unreachable` means the host answered and no service holds that
+port, so the fault is the service. `administratively prohibited` means a
+firewall or router ACL refused the packet -- the peer may be perfectly healthy
+and the fix is the filter. `host unreachable` means nothing reached the host at
+all, so the capture says nothing about its ports. On one real corpus a single capture
+held 433 host-unreachable, 262 administratively prohibited and 63
+port-unreachable errors, so one sentence for all three would have been wrong
+for most of them.
+
+### When ICMP and retransmissions both fire
+
+`retransmissions` and `icmp_unreachable` frequently appear on the same dialog,
+and they are not two views of one thing. `retransmissions` measures how hard the
+sender tried before giving up. `icmp_unreachable` states why nothing came back.
+The ICMP fact therefore **annotates** the retransmission finding rather than
+replacing it: sipnab sets `retransmissions.icmp_cause` to the ICMP description,
+the hint stops offering "a one-way path or an unreachable peer" as a guess, and the
+`count` and `span_sec` survive. Suppressing the finding would have deleted a
+measurement to remove a sentence.
+
+With no ICMP in the capture, `icmp_cause` is absent and the retransmission hint
+reads exactly as it always did -- the inference is the honest answer when
+nothing better is available.
 
 The same document is what you get from:
 

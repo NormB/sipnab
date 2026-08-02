@@ -19,6 +19,45 @@ use super::stream::{RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
 use crate::sip::sdp::SdpMedia;
 
+/// How an ICMP error's quoted datagram was tied to tracked media.
+///
+/// Ordered by how much the tie proves, strongest first. The variant is carried
+/// into every surface rather than collapsed to a boolean because the tiers are
+/// not equally strong: [`Flow`](Self::Flow) means sipnab watched that exact
+/// datagram's stream, while [`SdpEndpoint`](Self::SdpEndpoint) means only that
+/// a call negotiated that address. A reader deciding whether to act on a
+/// finding needs to know which of those they have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaMatch {
+    /// The quoted datagram's directed 5-tuple is exactly a tracked stream.
+    Flow,
+    /// The SSRC in the quoted payload names a tracked stream. The tie that
+    /// carries RTCP, which runs on a port no stream is keyed on.
+    Ssrc,
+    /// One of the two sockets is an endpoint of a tracked stream.
+    Endpoint,
+    /// One of the two sockets was advertised in SDP, or is the RTCP companion
+    /// port of one. Works when no media was captured at all.
+    SdpEndpoint,
+    /// Nothing matched. The evidence is still real — only the stream is
+    /// unknown — so callers count it rather than dropping it.
+    #[default]
+    None,
+}
+
+/// What a media ICMP quote was tied to, and by which rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MediaAttribution {
+    /// The strongest tier that matched.
+    pub matched: MediaMatch,
+    /// How many tracked streams the tier matched. Zero for an SDP-only match,
+    /// which by definition has no stream behind it.
+    pub streams: usize,
+    /// `Call-ID`s of the dialogs the matched media belongs to, deduplicated.
+    /// Empty when the streams matched were never linked to a dialog.
+    pub call_ids: Vec<String>,
+}
+
 /// A media endpoint negotiated in SDP, retained so an RTP stream that appears
 /// *after* its SDP (the usual order — INVITE/200 precede the first RTP packet,
 /// and in offline pcap replay always do) resolves its codec, clock rate, and
@@ -768,6 +807,146 @@ impl StreamStore {
     /// Look up a stream by its key.
     pub fn get(&self, key: &StreamKey) -> Option<&RtpStream> {
         self.streams.get(key)
+    }
+
+    /// Tie an ICMP error's quoted datagram to the media this store tracked.
+    ///
+    /// An ICMP error about media carries no `Call-ID` — a media datagram has
+    /// none to carry — so the signalling side's association key does not exist
+    /// here. What the quote does carry is the failed datagram's own 5-tuple
+    /// and, when the router quoted more than RFC 792's 8-byte minimum, an RTP
+    /// or RTCP header with an SSRC. Those are matched here, most specific
+    /// first, and the tier that succeeded is returned so a reader can see how
+    /// strong the tie is rather than being handed a bare "matched".
+    ///
+    /// The tiers, and why each exists:
+    ///
+    /// 1. [`MediaMatch::Flow`] — the quoted directed 5-tuple is exactly a
+    ///    tracked stream. The quote describes a datagram sipnab itself saw as
+    ///    RTP; nothing weaker is needed and nothing stronger exists.
+    /// 2. [`MediaMatch::Ssrc`] — the quoted payload named a tracked stream's
+    ///    SSRC. This is what carries the commonest real case: RTCP runs one
+    ///    port above RTP (RFC 3550 §11), so an error about RTCP can never
+    ///    match a stream's 5-tuple, and in one real corpus the media errors
+    ///    were predominantly RTCP.
+    /// 3. [`MediaMatch::Endpoint`] — one of the two sockets is an endpoint of
+    ///    a tracked stream, in either direction. Covers a capture that saw
+    ///    only one half of the media.
+    /// 4. [`MediaMatch::SdpEndpoint`] — the socket was advertised in SDP, or
+    ///    is the RTCP companion (one port above) of one. This is the only tier
+    ///    that works when no media was captured at all, which is exactly the
+    ///    case an operator asks about when they say "the call connected and
+    ///    there was no audio".
+    /// 5. [`MediaMatch::None`] — nothing matched. The caller counts it as
+    ///    unattributed; it is never discarded, because the endpoint it names
+    ///    is real whether or not this capture holds its stream.
+    ///
+    /// Both sockets are tried at tiers 3 and 4, destination first: the ICMP
+    /// error is *about* the destination, but the source is our own media port
+    /// and identifies the call just as well when the destination is unknown.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` — the quoted datagram's source: the socket that sent the media.
+    /// * `dst` — the quoted datagram's destination: the socket that did not
+    ///   answer.
+    /// * `ssrc` — SSRC read out of the quoted payload, when the quote reached
+    ///   it. `None` is the RFC 792 case, not a failure.
+    ///
+    /// # Returns
+    ///
+    /// The strongest tier that matched, with the `Call-ID`s it named
+    /// (deduplicated, in stream insertion order). `MediaMatch::None` with no
+    /// call IDs when nothing matched.
+    pub fn attribute_media_quote(
+        &self,
+        src: SocketAddr,
+        dst: SocketAddr,
+        ssrc: Option<u32>,
+    ) -> MediaAttribution {
+        let dst_ep = (dst.ip(), dst.port());
+        let src_ep = (src.ip(), src.port());
+
+        // 1. The quoted 5-tuple is a stream, exactly and directionally.
+        if let Some(keys) = self.endpoint_index.get(&dst_ep) {
+            let exact: Vec<&StreamKey> = keys
+                .iter()
+                .filter(|k| k.src == src && k.dst == dst)
+                .collect();
+            if !exact.is_empty() {
+                return self.attribution(MediaMatch::Flow, exact.into_iter());
+            }
+        }
+
+        // 2. The quoted payload named a tracked SSRC.
+        if let Some(keys) = ssrc.and_then(|s| self.ssrc_index.get(&s))
+            && !keys.is_empty()
+        {
+            return self.attribution(MediaMatch::Ssrc, keys.iter());
+        }
+
+        // 3. Either socket is an endpoint of a tracked stream.
+        for ep in [&dst_ep, &src_ep] {
+            if let Some(keys) = self.endpoint_index.get(ep)
+                && !keys.is_empty()
+            {
+                return self.attribution(MediaMatch::Endpoint, keys.iter());
+            }
+        }
+
+        // 4. Either socket was advertised in SDP, or is its RTCP companion.
+        //    RFC 3550 §11: when the media port is even, RTCP uses the next
+        //    port up, and no SDP line ever mentions it.
+        for sock in [dst, src] {
+            let companion = sock.port().checked_sub(1).filter(|p| p % 2 == 0);
+            for port in [Some(sock.port()), companion].into_iter().flatten() {
+                if let Some(ep) = self.sdp_endpoints.get(&(sock.ip(), port)) {
+                    return MediaAttribution {
+                        matched: MediaMatch::SdpEndpoint,
+                        streams: 0,
+                        call_ids: vec![ep.call_id.clone()],
+                    };
+                }
+            }
+        }
+
+        MediaAttribution::default()
+    }
+
+    /// Collect the dialogs behind a set of matched stream keys.
+    ///
+    /// Split out so each tier above states only its own matching rule; the
+    /// answer they all produce — how many streams, and which calls — is built
+    /// once here and cannot drift between tiers.
+    fn attribution<'a>(
+        &self,
+        matched: MediaMatch,
+        keys: impl Iterator<Item = &'a StreamKey>,
+    ) -> MediaAttribution {
+        let mut streams = 0usize;
+        let mut call_ids: Vec<String> = Vec::new();
+        for key in keys {
+            let Some(stream) = self.streams.get(key) else {
+                continue;
+            };
+            streams += 1;
+            if let Some(id) = &stream.associated_dialog
+                && !call_ids.iter().any(|c| c == id)
+            {
+                call_ids.push(id.clone());
+            }
+        }
+        // Every key came from an index this store maintains, so a zero here
+        // would mean the index outlived its streams. Report no match rather
+        // than a match onto nothing.
+        if streams == 0 {
+            return MediaAttribution::default();
+        }
+        MediaAttribution {
+            matched,
+            streams,
+            call_ids,
+        }
     }
 
     /// Insert a pre-built stream directly (unit tests only) — bypasses
@@ -2173,5 +2352,201 @@ a=rtpmap:96 H264/90000\r\n";
         }
 
         assert_eq!(store.iter().count(), 5);
+    }
+
+    // -- attributing an ICMP quote to media ------------------------------
+
+    /// The sender of the media in `make_parsed`.
+    fn a() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+    /// The receiver in `make_parsed` — the one an ICMP error is about.
+    fn b() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
+    }
+
+    /// A store holding one stream `a:20000 -> b:30000` with SSRC `0xC0FFEE`,
+    /// linked to `call-1`.
+    fn store_with_one_stream() -> StreamStore {
+        let mut store = StreamStore::new(100);
+        store.link_endpoint(b(), 30000, "call-1", &[]);
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0x00C0_FFEE, 1),
+            ts(0),
+        );
+        store
+    }
+
+    /// Tier 1: the quoted 5-tuple is exactly a tracked stream. Strongest tie
+    /// available, and it names the call.
+    #[test]
+    fn an_exact_five_tuple_matches_the_stream_it_names() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20000),
+            SocketAddr::new(b(), 30000),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::Flow);
+        assert_eq!(att.streams, 1);
+        assert_eq!(att.call_ids, vec!["call-1".to_string()]);
+    }
+
+    /// Both halves of the 5-tuple are part of the key. Two senders can be
+    /// aiming at one media port — a re-INVITE, a second leg, a stray sender —
+    /// and only the one whose source socket matches is the tracked flow.
+    /// Matching on the destination alone would report the wrong stream, and
+    /// with it the wrong call, for the other.
+    #[test]
+    fn a_different_sender_to_the_same_socket_is_not_the_same_flow() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            // Same destination socket, a different source port.
+            SocketAddr::new(a(), 20002),
+            SocketAddr::new(b(), 30000),
+            None,
+        );
+        assert_ne!(
+            att.matched,
+            MediaMatch::Flow,
+            "the source socket is half the key: this is not that stream's flow"
+        );
+        assert_eq!(att.matched, MediaMatch::Endpoint);
+    }
+
+    /// The same, the other way round: the tracked source socket aiming at a
+    /// destination no stream ever used is not the tracked flow either.
+    #[test]
+    fn the_same_sender_to_a_different_socket_is_not_the_same_flow() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20000),
+            SocketAddr::new(b(), 30002),
+            None,
+        );
+        assert_ne!(
+            att.matched,
+            MediaMatch::Flow,
+            "the destination socket is the other half of the key"
+        );
+        assert_eq!(att.matched, MediaMatch::Endpoint);
+    }
+
+    /// Direction is part of the key. A quote of the reverse datagram describes
+    /// a different flow, and reporting it as the same one would claim the
+    /// wrong socket failed. It still matches — both sockets belong to the same
+    /// media — but at the weaker endpoint tier, which says so.
+    #[test]
+    fn the_reverse_direction_is_not_an_exact_flow_match() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(b(), 30000),
+            SocketAddr::new(a(), 20000),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::Endpoint);
+    }
+
+    /// Tier 2: RTCP runs one port above RTP, so its 5-tuple can never be a
+    /// stream's. The SSRC in the quoted report is the tie that survives, and
+    /// it is what carries the commonest real case.
+    #[test]
+    fn an_rtcp_port_pair_matches_on_ssrc_alone() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20001),
+            SocketAddr::new(b(), 30001),
+            Some(0x00C0_FFEE),
+        );
+        assert_eq!(att.matched, MediaMatch::Ssrc);
+        assert_eq!(att.call_ids, vec!["call-1".to_string()]);
+    }
+
+    /// Tier 4: with no media captured at all, the SDP-advertised port one
+    /// below still places an RTCP failure on the call. This is the case an
+    /// operator is describing when they say the call connected silently.
+    #[test]
+    fn an_rtcp_port_falls_back_to_the_sdp_port_one_below() {
+        let mut store = StreamStore::new(100);
+        store.link_endpoint(b(), 30000, "call-2", &[]);
+        assert_eq!(store.len(), 0, "an SDP link creates no stream");
+
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20001),
+            SocketAddr::new(b(), 30001),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::SdpEndpoint);
+        assert_eq!(att.streams, 0, "an SDP match has no stream behind it");
+        assert_eq!(att.call_ids, vec!["call-2".to_string()]);
+    }
+
+    /// The companion rule is one port up from an EVEN media port, per RFC 3550
+    /// §11. Reading it as "any port, minus one" would attach an error on an
+    /// even port to whatever odd port happened to be advertised below it.
+    #[test]
+    fn the_rtcp_companion_rule_only_applies_above_an_even_port() {
+        let mut store = StreamStore::new(100);
+        // An odd advertised port: nothing may be inferred one above it.
+        store.link_endpoint(b(), 30001, "call-3", &[]);
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20002),
+            SocketAddr::new(b(), 30002),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::None);
+    }
+
+    /// Nothing matched is a real answer, not a failure: the caller counts it
+    /// as unattributed and still reports the endpoint.
+    #[test]
+    fn an_unrelated_flow_matches_nothing() {
+        let store = store_with_one_stream();
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 41000),
+            SocketAddr::new(b(), 51000),
+            Some(0xDEAD_BEEF),
+        );
+        assert_eq!(att.matched, MediaMatch::None);
+        assert_eq!(att.streams, 0);
+        assert!(att.call_ids.is_empty());
+    }
+
+    /// A stream never linked to a dialog still matches — the flow is real —
+    /// but names no call, and must not invent one.
+    #[test]
+    fn a_stream_without_a_dialog_matches_but_names_no_call() {
+        let mut store = StreamStore::new(100);
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0x00C0_FFEE, 1),
+            ts(0),
+        );
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20000),
+            SocketAddr::new(b(), 30000),
+            None,
+        );
+        assert_eq!(att.matched, MediaMatch::Flow);
+        assert_eq!(att.streams, 1);
+        assert!(
+            att.call_ids.is_empty(),
+            "an unlinked stream has no call to name"
+        );
+    }
+
+    /// An empty store matches nothing, which is the answer for a capture that
+    /// holds no media — and it must not panic reaching for indexes that are
+    /// empty.
+    #[test]
+    fn an_empty_store_matches_nothing() {
+        let store = StreamStore::new(100);
+        let att = store.attribute_media_quote(
+            SocketAddr::new(a(), 20000),
+            SocketAddr::new(b(), 30000),
+            Some(1),
+        );
+        assert_eq!(att, MediaAttribution::default());
     }
 }

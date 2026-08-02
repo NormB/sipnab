@@ -393,6 +393,7 @@ pub fn run_cores_file(
                     r.stream_store.len(),
                     cli.cores,
                 );
+                report_icmp_summary(&r.stream_store);
             }
             if !reports_ok {
                 std::process::exit(1);
@@ -401,6 +402,89 @@ pub fn run_cores_file(
         Err(e) => {
             tracing::error!("multi-core reconstruction failed: {e:#}");
             std::process::exit(1);
+        }
+    }
+}
+
+/// Print what ICMP said about this run, on stderr, beside the packet totals.
+///
+/// Two blocks, because the two answer different questions and are attributed
+/// by different keys. "Why did this call fail to set up" is signalling, keyed
+/// by `Call-ID`. "Why could nobody hear anything" is media, keyed by the
+/// quoted datagram's own 5-tuple against the streams this run tracked. A
+/// reader scanning a summary should not have to open each dialog to discover
+/// that a router has been answering on the peer's behalf.
+///
+/// Called from every batch summary path — single-threaded and both `--cores`
+/// entry points. The signalling block used to be inline in the
+/// single-threaded one only, so a `--cores` run printed nothing however much
+/// ICMP the capture held. Evidence that reaches no surface is the defect this
+/// whole area exists to remove, so there is one renderer and every path calls
+/// it.
+///
+/// # Arguments
+///
+/// * `streams` — the run's stream store, merged when the run was parallel.
+///   Media quotes are resolved against it here; an empty store yields a report
+///   in which every media error is unattributed, which is honest.
+///
+/// # Side effects
+///
+/// Writes to stderr. Prints nothing at all when the capture held no ICMP,
+/// which is the common case.
+fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
+    let icmp = crate::pipeline::icmp_evidence_report();
+    if icmp.errors > 0 {
+        let top: Vec<String> = icmp
+            .endpoints
+            .iter()
+            .take(5)
+            .map(|e| match e.port {
+                Some(p) => format!("{}:{} ({}, {})", e.addr, p, e.errors, e.description),
+                None => format!("{} ({}, {})", e.addr, e.errors, e.description),
+            })
+            .collect();
+        eprintln!(
+            "ICMP: {} error(s) quoting a SIP request, naming {} unreachable endpoint(s). \
+             Busiest: {}.",
+            icmp.errors,
+            icmp.endpoints.len(),
+            top.join(", ")
+        );
+        // A cap that silently swallowed evidence would make the numbers above
+        // understate the problem, so say when one bit.
+        if icmp.unattributed > 0 || icmp.untracked_dialogs > 0 {
+            eprintln!(
+                "ICMP: {} error(s) quoted too little to name a Call-ID and {} more reached no \
+                 dialog because the tracking cap was full — real evidence that appears against \
+                 no call.",
+                icmp.unattributed, icmp.untracked_dialogs
+            );
+        }
+    }
+
+    // A media quote that matched no stream is still printed. Dropping it would
+    // hide that the network answered, which is the whole point of reading ICMP.
+    let media = crate::pipeline::icmp_media_report(streams);
+    if media.errors > 0 {
+        eprintln!(
+            "ICMP: {} error(s) quoting non-SIP traffic, {} of them media, across {} flow(s). \
+             Attributed to a stream or SDP endpoint: {}; matched nothing this capture holds: {}.",
+            media.errors,
+            media.media,
+            media.flows.len(),
+            media.attributed,
+            media.unattributed,
+        );
+        for f in media.flows.iter().take(5) {
+            eprintln!("  {}", f.hint);
+        }
+        if media.unkeyed > 0 || media.untracked_flows > 0 {
+            eprintln!(
+                "ICMP: {} media error(s) quoted too little to name a flow and {} more reached no \
+                 flow because the tracking cap was full.",
+                media.unkeyed, media.untracked_flows
+            );
         }
     }
 }
@@ -466,6 +550,7 @@ pub fn run(
                 result.stream_store.len(),
                 cli.cores,
             );
+            report_icmp_summary(&result.stream_store);
         }
         if !reports_ok {
             std::process::exit(1);
@@ -1519,39 +1604,7 @@ impl BatchRunner {
                 );
             }
 
-            // ICMP errors quoting SIP: the capture-wide view of what the
-            // per-dialog findings say one call at a time. An operator scanning
-            // a summary for "why are calls failing" should not have to open
-            // each dialog to discover a router has been answering for them.
-            let icmp = crate::pipeline::icmp_evidence_report();
-            if icmp.errors > 0 {
-                let top: Vec<String> = icmp
-                    .endpoints
-                    .iter()
-                    .take(5)
-                    .map(|e| match e.port {
-                        Some(p) => format!("{}:{} ({}, {})", e.addr, p, e.errors, e.description),
-                        None => format!("{} ({}, {})", e.addr, e.errors, e.description),
-                    })
-                    .collect();
-                eprintln!(
-                    "ICMP: {} error(s) quoting a SIP request, naming {} unreachable \
-                     endpoint(s). Busiest: {}.",
-                    icmp.errors,
-                    icmp.endpoints.len(),
-                    top.join(", ")
-                );
-                // A cap that silently swallowed evidence would make the numbers
-                // above understate the problem, so say when one bit.
-                if icmp.unattributed > 0 || icmp.untracked_dialogs > 0 {
-                    eprintln!(
-                        "ICMP: {} error(s) quoted too little to name a Call-ID and {} more \
-                         reached no dialog because the tracking cap was full — real evidence \
-                         that appears against no call.",
-                        icmp.unattributed, icmp.untracked_dialogs
-                    );
-                }
-            }
+            report_icmp_summary(&stream_store.read());
 
             // Helpful guidance when no SIP signalling was found. If RTP was
             // parsed, the capture was readable — just media-only — so soften
