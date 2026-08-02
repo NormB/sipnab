@@ -432,6 +432,21 @@ pub fn run_cores_file(
 ///
 /// Writes to stderr. Prints nothing at all when the capture held no ICMP,
 /// which is the common case.
+/// Whether this run should retain RTP payload bytes.
+///
+/// Retention costs a per-packet payload clone, so it stays off unless
+/// something in *this* run can read the buffers back. Batch reporting cannot.
+/// The MCP server can: `export_audio` decodes exactly these buffers, so with
+/// retention off it could not succeed for any call in any capture, in any
+/// build — which is what it did. MCP is the only batch-mode consumer, so it is
+/// the condition.
+///
+/// The TUI keeps its own retention decision in `tui_mode.rs`, which is why its
+/// F2 WAV export always worked against the same decoder.
+fn audio_retention_wanted(cli: &Cli) -> bool {
+    cli.mcp
+}
+
 fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
     let icmp = crate::pipeline::icmp_evidence_report();
     if icmp.errors > 0 {
@@ -690,35 +705,46 @@ impl BatchRunner {
 
         // 16a. Initialize HEP sender if --hep-send is set
         #[cfg(feature = "hep")]
-        let hep_sender: Option<crate::capture::hep::HepSender> = if let Some(ref addr) =
-            cli.hep_send
-        {
-            let capture_id = cli.hep_id.unwrap_or(1);
-            let hep_auth = match cli.resolve_hep_auth() {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::error!("HEP auth: {e}");
-                    None
+        let hep_sender: Option<crate::capture::hep::HepSender> =
+            if let Some(ref addr) = cli.hep_send {
+                let capture_id = cli.hep_id.unwrap_or(1);
+                let hep_auth = match cli.resolve_hep_auth() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::error!("HEP auth: {e}");
+                        None
+                    }
+                };
+                let authenticated = hep_auth.is_some();
+                // Mint the destination here rather than inside the constructor, so
+                // the type is proven at the call site. While the constructor took a
+                // &str, any future caller could mint a destination from an arbitrary
+                // string -- which is the hole the permit type exists to close.
+                let destination = crate::capture::hep::OperatorDestination::from_cli_flag(
+                    crate::capture::hep::HEP_SEND_FLAG,
+                    addr,
+                );
+                match crate::capture::hep::HepSender::for_destination(
+                    &destination,
+                    capture_id,
+                    hep_auth,
+                    cli.hep_auth_mode,
+                ) {
+                    Ok(sender) => {
+                        tracing::info!(
+                            "HEP sender targeting {addr} (capture id {capture_id}{})",
+                            if authenticated { ", authenticated" } else { "" }
+                        );
+                        Some(sender)
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create HEP sender: {e}");
+                        None
+                    }
                 }
+            } else {
+                None
             };
-            let authenticated = hep_auth.is_some();
-            match crate::capture::hep::HepSender::new(addr, capture_id, hep_auth, cli.hep_auth_mode)
-            {
-                Ok(sender) => {
-                    tracing::info!(
-                        "HEP sender targeting {addr} (capture id {capture_id}{})",
-                        if authenticated { ", authenticated" } else { "" }
-                    );
-                    Some(sender)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to create HEP sender: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
 
         // 17. Initialize processing state
         //
@@ -746,9 +772,18 @@ impl BatchRunner {
             if let Some(max_frames) = config.limits.max_audio_frames {
                 ss.set_max_audio_frames(max_frames as usize);
             }
-            // Batch mode has no audio export/playback path; don't pay a
-            // per-packet payload clone for buffers nothing will read.
-            ss.set_audio_capture(false);
+            if audio_retention_wanted(&cli) {
+                ss.set_audio_capture(true);
+                // Retention changes this run's memory profile, so state the
+                // bound rather than letting an operator discover it under load.
+                let frames = config.limits.max_audio_frames.unwrap_or(1500);
+                let streams = cli.max_streams_limit(config);
+                tracing::info!(
+                    "RTP payload retention is on so the MCP export_audio tool can decode it: \
+                     up to {frames} frame(s) per stream across at most {streams} stream(s). \
+                     Lower [limits] max_audio_frames or --max-streams to bound it further."
+                );
+            }
             Arc::new(RwLock::new(ss))
         };
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
@@ -901,6 +936,10 @@ impl BatchRunner {
             .clone()
             .or(config.security.alert_exec.clone());
         let mut alert_engine = AlertEngine::new(alert_rules, effective_alert_exec);
+        // Without this the global budget sits at its default and --exec-rate-limit
+        // is silently inert on the alert path -- the same shape as #35, #55, #63
+        // and #83, where a flag parsed, validated, and did nothing.
+        alert_engine.set_exec_rate_limit(cli.exec_rate_limit);
         if cli.syslog || alert_channel_syslog {
             alert_engine.set_syslog(true);
         }
@@ -2574,6 +2613,30 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     /// Baseline non-interactive CLI; mutate the pub fields per test.
+    /// Retention must follow whether *this* run can read the buffers back.
+    ///
+    /// The whole defect was that it did not: retention was hardcoded off, so
+    /// `export_audio` decoded an always-empty buffer and failed for every call
+    /// in every capture. Asserting the false case matters as much as the true
+    /// one — a blanket `true` would restore the per-packet clone for batch runs
+    /// that never read it, which is why it was switched off in the first place.
+    #[test]
+    fn audio_payload_is_retained_exactly_when_mcp_can_read_it() {
+        let mut cli = base_cli();
+
+        cli.mcp = false;
+        assert!(
+            !audio_retention_wanted(&cli),
+            "a plain batch run has no reader, so it must not pay the clone"
+        );
+
+        cli.mcp = true;
+        assert!(
+            audio_retention_wanted(&cli),
+            "export_audio decodes these buffers; with retention off it cannot succeed"
+        );
+    }
+
     fn base_cli() -> Cli {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.no_tui = true;
