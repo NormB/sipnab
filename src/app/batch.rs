@@ -1519,6 +1519,40 @@ impl BatchRunner {
                 );
             }
 
+            // ICMP errors quoting SIP: the capture-wide view of what the
+            // per-dialog findings say one call at a time. An operator scanning
+            // a summary for "why are calls failing" should not have to open
+            // each dialog to discover a router has been answering for them.
+            let icmp = crate::pipeline::icmp_evidence_report();
+            if icmp.errors > 0 {
+                let top: Vec<String> = icmp
+                    .endpoints
+                    .iter()
+                    .take(5)
+                    .map(|e| match e.port {
+                        Some(p) => format!("{}:{} ({}, {})", e.addr, p, e.errors, e.description),
+                        None => format!("{} ({}, {})", e.addr, e.errors, e.description),
+                    })
+                    .collect();
+                eprintln!(
+                    "ICMP: {} error(s) quoting a SIP request, naming {} unreachable \
+                     endpoint(s). Busiest: {}.",
+                    icmp.errors,
+                    icmp.endpoints.len(),
+                    top.join(", ")
+                );
+                // A cap that silently swallowed evidence would make the numbers
+                // above understate the problem, so say when one bit.
+                if icmp.unattributed > 0 || icmp.untracked_dialogs > 0 {
+                    eprintln!(
+                        "ICMP: {} error(s) quoted too little to name a Call-ID and {} more \
+                         reached no dialog because the tracking cap was full — real evidence \
+                         that appears against no call.",
+                        icmp.unattributed, icmp.untracked_dialogs
+                    );
+                }
+            }
+
             // Helpful guidance when no SIP signalling was found. If RTP was
             // parsed, the capture was readable — just media-only — so soften
             // the message rather than implying a parse failure.

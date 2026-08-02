@@ -54,7 +54,7 @@ pub mod crypto;
 pub mod error;
 pub mod names;
 pub mod net;
-#[cfg(feature = "native")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pipeline;
 
 /// WASM plugin host — third-party dialog detections.

@@ -519,6 +519,69 @@
             }
           ]
         },
+        "icmp_unreachable": {
+          "description": "An ICMP/ICMPv6 error quoting one of this dialog's requests. Omitted entirely (not null) when absent, because the check can only run on a capture that holds ICMP at all: null would claim it ran. `unreachable_endpoint` is the socket that did not answer; `reported_by` is the router or host that reported it, which is a different address and is not the fault. `truncated` says the quote sipnab read was a prefix of the original datagram, which RFC 792 permits and most routers do.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "description",
+                "icmp_type",
+                "icmp_code",
+                "unreachable_endpoint",
+                "reported_by",
+                "errors",
+                "truncated",
+                "evidence"
+              ],
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "icmp_type": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                "icmp_code": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                "unreachable_endpoint": {
+                  "type": "string"
+                },
+                "reported_by": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "errors": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "truncated": {
+                  "type": "boolean"
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "hints": {
           "type": "array",
           "items": {

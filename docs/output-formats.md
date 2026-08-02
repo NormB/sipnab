@@ -207,12 +207,24 @@ drew on, as indices into the dialog's own message list:
 | `final_failure` | The dialog ended on a `4xx`/`5xx`/`6xx`. Carries `code`, `reason_phrase`, and the `Reason:` (RFC 3326) and `Warning:` headers when present, which frequently hold the real cause behind a generic status code. |
 | `auth_loop` | Three or more `401`/`407` challenges with no `2xx`. `kind` is `credential_failure` when the client answers each challenge and is re-challenged, or `silent_drop` when it never sends `Authorization` at all — different faults with different fixes. |
 | `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. |
+| `icmp_unreachable` | An ICMP or ICMPv6 error quoting one of this dialog's requests. Carries `unreachable_endpoint` (the host that did not answer), `reported_by` (the router or host that sent the error — a *different* machine), `description` of the ICMP cause, an exact `errors` count, and capped `samples`. |
 
 Each finding has an `evidence` array of message indices, and `hints` carries one
 plain-language line per finding. Detections 4–7 in
 [the spec](design/sip-problem-diagnosis.md) are not implemented, and their fields
 are absent rather than always-null: a field that is never populated reads as
 "checked, nothing found", which would be a lie.
+
+`icmp_unreachable` is worth singling out because it is the only finding that
+reports a **fact** rather than an inference. The others read the SIP and reason
+about what the silence means. This one carries a router's own statement that the
+far end is not reachable. Note that `errors` counts every occurrence while
+`samples` keeps only the first few — on a real capture 720 of 3,232 errors fell
+past the sample cap, so counting samples would have reported "8 times" for a
+peer that failed thirty. Distinguish
+`unreachable_endpoint` from `reported_by` when acting on it: the reporter is
+usually a router in the path, and sending an engineer to that device wastes the
+finding.
 
 The same document is what you get from:
 

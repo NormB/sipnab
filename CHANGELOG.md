@@ -10,6 +10,29 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **ICMP errors quoting a SIP request are now evidence, not invisible.** A
+  router answering "host unreachable" for an INVITE is the most diagnostic
+  packet a capture can hold — it is a categorical statement that the far end is
+  not there — and sipnab never looked inside ICMP at all. Five corpus captures
+  each lost about 26% of their SIP to it; the deficits matched their ICMP counts
+  exactly.
+
+  ICMPv4 (RFC 792) and ICMPv6 (RFC 4443) errors are parsed, the quoted datagram
+  is read as a *prefix* rather than a message, and the evidence is filed against
+  the dialog by `Call-ID`. It surfaces as the `icmp_unreachable` finding in
+  `--json-dialogs`, `--report`, the REST API and MCP, and as a capture-wide line
+  in the batch summary.
+
+  On one capture: **97 dialogs gained a stated cause where none had one**, and
+  the SIP message total is unchanged at 1902 — a quote is evidence about a
+  message, never a message. The quote is truncated by design, so a partial
+  request is never counted as a complete one. `unreachable_endpoint` and
+  `reported_by` are kept distinct: the reporter is usually a router in the path,
+  and blaming it sends an engineer to the wrong device. `errors` is exact while
+  `samples` is capped — 720 of 3,232 real errors fell past the sample cap, so
+  counting samples would have reported "8 times" for a peer that failed thirty.
+
 ### Fixed
 - **`--filter` was ignored by every CLI output path, silently, exit 0.** The
   expression compiled, and then `--report` and `--json-dialogs` rendered the
