@@ -203,6 +203,35 @@ impl SipnabMcp {
         }
         let target = root.join(name);
 
+        // A bare name can still leave the root, because the escape is not in
+        // the string: a symlink someone already placed in the root is one
+        // normal component and passes every check above, and the kernel follows
+        // it at `open`. Measured before this: an export wrote 77,736 bytes
+        // through such a link to a path outside the root, exit 0, and returned
+        // the in-root path as though that were where the bytes went.
+        //
+        // `canonical_target` is the same resolver `-O` uses to catch different
+        // spellings of one file — reused rather than reimplemented, because two
+        // implementations of one rule is a defect pattern this tree has already
+        // been bitten by.
+        //
+        // The resolved path is what gets returned, so a caller is told where
+        // the bytes will actually land rather than where it asked for them.
+        let resolved = crate::capture::output_guard::canonical_target(&target);
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if !resolved.starts_with(&canonical_root) {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "'{name}' resolves outside the configured --mcp-file-root. \
+                     The name is a link to '{}', and these tools write only \
+                     inside the root.",
+                    resolved.display()
+                ),
+                None,
+            ));
+        }
+        let target = resolved;
+
         // Refuse before the caller opens anything: every file tool writes with
         // truncation, so a check made after the open has already destroyed the
         // capture. This is the same precondition `-O` enforces, applied at the
@@ -2494,6 +2523,73 @@ mod tests {
 
     /// A server whose dialog store holds one dialog (`call_id`) with an
     /// INVITE followed by a 200 OK (two messages).
+    /// A bare filename that is a symlink out of the root is refused.
+    ///
+    /// `resolve_in_root` rejected separators, `..` and anything that was not a
+    /// single normal component, then joined and returned. String validation
+    /// cannot see a symlink, because the escape is not in the string: the name
+    /// really is one bare component, and the kernel does the rest at `open`.
+    ///
+    /// Measured before this check existed: an export wrote 77,736 bytes through
+    /// an in-root symlink to a path outside the root, exit 0, and returned the
+    /// in-root path as though that were where the bytes went. The shipped
+    /// security model says "naming one directory means the worst an agent can
+    /// do is fill it", and that did not hold.
+    ///
+    /// The escape needs prior write access inside the root, so this is not a
+    /// remote break. It is listed and fixed because it is the STATED boundary of
+    /// an agent-facing surface, and a boundary documented as absolute should be.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_file_root_is_refused() {
+        let base = std::env::temp_dir().join("sipnab-mcp-root-symlink");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+
+        let escape = outside.join("secrets.pcap");
+        std::fs::write(&escape, b"original").expect("seed the file outside");
+        std::os::unix::fs::symlink(&escape, root.join("innocent.pcap")).expect("symlink");
+
+        let srv = server_with_dialog("sym@test").with_file_root(&root);
+        let err = srv
+            .resolve_in_root("innocent.pcap")
+            .expect_err("a name that resolves outside the root must be refused");
+
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("outside") || msg.contains("symlink") || msg.contains("root"),
+            "the refusal must say the name leaves the root, not merely that it \
+             failed: {msg}"
+        );
+        assert_eq!(
+            std::fs::read(&escape).expect("read"),
+            b"original",
+            "the file outside the root must be untouched"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// An ordinary name inside the root still resolves, so the check above is
+    /// not simply refusing everything.
+    #[cfg(unix)]
+    #[test]
+    fn a_plain_name_inside_the_file_root_still_resolves() {
+        let root = std::env::temp_dir().join("sipnab-mcp-root-plain");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+
+        let srv = server_with_dialog("plain@test").with_file_root(&root);
+        let path = srv
+            .resolve_in_root("out.pcap")
+            .expect("a bare name inside the root must resolve");
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("out.pcap"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn server_with_dialog(call_id: &str) -> SipnabMcp {
         let mut ds = DialogStore::new(100, false);
         ds.process_message(invite(call_id, base_ts()));

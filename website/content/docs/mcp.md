@@ -1037,6 +1037,17 @@ sipnab refuses `../x`, `/etc/passwd` and `sub/dir.pcap` before any filesystem
 call. That is the whole security model and it is deliberately absolute: a tool
 accepting an agent-supplied path is an arbitrary file write, not an export.
 
+Name checking alone does not finish the job, so sipnab does one more thing. A
+symlink already sitting in the root is a single bare component — it passes every
+check above, and the kernel follows it when the file opens. sipnab therefore
+compares the resolved path against the root in its fully resolved form and refuses a name by
+where it points rather than by how someone spelled it. Each tool returns the
+resolved path, so a caller learns where the bytes actually went.
+
+That escape needed prior write access inside the root, so it never amounted to a
+remote break. sipnab closes it because this page calls the boundary absolute, and
+a boundary described that way ought to be.
+
 ### `list_captures`
 
 Capture files in the configured root, with sizes. It skips anything that is
