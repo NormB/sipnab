@@ -162,7 +162,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | getrandom | 0.2.17 | MIT OR Apache-2.0 |
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
-| glob | 0.3.3 | MIT OR Apache-2.0 |
+| glob | 0.3.4 | MIT OR Apache-2.0 |
 | h2 | 0.4.14 | MIT |
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 |
@@ -288,7 +288,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustls | 0.23.42 | Apache-2.0 OR ISC OR MIT |
+| rustls | 0.23.43 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.14.0 | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.13 | ISC |
 | rustversion | 1.0.22 | MIT OR Apache-2.0 |
@@ -348,10 +348,10 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | tokio-macros | 2.7.0 | MIT |
 | tokio-stream | 0.1.18 | MIT |
 | tokio-util | 0.7.18 | MIT |
-| toml | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml | 1.1.4+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_datetime | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_edit | 0.25.13+spec-1.1.0 | MIT OR Apache-2.0 |
-| toml_parser | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml_parser | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_writer | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 |
 | tower | 0.5.3 | MIT |
 | tower-layer | 0.3.3 | MIT |
