@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.73] - 2026-08-02
 
 ### Added
 - **ICMP errors quoting a SIP request are now evidence, not invisible.** A
