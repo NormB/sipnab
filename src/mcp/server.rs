@@ -558,6 +558,32 @@ pub struct StatsResponse {
     pub orphaned_stream_count: usize,
     /// Dialogs currently in an active (non-terminated) state.
     pub active_call_count: usize,
+    /// SIP messages seen OUTSIDE `--portrange` and therefore analysed by
+    /// nothing: they are in no dialog, no stream and no count above.
+    ///
+    /// Always present, including when it is zero. A field that appears only
+    /// when something went wrong is a field the reader never learns exists,
+    /// and this reader is a model that cannot ask a follow-up question. The
+    /// CLI already prints this beside its summary; before this field the MCP
+    /// surface returned a byte-identical key set whether a third of the
+    /// capture had been dropped or none of it had.
+    pub unanalysed_sip_messages: u64,
+    /// The busiest ports carrying that unanalysed SIP, busiest first, capped
+    /// at five. Empty when nothing was skipped.
+    ///
+    /// The service port — destination of a request, source of a response —
+    /// never the ephemeral port, which differs per dialog and names nothing.
+    pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
+}
+
+/// One port carrying SIP that `--portrange` excluded from the analysis.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct UnanalysedPort {
+    /// The service port.
+    pub port: u16,
+    /// SIP messages skipped on it.
+    pub messages: u64,
 }
 
 /// Parameters for `security_findings`.
@@ -1589,18 +1615,31 @@ impl SipnabMcp {
     #[tool(
         name = "stats",
         description = "Returns aggregate counters: total dialogs, total \
-                       streams, orphaned-stream count, active-call count."
+                       streams, orphaned-stream count, active-call count, \
+                       and the count of SIP messages seen outside \
+                       --portrange that nothing analysed."
     )]
     pub async fn stats(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
+            let skipped = crate::pipeline::portrange_skip_report();
             let resp = StatsResponse {
                 schema_version: 1,
                 dialog_count: ds.len(),
                 stream_count: ss.len(),
                 orphaned_stream_count: ss.orphaned_count(),
                 active_call_count: ds.active_count(),
+                unanalysed_sip_messages: skipped.messages,
+                unanalysed_busiest_ports: skipped
+                    .ports
+                    .iter()
+                    .take(5)
+                    .map(|p| UnanalysedPort {
+                        port: p.port,
+                        messages: p.messages,
+                    })
+                    .collect(),
             };
             drop(ss);
             drop(ds);
@@ -3619,6 +3658,40 @@ mod tests {
         assert_eq!(v["stream_count"], 0);
         assert_eq!(v["orphaned_stream_count"], 0);
         assert_eq!(v["active_call_count"], 0);
+    }
+
+    /// `stats` reports the SIP that `--portrange` excluded, always.
+    ///
+    /// The CLI has printed this beside its summary since the skip accounting
+    /// landed. The MCP surface did not, and returned a byte-identical key set
+    /// whether a third of the capture had been dropped or none of it had — so
+    /// a model driving the tools could answer questions about "the calls in
+    /// this capture" from two thirds of them with full confidence, and had no
+    /// way to learn otherwise. On one real capture that was 1,401 dialogs of
+    /// 3,712, and 4,247 of 13,455 messages.
+    ///
+    /// The field is asserted present at ZERO, not merely present when
+    /// something was skipped. A field that appears only when something went
+    /// wrong is a field the reader never learns exists, and this reader cannot
+    /// ask a follow-up question.
+    #[tokio::test]
+    async fn stats_reports_the_sip_left_outside_the_port_range() {
+        crate::pipeline::reset_portrange_skips();
+        let server = empty_server();
+        let result = server.stats().await.expect("stats should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert!(
+            v.get("unanalysed_sip_messages").is_some(),
+            "the skipped-SIP count must be present even when it is zero, or a \
+             model never learns the concept exists: {v}"
+        );
+        assert_eq!(v["unanalysed_sip_messages"], 0);
+        assert!(
+            v["unanalysed_busiest_ports"].is_array(),
+            "the per-port breakdown must be an array, empty when nothing was \
+             skipped: {v}"
+        );
     }
 
     /// A store with one dialog and no streams reports counts 1 and 0.
