@@ -394,6 +394,7 @@ pub fn run_cores_file(
                     cli.cores,
                 );
                 report_icmp_summary(&r.stream_store);
+                report_retention_losses(&r.dialog_store);
             }
             if !reports_ok {
                 std::process::exit(1);
@@ -445,6 +446,66 @@ pub fn run_cores_file(
 /// F2 WAV export always worked against the same decoder.
 fn audio_retention_wanted(cli: &Cli) -> bool {
     cli.mcp
+}
+
+/// Report what the dialog store shed, beside the totals that hide it.
+///
+/// The packet and message counters sit UPSTREAM of the store, so they count
+/// what arrived rather than what was kept. On the corpus that gap is real: 314
+/// messages evicted from 65 dialogs while the summary reported 103,234 SIP
+/// messages and said nothing, because the only other signal is a `debug!` line
+/// nobody sees at the default level.
+///
+/// Three distinct loss channels, each silent until now, and each meaning
+/// something different to an operator:
+/// - idle compaction drops MESSAGES from dialogs it keeps
+/// - at capacity with `--no-rotate`, a new dialog is REJECTED, so the earliest
+///   calls are the ones you keep
+/// - at capacity while rotating, the OLDEST dialog is discarded instead
+///
+/// Silent when nothing was shed, so a clean run stays quiet — the same rule
+/// the `-I` resolution accounting follows.
+fn report_retention_losses(dialogs: &DialogStore) {
+    if let Some(msg) = retention_summary(dialogs) {
+        tracing::warn!("{msg}");
+    }
+}
+
+/// The retention sentence, or `None` when the store shed nothing.
+///
+/// Split from the logging so the wording is testable: the value of this line
+/// is entirely in what it says, and a test that only checked "something was
+/// logged" would pass on a sentence naming the wrong number.
+fn retention_summary(dialogs: &DialogStore) -> Option<String> {
+    let msgs = dialogs.total_idle_messages_evicted();
+    let dropped = dialogs.total_capacity_dialogs_dropped();
+    let rotated = dialogs.total_capacity_dialogs_evicted();
+    if msgs == 0 && dropped == 0 && rotated == 0 {
+        return None;
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if msgs > 0 {
+        parts.push(format!(
+            "{msgs} message(s) evicted from retained dialogs by idle compaction"
+        ));
+    }
+    if dropped > 0 {
+        parts.push(format!(
+            "{dropped} new dialog(s) refused at capacity (--no-rotate keeps the earliest)"
+        ));
+    }
+    if rotated > 0 {
+        parts.push(format!(
+            "{rotated} oldest dialog(s) discarded at capacity by rotation"
+        ));
+    }
+
+    Some(format!(
+        "retention: {}. The message and packet counts above are what sipnab READ, \
+         not what it kept — raise --limit, or --max-dialogs, to keep more.",
+        parts.join("; ")
+    ))
 }
 
 /// Print the ICMP evidence summary for a finished run.
@@ -572,6 +633,7 @@ pub fn run(
                 cli.cores,
             );
             report_icmp_summary(&result.stream_store);
+            report_retention_losses(&result.dialog_store);
         }
         if !reports_ok {
             std::process::exit(1);
@@ -1650,6 +1712,7 @@ impl BatchRunner {
             }
 
             report_icmp_summary(&stream_store.read());
+            report_retention_losses(&dialog_store.read());
 
             // Helpful guidance when no SIP signalling was found. If RTP was
             // parsed, the capture was readable — just media-only — so soften
@@ -2619,6 +2682,69 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     /// Baseline non-interactive CLI; mutate the pub fields per test.
+    /// Build a `SipMessage` for `call_id` from the shared INVITE fixture.
+    fn invite_msg(call_id: &str) -> sip::message::SipMessage {
+        let data = bytes::Bytes::from(invite_bytes(call_id));
+        sip::parser::parse_sip_bytes(
+            &data,
+            chrono::Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("fixture parses")
+    }
+
+    /// A run that shed nothing must stay quiet.
+    ///
+    /// Without this the obvious implementation — always print the counters —
+    /// would pass the other test while adding a line to every clean run, and a
+    /// warning that fires constantly is one operators learn to skim past.
+    #[test]
+    fn a_run_that_kept_everything_reports_no_retention_loss() {
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_msg("kept-1@example.com"));
+
+        assert_eq!(
+            retention_summary(&store),
+            None,
+            "nothing was shed, so there is nothing to warn about"
+        );
+    }
+
+    /// A dialog discarded at capacity must be named, with its count.
+    ///
+    /// The defect this closes: three separate loss counters existed, each
+    /// carefully documented, and NONE had a consumer outside its own unit test.
+    /// On the corpus 402 messages were evicted while the summary reported
+    /// 103,234 SIP messages and said nothing, because the packet counters sit
+    /// upstream of the store — they count what arrived, not what was kept.
+    #[test]
+    fn a_dialog_discarded_at_capacity_is_named_with_its_count() {
+        // Capacity one, rotating: the second dialog displaces the first.
+        let mut store = DialogStore::new(1, true);
+        store.process_message(invite_msg("first@example.com"));
+        store.process_message(invite_msg("second@example.com"));
+
+        assert_eq!(
+            store.total_capacity_dialogs_evicted(),
+            1,
+            "the fixture must actually evict, or this test proves nothing"
+        );
+
+        let msg = retention_summary(&store).expect("an eviction must be reported");
+        assert!(
+            msg.contains('1') && msg.contains("discarded at capacity"),
+            "the warning must carry the count and the cause: {msg}"
+        );
+        assert!(
+            msg.contains("what sipnab READ"),
+            "it must say the totals above are not what was kept: {msg}"
+        );
+    }
+
     /// Retention must follow whether *this* run can read the buffers back.
     ///
     /// The whole defect was that it did not: retention was hardcoded off, so
