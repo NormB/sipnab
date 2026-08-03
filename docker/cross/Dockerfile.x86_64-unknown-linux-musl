@@ -9,3 +9,6 @@ RUN apt-get update && apt-get install -y flex bison wget xz-utils && rm -rf /var
     && make -j$(nproc) \
     && make install \
     && cd .. && rm -rf libpcap-1.10.5 libpcap-1.10.5.tar.xz
+
+RUN chown -R 1000:1000 /usr/local/x86_64-linux-musl
+USER 1000
