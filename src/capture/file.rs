@@ -556,6 +556,14 @@ fn read_opened_inner(
 ) -> Result<FileRead> {
     let link_type = cap.get_datalink().0;
     let replay = config.replay;
+    // The source stamped on every packet this file yields. Interned ONCE per
+    // file: the value is the same string for all of them, so each packet
+    // clones an `Arc` (a refcount increment) instead of allocating the path
+    // again — a 14M-packet corpus would otherwise pay 14M allocations for one
+    // constant. Cheap enough that no packet is left unstamped, which matters:
+    // an unstamped packet is one the pcapng writer cannot tell apart from the
+    // previous file's, and it then names the wrong file as its origin.
+    let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
     // First and last packet of THIS file, tracked unconditionally: `prev_ts`
     // above is the replay pacing state and is only written in replay mode.
     let mut span: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
@@ -625,12 +633,16 @@ fn read_opened_inner(
                     *prev_ts = Some(ts);
                 }
 
-                let packet = Packet::new(
+                let packet = Packet::with_source(
                     ts,
                     pkt.data.to_vec(),
                     pkt.header.caplen as usize,
                     pkt.header.len as usize,
-                    None, // File captures have no interface name
+                    // The file IS this packet's source. Without it a
+                    // multi-file set is indistinguishable downstream and the
+                    // pcapng export attributes every frame to the first
+                    // input — including the ones read out of the others.
+                    Some(std::sync::Arc::clone(&source)),
                     link_type,
                 );
 
@@ -815,12 +827,17 @@ mod tests {
             .join("udp_5060.pcap")
     }
 
-    /// Helper: a real multi-packet SIP/RTP sample (classic pcap).
-    fn sample_pcap() -> std::path::PathBuf {
+    /// Helper: path to a checked-in sample capture.
+    fn sample(name: &str) -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("pcap-samples")
-            .join("sip-rtp-g711.pcap")
+            .join(name)
+    }
+
+    /// Helper: a real multi-packet SIP/RTP sample (classic pcap).
+    fn sample_pcap() -> std::path::PathBuf {
+        sample("sip-rtp-g711.pcap")
     }
 
     /// Read a capture file via `capture_file` and return the packet count.
@@ -1080,8 +1097,8 @@ mod tests {
         );
     }
 
-    /// Reading the UDP fixture yields non-empty packets with no interface
-    /// name (file captures carry none).
+    /// Reading the UDP fixture yields non-empty packets, each stamped with
+    /// the file it was read from.
     #[test]
     fn read_fixture_pcap() {
         let path = fixture_path();
@@ -1104,7 +1121,50 @@ mod tests {
         for pkt in &packets {
             assert!(!pkt.data.is_empty());
             assert!(pkt.caplen > 0);
-            assert!(pkt.interface.is_none()); // File captures have no interface
+            assert_eq!(
+                pkt.interface.as_deref(),
+                Some(path.display().to_string().as_str()),
+                "a replayed packet names the file it came from"
+            );
         }
+    }
+
+    /// Every packet of a two-file set names the file it was actually read
+    /// from — not the first file of the set.
+    ///
+    /// This is the identity the pcapng export binds its Interface Description
+    /// Blocks to. While replayed packets carried `interface: None`, the
+    /// writer had nothing to tell two same-link-type inputs apart and put
+    /// every frame on the first input's interface, so the export stated the
+    /// wrong origin for the whole of the second file.
+    #[test]
+    fn each_file_of_a_set_stamps_its_own_source() {
+        let a = sample("register-invite-reinvite-bye.pcap");
+        let b = sample("sip-rtp-g711.pcap");
+        if !a.exists() || !b.exists() {
+            eprintln!("Skipping: samples not found");
+            return;
+        }
+
+        let (tx, rx) = packet_channel(4096);
+        capture_files(&[a.clone(), b.clone()], &CaptureConfig::default(), tx, None)
+            .expect("read the set");
+
+        let packets: Vec<Packet> = rx.try_iter().collect();
+        let from_a = packets
+            .iter()
+            .filter(|p| p.interface.as_deref() == Some(a.display().to_string().as_str()))
+            .count();
+        let from_b = packets
+            .iter()
+            .filter(|p| p.interface.as_deref() == Some(b.display().to_string().as_str()))
+            .count();
+
+        assert!(from_a > 0 && from_b > 0, "both files contribute packets");
+        assert_eq!(
+            from_a + from_b,
+            packets.len(),
+            "every packet names one of the two files it could have come from"
+        );
     }
 }

@@ -232,21 +232,33 @@ What remains: nothing in `src/` calls `try_recv_response()`
 ([`:582`](../../src/process_isolation.rs)) — the only callers are two integration
 tests. Per-event attribution is still unavailable while a run is in progress.
 
-**Suppressed event-exec actions are completely silent.** `check_rate_limit`
-([`event_exec.rs:222-241`](../../src/output/event_exec.rs)) returns `false` and
-both callers simply return — [`:130-132`](../../src/output/event_exec.rs) and
-[`:197-199`](../../src/output/event_exec.rs). No log, no counter, no finding.
-Only the queue-depth drop warns (`MAX_QUEUE_DEPTH = 100`,
-[`:21`](../../src/output/event_exec.rs), checked at [`:288`](../../src/output/event_exec.rs)).
+**Suppressed event-exec actions were completely silent — now fixed.**
+`check_rate_limit` returned `false` and both callers simply returned. No log, no
+counter, no finding. Only the queue-depth drop warned (`MAX_QUEUE_DEPTH = 100`).
 So with the default `--exec-rate-limit 10`, the eleventh event of a second
-vanishes without trace — and a flood is exactly when the eleventh event matters.
+vanished without trace — and a flood is exactly when the eleventh event matters.
+Both callers now book the suppression in `ExecOutcomeCounts::rate_limited`, the
+queue-depth drop books `queue_full`, and a failed spawn books `spawn_failed`; the
+teardown line states all three.
 
-**Hooks that ran are never checked.** `reap_action`
-([`event_exec.rs:68-74`](../../src/output/event_exec.rs)) is
-`Ok(Some(_)) => ReapAction::Remove`: the child's exit status is matched with a
-wildcard and discarded. sipnab runs `sh -c <operator command>` and never learns
-whether the ban it asked for happened. A failing hook and a succeeding one are
-indistinguishable.
+**Hooks that ran were never checked — now fixed.** `reap_action` was
+`Ok(Some(_)) => ReapAction::Remove`: the child's exit status was matched with a
+wildcard and discarded. sipnab ran `sh -c <operator command>` and never learned
+whether the ban it asked for happened. A failing hook and a succeeding one were
+indistinguishable — measured, before the fix, as ten seconds of a hook exiting 7
+producing an empty log.
+
+`ReapAction::Exited` now carries the `ExitStatus` out of the reaper, and each
+finished child is booked as `succeeded`, `failed` or — when the status check
+itself errors — `unknown`. A failure warns with the exit status **and the command
+template that produced it**, because "a command exited 7" is not actionable and
+"`nft add element …` exited 7" is. The warn escalates by order of magnitude, the
+same way `--alert-exec` reports its suppressions, so a hook broken at packet rate
+does not turn the log into the flood it is reporting; `Drop for EventExecEngine`
+states the exact totals. Nothing is retried and nothing aborts the capture — a
+failing hook is reported and otherwise ignored, per section 5's rule that the
+evidence must survive the conditions under which a response matters most.
+`EventExecEngine::outcomes` exposes the same ledger during a run.
 
 **A fourth, not previously recorded — now fixed.** `--alert-exec` had **no rate
 limit at all.** It lives in `alerting.rs`, not `event_exec.rs`, and shared none
@@ -283,10 +295,12 @@ from its own state.
 ## 7. Recommendation
 
 **Close the blind spots first, as ordinary defects, before building anything
-new.** Log the event-exec rate-limit drop. Check the child's exit status. Expose
-the kill tally during a run rather than only at shutdown. These are small, they
-improve today's `tracing` output on their own, and until they are done no
-threshold in section 5 can be verified from the outside.
+new.** Log the event-exec rate-limit drop — **done**. Check the child's exit
+status — **done**. Expose the kill tally during a run rather than only at
+shutdown — **done**: `ScannerKillHandle::counts` returns the live snapshot and
+does not depend on anyone draining the outcome channel. These were small, they
+improved today's `tracing` output on their own, and no threshold in section 5
+could be verified from the outside until they were.
 
 The fourth item on that list — giving `--alert-exec` a real rate limit — is
 **done**, and section 6 records both what shipped and the measurement that

@@ -35,6 +35,15 @@ use crate::capture::tls;
 
 // ── Sweep clock ────────────────────────────────────────────────────
 
+/// How long an RTP stream may go unlinked to any dialog before a sweep flags
+/// it orphaned.
+///
+/// One constant because two paths sweep: the single-threaded receive loop
+/// below, and the post-merge sweep the `--cores` path runs in
+/// [`crate::parallel`]. A second copy of `30` is how those two would drift
+/// apart on the threshold after being brought together on the sweep itself.
+pub(crate) const ORPHAN_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Which clock drives the periodic sweep, and what "now" the sweep's
 /// age-based cutoffs are measured against.
 ///
@@ -147,6 +156,34 @@ impl SweepClock {
                 *last_sweep = Some(now);
                 Some(CaptureNow(now))
             }
+        }
+    }
+
+    /// The "now" a FINAL, end-of-run sweep measures its cutoffs against: the
+    /// last packet's capture timestamp offline, wall time live.
+    ///
+    /// [`take_due`](Self::take_due) answers "is the next periodic sweep due
+    /// yet". This answers "the reading is over — what time is it". The
+    /// `--cores` path needs the second question and cannot ask the first: its
+    /// stores are thread-local until the workers join, so there is no merged
+    /// store to sweep until every packet has been read. It sweeps once, after
+    /// the merge, against this instant.
+    ///
+    /// Reading the clock rather than starting a new one is what keeps that
+    /// sweep a function of the capture's bytes instead of of the reader's
+    /// speed — the property this type exists to hold.
+    ///
+    /// # Returns
+    ///
+    /// `None` offline when no packet was ever read: there is no capture time
+    /// to measure against, and an empty store has nothing to sweep.
+    ///
+    /// Unlike `take_due` this records nothing, so calling it does not disturb
+    /// the periodic schedule.
+    pub(crate) fn final_now(&self) -> Option<CaptureNow> {
+        match self {
+            Self::Live { .. } => Some(CaptureNow(chrono::Utc::now())),
+            Self::Capture { latest_packet, .. } => latest_packet.map(CaptureNow),
         }
     }
 }
@@ -1334,9 +1371,7 @@ impl BatchRunner {
             // 5 seconds of capture time, which is wall time only when live).
             if let Some(now) = sweep_clock.take_due(sweep_interval) {
                 processor.sweep();
-                stream_store
-                    .write()
-                    .mark_orphaned(now.get(), std::time::Duration::from_secs(30));
+                stream_store.write().mark_orphaned(now.get(), ORPHAN_AFTER);
                 let compacted = dialog_store.write().compact_idle(now.get());
                 if compacted.messages_evicted > 0 {
                     tracing::debug!(
@@ -3737,6 +3772,49 @@ mod tests {
             clock.take_due(FIVE),
             Some(CaptureNow(cap_ts(10))),
             "a reordered packet rewound the capture clock, postponing the sweep"
+        );
+    }
+
+    /// The end-of-run sweep's "now" is the capture's LAST timestamp, whatever
+    /// the periodic schedule happened to land on. `--cores` reads this to
+    /// sweep its merged stores once, so a value short of the final packet
+    /// would leave the last stretch of the capture unswept.
+    #[test]
+    fn final_now_is_the_captures_last_timestamp() {
+        let mut clock = SweepClock::new(true);
+        assert_eq!(clock.final_now(), None, "nothing read, nothing to sweep");
+        clock.observe(cap_ts(0));
+        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(0))));
+        assert_eq!(
+            clock.take_due(FIVE),
+            None,
+            "the first packet only starts the periodic clock"
+        );
+        clock.observe(cap_ts(900));
+        assert_eq!(
+            clock.final_now(),
+            Some(CaptureNow(cap_ts(900))),
+            "the final sweep must measure against the last packet"
+        );
+        // A periodic sweep in between must not move it, and reading it must
+        // not consume anything: the two questions are independent.
+        assert_eq!(clock.take_due(FIVE), Some(CaptureNow(cap_ts(900))));
+        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(900))));
+        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(900))));
+    }
+
+    /// Live, the end-of-run sweep is wall time — the same split `take_due`
+    /// makes. A live run's packets carry arrival times, so the two clocks
+    /// agree there and only the offline path needs the capture's own.
+    #[test]
+    fn final_now_is_wall_time_on_a_live_run() {
+        let mut clock = SweepClock::new(false);
+        clock.observe(cap_ts(0)); // years in the past, must be ignored
+        let now = clock.final_now().expect("a live clock always has a now");
+        assert!(
+            chrono::Utc::now().signed_duration_since(now.get()) < chrono::TimeDelta::seconds(5),
+            "a live final sweep's now must be wall time, got {:?}",
+            now.get()
         );
     }
 

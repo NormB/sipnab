@@ -454,11 +454,28 @@ pub struct DialogSelection<'a> {
 /// # Returns
 ///
 /// The matching dialogs with their streams, in store order.
+///
+/// # Side effects
+///
+/// Resolves this run's ICMP media evidence against `stream_store` — see the
+/// note at the top of the body for why it happens here.
 pub fn select_dialogs<'a>(
     filter: Option<&FilterExpr>,
     dialog_store: &'a super::dialog_store::DialogStore,
     stream_store: &'a crate::rtp::stream_store::StreamStore,
 ) -> DialogSelection<'a> {
+    // Tie this run's ICMP media evidence to the streams it describes, once,
+    // here. An ICMP error that quotes a media datagram carries no `Call-ID`, so
+    // the only thing that can say WHICH stream it is about — and how strong
+    // that claim is, from an exact directed 5-tuple down to no match at all —
+    // is the complete stream store. This function is the point every
+    // post-capture surface passes through holding one: `--report` and
+    // `--json-dialogs` both call it immediately before rendering, and the
+    // renderers themselves are handed a dialog's streams, never the store.
+    // Resolving once here rather than per surface is also what stops stderr,
+    // `--report` and the JSON disagreeing about the same capture.
+    crate::pipeline::resolve_icmp_media(stream_store);
+
     let mut by_call: std::collections::HashMap<&'a str, Vec<&'a RtpStream>> =
         std::collections::HashMap::new();
     for stream in stream_store.iter() {

@@ -647,11 +647,16 @@ pub fn icmp_evidence_report() -> IcmpEvidenceReport {
 ///
 /// # Side effects
 ///
-/// Frees the store and re-arms the no-evidence fast path.
+/// Frees the store and re-arms the no-evidence fast path. The RESOLVED media
+/// findings go with it: they are an answer about the store that is being
+/// discarded, and leaving them behind would let the next capture's surfaces
+/// report the previous capture's flows.
 pub fn reset_icmp_evidence() {
     *ICMP_EVIDENCE.lock() = None;
     ICMP_EVIDENCE_SEEN.store(false, std::sync::atomic::Ordering::Release);
     *MEDIA_ICMP.lock() = None;
+    *MEDIA_ICMP_RESOLVED.lock() = None;
+    MEDIA_ICMP_RESOLVED_SEEN.store(false, std::sync::atomic::Ordering::Release);
 }
 
 // ── What ICMP said about media ───────────────────────────────────────
@@ -1184,6 +1189,225 @@ pub fn icmp_media_report(streams: &StreamStore) -> IcmpMediaReport {
         flows,
         endpoints,
     }
+}
+
+// ── Getting media findings to machine-readable surfaces ──────────────
+//
+// [`icmp_media_report`] answers the question once, on stderr, at the end of a
+// run. That left every structured surface — `--report`, `--json-dialogs`, the
+// REST dialog document, MCP — unable to see a single one of these findings,
+// which is the same "evidence that reaches no consumer" defect the media
+// reader itself was written to remove, one layer up.
+//
+// Two facts decide the shape of what follows.
+//
+// **A media flow is not a dialog.** Most of these findings name no call at
+// all: on one real corpus, 205 of 514 errors matched nothing this capture
+// holds, and one more quoted too little to be keyed on a flow. A per-dialog
+// surface is therefore the WRONG home for the collection — hanging the set off
+// dialogs would silently drop every finding that has no dialog to hang from,
+// and "silently drops the majority" is how this feature got filed in the first
+// place. So the ledger is capture-wide (rendered by
+// [`crate::output::dialog_report`] as its own section), and a dialog carries
+// only the findings whose attribution NAMED that dialog, as a convenience view
+// onto the same objects. A reader of one call still sees the capture-wide
+// counters beside them, so "there is evidence here you are not looking at" is
+// never invisible.
+//
+// **The tier is part of the finding, not decoration.** Flow (the quoted
+// directed 5-tuple is exactly a tracked stream), Ssrc (read out of the quoted
+// RTP/RTCP header), Endpoint, SdpEndpoint and None are five different
+// strengths of claim, and a consumer that cannot tell them apart will present
+// a None-tier guess with the confidence of an exact 5-tuple match. That is
+// worse than omitting the finding, so every serialized finding carries
+// [`MediaIcmpFinding::attribution_tier`] and no surface may emit one without
+// it.
+//
+// The caching below exists because attribution is the one part of a finding
+// that cannot be derived from the finding: the tier is a statement about the
+// run's `StreamStore`, and the per-dialog and per-report renderers are handed a
+// dialog's streams, never the store. Resolving once, where the store is whole,
+// is also what keeps stderr, `--report` and the JSON from disagreeing about the
+// same capture.
+
+impl MediaIcmpFinding {
+    /// The attribution tier, as a stable machine-readable token.
+    ///
+    /// The five tiers are not equally strong claims — see
+    /// [`crate::rtp::stream_store::StreamStore::attribute_media_quote`] for
+    /// what each one proves. Rendered from one place so no two surfaces can
+    /// spell the same tier differently, and so a consumer can branch on it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sipnab::pipeline::icmp_media_report;
+    /// use sipnab::rtp::stream_store::StreamStore;
+    ///
+    /// // An empty run has no findings, so there is no tier to read.
+    /// let report = icmp_media_report(&StreamStore::new(1));
+    /// assert!(report.flows.is_empty());
+    /// ```
+    #[must_use]
+    pub const fn attribution_tier(&self) -> &'static str {
+        match self.matched {
+            MediaMatch::Flow => "flow",
+            MediaMatch::Ssrc => "ssrc",
+            MediaMatch::Endpoint => "endpoint",
+            MediaMatch::SdpEndpoint => "sdp_endpoint",
+            MediaMatch::None => "none",
+        }
+    }
+
+    /// What the quoted payload turned out to be, as a stable token.
+    ///
+    /// Separate from the tier because they answer different questions: this is
+    /// what the router quoted, the tier is what sipnab could tie it to. A quote
+    /// can be unmistakably RTP and match nothing (`rtp` + `none`), or match a
+    /// stream exactly with no payload left to read (`unread` + `flow`).
+    #[must_use]
+    pub const fn payload_kind(&self) -> &'static str {
+        match self.payload {
+            QuotedMediaKind::Rtp { .. } => "rtp",
+            QuotedMediaKind::Rtcp { .. } => "rtcp",
+            QuotedMediaKind::Unread => "unread",
+            QuotedMediaKind::NotMedia => "not_media",
+        }
+    }
+}
+
+/// The run's media findings, resolved once and indexed by `Call-ID`.
+///
+/// Built by [`resolve_icmp_media`] and read by [`icmp_media_findings`]. The
+/// index is built once rather than scanned per dialog because the post-capture
+/// surfaces walk every dialog in the store: a linear scan per dialog would be
+/// O(dialogs × flows) for an answer that does not vary between dialogs.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedIcmpMedia {
+    /// The capture-wide report, exactly as [`icmp_media_report`] built it.
+    report: IcmpMediaReport,
+    /// `Call-ID` → indices into `report.flows`.
+    by_call_id: std::collections::HashMap<String, Vec<usize>>,
+}
+
+impl ResolvedIcmpMedia {
+    /// Index a report by the `Call-ID`s its findings named.
+    ///
+    /// Public so a caller holding a report from [`icmp_media_report`] can index
+    /// it without going through the process-global set — which is what lets the
+    /// surfaces be tested against a known set of findings rather than against
+    /// whatever the last capture left behind.
+    #[must_use]
+    pub fn new(report: IcmpMediaReport) -> Self {
+        let mut by_call_id: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, finding) in report.flows.iter().enumerate() {
+            for call_id in &finding.call_ids {
+                by_call_id.entry(call_id.clone()).or_default().push(i);
+            }
+        }
+        Self { report, by_call_id }
+    }
+
+    /// The capture-wide report: every finding, with the totals that stay exact
+    /// past the caps.
+    #[must_use]
+    pub fn report(&self) -> &IcmpMediaReport {
+        &self.report
+    }
+
+    /// The findings whose attribution named this dialog, busiest first.
+    ///
+    /// Empty for almost every dialog, and empty for EVERY dialog when the
+    /// attribution reached no tier that names a call — which is why the
+    /// capture-wide [`report`](Self::report) is the ledger and this is a view
+    /// onto it.
+    #[must_use]
+    pub fn findings_for(&self, call_id: &str) -> Vec<&MediaIcmpFinding> {
+        self.by_call_id
+            .get(call_id)
+            .map(|idx| {
+                idx.iter()
+                    .filter_map(|&i| self.report.flows.get(i))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Resolved media findings for the current run, or an empty set.
+static MEDIA_ICMP_RESOLVED: parking_lot::Mutex<Option<std::sync::Arc<ResolvedIcmpMedia>>> =
+    parking_lot::Mutex::new(None);
+
+/// Set once [`resolve_icmp_media`] has run, so the per-dialog lookup on a
+/// capture with no media ICMP — the common case — costs one relaxed load and
+/// no lock.
+static MEDIA_ICMP_RESOLVED_SEEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The empty answer, shared so a dialog-by-dialog walk allocates nothing.
+static NO_ICMP_MEDIA: std::sync::OnceLock<std::sync::Arc<ResolvedIcmpMedia>> =
+    std::sync::OnceLock::new();
+
+/// Resolve this run's media ICMP evidence against `streams` and publish it.
+///
+/// The single point at which a media quote acquires an attribution tier. Call
+/// it once per run, from the one place holding the complete stream store; every
+/// structured surface then reads the same answer through
+/// [`icmp_media_findings`] instead of re-deriving it from the dialog-shaped
+/// fragment it happens to have been handed.
+///
+/// # Arguments
+///
+/// * `streams` — the run's stream store, merged when the run was parallel. An
+///   empty one is valid and resolves every finding to the `none` tier, which is
+///   the honest answer for a capture holding no media.
+///
+/// # Returns
+///
+/// The resolved findings, indexed by `Call-ID`.
+///
+/// # Side effects
+///
+/// Replaces the process-global resolved set. Calling it again with a more
+/// complete store re-resolves — the store only grows, so a later answer is
+/// never weaker.
+pub fn resolve_icmp_media(streams: &StreamStore) -> std::sync::Arc<ResolvedIcmpMedia> {
+    let resolved = std::sync::Arc::new(ResolvedIcmpMedia::new(icmp_media_report(streams)));
+    *MEDIA_ICMP_RESOLVED.lock() = Some(std::sync::Arc::clone(&resolved));
+    MEDIA_ICMP_RESOLVED_SEEN.store(true, std::sync::atomic::Ordering::Release);
+    resolved
+}
+
+/// This run's resolved media findings, or an empty set.
+///
+/// Empty is returned when nothing has resolved yet, NOT a set of findings with
+/// their tiers guessed at: a finding without its tier is exactly the misleading
+/// output this whole path exists to prevent, so an unresolved run reports
+/// nothing rather than reporting badly.
+#[must_use]
+pub fn icmp_media_findings() -> std::sync::Arc<ResolvedIcmpMedia> {
+    if !MEDIA_ICMP_RESOLVED_SEEN.load(std::sync::atomic::Ordering::Acquire) {
+        return std::sync::Arc::clone(NO_ICMP_MEDIA.get_or_init(Default::default));
+    }
+    MEDIA_ICMP_RESOLVED
+        .lock()
+        .as_ref()
+        .map(std::sync::Arc::clone)
+        .unwrap_or_else(|| std::sync::Arc::clone(NO_ICMP_MEDIA.get_or_init(Default::default)))
+}
+
+/// Publish a known set of findings as this run's resolved evidence.
+///
+/// Test-only. The surfaces read the process-global set, so proving that a
+/// finding reaches a surface means putting a KNOWN finding there — building one
+/// through a capture would tie every surface test to whatever a fixture's
+/// routers happened to quote, and could not produce a `sdp_endpoint` or an
+/// `endpoint` tier on demand at all.
+#[cfg(test)]
+pub fn publish_icmp_media_for_test(resolved: ResolvedIcmpMedia) {
+    *MEDIA_ICMP_RESOLVED.lock() = Some(std::sync::Arc::new(resolved));
+    MEDIA_ICMP_RESOLVED_SEEN.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// Render one media finding in plain language.
@@ -2043,5 +2267,159 @@ mod quoted_media_tests {
         assert_eq!(QuotedMediaKind::NotMedia.ssrc(), None);
         assert!(!QuotedMediaKind::Unread.is_media());
         assert!(!QuotedMediaKind::NotMedia.is_media());
+    }
+}
+
+/// Tests for the attribution tier and the resolved-findings index.
+///
+/// The tier is the part of a media finding a consumer cannot recover on its
+/// own: `flow` is an exact directed 5-tuple match against a stream sipnab
+/// watched and `none` is no match at all, and a surface that prints one where
+/// it meant the other is more misleading than a surface that prints neither.
+/// So the token each tier renders to is pinned here rather than left to
+/// whichever surface writes it out.
+#[cfg(test)]
+mod resolved_media_tests {
+    use super::{
+        IcmpMediaReport, MediaIcmpFinding, MediaMatch, QuotedMediaKind, ResolvedIcmpMedia,
+    };
+
+    /// One finding at `matched`, naming `call_ids`.
+    fn finding(matched: MediaMatch, call_ids: &[&str]) -> MediaIcmpFinding {
+        MediaIcmpFinding {
+            source: "192.0.2.1:40000".to_string(),
+            unreachable_endpoint: "192.0.2.2:20000".to_string(),
+            reported_by: "192.0.2.9".to_string(),
+            transport: "UDP",
+            description: "port unreachable".to_string(),
+            icmp_type: 3,
+            icmp_code: 3,
+            errors: 4,
+            payload: QuotedMediaKind::Rtp {
+                ssrc: 0x0BAD_F00D,
+                payload_type: 0,
+            },
+            matched,
+            streams: 1,
+            call_ids: call_ids.iter().map(|s| (*s).to_string()).collect(),
+            hint: "hint".to_string(),
+        }
+    }
+
+    /// Every tier renders to its own token, and no two share one.
+    ///
+    /// A collision here would let a consumer branching on the token treat a
+    /// guess as a measurement, which is the whole reason the tier is carried.
+    #[test]
+    fn each_attribution_tier_renders_to_its_own_token() {
+        let tiers = [
+            (MediaMatch::Flow, "flow"),
+            (MediaMatch::Ssrc, "ssrc"),
+            (MediaMatch::Endpoint, "endpoint"),
+            (MediaMatch::SdpEndpoint, "sdp_endpoint"),
+            (MediaMatch::None, "none"),
+        ];
+        for (matched, token) in tiers {
+            assert_eq!(
+                finding(matched, &[]).attribution_tier(),
+                token,
+                "{matched:?} must render as {token}"
+            );
+        }
+        let mut seen: Vec<&str> = tiers.iter().map(|(_, t)| *t).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            tiers.len(),
+            "two tiers share a token, so a consumer cannot tell them apart"
+        );
+    }
+
+    /// The payload kind is a separate fact from the tier.
+    ///
+    /// A quote can be unmistakably RTP and match nothing, or match a stream
+    /// exactly with no payload left to read. Collapsing the two would lose
+    /// which of them a reader is looking at.
+    #[test]
+    fn the_payload_kind_is_reported_separately_from_the_tier() {
+        let mut f = finding(MediaMatch::None, &[]);
+        assert_eq!(f.payload_kind(), "rtp");
+        assert_eq!(f.attribution_tier(), "none");
+        f.payload = QuotedMediaKind::Rtcp {
+            ssrc: 1,
+            packet_type: 201,
+        };
+        assert_eq!(f.payload_kind(), "rtcp");
+        f.payload = QuotedMediaKind::Unread;
+        assert_eq!(f.payload_kind(), "unread");
+        f.payload = QuotedMediaKind::NotMedia;
+        assert_eq!(f.payload_kind(), "not_media");
+    }
+
+    /// The index returns a dialog's findings and nobody else's.
+    #[test]
+    fn the_resolved_set_indexes_findings_by_the_calls_they_named() {
+        let report = IcmpMediaReport {
+            errors: 12,
+            flows: vec![
+                finding(MediaMatch::Flow, &["a@example.com"]),
+                finding(MediaMatch::Ssrc, &["a@example.com", "b@example.com"]),
+                finding(MediaMatch::None, &[]),
+            ],
+            ..IcmpMediaReport::default()
+        };
+        let resolved = ResolvedIcmpMedia::new(report);
+
+        assert_eq!(resolved.findings_for("a@example.com").len(), 2);
+        assert_eq!(resolved.findings_for("b@example.com").len(), 1);
+        assert!(resolved.findings_for("nobody@example.com").is_empty());
+    }
+
+    /// A finding that named no call reaches the capture-wide ledger and no
+    /// dialog.
+    ///
+    /// This is the majority case on real traffic — 205 of 514 errors on one
+    /// corpus matched nothing the capture held — and it is why the ledger is
+    /// capture-wide rather than assembled from the dialogs.
+    #[test]
+    fn a_finding_that_named_no_call_is_still_in_the_capture_wide_ledger() {
+        let report = IcmpMediaReport {
+            errors: 4,
+            unattributed: 4,
+            flows: vec![finding(MediaMatch::None, &[])],
+            ..IcmpMediaReport::default()
+        };
+        let resolved = ResolvedIcmpMedia::new(report);
+
+        assert_eq!(
+            resolved.report().flows.len(),
+            1,
+            "the ledger must hold a finding no dialog can claim"
+        );
+        assert!(resolved.findings_for("a@example.com").is_empty());
+    }
+
+    /// Discarding the evidence discards the resolved answer about it.
+    ///
+    /// The resolved set is an answer ABOUT a store; leaving it behind would let
+    /// the next capture's surfaces report the previous capture's flows.
+    #[test]
+    #[serial_test::serial(icmp_evidence)]
+    fn resetting_the_evidence_drops_the_resolved_findings() {
+        let store = crate::rtp::stream_store::StreamStore::new(4);
+        super::resolve_icmp_media(&store);
+        assert!(
+            super::MEDIA_ICMP_RESOLVED_SEEN.load(std::sync::atomic::Ordering::Acquire),
+            "resolving must arm the fast path or no surface will look"
+        );
+
+        super::reset_icmp_evidence();
+
+        assert!(
+            !super::MEDIA_ICMP_RESOLVED_SEEN.load(std::sync::atomic::Ordering::Acquire),
+            "a reset that leaves the resolved set armed serves stale findings"
+        );
+        assert_eq!(super::icmp_media_findings().report().errors, 0);
     }
 }

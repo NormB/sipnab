@@ -15,11 +15,60 @@ NC='\033[0m'
 
 echo -e "${YELLOW}Running pre-commit checks...${NC}"
 
+# ── Naming what failed ─────────────────────────────────────────────
+# Gates 1 and 2 must capture their tool's output rather than let it stream:
+# gate 5 reads the test run back for the homepage count, and streaming clippy
+# would bury the one-line-per-gate summary this hook is built around. Capturing
+# it is not licence to discard it. Both used to print `FAIL` and a "run it
+# yourself" line, so whoever hit it paid for a second full run of the same
+# suite just to learn the name of the test — and until that second run finished
+# they could not tell whether the break was theirs or already on HEAD. It cost
+# an extraction of a pristine HEAD into a scratch directory to settle exactly
+# that question once.
+#
+# So every failure path below prints the part of the capture that names the
+# problem, writes the whole capture next to it, and stays bounded: this hook
+# runs on every commit and a wall of text is read as carefully as no text.
+LOG_DIR=$(git rev-parse --git-dir 2>/dev/null || echo .)
+
+# Print at most <max> lines of stdin, indented, then say how many were withheld
+# and where the rest lives.
+emit_capped() { # emit_capped <max-lines> <log-path>   (reads stdin)
+    local max="$1" log="$2" line n=0 extra=0
+    while IFS= read -r line; do
+        n=$((n + 1))
+        if [ "$n" -le "$max" ]; then
+            printf '    %s\n' "$line"
+        else
+            extra=$((extra + 1))
+        fi
+    done
+    if [ "$extra" -gt 0 ]; then
+        printf '    ... %d more line(s) in %s\n' "$extra" "$log"
+    fi
+}
+
 # ── 1. Clippy must pass ────────────────────────────────────────────
+# `--color never` so the greps below key on the diagnostic and not on whatever
+# CARGO_TERM_COLOR wrapped it in.
 echo -n "  Clippy... "
-if ! cargo clippy --features full -- -D warnings 2>/dev/null; then
+set +e
+CLIPPY_OUTPUT=$(cargo clippy --features full --color never -- -D warnings 2>&1)
+CLIPPY_RC=$?
+set -e
+if [ "$CLIPPY_RC" -ne 0 ]; then
     echo -e "${RED}FAIL${NC}"
-    echo "Fix clippy warnings before committing."
+    CLIPPY_LOG="$LOG_DIR/sipnab-pre-commit-clippy.log"
+    printf '%s\n' "$CLIPPY_OUTPUT" > "$CLIPPY_LOG"
+    # Headline and source location for each diagnostic, in order. This gate
+    # used to send clippy's stderr to /dev/null, which is where every
+    # diagnostic goes — the lint, the file and the line were all thrown away
+    # before anything read them.
+    printf '%s\n' "$CLIPPY_OUTPUT" \
+        | grep -E '^(error|warning)(\[[^]]*\])?:|^ +--> ' \
+        | emit_capped 20 "$CLIPPY_LOG"
+    echo "  Reproduce: cargo clippy --features full -- -D warnings"
+    echo "  Full output: $CLIPPY_LOG"
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"
@@ -33,12 +82,76 @@ echo -e "${GREEN}OK${NC}"
 # and feeding step 5 a truncated sum.
 echo -n "  Tests... "
 set +e
-TEST_OUTPUT=$(cargo test --features full 2>&1)
+TEST_OUTPUT=$(cargo test --features full --color never 2>&1)
 TEST_RC=$?
 set -e
 if [ "$TEST_RC" -ne 0 ] || echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
     echo -e "${RED}FAIL${NC}"
-    echo "Tests are failing or the run did not complete. Run: cargo test --features full"
+    TEST_LOG="$LOG_DIR/sipnab-pre-commit-tests.log"
+    printf '%s\n' "$TEST_OUTPUT" > "$TEST_LOG"
+    # Extractions from here on are greps that may legitimately match nothing,
+    # and an aborted report is the defect this replaced.
+    set +e
+    FAILED_TESTS=$(printf '%s\n' "$TEST_OUTPUT" \
+        | sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' | sort -u)
+    if [ -n "$FAILED_TESTS" ]; then
+        echo "  $(printf '%s\n' "$FAILED_TESTS" | wc -l | tr -d ' ') test(s) failed:"
+        printf '%s\n' "$FAILED_TESTS" | emit_capped 10 "$TEST_LOG"
+        # libtest collects each failing test's panic under
+        # `---- <name> stdout ----`, which carries the panic location and the
+        # assertion message — the two facts that decide whether the break is
+        # yours or was already there. Three tests deep is enough to see a
+        # pattern; the rest is in the log.
+        SHOWN=0
+        while IFS= read -r t; do
+            [ "$SHOWN" -ge 3 ] && break
+            SHOWN=$((SHOWN + 1))
+            BLOCK=$(printf '%s\n' "$TEST_OUTPUT" | awk -v pfx="---- $t " '
+                inb && index($0, "---- ") == 1 { exit }
+                inb && (/^failures:/ || /^test result:/) { exit }
+                index($0, pfx) == 1 { inb = 1; next }
+                inb && n == 0 && /^[[:space:]]*$/ { next }
+                inb { print; if (++n >= 12) exit }')
+            if [ -n "$BLOCK" ]; then
+                echo ""
+                echo "  $t"
+                printf '%s\n' "$BLOCK" | emit_capped 12 "$TEST_LOG"
+            fi
+        done <<< "$FAILED_TESTS"
+        SUMMARY=$(printf '%s\n' "$TEST_OUTPUT" | grep '^test result: FAILED')
+        if [ -n "$SUMMARY" ]; then
+            echo ""
+            printf '%s\n' "$SUMMARY" | emit_capped 5 "$TEST_LOG"
+        fi
+        FIRST=$(printf '%s\n' "$FAILED_TESTS" | head -1)
+        echo ""
+        case "$FIRST" in
+        *\ *)
+            # A doctest name ("src/lib.rs - foo (line 12)") is not a filter.
+            echo "  Reproduce: cargo test --features full --doc"
+            ;;
+        *)
+            echo "  Reproduce: cargo test --features full $FIRST -- --exact --nocapture"
+            ;;
+        esac
+    else
+        # No `test ... FAILED` line means the suite never got that far. A
+        # compile error names a file and a line, so print those; anything else
+        # (a signal, a linker failure, an out-of-memory kill) has no structure
+        # to key on, so print the tail. Printing the tail beats printing
+        # nothing, which is what this did for every one of these cases.
+        BUILD_ERRORS=$(printf '%s\n' "$TEST_OUTPUT" \
+            | grep -E '^(error|warning)(\[[^]]*\])?:|^ +--> ')
+        if [ -n "$BUILD_ERRORS" ]; then
+            echo "  The suite did not build:"
+            printf '%s\n' "$BUILD_ERRORS" | emit_capped 20 "$TEST_LOG"
+        else
+            echo "  The run ended without naming a test (exit $TEST_RC). Last lines:"
+            printf '%s\n' "$TEST_OUTPUT" | tail -n 20 | emit_capped 20 "$TEST_LOG"
+        fi
+        echo "  Reproduce: cargo test --features full"
+    fi
+    echo "  Full output: $TEST_LOG"
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"

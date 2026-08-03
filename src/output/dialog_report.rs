@@ -24,8 +24,15 @@ use crate::sip::dialog::{DialogState, SipDialog};
 ///
 /// The formatted report as a `String` (despite the name, nothing is
 /// printed): a fixed-width dialog table, then an "RTP Streams:" table for
-/// associated streams and an "Orphaned Streams:" table, each section
-/// omitted when empty.
+/// associated streams, an "Orphaned Streams:" table, and an ICMP media
+/// section, each omitted when empty.
+///
+/// The ICMP section is read from the run's resolved evidence
+/// ([`crate::pipeline::icmp_media_findings`]) rather than taken as an
+/// argument, for the reason `diagnose_signaling` reads its own: an ICMP error
+/// is not a `SipDialog` and not an `RtpStream`, so it cannot arrive through
+/// either slice, and a capture that recorded none behaves exactly as it did
+/// before the section existed.
 pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> String {
     let mut out = String::with_capacity(4096);
 
@@ -166,7 +173,98 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
         }
     }
 
+    // ── What ICMP said about media ──────────────────────────────────
+    write_icmp_media_section(&mut out, &crate::pipeline::icmp_media_findings());
+
     out
+}
+
+/// Append the capture-wide ICMP media section, or nothing.
+///
+/// # This section is the LEDGER, and it is capture-wide on purpose
+///
+/// A media flow is not a dialog. On one real corpus, 205 of 514 ICMP errors
+/// quoting non-SIP traffic matched nothing the capture held and one more quoted
+/// too little even to be keyed on a flow — so a per-dialog rendering could show
+/// at most the 308 that reached a stream or an SDP endpoint, and would drop the
+/// rest without saying so. This section therefore reports every retained flow
+/// and every outcome counter, and the per-dialog JSON carries only the findings
+/// whose attribution named a call. Two views, one set of objects.
+///
+/// It is not narrowed by `--filter` for the same reason: a filter selects
+/// dialogs, and most of these findings belong to none. The heading says
+/// "capture-wide" so nobody reads it as filtered.
+///
+/// # Every row names its tier
+///
+/// `Tier` is the first column, before the addresses, because it is what decides
+/// whether the row is a measurement or a lead: `flow` is an exact directed
+/// 5-tuple match against a stream sipnab watched, `none` is no match at all.
+/// A table that showed the endpoint without the tier would invite a reader to
+/// act on all five as though they were the first.
+///
+/// # Three outcomes, never two
+///
+/// `unkeyed` counts errors whose quote stopped before the transport header, so
+/// they have no flow to match. That is a different state from "matched
+/// nothing", and the summary keeps them apart — the invariants
+/// `attributed + unattributed == errors` and
+/// `sum(row errors) + unkeyed + untracked == errors` are only checkable while
+/// they stay apart.
+fn write_icmp_media_section(out: &mut String, resolved: &crate::pipeline::ResolvedIcmpMedia) {
+    let report = resolved.report();
+    if report.errors == 0 {
+        return;
+    }
+
+    let _ = writeln!(out);
+    let _ = writeln!(out, "ICMP (media, capture-wide):");
+    let _ = writeln!(
+        out,
+        "{} error(s) quoting non-SIP traffic, {} of them media, across {} flow(s) and {} \
+         endpoint(s).",
+        report.errors,
+        report.media,
+        report.flows.len(),
+        report.endpoints.len(),
+    );
+    let _ = writeln!(
+        out,
+        "Attributed to a stream or SDP endpoint: {}; matched nothing this capture holds: {}. \
+         Of those, {} quoted too little to name a flow and {} reached no flow because the \
+         tracking cap was full; {} endpoint(s) went untallied.",
+        report.attributed,
+        report.unattributed,
+        report.unkeyed,
+        report.untracked_flows,
+        report.untallied_endpoints,
+    );
+
+    if report.flows.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(
+        out,
+        "{:<13} {:<9} {:<7} {:<8} {:<6} {:<22} {:<22} {:<16} Description",
+        "Tier", "Payload", "Errors", "Streams", "Calls", "Source", "Unreachable", "Reported by",
+    );
+    let _ = writeln!(out, "{}", "-".repeat(122));
+    for f in &report.flows {
+        let _ = writeln!(
+            out,
+            "{:<13} {:<9} {:<7} {:<8} {:<6} {:<22} {:<22} {:<16} {}",
+            f.attribution_tier(),
+            f.payload_kind(),
+            f.errors,
+            f.streams,
+            f.call_ids.len(),
+            f.source,
+            f.unreachable_endpoint,
+            f.reported_by,
+            f.description,
+        );
+    }
 }
 
 /// Convert a `DialogState` to a short display string.
@@ -749,5 +847,193 @@ mod tests {
         // ASCII sanity: whole chars that fit, no ellipsis when there is no room.
         assert_eq!(truncate_str("hello", 0), "");
         assert_eq!(truncate_str("hello", 3), "hel");
+    }
+
+    // ── ICMP media section ─────────────────────────────────────────────
+
+    /// One finding at `matched`, naming `call_ids`.
+    fn media_finding(
+        matched: crate::pipeline::MediaMatch,
+        call_ids: &[&str],
+    ) -> crate::pipeline::MediaIcmpFinding {
+        crate::pipeline::MediaIcmpFinding {
+            source: "192.0.2.1:40000".to_string(),
+            unreachable_endpoint: "192.0.2.2:20000".to_string(),
+            reported_by: "192.0.2.9".to_string(),
+            transport: "UDP",
+            description: "port unreachable".to_string(),
+            icmp_type: 3,
+            icmp_code: 3,
+            errors: 4,
+            payload: crate::pipeline::QuotedMediaKind::Rtp {
+                ssrc: 0x0BAD_F00D,
+                payload_type: 0,
+            },
+            matched,
+            streams: 1,
+            call_ids: call_ids.iter().map(|s| (*s).to_string()).collect(),
+            hint: "audio sent that way is discarded".to_string(),
+        }
+    }
+
+    /// A resolved set with one finding per tier and all three outcomes used.
+    fn resolved_one_per_tier() -> crate::pipeline::ResolvedIcmpMedia {
+        use crate::pipeline::MediaMatch;
+        let flows: Vec<_> = [
+            MediaMatch::Flow,
+            MediaMatch::Ssrc,
+            MediaMatch::Endpoint,
+            MediaMatch::SdpEndpoint,
+            MediaMatch::None,
+        ]
+        .into_iter()
+        .map(|m| media_finding(m, &["call-1@example.com"]))
+        .collect();
+        crate::pipeline::ResolvedIcmpMedia::new(crate::pipeline::IcmpMediaReport {
+            errors: 23,
+            media: 20,
+            attributed: 16,
+            unattributed: 7,
+            unkeyed: 3,
+            untracked_flows: 0,
+            untallied_endpoints: 0,
+            flows,
+            endpoints: Vec::new(),
+        })
+    }
+
+    /// Every row names its tier, and all five tiers can be told apart.
+    ///
+    /// The tier is what decides whether a row is a measurement or a lead. A
+    /// table that showed the endpoint without it would invite a reader to act
+    /// on a `none`-tier guess as though it were an exact 5-tuple match.
+    #[test]
+    fn every_media_row_names_its_attribution_tier() {
+        let mut out = String::new();
+        write_icmp_media_section(&mut out, &resolved_one_per_tier());
+
+        let (_, table) = out
+            .split_once("Description")
+            .unwrap_or_else(|| panic!("the section rendered no table:\n{out}"));
+        let rows: Vec<&str> = table
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('-'))
+            .collect();
+        assert_eq!(rows.len(), 5, "one row per finding:\n{out}");
+        for (i, row) in rows.iter().enumerate() {
+            let tier = row.split_whitespace().next().unwrap_or("");
+            assert!(
+                ["flow", "ssrc", "endpoint", "sdp_endpoint", "none"].contains(&tier),
+                "row {i} opens with {tier:?}, which is not an attribution tier:\n{out}"
+            );
+        }
+        for tier in ["flow", "ssrc", "endpoint", "sdp_endpoint", "none"] {
+            assert_eq!(
+                rows.iter()
+                    .filter(|r| r.split_whitespace().next() == Some(tier))
+                    .count(),
+                1,
+                "tier {tier} must appear exactly once:\n{out}"
+            );
+        }
+    }
+
+    /// The summary keeps `unkeyed` as its own outcome.
+    ///
+    /// A quote that stopped before the ports has no flow to match — a third
+    /// state, not "matched nothing". Folding it away would make the two
+    /// invariants #98 asserts uncheckable from the report.
+    #[test]
+    fn the_media_summary_reports_unkeyed_separately() {
+        let resolved = resolved_one_per_tier();
+        let mut out = String::new();
+        write_icmp_media_section(&mut out, &resolved);
+
+        assert!(
+            out.contains("3 quoted too little to name a flow"),
+            "the unkeyed count must be stated, not folded into unattributed:\n{out}"
+        );
+        assert!(
+            out.contains("matched nothing this capture holds: 7"),
+            "the unattributed count must be stated:\n{out}"
+        );
+        // The report is the surface an invariant is checked FROM, so the
+        // numbers it prints must still add up.
+        let r = resolved.report();
+        assert_eq!(r.attributed + r.unattributed, r.errors);
+        assert_eq!(
+            r.flows.iter().map(|f| f.errors).sum::<u64>() + r.unkeyed + r.untracked_flows,
+            r.errors
+        );
+    }
+
+    /// A finding no dialog can claim is still printed.
+    ///
+    /// On one real corpus 205 of 514 errors matched nothing the capture held.
+    /// A section assembled from dialogs would show none of them, which is the
+    /// invisibility this section exists to end.
+    #[test]
+    fn a_finding_that_named_no_call_is_still_printed() {
+        use crate::pipeline::{IcmpMediaReport, MediaMatch, ResolvedIcmpMedia};
+        let resolved = ResolvedIcmpMedia::new(IcmpMediaReport {
+            errors: 4,
+            unattributed: 4,
+            flows: vec![media_finding(MediaMatch::None, &[])],
+            ..IcmpMediaReport::default()
+        });
+        let mut out = String::new();
+        write_icmp_media_section(&mut out, &resolved);
+
+        let (_, table) = out
+            .split_once("Description")
+            .unwrap_or_else(|| panic!("a finding with no call produced no table:\n{out}"));
+        assert!(
+            table.lines().any(|l| l.starts_with("none ")),
+            "the unattributed finding must be printed:\n{out}"
+        );
+    }
+
+    /// A capture with no media ICMP raises no section.
+    ///
+    /// Absent rather than empty, so "no ICMP section" reads as "this capture
+    /// had none" and stays true.
+    #[test]
+    fn a_capture_with_no_media_icmp_raises_no_section() {
+        let mut out = String::new();
+        write_icmp_media_section(&mut out, &crate::pipeline::ResolvedIcmpMedia::default());
+        assert!(
+            out.is_empty(),
+            "silence when there is nothing to say: {out}"
+        );
+    }
+
+    /// The whole report carries the section, not just the writer.
+    ///
+    /// The writer can be right while nothing calls it, which was the state
+    /// this task started from.
+    #[test]
+    #[serial_test::serial(icmp_evidence)]
+    fn the_report_carries_the_media_section() {
+        let dialog = make_completed_dialog();
+
+        crate::pipeline::reset_icmp_evidence();
+        let clean = print_dialog_report(&[&dialog], &[]);
+        assert!(
+            !clean.contains("ICMP (media"),
+            "a capture with no media ICMP must not grow a section:\n{clean}"
+        );
+
+        crate::pipeline::publish_icmp_media_for_test(resolved_one_per_tier());
+        let report = print_dialog_report(&[&dialog], &[]);
+        crate::pipeline::reset_icmp_evidence();
+
+        assert!(
+            report.contains("ICMP (media, capture-wide):"),
+            "the report dropped the media section:\n{report}"
+        );
+        assert!(
+            report.contains("sdp_endpoint"),
+            "the weakest attributed tier must still reach the report:\n{report}"
+        );
     }
 }

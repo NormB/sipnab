@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Utc};
 use std::net::IpAddr;
+use std::sync::Arc;
 
 /// Pre-parsed addressing metadata for packets that arrive from a source
 /// which already knows the inner addresses (e.g. a HEP listener that
@@ -46,8 +47,21 @@ pub struct Packet {
     pub caplen: usize,
     /// Original length of the packet on the wire.
     pub origlen: usize,
-    /// Name of the capture interface, if from a live source.
-    pub interface: Option<String>,
+    /// Where this packet came from: the capture device for live capture, the
+    /// capture FILE for replay, the listener address for HEP. `None` only for
+    /// sources that genuinely have no identity (synthetic packets).
+    ///
+    /// This is what the pcapng writer turns into an Interface Description
+    /// Block, so it is the export's claim about the packet's origin — see
+    /// [`crate::capture::writer::PcapWriter::write`].
+    ///
+    /// `Arc<str>` rather than `String` because the value is CONSTANT for the
+    /// whole of a source and is stamped on every packet: a 14M-packet replay
+    /// interns the path once per file and pays a refcount increment per
+    /// packet, where an owned `String` would be 14M allocations of the same
+    /// bytes. Cloning is cheap enough that no hot path has an excuse to skip
+    /// the stamp; construct with [`Packet::with_source`] to reuse the handle.
+    pub interface: Option<Arc<str>>,
     /// Pcap link-layer header type (e.g., `1` for `DLT_EN10MB`). Ignored
     /// when `pre_parsed` is `Some`.
     pub link_type: i32,
@@ -71,7 +85,7 @@ impl Packet {
     /// * `caplen` — number of bytes actually captured (may be < `origlen`
     ///   when the capture used a snap length).
     /// * `origlen` — original on-the-wire length of the packet in bytes.
-    /// * `interface` — name of the live capture interface, if any.
+    /// * `interface` — name of the source this packet came from, if known.
     /// * `link_type` — pcap link-layer header type (e.g. 1 = `DLT_EN10MB`).
     ///
     /// # Returns
@@ -85,6 +99,45 @@ impl Packet {
         interface: Option<String>,
         link_type: i32,
     ) -> Self {
+        Self::with_source(
+            timestamp,
+            data,
+            caplen,
+            origlen,
+            interface.map(Arc::from),
+            link_type,
+        )
+    }
+
+    /// As [`new`](Self::new), but takes an already-interned source handle.
+    ///
+    /// The source name is the same string for every packet of a capture file
+    /// or device, so a reader interns it once and clones the handle per
+    /// packet — a refcount increment instead of an allocation. Use this on
+    /// any path that stamps a source onto a whole stream;
+    /// [`new`](Self::new) is the convenience wrapper for the one-off callers
+    /// that already hold a `String`.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` — capture time of the packet (UTC).
+    /// * `data` — raw packet bytes beginning at the link layer.
+    /// * `caplen` — number of bytes actually captured (may be < `origlen`).
+    /// * `origlen` — original on-the-wire length of the packet in bytes.
+    /// * `source` — interned name of the device/file/listener it came from.
+    /// * `link_type` — pcap link-layer header type (e.g. 1 = `DLT_EN10MB`).
+    ///
+    /// # Returns
+    ///
+    /// A `Packet` whose `data` starts at the link layer.
+    pub fn with_source(
+        timestamp: DateTime<Utc>,
+        data: Vec<u8>,
+        caplen: usize,
+        origlen: usize,
+        source: Option<Arc<str>>,
+        link_type: i32,
+    ) -> Self {
         // `data` holds exactly the captured bytes, so `caplen` must equal
         // `data.len()` (snap-length truncation shortens `data` too; only
         // `origlen` may exceed it). Catch a desynced caller in debug builds
@@ -92,7 +145,7 @@ impl Packet {
         debug_assert_eq!(
             caplen,
             data.len(),
-            "Packet::new: caplen ({caplen}) must equal data.len() ({})",
+            "Packet::with_source: caplen ({caplen}) must equal data.len() ({})",
             data.len(),
         );
         Self {
@@ -100,7 +153,7 @@ impl Packet {
             data: data.into(),
             caplen,
             origlen,
-            interface,
+            interface: source,
             link_type,
             pre_parsed: None,
         }
@@ -136,7 +189,7 @@ impl Packet {
             data: data.into(),
             caplen: len,
             origlen: len,
-            interface,
+            interface: interface.map(Arc::from),
             link_type: 0,
             pre_parsed: Some(pre_parsed),
         }
