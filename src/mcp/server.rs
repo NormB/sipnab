@@ -289,6 +289,96 @@ impl SipnabMcp {
     }
 }
 
+impl SipnabMcp {
+    /// The suppression list governing a lint run, explicit or discovered.
+    ///
+    /// An explicit filename wins outright and never falls back to discovery:
+    /// naming a file that cannot be read is an error, because a caller that
+    /// pointed at one and got a full-catalogue run would read the result as
+    /// "my suppressions matched nothing".
+    ///
+    /// Discovery starts at the directory holding the capture, and only a file
+    /// replay has one — a live interface is not a path. See
+    /// [`SuppressionFile::discover`](crate::sip::lint::SuppressionFile::discover)
+    /// for why the walk stops at a project root.
+    fn resolve_suppressions(
+        &self,
+        explicit: Option<&String>,
+    ) -> Result<Option<crate::sip::lint::SuppressionFile>, rmcp::ErrorData> {
+        if let Some(name) = explicit {
+            // The same one-component, symlink-resolved resolver every file
+            // tool uses, rather than a second path check that could differ.
+            let path = self.resolve_in_root(name)?;
+            let file = crate::sip::lint::SuppressionFile::load(&path).map_err(|e| {
+                rmcp::ErrorData::invalid_params(
+                    format!("cannot read suppression file '{name}': {e}"),
+                    None,
+                )
+            })?;
+            return Ok(Some(file));
+        }
+
+        let capture_dir = {
+            let state = self.capture.read();
+            state.context.as_ref().and_then(|c| {
+                if c.live {
+                    return None;
+                }
+                std::path::Path::new(&c.name)
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+            })
+        };
+        let Some(dir) = capture_dir else {
+            return Ok(None);
+        };
+        let Some(found) = crate::sip::lint::SuppressionFile::discover(&dir) else {
+            return Ok(None);
+        };
+        // A discovered file that cannot be read is reported rather than
+        // silently ignored: it is on disk and the operator believes it applies.
+        crate::sip::lint::SuppressionFile::load(&found)
+            .map(Some)
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(
+                    format!("cannot read discovered {}: {e}", found.display()),
+                    None,
+                )
+            })
+    }
+}
+
+/// The suppression half of a lint response, always emitted.
+///
+/// Present even when nothing was suppressed and no file was found. A response
+/// carrying no field and a response carrying zero must not be the same bytes:
+/// the first says nothing about whether findings were hidden, the second says
+/// none were. The file is named because "3 findings suppressed" is
+/// unactionable when discovery walked up several directories to find it.
+fn suppression_json(
+    file: Option<&crate::sip::lint::SuppressionFile>,
+    withheld: crate::sip::lint::WithheldCounts,
+) -> serde_json::Value {
+    serde_json::json!({
+        "file": file.map(|f| f.path().display().to_string()),
+        "patterns": file.map(|f| f.patterns().to_vec()).unwrap_or_default(),
+        "findings_suppressed": withheld.suppressed,
+    })
+}
+
+/// What the run kept back, by reason, always emitted.
+///
+/// Three counts rather than one, because they send an operator to three
+/// different places: a suppression file they wrote, a severity floor they
+/// chose, and a per-rule cap that means there was simply too much.
+fn withheld_json(withheld: crate::sip::lint::WithheldCounts) -> serde_json::Value {
+    serde_json::json!({
+        "suppressed": withheld.suppressed,
+        "below_severity": withheld.below_severity,
+        "capped": withheld.capped,
+    })
+}
+
 // ── Tool parameter structs ──────────────────────────────────────────
 
 /// Filter and pagination parameters for `list_dialogs`.
@@ -557,6 +647,12 @@ pub struct LintDialogParams {
     pub rulesets: Option<Vec<String>>,
     /// Drop findings quieter than this: `info`, `notice`, `warning`, `error`.
     pub severity_min: Option<String>,
+    /// Bare filename of a suppression list inside `--mcp-file-root`.
+    ///
+    /// Wins outright over the `.sipnablint` discovery walk: a caller that
+    /// names a file has stated an intent, and quietly linting against a
+    /// different file found by searching upward would be the opposite of it.
+    pub suppression_file: Option<String>,
 }
 
 /// Parameters for `validate_message`.
@@ -567,6 +663,9 @@ pub struct ValidateMessageParams {
     pub call_id: String,
     /// Zero-based position of the message within the dialog.
     pub index: u32,
+    /// Bare filename of a suppression list inside `--mcp-file-root`. Wins
+    /// outright over the `.sipnablint` discovery walk.
+    pub suppression_file: Option<String>,
 }
 
 /// Parameters for `explain_rule`.
@@ -2668,9 +2767,14 @@ impl SipnabMcp {
                        for. Optional 'rulesets' narrows the run (all, must, rfc, \
                        interop, observation/observed, syntax, or rfc3261, \
                        rfc3264, rfc4566, rfc3551, rfc5761) and 'severity_min' \
-                       drops the quieter findings. The response names every rule \
-                       that had no input to read, so a short list is not \
-                       mistaken for a clean call."
+                       drops the quieter findings. A .sipnablint beside the \
+                       capture, or one named by 'suppression_file', silences \
+                       rules by identifier; the response always reports which \
+                       file was applied and how many findings it silenced, \
+                       alongside counts for the severity floor and the \
+                       per-rule cap. The response also names every rule that \
+                       had no input to read, so a short list is not mistaken \
+                       for a clean call."
     )]
     pub async fn lint_dialog(
         &self,
@@ -2678,6 +2782,7 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let selectors = parse_rule_selectors(params.rulesets.as_ref())?;
         let min_severity = parse_min_severity(params.severity_min.as_ref())?;
+        let suppressions = self.resolve_suppressions(params.suppression_file.as_ref())?;
 
         let payload = {
             let ds = self.dialog_store.read();
@@ -2696,9 +2801,14 @@ impl SipnabMcp {
                 crate::sip::lint::ObservedMedia::from_streams(ss.streams_for(&params.call_id));
             let stream_count = media.streams().len();
 
-            let config = crate::sip::lint::LintConfig::new().with_min_severity(min_severity);
-            let findings =
-                crate::sip::lint::Linter::new(config).lint_dialog_with_media(dialog, &media);
+            let mut config = crate::sip::lint::LintConfig::new().with_min_severity(min_severity);
+            if let Some(file) = &suppressions {
+                config = config.with_suppression_file(file);
+            }
+            let outcome = crate::sip::lint::Linter::new(config)
+                .lint_dialog_with_media_detailed(dialog, &media);
+            let withheld = outcome.withheld;
+            let findings = outcome.findings;
             // Selection runs over the findings rather than over the config,
             // because `LintConfig` holds one ruleset and the argument is a
             // list. Every rule is independent of every other, so filtering
@@ -2734,6 +2844,8 @@ impl SipnabMcp {
                 "finding_count": findings.len(),
                 "severity_counts": severity_counts(&findings),
                 "findings": findings,
+                "suppressions": suppression_json(suppressions.as_ref(), withheld),
+                "findings_withheld": withheld_json(withheld),
                 "rules_not_evaluated": skipped_rules(LintRun::WholeDialog {
                     media: stream_count > 0,
                 }),
@@ -2758,12 +2870,14 @@ impl SipnabMcp {
                        separate fields, what the message held and what the \
                        section calls for. Reads that message alone, so the rules \
                        needing a dialog or the observed media do not run; the \
-                       response names each of them."
+                       response names each of them, and reports any \
+                       .sipnablint applied with the counts it silenced."
     )]
     pub async fn validate_message(
         &self,
         Parameters(params): Parameters<ValidateMessageParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let suppressions = self.resolve_suppressions(params.suppression_file.as_ref())?;
         let payload = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
@@ -2783,8 +2897,13 @@ impl SipnabMcp {
                 )
             })?;
 
-            let linter = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new());
-            let findings = linter.lint_message(msg, index);
+            let mut config = crate::sip::lint::LintConfig::new();
+            if let Some(file) = &suppressions {
+                config = config.with_suppression_file(file);
+            }
+            let outcome = crate::sip::lint::Linter::new(config).lint_message_detailed(msg, index);
+            let withheld = outcome.withheld;
+            let findings = outcome.findings;
 
             serde_json::json!({
                 "schema_version": 1,
@@ -2794,6 +2913,8 @@ impl SipnabMcp {
                 "finding_count": findings.len(),
                 "severity_counts": severity_counts(&findings),
                 "findings": findings,
+                "suppressions": suppression_json(suppressions.as_ref(), withheld),
+                "findings_withheld": withheld_json(withheld),
                 "rules_not_evaluated": skipped_rules(LintRun::OneMessage),
                 "rule_catalogue": "docs/sip-lint-rules.md",
             })
@@ -5123,6 +5244,7 @@ mod tests {
                 call_id: "lint-1@example.com".to_string(),
                 rulesets: None,
                 severity_min: None,
+                suppression_file: None,
             }))
             .await
             .expect("lint_dialog");
@@ -5154,6 +5276,7 @@ mod tests {
                     rulesets: sets
                         .map(|s| s.into_iter().map(str::to_string).collect::<Vec<String>>()),
                     severity_min: min.map(str::to_string),
+                    suppression_file: None,
                 }))
                 .await
                 .expect("lint_dialog");
@@ -5191,6 +5314,181 @@ mod tests {
         );
     }
 
+    /// The suppression disclosure is present even when nothing was suppressed.
+    ///
+    /// A response with no field and a response with zero must not be the same
+    /// bytes. The first says nothing about whether findings were hidden; the
+    /// second says none were. Same reasoning as `stats` carrying
+    /// `unanalysed_sip_messages` at zero.
+    #[tokio::test]
+    async fn a_run_with_no_suppressions_still_reports_the_disclosure() {
+        let server = server_with_dialog("supp-0@example.com");
+        let result = server
+            .lint_dialog(Parameters(LintDialogParams {
+                call_id: "supp-0@example.com".to_string(),
+                rulesets: None,
+                severity_min: None,
+                suppression_file: None,
+            }))
+            .await
+            .expect("lint_dialog");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert!(
+            v.get("suppressions").is_some(),
+            "the field must exist even with no .sipnablint in play: {v}"
+        );
+        assert_eq!(v["suppressions"]["file"], serde_json::Value::Null);
+        assert_eq!(v["suppressions"]["patterns"], serde_json::json!([]));
+        assert_eq!(v["suppressions"]["findings_suppressed"], 0);
+        assert_eq!(
+            v["findings_withheld"],
+            serde_json::json!({"suppressed": 0, "below_severity": 0, "capped": 0}),
+            "all three counters reported, at zero"
+        );
+    }
+
+    /// An explicit suppression file applies, is named, and its effect is counted.
+    #[tokio::test]
+    async fn an_explicit_suppression_file_is_applied_named_and_counted() {
+        let root = std::env::temp_dir().join("sipnab-mcp-supp-explicit");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(
+            root.join(".sipnablint"),
+            "# the carrier strips these\nSIP-3261-8.1.1.6-MAX-FORWARDS-MISSING\n",
+        )
+        .expect("write");
+
+        let server = server_with_dialog("supp-1@example.com").with_file_root(&root);
+
+        let before = {
+            let r = server
+                .lint_dialog(Parameters(LintDialogParams {
+                    call_id: "supp-1@example.com".to_string(),
+                    rulesets: None,
+                    severity_min: None,
+                    suppression_file: None,
+                }))
+                .await
+                .expect("lint_dialog");
+            serde_json::from_str::<serde_json::Value>(&text_of(&r)).unwrap()
+        };
+        let hits = before["finding_count"].as_u64().unwrap_or(0);
+        assert!(hits > 0, "the fixture INVITE has no Max-Forwards: {before}");
+
+        let after = {
+            let r = server
+                .lint_dialog(Parameters(LintDialogParams {
+                    call_id: "supp-1@example.com".to_string(),
+                    rulesets: None,
+                    severity_min: None,
+                    suppression_file: Some(".sipnablint".to_string()),
+                }))
+                .await
+                .expect("lint_dialog");
+            serde_json::from_str::<serde_json::Value>(&text_of(&r)).unwrap()
+        };
+
+        assert_eq!(
+            after["finding_count"], 0,
+            "the rule was suppressed: {after}"
+        );
+        assert_eq!(
+            after["suppressions"]["findings_suppressed"], hits,
+            "every finding the file silenced is counted, so a clean-looking \
+             result cannot be mistaken for a clean call: {after}"
+        );
+        assert_eq!(after["findings_withheld"]["suppressed"], hits);
+        assert!(
+            after["suppressions"]["file"]
+                .as_str()
+                .is_some_and(|f| f.ends_with(".sipnablint")),
+            "the response must name the file that did it: {after}"
+        );
+        assert_eq!(
+            after["suppressions"]["patterns"],
+            serde_json::json!(["SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING"])
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A named suppression file that cannot be read is an error.
+    ///
+    /// Falling back to a full-catalogue run would hand the caller findings
+    /// their file was meant to silence, and they would read the difference as
+    /// "my patterns matched nothing".
+    #[tokio::test]
+    async fn a_named_suppression_file_that_is_missing_is_refused() {
+        let root = std::env::temp_dir().join("sipnab-mcp-supp-missing");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let server = server_with_dialog("supp-2@example.com").with_file_root(&root);
+
+        let err = server
+            .lint_dialog(Parameters(LintDialogParams {
+                call_id: "supp-2@example.com".to_string(),
+                rulesets: None,
+                severity_min: None,
+                suppression_file: Some("absent.sipnablint".to_string()),
+            }))
+            .await
+            .expect_err("a named file that is not there must not silently lint everything");
+        assert!(
+            err.message.contains("absent.sipnablint"),
+            "the refusal names the file: {}",
+            err.message
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `validate_message` carries the same disclosure as `lint_dialog`.
+    #[tokio::test]
+    async fn validate_message_reports_the_suppression_disclosure_too() {
+        let server = server_with_dialog("supp-3@example.com");
+        let result = server
+            .validate_message(Parameters(ValidateMessageParams {
+                call_id: "supp-3@example.com".to_string(),
+                index: 0,
+                suppression_file: None,
+            }))
+            .await
+            .expect("validate_message");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert!(v.get("suppressions").is_some(), "{v}");
+        assert_eq!(v["findings_withheld"]["suppressed"], 0);
+        assert_eq!(v["findings_withheld"]["below_severity"], 0);
+        assert_eq!(v["findings_withheld"]["capped"], 0);
+    }
+
+    /// A severity floor is reported as its own reason, not as suppression.
+    #[tokio::test]
+    async fn the_severity_floor_is_counted_apart_from_suppression() {
+        let server = server_with_dialog("supp-4@example.com");
+        let result = server
+            .lint_dialog(Parameters(LintDialogParams {
+                call_id: "supp-4@example.com".to_string(),
+                rulesets: None,
+                severity_min: Some("error".to_string()),
+                suppression_file: None,
+            }))
+            .await
+            .expect("lint_dialog");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["finding_count"], 0);
+        assert!(
+            v["findings_withheld"]["below_severity"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
+            "the findings dropped by the floor are counted under the floor: {v}"
+        );
+        assert_eq!(
+            v["findings_withheld"]["suppressed"], 0,
+            "and not attributed to a suppression file nobody wrote"
+        );
+    }
+
     /// `validate_message` reads one message and says which rules it could not
     /// reach, so its shorter list is not read as a cleaner message.
     #[tokio::test]
@@ -5200,6 +5498,7 @@ mod tests {
             .validate_message(Parameters(ValidateMessageParams {
                 call_id: "lint-3@example.com".to_string(),
                 index: 0,
+                suppression_file: None,
             }))
             .await
             .expect("validate_message");
@@ -5225,6 +5524,7 @@ mod tests {
             .validate_message(Parameters(ValidateMessageParams {
                 call_id: "lint-3@example.com".to_string(),
                 index: 99,
+                suppression_file: None,
             }))
             .await
             .expect_err("out of range");

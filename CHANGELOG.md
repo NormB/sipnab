@@ -12,6 +12,37 @@ entry that carries them.
 
 ### Added
 
+- **The linter's suppression file exists now, and it cannot hide silently.**
+  `LintConfig::suppress_list` parsed the file *shape* and nothing loaded a file
+  or exposed a way to name one, so the `.sipnablint` a CI user needs on day one
+  was a parser with no reader — the same parsed-and-never-consumed shape as the
+  RTCP Extended Reports and the Prometheus counters this cycle already fixed.
+
+  sipnab now looks for a `.sipnablint` beside the capture and climbs toward the
+  project root, stopping at the nearest ancestor holding a `.git`. A capture
+  living outside any project — a corpus mount, a shared drop, `/tmp` — adopts
+  nothing from above itself, because inheriting a stranger's suppression list
+  would switch off rules nobody here turned off and the run would come back
+  clean for a reason four directories away. `lint_dialog` and
+  `validate_message` take a `suppression_file` that overrides the search
+  outright, and a file it names that sipnab cannot open is refused rather than
+  quietly linted with every rule on.
+
+  Every response now carries `suppressions` (the file applied, its patterns,
+  and how many findings it silenced) and `findings_withheld`, **including when
+  every number is zero**. A response with no field and a response with zero are
+  not the same claim: the first says nothing about whether the run hid
+  findings, the second says it hid none.
+
+  The three reasons stay apart — `suppressed`, `below_severity`, `capped` —
+  because they send an operator to three different places. Making the
+  suppressed count exact meant `FindingSink::wants` had to stop
+  short-circuiting on suppression: skipping the rule saved the work and
+  destroyed the only thing that could count its findings, so a suppressed rule
+  now runs and the sink drops and counts the result. `capped` remains a lower
+  bound and says so, since a rule may stop once it hits the cap and nothing can
+  count what it never raises.
+
 - **The conformance linter is reachable from an agent.** 0.5.74 shipped the
   linter as a library module with 83 unit tests and corpus-measured hit rates,
   and registered no MCP tool for it. The capability existed and nothing could

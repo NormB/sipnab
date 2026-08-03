@@ -83,6 +83,20 @@ OBS-*
 
 Patterns separate on commas, spaces or newlines, and `#` starts a comment.
 
+Put them in a `.sipnablint` and check it in beside the config it belongs to.
+sipnab looks for one next to the capture, then climbs toward the project root —
+the nearest ancestor holding a `.git` — and stops there. A capture living
+outside any project, such as a corpus mount or a shared drop, picks up nothing
+from above itself: adopting a stranger's suppression list would switch off
+rules nobody on this project turned off, and the run would come back clean for
+a reason four directories away.
+
+Suppression never hides itself. Every `lint_dialog` and `validate_message`
+response names the file it applied and counts what that file silenced, next to
+separate counts for the severity floor and the per-rule cap. A short finding
+list always says why it is short — see [the MCP page](mcp.md) for the exact
+fields.
+
 One further guard rail keeps CI readable: a single rule reports at most 25
 findings per dialog by default. A dialog retransmitting an `INVITE` eleven
 times trips a message rule eleven times, and every one of them is true, but
