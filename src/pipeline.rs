@@ -1626,6 +1626,18 @@ pub struct MediaDecrypt<'a> {
 /// plain `&mut` stores directly. Separating the (duplicated) classification
 /// from the (legitimately different) application is the core of the pipeline
 /// unification (WS1).
+// `Sip` dominates: the enum is 288 bytes and every returned `PacketAction`
+// pays it, including the `None` that most packets on a media-heavy link
+// produce. Boxing `msg` would shrink it to a Vec plus a discriminant at the
+// cost of one allocation per SIP message, which is plausibly the better trade
+// and is tracked separately.
+//
+// Not done here because it is a hot-path change across 24 destructuring sites
+// and the case for it rests on a packet mix nobody has measured. Adding the
+// frame pointer to `SipMessage` pushed this past clippy's threshold; it did
+// not create the imbalance, which predates it. Silencing with a reason beats
+// either an unmeasured rewrite or a lint that everyone learns to ignore.
+#[allow(clippy::large_enum_variant)]
 pub enum PacketAction {
     /// Nothing to record: not SIP/RTP/RTCP, a DTLS handshake already consumed
     /// for key material, or opted out via `PipelineOptions`.
@@ -1721,7 +1733,18 @@ pub fn classify_packet(
             pp.dst_port,
             effective_transport,
         ) {
-            Ok(sip_msg) => {
+            Ok(mut sip_msg) => {
+                // Carry the frame pointer across the SIP parse boundary. The
+                // parser takes bytes and addressing, deliberately — it has no
+                // business knowing about captures — so the packet's provenance
+                // is attached here, at the one place that holds both the
+                // `ParsedPacket` and the message it produced.
+                //
+                // Cloning an `Option<FrameRef>` is a refcount bump on an
+                // `Arc<str>` already interned once per source, plus two words.
+                // Paid per SIP message rather than per packet, which on real
+                // traffic is a small fraction of the frames.
+                sip_msg.frame = pp.frame.clone();
                 let mut sdp_links = Vec::new();
                 if !opts.no_dialog
                     && let Some(sdp) = sip_msg.sdp()
@@ -1950,6 +1973,7 @@ mod quiet_bad_parse_tests {
     /// `payload`, for driving `classify_packet` without a real capture.
     fn packet(payload: &[u8]) -> ParsedPacket {
         ParsedPacket {
+            frame: None,
             timestamp: Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),

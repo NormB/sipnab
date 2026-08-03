@@ -67,6 +67,21 @@ pub struct SipMessage {
     pub transport: TransportProto,
     /// Whether this message is a retransmission of a previously seen message.
     pub(crate) is_retransmission: bool,
+    /// Pointer back to the frame this message was parsed out of.
+    ///
+    /// This is where provenance stops being an idea about packets and starts
+    /// being usable: every dialog, diagnosis, lint finding and report is built
+    /// from `SipMessage`, so a message that knows its frame lets each of those
+    /// say which bytes it came from. Without it, the pointer that
+    /// `ParsedPacket` carries dies at the SIP parse boundary and every fact
+    /// downstream is an assertion again.
+    ///
+    /// `None` for a message that came from no frame — hand-built in a test, or
+    /// reassembled from a source that could not number its frames. Downstream
+    /// must report the absence rather than substitute a neighbouring frame:
+    /// naming the wrong bytes is the failure this whole mechanism exists to
+    /// prevent.
+    pub frame: Option<crate::capture::packet::FrameRef>,
 }
 
 impl SipMessage {

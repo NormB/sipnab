@@ -26,6 +26,7 @@ use sipnab::sip::dialog_store::DialogStore;
 /// * `src_port` / `dst_port` — UDP ports stamped on the packet.
 fn parsed(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
     ParsedPacket {
+        frame: None,
         timestamp: Utc::now(),
         src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
         dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
