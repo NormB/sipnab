@@ -51,6 +51,39 @@ pub struct PreParsed {
 pub struct FrameOrigin {
     /// 0-based position of this frame within its source.
     pub ordinal: u64,
+    /// Digest of the frame's bytes as they were read, when one was computed.
+    ///
+    /// This is what lets a resolver tell "here is your frame" apart from "the
+    /// capture changed under you". Following a pointer to the WRONG frame is
+    /// worse than not following it at all — it manufactures confidence, the
+    /// same way the pcapng writer naming the wrong input file did — so a
+    /// resolver holding a digest that does not match must refuse rather than
+    /// return bytes.
+    ///
+    /// `None` when the run did not compute one. A resolver must then say the
+    /// frame is UNVERIFIED rather than implying it checked.
+    pub digest: Option<u64>,
+}
+
+/// FNV-1a over a frame's bytes.
+///
+/// Deliberately not `DefaultHasher`: its output is explicitly not guaranteed
+/// stable across Rust releases, and a digest that changes when the toolchain
+/// changes would make every stored pointer unverifiable after an upgrade —
+/// silently, and in the direction that refuses valid frames. FNV-1a is fixed
+/// by its specification, so a digest written today still means the same thing
+/// to a build from next year.
+///
+/// Not cryptographic, and does not need to be. It answers "did these bytes
+/// change", not "did someone change these bytes on purpose".
+#[must_use]
+pub fn frame_digest(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 /// A resolvable pointer to the bytes a fact came from.
