@@ -16,10 +16,10 @@ use crate::sip::message::SipMessage;
 
 use super::FindingSink;
 use super::finding::{
-    BRANCH_COOKIE, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED, CSEQ_METHOD_MISMATCH,
-    HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING, MAX_FORWARDS_RANGE,
-    MIN_SE_TOO_SMALL, REFRESHER_MISSING, SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL,
-    URI_BRACKETS, URI_PARAM_DEMOTED,
+    BRANCH_COOKIE, CONTACT_MISSING_IN_2XX, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED,
+    CSEQ_METHOD_MISMATCH, HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING,
+    MAX_FORWARDS_RANGE, MIN_SE_TOO_SMALL, REFRESHER_MISSING, RELIABLE_PROVISIONAL_WITHOUT_RSEQ,
+    SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL, URI_BRACKETS, URI_PARAM_DEMOTED,
 };
 
 /// The five header fields RFC 3261 §8.1.1 makes mandatory in every request and
@@ -178,6 +178,65 @@ pub(crate) fn lint(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     branch_cookie(msg, index, sink);
     cseq_method(msg, index, sink);
     session_timers(msg, index, sink);
+    dialog_target(msg, index, sink);
+    reliable_provisional(msg, index, sink);
+}
+
+/// Whether this response answers an `INVITE`, by its own `CSeq`.
+fn answers_invite(msg: &SipMessage) -> bool {
+    !msg.is_request
+        && msg
+            .cseq()
+            .is_some_and(|(_, m)| m.eq_ignore_ascii_case("INVITE"))
+}
+
+/// RFC 3261 §12.1.1 — a 2xx to `INVITE` has to name where the dialog lives.
+fn dialog_target(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    if !answers_invite(msg)
+        || !msg.status_code.is_some_and(|c| (200..300).contains(&c))
+        || msg.header("Contact").is_some()
+    {
+        return;
+    }
+    sink.push(
+        &CONTACT_MISSING_IN_2XX,
+        index,
+        "2xx to INVITE with no Contact header field",
+        "Contact: <sip:user@host>",
+        "§12.1.1 makes the UAS add a Contact to the response. It is the remote target for \
+         the dialog the 2xx creates, so without it the caller has nowhere to send the ACK \
+         and nowhere to send the BYE. The call answers and then cannot be hung up cleanly.",
+    );
+}
+
+/// RFC 3262 §3 — a provisional that demands 100rel has to carry an `RSeq`.
+fn reliable_provisional(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    if !requires_100rel(msg) || msg.header("RSeq").is_some() {
+        return;
+    }
+    sink.push(
+        &RELIABLE_PROVISIONAL_WITHOUT_RSEQ,
+        index,
+        "provisional carries Require: 100rel with no RSeq header field",
+        "RSeq: <sequence number>",
+        "§3 makes a reliable provisional carry both the 100rel option tag and an RSeq. The \
+         RSeq is the number the PRACK acknowledges, so without it the receiver has to \
+         acknowledge a response it cannot name, and the retransmissions run until the \
+         transaction gives up.",
+    );
+}
+
+/// Whether `msg` is a provisional response demanding reliable delivery.
+///
+/// 100 Trying is excluded on purpose: it is the one provisional never sent
+/// reliably, so a `Require` on it is a different defect from this one and
+/// reporting it here would be wrong twice over.
+pub(crate) fn requires_100rel(msg: &SipMessage) -> bool {
+    msg.status_code.is_some_and(|c| (101..200).contains(&c))
+        && msg.headers_by_name("Require").iter().any(|v| {
+            v.split(',')
+                .any(|tag| tag.trim().eq_ignore_ascii_case("100rel"))
+        })
 }
 
 /// The RFC 4028 floor, in seconds, for both `Session-Expires` and `Min-SE`.
@@ -740,6 +799,110 @@ mod tests {
             !ids(&no_timer).contains(&REFRESHER_MISSING.id),
             "{:?}",
             ids(&no_timer)
+        );
+    }
+
+    /// A 2xx to INVITE with no Contact leaves the dialog unroutable.
+    #[test]
+    fn a_2xx_to_invite_without_contact_is_reported() {
+        let raw = ok_to_invite(&[]);
+        assert!(
+            ids(&raw).contains(&CONTACT_MISSING_IN_2XX.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    /// The Contact rule is confined to 2xx answers to INVITE.
+    ///
+    /// A 2xx to REGISTER or BYE creates no dialog, and a provisional is not
+    /// the response §12.1.1 governs. Without these guards the rule fires on
+    /// ordinary conformant traffic.
+    #[test]
+    fn the_contact_rule_ignores_other_responses() {
+        let with_contact = ok_to_invite(&["Contact: <sip:bob@192.0.2.2>"]);
+        assert!(!ids(&with_contact).contains(&CONTACT_MISSING_IN_2XX.id));
+
+        let bye = ok_to_invite(&[]).replace("CSeq: 314159 INVITE", "CSeq: 314159 BYE");
+        assert!(
+            !ids(&bye).contains(&CONTACT_MISSING_IN_2XX.id),
+            "{:?}",
+            ids(&bye)
+        );
+
+        let ringing = ok_to_invite(&[]).replace("200 OK", "180 Ringing");
+        assert!(
+            !ids(&ringing).contains(&CONTACT_MISSING_IN_2XX.id),
+            "{:?}",
+            ids(&ringing)
+        );
+
+        let busy = ok_to_invite(&[]).replace("200 OK", "486 Busy Here");
+        assert!(
+            !ids(&busy).contains(&CONTACT_MISSING_IN_2XX.id),
+            "{:?}",
+            ids(&busy)
+        );
+    }
+
+    /// A provisional demanding 100rel must carry the number the PRACK cites.
+    #[test]
+    fn a_reliable_provisional_without_rseq_is_reported() {
+        let raw = ok_to_invite(&["Require: 100rel", "Contact: <sip:bob@192.0.2.2>"])
+            .replace("200 OK", "183 Session Progress");
+        assert!(
+            ids(&raw).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    /// The RSeq rule stays off everything it does not govern.
+    ///
+    /// 100 Trying is never sent reliably, a provisional with an RSeq is
+    /// correct, and 100rel in a Require on a final response is a different
+    /// question entirely.
+    #[test]
+    fn the_rseq_rule_is_confined_to_reliable_provisionals() {
+        let with_rseq =
+            ok_to_invite(&["Require: 100rel", "RSeq: 1"]).replace("200 OK", "183 Session Progress");
+        assert!(!ids(&with_rseq).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
+
+        // 100 Trying is the one provisional that is never reliable.
+        let trying = ok_to_invite(&["Require: 100rel"]).replace("200 OK", "100 Trying");
+        assert!(
+            !ids(&trying).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
+            "{:?}",
+            ids(&trying)
+        );
+
+        // A provisional that never asked for reliability.
+        let plain = ok_to_invite(&[]).replace("200 OK", "180 Ringing");
+        assert!(!ids(&plain).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
+
+        // A final response is out of scope even carrying the tag.
+        let final_resp = ok_to_invite(&["Require: 100rel", "Contact: <sip:b@192.0.2.2>"]);
+        assert!(!ids(&final_resp).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id));
+    }
+
+    /// The option tag is matched per comma-separated entry, case-insensitively.
+    #[test]
+    fn the_100rel_tag_is_matched_as_a_whole_entry() {
+        let multi =
+            ok_to_invite(&["Require: timer, 100REL"]).replace("200 OK", "183 Session Progress");
+        assert!(
+            ids(&multi).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
+            "{:?}",
+            ids(&multi)
+        );
+
+        // A tag that merely contains the text is not the tag.
+        let lookalike =
+            ok_to_invite(&["Require: no100relhere"]).replace("200 OK", "183 Session Progress");
+        assert!(
+            !ids(&lookalike).contains(&RELIABLE_PROVISIONAL_WITHOUT_RSEQ.id),
+            "{:?}",
+            ids(&lookalike)
         );
     }
 

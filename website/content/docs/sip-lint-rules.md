@@ -168,10 +168,29 @@ These read one message on its own.
 | `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 §20.22](https://www.rfc-editor.org/rfc/rfc3261#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. |
 | `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. |
 | `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 §8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5) | The `CSeq` method disagrees with the request line. |
+| `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` | error | must | [RFC 3261 §12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) | A 2xx answer to `INVITE` carries no `Contact`, so the dialog it creates has no remote target for the `ACK` or the `BYE`. |
+| `SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ` | error | must | [RFC 3262 §3](https://www.rfc-editor.org/rfc/rfc3262#section-3) | A provisional demands `100rel` and carries no `RSeq`, so the receiver has to acknowledge a response it cannot name. |
 | `SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE` | error | must | [RFC 4028 §7.1](https://www.rfc-editor.org/rfc/rfc4028#section-7.1) | One message carries a `Session-Expires` smaller than the `Min-SE` beside it, so it asks for a refresh interval it has already declared too short. |
 | `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL` | warning | must | [RFC 4028 §4](https://www.rfc-editor.org/rfc/rfc4028#section-4) | `Session-Expires` sits below the 90-second absolute minimum. |
 | `SIP-4028-5-MIN-SE-TOO-SMALL` | warning | must | [RFC 4028 §5](https://www.rfc-editor.org/rfc/rfc4028#section-5) | `Min-SE` sits below 90 seconds, wherever it appears. |
 | `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 §9](https://www.rfc-editor.org/rfc/rfc4028#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. |
+
+### What the corpus can and cannot vouch for
+
+Three of these rules report zero against the local corpus, and the zeros do not
+all mean the same thing.
+
+`SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` is well exercised: the corpus holds
+1,989 2xx answers to `INVITE`, every one of them carrying a `Contact`. The rule
+reaches its own code path 1,989 times and declines each time, which is the
+strongest evidence available short of a positive hit.
+
+The two RFC 3262 rules are not exercised. The corpus contains exactly one
+reliable provisional and one `PRACK`, so their silence rests on their unit
+tests rather than on real traffic. Both fire on crafted input and both stay
+quiet under their guards, but nobody should read their zero as a measurement.
+Saying so is the point: an unexercised rule and a rule with nothing to find
+produce the same row, and only this note tells them apart.
 
 ### Session timers, and the section number that is easy to get wrong
 
@@ -233,6 +252,7 @@ These read a dialog's messages against each other.
 | `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT` | error | must | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | An answer shares no media format with the offer, on a stream it did not decline. |
 | `SDP-3264-6.1-ANSWER-EXTRA-FORMAT` | info | interop | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | An answer lists a format the offer never carried. |
 | `SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL` | error | must | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | The answer's direction attribute contradicts what the offer's admits. |
+| `SIP-3262-4-PRACK-MISSING` | warning | must | [RFC 3262 §4](https://www.rfc-editor.org/rfc/rfc3262#section-4) | A reliable provisional went unacknowledged in a dialog whose `INVITE` reached a final response, so the `PRACK` is absent rather than merely off the end of the capture. |
 | `SDP-3264-8.4-HOLD-CONNECTION-ZERO` | warning | should | [RFC 3264 §8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) | A re-offer blanks the connection address to signal hold. |
 
 ### An answer listing an extra codec stays legal

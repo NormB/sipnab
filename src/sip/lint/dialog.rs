@@ -21,7 +21,7 @@ use crate::sip::sdp::{SdpDirection, SdpMedia, SdpSession, effective_address};
 use super::FindingSink;
 use super::finding::{
     ACK_CSEQ_MISMATCH, ANSWER_DIRECTION_ILLEGAL, ANSWER_EXTRA_FORMAT, ANSWER_NO_COMMON_FORMAT,
-    HOLD_CONNECTION_ZERO, TO_TAG_IN_INITIAL_REQUEST,
+    HOLD_CONNECTION_ZERO, PRACK_MISSING, TO_TAG_IN_INITIAL_REQUEST,
 };
 
 /// The unspecified IPv4 address RFC 2543 used to signal hold.
@@ -111,6 +111,68 @@ pub(crate) fn lint(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
         answer_direction(pair, sink);
     }
     hold_with_unspecified_address(dialog, sink);
+    prack_for_reliable_provisionals(dialog, sink);
+}
+
+/// RFC 3262 §4 — a reliable provisional has to draw a `PRACK`.
+///
+/// # Why this is guarded three ways
+///
+/// A capture is a window, not a transcript. The naive rule — "a 100rel
+/// provisional with no PRACK behind it" — fires on every dialog whose capture
+/// stopped between the two, which on a busy trunk is a large share of them, and
+/// a rule that fires on ordinary traffic gets switched off in week one.
+///
+/// So it reports only where the capture has already proved it saw the rest of
+/// the exchange: the dialog carries a final response to the `INVITE`, which the
+/// UAS only sends after the reliable provisional is settled. If the final
+/// answer arrived and no `PRACK` appears anywhere in the dialog, the PRACK is
+/// genuinely absent rather than merely off the end of the file.
+fn prack_for_reliable_provisionals(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&PRACK_MISSING) {
+        return;
+    }
+
+    // The provisional that asked for reliability, and where it sat.
+    let Some((index, _)) = dialog
+        .messages
+        .iter()
+        .enumerate()
+        .find(|(_, m)| super::message::requires_100rel(m))
+    else {
+        return;
+    };
+
+    // Guard one: the capture has to show the exchange finishing.
+    let saw_final = dialog.messages.iter().any(|m| {
+        !m.is_request
+            && m.status_code.is_some_and(|c| c >= 200)
+            && m.cseq()
+                .is_some_and(|(_, method)| method.eq_ignore_ascii_case("INVITE"))
+    });
+    if !saw_final {
+        return;
+    }
+
+    // Guard two: a PRACK anywhere in the dialog settles it.
+    let saw_prack = dialog
+        .messages
+        .iter()
+        .any(|m| m.is_request && m.method == Some(SipMethod::Prack));
+    if saw_prack {
+        return;
+    }
+
+    sink.push(
+        &PRACK_MISSING,
+        index,
+        "provisional required 100rel, the INVITE reached a final response, and no PRACK \
+         appears in the dialog",
+        "PRACK acknowledging the RSeq of the reliable provisional",
+        "§4 makes the UAC create a PRACK for a provisional sent reliably. Without one the \
+         UAS retransmits the provisional until it gives up, which the caller hears as \
+         ringing that never becomes a call.",
+    );
 }
 
 /// RFC 3261 §8.1.1.2 — a request outside a dialog carries no `To` tag.
@@ -495,6 +557,7 @@ mod tests {
              From: <sip:alice@example.com>;tag=1928301774\r\n\
              Call-ID: lint-fixture-1\r\n\
              CSeq: {cseq} {method}\r\n\
+             Contact: <sip:bob@192.0.2.2>\r\n\
              {body}Content-Length: {}\r\n\
              \r\n{sdp}",
             sdp.len()
@@ -531,6 +594,90 @@ mod tests {
     }
 
     /// A conformant INVITE/200/ACK exchange raises nothing.
+    /// A reliable provisional, in a dialog whose INVITE reached a final answer.
+    fn reliable_183(cseq: u32) -> String {
+        format!(
+            "SIP/2.0 183 Session Progress\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK{cseq}\r\n\
+             To: <sip:bob@example.net>;tag=a6c85cf\r\n\
+             From: <sip:alice@example.com>;tag=1928301774\r\n\
+             Call-ID: lint-fixture-1\r\n\
+             CSeq: {cseq} INVITE\r\n\
+             Require: 100rel\r\n\
+             RSeq: 1\r\n\
+             Contact: <sip:bob@192.0.2.2>\r\n\
+             Content-Length: 0\r\n\
+             \r\n"
+        )
+    }
+
+    /// A PRACK acknowledging that provisional.
+    fn prack(cseq: u32) -> String {
+        format!(
+            "PRACK sip:bob@example.net SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKprack{cseq}\r\n\
+             Max-Forwards: 70\r\n\
+             To: <sip:bob@example.net>;tag=a6c85cf\r\n\
+             From: <sip:alice@example.com>;tag=1928301774\r\n\
+             Call-ID: lint-fixture-1\r\n\
+             CSeq: {cseq} PRACK\r\n\
+             RAck: 1 {cseq} INVITE\r\n\
+             Content-Length: 0\r\n\
+             \r\n"
+        )
+    }
+
+    /// A reliable provisional the dialog never acknowledged is reported.
+    #[test]
+    fn a_reliable_provisional_without_a_prack_is_reported() {
+        let got = ids(&[
+            &invite(1, "", ""),
+            &reliable_183(1),
+            &ok(1, "INVITE", ""),
+            &ack(1),
+        ]);
+        assert!(got.contains(&PRACK_MISSING.id), "{got:?}");
+    }
+
+    /// A PRACK anywhere in the dialog settles it.
+    #[test]
+    fn a_dialog_carrying_a_prack_is_silent() {
+        let got = ids(&[
+            &invite(1, "", ""),
+            &reliable_183(1),
+            &prack(1),
+            &ok(1, "INVITE", ""),
+            &ack(1),
+        ]);
+        assert!(!got.contains(&PRACK_MISSING.id), "{got:?}");
+    }
+
+    /// A capture that stops before the final answer reports nothing.
+    ///
+    /// The guard that keeps this rule off ordinary traffic. A capture is a
+    /// window, and a dialog cut off between the provisional and the PRACK has
+    /// not shown that the PRACK is missing — only that the file ended. Without
+    /// this the rule fires on a large share of any busy trunk.
+    #[test]
+    fn a_truncated_dialog_is_not_accused_of_a_missing_prack() {
+        let got = ids(&[&invite(1, "", ""), &reliable_183(1)]);
+        assert!(
+            !got.contains(&PRACK_MISSING.id),
+            "no final response means the capture never showed the rest: {got:?}"
+        );
+    }
+
+    /// A provisional that never asked for reliability needs no PRACK.
+    #[test]
+    fn an_ordinary_provisional_needs_no_prack() {
+        let ringing = reliable_183(1)
+            .replace("Require: 100rel\r\n", "")
+            .replace("RSeq: 1\r\n", "")
+            .replace("183 Session Progress", "180 Ringing");
+        let got = ids(&[&invite(1, "", ""), &ringing, &ok(1, "INVITE", ""), &ack(1)]);
+        assert!(!got.contains(&PRACK_MISSING.id), "{got:?}");
+    }
+
     #[test]
     fn a_conformant_call_raises_nothing() {
         let raws = [

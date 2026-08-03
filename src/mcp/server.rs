@@ -3535,6 +3535,10 @@ mod tests {
                 "To: <sip:bob@example.com>;tag=t2",
                 &format!("Call-ID: {call_id}"),
                 "CSeq: 1 INVITE",
+                // RFC 3261 §12.1.1: a 2xx to INVITE is the dialog's remote
+                // target. Without it this fixture is not the conformant call
+                // it claims to be, and CONTACT_MISSING_IN_2XX says so.
+                "Contact: <sip:bob@127.0.0.1>",
                 "Content-Length: 0",
             ],
             b"",
