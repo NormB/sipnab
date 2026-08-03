@@ -651,32 +651,6 @@ pub fn run_cores_file(
     }
 }
 
-/// Print what ICMP said about this run, on stderr, beside the packet totals.
-///
-/// Two blocks, because the two answer different questions and are attributed
-/// by different keys. "Why did this call fail to set up" is signalling, keyed
-/// by `Call-ID`. "Why could nobody hear anything" is media, keyed by the
-/// quoted datagram's own 5-tuple against the streams this run tracked. A
-/// reader scanning a summary should not have to open each dialog to discover
-/// that a router has been answering on the peer's behalf.
-///
-/// Called from every batch summary path — single-threaded and both `--cores`
-/// entry points. The signalling block used to be inline in the
-/// single-threaded one only, so a `--cores` run printed nothing however much
-/// ICMP the capture held. Evidence that reaches no surface is the defect this
-/// whole area exists to remove, so there is one renderer and every path calls
-/// it.
-///
-/// # Arguments
-///
-/// * `streams` — the run's stream store, merged when the run was parallel.
-///   Media quotes are resolved against it here; an empty store yields a report
-///   in which every media error is unattributed, which is honest.
-///
-/// # Side effects
-///
-/// Writes to stderr. Prints nothing at all when the capture held no ICMP,
-/// which is the common case.
 /// Whether this run should retain RTP payload bytes.
 ///
 /// Retention costs a per-packet payload clone, so it stays off unless
@@ -690,6 +664,31 @@ pub fn run_cores_file(
 /// F2 WAV export always worked against the same decoder.
 fn audio_retention_wanted(cli: &Cli) -> bool {
     cli.mcp
+}
+
+/// Arm the store's retention from that decision, and report what was decided.
+///
+/// One function rather than an `if` at the construction site, because the site
+/// had exactly the bug that shape invites: `if audio_retention_wanted(&cli) {
+/// ss.set_audio_capture(true); ... }` with no `else`. `StreamStore::new` arms
+/// retention by default — correctly, for the TUI, whose stream-detail view
+/// plays a stream straight out of `payload_buffer` (`app::tui_mode` builds its
+/// own store and keeps that default). So the one-armed `if` gated the operator
+/// *notice* and never the behaviour, and every batch run buffered audio nothing
+/// in it could read: up to 1500 frames per stream across up to 50,000 streams
+/// at the defaults, bounded per frame only by snaplen.
+///
+/// It stayed latent because the auto-BPF filter is `portrange 5060-5061`, so no
+/// RTP reaches the store to retain. It arms the moment an operator widens the
+/// filter to capture media — the first thing they do when they want audio.
+///
+/// A one-armed `if` cannot express "exactly when"; an assignment can. Taking
+/// `&mut StreamStore` keeps the decision and its effect inseparable, so a test
+/// can hold the store afterwards and read back what a run would actually do.
+fn apply_audio_retention(ss: &mut StreamStore, cli: &Cli) -> bool {
+    let wanted = audio_retention_wanted(cli);
+    ss.set_audio_capture(wanted);
+    wanted
 }
 
 /// Report what the dialog store shed, beside the totals that hide it.
@@ -1153,8 +1152,7 @@ impl BatchRunner {
             if let Some(max_frames) = config.limits.max_audio_frames {
                 ss.set_max_audio_frames(max_frames as usize);
             }
-            if audio_retention_wanted(&cli) {
-                ss.set_audio_capture(true);
+            if apply_audio_retention(&mut ss, &cli) {
                 // Retention changes this run's memory profile, so state the
                 // bound rather than letting an operator discover it under load.
                 let frames = config.limits.max_audio_frames.unwrap_or(1500);
@@ -3222,6 +3220,45 @@ mod tests {
         assert!(
             audio_retention_wanted(&cli),
             "export_audio decodes these buffers; with retention off it cannot succeed"
+        );
+    }
+
+    /// The store a run configures must end up in the state the predicate asked
+    /// for — which is a different claim from the one above, and the one that
+    /// was false in shipped builds.
+    ///
+    /// `audio_payload_is_retained_exactly_when_mcp_can_read_it` asserts the
+    /// decision and stops there. It passed throughout, because the decision was
+    /// always right; what was missing was applying it. The construction site
+    /// read `if wanted { set(true) }` with no `else`, and `StreamStore::new`
+    /// defaults retention ON for the TUI, so a non-MCP batch run computed
+    /// "false" and then retained anyway. Testing a predicate cannot catch a
+    /// caller that ignores it, so this reads the state back off the store.
+    #[test]
+    fn a_batch_run_leaves_the_store_in_the_state_the_predicate_asked_for() {
+        let mut cli = base_cli();
+
+        cli.mcp = false;
+        let mut ss = StreamStore::new(16);
+        assert!(
+            ss.audio_capture(),
+            "precondition: the default is ON, which is why the false case is \
+             the one that needs applying"
+        );
+        assert!(!apply_audio_retention(&mut ss, &cli));
+        assert!(
+            !ss.audio_capture(),
+            "a non-MCP run must leave retention OFF; leaving the constructor's \
+             default in place buffers up to 1500 frames per stream that nothing \
+             in this run can read"
+        );
+
+        cli.mcp = true;
+        let mut ss = StreamStore::new(16);
+        assert!(apply_audio_retention(&mut ss, &cli));
+        assert!(
+            ss.audio_capture(),
+            "export_audio decodes payload_buffer, so an MCP run must retain"
         );
     }
 

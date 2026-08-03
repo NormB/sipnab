@@ -9,18 +9,21 @@
 //! like a call with no media once retention was off.
 //!
 //! That is not a hypothetical. sipnab's MCP `export_audio` tool runs in batch
-//! mode, batch mode turns retention off unconditionally, and the tool has
-//! therefore never been able to succeed for any call in any capture — it
-//! failed saying "No audio streams with captured data found", which reads as a
-//! statement about the call rather than about the run.
+//! mode, and batch mode used to turn retention off unconditionally, so the tool
+//! could not succeed for any call in any capture — it failed saying "No audio
+//! streams with captured data found", which reads as a statement about the call
+//! rather than about the run. A batch run now retains exactly when it is an MCP
+//! run, which is the only batch configuration that can read the buffers back
+//! (`app::batch::apply_audio_retention`).
 //!
-//! These tests pin both halves against a real capture:
+//! Both halves stay worth pinning against a real capture, because both are
+//! still reachable — the second is what every non-MCP batch run does:
 //!
 //! - With retention on — what any run that intends to export audio must do —
 //!   the export produces a WAV of the media that was actually on the wire.
-//! - With retention off — what batch mode does today — the export refuses, and
-//!   its refusal reports the measurement (packets, codec) and names retention,
-//!   rather than denying the call had audio.
+//! - With retention off, the export refuses, and its refusal reports the
+//!   measurement (packets, codec) and names retention, rather than denying the
+//!   call had audio.
 
 #![cfg(feature = "native")]
 

@@ -375,6 +375,18 @@ impl StreamStore {
         self.audio_capture = enabled;
     }
 
+    /// Whether this store is buffering audio payloads.
+    ///
+    /// Exposed so a caller's retention decision can be asserted against the
+    /// store it configured, without routing RTP through it first. The setter
+    /// alone left the resulting state unobservable, so a caller that computed
+    /// the right answer and failed to apply it read exactly like one that
+    /// applied it — which is how `app::batch` shipped a run that retained
+    /// audio nothing in it could read.
+    pub fn audio_capture(&self) -> bool {
+        self.audio_capture
+    }
+
     /// Set the maximum number of audio frames retained per stream for WAV export.
     pub fn set_max_audio_frames(&mut self, max: usize) {
         self.max_audio_frames = max;
