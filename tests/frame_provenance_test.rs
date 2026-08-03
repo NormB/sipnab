@@ -407,3 +407,74 @@ fn an_unreadable_source_is_refused_by_name() {
         other => panic!("expected Unreadable, got {other:?}"),
     }
 }
+
+// ── the pointer survives the parse boundary ───────────────────────────
+
+/// A SIP message read from a capture knows which frame it came from, and that
+/// frame resolves back to the bytes.
+///
+/// This is the join that makes provenance usable rather than theoretical.
+/// `ParsedPacket` is where the packet's identity used to die: the SIP parser
+/// takes bytes and addressing and has no business knowing about captures, so
+/// without an explicit hand-off every dialog, diagnosis and lint finding built
+/// downstream is an assertion with nothing behind it.
+///
+/// Asserts the round trip, not just the presence of a field. A `FrameRef` that
+/// is populated but points at the wrong frame would satisfy "is_some()" and be
+/// worse than none at all.
+#[test]
+fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
+    use sipnab::capture::parse::parse_packet;
+    use sipnab::pipeline::{self, PacketAction, PipelineOptions};
+    use sipnab::rtp::heuristic::RtpHeuristic;
+
+    let pcap = format!(
+        "{}/tests/fixtures/sip_call.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let packets = read_all(&pcap);
+
+    let mut heuristic = RtpHeuristic::new();
+    let opts = PipelineOptions::default();
+    let mut checked = 0;
+
+    for pkt in &packets {
+        let Ok(pp) = parse_packet(pkt) else { continue };
+        assert_eq!(
+            pp.frame,
+            pkt.frame_ref(),
+            "the parse boundary dropped or altered the frame pointer"
+        );
+        let mut decrypt = pipeline::MediaDecrypt::default();
+        if let PacketAction::Sip { msg, .. } =
+            pipeline::classify_packet(&pp, &mut heuristic, &opts, &mut decrypt)
+        {
+            let r = msg.frame.clone().unwrap_or_else(|| {
+                panic!("a SIP message parsed from a capture must know its frame")
+            });
+
+            // The pointer must lead back to the frame this message was in --
+            // and `resolve` verifies the digest, so a pointer aimed one frame
+            // off is refused rather than quietly returning a neighbour.
+            let got = resolve(&r).expect("the message's own frame must resolve");
+            assert!(
+                got.is_verified(),
+                "the reader recorded a digest, so following the pointer must \
+                 verify rather than report UNVERIFIED"
+            );
+            assert_eq!(
+                got.bytes(),
+                &pkt.data[..],
+                "the pointer resolved to bytes other than the frame this \
+                 message was parsed from"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked >= 2,
+        "the fixture must yield at least two SIP messages for this to say \
+         anything; it yielded {checked}"
+    );
+}

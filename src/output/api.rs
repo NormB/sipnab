@@ -1742,6 +1742,7 @@ mod tests {
         use crate::rtp::parser::RtpHeader;
 
         let parsed = crate::capture::ParsedPacket {
+            frame: None,
             timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("ts"),
             src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
@@ -1889,6 +1890,7 @@ mod tests {
             let mut ss = state.stream_store.write();
             for seq in 1..=5u16 {
                 let parsed = crate::capture::ParsedPacket {
+                    frame: None,
                     timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
                     src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                     dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),

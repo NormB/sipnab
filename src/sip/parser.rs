@@ -310,6 +310,7 @@ pub fn parse_sip_bytes(
     let (headers, body_range, parse_error) = parse_headers_and_body(data, header_start);
 
     Ok(SipMessage {
+        frame: None,
         raw: data.clone(),
         is_request: first.is_request,
         method: first.method,

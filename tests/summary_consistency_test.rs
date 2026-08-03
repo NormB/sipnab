@@ -132,6 +132,7 @@ fn stream_summary_canonical_keys() {
     rtp[3] = 0x01;
     let hdr = sipnab::rtp::parser::parse_rtp_header(&rtp).expect("rtp parses");
     let pp = sipnab::capture::parse::ParsedPacket {
+        frame: None,
         timestamp: chrono::Utc::now(),
         src_addr: addr("10.0.0.1"),
         dst_addr: addr("10.0.0.2"),

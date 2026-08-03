@@ -647,6 +647,7 @@ mod tests {
         use crate::capture::parse::TransportProto;
         use crate::rtp::parser::RtpHeader;
         let parsed = ParsedPacket {
+            frame: None,
             timestamp: Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),

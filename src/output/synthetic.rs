@@ -97,6 +97,7 @@ mod tests {
 
         let large_body = vec![b'X'; 70_000]; // > u16::MAX (65535)
         let msg = SipMessage {
+            frame: None,
             raw: large_body.into(),
             is_request: true,
             method: Some(crate::sip::SipMethod::Invite),

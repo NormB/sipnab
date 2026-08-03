@@ -517,6 +517,7 @@ mod tests {
     fn sip_message_stir_shaken_missing_header() {
         use std::net::{IpAddr, Ipv4Addr};
         let msg = SipMessage {
+            frame: None,
             raw: Default::default(),
             is_request: true,
             method: Some(crate::sip::SipMethod::Invite),
@@ -592,6 +593,7 @@ mod tests {
         let identity_value = build_identity_header(payload);
 
         let msg = SipMessage {
+            frame: None,
             raw: Default::default(),
             is_request: true,
             method: Some(crate::sip::SipMethod::Invite),

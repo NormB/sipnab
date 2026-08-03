@@ -181,6 +181,7 @@ fn store_with_stream(
         store.link_endpoint(IpAddr::V4(dead_peer()), dst_port, call_id, &[]);
     }
     let parsed = ParsedPacket {
+        frame: None,
         timestamp: Utc
             .with_ymd_and_hms(2024, 1, 15, 11, 59, 0)
             .single()

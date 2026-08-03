@@ -1245,6 +1245,7 @@ mod tests {
     /// payload.
     fn make_parsed(src_port: u16, dst_port: u16, payload_len: usize) -> ParsedPacket {
         ParsedPacket {
+            frame: None,
             timestamp: DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
