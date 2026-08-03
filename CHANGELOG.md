@@ -8,12 +8,62 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [0.5.77] - Unreleased
+## [0.5.77] - 2026-08-03
 
-Nothing yet. `Cargo.toml` moved to 0.5.77 so that work landing after the
-0.5.76 entry below reports a version distinguishable from it — a build of this
-tree calling itself 0.5.76 would be indistinguishable from the tree that entry
-describes, which is exactly the confusion a version number exists to prevent.
+**0.5.76 was never published**, so this release carries its entry as well as
+this one. Read both: the capture-sizing work described under 0.5.76 reaches
+users here for the first time.
+
+Both fixes below came out of reviewing that capture work before releasing it,
+and both are the same shape — a value computed correctly and then either not
+applied or not reported. Each had a test that passed throughout, because each
+test asserted the decision rather than its effect.
+
+### Fixed
+
+- **Every batch run buffered RTP audio that nothing in it could read.**
+  `StreamStore` arms payload retention by default, which is right for the TUI —
+  its stream-detail view plays a stream straight out of that buffer. The batch
+  path then read `if audio_retention_wanted(&cli) { set(true) }` with no `else`,
+  and a one-armed `if` cannot switch off something already on, so the condition
+  gated the operator *notice* and never the behaviour. Only the MCP
+  `export_audio` tool consumes those buffers in batch mode, so every run without
+  `--mcp` retained up to 1500 frames per stream across up to 50,000 streams at
+  the defaults, bounded per frame only by `--snaplen`, for a reader that did not
+  exist. It stayed invisible because the auto-generated filter is
+  `portrange 5060-5061` and no RTP reaches the store to retain — it would have
+  armed the moment an operator widened the filter to capture media, which is the
+  first thing anyone does when they want audio.
+
+- **The packet-drop warning told operators the buffer default was 2 MiB after
+  it became 64.** The number in that message is the one an operator acts on, and
+  it named a figure 32x below the truth: someone dropping packets at the default
+  read that they were on a small ring with obvious headroom, so the suggested
+  remedy looked untried and the real causes — interface drops, snaplen, an
+  over-broad filter — went unexamined. The warning now reports the ring this run
+  actually received, which is not always the one requested: the open walks a
+  ladder that halves to a 2 MiB floor when the kernel refuses, and past
+  `MAX_BUFFER_MB` (2047, the last whole MiB that fits a positive C `int`) the
+  request and the allocation diverge. Both the reported figure and the byte count
+  libpcap receives now derive from one clamp, so the message cannot name a
+  buffer that was never allocated.
+
+### Internal
+
+- The pre-push hook runs Vale and codespell, the two CI-blocking prose gates
+  that no cargo command builds. Both reddened `main` on 2026-08-03 — twelve
+  passive-voice errors, then two misspellings — each found only after a push. A
+  missing tool reports `NOT CHECKED` and never a pass, on the same principle as
+  the corpus gate: a check that goes quiet when its tool is absent is worse than
+  no check, because green then means nothing.
+- Both fixes above added the observable their absence had hidden —
+  `StreamStore::audio_capture()`, and a `drop_warning()` that returns the text
+  instead of logging it from behind a once-per-run latch — and both new tests
+  were verified by reinstating the original defect and confirming they fail
+  while the old tests stay green.
+- The capture-performance roadmap no longer describes the 2 MiB default and the
+  fixed-size packet channel as current, and cites symbols rather than line
+  numbers, all of which had rotted.
 
 ## [0.5.76] - 2026-08-03
 
