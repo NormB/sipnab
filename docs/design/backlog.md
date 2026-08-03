@@ -8,6 +8,10 @@ bottom for context.
 
 Tiers:
 
+- **PA — agent-surface program**: the 2026-08-03 roadmap for what the MCP
+  surface should become. Ranked internally PA1..PA13 by dependency order
+  crossed with wrong-answer surface removed, not by defect severity — see the
+  section for why it does not use the P0-P5 scale.
 - **P0 — panics & security**: crashes reachable from real input,
   injection, auth/limit bypass, key-material hygiene.
 - **P1 — wrong results in real use**: incorrect exports/metrics/state,
@@ -372,6 +376,280 @@ Tiers:
 - [x] spawn_http/post_status/shutdown — [duplicated-fixture] triplicated across mcp token/http tests. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] fuzz_corpus_replay.rs:131 / smoke_fuzz_test.rs:20 — [duplicated-fixture] two independent xorshift Rng+mutate impls. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/mockup_alignment_test.rs — [heuristic-limit] lifeline reference = most-pipes line; misaligned reference flags everything else. **Done (P4 test-quality wave, 2026-07-24).**
+
+## PA — agent-surface program (added 2026-08-03)
+
+A single coherent program rather than scattered feature requests, so it gets
+its own tier letter instead of being flattened into P5 beside "distributed
+capture cluster management". Tiers P0-P5 rank *defects* by blast radius. These
+are product bets, and ranking them by the same scale would either overstate
+them (they break nothing today) or bury them (they are the roadmap).
+
+**Ranked PA1 first.** The ordering below is not the order the ideas arrived in;
+it is dependency order crossed with how much wrong-answer surface each removes.
+Where it departs from the obvious reading, the entry says why.
+
+Verified state at the time of writing, so no entry claims a gap that is already
+closed: 28 MCP tools registered; `open_capture` shipped in 0.5.74; the
+conformance linter and `lint_dialog` / `validate_message` / `explain_rule`
+shipped in 0.5.75; `ServerCapabilities::builder()` calls `enable_tools()` and
+nothing else, so resources, prompts and sampling are all unimplemented; no
+aggregation tool of any kind exists; ASR, NER and ACD appear nowhere in the
+tree; `redact` appears only in `Debug` impls for key material, never on an
+output path.
+
+- [ ] **PA1 — Packet-level provenance (`_ref` + `show_evidence`).** Every fact
+  sipnab emits carries a resolvable pointer to the bytes behind it:
+  `"_ref": "c:<capture-instance>|f:<frame>|b:<byte-range>|t:<timestamp>"`, with
+  `show_evidence { refs[] }` returning frames, hexdump and decode. **Ranked
+  first, and the ranking is the argument:** this cannot be bolted on. It
+  threads the parser, the analysis structs, the serializer, the export path and
+  the docs. There are 28 tools today and 12 more proposed below — every one
+  added before this lands is another response to retrofit, so the cheapest
+  moment to build it is the one before the surface grows again. It also makes
+  hallucination *mechanically* detectable rather than suspected: put "every
+  assertion must carry a ref" in the MCP `instructions`, and a claim without a
+  ref becomes unsupported by construction, checkable by a human or CI without
+  redoing the analysis.
+  - Half the primitive already exists: `CaptureIdentity` (0.5.74) is the
+    capture-instance id plus generation counters a ref needs for stability.
+    Bind refs to it plus a content hash, and have `show_evidence` **refuse** a
+    foreign ref rather than resolve it against the wrong file. Silent
+    misresolution is worse than no provenance, because the whole feature is a
+    trust claim.
+  - A ref must be honest about itself: `resolvable: true | false |
+    "reconstructed"`. File sources can seek and return real bytes. Live sources
+    hold parsed messages and not frames, which is exactly why `export_capture`
+    re-synthesises — so they need a bounded raw-frame ring
+    (`--mcp-evidence-ring 256MB`) or an explicit reconstruction marker. Do not
+    paper over the difference.
+  - Composes with PA3: a ref points at a frame, not at content, so it survives
+    pseudonymisation. The agent can cite what it is not permitted to read.
+  - Granularity: frame-level is easy, byte-range-within-message is much better,
+    and the parser already carries spans. Field-level is what lets a lint
+    finding point at the specific malformed `Contact` rather than the message.
+  - Refs inflate every response, so make them opt-out per call and keep the
+    encoding compact.
+  - **Scheduling constraint, not a design one:** this touches `src/pipeline.rs`,
+    `src/output/json.rs` and `src/capture/*`, all of which carry large
+    uncommitted diffs from concurrent work as of 2026-08-03. Start with the
+    design doc and the identity/hash binding, land the threading once the tree
+    is quiet, and gate every new tool below on emitting refs so the retrofit
+    never grows.
+
+- [ ] **PA2 — Aggregation: `group_dialogs` and `timeline`.** Ranked second
+  because it removes the single largest source of confidently-wrong answers
+  that exists today. Every question beginning with *which* — which IP, which
+  UA, which trunk, which hour — currently forces the agent to page 1334 dialogs
+  and count client-side, and cursors do not fix it because agents stop early and
+  answer from a truncated set. `total_matched` tells them the answer is short;
+  it does not give them the answer.
+  ```
+  group_dialogs { by: "src.ip"|"user_agent"|"final_status_code"|"codec"
+                      |"to_domain"|"hour"|"next_hop",
+                  metrics: ["count","asr","ner","acd","pdd_p50","pdd_p95",
+                            "mos_p10","retransmit_rate"],
+                  filter?: <alias|DSL>, top?: 20 }
+  timeline { bucket: "1m", metrics: [...] }
+  ```
+  ASR/NER/ACD are the vocabulary carrier engineers already think in and appear
+  nowhere in the tree — they need defining and grounding before they are
+  reported, with the same `mos_grounded` discipline: a metric computed over a
+  population that cannot support it must say so rather than return a number.
+  `timeline` is what turns "there are failures" into "failures started at
+  14:07".
+
+- [ ] **PA3 — MCP resources and prompts.** Two of MCP's three primitives are
+  unimplemented; the capability builder enables tools only. Cheapest large win
+  on this list, because the content is already written for the docs site.
+  - **Resources:** the Filter DSL grammar (31 fields, 7 operators, aliases), the
+    SIP response-code registry, header-field and parameter references, the
+    MOS/codec grounding table, and `list_captures` output. Today an agent
+    guesses at DSL syntax and eats `-32602` until it converges; serving the
+    grammar is a one-time read that deletes an entire failure mode.
+  - **Prompts:** `triage-outage`, `carrier-escalation`, `codec-interop-audit`,
+    `post-change-verification`. These encode the ordering that currently lives
+    in prose on a docs page the agent never reads —
+    `capture_status` → `stats` (check `unanalysed_sip_messages`) →
+    `find_problems` → `triage_call`.
+
+- [ ] **PA4 — Complete the linter rule corpus.** The engine and the
+  declaration-versus-observation class shipped in 0.5.75 with 22 rules. The
+  engine is a day's work and anyone can copy it; two hundred *correct* interop
+  rules is twenty-five years of carrier experience and does not transfer. That
+  is the moat, and it is unbuilt. Verified absent today: RFC 4028 entirely
+  (`Session-Expires` below `Min-SE`, refresher ambiguity, no refresh before
+  expiry), `Record-Route` in a response absent from the request, missing
+  `Contact` on a 2xx to INVITE, `Require: 100rel` with no PRACK arriving, route
+  sets mixing loose and strict (`;lr` absent), duplicate `branch` across Via
+  (loop detection), singular headers appearing twice, ACK to non-2xx not
+  hop-by-hop on the same branch, dynamic PT collision across re-INVITEs,
+  telephone-event negotiated one-way, a rejected `m=` line at port 0 still
+  carrying attributes, and Opus negotiated against 160-byte 8 kHz packets.
+  - `rulesets` gains `rfc4028` for free once a rule cites it — the selector list
+    is derived from `RULES`, not restated.
+  - **`.sipnablint` is not wired.** `LintConfig::suppress_list` parses the file
+    shape and nothing loads a file or exposes a CLI flag, so the suppression
+    story a CI user needs on day one does not exist yet. Without it CI drowns.
+  - Every rule is a docs page, which makes this a content flywheel as much as a
+    feature.
+
+- [ ] **PA5 — Redaction mode.** Ranked below the linter only because it is
+  larger and wants PA1's structured-hints refactor first, not because it
+  matters less: it is the feature that clears a healthcare, financial or
+  government security review, and the one that makes agent-assisted VoIP triage
+  viable as a service. sngrep, Wireshark and Homer were all designed for
+  on-prem eyes-only use, pre-LLM. The threat model "my analysis tool is about to
+  POST my customers' PII to a vendor" dates to roughly 2024.
+  - **Inventory:** `From` / `To` / `P-Asserted-Identity` / `Remote-Party-ID` /
+    `Diversion` / `History-Info` / `Contact` (subscriber E.164s, display names);
+    `Authorization` / `Proxy-Authorization` (username, realm, and the
+    nonce+response pair, which is an offline dictionary attack against HA1 — a
+    credential disclosure, not a privacy nit); `Call-ID` and SDP `o=` (internal
+    hostnames and IPs); `MESSAGE` bodies, `application/kpml+xml`, SIP INFO DTMF.
+  - **RFC 4733 telephone-event is the one that gets missed**, and sipnab does
+    decode it — `src/rtp/dtmf.rs` reconstructs digits into `DtmfEvent { digit }`.
+    Post-answer IVR entry is card numbers, PINs, SSNs, DOBs. Verified 2026-08-03:
+    decoded digits reach the TUI and **not** the MCP or JSON surfaces today, so
+    the exposure there is latent rather than live — but `export_audio` is on the
+    MCP surface and writes the conversation itself.
+  - **A boolean flag is the wrong design.** Naive masking destroys correlation,
+    and correlation is the entire diagnostic value. Keyed pseudonymisation with
+    structure preservation: E.164 to a prefix-preserving token with configurable
+    retained prefix so route/NPA analysis survives; IPs via Crypto-PAn style
+    prefix-preserving mapping (Xu et al., already solved in the netflow
+    anonymisation literature) so NAT-mismatch and subnet reasoning still work on
+    pseudonyms; digest `response`/`nonce`/`cnonce`/`nc` **deleted** rather than
+    tokenised, since none of it survives anonymisation with diagnostic value
+    intact; DTMF reduced to a count and a time ("8 digits collected at t+4.2s")
+    with the digits destroyed; `export_audio` either refused or emitting an
+    energy-envelope WAV that preserves talk/silence for one-way and clipping
+    diagnosis while carrying zero content.
+  - **Redact at the serialisation boundary, not at parse**, so internal stores
+    stay complete and TUI/REST are unaffected, and there is exactly one choke
+    point to test. Enforce it in the type system: a `Redacted<T>` newtype the
+    rmcp handlers structurally cannot bypass turns "I forgot to redact this new
+    field" from a future CVE into a compile error. Belongs in the invariants doc
+    beside the stdio invariant.
+  - **The bug that will actually ship is free text.** `"RTP from 10.0.2.15 ->
+    10.0.2.20 only"` leaks two addresses through a `hints[]` string while every
+    structured field is dutifully tokenised. Same for `search_messages` snippets
+    (raw body bytes), `render_ladder` markdown, and the markdown/text arms of
+    `get_dialog_report`. Fix by making hints structured
+    (`{template: "one_way_media", args: {src, dst}}`) and rendering *after*
+    redaction — a refactor worth doing independently, since it also makes hints
+    machine-consumable instead of string-matched.
+  - Forward-map search queries through the same HMAC, or `search_messages`
+    silently returns nothing when the operator searches a real number.
+  - `server_capabilities` must report `redaction: {enabled, classes, key_mode}`
+    and it belongs in the MCP `instructions`, or an agent will make confident
+    false statements about "user E-7f3a". Ship `--mcp-redact-map` writing the
+    reversal table locally at 0600.
+
+- [ ] **PA6 — CI gate (`evaluate_expectations`).** The category shift: every
+  other item here makes a bad day shorter, this one prevents it, and it moves
+  sipnab from a tool reached for during an incident to something that runs on
+  every commit.
+  ```
+  evaluate_expectations { rules: [
+    { metric: "asr",         op: ">=", value: 0.99, scope: "filter:dst.ip=='203.0.113.9'", min_sample: 50 },
+    { metric: "count",       op: "==", value: 0,    scope: "filter:status==488" },
+    { metric: "mos_p10",     op: ">=", value: 4.0,  grounded_only: true },
+    { metric: "lint_errors", op: "==", value: 0,    scope: "severity:error" } ] }
+  ```
+  - Rules live in a checked-in `sipnab.expect.yaml` next to the SBC config. The
+    file is the UX; the MCP tool is how the agent reasons about it. A CLI path
+    with an exit code shares the same evaluator, the way the parser is already
+    shared across TUI/CLI/JSON/MCP.
+  - **`grounded_only` is load-bearing and must default to failing loudly.** A
+    MOS gate that silently skips every AMR-WB stream reports green on a capture
+    it never judged. Extend the existing `ungrounded_excluded` discipline:
+    unevaluable fails, it does not pass quietly.
+  - `min_sample` guards, or a three-call smoke test fails an ASR threshold and
+    someone deletes the gate on Friday. A disabled gate is worse than none,
+    because it stays in the repo lying about coverage.
+  - Document deterministic metrics first (counts, lint errors, status codes) and
+    let people opt into percentiles once they trust it.
+  - Baseline mode — `{metric:"asr", op:">=", baseline:"golden/2026-07-31.pcap",
+    tolerance:0.02}` — is where `open_capture` stops being nice-to-have. Depends
+    on PA4 for `lint_errors` and PA2 for the metrics.
+
+- [ ] **PA7 — Repro generation.** Closes the distance between "the agent
+  identified it" and "I can prove it and hand it to someone". Analysis ending in
+  a paragraph creates work; analysis ending in an artifact removes it.
+  - `generate_repro { call_id, format:"sipp", pin:["sdp","user_agent"],
+    vary:["call_id","tags","branch"] }`. **The novel part is letting the agent's
+    hypothesis be an input:** pinning what it believes caused the failure and
+    varying identity makes the artifact encode the theory, so running it tests
+    that theory rather than replaying generically. Getting the pin/vary split
+    wrong emits a scenario that "reproduces" for unrelated reasons, which is
+    worse than emitting nothing.
+  - `generate_wireshark_filter { call_id }` is trivial and a real trust-builder:
+    handing off cleanly to the human's preferred tool signals the project is not
+    trying to own the workflow. `generate_fail2ban_rule { finding_id }` scoped
+    to one finding, with evidence attached.
+  - **Fix the pcap asterisk here.** `export_capture` honestly warns that frames
+    are re-synthesised, but that weakness lands exactly where repro needs
+    strength. When the source is a *file*, seek and copy the original frames for
+    a Call-ID — RTP included, real link layer, byte-exact. Wants PA1's frame
+    addressing.
+  - **Explicitly not doing:** config-fix generation (OpenSIPS/Kamailio
+    snippets). Test artifacts are inert; config that lands in a production proxy
+    is a different liability class, and the first time an agent-authored route
+    block drops calls it is this project's name on it.
+
+- [ ] **PA8 — MCP sampling (`sampling/createMessage`), default off.** Ranked
+  last deliberately: client support is thin and uneven, so nothing may depend on
+  it. sipnab is the rare server shaped for it — a long-running process watching
+  a stream, with observations nobody asked for yet — where most MCP servers are
+  stateless wrappers with nothing to say between turns.
+  - Uses in value order: alert narration (AlertEngine trips `reg_flood`, sipnab
+    assembles structured evidence and asks the client's model for a
+    two-sentence characterisation — LLM capability with no key in the config and
+    no weights in the binary); long-tail novelty (unknown UA, unregistered
+    response code, unparsed SDP attribute); cluster labelling amortised once per
+    dialog signature and cached, so the cost pays off across every later query;
+    and an NL query bar in the TUI that samples for a Filter DSL expression and
+    validates it against sipnab's own parser before running it.
+  - Capability-negotiate at initialize and degrade to structured-evidence-only.
+  - Debounce, dedupe by finding signature, hard budget
+    (`--mcp-sampling-budget 20/h`), kill switch, default off — a rule tripping
+    500 times must not fire 500 inferences.
+  - **Injection reverses direction.** The D22 rule keeps tool descriptions from
+    telling the model to trust content; sampling inverts the flow and feeds
+    attacker-controlled bytes *to* a model. Scanners already spray `From` and
+    `User-Agent` for free. Forward only structured, length-clamped, escaped
+    fields, never raw message text, with a system prompt stating that all
+    content is untrusted observation. Deserves its own docs section.
+  - **Sampling narrates, never decides.** An LLM-authored verdict inside a CI
+    gate is nondeterministic by construction: the rule engine produces the
+    verdict, the model produces the sentence.
+
+- [ ] **PA9 — `compare_captures { a, b, dimensions }`.** Baseline comparison is
+  what turns a capture tool into an operations tool: is today worse than
+  yesterday, and where. `open_capture` shipped in 0.5.74, so the blocker is
+  gone. Wants PA2, since the answer is a diff of aggregates rather than of
+  dialog lists.
+
+- [ ] **PA10 — `get_call_tree { call_id }`.** The TUI's `x` extended-flow B2BUA
+  stitching exists and is not reachable over MCP. Multi-leg is the normal case
+  in carrier work, so a single-leg-only agent surface is a real limitation.
+
+- [ ] **PA11 — `describe_endpoint { ip | user }`.** Everything about one entity:
+  dialogs, registration state, UA, failure rate, streams, findings. Agents
+  reason in entities and the surface is dialog-centric.
+
+- [ ] **PA12 — `validate_filter { expr }`.** Dry-run a DSL expression and return
+  `total_matched` plus parse errors without fetching rows. Cheap iteration
+  instead of expensive guessing. Largely obsoleted if PA3 ships the grammar as a
+  resource, so do that first and re-measure whether this is still needed.
+
+- [ ] **PA13 — `build_evidence_package { call_ids[], filename }`.** pcap, ladder,
+  RTP stats and report in one directory, with the re-synthesised-frames
+  disclaimer baked into a README *inside* it — the artifact is what gets
+  forwarded to the carrier, so that is where the warning has to live. Much
+  stronger once PA1 makes every claim dereferenceable and PA7 makes the pcap
+  byte-exact.
 
 ## P5 — features & long-term / exploratory
 
