@@ -29,6 +29,49 @@ pub struct PreParsed {
     pub ip_protocol: u8,
 }
 
+/// Where in its source a packet was read from.
+///
+/// Half of a provenance pointer. The other half is [`Packet::interface`],
+/// which names the source — together they identify one frame, and
+/// [`Packet::frame_ref`] pairs them.
+///
+/// # Why the ordinal is per source, not per run
+///
+/// A frame's identity is the file it lives in plus its position in that file.
+/// Counting across the whole run instead would give the same bytes a different
+/// name depending on how the run was invoked: frame 40 of `b.pcap` would be
+/// "packet 4,212" when `a.pcap` was read first and "packet 40" when it was
+/// read alone. A pointer that changes with the command line cannot be compared
+/// between two runs, which is the one thing a provenance pointer is for.
+///
+/// `read_opened_inner` keeps this counter separately from the run-global one
+/// it already threads through for `--count` and the summary line, because
+/// those two answer different questions and only one of them resets per file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FrameOrigin {
+    /// 0-based position of this frame within its source.
+    pub ordinal: u64,
+}
+
+/// A resolvable pointer to the bytes a fact came from.
+///
+/// Produced by [`Packet::frame_ref`]. Rendered as `<source>#<ordinal>`, which
+/// is the form that appears in output and the form a resolver accepts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameRef {
+    /// The source the frame was read from — a capture file path for replay,
+    /// a device name for live capture, a listener address for HEP.
+    pub source: Arc<str>,
+    /// Where in that source it sat.
+    pub origin: FrameOrigin,
+}
+
+impl std::fmt::Display for FrameRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}#{}", self.source, self.origin.ordinal)
+    }
+}
+
 /// A captured network packet with metadata.
 ///
 /// Carries the raw bytes from the link layer along with timing and source
@@ -69,9 +112,30 @@ pub struct Packet {
     /// knows the inner addresses (e.g. HEP listener). When `Some`, the
     /// parser uses this directly and `data` is the transport payload.
     pub pre_parsed: Option<PreParsed>,
+    /// Where in [`Packet::interface`] this frame sat.
+    ///
+    /// `None` for sources that cannot number their frames, and for synthetic
+    /// packets that were never read from anything. A `None` here is not a
+    /// gap to be filled in later by a downstream guess: a fact built from a
+    /// packet with no origin has no provenance, and must say so rather than
+    /// borrow the previous packet's.
+    pub origin: Option<FrameOrigin>,
 }
 
 impl Packet {
+    /// This packet's provenance pointer, when it has one.
+    ///
+    /// Requires BOTH halves. A source with no ordinal cannot name a frame, and
+    /// an ordinal with no source does not say which file it counts within — so
+    /// either alone is unresolvable, and returning it would be the fabrication
+    /// this whole mechanism exists to prevent.
+    pub fn frame_ref(&self) -> Option<FrameRef> {
+        Some(FrameRef {
+            source: Arc::clone(self.interface.as_ref()?),
+            origin: (self.origin)?,
+        })
+    }
+
     /// Create a new packet from raw capture data starting at the link layer.
     ///
     /// Pure constructor: converts `data` into refcounted `bytes::Bytes` and
@@ -156,6 +220,7 @@ impl Packet {
             interface: source,
             link_type,
             pre_parsed: None,
+            origin: None,
         }
     }
 
@@ -192,6 +257,7 @@ impl Packet {
             interface: interface.map(Arc::from),
             link_type: 0,
             pre_parsed: Some(pre_parsed),
+            origin: None,
         }
     }
 }
