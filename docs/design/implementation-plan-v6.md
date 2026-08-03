@@ -23,6 +23,29 @@
 > Use `Cargo.toml`'s `[features]` block as the authoritative feature list.
 > Use `implementation-plan-phases-8-10.md` for current phase status.
 
+> **⚠ HISTORICAL RECORD — an unchecked `- [ ]` box here is not an open
+> commitment.** *(Annotated 2026-08-03.)* This is the plan as written before
+> the work happened, retained for its reasoning. Its checkboxes were never
+> maintained against the tree, so they fall into three groups and the document
+> does not distinguish them: **shipped** (built, but the box was never ticked),
+> **superseded** (built differently, and the tree is right), and **never built**
+> (decided against, sometimes years ago). Do not read a box here as a
+> to-do list, and do not tick one to "close" it — that would erase the record
+> of what was planned.
+>
+> The live queues are [`backlog.md`](backlog.md) and, for capture work,
+> [`capture-tuning-tasks.md`](capture-tuning-tasks.md). The authoritative
+> statements of what exists are `Cargo.toml`, `src/cli.rs` and
+> [`../internals/`](../internals/). Where a section here has been checked
+> against the tree and found wrong, the correction is written **in place**, in
+> a quoted block like this one, rather than by editing the original sentence —
+> see the D16 annotation and the store-lock note under D5.
+>
+> D16 is the worked example: it specifies scanner-kill and the REST API as
+> forked child processes with Unix-socket IPC, and its acceptance gates read
+> *"verified by checking PID differs from main"*. Neither was ever built as a
+> process. Both are threads, deliberately. See the annotation on D16 below.
+
 **Changes from v5:** Added threat model, risk register, security hardening throughout all phases, privilege separation model, process isolation for daemon mode, MVP release milestones, tightened exit criteria, dependency audit strategy, testing pyramid. Replaced Lua scripting with Filter DSL + NDJSON pipeline + event exec hooks. Added VoIP engineering workflow features: SIP response code intelligence, transaction timing/PDD analysis, one-way audio diagnosis, multi-leg call correlation, structured call diagnosis reports, SDP negotiation timeline tracking, per-endpoint concurrent call tracking, and built-in diagnostic filter aliases. Adjusted timeline estimates for single-developer reality.
 
 ---
@@ -136,6 +159,14 @@ sipnab captures network traffic, decrypts TLS/SRTP, injects packets (scanner kil
 **T2 — Denial of service against sipnab itself.** Hash flooding DialogStore/StreamStore, reassembly table exhaustion, regex catastrophic backtracking (ReDoS) on user-supplied filter patterns, event exec fork bombs. Mitigation: default size caps on all stores, regex size limits, rate limits on all network listeners, exec hooks rate-limited.
 
 **T3 — Privilege escalation.** sipnab runs as root (or CAP_NET_RAW) for capture. Privilege drop after device open (D15). Scanner kill requires privileged capture fd — isolated in a child process (D16). API and metrics run unprivileged.
+
+> **Correction (2026-08-03), because this is a security claim rather than a
+> planning note:** the child process in D16 was never built. Scanner kill holds
+> its raw socket in a **thread** of the main process, so the capture fd and the
+> parsing pipeline share one address space. D15's privilege drop is real and
+> does happen; the process-boundary half of this mitigation does not exist. See
+> the D16 annotation. Applies equally to **T6** below, whose rate limit is real
+> but is enforced in that thread, not in a separate process.
 
 **T4 — Information disclosure.** Key material leakage (addressed by D11). API exposes dialog content which may contain PII (phone numbers, caller names, SIP credentials in malformed traffic). Prometheus metrics reveal traffic patterns. Mitigation: API key auth, localhost-default bind for all listeners, key material never crosses IPC boundaries, no key material in logs/metrics/API responses.
 
@@ -365,7 +396,32 @@ This is not aspirational — these guarantees are enforced at compile time by `r
                                             └─────────────────────┘
 ```
 
-Capture threads own their reassembly state — no shared mutable state between capture threads. Parsed packets are sent to the main thread via a lock-free crossbeam channel. The main thread owns the `DialogStore` and is the only writer. The optional async runtime (if `--metrics` or `--api` is used) reads from the `DialogStore` through a `parking_lot::RwLock` — read-heavy, write-rare, so RwLock contention is minimal.
+Capture threads own their reassembly state — no shared mutable state between capture threads. Parsed packets are sent to the main thread via a lock-free crossbeam channel. The main thread owns the `DialogStore` and is the only writer. The optional async runtime (if `--metrics` or `--api` is used) reads from the `DialogStore` through a `parking_lot::RwLock`.
+
+> **Refuted 2026-08-03 — the sentence that used to end that paragraph was
+> false, and it is corrected here rather than deleted because every later
+> contention judgement in this plan rests on it.** It read: *"read-heavy,
+> write-rare, so RwLock contention is minimal."*
+>
+> The real shape is the opposite. `src/app/batch.rs` takes
+> `dialog_store.write()` **and** `stream_store.write()` **once per packet**,
+> and holds both across the entire per-packet body. Writes are therefore the
+> single most frequent operation in the process — one write-lock acquisition
+> per store per packet, at whatever rate the capture is running — while reads
+> arrive only when `--api`, `--metrics`, the MCP server or the TUI happens to
+> poll. "Write-rare" describes no configuration sipnab has ever shipped.
+>
+> What is true is the *conclusion*, for a different reason: contention is
+> usually low because in the common case there is no second party. With no
+> `--api`, no `--metrics` and no MCP server, every acquisition is uncontested,
+> so the cost is the uncontested `parking_lot` fast path rather than an absence
+> of writes. Turn a reader on and the reader waits for the in-flight packet —
+> which is the correct thing to reason about, and is not what "write-rare"
+> would predict. Measured detail, including why the serial pcap reader (not
+> this lock) is what caps `--cores`, is in
+> [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
+> §2d; the lock-ordering rules the batch path actually follows are in
+> [`invariants.md`](../internals/invariants.md) §2.
 
 This eliminates the global `capture_lock` mutex from sngrep that blocked the capture thread during every TUI redraw.
 
@@ -417,6 +473,10 @@ External processes handle complex logic. sipnab's responsibility ends at conditi
 The scanner kill feature (`--kill-scanner`) sends response packets, which requires either a raw socket or cooperation from the capture interface. This is the **only** active/injection feature. All other security features (fraud detection, digest leak, registration flood) are purely passive analysis — they observe and alert, never inject.
 
 Active response is opt-in, rate-limited (max 10 responses/sec to prevent amplification), isolated in a dedicated child process, and logged. It is never enabled by default.
+
+> **Correction (2026-08-03):** "dedicated child process" is a dedicated
+> **thread**. Opt-in, rate-limited and logged are all accurate. See the D16
+> annotation.
 
 ### D9 — PCAP-NG as the forward-looking format
 
@@ -562,6 +622,45 @@ The drop-to user is configurable via `--user <name>` (default: `sipnab` if it ex
 **Exception: scanner kill.** `pcap_inject()` requires the capture fd to remain writable. This is handled by D16 (process isolation).
 
 ### D16 — Process isolation for dangerous operations
+
+> **⚠ NEVER BUILT AS SPECIFIED, AND NOT AN OPEN COMMITMENT.**
+> *(Annotated 2026-08-03. The section below is the original plan, kept for its
+> reasoning; this box is the outcome.)*
+>
+> **Neither child process exists.** Scanner-kill and the REST API both run as
+> **threads** in the main process, and always have:
+>
+> - Scanner-kill is a worker thread fed by a crossbeam channel
+>   ([`process_isolation.rs`](../../src/process_isolation.rs)). Its module doc
+>   says so in the first line — *"Provides thread-based isolation"*.
+> - The REST API is a detached OS thread named `servers` hosting a tokio
+>   runtime ([`servers.rs`](../../src/app/servers.rs)). It reads the shared
+>   `Arc<RwLock<..>>` stores directly; there is no IPC.
+> - There is no Unix socket pair, no `fork`, and no
+>   `docs/internals/ipc-protocol.md`. The `KillRequest`/`KillResponse` types
+>   are still `Serialize`/`Deserialize` — a fossil of the IPC design below,
+>   and the only trace of it in the tree.
+>
+> **The acceptance gates in Phases 4 and 6 that read *"verified by checking PID
+> differs from main"* can never pass and must not be treated as outstanding
+> work.** They assert a process architecture that was decided against.
+>
+> The decision is analysed, with the counter-arguments taken seriously, in
+> [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md).
+> Its verdict: forking the REST API is declined outright — the shared store
+> reads *are* the entire API, so isolating it turns every read into a wire
+> protocol. Scanner-kill remains the one defensible fork candidate (it holds a
+> `CAP_NET_RAW` socket across the privilege drop, it is the only component that
+> transmits, and it already has no shared state), tracked as **`PI2`** in
+> [`backlog.md`](backlog.md) at P5 — *only* if `--kill-scanner` stops being
+> niche. Related: the blast-radius argument this section makes is better served
+> by a seccomp allowlist after the privilege drop (`G5`), which is cheaper and
+> covers libpcap, the C code that touches every untrusted byte first.
+>
+> One consequence has already been fixed elsewhere: `architecture.md` had
+> repeated this section's claim that active responses "run in an isolated
+> child", which was a factual error in a *security* claim rather than a
+> planning artifact. Corrected on the branch (PI1).
 
 Scanner kill (packet injection) and the REST API (network-facing service) run in isolated child processes, not in the main packet processing loop. This limits blast radius: a vulnerability in the API handler or an exploit via crafted scanner-kill responses cannot compromise the capture/parse pipeline.
 
@@ -920,7 +1019,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 | `--to <pattern>` | Match To header user (sipgrep `-t`) |
 | `--contact <pattern>` | Match Contact header (sipgrep `-c`) |
 | `--ua <pattern>` | Match User-Agent header (sipgrep `-j`) |
-| `--kill-scanner` | Auto-respond 200 to friendly-scanner (sipgrep `-J`). Launches isolated child process (D16). |
+| `--kill-scanner` | Auto-respond 200 to friendly-scanner (sipgrep `-J`). Launches isolated child process (D16) — **shipped as a worker thread, not a process; see the D16 annotation.** |
 | `--kill-ua <name>` | Kill scanner with custom UA match (sipgrep `-j` + `-J`) |
 | `--kill-response <code>` | Response code for kill mode (default: 200) |
 | `--report` | Print dialog report on exit (sipgrep `-G`) |
@@ -1433,7 +1532,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
   - Atomic counters updated on dialog state transitions
   - `ConcurrentCallTracker`: `HashMap<IpAddr, AtomicU32>` for source and destination separately
   - Exposed in: TUI statistics view ("Top endpoints by active calls"), Prometheus gauge, filter DSL, alerting engine
-- [ ] **IPC interface design:** Define the Unix socket message format for communicating dialog/stream data to child processes (used by scanner kill in Phase 4, API in Phase 6). Implement the serialization layer now even if children ship later.
+- [ ] **IPC interface design:** Define the Unix socket message format for communicating dialog/stream data to child processes (used by scanner kill in Phase 4, API in Phase 6). Implement the serialization layer now even if children ship later. — **NOT BUILT, AND NOT OUTSTANDING (2026-08-03).** No child process was ever created, so no wire format was needed. The `Serialize`/`Deserialize` derives on `KillRequest`/`KillResponse` are all that came of it. See the D16 annotation.
 
 **Gate — 2.4 is done when:**
 - [ ] Dialog state machine: INVITE basic call (Trying→Ringing→InCall→Completed) verified step-by-step against test pcap
@@ -1456,7 +1555,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] Multi-leg correlation (heuristic): two-leg pcap without X-Call-ID → timing heuristic links legs correctly
 - [ ] Cross-leg SDP diff: different codecs between A-leg and B-leg SDP → diff produced
 - [ ] Concurrent calls: 5 simultaneous INVITEs from same source → concurrent count = 5
-- [ ] IPC serialization: DialogStore data serializes/deserializes correctly over Unix socket
+- [ ] IPC serialization: DialogStore data serializes/deserializes correctly over Unix socket — **NOT BUILT, AND NOT OUTSTANDING (2026-08-03):** there is no Unix socket. See the D16 annotation.
 
 **Docs — 2.4 deliverables:**
 - [ ] Rustdoc on all public types/functions in `sip/dialog.rs`, `sip/timing.rs`, `sip/correlation.rs`, `sip/sdp_timeline.rs`
@@ -1464,7 +1563,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] `docs/transaction-timing.md` — what timing metrics are tracked, how PDD is measured, retransmission detection, per-hop latency
 - [ ] `docs/sdp-timeline.md` — SDP event types (HOLD, RESUME, CODEC CHANGE, T.38, MEDIA ANCHOR), how they're detected, JSON format
 - [ ] `docs/multi-leg-correlation.md` — correlation methods, priority order, heuristic parameters, cross-leg diff format, manual linking (TUI)
-- [ ] `docs/internals/ipc-protocol.md` — Unix socket message format specification for child process communication
+- [ ] `docs/internals/ipc-protocol.md` — Unix socket message format specification for child process communication — **NOT BUILT, AND NOT OUTSTANDING (2026-08-03):** the page does not exist and should not be written; there is no IPC to specify. See the D16 annotation.
 
 ### 2.5 — RTP Stream Engine (First-Class)
 
@@ -2000,7 +2099,7 @@ Automated testing for the interactive TUI using three complementary approaches.
 - [ ] friendly-scanner and sipvicious detected with zero false negatives against test pcaps
 - [ ] **False positive rate < 1%** against normal traffic test corpus
 - [ ] `--kill-scanner` sends valid SIP responses that scanners accept
-- [ ] **Scanner kill runs in isolated child process** (D16), verified by checking PID differs from main
+- [ ] **Scanner kill runs in isolated child process** (D16), verified by checking PID differs from main — **UNSATISFIABLE, AND NOT OUTSTANDING (2026-08-03).** Scanner-kill is a worker thread; the PID is the same by design. Thread-level isolation shipped instead (dedicated worker, its own rate limiter, non-blocking channels in both directions). A real child process is tracked as `PI2` in [`backlog.md`](backlog.md) at P5, conditional on `--kill-scanner` ceasing to be niche. See the D16 annotation.
 - [ ] **Scanner kill rate limit enforced** (10/sec), verified by sending >10 scanner packets/sec and counting responses
 - [ ] **Scanner kill rejects broadcast/multicast targets**
 - [ ] Registration flood detection fires at correct threshold with ≤ 1s latency
@@ -2033,7 +2132,7 @@ Automated testing for the interactive TUI using three complementary approaches.
 - [ ] Detection: sipvicious sequential REGISTER → detected (behavioral pattern, not just UA string)
 - [ ] Detection: custom UA `--kill-ua "my-scanner"` → detected
 - [ ] Detection: normal SIP traffic (100 calls) → 0 false positive scanner alerts (<1%)
-- [ ] Kill: isolated child process: main process PID ≠ scanner kill child PID
+- [ ] Kill: isolated child process: main process PID ≠ scanner kill child PID — **UNSATISFIABLE, AND NOT OUTSTANDING (2026-08-03):** same process, dedicated thread. See the D16 annotation.
 - [ ] Kill: 200 OK response sent to scanner INVITE → valid SIP (parseable by test SIP parser)
 - [ ] Kill: configurable response code: `--kill-response 404` → sends 404
 - [ ] Kill: rate limit: 15 scanner packets/sec → only 10 responses sent, 5 dropped
@@ -2505,7 +2604,7 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 
 **Exit criteria — Phase 6 is done when:**
 - [ ] REST API serves dialog list, detail, and pcap export with correct JSON
-- [ ] **API runs in isolated child process** (D16), verified by PID check
+- [ ] **API runs in isolated child process** (D16), verified by PID check — **UNSATISFIABLE, AND DECLINED (2026-08-03).** The REST API is a detached OS thread hosting a tokio runtime ([`servers.rs`](../../src/app/servers.rs)) and reads the shared stores directly. Forking it is not deferred, it is declined: the store reads *are* the API, so isolation would turn every read into a wire protocol. See the D16 annotation and [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md) §3–4.
 - [ ] **API binds to localhost by default** (D18)
 - [ ] **API with non-loopback bind + no TLS prints warning**
 - [ ] WebSocket stream delivers events within 100ms of capture

@@ -82,21 +82,71 @@ pub struct CaptureConfig {
     /// Put a named interface into promiscuous mode. The `"any"` pseudo-device is
     /// never promiscuous regardless of this flag. Disabled by `--no-promisc`.
     pub promisc: bool,
+    /// Ask libpcap to hand each packet over the moment it arrives
+    /// (`pcap_set_immediate_mode`) instead of letting the kernel accumulate
+    /// them in the capture ring.
+    ///
+    /// This is not a latency dial with no other consequences: on Linux it also
+    /// picks the ring format. libpcap's `prepare_tpacket_socket` guards
+    /// TPACKET_V3 with `if (!handle->opt.immediate)` — a V3 block cannot be
+    /// handed up early, so asking for immediate delivery forces TPACKET_V2.
+    /// V2 sizes every ring slot from the snaplen, and sipnab's default snaplen
+    /// is 65535, so on the default `any` device a 64 MiB ring is carved into
+    /// only about a thousand slots. V3 sizes its frames from a fixed maximum
+    /// instead and has no such capacity cliff.
+    ///
+    /// So the value follows who is reading the packets, decided in
+    /// `app::bootstrap` from the run mode: the interactive TUI keeps immediate
+    /// mode because a human is watching individual messages land, and a
+    /// headless capture gives it up to get the deeper ring. Ignored by the file
+    /// and HEP sources, which have no kernel ring.
+    pub immediate_mode: bool,
 }
 
+/// Default kernel capture buffer, in MiB — the ring libpcap fills and sipnab
+/// drains ([`CaptureConfig::buffer_mb`], `-B`/`--buffer`).
+///
+/// **This is the single most important anti-drop setting sipnab has**, which is
+/// why it is a named constant read by both `CaptureConfig::default` and the CLI
+/// resolution in `app::bootstrap` rather than a literal written twice.
+///
+/// It was 2 MiB, inherited from libpcap's own default, and 2 MiB is a default
+/// for a debugging sniffer rather than a capture tool: roughly 1,400 full-MTU
+/// frames, which at the rates sipnab is benchmarked at is **under a millisecond
+/// of slack**. Any scheduling hiccup and the kernel starts discarding — and
+/// before `KERNEL_DROPPED` existed nothing said so, which is how a lossy
+/// capture came to look like a clean one.
+///
+/// 64 MiB buys roughly 45,000 full-MTU frames — tens of milliseconds of
+/// tolerance, enough to ride out a scheduler delay or a slow consumer. The cost
+/// is 64 MiB of kernel memory **per capture device**, so a `--multi-device` run
+/// over eight interfaces reserves half a gigabyte; lower it with `-B` there.
+/// Small or memory-constrained hosts do not need to: an allocation this size
+/// can fail on them, and [`super::live`] retries with progressively smaller
+/// rings rather than refusing to capture.
+pub const DEFAULT_BUFFER_MB: u32 = 64;
+
 impl Default for CaptureConfig {
-    /// Defaults matching the CLI: full 65535 snaplen, 2 MiB kernel buffer,
-    /// no filter/limits, no replay, 64 MiB queue budget, promiscuous on.
+    /// Defaults matching the CLI: full 65535 snaplen,
+    /// [`DEFAULT_BUFFER_MB`] kernel buffer, no filter/limits, no replay,
+    /// 64 MiB queue budget, promiscuous on, immediate mode on.
+    ///
+    /// `immediate_mode: true` is the interactive answer, which is both the CLI
+    /// default (no `-N` means the TUI) and what every capture did
+    /// unconditionally before the choice existed — so a caller that builds a
+    /// config from `default()` and never touches the field captures exactly as
+    /// it always has, rather than silently switching ring format.
     fn default() -> Self {
         Self {
             snaplen: 65535,
-            buffer_mb: 2,
+            buffer_mb: DEFAULT_BUFFER_MB,
             bpf_filter: None,
             count: None,
             duration: None,
             replay: false,
             buffer_budget_mb: 64,
             promisc: true,
+            immediate_mode: true,
         }
     }
 }
@@ -492,11 +542,23 @@ mod tests {
     fn default_capture_config() {
         let config = CaptureConfig::default();
         assert_eq!(config.snaplen, 65535);
-        assert_eq!(config.buffer_mb, 2);
+        assert_eq!(config.buffer_mb, DEFAULT_BUFFER_MB);
         assert!(config.bpf_filter.is_none());
         assert!(config.count.is_none());
         assert!(config.duration.is_none());
         assert_eq!(config.buffer_budget_mb, 64);
+    }
+
+    /// The default is the interactive answer — the same thing every capture
+    /// asked for before the field existed. A caller that builds a config from
+    /// `default()` must not have its ring format changed under it; only
+    /// `app::bootstrap`, which knows the run mode, turns this off.
+    #[test]
+    fn default_capture_config_keeps_immediate_mode() {
+        assert!(
+            CaptureConfig::default().immediate_mode,
+            "default must preserve the historical immediate-mode capture"
+        );
     }
 
     /// `channel_capacity` scales with the budget and clamps to the

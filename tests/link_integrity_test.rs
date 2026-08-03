@@ -402,9 +402,17 @@ fn wiki_intra_docs_links_resolve() {
     // pair — the MCP page's suppression section links to the rule catalogue for
     // the pattern syntax, and the catalogue links back to the MCP page for the
     // response fields that report what a suppression silenced.
+    // Raised 254 -> 261 by `tuning-capture.md`, which cross-links the CLI and
+    // config references, benchmarks and troubleshooting, and is linked from the
+    // docs index in turn.
+    // Raised 261 -> 268 by concurrent capture-docs work, diffed per file rather
+    // than assumed: `troubleshooting.md` +4, `internals/invariants.md` +2,
+    // `benchmarks.md` +1. The `any`-versus-named section added to
+    // `tuning-capture.md` contributed none — it cites source paths inline
+    // rather than linking out.
     assert_eq!(
-        seen, 254,
-        "extractor found {seen} wiki links, expected 254. More is fine — bump \
+        seen, 268,
+        "extractor found {seen} wiki links, expected 268. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
@@ -831,9 +839,10 @@ fn every_docs_page_is_linked_from_the_index() {
     // An exact pin makes a DROP the failure, which is the only direction that
     // matters here, and matches how `linked_code_targets_exist` pins its link
     // count. Adding a docs page fails this once, deliberately: bump the number.
+    // Raised 34 -> 35 by `tuning-capture.md`.
     assert_eq!(
-        checked, 34,
-        "docs-page walk saw {checked} pages, expected 34. More is fine — bump \
+        checked, 35,
+        "docs-page walk saw {checked} pages, expected 35. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );

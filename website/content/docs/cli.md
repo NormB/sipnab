@@ -197,7 +197,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--recursive` | -- | off | Descend into subdirectories when `-I` names a directory |
 | `--input-name` | `<GLOB>` | -- | Read only files whose *name* matches this pattern when `-I` names a directory. Applies at every depth under `--recursive` |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
-| `-B`, `--buffer` | `<MIB>` | `2` | Kernel capture buffer size in MiB |
+| `-B`, `--buffer` | `<MIB>` | `64` | Kernel capture buffer size in MiB (per device). See [Tuning capture](@/docs/tuning-capture.md) |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |
 | `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet (sipgrep `-S`). Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |

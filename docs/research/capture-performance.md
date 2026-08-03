@@ -10,12 +10,17 @@ the complexity when the previous phase proves insufficient.
 sipnab captures via **libpcap** (the `pcap` crate). Live loop in
 `src/capture/live.rs:99-249`:
 
-- `immediate_mode(true)` is set (`live.rs:120`) — packets delivered without extra
-  libpcap buffering latency.
-- A kernel **BPF filter** is applied when provided (`live.rs:133-141`) — the only
-  in-kernel optimization currently in use.
-- Default kernel buffer **2 MiB** (`src/capture/mod.rs:84-97`, `--buffer-mb`).
-- `poll(2)` with a 100 ms interval (`live.rs:25,183-245`), then `next_packet()`.
+- `immediate_mode` is **run-mode-dependent** (`immediate_mode_for()` in
+  `src/app/bootstrap.rs`): on for the TUI, off for every headless run, which is
+  what decides TPACKET_V2 versus V3. It was unconditionally `true` when this
+  page was written.
+- A kernel **BPF filter** is applied when provided (`capture_live()` in
+  `src/capture/live.rs`) — the only in-kernel optimization currently in use.
+- Default kernel buffer **64 MiB** (`DEFAULT_BUFFER_MB` in
+  `src/capture/native.rs`, `-B`/`--buffer`), with a halving fallback ladder to a
+  2 MiB floor. It was 2 MiB when this page was written.
+- `poll(2)` on the **ring-empty path only**. It used to run before every packet,
+  including when the mmap'd ring already had data.
 
 **Where loss happens under load (not the NIC — the pipeline):**
 

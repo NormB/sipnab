@@ -317,9 +317,16 @@ fn linked_code_targets_exist() {
     // extraction narrow: this read 40 while 265 links existed, so a regex that
     // stopped matching 200 of them would still have passed. Bump when the
     // corpus grows; never lower it to make a build pass.
+    // Raised 283 -> 290 by the capture-tuning docs pass: +6 code links in
+    // internals/invariants.md (the §2 lock-discipline rewrite) and +1 in
+    // internals/threading.md. Growth, not a loosening — every one of the 7 was
+    // attributed before this pin moved.
+    // Raised 290 -> 294 by the `LK1` sub-rule appended to internals/invariants.md
+    // §2 ("decide under the guard, perform after it"): +4 code links, all in
+    // that one page.
     assert_eq!(
-        seen, 283,
-        "code-link extraction found {seen} links, expected 283. More links is \
+        seen, 294,
+        "code-link extraction found {seen} links, expected 294. More links is \
          fine — bump this. FEWER means the extractor stopped matching, and \
          every assertion below it silently narrowed."
     );
@@ -410,9 +417,13 @@ fn linked_symbols_resolve_to_a_definition() {
             }
         }
     }
+    // Raised 58 -> 62 by the `LK1` sub-rule in internals/invariants.md §2: all
+    // four of its code links carry a `()` symbol claim
+    // (`DeferredEffects::drain`, `EventExecEngine::dispatch_pending`,
+    // `TumblingWindow::allows_with_reserved`, `process_parsed_packet`).
     assert_eq!(
-        seen, 58,
-        "symbol extraction found {seen} claims, expected 58. Bump when the \
+        seen, 62,
+        "symbol extraction found {seen} claims, expected 62. Bump when the \
          developer docs cite more symbols; a drop means the `()`-suffix pattern \
          stopped matching and unresolvable symbols pass unseen."
     );

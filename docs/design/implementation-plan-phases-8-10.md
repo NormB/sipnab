@@ -9,7 +9,8 @@
 **Slots into:** `implementation-plan-v6.md` as Phases 8–10 (follow Phase 7 — Polish, Packaging, Release).
 **Origin:** Issue request — *"So that I can have a local AI agent go and talk to a server that we're debugging stuff on."* — expanded after architectural review to cover the full integration story (AI agents, scripts/SDKs, dashboards, observability).
 
-> **Status as of 2026-07-20 (current release v0.5.19).** This plan is
+> **Status as it stood on 2026-07-20, when the release was v0.5.19** — not a
+> statement about the current release, which has moved on since. This plan is
 > partly delivered. The **MCP server** (stdio + Streamable-HTTP), the **HEP
 > source mode**, the **per-call asymmetry heuristics**, and the whole
 > **documentation & website overhaul (Phase 12)** all shipped; the
@@ -21,6 +22,34 @@
 > OpenAPI spec exists yet), and **Phase 11** (NISQA perceptual MOS). Phase 10
 > (NATS) remains deferred. The sub-phase specs below are retained as the
 > design record for the unbuilt work and as history for the shipped work.
+
+> **⚠ HISTORICAL RECORD — an unchecked `- [ ]` box here is not an open
+> commitment.** *(Annotated 2026-08-03.)* The per-phase checkboxes below were
+> never maintained against the tree. The **Phase Roadmap** table and the
+> **Priority Sequencing** notes immediately following *are* kept current and
+> are the status of record; the sub-phase boxes are the plan as written. A box
+> may be shipped-but-unticked, superseded, or decided against, and nothing in
+> the box text distinguishes those. Do not read this file as a to-do list, and
+> do not tick a box to "close" it — that erases what was planned.
+>
+> The live queues are [`backlog.md`](backlog.md) and, for capture work,
+> [`capture-tuning-tasks.md`](capture-tuning-tasks.md). The authoritative
+> statements of what exists are `Cargo.toml`, `src/cli.rs` and
+> [`../internals/`](../internals/).
+>
+> The same applies with more force to
+> [`implementation-plan-v6.md`](implementation-plan-v6.md), which this plan
+> slots into: its **D16** specifies scanner-kill and the REST API as forked
+> child processes with Unix-socket IPC, and its acceptance gates read *"verified
+> by checking PID differs from main"*. Neither was ever built as a process —
+> both are threads, deliberately — and those gates are annotated there as
+> unsatisfiable rather than outstanding. **D19 ("no key material in IPC"),
+> referenced from this file's Resolved Decisions, is therefore vacuous rather
+> than satisfied: there is no IPC boundary for key material to cross.** Do not
+> cite it as a control. The one place key material genuinely leaves the
+> process is the opt-in pcapng Decryption Secrets Block
+> ([`writer.rs`](../../src/capture/writer.rs)), which is an operator-chosen
+> export and is governed on its own terms, not by D19.
 
 ## Phase Roadmap
 

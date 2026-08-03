@@ -1,7 +1,9 @@
-# Four decisions: one re-scoped, one deferred, two approved
+# Deferred and declined: four feature decisions, and five technologies
 
-**Status:** decided 2026-08-01; §2 and §4 approved to move forward 2026-08-02.
-§1 and §3 remain unscheduled. Verified against `main` at 1998303.
+**Status:** §§1–4 decided 2026-08-01; §2 and §4 approved to move forward
+2026-08-02. §1 and §3 remain unscheduled. Verified against `main` at 1998303.
+**§5 (declined capture technologies) added 2026-08-03**, verified against the
+tree at that date.
 
 Four requests sat open a long time each, and they had one thing in common: the
 honest answer turned out to be some version of *not as asked*. An undecided
@@ -29,6 +31,14 @@ shows the work rather than the verdict.
 | 2 | Write-back MCP tools | **Approved to move forward** (2026-08-02). The invariant analysis in §2 stands and becomes the build requirements |
 | 3 | Automated threat-mitigation hooks | **Fixes extracted and shipped; the action ledger deferred** on a named prerequisite |
 | 4 | `open_capture` MCP tool | **Approved to move forward** (2026-08-02). §4 records what has to change first |
+
+**§5 is a different kind of entry, and it is why this page exists.** §§1–4 are
+*feature* requests. §5 records *technologies* that were evaluated as ways to
+make capture faster and rejected — process forking, PF_RING, DPDK, AF_XDP and
+XDP-as-a-filter. Each had a real advocate and each has one decisive fact
+against it. They were missing from this page entirely until 2026-08-03, which
+is precisely the gap this page is supposed to close: an unrecorded rejection
+comes back every quarter with the same arguments.
 
 ---
 
@@ -765,6 +775,84 @@ cannot see its own context"* — and it mutates nothing.
 
 ---
 
+## 5. Declined capture technologies
+
+Five things that would make capture faster, if they worked here. Each entry is
+the verdict and the **one** fact that decides it — the full investigations are
+in [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
+and in the `CT*`/`PI*` entries of [`backlog.md`](backlog.md), and the detail
+belongs there rather than repeated here. Recorded so none of these is
+re-proposed from first principles.
+
+### 5a. Forking as an architecture — **declined**
+
+**Decisive: the shared `Arc<RwLock<..>>` stores are the product.** Every
+surface sipnab has — the REST API, the MCP tools, the TUI, the reports — is a
+read of those stores. Putting a process boundary anywhere in the middle turns
+each of those reads into a wire protocol, which is a new distributed system
+rather than a refactor. The scaling argument that motivated it does not
+survive measurement either: what caps `--cores` is the single sequential pcap
+reader, not lock contention.
+
+Detail, including the fault- and memory-isolation arguments taken at their
+strongest: [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
+§§2–4. **One exception survives** — scanner-kill, the only component that
+transmits and the only one with no shared state, tracked as **`PI2`** in
+[`backlog.md`](backlog.md) at P5 and conditional on `--kill-scanner` ceasing
+to be niche. That is the whole of the surviving case; it is not a licence to
+fork anything else. Related history: `implementation-plan-v6.md` D16 specified
+forked children for scanner-kill *and* the REST API, with acceptance gates
+reading "verified by checking PID differs from main". Neither was built; both
+are threads. That section is annotated in place.
+
+### 5b. DPDK — **declined**
+
+**Decisive: `pcap-dpdk.c` sets `selectable_fd = portid`, so `dpdk:0` polls
+stdin and captures nothing.** File descriptor 0 is standard input, and libpcap
+hands it to `poll()` as though it were the capture handle. Compounding it: the
+DPDK module was **deleted in libpcap 1.11**, and Debian's libpcap — what the
+`.deb`, the Docker image and the `gnu` builds link — never enabled it. So the
+device string cannot work, will not be supported upstream, and is absent from
+the library sipnab actually ships against. Context in
+[`backlog.md`](backlog.md) `CT6` (the backend-verification entry that covers
+DPDK, netmap and AF_XDP together); netmap, from the same investigation, is the
+one alternate backend that *did* survive.
+
+### 5c. PF_RING — **declined, on licensing**
+
+**Decisive: proprietary ntop-EULA blobs are linked into `libpfring`, which is
+incompatible with sipnab's MIT-OR-Apache-2.0 redistribution.** The build
+`ar -x`s ntop's object files straight into the shared library, so there is no
+"just the open-source part" package to ship, and the EULA reads *"for your own
+personal, non-commercial use"*. That alone makes the Docker image and the
+`.deb` undistributable. ZC mode additionally needs a paid per-MAC licence.
+Moot regardless on two technical counts. Full verdict:
+[`backlog.md`](backlog.md) **`CT10`**.
+
+### 5d. AF_XDP — **declined**
+
+**Decisive: it is ingress-only, so it loses one direction of every call.** A
+SIP dialog and its RTP are bidirectional; half a call is not a smaller answer,
+it is a wrong one. Independently fatal: there is **no tee** — once an XSK binds
+a queue it takes every packet on it, so sipnab would steal the production
+traffic it is there to observe. And there is **no AF_XDP module in any version
+of libpcap**, so this is a from-scratch backend, not a device string. Full
+verdict: [`backlog.md`](backlog.md) **`CT13`**.
+
+### 5e. XDP as a capture filter — **declined, on architecture**
+
+**Decisive: XDP runs upstream of the AF_PACKET taps, so it can only filter
+*from* sipnab, never *for* it.** An `XDP_DROP` happens before the tap sipnab
+reads, so the packets it discards are invisible to sipnab — and on a live SIP
+server they are the production traffic being observed. It is the wrong side of
+the hook. Note that it fails on **architecture, not permissions**: do not
+re-propose it on the grounds that the privilege drop now allows it. The one
+surviving eBPF use is `PACKET_FANOUT_EBPF`/`_CBPF` for fanout steering, which
+is a different mechanism at a fraction of the cost — see `CT11`. Full verdict:
+[`backlog.md`](backlog.md) **`CT12`**.
+
+---
+
 ## Conditions, in one place
 
 | Decision | Condition |
@@ -773,6 +861,12 @@ cannot see its own context"* — and it mutates nothing.
 | §2 Write-back MCP tools | Approved. **Both** a wire-visible store generation/etag *and* an annotation store no analysis reads are build requirements — see §2 |
 | §3 Threat-mitigation ledger | Reopens when sipnab gains durable cross-run state — and only after the three blind spots in §3 are closed as ordinary defects |
 | §4 `open_capture` | **Built 2026-08-02.** The three build requirements shipped with it; the REST etag is the one piece still open — see §4 |
+| §5a Forking as an architecture | Does not reopen. The one surviving fork candidate is scanner-kill (`PI2`), and only if `--kill-scanner` stops being niche |
+| §5b DPDK | Does not reopen. The module is deleted upstream and absent from every libpcap sipnab links |
+| §5c PF_RING | Reopens only if ntop relicenses the `libpfring` blobs compatibly with MIT-OR-Apache-2.0. Not otherwise |
+| §5d AF_XDP | Reopens only if the kernel grows a tee (`clone_redirect` in `xdp_func_proto`) **and** an egress path. Both, not either |
+| §5e XDP as a capture filter | Does not reopen. It is on the wrong side of the tap; no permission change affects that |
 
-The two still open, §1 and §3, do not move on "someone asked again"; they move on
-the facts named above.
+The two feature decisions still open, §1 and §3, do not move on "someone asked
+again"; they move on the facts named above. The §5 technologies do not move on
+a benchmark either — every one of them fails before throughput is reached.

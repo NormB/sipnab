@@ -31,6 +31,183 @@ Tiers:
 
 ## P0 — panics & security
 
+<!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
+
+- [ ] **CT1 — Kernel packet drops are never read, so a lossy capture reports a
+  confident wrong answer.** `pcap::Capture::stats()` is never called anywhere in
+  the tree (`grep -rn '\.stats()' src/` matches only MCP tool tests). libpcap has
+  had the counters all along — `pcap 2.4.0` exposes
+  `Stat { received, dropped, if_dropped }` at
+  `capture/activated/mod.rs:33,304` — and sipnab reads none of them. On a busy
+  server where the 2 MiB kernel buffer (see CT2) overflows, sipnab prints
+  "1,204 dialogs" from a capture the kernel silently truncated by 40% and says
+  nothing. This is the same defect class the `--cores` empty-output fix already
+  closed on purpose: *"An empty output that exits 0 reads as 'there was nothing
+  to report', which is the one conclusion the run had disproved"*
+  (`src/app/bootstrap.rs:396-401`). A forensics tool that cannot say it lost
+  evidence is worse than one that refuses to run. **Do:** poll `stats()` on the
+  live capture sweep, carry `dropped`/`if_dropped` into the batch summary, the
+  `/v1/stats` REST payload, the MCP `stats` tool and a Prometheus counter; warn
+  once when `dropped` first goes nonzero and again with the total at shutdown.
+  **This is also the prerequisite for every item in CT2-CT5** — none of that
+  tuning can be evaluated without a drop counter to tune against.
+  **In progress (2026-08-03) — the counter half is done, the surfacing half is
+  not.** `src/capture/live.rs` now polls `cap.stats()` on a 1s timer
+  (`STATS_INTERVAL`; a syscall, so deliberately not per packet), folds each
+  reading into process-global `KERNEL_DROPPED` / `IFACE_DROPPED` via
+  `fold_stats`, and reads once more at loop exit so drops in the final window
+  are not lost. Folding takes the **delta** because libpcap's per-handle
+  counters are cumulative, which is also what makes the totals correct under
+  `--multi-device` (each device contributes increments to one total), and it
+  saturates so a backwards counter cannot underflow. The operator gets one
+  `warn` the moment drops first appear, naming both classes and the remedies
+  (`-B/--buffer`, BPF, `--snaplen`; and that interface drops are *not* fixed by
+  a bigger buffer), plus a loud non-`info` summary line at capture end.
+  `kernel_drop_counts()` is the public accessor. Four unit tests cover
+  delta-not-absolute, saturation, kernel-vs-interface separation, and the clean
+  no-op path, serialized on `kernel_drop_counts` since they share process
+  globals. Verified: `cargo test --lib capture::live` 20/20, `cargo clippy
+  --lib --all-targets` clean, `cargo fmt --check` clean, `cargo test --test
+  capture_test` 16/16. **Still to do:** carry the counts into the batch
+  summary, `/v1/stats`, the MCP `stats` tool and a Prometheus counter — right
+  now they are logged but not queryable, which is the same gap
+  `INVALID_PCAP_TIMESTAMPS` has had all along and should be closed for both
+  together.
+- [ ] **CT2 — The kernel ring buffer defaults to 2 MiB, which silently drops on
+  any busy server.** `src/app/bootstrap.rs:1359` —
+  `let buffer_mb = cli.buffer.or(config.capture.buffer).unwrap_or(2);` — fed to
+  `.buffer_size((config.buffer_mb * 1_000_000) as i32)` at
+  `src/capture/live.rs:146`. Two megabytes is roughly 1,400 full-MTU frames: at
+  the 2.3M pkts/s this tool benchmarks at, that is **under a millisecond of
+  slack**. Any scheduling hiccup, any `--api` request that makes the reader wait
+  (see LK1), and the kernel starts discarding. The same reasoning as CT1 applies
+  and is why this is P0 rather than a tuning nicety: the overflow is *the*
+  mechanism that loses evidence, and CT1 is why nobody finds out. They are two
+  halves of one defect and should ship together — a bigger ring with no counter
+  is still unfalsifiable, and a counter over a 2 MiB ring just reports the loss
+  faster. **Do:** raise the default to something defensible for a capture tool
+  (tcpdump-class deployments run 64-256 MiB), or size it from the link rate;
+  document the memory cost; and once CT1 lands, prove the new default against a
+  measured `dropped` of zero on the reference corpus replayed at line rate.
+  `-B`/`--buffer` already exists so the knob is there — the **default** is the
+  bug, because the operators who most need it are the ones who do not know to
+  set it. **Done (default raised):** `capture::DEFAULT_BUFFER_MB = 64`, a
+  single named constant now read by both `CaptureConfig::default` and the CLI
+  resolution in `app::bootstrap` (the literal `2` had been written twice).
+  Because a large ring can fail with `ENOMEM` on a small host, `live.rs`
+  walks a halving `buffer_ladder` from the requested size down to a 2 MiB
+  floor and warns when it settles for less, so a bigger default can never
+  turn a working capture into a failing one; an explicit small `-B` is
+  honoured exactly and never promoted. Four ladder tests cover
+  requested-first, halving, no-promotion, and termination/non-zero. Docs
+  updated in `docs/cli-reference.md`, `docs/config-reference.md` and both
+  website mirrors. **Caveat — read CT7:** on a stock server with NIC
+  offloads on, TPACKET_V2 slot sizing means 64 MiB holds only ~1,000
+  packets, so most of this win is unrealised until CT7 lands.
+- [ ] **G7 — `$SIPNAB_AUDIO_PLUGIN` is `dlopen`ed ahead of every trusted path.**
+  `src/rtp/playback.rs` `plugin_candidates()` pushes the env-var path **first**,
+  before the exe-adjacent build, `/usr/lib/sipnab/` and the loader search path,
+  and `load_plugin()` returns the first that loads. So an attacker who controls
+  the environment gets arbitrary **native, unsandboxed** code executed in
+  sipnab's address space — the one holding TLS key material, bearer tokens and
+  the capture handle. The `// SAFETY:` comment above the `Library::new` call
+  asserts *"loading a trusted plugin library; any initializers it runs are our
+  own code"*, which is exactly the assumption the env-var branch breaks. Note
+  the contrast with the WASM plugin host, which is deliberately import-free and
+  fuel-metered (`src/plugin/mod.rs`) — the audio path has none of that.
+  **Do:** try trusted paths first and treat the env var as a
+  development-only override (gate it behind a debug build, an explicit
+  `--allow-plugin-override`, or an ownership/permission check on the file), and
+  correct the SAFETY comment either way.
+- [ ] **CT7 — `immediate_mode(true)` silently forces sipnab onto TPACKET_V2,
+  capping the ring at ~1,000 packets on a stock server.** Verified against
+  libpcap 1.10 `pcap-linux.c` upstream, not inferred. `prepare_tpacket_socket()`
+  reads: *"The buffering cannot be disabled in that mode, so if the user has
+  requested immediate mode, we don't use TPACKET_V3"* — guarded by
+  `if (!handle->opt.immediate)`. `src/capture/live.rs` sets immediate mode
+  **unconditionally**, so sipnab never gets the block-based V3 ring. The
+  consequence compounds with CT3: TPACKET_V2 slots are fixed-size and sized from
+  the snaplen (`frame_size = handle->snapshot; req.tp_frame_size =
+  TPACKET_ALIGN(macoff + frame_size); req.tp_frame_nr = buffer_size /
+  tp_frame_size`), and the Ethernet clamp is `offload ? MAX(mtu, 65535) : mtu`.
+  **The clamp is guarded on `handle->linktype == DLT_EN10MB`, and sipnab's
+  default Linux device is `any` (`src/capture/device.rs:38-40`), which is
+  `DLT_LINUX_SLL2` — so on the DEFAULT configuration no clamp runs at all**
+  and the slot is the full 65535-byte snaplen regardless of offload settings.
+  The new 64 MiB ring therefore holds roughly **1,000 packets**; at the old
+  2 MiB default the same arithmetic gave **31 slots**. Naming an interface
+  explicitly *and* disabling offloads is what reaches the clamp (~41,000
+  slots); either alone does not. TPACKET_V3 sizes slots at a fixed
+  `MAXIMUM_SNAPLEN` regardless of snaplen and has no such cliff. **Do:** make
+  immediate mode run-mode-dependent — on for the TUI (where per-packet latency
+  is the product), off for headless `-N` — which selects V3 automatically. **And
+  shorten the timeout in V3 mode, do not merely flip the flag:** with
+  TPACKET_V3 libpcap sets `req.tp_retire_blk_tov = handlep->timeout`, so
+  sipnab's existing `.timeout(100)` becomes a 100 ms *block-retire* timeout,
+  and `set_poll_timeout()` then sets `poll_timeout = -1` (block forever, let
+  V3 do the waking). On a lightly-loaded interface that is up to 100 ms of
+  added delivery latency — free for headless/`-O` capture, visible lag for the
+  live TUI. So the existing `live.rs` comment is load-bearing, not an
+  oversight. The
+  existing comment claiming immediate mode is *required* for the `poll()` loop
+  is now weaker since the poll moved to the ring-empty path only (CT8), but it
+  must be re-verified on a live interface before flipping, because
+  `--duration`/Ctrl-C responsiveness is what it protects. Ranked P0 because it
+  silently negates most of CT2's benefit on exactly the busy servers CT2
+  targets, and because it makes `-B` advice misleading until fixed.
+- [x] **CT9 — `-B/--buffer` used decimal MB while every surface said MiB, and
+  overflowed to a NEGATIVE size past 2047.** Two bugs in one expression,
+  `.buffer_size((config.buffer_mb * 1_000_000) as i32)`. **(a) Units:** the
+  field is `buffer_mb`, the `-B` help says MiB and `docs/cli-reference.md` says
+  MiB, but the multiplier was decimal — `--buffer 64` quietly requested 61.04
+  MiB. **(b) Overflow:** `pcap_set_buffer_size` takes a C `int`, and nothing
+  bounded the input. `--buffer 2148` computed `2_148_000_000` and handed libpcap
+  **-2_146_967_296**; `--buffer 5000` overflowed `u32` before the cast (panic in
+  debug, wrap in release). Both reachable from a plain CLI flag with no
+  validation. **Done:** extracted `buffer_size_bytes(mb)` — multiplier is
+  1 MiB, arithmetic is `u64` and saturating, result is clamped to
+  `MAX_BUFFER_MB = 2047` (the last whole MiB that fits in `i32`) with a `warn`
+  when clamping. The MiB multiplier also makes every accepted size a whole
+  multiple of 4 KiB, 16 KiB **and** 64 KiB pages, which matters on aarch64
+  kernels built with 64 KiB pages: 64,000,000 is not a multiple of 65,536,
+  67,108,864 is exactly 1024 of them. Three tests pin the unit, the
+  page-alignment across all three page sizes, and clamp-not-wrap for
+  `[2048, 2148, 4000, 5000, 100_000, u32::MAX]`. Verified: `cargo test --lib
+  capture::live` 20/20, clippy clean, fmt clean.
+- [x] **CT8 — The capture loop called `poll(2)` once per packet.**
+  `src/capture/live.rs` polled the capture fd *before every* `next_packet()`,
+  including when the memory-mapped ring already held data — which on a busy link
+  is essentially always. At the rates sipnab is benchmarked at that is millions
+  of wasted syscalls per second, and it bought nothing: draining a TPACKET ring
+  is userspace pointer work, and `poll()` is only needed once the ring is empty.
+  **Done:** the wait moved into the `Err(TimeoutExpired)` arm — libpcap's
+  "nothing available" signal — so a busy link now makes **zero** poll syscalls
+  and drains back-to-back, while an idle link still blocks up to `POLL_INTERVAL`
+  and re-checks shutdown/count/duration exactly as before. Verified: `cargo test
+  --lib capture::` 326/326, clippy clean, fmt clean. **Not yet measured on a
+  live interface** — the throughput claim is reasoned from the syscall count,
+  not benchmarked, and should be confirmed with CT1's drop counters under load.
+- [x] **PI1 — `architecture.md` claims a process isolation that does not
+  exist.** `docs/architecture.md:149-150` states *"D15/D16 — Privilege drop +
+  process isolation … active responses run in an isolated child."* Active
+  responses run in the `scanner-kill` **thread**
+  (`src/process_isolation.rs:5` — *"Provides thread-based isolation"*;
+  `:28` still carries *"Future enhancement: replace threads with
+  `fork()`/`Command` for true process-level isolation"*), sharing the address
+  space with the parsers, the stores, TLS key material and bearer tokens.
+  `docs/rest-api.md:1117` makes exactly the right disclosure for the API
+  (*"it is not a separate OS process; treat the API bind address and key
+  accordingly"*); `architecture.md` owes the same for scanner-kill and does not
+  make it. Overstating a security boundary in the architecture doc is a P0
+  regardless of how cheap the fix is. **Done:** the combined D15/D16 bullet is
+  split. D15 now states what privilege drop actually does (`setuid`/`setgid`,
+  `PR_SET_NO_NEW_PRIVS`, core dumps disabled, optional `--chroot`); D16 is
+  retitled *"specified, not shipped"* and says plainly that scanner-kill is a
+  thread and the servers are tasks in the one address space, that
+  `panic = "abort"` (`Cargo.toml:262`) means threads buy no fault containment
+  either, and where the analysis lives. Verified: `docs_drift_test` (32 tests)
+  and `link_integrity_test` (9 tests) both pass.
+
 - [x] src/tui/render/popups.rs:653 — [bug] byte-slicing UTF-8 in filter fields panics on multi-byte at boundary (also :666, :677, save/file-open cursors). **Done:** all slices go through `text::floor_char_boundary` / whole-char cursor cells; save + file-open path lines share one `path_with_cursor_spans` builder; the filter-dialog *controller's* byte-stepping cursor (insert/remove/arrows) was the same bug at input time and is now char-based.
 - [x] src/tui/render/popups.rs:677 — [bug] range start > end panic when focused cursor beyond inner_width; cursor never clamped. **Done:** after-cursor slice is clipped to a boundary-floored visible window and only drawn when `cursor_end < visible_end`.
 - [x] src/output/cli_print.rs:199 — [panic] `--payload-limit` byte-slices str mid-UTF-8 → process panic on multibyte raw messages. **Done:** cut point floors to the previous char boundary.
@@ -44,6 +221,46 @@ Tiers:
 - [x] src/capture/tls.rs:191 — [security] `KeyLogEntry::drop` wipes with elidable plain loop and skips `label`; use `zeroize` like `TlsSession`. **Done:** extracted `zeroize_material` (Drop calls it) that `zeroize`s secret, client_random, AND label via the crate (non-elidable).
 
 ## P1 — wrong results in real use
+
+<!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
+
+- [ ] **G6 — `--cores N` is silently ignored on live capture.** `RunMode` is
+  chosen by `cli.cores > 1 && cli.has_input() && !cli.multi_device`
+  (`src/app/bootstrap.rs`), so `--cores 8 -d eth0` falls through to
+  single-threaded `RunMode::Batch` with **no warning at all** — the operator
+  asked for eight cores and silently got one. The adjacent block already sets
+  the precedent for handling this honestly: `--cores` with `--json`/`-O` exits
+  2 with a precise message rather than emitting nothing and exiting 0. The same
+  reasoning applies here. **Do:** warn (or refuse) when `--cores > 1` is
+  combined with a live source or `--multi-device`, naming that the parallel
+  reconstruction path is offline-only. Cheap, and it removes a silent
+  expectation mismatch on exactly the busy-server workload where someone would
+  reach for it.
+- [ ] **LK1 — `fork`/`exec`, stdout writes and a third lock all happen while
+  holding BOTH store write locks.** `src/app/batch.rs:1553-1554` takes
+  `dialog_store.write()` and `stream_store.write()` and holds both across the
+  whole per-packet body. Inside that critical section:
+  `event_exec.fire_dialog_event(..)` at `:2038` and `fire_quality_event(..)` at
+  `:2348` reach `Command::new("sh").spawn()`
+  (`src/output/event_exec.rs:443`); `alert_engine.write().fire(..)` at `:2072`,
+  `:2122`, `:2160`, `:2172` and `:2185` takes a **third** lock
+  (`Arc<RwLock<AlertEngine>>`) and reaches a second
+  `Command::new("sh").spawn()` (`src/security/alerting.rs:717`); and the
+  buffered stdout sink is written. A `posix_spawn` costs hundreds of
+  microseconds against a per-packet budget of hundreds of nanoseconds, so the
+  most expensive syscall in the process runs in the most contended section of
+  it — and it is there by accident, not by design. This breaks two written
+  rules: [invariant 2](../internals/invariants.md) (*"Never hold both write
+  locks simultaneously"*) and `docs/internals/threading.md:144-147` (*"each
+  store takes one write lock per packet, briefly"*). It is also the mechanism
+  behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
+  the ordering `stores → alerts` exists only on this path and is written down
+  nowhere; `security_findings` (`src/mcp/server.rs:2078`) currently takes
+  `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
+  stops the next MCP tool from creating one. **Do:** queue exec requests and
+  per-message output during the locked section, drain them after the guards
+  drop, then add the missing lock-ordering rule to `invariants.md`. Ship with a
+  before/after throughput number and a `dropped` delta from CT1.
 
 - [x] **`--version` never reports the `metrics` feature** — `compiled_features()`
   in `src/cli.rs` walked `native, tui, audio, tls, hep, api, mcp, mcp-http, wasm`
@@ -111,6 +328,104 @@ Tiers:
 - [x] src/capture/hep.rs:1566 — [missed-edge-case] `HepSender::new` binds `0.0.0.0:0` (IPv4-only); IPv6 dest fails — bind family should follow destination. **Done:** the destination is resolved first and the bind follows its family (`[::]:0` for IPv6, `0.0.0.0:0` for IPv4).
 
 ## P2 — robustness, observability & efficiency
+
+<!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
+
+- [ ] **G1 — `INVALID_PCAP_TIMESTAMPS` is counted and warned but never
+  reportable.** `src/capture/live.rs` counts every packet whose pcap timestamp
+  was corrupt and had to be stamped with the wall clock — which makes *all*
+  timing analysis for that run (PDD, delta times, call duration) unreliable —
+  and the only trace is a rate-limited `warn`. No report, no `/v1/stats`, no MCP
+  tool, no Prometheus metric exposes it. An agent or a dashboard reading the
+  timing numbers has no way to learn they are untrustworthy. This is the
+  identical gap to CT1's remaining half and should be closed in the same pass:
+  one "capture quality" block carrying invalid timestamps, kernel drops and
+  interface drops together, surfaced everywhere the counts are.
+- [ ] **CT3 — `--snaplen` defaults to 65535, so every packet is copied whole
+  even for SIP-only work.** `src/app/bootstrap.rs:1357` —
+  `cli.snaplen.or(config.capture.snaplen).unwrap_or(65535)`. The flag exists
+  (`src/cli.rs:293-295`) and reaches `.snaplen(config.snaplen as i32)`
+  (`src/capture/live.rs:145`); the **default** is the full frame. For signalling
+  analysis, 200-400 bytes captures every SIP header worth matching on, and the
+  saving is paid on *every* packet in the kernel copy, the ring buffer
+  occupancy (CT2) and the `to_vec()` at `src/capture/live.rs:266`. **This is not
+  a free default change**, which is why it is a profile and not a number:
+  truncation breaks `--export-audio`/WAV export and Opus decode (they need RTP
+  payload, not just headers), and it degrades `-O` pcap re-emit to truncated
+  frames. **Do:** ship named capture profiles (`--profile signalling` → small
+  snaplen, `--profile full` → 65535) rather than moving the bare default;
+  refuse or loudly warn when a small snaplen is combined with audio export or
+  `-O`; and surface `caplen` vs `origlen` (already carried on `Packet`) in the
+  summary so truncation is visible rather than inferred.
+- [ ] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
+  `grep -rn 'FANOUT\|fanout' src/` matches nothing. `--cores N` is offline-only
+  (`RunMode::CoresFile` requires `-I`, `src/app/bootstrap.rs:433`), so on a busy
+  server the live path is one `capture-<device>` thread feeding one processing
+  loop — exactly the topology CT2 overflows. Linux `PACKET_FANOUT` is the
+  standard answer: N sockets on one interface, kernel-side flow-hashed
+  distribution, no userspace dispatcher. **Two blockers I assumed are not
+  real** (established 2026-08-03 against mainline `net/packet/af_packet.c`):
+  (a) **No libpcap fork is needed.** `fanout_add()` accepts an already-bound,
+  already-ring-mapped socket and re-links the prot_hook for the
+  already-`PACKET_SOCK_RUNNING` case, and the `pcap` crate exposes
+  `impl AsRawFd for Capture<Active>` — so this is literally
+  `setsockopt(cap.as_raw_fd(), SOL_PACKET, PACKET_FANOUT, ..)` on a normally
+  opened libpcap handle, plus N capture threads. (b) **The direction-independence
+  question is already answered.** `PACKET_FANOUT_HASH` uses
+  `__skb_get_hash_symmetric()` (af_packet.c:1362), which is *symmetric*, so both
+  directions of an RTP stream already land on one worker — exactly the property
+  `src/parallel.rs:68` proves RTP/RTCP needs. Use
+  `PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_ROLLOVER`. What symmetric hashing
+  still cannot do is co-locate a call's SIP (5060) with its media (ephemeral
+  SDP-negotiated ports) — different 5-tuples, different workers; see CT11 for
+  the cheap fix. Requires no new capability, no new toolchain, and works in the
+  existing Docker image. Linux-only; must degrade cleanly elsewhere.
+- [ ] **CT11 — Call-aware fanout steering with CLASSIC BPF (no eBPF toolchain).**
+  Follows CT4 and closes its one remaining gap. Symmetric flow hashing keeps
+  each RTP stream on one worker but cannot put a call's SIP signalling on the
+  same worker as its media. `fanout_set_data_cbpf()`
+  (`net/packet/af_packet.c:1583`) takes a plain `struct sock_fprog` via
+  `bpf_prog_create_from_user()` and the program returns a **worker index** —
+  so a hand-written ~15-instruction cBPF program can pin ports 5060/5061 to
+  worker 0 and hash everything else across `1..N-1`, giving deterministic
+  co-location of all signalling. **No `CAP_BPF`, no verifier, no nightly
+  toolchain, no clang, no BTF, no Docker seccomp problem, and it works after
+  the privilege drop.** Note it must be hand-written: `pcap_compile` emits
+  match/no-match return values, not worker indices, so `Capture::compile()`
+  output cannot be reused. Worth doing only after CT4 ships and only if
+  cross-worker call correlation is measured to be a real cost.
+  *(Unverified: that `bpf_prog_create_from_user()` contains no internal
+  capability check beyond `SOCK_FILTER_LOCKED` — confirm in
+  `net/core/filter.c` before relying on the "no CAP_BPF" claim.)*
+- [ ] **CT5 — `immediate_mode(true)` is hardcoded, defeating kernel batching.**
+  `src/capture/live.rs:152` sets it unconditionally, with the comment that the
+  `poll()`-driven non-blocking loop requires it. That is the right call for an
+  interactive TUI (packets appear as they arrive) and the wrong one for a
+  headless `-N` capture on a busy link, where it costs roughly a wakeup per
+  packet instead of per buffer-fill. **Do:** make it policy rather than a
+  constant — immediate for TUI, batched for `-N` — and verify the `poll()` loop
+  still terminates promptly on `--duration`/Ctrl-C with it off (that is the
+  constraint the comment is protecting, and it must not regress). Cheapest item
+  in this group; measure with CT1's counter.
+- [ ] **PR1 — `--cores` plateaus at 2 because one thread reads the whole `-I`
+  set serially.** Measured, `docs/benchmarks.md:46-56`: 1 core 1.06M pkts/s,
+  2 cores 2.32M, 4 cores 2.03M, 8 cores 1.89M — throughput *declines* past two.
+  The published cause is *"the single sequential pcap reader (read + buffer copy
+  + host-pair peek), not the core count"*, and `src/parallel.rs:558` confirms
+  it: a serial `for (i, path) in paths.iter().enumerate()` loop. Since `-I`
+  routinely names a directory or glob of rotated captures, N reader threads each
+  opening their own file — all sharding into the *same* worker pool, preserving
+  cross-file dialog stitching — attacks the measured bottleneck directly.
+  Threads, not processes: `--cores` workers already hold zero shared locks
+  (`src/parallel.rs:275-283`), so there is nothing a fork would isolate.
+  **Blocker, must be settled first:** packets would reach a worker interleaved
+  across files and therefore out of timestamp order. `DialogStore::merge` is
+  order-tolerant (`absorb_messages`, `src/sip/dialog_store.rs:1089-1106`, sorts
+  by timestamp and replays the state machine), but a *live* worker store is fed
+  by `process_message` in arrival order and it is **not established** that
+  out-of-order arrival is harmless there. Write the `--cores 1` vs
+  parallel-reader parity test over the reference corpus before writing the
+  feature.
 
 - [x] **TUI copy/paste (user-reported 2026-07-24)** — mouse capture blocks the terminal's native drag-select on every view, and the only clipboard feature (call-flow `E` Mermaid export) shells out to pbcopy/xclip, which fails over SSH. Plan: OSC 52 as primary clipboard mechanism (terminal puts text on the local clipboard; works over SSH) with pbcopy/xclip fallback; `y` copy binding on the message-detail pane; a mouse-capture toggle key so native selection works everywhere; help + docs updated (including the Shift+drag bypass tip). **Done:** new `tui::clipboard` module — OSC 52 written to /dev/tty (72 KiB raw bound, char-boundary truncation, xterm-safe base64 size) with silent pbcopy/xclip belt-and-suspenders and honest status wording; `y` yanks the displayed raw message (detached worker + status line, same pattern as `E`); F12 toggles mouse capture (audited free across views; rebind wins; persistent status reminder while off); help view, keybindings docs and website mirror updated with a Copying-text section.
 
@@ -215,6 +530,32 @@ Tiers:
 - [x] src/pipeline.rs:57 — [edge-case] is_rtcp_packet requires odd dst port; RFC 5761 mux RTCP on even port never recognized. **Done:** `is_rtcp_packet` recognizes RFC 5761 muxed RTCP on even ports by content (v2, PT 192-223, self-consistent RTCP length) while keeping the classic odd-port path; the length-consistency guard keeps existing even-port non-RTCP tests passing.
 
 ## P3 — code health
+
+<!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
+
+- [ ] **G2 — The store-lock rationale in `implementation-plan-v6.md` is stale
+  and says the opposite of what the code does.** It reads: *"The optional async
+  runtime (if `--metrics` or `--api` is used) reads from the `DialogStore`
+  through a `parking_lot::RwLock` — read-heavy, write-rare, so RwLock contention
+  is minimal."* The batch loop takes `dialog_store.write()` **once per packet**
+  (`src/app/batch.rs`), so at benchmarked rates writes are the single most
+  frequent operation in the process. "Write-rare" is the premise every later
+  contention judgement rests on, and it is false. Correct it in place (the
+  repo's own "refute your own claims in place" norm), and say what the real
+  shape is: write-per-packet, read-rare-but-latency-sensitive.
+- [ ] **G3 — Invariant 2 and the batch applier contradict each other.**
+  `docs/internals/invariants.md` §2 states *"Never hold both write locks
+  simultaneously"* and then explains that *"The batch and `--cores` appliers
+  hold their stores by `&mut` and so have no ordering to get wrong."* The batch
+  applier does not: `src/app/batch.rs` takes `dialog_store.write()` **and**
+  `stream_store.write()` and holds both across the whole per-packet body,
+  passing `&mut` borrows of the guards downward. There is no deadlock (the order
+  is consistent), but the invariant page describes a discipline the main path
+  does not follow, so a reader checking their new code against it gets the wrong
+  answer. Either restate the rule as "consistent order, dialog before stream" or
+  make the batch path match — and see LK1, which wants that section narrowed
+  anyway.
+
 
 - [x] **Proofread the active-voice rewrite** — `99e6ab8` rewrote 331 prose
   lines across 28 files to name their actor, and three of them shipped as
@@ -793,6 +1134,106 @@ export is PA7. PB's multi-leg ladder is PA10. Those PA entries stay
 authoritative; the PB text above adds only what they do not already say.
 
 ## P5 — features & long-term / exploratory
+
+<!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
+
+- [ ] **G5 — No seccomp and no Landlock, on a process whose whole job is
+  parsing hostile input.** `src/privilege.rs` does real work — `setgid`,
+  `setuid`, `drop_supplementary_groups`, `PR_SET_NO_NEW_PRIVS`,
+  `PR_SET_DUMPABLE=0`, `setrlimit(RLIMIT_CORE, 0)`, optional `chroot` — but
+  there is no syscall filter and no filesystem-access restriction
+  (`grep -rn 'seccomp\|landlock\|unshare' src/` matches nothing). sipnab's own
+  parsers are safe Rust, but **libpcap is C and touches every untrusted byte
+  first**, in the address space holding TLS key material, bearer tokens and a
+  pre-drop `CAP_NET_RAW` socket. A seccomp-bpf allowlist installed after the
+  privilege drop closes far more of that exploitation path than process
+  isolation would (see PI2 and
+  `docs/design/process-isolation-and-hot-path-cost.md` §2b/§5), for a fraction
+  of the architectural cost — the post-drop syscall set is small and stable.
+  Landlock would additionally bound filesystem reach for runs without
+  `--chroot`. Ranked P5 only because it needs a carefully-derived allowlist and
+  a per-platform fallback; the argument for it is stronger than its rank.
+- [x] **CT14 — `any` costs ~41x ring capacity and all promiscuous mode:
+  DOCUMENTED.** Found 2026-08-03, written up as `docs/tuning-capture.md` §5.
+  libpcap's `create_ring()` sizes each TPACKET_V2 slot from the snaplen, and
+  the MTU+18 clamp that would rescue it is guarded by
+  `if (handle->linktype == DLT_EN10MB)`. sipnab's Linux default device is `any`
+  (`src/capture/device.rs:35-40`), which is **`DLT_LINUX_SLL2`** — so the clamp
+  never runs and every slot is the full 65535-byte snaplen: **~1,000 slots on
+  `any` against ~41,000** named-with-offloads-off, in the same 64 MiB. No
+  `ethtool` setting reaches it — the guard tests link type, not offloads.
+  `any` also **cannot go promiscuous** — `use_promisc` in `capture_live()`
+  (`src/capture/live.rs`) tests `device != "any"` — so it misses mirrored
+  traffic, and it forfeits the per-interface capture threads of
+  `--multi-device` (`src/capture/native.rs`). The default stays — it exists so
+  loopback SIP is not missed — so leaving it trades coverage for throughput,
+  deliberately. No code change. Related: CT5 (TPACKET_V3).
+- [x] **CT13 — AF_XDP: DECLINED.** Investigated 2026-08-03 against mainline.
+  **Decisive: it steals traffic from the host — there is no tee.**
+  `BPF_FUNC_clone_redirect` is absent from `xdp_func_proto()`
+  (`net/core/filter.c:8600`), so once an XSK binds a queue it takes every
+  packet on it. Suricata, verbatim: *"during `af_xdp` operation the selected
+  interface cannot be used for regular network usage."*
+  Independently fatal: XDP is **ingress-only**, so a two-way dialog loses a
+  direction. Moot anyway — **libpcap has no AF_XDP backend**.
+  **Keep for CT2/CT7:** Netdev 2.2 put real `tcpdump` on TPACKET_V3 at
+  **0.74 Mpps at 64B / 0.62 Mpps at 1500B** — a truer ceiling than `rxdrop`.
+- [x] **CT12 — XDP as a capture filter: DECLINED, on architecture.**
+  Investigated 2026-08-03 against mainline `net/core/dev.c`.
+  **Decisive: XDP runs upstream of capture, so it can only filter *from*
+  sipnab, never *for* it.** `do_xdp_generic()` is at dev.c:6022, **before** the
+  AF_PACKET tap loops at 6044/6051. An `XDP_DROP` is invisible to sipnab, and
+  on a live SIP server it drops the production traffic you are observing.
+  Secondary: `dev_xdp_attach()` (dev.c:10401) enforces exclusivity, so sipnab
+  cannot coexist with Cilium/Calico. Note it fails on **architecture, not
+  permissions** — `__sys_bpf()` has no blanket capability gate, so do not
+  re-propose it on privilege-drop grounds. `PACKET_FANOUT_EBPF` is the one
+  surviving eBPF use — see CT11 for ~80% of the benefit at ~2% of the cost.
+- [x] **CT10 — PF_RING: DECLINED, on licensing.** Investigated 2026-08-03.
+  **Decisive: `userland/lib/libs/*.{a,so}` are proprietary blobs under an ntop
+  EULA** reading *"for your own personal, non-commercial use"* and forbidding
+  redistribution. `lib/Makefile.in` `ar -x`s their objects straight into
+  `libpfring.so`, so there is no "just the LGPL-2.1 part" package — which makes
+  sipnab's Docker image and .deb undistributable and is incompatible with the
+  **MIT-OR-Apache-2.0** grant. Moot regardless: PF_RING's `pcap-linux.c`
+  **hardcodes `linktype = DLT_EN10MB`**, silently misparsing tun/tap/VPN
+  frames, and under ZC `pfring_get_selectable_fd()` returns `-1` against the
+  `pcap` crate's `assert!(fd != -1)` — a **hard panic**. The 9× figure is
+  ZC-vs-Linux-stack *forwarding* (Gallenmüller et al., ANCS 2015), not capture.
+- [ ] **CT6 — Verify (then document) the alternate libpcap backends: AF_XDP,
+  DPDK, netmap.** libpcap has shipped DPDK and netmap capture modules for years
+  and selects them by device name (`dpdk:0`, `netmap:eth0`, `xdp:eth0`).
+  sipnab passes device names through almost verbatim —
+  `src/capture/device.rs:119-144` rejects only empty names and embedded NULs,
+  then hands the string to `pcap::Capture::from_device()` — so **these may
+  already work today with no code change**, depending entirely on whether the
+  linked libpcap was built with those modules. That makes step one *verification
+  and packaging*, not engineering: check what `libpcap` the release artifacts
+  and the Docker image actually link (`Dockerfile`, `packaging/`), test one
+  alternate backend end to end, and either document the supported device-name
+  syntax in `docs/install.md` or state plainly that it is unsupported. Only
+  after that is it worth discussing a native AF_XDP path. This is the genuine
+  order-of-magnitude lever for live capture, and it is a kernel-interface
+  change, not a language change — see
+  `docs/design/process-isolation-and-hot-path-cost.md` §5 for why rewriting hot
+  Rust into C or assembler is not (the per-packet cost is a `memcpy` plus a hash
+  lookup, the copy was already measured at ~15 ns, and the sequential stage that
+  caps `--cores` is libpcap itself).
+- [ ] **PI2 — Scanner-kill as a real child process (D16 as originally
+  specified).** The cleanest fork candidate in the tree and the only one worth
+  doing: it is the sole component that *transmits*, it holds a `CAP_NET_RAW` raw
+  socket opened before the privilege drop and kept for the whole run
+  (`src/process_isolation.rs:107-136`), and it already has no shared state — it
+  communicates over a crossbeam channel whose messages are **already**
+  `Serialize`/`Deserialize` (`src/process_isolation.rs:307,329`), an otherwise
+  unexplained fossil of the D16 IPC design
+  (`docs/design/implementation-plan-v6.md:564,2019-2024`). Ranked P5 rather than
+  higher only because `--kill-scanner` is off by default and niche; if it
+  becomes a headline feature this moves up. **Not** a licence to fork anything
+  else — forking the REST API or the `--cores` workers is analysed and declined
+  in `docs/design/process-isolation-and-hot-path-cost.md` §3-4, because the
+  shared `Arc<RwLock<..>>` stores every surface reads are the product, and
+  turning those reads into IPC is a new wire protocol, not a refactor.
 
 - [x] **Packet loss map** — visual representation of RTP loss patterns. **Done:** new `StreamLossMap` view (key `L` from Stream Detail / Quality Dashboard) rendering a sequence-space density strip from `RtpStream.lost_sequences` — bursty loss shows as a dark cluster, diffuse as scattered specks — with a summary header (loss %, burst count/pattern from `burst_gap_analysis`) and sequence axis. Pure wraparound-aware `build_loss_map` binning core in `src/rtp/loss_map.rs` (9 unit tests); spec at docs/superpowers/specs/2026-07-24-packet-loss-map-design.md.
 - [ ] **OpenSSF Best Practices Badge** — answer sheet prepared and grounded at

@@ -1022,11 +1022,62 @@ pub struct StatsResponse {
     /// The service port — destination of a request, source of a response —
     /// never the ephemeral port, which differs per dialog and names nothing.
     pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
+    /// How much of the wire the counts above are drawn from, and whether the
+    /// clock behind any timing figure can be believed.
+    ///
+    /// Without this, every count in this response reads as a total when it
+    /// may be a floor. A reader that cannot ask a follow-up question has no
+    /// other way to tell the two apart.
+    pub capture_quality: CaptureQualityJson,
     /// Which capture these counts describe, and which revision of its stores.
     ///
     /// Every number above is a whole-store aggregate, so a swap changes all of
     /// them at once with nothing else in the response to say why.
     pub capture_identity: crate::provenance::CaptureEtag,
+}
+
+/// The three ways this run's analysis can be incomplete or mistimed, plus the
+/// one flag that says whether any of them happened.
+///
+/// Kept as three counters rather than a sum because the remedies differ and
+/// disagree: kernel-ring drops are answered by a bigger `-B`/`--buffer`, a
+/// narrower BPF filter or a smaller `--snaplen`; interface drops cannot be
+/// recovered by a bigger buffer at all and point at the NIC, the driver or
+/// the mirror; and an invalid timestamp loses no packet whatever, but makes
+/// every timing figure in the capture — post-dial delay, RFC 3550 jitter,
+/// MOS, call duration — unreliable. One collapsed total would send a reader
+/// to the wrong one of the three.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CaptureQualityJson {
+    /// Packets the kernel discarded because the capture ring was full. Dialogs
+    /// may be missing messages and RTP loss will overstate the wire.
+    pub kernel_dropped_packets: u64,
+    /// Packets the interface or its driver discarded before libpcap saw them.
+    /// A larger capture buffer does not recover these.
+    pub interface_dropped_packets: u64,
+    /// Packets whose pcap timestamp was unusable and were stamped with the
+    /// wall clock instead. Timing figures for this run are unreliable.
+    pub invalid_timestamps: u64,
+    /// `true` when any of the three counters above is non-zero.
+    ///
+    /// Named for the direction there is evidence for. `false` means nothing
+    /// was **observed** to go wrong — not that the capture provably saw every
+    /// packet, since loss upstream of the capture point (an oversubscribed
+    /// SPAN port, a one-directional tap, a filter that excluded the traffic)
+    /// is invisible to all three counters.
+    pub degraded: bool,
+}
+
+impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
+    fn from(q: crate::output::prometheus::CaptureQuality) -> Self {
+        Self {
+            kernel_dropped_packets: q.kernel_dropped_packets,
+            interface_dropped_packets: q.interface_dropped_packets,
+            invalid_timestamps: q.invalid_timestamps,
+            degraded: q.degraded(),
+        }
+    }
 }
 
 /// One port carrying SIP that `--portrange` excluded from the analysis.
@@ -2101,10 +2152,18 @@ impl SipnabMcp {
         name = "stats",
         description = "Returns aggregate counters: total dialogs, total \
                        streams, orphaned-stream count, active-call count, \
-                       and the count of SIP messages seen outside \
-                       --portrange that nothing analysed."
+                       the count of SIP messages seen outside --portrange \
+                       that nothing analysed, and a capture_quality block \
+                       giving packets dropped by the kernel capture ring, \
+                       packets dropped by the interface or driver, packets \
+                       whose pcap timestamp was unusable, and whether any \
+                       of those three is non-zero."
     )]
     pub async fn stats(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Read before the locks below: process-global atomics unrelated to
+        // either store's revision, so nothing is gained by holding a guard
+        // across the read.
+        let capture_quality = crate::output::prometheus::CaptureQuality::current().into();
         let payload = {
             // Capture lock first, then the stores — see `CaptureState`.
             let state = self.capture.read();
@@ -2128,6 +2187,7 @@ impl SipnabMcp {
                         messages: p.messages,
                     })
                     .collect(),
+                capture_quality,
             };
             drop(ss);
             drop(ds);
@@ -4704,6 +4764,72 @@ mod tests {
             "the per-port breakdown must be an array, empty when nothing was \
              skipped: {v}"
         );
+    }
+
+    /// `stats` carries the capture-quality block, always, with the three
+    /// losses named separately.
+    ///
+    /// The counters existed and were warned about on stderr; nothing put them
+    /// where a machine could read them, so an agent reasoning over these
+    /// counts had no way to learn the run was lossy. Asserted present at zero
+    /// for the same reason as `unanalysed_sip_messages` above: a key that
+    /// only appears when something is wrong is a key the reader never learns
+    /// exists.
+    ///
+    /// The three counters are asserted to be three distinct keys. Summing
+    /// them would name one problem where there are three, with three
+    /// different remedies — and "raise the buffer" is the wrong answer to
+    /// two of them.
+    #[tokio::test]
+    async fn stats_reports_capture_quality_with_the_three_losses_apart() {
+        let server = empty_server();
+        let result = server.stats().await.expect("stats should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        let q = &v["capture_quality"];
+        assert!(q.is_object(), "capture_quality must always be present: {v}");
+        for field in [
+            "kernel_dropped_packets",
+            "interface_dropped_packets",
+            "invalid_timestamps",
+        ] {
+            assert!(
+                q[field].is_u64(),
+                "capture_quality.{field} must be a count even at zero: {q}"
+            );
+        }
+        assert!(
+            q["degraded"].is_boolean(),
+            "capture_quality.degraded must be a boolean: {q}"
+        );
+    }
+
+    /// The degraded flag follows the counters rather than being independent
+    /// state, in both directions and for each of the three counters alone.
+    #[test]
+    fn capture_quality_degraded_tracks_each_counter() {
+        use crate::output::prometheus::CaptureQuality;
+
+        let clean: CaptureQualityJson = CaptureQuality::default().into();
+        assert!(!clean.degraded);
+
+        for quality in [
+            CaptureQuality {
+                kernel_dropped_packets: 1,
+                ..Default::default()
+            },
+            CaptureQuality {
+                interface_dropped_packets: 1,
+                ..Default::default()
+            },
+            CaptureQuality {
+                invalid_timestamps: 1,
+                ..Default::default()
+            },
+        ] {
+            let json: CaptureQualityJson = quality.into();
+            assert!(json.degraded, "{quality:?} must serialize as degraded");
+        }
     }
 
     /// A store with one dialog and no streams reports counts 1 and 0.

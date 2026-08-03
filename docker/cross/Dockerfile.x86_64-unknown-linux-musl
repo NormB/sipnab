@@ -1,11 +1,51 @@
 FROM ghcr.io/cross-rs/x86_64-unknown-linux-musl:main@sha256:b7452ab0229ccaf49fd17b207f148bb470362a8da3fdb903b332fbfc819367fc
 
-# Build libpcap from source against musl for static linking
+# libpcap is built from source against musl because the released musl artifact
+# links it statically; the distro copy is glibc-linked and unusable here.
+#
+# 1.10.6 rather than 1.10.5: only 1.10.6 mentions netmap in
+# `pcap_lib_version()` (upstream CHANGES: "Mind netmap support in
+# pcap_lib_version()"). On 1.10.5 the backend is compiled in but invisible, so
+# nothing downstream can assert it is present. 1.10.6 also makes DPDK opt-in.
+#
+# netmap is the only alternate capture backend that can ship in a static musl
+# binary: BSD-2-Clause and header-only, so there is no library to link and
+# nothing to break full static linking. DPDK is not an option — upstream
+# pcap-dpdk.c states libdpdk can only be linked dynamically, and libpcap 1.11
+# removes the module entirely. libpcap has no AF_XDP/XDP module in any release.
+#
+# The netmap headers are pinned to a commit for the same reason the base image
+# and the libpcap tarball are pinned: `master` is not a version.
+ARG LIBPCAP_VERSION=1.10.6
+# luigirizzo/netmap tag v13.0.
+ARG NETMAP_COMMIT=6d3a00936a7dfae50d97b9f90d5f05bff235c86c
+ARG MUSL_PREFIX=/usr/local/x86_64-linux-musl
+
+# `-include sys/types.h` is load-bearing, not defensive: net/netmap_user.h uses
+# `u_int`/`u_char` and pcap-netmap.c does not pull in sys/types.h first, which
+# musl (unlike glibc) does not paper over. Without it `make` fails. `configure`
+# reports "netmap support ... yes" either way because its probe compiles with
+# AC_INCLUDES_DEFAULT, so a green configure proves nothing. `-D_GNU_SOURCE`
+# alone does not fix it. Setting CFLAGS replaces libpcap's own default, so
+# `-g -O2` is restated to avoid silently building unoptimised.
+#
+# The `ar t` assertion is the actual gate: if netmap ever stops compiling in,
+# the image build fails here rather than shipping a binary quietly missing it.
 RUN apt-get update && apt-get install -y flex bison wget xz-utils && rm -rf /var/lib/apt/lists/* \
-    && wget -q https://www.tcpdump.org/release/libpcap-1.10.5.tar.xz \
-    && tar xf libpcap-1.10.5.tar.xz \
-    && cd libpcap-1.10.5 \
-    && CC=x86_64-linux-musl-gcc ./configure --host=x86_64-linux-musl --prefix=/usr/local/x86_64-linux-musl --disable-shared --without-libnl \
+    && mkdir -p "${MUSL_PREFIX}/include/net" \
+    && for header in netmap.h netmap_user.h netmap_legacy.h; do \
+         wget -q -O "${MUSL_PREFIX}/include/net/${header}" \
+           "https://raw.githubusercontent.com/luigirizzo/netmap/${NETMAP_COMMIT}/sys/net/${header}" \
+         || exit 1; \
+       done \
+    && wget -q "https://www.tcpdump.org/release/libpcap-${LIBPCAP_VERSION}.tar.xz" \
+    && tar xf "libpcap-${LIBPCAP_VERSION}.tar.xz" \
+    && cd "libpcap-${LIBPCAP_VERSION}" \
+    && CC=x86_64-linux-musl-gcc \
+       CFLAGS="-g -O2 -I${MUSL_PREFIX}/include -include sys/types.h" \
+       ./configure --host=x86_64-linux-musl --prefix="${MUSL_PREFIX}" \
+                   --disable-shared --without-libnl --enable-netmap \
     && make -j$(nproc) \
     && make install \
-    && cd .. && rm -rf libpcap-1.10.5 libpcap-1.10.5.tar.xz
+    && ar t "${MUSL_PREFIX}/lib/libpcap.a" | grep -qx 'pcap-netmap.o' \
+    && cd .. && rm -rf "libpcap-${LIBPCAP_VERSION}" "libpcap-${LIBPCAP_VERSION}.tar.xz"

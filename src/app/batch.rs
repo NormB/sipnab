@@ -302,6 +302,212 @@ struct ProcessingState<'a> {
     group: Option<&'a mut output::group::GroupBuffer>,
 }
 
+// ── Deferred side effects ──────────────────────────────────────────
+
+/// Everything one packet wants to do to the world outside the two store write
+/// locks, held until those locks are released.
+///
+/// The receive loop takes the dialog store's write lock and the stream store's
+/// write lock together, for the whole of a packet's processing. That much is
+/// forced: classification reads both, and a message that creates a dialog also
+/// links the SDP endpoints its media will arrive on. What is *not* forced is
+/// what used to run in there with them:
+///
+/// * `--on-dialog-exec` / `--on-quality-exec` reached
+///   `Command::new("sh").spawn()` — a real `fork`/`exec`, hundreds of
+///   microseconds, against a per-packet budget of hundreds of nanoseconds.
+///   Every reader of either store waited for the kernel to build a process
+///   image.
+/// * every `AlertEngine::fire` took a THIRD lock under the two, and reached a
+///   second `spawn` inside it.
+/// * per-message output went straight at the stdout sink, so a buffer fill put
+///   a `write(2)` in there too.
+///
+/// None of the three needs either store: they need bytes that were already
+/// read out of it. So the locked section now produces those bytes and this
+/// type carries them out, where [`Self::drain`] replays them. The stores are
+/// still updated under the locks — only the side effects moved.
+///
+/// One instance is reused for the whole run, so the buffers reach their
+/// high-water mark once instead of being allocated per packet.
+struct DeferredEffects {
+    /// Bytes bound for the per-message output sink.
+    out: DeferredOutput,
+    /// Alert firings, in the order they were raised.
+    alerts: Vec<DeferredAlert>,
+}
+
+/// One `AlertEngine::fire` call raised while the store guards were held.
+///
+/// Every field is owned or `Copy`, so nothing here borrows the store the
+/// detector read — which is what lets the call, and the `sh -c` spawn inside
+/// it, happen after the guards drop.
+struct DeferredAlert {
+    /// Rule name the finding is filed under (`"scanner"`, `"fraud"`, …).
+    kind: &'static str,
+    /// Source address the finding is about.
+    src_ip: std::net::IpAddr,
+    /// Human-readable detail line, already formatted and owned.
+    detail: String,
+    /// CAPTURE time of the event, which every threshold and cooldown in the
+    /// alert engine is measured against. Taken from the packet, so deferring
+    /// the call cannot move it — a replay still gives the same answer as
+    /// watching it live.
+    at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The output one packet produces, composed under the store guards and handed
+/// to the real sink once they drop.
+///
+/// Deliberately shaped like the slice of [`output::BatchSink`] the emitters
+/// use (`write_str`, `write_fmt`, `writer`, `record`, `end_message`), so the
+/// call sites read the same and the bytes are the same bytes in the same
+/// order. The only difference is where they land first.
+struct DeferredOutput {
+    /// Emitted bytes, in emission order.
+    ///
+    /// Reused across packets. That is what keeps the `--json` path
+    /// allocation-free after the write moved off the sink: `write_message_json`
+    /// still serializes straight into a buffer with no per-message `String`,
+    /// and the buffer stops growing once it has seen the largest message.
+    bytes: Vec<u8>,
+    /// First non-`BrokenPipe` error raised by a serializer writing into
+    /// `bytes`. Handed to the sink at drain time rather than dropped, so a
+    /// serialization failure still decides the run's exit code.
+    hard_error: Option<std::io::Error>,
+    /// `--line-buffer` message boundaries crossed while the guards were held.
+    ///
+    /// Replayed against the sink at drain time, so one flush per message is
+    /// still one flush per message rather than one per packet.
+    message_ends: usize,
+}
+
+impl DeferredOutput {
+    /// An empty buffer.
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            hard_error: None,
+            message_ends: 0,
+        }
+    }
+
+    /// Record `r` unless it succeeded or failed with `BrokenPipe`, keeping the
+    /// first — the same rule, and for the same reason, as
+    /// [`output::BatchSink::record`].
+    fn record(&mut self, r: std::io::Result<()>) {
+        if let Err(e) = r
+            && e.kind() != std::io::ErrorKind::BrokenPipe
+            && self.hard_error.is_none()
+        {
+            self.hard_error = Some(e);
+        }
+    }
+
+    /// Append a string.
+    fn write_str(&mut self, s: &str) {
+        self.bytes.extend_from_slice(s.as_bytes());
+    }
+
+    /// Append formatted output (enables `write!(out, ...)`).
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) {
+        let r = std::io::Write::write_fmt(&mut self.bytes, args);
+        self.record(r);
+    }
+
+    /// Direct access to the byte buffer, for the zero-copy serializers that
+    /// took [`output::BatchSink::writer`]. Errors bypass this type's tracking,
+    /// so callers feed the result back through [`Self::record`].
+    fn writer(&mut self) -> &mut Vec<u8> {
+        &mut self.bytes
+    }
+
+    /// Mark the end of one message. The flush it may imply happens at drain
+    /// time, since flushing a buffer the sink has not been given yet would
+    /// write nothing.
+    fn end_message(&mut self) {
+        self.message_ends += 1;
+    }
+
+    /// Hand this packet's bytes to `sink` and reset for the next packet.
+    ///
+    /// One `write_all` per packet rather than one per emitter. The sink's own
+    /// 64 KiB buffering is untouched, so the syscall count downstream is what
+    /// it always was and the bytes are byte-identical to what the emitters
+    /// used to write directly.
+    fn drain_into<W: std::io::Write>(&mut self, sink: &mut output::BatchSink<W>) {
+        // Fed first: it happened before any of the bytes could reach the sink,
+        // and the sink keeps the FIRST error it is told about.
+        if let Some(e) = self.hard_error.take() {
+            sink.record(Err(e));
+        }
+        if !self.bytes.is_empty() {
+            let r = sink.writer().write_all(&self.bytes);
+            sink.record(r);
+            self.bytes.clear();
+        }
+        for _ in 0..self.message_ends {
+            sink.end_message();
+        }
+        self.message_ends = 0;
+    }
+}
+
+impl DeferredEffects {
+    /// An empty set of effects.
+    fn new() -> Self {
+        Self {
+            out: DeferredOutput::new(),
+            alerts: Vec::new(),
+        }
+    }
+
+    /// Replay everything the packet queued, now that both store guards have
+    /// dropped. The single place the deferred work is performed.
+    ///
+    /// Output first: stdout is the run's primary evidence stream, and reaching
+    /// the sink is what makes it real. The alert firings follow, each taking
+    /// and releasing the alert lock on its own — exactly as the five call sites
+    /// used to, so the findings history and the `--alert-exec` budgets see the
+    /// same sequence of calls with the same capture timestamps. The `--on-*`
+    /// hook commands go last. None of the three is nested under a store lock
+    /// any more, which is the whole point: the alert engine was a third lock in
+    /// that stack with no written ordering rule, and a `sh -c` spawn ran with
+    /// all three held.
+    ///
+    /// # Arguments
+    ///
+    /// * `sink` — the buffered stdout sink the queued bytes belong to.
+    /// * `alerts` — the shared alert engine, locked once per queued finding.
+    /// * `event_exec` — the hook engine holding this packet's decided-but-
+    ///   unspawned commands. Passed in rather than queued here because the
+    ///   requests were built from a dialog or a stream and the engine that
+    ///   decided them also owns the rate limit and child list that bound them.
+    ///
+    /// # Side effects
+    ///
+    /// Writes to `sink` and may flush it (`--line-buffer`); takes the alert
+    /// engine's write lock once per queued alert and through it may write to
+    /// stderr and syslog and spawn `--alert-exec` children; and spawns the
+    /// queued `--on-dialog-exec` / `--on-quality-exec` children. Every process
+    /// this run
+    /// creates from the packet path is created here.
+    fn drain<W: std::io::Write>(
+        &mut self,
+        sink: &mut output::BatchSink<W>,
+        alerts: &Arc<RwLock<AlertEngine>>,
+        event_exec: &mut EventExecEngine,
+    ) {
+        self.out.drain_into(sink);
+        for alert in self.alerts.drain(..) {
+            alerts
+                .write()
+                .fire(alert.kind, alert.src_ip, &alert.detail, alert.at);
+        }
+        event_exec.dispatch_pending();
+    }
+}
+
 /// Resolve the pcap file a `--tshark-filter` / `--wireshark` command should
 /// reference. Precedence: the input file (`-I`, offline analysis), then the
 /// file the live capture was written to (`-O`).
@@ -432,6 +638,7 @@ pub fn run_cores_file(
                 );
                 report_icmp_summary(&r.stream_store);
                 report_retention_losses(&r.dialog_store);
+                report_capture_quality();
             }
             if !reports_ok {
                 std::process::exit(1);
@@ -541,6 +748,74 @@ fn retention_summary(dialogs: &DialogStore) -> Option<String> {
     Some(format!(
         "retention: {}. The message and packet counts above are what sipnab READ, \
          not what it kept — raise --limit, or --max-dialogs, to keep more.",
+        parts.join("; ")
+    ))
+}
+
+/// Report what the CAPTURE lost, beside the totals that hide it.
+///
+/// The sibling of [`report_retention_losses`], one layer further upstream. That
+/// one reports what the store shed after sipnab read it; this reports what
+/// sipnab never read at all, because the kernel or the NIC threw it away first.
+/// Both matter for the same reason and were both silent: a count of what
+/// arrived reads as a count of what happened.
+///
+/// Three channels, each meaning something different to an operator, and each
+/// with a different remedy — which is why they are named separately rather than
+/// summed:
+/// - **kernel-buffer drops** ([`KERNEL_DROPPED`]) — the ring was full; raise
+///   `-B/--buffer`, narrow the BPF, or cut `--snaplen`
+/// - **interface/driver drops** ([`IFACE_DROPPED`]) — never reached libpcap; a
+///   bigger buffer cannot recover these, look at the NIC and its offloads
+/// - **invalid timestamps** ([`INVALID_PCAP_TIMESTAMPS`]) — packets stamped
+///   with the wall clock because their pcap timestamp was corrupt, which makes
+///   every timing figure (post-dial delay, jitter, MOS) unreliable
+///
+/// Silent when the capture was clean, so a good run stays quiet — the same rule
+/// [`retention_summary`] follows.
+fn report_capture_quality() {
+    if let Some(msg) = capture_quality_summary() {
+        tracing::warn!("{msg}");
+    }
+}
+
+/// The capture-quality sentence, or `None` when nothing was lost.
+///
+/// Split from the logging for the same reason as [`retention_summary`]: the
+/// whole value is in what it says, and a test asserting only that "something
+/// was logged" would pass on a sentence naming the wrong number.
+fn capture_quality_summary() -> Option<String> {
+    let (dropped, if_dropped) = crate::capture::live::kernel_drop_counts();
+    let bad_ts =
+        crate::capture::live::INVALID_PCAP_TIMESTAMPS.load(std::sync::atomic::Ordering::Relaxed);
+    if dropped == 0 && if_dropped == 0 && bad_ts == 0 {
+        return None;
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if dropped > 0 {
+        parts.push(format!(
+            "{dropped} packet(s) dropped by the kernel capture buffer \
+             (raise -B/--buffer, narrow the BPF filter, or lower --snaplen)"
+        ));
+    }
+    if if_dropped > 0 {
+        parts.push(format!(
+            "{if_dropped} packet(s) dropped by the interface or its driver \
+             (a bigger buffer cannot recover these — check the NIC and its offloads)"
+        ));
+    }
+    if bad_ts > 0 {
+        parts.push(format!(
+            "{bad_ts} packet(s) had a corrupt capture timestamp and were stamped \
+             with the wall clock (timing analysis is unreliable for this run)"
+        ));
+    }
+
+    Some(format!(
+        "capture quality: {}. THIS ANALYSIS IS INCOMPLETE — the counts above are \
+         what sipnab RECEIVED, not what crossed the wire. See \
+         docs/tuning-capture.md.",
         parts.join("; ")
     ))
 }
@@ -671,6 +946,7 @@ pub fn run(
             );
             report_icmp_summary(&result.stream_store);
             report_retention_losses(&result.dialog_store);
+            report_capture_quality();
         }
         if !reports_ok {
             std::process::exit(1);
@@ -1347,6 +1623,13 @@ impl BatchRunner {
         // capture; `--line-buffer` flushes after every message.
         let mut sink = output::BatchSink::stdout(cli.line_buffer);
 
+        // Carries a packet's output, alerts and hook commands OUT of the
+        // section that holds both store write locks, so the syscalls they
+        // imply — `fork`/`exec` above all — happen with no lock held. Built
+        // once and reused, so its buffers are allocated once for the run.
+        // See `DeferredEffects`.
+        let mut effects = DeferredEffects::new();
+
         // 18. Main receive loop
         let start = std::time::Instant::now();
         let mut total_count: u64 = 0;
@@ -1549,6 +1832,12 @@ impl BatchRunner {
                 // Acquire write locks once per packet. The locks are uncontested
                 // in the no-API case; with --api, the API thread briefly waits
                 // for in-flight per-packet processing to finish.
+                //
+                // Nothing that can block belongs in this scope. Everything that
+                // used to — both `sh -c` spawn sites, the alert engine's own
+                // lock, and the stdout writes — is queued into `effects` (and
+                // into the event-exec engine's pending queue) and replayed
+                // immediately below, with the guards gone.
                 {
                     let mut ds_guard = dialog_store.write();
                     let mut ss_guard = stream_store.write();
@@ -1569,9 +1858,16 @@ impl BatchRunner {
                         &mut proc_state,
                         &mut engines,
                         &mut counters,
-                        &mut sink,
+                        &mut effects,
                     );
                 }
+
+                // Both store guards have dropped. Replay what the packet
+                // queued, in the order it was raised: output, then alert
+                // findings, then the hook commands. Draining per packet —
+                // rather than per batch, or at end of capture — is what keeps
+                // ordering identical to emitting inline.
+                effects.drain(&mut sink, &engines.alerts, &mut event_exec);
 
                 // --hep-send: forward matched SIP messages via HEP
                 #[cfg(feature = "hep")]
@@ -1626,6 +1922,13 @@ impl BatchRunner {
                 break;
             }
         }
+
+        // A no-op today — every packet drains before the loop can break — and
+        // kept because the cost of being wrong is silent data loss. A future
+        // `break` added inside the per-packet body would otherwise discard that
+        // packet's output, its findings and its hook commands with no error
+        // anywhere, which is the failure this whole area exists to remove.
+        effects.drain(&mut sink, &engines.alerts, &mut event_exec);
 
         // Replay any --group-by buffer before draining, so grouped output lands
         // ahead of reports exactly where the streamed output would have.
@@ -1775,6 +2078,7 @@ impl BatchRunner {
 
             report_icmp_summary(&stream_store.read());
             report_retention_losses(&dialog_store.read());
+            report_capture_quality();
 
             // Helpful guidance when no SIP signalling was found. If RTP was
             // parsed, the capture was readable — just media-only — so soften
@@ -1926,22 +2230,26 @@ fn decide_emit(
 ///   state (the store guards are held by the caller).
 /// * `engines` — security detectors, alert engine, and kill-worker handle.
 /// * `counters` — SIP/RTP counts and emit-selection state, updated here.
-/// * `sink` — buffered per-message output sink.
+/// * `effects` — where the side effects go instead of happening. See
+///   [`DeferredEffects`]: this function runs with both store write locks held,
+///   and neither a `fork`/`exec` nor a third lock nor a `write(2)` belongs in
+///   there. The caller replays them once the guards drop.
 ///
 /// # Side effects
 ///
-/// Mutates the dialog and stream stores; fires alert-engine findings and
-/// `--on-*` exec events; hands kill requests to the isolated worker for
-/// detected or targeted scanners; writes hexdump/fail2ban/per-message
-/// output into `sink`; decrypts SRTP payloads in place via the pipeline;
-/// and logs DTMF/STIR-SHAKEN details.
-fn process_parsed_packet<W: std::io::Write>(
+/// Mutates the dialog and stream stores; decrypts SRTP payloads in place via
+/// the pipeline; hands kill requests to the isolated worker for detected or
+/// targeted scanners; and logs DTMF/STIR-SHAKEN details. Alert findings,
+/// `--on-*` exec events and hexdump/fail2ban/per-message output are QUEUED —
+/// into `effects` and into the event-exec engine's own pending queue — not
+/// performed.
+fn process_parsed_packet(
     pp: &ParsedPacket,
     ctx: &BatchContext<'_>,
     state: &mut ProcessingState<'_>,
     engines: &mut DetectionEngines,
     counters: &mut PacketCounters,
-    sink: &mut output::BatchSink<W>,
+    effects: &mut DeferredEffects,
 ) {
     let matcher = ctx.matcher;
     let filter_expr = ctx.filter_expr;
@@ -1958,7 +2266,6 @@ fn process_parsed_packet<W: std::io::Write>(
     let fraud_detector = &mut engines.fraud;
     let digest_detector = &mut engines.digest;
     let reg_flood_detector = &mut engines.reg_flood;
-    let alert_engine = &mut engines.alerts;
     let scanner_kill_handle = &engines.kill_handle;
     let kill_response_code = engines.kill_response_code;
     let kill_targets = &engines.kill_targets;
@@ -1968,11 +2275,17 @@ fn process_parsed_packet<W: std::io::Write>(
     let prev_timestamp = &mut counters.prev_timestamp;
     let trailing_remaining = &mut counters.trailing_remaining;
     let followed_dialogs = &mut counters.followed_dialogs;
+    // Split the borrow: the output buffer and the alert queue are disjoint
+    // fields, and the emitters below interleave with the detectors.
+    let DeferredEffects {
+        out,
+        alerts: pending_alerts,
+    } = effects;
     // Hexdump output (applies to all packets)
     if cli.hexdump && cli.no_tui {
         let dump = output::hexdump(&pp.payload);
         write!(
-            sink,
+            out,
             "{} {}:{} -> {}:{} {}\n{}",
             pp.timestamp.format("%H:%M:%S%.3f"),
             pp.src_addr,
@@ -2035,7 +2348,10 @@ fn process_parsed_packet<W: std::io::Write>(
                     && let Some(dialog) = dialog_store.get(call_id)
                     && prev_state.as_ref() != Some(dialog.state())
                 {
-                    event_exec.fire_dialog_event(dialog);
+                    // Queued, not fired: the command is decided here (it reads
+                    // the dialog, which needs this lock) and spawned by the
+                    // caller once the guards drop.
+                    event_exec.queue_dialog_event(dialog);
                 }
 
                 // Link SDP media endpoints to RTP streams
@@ -2069,25 +2385,25 @@ fn process_parsed_packet<W: std::io::Write>(
             if let Some(det) = scanner_detector
                 && let Some(alert) = det.check(&sip_msg)
             {
-                alert_engine.write().fire(
-                    "scanner",
-                    alert.src_ip,
-                    &format!(
+                pending_alerts.push(DeferredAlert {
+                    kind: "scanner",
+                    src_ip: alert.src_ip,
+                    detail: format!(
                         "method={} ua={} detection={}",
                         output::render_absent(alert.method.as_deref()),
                         output::render_absent(alert.ua.as_deref()),
                         alert.detection_method
                     ),
-                    sip_msg.timestamp,
-                );
+                    at: sip_msg.timestamp,
+                });
                 if cli.fail2ban {
                     let event = output::format_scanner_event(
                         &alert.src_ip.to_string(),
                         alert.ua.as_deref(),
                         alert.method.as_deref(),
                     );
-                    sink.write_str(&event);
-                    sink.write_str("\n");
+                    out.write_str(&event);
+                    out.write_str("\n");
                 }
 
                 // D16: Send kill response via isolated worker thread.
@@ -2119,21 +2435,21 @@ fn process_parsed_packet<W: std::io::Write>(
             {
                 let method = sip_msg.method.as_ref().map(|m| m.as_str());
                 let ua = sip_msg.user_agent();
-                alert_engine.write().fire(
-                    "scanner",
-                    sip_msg.src_addr,
-                    &format!(
+                pending_alerts.push(DeferredAlert {
+                    kind: "scanner",
+                    src_ip: sip_msg.src_addr,
+                    detail: format!(
                         "method={} ua={} detection=kill-target",
                         output::render_absent(method),
                         output::render_absent(ua)
                     ),
-                    sip_msg.timestamp,
-                );
+                    at: sip_msg.timestamp,
+                });
                 if cli.fail2ban {
                     let event =
                         output::format_scanner_event(&sip_msg.src_addr.to_string(), ua, method);
-                    sink.write_str(&event);
-                    sink.write_str("\n");
+                    out.write_str(&event);
+                    out.write_str("\n");
                 }
                 // SN-01: same HEP-origin ineligibility as behavioral kill above.
                 if let Some(handle) = &scanner_kill_handle
@@ -2157,24 +2473,24 @@ fn process_parsed_packet<W: std::io::Write>(
                 && let Some(dialog) = dialog_store.get(call_id)
                 && let Some(alert) = det.check(&sip_msg, dialog)
             {
-                alert_engine.write().fire(
-                    "fraud",
-                    alert.src_ip,
-                    &format!("{:?}: {}", alert.alert_type, alert.detail),
-                    sip_msg.timestamp,
-                );
+                pending_alerts.push(DeferredAlert {
+                    kind: "fraud",
+                    src_ip: alert.src_ip,
+                    detail: format!("{:?}: {}", alert.alert_type, alert.detail),
+                    at: sip_msg.timestamp,
+                });
             }
 
             // Security detection: digest leak
             if let Some(det) = digest_detector {
-                let alerts = det.check(&sip_msg);
-                for alert in &alerts {
-                    alert_engine.write().fire(
-                        "digest",
-                        sip_msg.src_addr,
-                        &format!("{:?}: {}", alert.vulnerability, alert.detail),
-                        sip_msg.timestamp,
-                    );
+                let leaks = det.check(&sip_msg);
+                for alert in &leaks {
+                    pending_alerts.push(DeferredAlert {
+                        kind: "digest",
+                        src_ip: sip_msg.src_addr,
+                        detail: format!("{:?}: {}", alert.vulnerability, alert.detail),
+                        at: sip_msg.timestamp,
+                    });
                 }
             }
 
@@ -2182,22 +2498,22 @@ fn process_parsed_packet<W: std::io::Write>(
             if let Some(det) = reg_flood_detector
                 && let Some(alert) = det.check(&sip_msg)
             {
-                alert_engine.write().fire(
-                    "reg_flood",
-                    alert.src_ip,
-                    &format!(
+                pending_alerts.push(DeferredAlert {
+                    kind: "reg_flood",
+                    src_ip: alert.src_ip,
+                    detail: format!(
                         "count={} threshold={}",
                         alert.register_count, alert.threshold
                     ),
-                    sip_msg.timestamp,
-                );
+                    at: sip_msg.timestamp,
+                });
                 if cli.fail2ban {
                     let event = output::format_reg_flood_event(
                         &alert.src_ip.to_string(),
                         alert.register_count,
                     );
-                    sink.write_str(&event);
-                    sink.write_str("\n");
+                    out.write_str(&event);
+                    out.write_str("\n");
                 }
             }
 
@@ -2256,7 +2572,7 @@ fn process_parsed_packet<W: std::io::Write>(
                     output_opts,
                     cli,
                     *prev_timestamp,
-                    sink,
+                    out,
                     group.as_deref_mut(),
                 );
             }
@@ -2345,7 +2661,9 @@ fn process_parsed_packet<W: std::io::Write>(
                     dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
                 };
                 if let Some(stream) = stream_store.get(&key) {
-                    event_exec.fire_quality_event(stream);
+                    // Queued, not fired — same reason as the dialog event: the
+                    // MOS estimate reads the stream, the `fork`/`exec` does not.
+                    event_exec.queue_quality_event(stream);
                 }
             }
         }
@@ -2417,19 +2735,21 @@ fn try_tls_decrypt(
 /// * `opts` — formatting options for the default text print.
 /// * `cli` — flags selecting the backend and suppression modes.
 /// * `prev_timestamp` — previous message's timestamp for `--delta-time`.
-/// * `sink` — buffered output sink written to.
+/// * `out` — the packet's deferred output buffer. The store guards are held
+///   for the whole of this call, so the bytes are composed here and reach the
+///   real sink from [`DeferredEffects::drain`].
 ///
 /// # Side effects
 ///
-/// Writes into `sink` (flushing per message when `--line-buffer` is set).
-/// Emits nothing in MCP mode (stdout is the JSON-RPC wire) or under
-/// `--no-cli-print`.
-fn dispatch_sip_output<W: std::io::Write>(
+/// Appends to `out` (recording the per-message boundary `--line-buffer`
+/// flushes on). Emits nothing in MCP mode (stdout is the JSON-RPC wire) or
+/// under `--no-cli-print`.
+fn dispatch_sip_output(
     msg: &sip::SipMessage,
     opts: &OutputOptions,
     cli: &Cli,
     prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
-    sink: &mut output::BatchSink<W>,
+    out: &mut DeferredOutput,
     group: Option<&mut output::group::GroupBuffer>,
 ) {
     // MCP mode owns stdout (JSON-RPC wire); no per-packet text/JSON output.
@@ -2450,26 +2770,28 @@ fn dispatch_sip_output<W: std::io::Write>(
         if let Some(rendered) = render_sip_output(msg, opts, cli, prev_timestamp) {
             buf.push(msg, rendered);
         }
-        sink.end_message();
+        out.end_message();
         return;
     }
     if cli.json_pretty {
         let json = output::json::message_to_json_pretty(msg);
-        sink.write_str(&json);
+        out.write_str(&json);
     } else if cli.json {
-        // Hot path: serialize straight into the sink's buffer — no
-        // per-message String, no per-message write(2).
-        // to_writer bypasses the sink's error tracking, so hand the result
+        // Hot path: serialize straight into the deferred buffer — no
+        // per-message String, no per-message write(2). The buffer is reused
+        // across packets, so this stays allocation-free after the first few
+        // messages have sized it.
+        // to_writer bypasses the buffer's error tracking, so hand the result
         // back: a full disk here is data loss, not a closed pipe.
         //
         // Pass the io::Error through UNWRAPPED. Boxing it (Error::other)
         // resets the kind to Other, which makes a BrokenPipe from `| head`
         // indistinguishable from ENOSPC — and then the pipeline that is
         // supposed to exit 0 exits 1.
-        let r = output::json::write_message_json(msg, sink.writer());
-        sink.record(r);
+        let r = output::json::write_message_json(msg, out.writer());
+        out.record(r);
     } else if cli.fail2ban {
-        // Detections only. The detector paths above write to this same sink;
+        // Detections only. The detector paths above write to this same buffer;
         // nothing is emitted per message here. This used to print a line for
         // every SIP request, which on a real carrier trunk named 180 distinct
         // peers — the trunk, the SBCs and the PBX — to a tool whose whole job
@@ -2478,15 +2800,16 @@ fn dispatch_sip_output<W: std::io::Write>(
     } else if cli.text_dump {
         // Raw SIP message text dump
         let raw = String::from_utf8_lossy(&msg.raw);
-        sink.write_str(&raw);
-        sink.write_str("\n");
+        out.write_str(&raw);
+        out.write_str("\n");
     } else {
         let text = output::cli_print::format_sip_message(msg, opts, prev_timestamp);
-        sink.write_str(&text);
+        out.write_str(&text);
     }
 
-    // Flush if --line-buffer is set
-    sink.end_message();
+    // Records the boundary --line-buffer flushes on; the flush itself happens
+    // when the buffer reaches the sink.
+    out.end_message();
 }
 
 /// Render one message exactly as `dispatch_sip_output` would have written it,
@@ -2759,6 +3082,77 @@ mod tests {
         .expect("fixture parses")
     }
 
+    // ── Capture-quality reporting (CT1/G1) ───────────────────────────────
+
+    /// A clean capture must stay quiet, for the same reason a clean retention
+    /// run does: a warning that fires on every run is one operators skim past.
+    ///
+    /// Serialized on the same key as the counter tests, because the three
+    /// counters this reads are process-global.
+    #[test]
+    #[serial_test::serial(kernel_drop_counts)]
+    fn a_clean_capture_reports_no_quality_loss() {
+        // Only meaningful when nothing else in the process has counted a loss;
+        // a prior test in the same binary may have. Assert the invariant that
+        // actually matters: silence iff all three counters are zero.
+        let (dropped, if_dropped) = crate::capture::live::kernel_drop_counts();
+        let bad_ts = crate::capture::live::INVALID_PCAP_TIMESTAMPS
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let summary = capture_quality_summary();
+        if dropped == 0 && if_dropped == 0 && bad_ts == 0 {
+            assert_eq!(summary, None, "a clean capture must report nothing");
+        } else {
+            assert!(
+                summary.is_some(),
+                "counters are nonzero ({dropped}/{if_dropped}/{bad_ts}) so the \
+                 summary must not be silent"
+            );
+        }
+    }
+
+    /// Kernel-buffer and interface drops must be named SEPARATELY, with their
+    /// own counts and their own remedies. Summing them would tell an operator
+    /// to raise `-B` for a driver drop that a bigger buffer cannot fix — the
+    /// single most common wrong response to a drop counter.
+    #[test]
+    #[serial_test::serial(kernel_drop_counts)]
+    fn kernel_and_interface_drops_are_reported_separately_with_remedies() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let before_k = crate::capture::live::KERNEL_DROPPED.load(Relaxed);
+        let before_i = crate::capture::live::IFACE_DROPPED.load(Relaxed);
+        crate::capture::live::KERNEL_DROPPED.fetch_add(7, Relaxed);
+        crate::capture::live::IFACE_DROPPED.fetch_add(3, Relaxed);
+
+        let msg = capture_quality_summary().expect("drops must be reported");
+
+        assert!(
+            msg.contains(&format!("{} packet(s) dropped by the kernel", before_k + 7)),
+            "kernel drops must be named with their count: {msg}"
+        );
+        assert!(
+            msg.contains(&format!(
+                "{} packet(s) dropped by the interface",
+                before_i + 3
+            )),
+            "interface drops must be named with their count: {msg}"
+        );
+        assert!(
+            msg.contains("-B/--buffer"),
+            "the kernel-drop remedy must be named: {msg}"
+        );
+        assert!(
+            msg.contains("cannot recover these"),
+            "interface drops must say a bigger buffer will not help: {msg}"
+        );
+        assert!(
+            msg.contains("INCOMPLETE"),
+            "the summary must say the analysis is incomplete: {msg}"
+        );
+
+        crate::capture::live::KERNEL_DROPPED.fetch_sub(7, Relaxed);
+        crate::capture::live::IFACE_DROPPED.fetch_sub(3, Relaxed);
+    }
+
     /// A run that shed nothing must stay quiet.
     ///
     /// Without this the obvious implementation — always print the counters —
@@ -3019,6 +3413,7 @@ mod tests {
             portrange,
         };
         let mut sink = output::BatchSink::new(Vec::new(), false);
+        let mut effects = DeferredEffects::new();
         for pp in packets {
             let mut state = ProcessingState {
                 dialog_store: &mut dialog_store,
@@ -3031,7 +3426,16 @@ mod tests {
                 dtls: None,
                 group: None,
             };
-            process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters, &mut sink);
+            process_parsed_packet(
+                pp,
+                &ctx,
+                &mut state,
+                &mut engines,
+                &mut counters,
+                &mut effects,
+            );
+            // Same drain the receive loop performs once the guards drop.
+            effects.drain(&mut sink, &engines.alerts, &mut event_exec);
         }
         counters.dtmf_count
     }
@@ -3138,8 +3542,13 @@ mod tests {
             ..Default::default()
         };
         let sink_bytes = |cli: &Cli, prev: Option<chrono::DateTime<chrono::Utc>>| {
+            // Round-trip through the real sink, so this still asserts on the
+            // bytes an operator receives rather than on the deferred buffer.
+            let mut out = DeferredOutput::new();
+            dispatch_sip_output(&msg, &opts, cli, prev, &mut out, None);
             let mut sink = output::BatchSink::new(Vec::new(), cli.line_buffer);
-            dispatch_sip_output(&msg, &opts, cli, prev, &mut sink, None);
+            out.drain_into(&mut sink);
+            sink.flush();
             sink.into_inner()
         };
 
@@ -3283,26 +3692,32 @@ mod tests {
             after_count: 0,
             portrange,
         };
-        let mut state = ProcessingState {
-            dialog_store: &mut dialog_store,
-            stream_store: &mut stream_store,
-            rtp_heuristic: &mut rtp_heuristic,
-            event_exec: &mut event_exec,
-            #[cfg(feature = "tls")]
-            srtp: None,
-            #[cfg(feature = "tls")]
-            dtls: None,
-            group: None,
-        };
-
-        process_parsed_packet(
-            pp,
-            &ctx,
-            &mut state,
-            &mut engines,
-            &mut counters,
-            &mut output::BatchSink::new(Vec::new(), false),
-        );
+        let mut effects = DeferredEffects::new();
+        // Scoped so the borrow of `event_exec` ends before the drain, the
+        // way the receive loop's lock scope does.
+        {
+            let mut state = ProcessingState {
+                dialog_store: &mut dialog_store,
+                stream_store: &mut stream_store,
+                rtp_heuristic: &mut rtp_heuristic,
+                event_exec: &mut event_exec,
+                #[cfg(feature = "tls")]
+                srtp: None,
+                #[cfg(feature = "tls")]
+                dtls: None,
+                group: None,
+            };
+            process_parsed_packet(
+                pp,
+                &ctx,
+                &mut state,
+                &mut engines,
+                &mut counters,
+                &mut effects,
+            );
+        }
+        let mut sink = output::BatchSink::new(Vec::new(), false);
+        effects.drain(&mut sink, &engines.alerts, &mut event_exec);
         (counters.sip_count, counters.rtp_count)
     }
 
@@ -3351,25 +3766,34 @@ mod tests {
             after_count: 0,
             portrange: (5060, 5061),
         };
-        let mut state = ProcessingState {
-            dialog_store: &mut dialog_store,
-            stream_store: &mut stream_store,
-            rtp_heuristic: &mut rtp_heuristic,
-            event_exec: &mut event_exec,
-            #[cfg(feature = "tls")]
-            srtp: None,
-            #[cfg(feature = "tls")]
-            dtls: None,
-            group: None,
-        };
-        process_parsed_packet(
-            pp,
-            &ctx,
-            &mut state,
-            &mut engines,
-            &mut counters,
-            &mut output::BatchSink::new(Vec::new(), false),
-        );
+        let mut effects = DeferredEffects::new();
+        // Scoped so the borrow of `event_exec` ends before the drain, the
+        // way the receive loop's lock scope does.
+        {
+            let mut state = ProcessingState {
+                dialog_store: &mut dialog_store,
+                stream_store: &mut stream_store,
+                rtp_heuristic: &mut rtp_heuristic,
+                event_exec: &mut event_exec,
+                #[cfg(feature = "tls")]
+                srtp: None,
+                #[cfg(feature = "tls")]
+                dtls: None,
+                group: None,
+            };
+            process_parsed_packet(
+                pp,
+                &ctx,
+                &mut state,
+                &mut engines,
+                &mut counters,
+                &mut effects,
+            );
+        }
+        // The findings only exist once the effects are replayed: the detector
+        // decides under the store guards, the alert engine fires after them.
+        let mut sink = output::BatchSink::new(Vec::new(), false);
+        effects.drain(&mut sink, &engines.alerts, &mut event_exec);
 
         alerts
             .read()
@@ -3423,6 +3847,386 @@ mod tests {
         );
     }
 
+    // ── Deferred side effects (LK1) ────────────────────────────────────
+
+    /// Wait for `path` to hold at least one byte, so a test can assert the
+    /// hook COMMAND ran rather than only that a process was created. Returns
+    /// `false` on timeout, which fails the test rather than hanging the suite.
+    fn wait_for_marker(path: &std::path::Path) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            if std::fs::metadata(path).is_ok_and(|m| m.len() > 0) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// The receive loop's contract, asserted directly: a packet processed with
+    /// both store write locks held RAISES its side effects and PERFORMS none
+    /// of them. They happen only once the guards are gone.
+    ///
+    /// This is the defect the deferral exists to close. `Command::new("sh")
+    /// .spawn()` is a real `fork`/`exec` — hundreds of microseconds against a
+    /// per-packet budget of hundreds of nanoseconds — and it used to run with
+    /// the dialog store's write lock and the stream store's write lock both
+    /// held, so every reader of either store waited for the kernel to build a
+    /// process image. The alert engine's own lock was taken beneath those two,
+    /// with a second spawn inside it, on an ordering rule written down nowhere.
+    ///
+    /// Nothing about a capture's OUTPUT changes if that regresses, which is
+    /// why every assertion here is about WHEN, not about what.
+    #[test]
+    fn side_effects_are_raised_under_the_guards_and_performed_after_them() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let marker = dir.path().join("hook-ran");
+        // `>>` opens with O_APPEND, so the file's existence and length are
+        // evidence the shell command itself ran.
+        let hook = format!("printf x >> {}", marker.display());
+
+        let mut cli = base_cli();
+        cli.no_cli_print = true;
+
+        let matcher = SipMatcher::new(&cli, None).expect("matcher");
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions::default();
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli: &cli,
+            no_rtp: false,
+            after_count: 0,
+            portrange: (5060, 5090),
+        };
+
+        // Stores behind the same locks the receive loop shares with the
+        // companion servers, so the guards under test are the real ones.
+        let dialog_store = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let stream_store = Arc::new(RwLock::new(StreamStore::new(100)));
+        let alerts = Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None)));
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut event_exec = EventExecEngine::new(Some(hook), None, 0, 3.0);
+        let mut engines = DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::clone(&alerts),
+            kill_handle: None,
+            kill_response_code: 200,
+            // Matches the fixture's 10.0.0.1:5075 source, so one packet raises
+            // both a hook command and an alert.
+            kill_targets: vec![
+                sec::scanner_kill::KillTarget::parse("10.0.0.1:5060-5090").expect("valid target"),
+            ],
+        };
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
+        };
+        let mut effects = DeferredEffects::new();
+        let pp = parsed_sip_packet(invite_bytes("lk1@example.com"), 5075, 5060);
+
+        {
+            let mut ds_guard = dialog_store.write();
+            let mut ss_guard = stream_store.write();
+            {
+                let mut state = ProcessingState {
+                    dialog_store: &mut ds_guard,
+                    stream_store: &mut ss_guard,
+                    rtp_heuristic: &mut rtp_heuristic,
+                    event_exec: &mut event_exec,
+                    #[cfg(feature = "tls")]
+                    srtp: None,
+                    #[cfg(feature = "tls")]
+                    dtls: None,
+                    group: None,
+                };
+                process_parsed_packet(
+                    &pp,
+                    &ctx,
+                    &mut state,
+                    &mut engines,
+                    &mut counters,
+                    &mut effects,
+                );
+            }
+
+            // The guards are demonstrably still held: an unrelated reader
+            // cannot get in. Without this the assertions below would also pass
+            // on a version that released the locks early.
+            assert!(
+                dialog_store.try_read().is_none(),
+                "the dialog store's write guard must still be held here"
+            );
+            assert!(
+                stream_store.try_read().is_none(),
+                "the stream store's write guard must still be held here"
+            );
+
+            assert_eq!(
+                event_exec.outcomes().spawned,
+                0,
+                "no fork/exec may happen while both store write locks are held"
+            );
+            assert_eq!(
+                event_exec.pending_depth(),
+                1,
+                "the hook must be DECIDED under the guards and parked"
+            );
+            assert_eq!(
+                effects.alerts.len(),
+                1,
+                "the alert must be queued under the guards, not fired"
+            );
+            assert!(
+                alerts
+                    .try_write()
+                    .is_some_and(|e| e.iter_findings(&[], None, 8).is_empty()),
+                "the alert engine's lock must be free and untouched under the store guards"
+            );
+            assert!(
+                !marker.exists(),
+                "the hook command must not have run yet: {}",
+                marker.display()
+            );
+        }
+
+        // Guards gone. Everything queued now happens, in the order it was
+        // raised — exactly what the receive loop does after its lock scope.
+        let mut sink = output::BatchSink::new(Vec::new(), false);
+        effects.drain(&mut sink, &engines.alerts, &mut event_exec);
+
+        assert_eq!(
+            event_exec.outcomes().spawned,
+            1,
+            "the hook must be spawned once the guards are released"
+        );
+        assert_eq!(event_exec.pending_depth(), 0, "nothing may be left parked");
+        assert!(effects.alerts.is_empty(), "the alert queue must be drained");
+
+        let details: Vec<String> = alerts
+            .read()
+            .iter_findings(&["scanner"], None, 8)
+            .into_iter()
+            .map(|f| f.detail.clone())
+            .collect();
+        assert!(
+            details.iter().any(|d| d.contains("detection=kill-target")),
+            "the deferred alert must reach the engine, got {details:?}"
+        );
+
+        assert!(
+            wait_for_marker(&marker),
+            "the hook command itself must run, not just be spawned"
+        );
+    }
+
+    /// Deferring output must not reorder it: within a packet the emitters land
+    /// in the order they ran, and packet N's bytes land entirely before packet
+    /// N+1's.
+    ///
+    /// Emission used to go straight at the sink, so ordering was whatever the
+    /// call order was. Now it goes through a per-packet buffer, and "the same
+    /// capture produces byte-identical output" rests on that buffer being
+    /// FIFO and drained per packet rather than per batch.
+    #[test]
+    fn deferred_output_preserves_emission_order() {
+        let mut cli = base_cli();
+        // Two emitters in one packet: the hexdump block first, then the raw
+        // message dump. Their relative order is the intra-packet assertion.
+        cli.hexdump = true;
+        cli.text_dump = true;
+
+        let first = parsed_sip_packet(invite_bytes("ord-1@example.com"), 5060, 5060);
+        let second = parsed_sip_packet(invite_bytes("ord-2@example.com"), 5060, 5060);
+        let out = drive_packets_output(&cli, &[first.clone(), second.clone()], (5060, 5061));
+
+        // Intra-packet: the hexdump of the first packet precedes its raw dump.
+        let hex_at = out
+            .find(&output::hexdump(&first.payload))
+            .expect("the first packet's hexdump block must be present");
+        let raw = String::from_utf8_lossy(&first.payload).into_owned();
+        let raw_at = out
+            .rfind(&raw)
+            .expect("the first packet's raw dump must be present");
+        assert!(
+            hex_at < raw_at,
+            "hexdump must precede the message it dumps (hex at {hex_at}, raw at {raw_at})"
+        );
+
+        // Cross-packet: everything the first packet emitted precedes anything
+        // the second emitted.
+        let second_at = out
+            .find(&output::hexdump(&second.payload))
+            .expect("the second packet's hexdump block must be present");
+        assert!(
+            raw_at < second_at,
+            "packet 1's output must land entirely before packet 2's \
+             (packet 1 raw at {raw_at}, packet 2 hexdump at {second_at})"
+        );
+        assert_eq!(
+            out.matches("ord-1@example.com").count(),
+            out.matches("ord-2@example.com").count(),
+            "both packets must emit the same shape of output"
+        );
+    }
+
+    /// Drive packets through the real lock-then-drain shape and return every
+    /// byte that reached the sink, as the operator's stdout would have seen it.
+    fn drive_packets_output(cli: &Cli, packets: &[ParsedPacket], portrange: (u16, u16)) -> String {
+        let matcher = SipMatcher::new(cli, None).expect("matcher");
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions {
+            color: output::ColorMode::Never,
+            ..Default::default()
+        };
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli,
+            no_rtp: false,
+            after_count: 0,
+            portrange,
+        };
+        let dialog_store = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let stream_store = Arc::new(RwLock::new(StreamStore::new(100)));
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+        let mut engines = DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
+            kill_handle: None,
+            kill_response_code: 0,
+            kill_targets: Vec::new(),
+        };
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
+        };
+        let mut effects = DeferredEffects::new();
+        let mut sink = output::BatchSink::new(Vec::new(), cli.line_buffer);
+        for pp in packets {
+            {
+                let mut ds_guard = dialog_store.write();
+                let mut ss_guard = stream_store.write();
+                let mut state = ProcessingState {
+                    dialog_store: &mut ds_guard,
+                    stream_store: &mut ss_guard,
+                    rtp_heuristic: &mut rtp_heuristic,
+                    event_exec: &mut event_exec,
+                    #[cfg(feature = "tls")]
+                    srtp: None,
+                    #[cfg(feature = "tls")]
+                    dtls: None,
+                    group: None,
+                };
+                process_parsed_packet(
+                    pp,
+                    &ctx,
+                    &mut state,
+                    &mut engines,
+                    &mut counters,
+                    &mut effects,
+                );
+            }
+            effects.drain(&mut sink, &engines.alerts, &mut event_exec);
+        }
+        sink.flush();
+        String::from_utf8(sink.into_inner()).expect("output is utf-8")
+    }
+
+    /// A writer that counts flushes and can be told to fail, so the deferred
+    /// buffer's flush and error handling are testable without a real pipe.
+    struct FlushProbe {
+        /// Bytes written through.
+        buf: Vec<u8>,
+        /// How many times `flush` was called.
+        flushes: usize,
+    }
+
+    impl std::io::Write for FlushProbe {
+        /// Append `data` and report it fully written.
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf.extend_from_slice(data);
+            Ok(data.len())
+        }
+        /// Count the flush; always succeeds.
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    /// `DeferredOutput` stands in for the sink faithfully: bytes come out in
+    /// the order they went in, a `--line-buffer` message boundary still causes
+    /// exactly one flush per message, and an error raised while composing
+    /// still reaches the sink's exit-code channel instead of vanishing.
+    #[test]
+    fn deferred_output_replays_bytes_flushes_and_errors() {
+        let mut out = DeferredOutput::new();
+        out.write_str("alpha");
+        write!(out, "-{}-", 42);
+        out.end_message();
+        out.write_str("beta");
+        out.end_message();
+
+        let mut sink = output::BatchSink::new(
+            FlushProbe {
+                buf: Vec::new(),
+                flushes: 0,
+            },
+            // --line-buffer on, so each recorded boundary must flush.
+            true,
+        );
+        out.drain_into(&mut sink);
+        assert_eq!(
+            String::from_utf8_lossy(&sink.get_ref().buf),
+            "alpha-42-beta",
+            "bytes must replay in emission order"
+        );
+        assert_eq!(
+            sink.get_ref().flushes,
+            2,
+            "each message boundary must still flush exactly once"
+        );
+
+        // Reused for the next packet, and empty.
+        assert!(out.bytes.is_empty());
+        assert_eq!(out.message_ends, 0);
+
+        // An error raised while composing survives to the sink, which is what
+        // decides the run's exit code. Only the FIRST is kept, and a closed
+        // downstream pipe is still not an error.
+        out.record(Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)));
+        assert!(
+            out.hard_error.is_none(),
+            "a broken pipe must stay swallowed"
+        );
+        out.record(Err(std::io::Error::other("disk full")));
+        out.record(Err(std::io::Error::other("later, ignored")));
+        out.drain_into(&mut sink);
+        assert_eq!(
+            sink.hard_error().map(std::string::ToString::to_string),
+            Some("disk full".to_string()),
+            "the first hard error must reach the sink"
+        );
+    }
+
     /// Drive a packet through `process_parsed_packet` with an active SRTP
     /// context, returning the rtp_count so wiring can be asserted.
     #[cfg(feature = "tls")]
@@ -3466,23 +4270,30 @@ mod tests {
             after_count: 0,
             portrange,
         };
-        let mut state = ProcessingState {
-            dialog_store: &mut dialog_store,
-            stream_store: &mut stream_store,
-            rtp_heuristic: &mut rtp_heuristic,
-            event_exec: &mut event_exec,
-            srtp: Some(srtp),
-            dtls: None,
-            group: None,
-        };
-        process_parsed_packet(
-            pp,
-            &ctx,
-            &mut state,
-            &mut engines,
-            &mut counters,
-            &mut output::BatchSink::new(Vec::new(), false),
-        );
+        let mut effects = DeferredEffects::new();
+        // Scoped so the borrow of `event_exec` ends before the drain, the
+        // way the receive loop's lock scope does.
+        {
+            let mut state = ProcessingState {
+                dialog_store: &mut dialog_store,
+                stream_store: &mut stream_store,
+                rtp_heuristic: &mut rtp_heuristic,
+                event_exec: &mut event_exec,
+                srtp: Some(srtp),
+                dtls: None,
+                group: None,
+            };
+            process_parsed_packet(
+                pp,
+                &ctx,
+                &mut state,
+                &mut engines,
+                &mut counters,
+                &mut effects,
+            );
+        }
+        let mut sink = output::BatchSink::new(Vec::new(), false);
+        effects.drain(&mut sink, &engines.alerts, &mut event_exec);
         counters.rtp_count
     }
 

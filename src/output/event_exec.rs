@@ -54,6 +54,41 @@ pub struct EventExecEngine {
     children: Vec<TrackedChild>,
     /// What the hook commands actually did. See [`ExecOutcomeCounts`].
     outcomes: ExecOutcomeCounts,
+    /// Hook invocations decided but not yet handed to the OS.
+    ///
+    /// The batch receive loop reads a dialog or a stream to build one of
+    /// these, and reading either requires the store write locks. `fork`/`exec`
+    /// costs hundreds of microseconds against a per-packet budget of hundreds
+    /// of nanoseconds, so running it under those locks stalls every reader of
+    /// both stores for the whole of it. [`Self::queue_dialog_event`] and
+    /// [`Self::queue_quality_event`] therefore park the fully-serialized
+    /// request here and [`Self::dispatch_pending`] spawns it once the guards
+    /// have dropped.
+    ///
+    /// The vector is reused rather than reallocated, so a run that fires a
+    /// hook on every packet still allocates the queue once.
+    pending: Vec<ExecRequest>,
+}
+
+/// One hook invocation, fully serialized: the command template plus the
+/// `SIPNAB_*` pairs, owning every byte and borrowing nothing.
+///
+/// Owning every byte is the point. The values are read out of a dialog or an
+/// RTP stream, which the batch loop can only reach while it holds both store
+/// write locks — a request that still *borrowed* the store would pin the very
+/// guard the spawn is trying to escape, and the `fork`/`exec` would stay
+/// inside the critical section.
+///
+/// Private: it is the engine's own parking format, never something a caller
+/// builds or inspects.
+struct ExecRequest {
+    /// Shell command template, run via `sh -c`. An `Arc<str>` clone of the
+    /// engine's stored template, so queueing one costs a pointer bump rather
+    /// than a string copy.
+    cmd: Arc<str>,
+    /// `SIPNAB_*` name/value pairs to set on the child. The names are string
+    /// literals, so only the values are owned.
+    env: Vec<(&'static str, String)>,
 }
 
 /// A spawned hook command, kept alongside the template that produced it.
@@ -235,6 +270,7 @@ impl EventExecEngine {
             rate_window: TumblingWindow::new(rate_limit, 1),
             children: Vec::new(),
             outcomes: ExecOutcomeCounts::default(),
+            pending: Vec::new(),
         }
     }
 
@@ -267,7 +303,30 @@ impl EventExecEngine {
     /// Spawns a `sh -c` child process running the configured command (see
     /// `spawn_command`); reaps finished children and mutates the
     /// rate-limit counters.
+    ///
+    /// Callers holding a lock the child's runtime would block must use
+    /// [`Self::queue_dialog_event`] plus [`Self::dispatch_pending`] instead;
+    /// this method is that pair back to back, so the two can never drift.
     pub fn fire_dialog_event(&mut self, dialog: &SipDialog) {
+        self.queue_dialog_event(dialog);
+        self.dispatch_pending();
+    }
+
+    /// Decide a dialog event and park its command, spawning nothing.
+    ///
+    /// Everything [`Self::fire_dialog_event`] does *except* the `fork`/`exec`:
+    /// the configured-command check, the rate-limit decision (and its
+    /// `rate_limited` booking), the JSON render and the env-pair build all
+    /// happen here, in the caller's critical section, because they all read
+    /// the dialog. Only the syscall is deferred.
+    ///
+    /// # Side effects
+    ///
+    /// Mutates the rate-limit window and the outcome ledger, and pushes at
+    /// most one request onto the pending queue. Every queued request must
+    /// reach [`Self::dispatch_pending`] before the engine is dropped, or its
+    /// command never runs at all.
+    pub fn queue_dialog_event(&mut self, dialog: &SipDialog) {
         let cmd = match self.on_dialog_cmd {
             Some(ref cmd) => cmd.clone(),
             None => return,
@@ -285,7 +344,7 @@ impl EventExecEngine {
             &crate::rtp::diagnosis::MediaDiagnosis::default(),
         );
 
-        let vars: Vec<(&str, String)> = vec![
+        let env: Vec<(&'static str, String)> = vec![
             ("SIPNAB_CALL_ID", dialog.call_id.clone()),
             (
                 "SIPNAB_FROM",
@@ -300,7 +359,7 @@ impl EventExecEngine {
             ("SIPNAB_JSON", json),
         ];
 
-        self.spawn_command(&cmd, &vars);
+        self.pending.push(ExecRequest { cmd, env });
     }
 
     /// Whether a quality-event command is configured. The per-RTP-packet hot path
@@ -329,7 +388,29 @@ impl EventExecEngine {
     /// Spawns a `sh -c` child process running the configured command (see
     /// `spawn_command`); reaps finished children and mutates the
     /// rate-limit counters.
+    ///
+    /// Callers holding a lock the child's runtime would block must use
+    /// [`Self::queue_quality_event`] plus [`Self::dispatch_pending`] instead;
+    /// this method is that pair back to back, so the two can never drift.
     pub fn fire_quality_event(&mut self, stream: &RtpStream) {
+        self.queue_quality_event(stream);
+        self.dispatch_pending();
+    }
+
+    /// Decide a quality event and park its command, spawning nothing.
+    ///
+    /// The deferring twin of [`Self::fire_quality_event`], for the same reason
+    /// [`Self::queue_dialog_event`] exists: the MOS estimate and the JSON
+    /// render read the stream and so need the caller's lock, while the
+    /// `fork`/`exec` needs nothing but the request.
+    ///
+    /// # Side effects
+    ///
+    /// Mutates the rate-limit window and the outcome ledger, and pushes at
+    /// most one request onto the pending queue. Every queued request must
+    /// reach [`Self::dispatch_pending`] before the engine is dropped, or its
+    /// command never runs at all.
+    pub fn queue_quality_event(&mut self, stream: &RtpStream) {
         let cmd = match self.on_quality_cmd {
             Some(ref cmd) => cmd.clone(),
             None => return,
@@ -348,7 +429,7 @@ impl EventExecEngine {
 
         let stream_json = super::json::stream_to_json(stream);
 
-        let vars: Vec<(&str, String)> = vec![
+        let env: Vec<(&'static str, String)> = vec![
             ("SIPNAB_STREAM_JSON", stream_json),
             ("SIPNAB_SSRC", format!("0x{:08x}", stream.key.ssrc)),
             ("SIPNAB_MOS", format!("{mos:.2}")),
@@ -356,7 +437,37 @@ impl EventExecEngine {
             ("SIPNAB_LOSS", format!("{:.1}", loss_pct(stream))),
         ];
 
-        self.spawn_command(&cmd, &vars);
+        self.pending.push(ExecRequest { cmd, env });
+    }
+
+    /// Spawn every queued request, oldest first, and empty the queue.
+    ///
+    /// Called once the caller's locks have dropped. This is where the
+    /// `fork`/`exec` — and the reaping and queue-depth check that guard it —
+    /// actually happen, so a caller that queues and never dispatches has
+    /// commands that were decided, counted as allowed, and never run.
+    ///
+    /// # Side effects
+    ///
+    /// For each queued request: reaps finished children (booking their exit
+    /// outcomes), drops the event if `MAX_QUEUE_DEPTH` children are still
+    /// pending, and otherwise spawns `sh -c <cmd>` without waiting for it. All
+    /// of it is booked in [`Self::outcomes`]. A no-op when nothing is queued,
+    /// which is every packet of a run with no `--on-*` command.
+    pub fn dispatch_pending(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        // Moved out whole rather than iterated in place: `spawn_command` needs
+        // `&mut self`, which a live borrow of `self.pending` would forbid.
+        let mut queued = std::mem::take(&mut self.pending);
+        for req in queued.drain(..) {
+            self.spawn_command(&req.cmd, &req.env);
+        }
+        // Hand the emptied allocation back, so a run that fires a hook per
+        // packet does not allocate a queue per packet. `spawn_command` cannot
+        // queue anything, so nothing is being overwritten here.
+        self.pending = queued;
     }
 
     /// Check and update rate limiting. Returns `true` if execution is allowed
@@ -368,8 +479,15 @@ impl EventExecEngine {
     /// has elapsed. The count itself is booked by `spawn_command` on
     /// successful spawn, not here, so an allowed-but-failed spawn does not
     /// spend budget it never used.
+    ///
+    /// Requests already parked in `pending` are declared to the window: they
+    /// have been allowed but not yet spawned, so their budget is spent in
+    /// intent and not yet in the count. Without that, deferring the spawn
+    /// would let a limit of N hand out N plus however many were queued.
     fn check_rate_limit(&mut self) -> bool {
-        self.rate_window.allows(Instant::now())
+        let reserved = u32::try_from(self.pending.len()).unwrap_or(u32::MAX);
+        self.rate_window
+            .allows_with_reserved(Instant::now(), reserved)
     }
 
     /// Reap completed child processes, booking their exit outcomes, to prevent
@@ -466,6 +584,16 @@ impl EventExecEngine {
     pub fn queue_depth(&self) -> usize {
         self.children.len()
     }
+
+    /// Requests decided but not yet spawned — non-zero only between a
+    /// `queue_*` call and the matching [`Self::dispatch_pending`].
+    ///
+    /// Exists so a caller (and a test) can assert that the deferral really
+    /// deferred: a hook whose command has already forked would show up in
+    /// [`Self::queue_depth`] instead.
+    pub fn pending_depth(&self) -> usize {
+        self.pending.len()
+    }
 }
 
 /// Report the hook totals once, at teardown.
@@ -483,6 +611,19 @@ impl EventExecEngine {
 /// rule as the `--alert-exec` ledger and the scanner-kill totals.)
 impl Drop for EventExecEngine {
     fn drop(&mut self) {
+        // A request still parked here was decided, charged to the rate limiter
+        // as allowed, and then never handed to the OS — a caller that queued
+        // without dispatching. The ledger below has no honest column for that
+        // (it is not a rate limit, not a full queue, not a failed spawn), so
+        // say it directly rather than let the command vanish.
+        if !self.pending.is_empty() {
+            warn!(
+                pending = self.pending.len(),
+                "{} event exec command(s) were queued and never dispatched, so they \
+                 did NOT run. Whatever they were supposed to do did not happen.",
+                self.pending.len()
+            );
+        }
         // One last non-blocking sweep, so a command that finished after the
         // final event is still counted rather than reported as unfinished.
         self.reap_children();
@@ -923,6 +1064,94 @@ mod tests {
     fn queue_depth_tracking() {
         let engine = EventExecEngine::new(None, None, 10, 3.0);
         assert_eq!(engine.queue_depth(), 0);
+    }
+
+    /// Queueing a dialog event decides it without forking: nothing reaches the
+    /// OS until `dispatch_pending`.
+    ///
+    /// This is the property the batch receive loop relies on to keep
+    /// `fork`/`exec` out of the section where it holds both store write locks.
+    /// A regression that spawned from `queue_dialog_event` would put the
+    /// syscall straight back under the guards, and would be invisible in the
+    /// output of any capture.
+    #[test]
+    fn queueing_a_dialog_event_spawns_nothing_until_dispatch() {
+        let mut engine = EventExecEngine::new(Some("true".to_string()), None, 0, 3.0);
+        let dialog = make_dialog();
+
+        engine.queue_dialog_event(&dialog);
+        assert_eq!(engine.pending_depth(), 1, "the request must be parked");
+        assert_eq!(
+            engine.outcomes().spawned,
+            0,
+            "queueing must not hand anything to the OS"
+        );
+        assert_eq!(engine.queue_depth(), 0, "no child may exist yet");
+
+        engine.dispatch_pending();
+        assert_eq!(engine.pending_depth(), 0, "dispatch must empty the queue");
+        assert_eq!(engine.outcomes().spawned, 1, "dispatch must spawn it");
+    }
+
+    /// The same, for the quality hook: the MOS gate and the JSON render happen
+    /// at queue time (they read the stream), the spawn does not.
+    #[test]
+    fn queueing_a_quality_event_spawns_nothing_until_dispatch() {
+        let mut engine = EventExecEngine::new(None, Some("true".to_string()), 0, 5.0);
+        let mut stream = make_stream();
+        // Loss high enough that the E-model MOS lands below the 5.0 threshold.
+        stream.packet_count = 100;
+        stream.lost_packets = 50;
+
+        engine.queue_quality_event(&stream);
+        assert_eq!(engine.pending_depth(), 1, "the request must be parked");
+        assert_eq!(engine.outcomes().spawned, 0, "queueing must not fork");
+
+        engine.dispatch_pending();
+        assert_eq!(engine.pending_depth(), 0);
+        assert_eq!(engine.outcomes().spawned, 1, "dispatch must spawn it");
+    }
+
+    /// A gate that rejects the event queues nothing, so `dispatch_pending` has
+    /// nothing to run — the deferral must not turn a suppressed event into a
+    /// command.
+    #[test]
+    fn a_suppressed_event_queues_nothing() {
+        // No command configured at all.
+        let mut none = EventExecEngine::new(None, None, 0, 3.0);
+        none.queue_dialog_event(&make_dialog());
+        assert_eq!(none.pending_depth(), 0);
+
+        // Rate limit of 1/s: the second event in the same window is booked as
+        // rate-limited and never queued.
+        let mut limited = EventExecEngine::new(Some("true".to_string()), None, 1, 3.0);
+        let dialog = make_dialog();
+        limited.queue_dialog_event(&dialog);
+        limited.queue_dialog_event(&dialog);
+        assert_eq!(limited.pending_depth(), 1, "only the allowed one is queued");
+        assert_eq!(limited.outcomes().rate_limited, 1);
+        limited.dispatch_pending();
+        assert_eq!(limited.outcomes().spawned, 1);
+    }
+
+    /// `fire_dialog_event` stays the queue-then-dispatch pair, so the direct
+    /// callers (and every existing test of them) still see one spawn per call
+    /// and the two paths cannot drift apart.
+    #[test]
+    fn firing_directly_still_spawns_immediately() {
+        let mut engine = EventExecEngine::new(Some("true".to_string()), None, 0, 3.0);
+        engine.fire_dialog_event(&make_dialog());
+        assert_eq!(engine.outcomes().spawned, 1);
+        assert_eq!(engine.pending_depth(), 0, "nothing may be left parked");
+    }
+
+    /// `dispatch_pending` on an empty queue is a no-op — the common case, once
+    /// per packet, on every run with no `--on-*` command.
+    #[test]
+    fn dispatching_an_empty_queue_does_nothing() {
+        let mut engine = EventExecEngine::new(None, None, 0, 3.0);
+        engine.dispatch_pending();
+        assert_eq!(engine.outcomes(), ExecOutcomeCounts::default());
     }
 
     /// Both dialog and quality templates are migrated at construction.

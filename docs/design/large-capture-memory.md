@@ -360,28 +360,44 @@ against the capture clock rather than the wall clock, or skip idle compaction
 entirely when the source is a file — the whole point of `compact_idle` is
 bounding a *long-running live process*, and a file read has a known end.
 
-### 3.3 Two adjacent defects found while measuring, recorded not solved
+### 3.3 Two adjacent defects found while measuring — both since fixed
 
-Both are out of scope here and neither is a memory problem, but both live on the
-large-capture path and both produce complete-looking wrong answers, so they
-belong on the record.
+Neither was a memory problem and both were out of scope for this document, but
+both lived on the large-capture path and both produced complete-looking wrong
+answers, so they were put on the record here. **Both shipped fixes in 0.5.72**;
+the record is kept, with the outcome, rather than deleted.
 
-**`--cores N > 1` does not read a multi-file set.** With the shipped 0.5.71
-binary, `-I /home/gator/pcaps --cores 4` fails with `multi-core reconstruction
-failed: Failed to open pcap file '/home/gator/pcaps': … Is a directory` (exit 1,
-so at least it is loud). Given two files explicitly, `-I tg.pcap7 -I tg.pcap8
---cores 4` reports 2,269 dialogs and 9,041 SIP messages — byte-identical to
-reading `tg.pcap7` alone — where `--cores 1` reports 4,399 and 18,009. That one
-exits 0. The working tree carries uncommitted modifications to `src/parallel.rs`,
-`src/main.rs`, `src/app/batch.rs` and `tests/multi_input_test.rs` that rework
-`run_offline_parallel_file` to take a resolved `&[PathBuf]`, so this is being
-addressed; the measurements above are all `--cores 1` and unaffected.
+**`--cores N > 1` did not read a multi-file set. Fixed in 0.5.72.** With the
+0.5.71 binary that produced the measurements above,
+`-I /home/gator/pcaps --cores 4` failed with `multi-core reconstruction failed:
+Failed to open pcap file '/home/gator/pcaps': … Is a directory` (exit 1, so at
+least it was loud). Given two files explicitly, `-I tg.pcap7 -I tg.pcap8
+--cores 4` reported 2,269 dialogs and 9,041 SIP messages — byte-identical to
+reading `tg.pcap7` alone — where `--cores 1` reported 4,399 and 18,009. That
+form exited 0, and was the genuinely dangerous one.
 
-**`DialogStore::merge` ignores capacity.** `src/sip/dialog_store.rs:566-568` is
-an unconditional `None => { self.dialogs.insert(cid, dialog); }`. Each `--cores` worker
-enforces `max_dialogs` on its own shard, and the merge target then accepts every
-survivor, so the post-merge store can hold up to N × `--limit` dialogs. The cap
-is enforced per worker and nowhere on the result.
+The cause was that `run_cores_file` reached for the first `-I` *argument*
+rather than the resolved set, and `main.rs` dispatched the mode before
+`bootstrap` — discarding the resolved, timestamp-ordered list it already held.
+`run_offline_parallel_file` now takes a resolved `&[PathBuf]`
+([`parallel.rs`](../../src/parallel.rs)) and feeds the whole set through **one**
+worker pool, so a call split across two files still shards to one worker by
+host pair and reconstructs as one dialog. Error policy matches
+`capture_files`: the first file's open failure is fatal, later files are
+skipped with a log. Covered by `tests/multi_input_test.rs`.
+
+The measurements in this document are all `--cores 1` and are unaffected by
+either the defect or the fix.
+
+**`DialogStore::merge` ignored capacity. Fixed in 0.5.72.** The merge insert
+was an unconditional `None => { self.dialogs.insert(cid, dialog); }`. Each
+`--cores` worker enforced `max_dialogs` on its own shard and the merge target
+then accepted every survivor, so the post-merge store could hold up to
+N × `--limit` dialogs — the setting an operator uses to bound memory, silently
+multiplied by the core count. `merge` now enforces the cap in both disposal
+modes and counts what it discards
+([`dialog_store.rs`](../../src/sip/dialog_store.rs)), guarded by
+`merge_enforces_capacity_in_both_disposal_modes`.
 
 ## 4. Options, ranked
 

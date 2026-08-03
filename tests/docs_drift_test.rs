@@ -2122,10 +2122,14 @@ fn no_documentation_table_repeats_a_row() {
     // Pinned. `>= 50` against a real 93 let the sweep lose nearly half the
     // tracked markdown without noticing, which for a duplicate-row check means
     // the duplicates it exists to find simply stop being looked for.
+    // Raised 123 -> 124 by `docs/design/capture-tuning-tasks.md`, which two
+    // tracked design docs already link to and so cannot stay untracked, and
+    // 124 -> 125 by `website/content/docs/tuning-capture.md`, the site mirror
+    // of the new tuning page.
     assert_eq!(
         files.len(),
-        121,
-        "found {} tracked markdown files, expected 121. More is fine — bump \
+        125,
+        "found {} tracked markdown files, expected 125. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2172,9 +2176,18 @@ fn no_documentation_table_repeats_a_row() {
     // Pinned. `>= 40` against a real 292 is the widest gap of the set: 250
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
+    // Raised 437 -> 448 by the capture-tuning work, diffed file by file against
+    // the merge base rather than guessed: `docs/tuning-capture.md` +4 and its
+    // generated site mirror +4 (the same four pages twice, which is what a
+    // mirrored page costs this counter),
+    // `docs/design/process-isolation-and-hot-path-cost.md` +2 and
+    // `docs/design/capture-tuning-tasks.md` +1. Nothing else moved: the pages
+    // this cycle edited most heavily — `rest-api.md`, `mcp.md`,
+    // `THIRD-PARTY-NOTICES.md` — grew ROWS inside tables that already existed,
+    // which this gate does not count.
     assert_eq!(
-        tables, 437,
-        "walked {tables} tables, expected 437. More is fine — bump this. FEWER \
+        tables, 448,
+        "walked {tables} tables, expected 448. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

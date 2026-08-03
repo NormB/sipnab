@@ -14,8 +14,11 @@ Scope, stated plainly because it bounds what the file is evidence of:
     `--features full` (the released gnu build; the musl build is that set minus
     `audio`, so this is a superset). Dev-dependencies are excluded — test
     harnesses are not linked into anything that ships.
-  * System libraries linked at runtime are listed by hand below, since they are
-    resolved by the platform, not by cargo, and never appear in its metadata.
+  * Non-cargo libraries are listed by hand below, since they are resolved by the
+    platform or by the cross image, not by cargo, and never appear in its
+    metadata. Some are linked from the host at runtime; some are compiled into
+    the static musl artifacts and therefore genuinely redistributed, which is a
+    stronger obligation and is why each row says which case it is.
 
 It records each crate's SPDX expression as declared in its own manifest. It is
 an inventory, not a compendium of licence texts; full texts live at the SPDX
@@ -32,15 +35,38 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Libraries the released binaries link at runtime. Cargo never sees these: they
-# come from the host's package manager, so they are maintained here and gated
-# by `third_party_notices_cover_system_libraries`.
+# Libraries cargo never sees: they come from the host's package manager or, for
+# the static musl artifacts, from the cross images in docker/cross/. Maintained
+# here by hand and gated by `third_party_notices_cover_system_libraries`.
+#
+# Two different obligations are mixed in this table on purpose, because the same
+# library can fall under both depending on the artifact. Linking the host's copy
+# at runtime redistributes nothing and carries no notice duty; compiling a copy
+# into a static binary does redistribute it, and BSD-2/3-Clause both require the
+# copyright notice and conditions to travel with binary distributions. Each row
+# states which case applies rather than leaving the reader to infer it.
 SYSTEM_LIBS = [
     (
         "libpcap",
         "BSD-3-Clause",
-        "Packet capture. Linked dynamically; required by every build that "
-        "includes the `native` feature, which is all of them.",
+        "Packet capture; required by every build, since they all include the "
+        "`native` feature. The gnu builds and the `.deb` link the host's shared "
+        "libpcap and redistribute nothing. The static musl builds compile "
+        "libpcap from source (see `docker/cross/`) and link it statically, so "
+        "those artifacts do carry a copy of it — which is what BSD-3-Clause's "
+        "binary-distribution clause covers.",
+    ),
+    (
+        "netmap",
+        "BSD-2-Clause",
+        "Kernel-bypass capture backend, reached only as a libpcap capture "
+        "module for `netmap:<ifname>` device names. It is header-only, so there "
+        "is no netmap library to link: three headers from `luigirizzo/netmap` "
+        "are compiled into libpcap's `pcap-netmap.o`. That object is inside the "
+        "statically linked libpcap in the **musl artifacts only**, so netmap "
+        "code is redistributed there and BSD-2-Clause requires this notice to "
+        "accompany it. The gnu builds use the host's libpcap and carry no "
+        "netmap code of sipnab's making.",
     ),
     (
         "libasound (alsa-lib)",
@@ -74,9 +100,9 @@ sipnab itself is dual-licensed **MIT OR Apache-2.0** (see `LICENSE-MIT` and
 This file is generated from the dependency graph, not maintained by hand, so it
 cannot drift from what actually ships. It lists the Rust crates reached from
 `sipnab` through normal and build edges with `--features full` — the released
-gnu build, of which the musl build is a subset — plus the system libraries the
-platform links at runtime. Dev-dependencies are excluded: test harnesses are not
-part of any distributed artifact.
+gnu build, of which the musl build is a subset — plus the non-cargo libraries
+the artifacts either link from the host or compile in. Dev-dependencies are
+excluded: test harnesses are not part of any distributed artifact.
 
 Each entry gives the SPDX expression the crate declares in its own manifest.
 Full licence texts are published at <https://spdx.org/licenses/> under those
@@ -141,8 +167,16 @@ def distributed_packages(meta: dict) -> list[tuple[str, str, str]]:
 
 
 def render(rows: list[tuple[str, str, str]]) -> str:
-    out = [HEADER, "", "## System libraries", ""]
-    out.append("Linked at runtime and provided by the host, never redistributed.")
+    """Render the whole notices document from the crate rows plus the hand list."""
+    out = [HEADER, "", "## System and bundled libraries", ""]
+    out.append(
+        "Libraries cargo does not resolve. Most are provided by the host and "
+        "linked at runtime, which redistributes nothing. The static musl "
+        "artifacts are the exception: they compile libpcap — and, inside it, "
+        "netmap — into the binary, so those two are genuinely redistributed "
+        "there and their BSD notices are reproduced below for that reason. The "
+        "last column says which case each library falls under."
+    )
     out.append("")
     out.append("| Library | Licence | How sipnab uses it |")
     out.append("|---|---|---|")

@@ -20,6 +20,7 @@ the cause from there.
 | "Calls to that one carrier fail immediately" / 488 | [488 Not Acceptable Here](#488-not-acceptable-here-codec-mismatch) |
 | "They can hear me but I can't hear them" | [One-way audio](#one-way-audio) |
 | "It sounds choppy / robotic / underwater" | [Poor call quality](#poor-call-quality) |
+| Every call in the capture looks lossy at once | [Poor call quality](#poor-call-quality), then [Tuning capture](@/docs/tuning-capture.md) -- the loss may be sipnab's, not the network's |
 | "There's a long pause before it rings" | [Slow call setup](#slow-call-setup-post-dial-delay) |
 | "Audio dies as soon as they answer" / works internally, not externally | [NAT traversal issues](#nat-traversal-issues) |
 | "The phones keep dropping off" / no inbound calls arrive | [Registration failures](#registration-failures) |
@@ -320,7 +321,9 @@ sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 | `rtp.jitter` > 30ms | Congestion or buffering | Network saturation, Wi-Fi, VPN overhead |
 | `rtp.loss` > 2% | Packet drops | Overloaded links, QoS misconfiguration, carrier issue |
 
-**Next steps:** If jitter is high but loss is low, the problem is buffering or path instability (check for Wi-Fi hops, VPN tunnels, or missing QoS marking). If loss is high, run a path MTR/traceroute to find where packets are dropping.
+**Next steps:** If jitter is high but loss is low, the problem is buffering or path instability (check for Wi-Fi hops, VPN tunnels, or missing QoS marking). If loss is high, first rule out sipnab itself, then run a path MTR/traceroute to find where packets are dropping.
+
+> **Before you chase high loss on the network, check whether *sipnab* dropped the packets.** A capture that lost packets to a full kernel ring buffer reports the missing RTP as network loss — the numbers look identical, and the fix is on the wrong machine. sipnab warns on the first drop and prints a summary at the end of a live capture; if you see that warning, or if loss looks implausibly high across *every* call at once, the figure is measuring your capture rather than the call. [Tuning capture on a busy server](@/docs/tuning-capture.md) covers how to read the two drop counters, what each one means, and what to change. This applies to live capture only — an offline `-I` read of an existing pcap loses nothing, though the pcap itself may have been captured lossily by whatever wrote it.
 
 ### Deep-dive with stream detail
 
@@ -513,3 +516,5 @@ Open the WAV in any audio player or Audacity.
 ## Still stuck?
 
 Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 31 fields, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
+
+If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](@/docs/tuning-capture.md).

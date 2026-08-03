@@ -416,7 +416,8 @@ pub fn parse_metrics_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
 /// gauge, and (when a meter is supplied) capture queue depth and
 /// backpressure counters — on top of the process-wide counters
 /// `PrometheusMetrics::for_scrape` loads (captured packets, reassembly
-/// timeouts, security alerts).
+/// timeouts, security alerts, and the capture-quality block: kernel drops,
+/// interface drops and invalid timestamps).
 ///
 /// # Side effects
 ///
@@ -862,5 +863,32 @@ mod tests {
         // Without a meter the gauge stays at its default 0.
         let m0 = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
         assert_eq!(m0.capture_queue_depth_packets, 0);
+    }
+
+    /// The standalone server carries the capture-quality block too.
+    ///
+    /// It builds its own `PrometheusMetrics` rather than sharing the REST
+    /// server's, so "the REST scrape has it" proves nothing here — and this
+    /// is the server an operator points Prometheus at when running without
+    /// `--api`.
+    #[test]
+    fn collect_metrics_carries_capture_quality() {
+        let m = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
+        assert_eq!(
+            m.capture_quality,
+            crate::output::prometheus::CaptureQuality::current(),
+            "the standalone collector must read the live capture counters, \
+             not a default"
+        );
+
+        let body = crate::output::prometheus::format_metrics(&m);
+        for family in [
+            "sipnab_capture_kernel_dropped_packets_total",
+            "sipnab_capture_interface_dropped_packets_total",
+            "sipnab_capture_invalid_timestamps_total",
+            "sipnab_capture_quality_degraded",
+        ] {
+            assert!(body.contains(family), "{family} missing from the scrape");
+        }
     }
 }

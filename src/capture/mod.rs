@@ -51,7 +51,8 @@ pub mod writer;
 mod native;
 #[cfg(feature = "native")]
 pub use native::{
-    CaptureConfig, CaptureHandle, CaptureSource, start_capture, start_multi_capture, stop_and_join,
+    CaptureConfig, CaptureHandle, CaptureSource, DEFAULT_BUFFER_MB, start_capture,
+    start_multi_capture, stop_and_join,
 };
 
 use std::sync::atomic::{AtomicU64, Ordering};

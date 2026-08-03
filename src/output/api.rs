@@ -894,8 +894,14 @@ async fn get_stream(
 ///
 /// 200 with `{schema_version, dialogs{total,active,completed,failed,
 /// cancelled}, streams{total,orphaned}, timing{pdd_p50_ms,pdd_p95_ms,
-/// pdd_p99_ms}}`; the percentiles are `null` when no dialog has a PDD.
-/// 401/503 from the guard.
+/// pdd_p99_ms}, capture_quality{kernel_dropped_packets,
+/// interface_dropped_packets, invalid_timestamps, degraded}}`; the
+/// percentiles are `null` when no dialog has a PDD. 401/503 from the guard.
+///
+/// `capture_quality` says how much of the wire the counts above are drawn
+/// from. Without it every number here reads as a total when it may be a
+/// floor, and the timing percentiles read as measured when the clock they
+/// came from may have been substituted.
 ///
 /// # Side effects
 ///
@@ -939,6 +945,11 @@ async fn get_stats(
     let pdd_p95 = percentile(&pdd_values, 95);
     let pdd_p99 = percentile(&pdd_values, 99);
 
+    // Read after the store locks are released: these are process-global
+    // atomics with no relationship to either store's revision, so holding a
+    // lock across the read would buy nothing and cost contention.
+    let quality = output::prometheus::CaptureQuality::current();
+
     Ok(Json(json!({
         "schema_version": 1,
         "dialogs": {
@@ -956,6 +967,12 @@ async fn get_stats(
             "pdd_p50_ms": pdd_p50,
             "pdd_p95_ms": pdd_p95,
             "pdd_p99_ms": pdd_p99,
+        },
+        "capture_quality": {
+            "kernel_dropped_packets": quality.kernel_dropped_packets,
+            "interface_dropped_packets": quality.interface_dropped_packets,
+            "invalid_timestamps": quality.invalid_timestamps,
+            "degraded": quality.degraded(),
         },
     })))
 }
@@ -1338,6 +1355,47 @@ mod tests {
         assert_eq!(parsed["dialogs"]["total"], 3);
         assert!(parsed["dialogs"]["active"].is_number());
         assert!(parsed["streams"]["orphaned"].is_number());
+    }
+
+    /// `/v1/stats` carries a capture-quality block naming the three losses
+    /// separately, plus the one flag that says whether the counts above
+    /// describe the whole capture.
+    ///
+    /// Present on every response, including a clean one. A block that
+    /// appeared only when something had gone wrong would be a block no
+    /// client learns exists, and the client here is frequently an agent that
+    /// cannot ask a follow-up question.
+    #[tokio::test]
+    async fn stats_reports_capture_quality_separately() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/stats"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        let q = &parsed["capture_quality"];
+        assert!(q.is_object(), "capture_quality missing from {body}");
+        for field in [
+            "kernel_dropped_packets",
+            "interface_dropped_packets",
+            "invalid_timestamps",
+        ] {
+            assert!(
+                q[field].is_u64(),
+                "capture_quality.{field} must be a count, got {:?}",
+                q[field]
+            );
+        }
+        assert!(
+            q["degraded"].is_boolean(),
+            "capture_quality.degraded must be a boolean, got {:?}",
+            q["degraded"]
+        );
     }
 
     /// With a static key configured, a request without credentials gets 401.

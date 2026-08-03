@@ -107,6 +107,45 @@ fn stats_returns_structured_json() {
     assert!(body["timing"].is_object(), "stats has a timing block");
 }
 
+/// `/v1/stats` carries the capture-quality block on every response, with the
+/// three losses under three names and one flag rolling them up.
+///
+/// The counters behind these fields have existed for a while and reached only
+/// a `warn` line on stderr. A client polling `/v1/stats` — which is what the
+/// support recipes in `docs/rest-api.md` tell an operator to do — could read
+/// dialog and stream totals off a run that had dropped part of the wire with
+/// nothing in the payload to say so.
+#[test]
+fn stats_reports_capture_quality() {
+    let srv = ApiServer::spawn(&[]);
+    let body = srv.get("/v1/stats").json();
+
+    let q = &body["capture_quality"];
+    assert!(
+        q.is_object(),
+        "capture_quality must be present on every /v1/stats response: {body}"
+    );
+    // A file replay has no capture ring and no NIC in the path, so all three
+    // are legitimately zero — and must be present AT zero, because a key that
+    // shows up only on a bad run is a key no client learns exists.
+    for field in [
+        "kernel_dropped_packets",
+        "interface_dropped_packets",
+        "invalid_timestamps",
+    ] {
+        assert_eq!(
+            q[field], 0,
+            "capture_quality.{field} must be present and zero for a file \
+             replay: {q}"
+        );
+    }
+    assert_eq!(
+        q["degraded"], false,
+        "nothing was observed wrong on a file replay, so degraded must be \
+         false rather than absent: {q}"
+    );
+}
+
 /// With an RTP fixture loaded, `/v1/streams` summaries carry all expected keys
 /// and the `/v1/streams/{ssrc}` detail validates against `stream.schema.json`.
 #[test]

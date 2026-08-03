@@ -50,6 +50,93 @@ pub struct PrometheusMetrics {
     pub reassembly_timeouts_total: u64,
     /// Media diagnosis counts by type (e.g., `"one_way_audio"`, `"nat_mismatch"`).
     pub diagnosis_total: HashMap<String, u64>,
+    /// The three ways this run's analysis can be incomplete or mistimed.
+    pub capture_quality: CaptureQuality,
+}
+
+/// How much of the wire the analysis actually saw, and whether its clock can
+/// be believed.
+///
+/// Three separate counters rather than one "lost" total, because the three
+/// have three different remedies and an operator who reads a sum is pushed
+/// toward the wrong one:
+///
+/// * `kernel_dropped_packets` — the capture ring was full when the packet
+///   arrived. Raise `-B`/`--buffer`, narrow the BPF filter, or cut
+///   `--snaplen`.
+/// * `interface_dropped_packets` — the NIC or its driver discarded the packet
+///   before libpcap ever saw it. **A bigger buffer cannot recover these**;
+///   the link is faster than the host can accept, so the answer is at the
+///   NIC, the driver, or the mirror configuration.
+/// * `invalid_timestamps` — the pcap timestamp was unusable and the packet
+///   was stamped with the wall clock instead. Nothing was lost, but every
+///   timing figure derived from that run (post-dial delay, RFC 3550 jitter,
+///   MOS, call duration) is unreliable.
+///
+/// Reported on every machine-readable surface — `/v1/stats`, the MCP `stats`
+/// tool and the Prometheus exposition. The three counters existed for some
+/// time before that and reached only a `warn` line on stderr, which neither
+/// an agent driving the MCP tools nor a dashboard ever reads: a run could
+/// drop a third of the wire and every machine-readable answer about it looked
+/// exactly like a clean one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CaptureQuality {
+    /// Packets the kernel discarded because the capture ring was full
+    /// (`ps_drop`). Non-zero means dialogs may be missing messages and RTP
+    /// loss figures overstate what was on the wire.
+    pub kernel_dropped_packets: u64,
+    /// Packets the interface or its driver discarded before libpcap saw them
+    /// (`ps_ifdrop`). Counted apart from the kernel drops because raising the
+    /// buffer does nothing for these.
+    pub interface_dropped_packets: u64,
+    /// Packets whose pcap timestamp was corrupt and were stamped with the
+    /// wall clock instead. Non-zero means the run's timing analysis is
+    /// unreliable even where no packet was lost.
+    pub invalid_timestamps: u64,
+}
+
+impl CaptureQuality {
+    /// Read the process-global capture counters.
+    ///
+    /// Zero on a build without the `native` feature, which has no live
+    /// capture and therefore no ring to overflow — reported as "nothing
+    /// observed" rather than omitted, so the block's key set does not change
+    /// between builds.
+    #[must_use]
+    pub fn current() -> Self {
+        #[cfg(feature = "native")]
+        {
+            let (kernel_dropped_packets, interface_dropped_packets) =
+                crate::capture::live::kernel_drop_counts();
+            Self {
+                kernel_dropped_packets,
+                interface_dropped_packets,
+                invalid_timestamps: crate::capture::live::INVALID_PCAP_TIMESTAMPS
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            }
+        }
+        #[cfg(not(feature = "native"))]
+        {
+            Self::default()
+        }
+    }
+
+    /// Whether anything was observed to be wrong with this capture: `true`
+    /// when any of the three counters has moved.
+    ///
+    /// Deliberately not called "complete". `false` means **nothing was
+    /// observed to go wrong**, not that the capture provably saw every
+    /// packet: loss upstream of the capture point — an oversubscribed SPAN
+    /// port, a tap that never mirrored one direction, a filter that excluded
+    /// the traffic — is invisible to every counter here. The claim is only
+    /// ever made in the `true` direction, which is the direction there is
+    /// evidence for.
+    #[must_use]
+    pub fn degraded(&self) -> bool {
+        self.kernel_dropped_packets > 0
+            || self.interface_dropped_packets > 0
+            || self.invalid_timestamps > 0
+    }
 }
 
 /// SIP response classes, as label values for `sipnab_responses_total{code}`.
@@ -84,6 +171,7 @@ impl PrometheusMetrics {
         let mut m = Self {
             capture_packets_total: crate::capture::captured_packets(),
             reassembly_timeouts_total: crate::capture::reassembly::reassembly_timeouts(),
+            capture_quality: CaptureQuality::current(),
             ..Self::default()
         };
         for class in RESPONSE_CLASSES {
@@ -262,6 +350,62 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         out,
         "sipnab_capture_backpressure_blocks_total {}",
         metrics.capture_backpressure_blocks_total
+    );
+    out.push('\n');
+
+    // Capture quality. Three counters, never a sum: a bigger ring buffer
+    // fixes kernel drops and does nothing for interface drops, and a corrupt
+    // timestamp loses no packet at all — it invalidates the timing figures.
+    // A single "lost" series would point an operator at the wrong remedy.
+    write_help_type(
+        &mut out,
+        "sipnab_capture_kernel_dropped_packets_total",
+        "Packets the kernel discarded because the capture ring was full",
+        "counter",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_kernel_dropped_packets_total {}",
+        metrics.capture_quality.kernel_dropped_packets
+    );
+    out.push('\n');
+    write_help_type(
+        &mut out,
+        "sipnab_capture_interface_dropped_packets_total",
+        "Packets the interface or driver discarded before libpcap saw them",
+        "counter",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_interface_dropped_packets_total {}",
+        metrics.capture_quality.interface_dropped_packets
+    );
+    out.push('\n');
+    write_help_type(
+        &mut out,
+        "sipnab_capture_invalid_timestamps_total",
+        "Packets whose pcap timestamp was unusable and were stamped with the wall clock",
+        "counter",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_invalid_timestamps_total {}",
+        metrics.capture_quality.invalid_timestamps
+    );
+    out.push('\n');
+    // Derivable from the three counters above, and published anyway: this is
+    // the single series a dashboard or an alert rule reads to know whether
+    // the rest of the scrape describes the whole capture or part of it.
+    write_help_type(
+        &mut out,
+        "sipnab_capture_quality_degraded",
+        "1 when packets were dropped or timestamps were invalid, 0 when nothing was observed wrong",
+        "gauge",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_quality_degraded {}",
+        u8::from(metrics.capture_quality.degraded())
     );
     out.push('\n');
 
@@ -663,5 +807,91 @@ mod tests {
         // Empty HashMap counters should not produce HELP/TYPE lines
         assert!(!output.contains("# HELP sipnab_dialogs_total"));
         assert!(!output.contains("# HELP sipnab_security_alerts_total"));
+    }
+
+    // ── capture quality ──────────────────────────────────────────────
+
+    /// The three capture-quality counters are emitted under three distinct
+    /// names carrying three distinct values.
+    ///
+    /// The point of the test is the separation. Kernel drops are fixed by a
+    /// bigger `-B`, interface drops are not fixable that way at all, and an
+    /// invalid timestamp loses no packet — it invalidates the timing. A
+    /// collapsed total would read as one problem with one remedy.
+    #[test]
+    fn capture_quality_counters_stay_separately_named() {
+        let metrics = PrometheusMetrics {
+            capture_quality: CaptureQuality {
+                kernel_dropped_packets: 11,
+                interface_dropped_packets: 22,
+                invalid_timestamps: 33,
+            },
+            ..Default::default()
+        };
+        let output = format_metrics(&metrics);
+
+        assert!(output.contains("# TYPE sipnab_capture_kernel_dropped_packets_total counter"));
+        assert!(output.contains("sipnab_capture_kernel_dropped_packets_total 11"));
+        assert!(output.contains("# TYPE sipnab_capture_interface_dropped_packets_total counter"));
+        assert!(output.contains("sipnab_capture_interface_dropped_packets_total 22"));
+        assert!(output.contains("# TYPE sipnab_capture_invalid_timestamps_total counter"));
+        assert!(output.contains("sipnab_capture_invalid_timestamps_total 33"));
+    }
+
+    /// A clean capture publishes all four series at zero rather than
+    /// omitting them: a rule over an absent series is no-data, not "fine".
+    #[test]
+    fn capture_quality_is_published_even_when_clean() {
+        let output = format_metrics(&PrometheusMetrics::default());
+
+        assert!(output.contains("sipnab_capture_kernel_dropped_packets_total 0"));
+        assert!(output.contains("sipnab_capture_interface_dropped_packets_total 0"));
+        assert!(output.contains("sipnab_capture_invalid_timestamps_total 0"));
+        assert!(output.contains("# TYPE sipnab_capture_quality_degraded gauge"));
+        assert!(output.contains("sipnab_capture_quality_degraded 0"));
+    }
+
+    /// Any one of the three counters moving raises the degraded gauge.
+    #[test]
+    fn any_single_counter_raises_the_degraded_gauge() {
+        for quality in [
+            CaptureQuality {
+                kernel_dropped_packets: 1,
+                ..Default::default()
+            },
+            CaptureQuality {
+                interface_dropped_packets: 1,
+                ..Default::default()
+            },
+            CaptureQuality {
+                invalid_timestamps: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(quality.degraded(), "{quality:?} must read as degraded");
+            let output = format_metrics(&PrometheusMetrics {
+                capture_quality: quality,
+                ..Default::default()
+            });
+            assert!(
+                output.contains("sipnab_capture_quality_degraded 1"),
+                "{quality:?} did not raise the gauge"
+            );
+        }
+    }
+
+    /// A capture with nothing wrong observed is not degraded.
+    #[test]
+    fn a_clean_capture_is_not_degraded() {
+        assert!(!CaptureQuality::default().degraded());
+    }
+
+    /// `for_scrape` loads the capture-quality block from the process
+    /// counters, so a collector that builds from it cannot publish a
+    /// hard-coded zero over a lossy run.
+    #[test]
+    fn for_scrape_loads_capture_quality() {
+        let m = PrometheusMetrics::for_scrape();
+        assert_eq!(m.capture_quality, CaptureQuality::current());
     }
 }

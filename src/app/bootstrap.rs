@@ -430,6 +430,13 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         }
     }
 
+    // The complement of the block above: `--cores N` on a source the parallel
+    // reader cannot take. Not fatal — the run is correct, just single-threaded
+    // — but never silent again. See `cores_ignored_warning`.
+    if let Some(msg) = cores_ignored_warning(cli) {
+        tracing::warn!("{msg}");
+    }
+
     let mode = if cli.cores > 1 && cli.has_input() && !cli.multi_device {
         RunMode::CoresFile
     } else {
@@ -445,6 +452,11 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             RunMode::Batch
         }
     };
+
+    // Immediate mode picks the kernel ring format, so it can only be answered
+    // once the consumer is known — which is here, and not in
+    // `build_capture_config`, which runs before the mode is decided.
+    capture_config.immediate_mode = immediate_mode_for(&mode);
 
     Ok(RunPlan {
         source,
@@ -1356,7 +1368,10 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
 fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, PlanError> {
     let snaplen = cli.snaplen.or(config.capture.snaplen).unwrap_or(65535);
 
-    let buffer_mb = cli.buffer.or(config.capture.buffer).unwrap_or(2);
+    let buffer_mb = cli
+        .buffer
+        .or(config.capture.buffer)
+        .unwrap_or(crate::capture::DEFAULT_BUFFER_MB);
 
     // Memory budget for the in-flight packet queue (capture→processing).
     let buffer_budget_mb = cli
@@ -1407,7 +1422,76 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         replay: cli.replay,
         buffer_budget_mb,
         promisc,
+        // Finalised by `plan` once the run mode is known — see
+        // `immediate_mode_for`. The interactive value is the right thing to
+        // start from: it is what every capture asked for before the choice
+        // existed, so nothing here can quietly change a ring format on its own.
+        immediate_mode: true,
     })
+}
+
+/// Whether the capture handle should ask libpcap for immediate mode, given the
+/// run mode this invocation resolved to.
+///
+/// The flag reads like a latency preference and is really a ring-format choice
+/// (see [`CaptureConfig::immediate_mode`]), so it is answered by asking who
+/// consumes the packets rather than by a flag anyone types.
+///
+/// The TUI keeps it. A person is watching individual messages appear, the link
+/// under a live troubleshooting session is human-scale, and a message that
+/// shows up a block later than it arrived is exactly the thing that makes an
+/// interactive tool feel wrong.
+///
+/// Everything else gives it up. A headless capture — batch, `--json`, `-O`,
+/// MCP, the API — is throughput-bound with nobody watching, and TPACKET_V3's
+/// ring is what keeps a burst from being dropped on the floor. Trading a few
+/// milliseconds of delivery latency nobody perceives for a ring that does not
+/// shrink with the snaplen is the correct trade there.
+fn immediate_mode_for(mode: &RunMode) -> bool {
+    matches!(mode, RunMode::Tui)
+}
+
+/// The message to log when `--cores N` was asked for on a run that cannot use
+/// it, or `None` when the request will be honoured.
+///
+/// `--cores` selects offline parallel reconstruction: it shards a saved capture
+/// by host pair and rebuilds dialogs per shard, which needs the whole file up
+/// front. There is no equivalent for a stream still arriving, so a live source
+/// (and `--multi-device`, which is live by definition) falls through to the
+/// single-threaded path.
+///
+/// It used to fall through in silence. `sipnab --cores 8 -d eth0` parses, runs,
+/// exits 0, and produces a correct capture on one core — the operator asked for
+/// eight and nothing in the run says they did not get them. On a host chosen
+/// for its core count that is a sizing decision made on a false premise.
+///
+/// Warned rather than refused, and that is the difference from the neighbouring
+/// `--cores` + `--json`/`-O` check that exits 2. There the combination emits
+/// *nothing* and still exits 0, so the output is a wrong answer and the only
+/// safe response is to refuse. Here the output is complete and correct; only
+/// the parallelism is missing. Refusing would break invocations that work today
+/// (a wrapper script that passes `--cores` uniformly and sometimes points at a
+/// device) to fix a problem that one sentence fixes.
+fn cores_ignored_warning(cli: &Cli) -> Option<String> {
+    if cli.cores <= 1 {
+        return None;
+    }
+    let reason = if cli.multi_device {
+        "--multi-device opens one capture per interface"
+    } else if !cli.has_input() {
+        "this run captures live rather than reading a saved file"
+    } else {
+        // `--cores N -I file` without --multi-device: honoured, say nothing.
+        return None;
+    };
+    Some(format!(
+        "--cores {n} is ignored here: {reason}, and parallel reconstruction is \
+         offline-only — it shards a capture FILE by host pair, which needs the \
+         whole capture up front. This run continues on ONE core; its output is \
+         complete, just slower. Point --cores at a saved capture \
+         (-I/--input <file>, without --multi-device) to actually use {n} of them.",
+        n = cli.cores,
+    ))
 }
 
 // ── Auth / token helpers ───────────────────────────────────────────
@@ -1655,7 +1739,7 @@ mod tests {
     fn build_capture_config_defaults() {
         let cc = build_capture_config(&base_cli(), &Config::default()).unwrap();
         assert_eq!(cc.snaplen, 65535);
-        assert_eq!(cc.buffer_mb, 2);
+        assert_eq!(cc.buffer_mb, crate::capture::DEFAULT_BUFFER_MB);
         assert_eq!(cc.bpf_filter, None);
         assert_eq!(cc.count, None);
         assert_eq!(cc.duration, None);
@@ -1763,6 +1847,160 @@ mod tests {
             "got: {}",
             err.message
         );
+    }
+
+    // ── immediate mode / ring format (CT7) ─────────────────────────────
+    //
+    // No live interface is available in a test run, so what is asserted is the
+    // decision — which run mode gets immediate delivery, and that `plan` puts
+    // that answer on the config the capture thread receives. Whether TPACKET_V3
+    // is then actually selected is libpcap's side of the contract and needs a
+    // real NIC to observe.
+
+    /// Only the interactive TUI keeps immediate mode; every headless mode
+    /// trades it for TPACKET_V3's snaplen-independent ring.
+    #[test]
+    fn immediate_mode_is_the_tui_and_nothing_else() {
+        assert!(immediate_mode_for(&RunMode::Tui));
+        assert!(!immediate_mode_for(&RunMode::Batch));
+        assert!(!immediate_mode_for(&RunMode::CoresFile));
+    }
+
+    /// A headless live capture (`-N -d ...`) must reach the capture thread with
+    /// immediate mode OFF — the whole point of the change, since that is what
+    /// lets libpcap choose TPACKET_V3.
+    #[test]
+    fn plan_turns_immediate_mode_off_for_headless_capture() {
+        let mut cli = base_cli(); // -N
+        cli.device = Some("eth0".to_string());
+        let p = plan(&cli, &Config::default()).expect("plan must succeed");
+        assert!(matches!(p.mode, RunMode::Batch));
+        assert!(
+            !p.capture_config.immediate_mode,
+            "a headless capture must let libpcap pick TPACKET_V3"
+        );
+    }
+
+    /// The TUI keeps immediate mode: a person is watching messages land, and a
+    /// packet held back until its ring block retires is what makes an
+    /// interactive tool feel broken.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn plan_keeps_immediate_mode_for_the_tui() {
+        let mut cli = Cli::parse_from_args(["sipnab"]); // no -N: interactive
+        cli.device = Some("eth0".to_string());
+        let p = plan(&cli, &Config::default()).expect("plan must succeed");
+        assert!(matches!(p.mode, RunMode::Tui));
+        assert!(
+            p.capture_config.immediate_mode,
+            "the interactive path must keep per-packet delivery"
+        );
+    }
+
+    /// Whatever the feature set, the flag on the plan always agrees with the
+    /// mode on the plan — the two can never drift apart.
+    #[test]
+    fn plan_immediate_mode_always_matches_the_run_mode() {
+        for headless in [true, false] {
+            let mut cli = Cli::parse_from_args(["sipnab"]);
+            cli.no_tui = headless;
+            cli.device = Some("eth0".to_string());
+            let p = plan(&cli, &Config::default()).expect("plan must succeed");
+            assert_eq!(
+                p.capture_config.immediate_mode,
+                matches!(p.mode, RunMode::Tui),
+                "immediate mode must follow the run mode exactly (headless={headless})"
+            );
+        }
+    }
+
+    // ── --cores on a source that cannot use it (G6) ────────────────────
+
+    /// The honoured case says nothing: `--cores N -I file` is exactly what the
+    /// parallel reader is for.
+    #[test]
+    fn cores_warning_silent_when_cores_are_actually_used() {
+        let mut cli = base_cli();
+        cli.cores = 8;
+        cli.input = vec!["capture.pcap".to_string()];
+        assert!(cores_ignored_warning(&cli).is_none());
+    }
+
+    /// `--cores 1` is the default and means nothing was asked for, on any
+    /// source — warning about it would be noise on every live run.
+    #[test]
+    fn cores_warning_silent_at_the_default_core_count() {
+        let mut cli = base_cli();
+        cli.cores = 1;
+        cli.device = Some("eth0".to_string());
+        assert!(cores_ignored_warning(&cli).is_none());
+        cli.multi_device = true;
+        assert!(cores_ignored_warning(&cli).is_none());
+    }
+
+    /// The defect: `--cores 8 -d eth0` used to run single-threaded in silence.
+    /// The warning must name the count that was discarded and the flag that
+    /// would honour it.
+    #[test]
+    fn cores_warning_fires_on_a_live_device() {
+        let mut cli = base_cli();
+        cli.cores = 8;
+        cli.device = Some("eth0".to_string());
+        let msg = cores_ignored_warning(&cli).expect("--cores on a live device must be reported");
+        assert!(msg.contains("--cores 8"), "names the request: {msg}");
+        assert!(msg.contains("-I"), "names the flag that works: {msg}");
+        assert!(
+            msg.contains("ONE core"),
+            "says what actually happens: {msg}"
+        );
+    }
+
+    /// No source at all is still a live run — the device is auto-detected —
+    /// so `--cores` is ignored there too and must say so.
+    #[test]
+    fn cores_warning_fires_on_auto_detected_capture() {
+        let mut cli = base_cli();
+        cli.cores = 4;
+        assert!(cores_ignored_warning(&cli).is_some());
+    }
+
+    /// `--multi-device` bypasses the parallel reader even with `-I` present,
+    /// because the run-mode test excludes it. A warning that keyed only on
+    /// "no input" would miss this and leave the same silence behind.
+    #[test]
+    fn cores_warning_fires_on_multi_device_even_with_input() {
+        let mut cli = base_cli();
+        cli.cores = 4;
+        cli.input = vec!["capture.pcap".to_string()];
+        cli.multi_device = true;
+        let msg = cores_ignored_warning(&cli).expect("--multi-device must be reported");
+        assert!(msg.contains("--multi-device"), "got: {msg}");
+    }
+
+    /// The warning fires exactly when the run mode is NOT `CoresFile`, for
+    /// every combination of the two inputs that decide it. Pinning the
+    /// complement is what stops the two conditions drifting apart later.
+    #[test]
+    fn cores_warning_is_the_exact_complement_of_the_parallel_path() {
+        for (has_input, multi_device) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let mut cli = base_cli();
+            cli.cores = 4;
+            cli.multi_device = multi_device;
+            if has_input {
+                cli.input = vec!["capture.pcap".to_string()];
+            } else {
+                cli.device = Some("eth0".to_string());
+            }
+            let takes_parallel_path = cli.cores > 1 && cli.has_input() && !cli.multi_device;
+            assert_eq!(
+                cores_ignored_warning(&cli).is_none(),
+                takes_parallel_path,
+                "input={has_input} multi_device={multi_device}: the warning must \
+                 cover every case the parallel path does not"
+            );
+        }
     }
 
     /// An unreadable `--bpf-file` yields an `Err` (exit code 2), not an exit.

@@ -5,6 +5,16 @@ as of 0.5.47 that is a checked claim rather than an asserted one: the corpus
 generator and the timing harness are in [`bench/`](../bench/), so you can
 regenerate the corpus and re-run every table below.
 
+> **Last measured against 0.5.47, on 2026-07-27. This page does not track the
+> current release.** Every table below is that measurement; nothing here has
+> been re-run since. If you are reading this on a later release — and you are,
+> unless you pinned 0.5.47 — treat these as the most recent *verified* figures
+> rather than as figures for the binary you are holding. That distinction is
+> the whole point of the A/B section further down: it is what "the numbers
+> carried forward" used to mean here before anyone checked, and re-checking it
+> is three commands ([Reproduce](#reproduce)). No number on this page has been
+> adjusted to stand in for a release it was not measured on.
+
 They were not, before. From 0.5.18 to 0.5.46 this page said the listed commands
 were "the full recipe" while the generator lived in an unpublished repository —
 nobody could re-run these numbers, including on the reference host named below.
@@ -78,6 +88,16 @@ within-version spread (~3.4%), and one replicate has 0.5.47 ahead. **Twenty-nine
 releases on, throughput holds within measurement noise.** The judgement
 this page carried for a year happens to have been correct — but it is now a
 measurement, and re-checking it is three commands.
+
+**And the same trap is open again, which is worth stating rather than
+quietly re-opening.** This A/B spans 0.5.18 → 0.5.47 and was run on 2026-07-27.
+It says nothing about anything released since; releases after 0.5.47 have
+changed capture-path defaults (the kernel ring buffer moved 2 → 64 MiB, and
+`poll(2)` came out of the per-packet path), so there is a live reason to expect
+movement — in either direction — that nobody has measured. Do **not** restate
+the sentence above with a higher version number in it. Re-run the A/B against
+the current release artifact and publish what comes back, or leave the claim
+where its evidence is: **0.5.47, 2026-07-27**.
 
 The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measures 1.06M
 single-core here against the 1.20M this page published for it — same binary,

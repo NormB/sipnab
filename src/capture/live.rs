@@ -26,6 +26,45 @@ use crate::signals;
 #[cfg(unix)]
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// pcap read timeout (ms) used when immediate mode is on — the interactive
+/// path, where libpcap is pinned to TPACKET_V2.
+///
+/// On V2 this is only the upper bound libpcap waits inside one read before
+/// giving up, and immediate delivery means it rarely gets there. Kept at the
+/// long-standing 100 ms.
+const IMMEDIATE_READ_TIMEOUT_MS: i32 = 100;
+
+/// pcap read timeout (ms) used when immediate mode is off — the headless path,
+/// where libpcap selects TPACKET_V3.
+///
+/// Deliberately short, and this is the whole cost of choosing V3. libpcap
+/// copies the read timeout into the ring request as `tp_retire_blk_tov`, the
+/// kernel's *block retire* timer: a partially-filled block is not handed to
+/// userspace until either it fills or that many milliseconds elapse. Inheriting
+/// the 100 ms above would therefore have added up to 100 ms of delivery latency
+/// to every packet on a link too quiet to fill a block — a real regression
+/// traded for ring depth, and one nothing in the output would have shown.
+///
+/// 5 ms bounds that at a twentieth of the poll interval the loop already
+/// tolerates when idle, while still letting a busy link batch heavily: the
+/// timer only decides anything for blocks that do not fill first, and at even
+/// 100k packets/s a 5 ms block holds hundreds of packets.
+const BATCHED_READ_TIMEOUT_MS: i32 = 5;
+
+/// The pcap read timeout to open with, given whether immediate mode is on.
+///
+/// A function rather than a literal at the call site because the two values
+/// mean different things to libpcap (a read bound vs a kernel block-retire
+/// timer) and the batched one is only safe while it stays small — which the
+/// tests pin.
+fn read_timeout_ms(immediate: bool) -> i32 {
+    if immediate {
+        IMMEDIATE_READ_TIMEOUT_MS
+    } else {
+        BATCHED_READ_TIMEOUT_MS
+    }
+}
+
 /// Result of waiting for a capture fd to become readable.
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,22 +176,73 @@ pub fn capture_live(
     // pseudo-device on Linux does not support it regardless.
     let use_promisc = config.promisc && device != "any";
 
-    let mut cap = match pcap::Capture::from_device(device)
-        .with_context(|| format!("Failed to open device '{device}'"))
-        .and_then(|inactive| {
-            inactive
-                .promisc(use_promisc)
-                .snaplen(config.snaplen as i32)
-                .buffer_size((config.buffer_mb * 1_000_000) as i32)
-                .timeout(100) // Return from next_packet every 100ms even without traffic
-                // Deliver packets as soon as they arrive instead of waiting for
-                // the kernel buffer to fill. Required for the poll()-driven loop
-                // below: without it, poll() on the capture fd won't report the
-                // socket readable promptly in non-blocking mode.
-                .immediate_mode(true)
-                .open()
-                .with_context(|| format!("Failed to activate capture on '{device}'"))
-        }) {
+    if config.buffer_mb > MAX_BUFFER_MB {
+        tracing::warn!(
+            "-B/--buffer {} MiB exceeds the {MAX_BUFFER_MB} MiB ceiling \
+             (pcap_set_buffer_size takes a C int); capturing with \
+             {MAX_BUFFER_MB} MiB instead.",
+            config.buffer_mb,
+        );
+    }
+
+    // Open with the requested ring, falling back to smaller ones if the kernel
+    // will not give us that much. See `buffer_ladder`.
+    let mut opened = None;
+    let mut open_err = None;
+    for (attempt, mb) in buffer_ladder(config.buffer_mb).into_iter().enumerate() {
+        let result = pcap::Capture::from_device(device)
+            .with_context(|| format!("Failed to open device '{device}'"))
+            .and_then(|inactive| {
+                inactive
+                    .promisc(use_promisc)
+                    .snaplen(config.snaplen as i32)
+                    .buffer_size(buffer_size_bytes(mb))
+                    // Read timeout and immediate mode are one decision, not two.
+                    // On Linux, asking for immediate delivery makes libpcap
+                    // refuse TPACKET_V3 (a V3 block cannot be retired early), so
+                    // the interactive path runs on V2 — where the ring is carved
+                    // into snaplen-sized slots and a 64 MiB ring at snaplen 65535
+                    // holds about a thousand packets. Headless captures give up
+                    // immediate delivery to get V3's snaplen-independent ring,
+                    // and pay for it with a short block-retire timer instead of
+                    // the 100 ms one V3 would otherwise inherit. See
+                    // `read_timeout_ms` and `CaptureConfig::immediate_mode`.
+                    //
+                    // Neither choice touches how quickly the loop below reacts to
+                    // shutdown: the handle is non-blocking, so an empty ring
+                    // returns TimeoutExpired at once and the wait that follows is
+                    // sipnab's own bounded `poll()` on the capture fd. `--duration`
+                    // and Ctrl-C are answered within POLL_INTERVAL either way.
+                    .timeout(read_timeout_ms(config.immediate_mode))
+                    .immediate_mode(config.immediate_mode)
+                    .open()
+                    .with_context(|| format!("Failed to activate capture on '{device}'"))
+            });
+        match result {
+            Ok(cap) => {
+                if attempt > 0 {
+                    // Say so loudly. A silently-shrunk ring is a capture that
+                    // will drop under load for a reason nobody can see, which
+                    // is the whole failure mode the bigger default exists to
+                    // prevent.
+                    tracing::warn!(
+                        "'{device}': the kernel refused a {} MiB capture buffer; \
+                         capturing with {mb} MiB instead. This host will tolerate \
+                         a smaller burst before dropping — watch the drop counters, \
+                         and set -B/--buffer explicitly to pin a size.",
+                        config.buffer_mb,
+                    );
+                }
+                opened = Some(cap);
+                break;
+            }
+            Err(e) => open_err = Some(e),
+        }
+    }
+
+    let mut cap = match opened.ok_or_else(|| {
+        open_err.unwrap_or_else(|| anyhow::anyhow!("Failed to open device '{device}'"))
+    }) {
         Ok(cap) => cap,
         Err(e) => {
             // Help a typo'd device name: append what actually exists (the
@@ -220,12 +310,31 @@ pub fn capture_live(
     let start = std::time::Instant::now();
     let mut count: u64 = 0;
 
+    // Kernel/interface drop accounting. libpcap's counters are cumulative per
+    // handle, so the loop keeps the previous reading and folds the delta into
+    // the process-global totals — see `fold_stats`.
+    let mut last_stats = std::time::Instant::now();
+    let (mut prev_dropped, mut prev_if_dropped) = (0u32, 0u32);
+
     tracing::info!(
         "Capturing on '{device}' (link_type={link_type}, snaplen={})",
         config.snaplen
     );
 
     loop {
+        // Ask libpcap what the kernel threw away. On a timer rather than per
+        // packet: `pcap_stats` is a syscall, and a capture that polls it per
+        // packet spends more time measuring loss than avoiding it.
+        if last_stats.elapsed() >= STATS_INTERVAL {
+            last_stats = std::time::Instant::now();
+            match cap.stats() {
+                Ok(stat) => fold_stats(device, &stat, &mut prev_dropped, &mut prev_if_dropped),
+                // Not fatal: some capture backends do not implement stats. The
+                // capture is still good; only the loss visibility is missing.
+                Err(e) => tracing::debug!("pcap_stats unavailable on '{device}': {e}"),
+            }
+        }
+
         if signals::shutdown_requested() {
             tracing::debug!("Shutdown requested, stopping live capture");
             break;
@@ -245,19 +354,20 @@ pub fn capture_live(
             break;
         }
 
-        // Bounded wait so the loop re-checks shutdown/count/duration roughly
-        // every POLL_INTERVAL even when the interface is completely idle. This
-        // is what stops `--duration` from hanging on a quiet link.
-        #[cfg(unix)]
-        match wait_readable(poll_fd, POLL_INTERVAL) {
-            Ok(WaitResult::Readable) => {}
-            Ok(WaitResult::TimedOut) => continue,
-            Err(e) => {
-                tracing::error!("poll on capture fd for '{device}' failed: {e}");
-                return Err(e).context("Fatal capture error while polling capture fd");
-            }
-        }
-
+        // Read FIRST, poll only when the ring is dry.
+        //
+        // This loop used to `poll()` before every `next_packet()`, which cost a
+        // syscall per packet — at the rates this tool benchmarks at, millions
+        // per second — and bought nothing whenever the ring already held data,
+        // which on a busy link is essentially always. libpcap's Linux capture
+        // is a memory-mapped TPACKET ring: draining it is userspace pointer
+        // work, and `poll()` is only needed once it is empty.
+        //
+        // So the wait moved into the `TimeoutExpired` arm, which is exactly the
+        // "nothing available" signal. Idle behaviour is unchanged — a quiet link
+        // still blocks up to POLL_INTERVAL and then re-checks
+        // shutdown/count/duration at the top — so `--duration` and Ctrl-C stay
+        // as responsive as before. A busy link now makes zero poll syscalls.
         match cap.next_packet() {
             Ok(pkt) => {
                 let ts = pcap_ts_to_chrono(pkt.header.ts);
@@ -278,7 +388,17 @@ pub fn capture_live(
                 count += 1;
             }
             Err(pcap::Error::TimeoutExpired) => {
-                // Normal: timeout fired with no packets available
+                // The ring is empty. Block here — bounded, so the loop still
+                // re-checks shutdown/count/duration roughly every
+                // POLL_INTERVAL on a completely idle link.
+                #[cfg(unix)]
+                match wait_readable(poll_fd, POLL_INTERVAL) {
+                    Ok(WaitResult::Readable) | Ok(WaitResult::TimedOut) => {}
+                    Err(e) => {
+                        tracing::error!("poll on capture fd for '{device}' failed: {e}");
+                        return Err(e).context("Fatal capture error while polling capture fd");
+                    }
+                }
                 continue;
             }
             Err(e) => {
@@ -289,8 +409,87 @@ pub fn capture_live(
         }
     }
 
-    tracing::info!("Live capture on '{device}' finished: {count} packets");
+    // Final reading, so drops in the last STATS_INTERVAL are not lost — on a
+    // short `--duration` run that window is most of the capture.
+    if let Ok(stat) = cap.stats() {
+        fold_stats(device, &stat, &mut prev_dropped, &mut prev_if_dropped);
+    }
+    let (dropped, if_dropped) = kernel_drop_counts();
+    if dropped > 0 || if_dropped > 0 {
+        tracing::warn!(
+            "Live capture on '{device}' finished: {count} packets captured, \
+             but {dropped} dropped by the kernel buffer and {if_dropped} by \
+             the interface — THIS ANALYSIS IS INCOMPLETE"
+        );
+    } else {
+        tracing::info!("Live capture on '{device}' finished: {count} packets, no drops");
+    }
     Ok(())
+}
+
+/// Largest capture buffer accepted, in MiB.
+///
+/// `pcap_set_buffer_size` takes a C `int`, so the byte count must fit in
+/// `i32`: 2047 MiB is the last whole MiB that does. Anything larger is clamped
+/// rather than allowed to wrap — `--buffer 2148` used to compute
+/// `2_148_000_000` and hand libpcap **-2_146_967_296**, and `--buffer 5000`
+/// overflowed `u32` before it even got that far.
+const MAX_BUFFER_MB: u32 = 2047;
+
+/// Convert a buffer size in MiB to the byte count libpcap wants.
+///
+/// Two things this gets right that the previous inline `mb * 1_000_000` did
+/// not:
+///
+/// **The unit.** The field, the `-B` help text and the docs all say *MiB*, and
+/// the old expression used decimal megabytes — so `--buffer 64` quietly asked
+/// for 61.04 MiB. A multiplier of 1 MiB makes the number mean what every
+/// surface says it means.
+///
+/// **Page alignment, for free.** A MiB multiplier makes every result a whole
+/// multiple of 4 KiB, 16 KiB *and* 64 KiB pages, which matters because aarch64
+/// server kernels are commonly built with 64 KiB pages: 64,000,000 is not a
+/// multiple of 65,536, while 67,108,864 is exactly 1024 of them. libpcap
+/// normalizes the request internally (it divides by the frame size to get
+/// `tp_frame_nr`, and the kernel allocates the ring in page-multiple blocks),
+/// so this is not a correctness fix — but handing the allocator a
+/// page-multiple avoids rounding a slot's worth of ring away for nothing.
+///
+/// Saturating throughout, and clamped to [`MAX_BUFFER_MB`], so no input can
+/// produce a negative or wrapped size.
+fn buffer_size_bytes(mb: u32) -> i32 {
+    let clamped = mb.min(MAX_BUFFER_MB);
+    let bytes = (clamped as u64).saturating_mul(1024 * 1024);
+    i32::try_from(bytes).unwrap_or(i32::MAX)
+}
+
+/// Capture-buffer sizes to try, largest first, starting from `requested`.
+///
+/// A big default ring is the right call on the busy servers sipnab is aimed at,
+/// but it must not turn a working capture into a failing one on a small host:
+/// allocating tens of megabytes of kernel ring can fail with `ENOMEM` on
+/// memory-constrained or heavily loaded systems, and "sipnab will not start"
+/// is a far worse outcome than "sipnab captures with a smaller buffer".
+///
+/// So the open path walks this ladder and takes the first size the kernel
+/// accepts, warning when that is not the size asked for. Each step halves,
+/// down to a 2 MiB floor — libpcap's own historical default, and the last size
+/// worth trying before concluding the failure is not about memory at all.
+///
+/// A `requested` at or below the floor yields just that one entry: an operator
+/// who explicitly passed `-B 1` gets 1 MiB or a hard error, not a silent
+/// promotion to something larger.
+fn buffer_ladder(requested: u32) -> Vec<u32> {
+    /// Smallest ring worth falling back to, in MiB.
+    const FLOOR_MB: u32 = 2;
+    let mut sizes = vec![requested.max(1)];
+    let mut mb = requested;
+    while mb > FLOOR_MB {
+        mb /= 2;
+        sizes.push(mb.max(FLOOR_MB));
+    }
+    sizes.dedup();
+    sizes
 }
 
 /// Packets whose pcap timestamp could not be converted and were stamped
@@ -298,6 +497,88 @@ pub fn capture_live(
 /// analysis (PDD, delta times, call duration) is unreliable for this run.
 pub static INVALID_PCAP_TIMESTAMPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+/// Packets the kernel discarded because the capture ring buffer was full
+/// when they arrived — `ps_drop` / `Stat::dropped`.
+///
+/// **A non-zero value means the analysis is incomplete.** Dialogs will be
+/// missing messages, streams will show loss that the wire did not have, and
+/// every count sipnab reports is a floor rather than a total. This is the
+/// number to raise `--buffer` against.
+pub static KERNEL_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Packets dropped by the interface or its driver before libpcap saw them —
+/// `ps_ifdrop` / `Stat::if_dropped`.
+///
+/// Distinct from [`KERNEL_DROPPED`] because the remedy is different: a bigger
+/// ring buffer cannot recover these. They point at the NIC, the driver, or a
+/// link that is simply faster than the host can accept.
+pub static IFACE_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Set once the first drop is reported, so the operator is told immediately
+/// and then left alone until the shutdown total.
+static DROP_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How often the capture loop asks libpcap for its drop counters.
+///
+/// `pcap_stats` is a syscall (a `getsockopt` on Linux), so it is polled on a
+/// timer rather than per packet: at the rates this tool is benchmarked at,
+/// per-packet polling would cost more than the capture.
+const STATS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Kernel and interface drops so far, as `(kernel, interface)`.
+///
+/// Process-global and monotonic, summed across every capture device in a
+/// `--multi-device` run.
+#[must_use]
+pub fn kernel_drop_counts() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (KERNEL_DROPPED.load(Relaxed), IFACE_DROPPED.load(Relaxed))
+}
+
+/// Fold one `pcap_stats` reading into the process-global drop counters.
+///
+/// libpcap's per-handle stats are **cumulative for the life of the handle**
+/// (on Linux the kernel's `PACKET_STATISTICS` counter resets on read, and
+/// libpcap accumulates it internally before returning), so this takes the
+/// delta against the previous reading rather than storing the absolute value.
+/// That is what makes the totals correct when several devices are capturing at
+/// once: each device contributes its own increments to one shared total.
+///
+/// `prev_*` are updated in place to the values just read.
+///
+/// # Side effects
+///
+/// Adds to [`KERNEL_DROPPED`] / [`IFACE_DROPPED`] and, the first time either
+/// goes non-zero, logs one `warn` naming the device — the operator needs to
+/// know that the run is lossy while it is still running, not afterwards.
+fn fold_stats(device: &str, stat: &pcap::Stat, prev_dropped: &mut u32, prev_if: &mut u32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    // Saturating: a handle that somehow reports a lower total than last time
+    // (a driver quirk, or a counter wrap) must not underflow into a huge delta.
+    let d_drop = u64::from(stat.dropped.saturating_sub(*prev_dropped));
+    let d_if = u64::from(stat.if_dropped.saturating_sub(*prev_if));
+    *prev_dropped = stat.dropped;
+    *prev_if = stat.if_dropped;
+    if d_drop == 0 && d_if == 0 {
+        return;
+    }
+    KERNEL_DROPPED.fetch_add(d_drop, Relaxed);
+    IFACE_DROPPED.fetch_add(d_if, Relaxed);
+    if !DROP_REPORTED.swap(true, Relaxed) {
+        tracing::warn!(
+            "PACKETS ARE BEING DROPPED on '{device}' (kernel buffer: {}, \
+             interface/driver: {}). The analysis for this run is INCOMPLETE — \
+             dialogs may be missing messages and RTP loss figures will \
+             overstate what was on the wire. Raise the kernel capture buffer \
+             with -B/--buffer (default 2 MiB), narrow the capture with a BPF \
+             filter, or reduce --snaplen. Interface drops are not fixed by a \
+             bigger buffer; they point at the NIC or driver.",
+            stat.dropped,
+            stat.if_dropped,
+        );
+    }
+}
 
 /// Convert a pcap `libc::timeval` to a chrono UTC datetime.
 ///
@@ -373,6 +654,67 @@ mod tests {
         libc::timeval {
             tv_sec: sec as _,
             tv_usec: usec as _,
+        }
+    }
+
+    // ── Read timeout vs immediate mode (CT7) ─────────────────────────────
+    // The device open cannot be exercised here (no root, no NIC), so what is
+    // pinned is the configuration decision: which timeout each ring format
+    // gets, and that the batched one stays small enough that TPACKET_V3's
+    // block-retire timer is not a latency regression.
+
+    /// Immediate mode keeps the long-standing 100 ms read bound. On
+    /// TPACKET_V2 this is only how long libpcap waits inside one read, and
+    /// immediate delivery means it rarely waits at all.
+    #[test]
+    fn immediate_mode_keeps_the_hundred_millisecond_read_timeout() {
+        assert_eq!(read_timeout_ms(true), 100);
+    }
+
+    /// Turning immediate mode off selects TPACKET_V3, where libpcap passes the
+    /// read timeout to the kernel as `tp_retire_blk_tov`. Reusing 100 ms there
+    /// would delay every packet on a link too quiet to fill a block by up to
+    /// 100 ms — the regression this shorter value exists to prevent.
+    #[test]
+    fn batched_mode_uses_a_short_block_retire_timeout() {
+        let batched = read_timeout_ms(false);
+        assert!(
+            batched < read_timeout_ms(true),
+            "the V3 block-retire timer must be shorter than the V2 read bound"
+        );
+        assert!(
+            (1..=10).contains(&batched),
+            "a block-retire timer of {batched} ms is either a latency \
+             regression (too long) or pointless churn (0 = retire only when \
+             full)"
+        );
+    }
+
+    /// The batched retire timer must stay well inside the interval the idle
+    /// loop already blocks for, so choosing TPACKET_V3 can never be the thing
+    /// that makes a capture feel slow.
+    #[cfg(unix)]
+    #[test]
+    fn batched_timeout_is_far_below_the_idle_poll_interval() {
+        let batched = u128::try_from(read_timeout_ms(false)).expect("non-negative timeout");
+        assert!(
+            batched * 10 <= POLL_INTERVAL.as_millis(),
+            "block-retire timer {batched} ms is not an order of magnitude \
+             below the {} ms idle poll",
+            POLL_INTERVAL.as_millis()
+        );
+    }
+
+    /// A non-positive timeout is never produced. Zero would mean "retire a V3
+    /// block only when it is full", which on a quiet link holds packets
+    /// indefinitely; negative is not a timeout at all.
+    #[test]
+    fn read_timeout_is_always_positive() {
+        for immediate in [true, false] {
+            assert!(
+                read_timeout_ms(immediate) > 0,
+                "immediate={immediate} produced a non-positive read timeout"
+            );
         }
     }
 
@@ -597,5 +939,200 @@ mod tests {
         let after = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
         assert!(after > before, "invalid timestamp must be counted");
         assert!((Utc::now() - dt).num_seconds().abs() < 60);
+    }
+
+    // ── Buffer size conversion (MiB, page-aligned, overflow-safe) ────────
+
+    /// The multiplier is MiB, not decimal MB. Every surface — the field name,
+    /// the `-B` help text, `docs/cli-reference.md` — says MiB, and the old
+    /// `mb * 1_000_000` quietly delivered 61.04 MiB for `--buffer 64`.
+    #[test]
+    fn buffer_size_uses_mebibytes_not_megabytes() {
+        assert_eq!(buffer_size_bytes(64), 64 * 1024 * 1024);
+        assert_eq!(buffer_size_bytes(1), 1_048_576);
+        assert_ne!(
+            buffer_size_bytes(64),
+            64_000_000,
+            "decimal MB is the bug this test exists to prevent"
+        );
+    }
+
+    /// Every accepted size is a whole multiple of 4 KiB, 16 KiB and 64 KiB
+    /// pages. 64 KiB matters specifically: aarch64 server kernels are commonly
+    /// built with 64 KiB pages, and 64,000,000 is not a multiple of 65,536.
+    #[test]
+    fn buffer_size_is_page_aligned_for_every_common_page_size() {
+        for mb in [1u32, 2, 8, 64, 256, MAX_BUFFER_MB] {
+            let bytes = buffer_size_bytes(mb) as u32;
+            for page in [4096u32, 16384, 65536] {
+                assert_eq!(
+                    bytes % page,
+                    0,
+                    "{mb} MiB = {bytes} B is not a multiple of a {page} B page"
+                );
+            }
+        }
+    }
+
+    /// A size past the `int` ceiling must clamp, never wrap. `--buffer 2148`
+    /// used to hand libpcap -2_146_967_296, and `--buffer 5000` overflowed
+    /// `u32` before the cast even happened.
+    #[test]
+    fn buffer_size_clamps_instead_of_wrapping_negative() {
+        for mb in [2048u32, 2148, 4000, 5000, 100_000, u32::MAX] {
+            let bytes = buffer_size_bytes(mb);
+            assert!(
+                bytes > 0,
+                "--buffer {mb} produced {bytes}; a non-positive buffer size is \
+                 the overflow bug"
+            );
+            assert!(
+                bytes <= MAX_BUFFER_MB as i32 * 1024 * 1024,
+                "--buffer {mb} produced {bytes}, above the clamp"
+            );
+        }
+        assert_eq!(
+            buffer_size_bytes(u32::MAX),
+            MAX_BUFFER_MB as i32 * 1024 * 1024
+        );
+    }
+
+    // ── Capture-buffer fallback ladder (CT2) ─────────────────────────────
+
+    /// The ladder starts at what was asked for. Anything else silently
+    /// capturing with a different ring than the operator requested is the
+    /// defect this whole path exists to avoid.
+    #[test]
+    fn buffer_ladder_tries_the_requested_size_first() {
+        assert_eq!(buffer_ladder(64)[0], 64);
+        assert_eq!(buffer_ladder(256)[0], 256);
+    }
+
+    /// Each step halves and the ladder bottoms out at the 2 MiB floor, so a
+    /// host that cannot give us 64 MiB still captures rather than failing.
+    #[test]
+    fn buffer_ladder_halves_down_to_the_floor() {
+        assert_eq!(buffer_ladder(64), vec![64, 32, 16, 8, 4, 2]);
+    }
+
+    /// An explicit small request is honoured exactly — never promoted upward,
+    /// and never given extra fallback steps it did not ask for. An operator
+    /// who passes `-B 1` on a tiny box means it.
+    #[test]
+    fn buffer_ladder_never_promotes_an_explicit_small_request() {
+        assert_eq!(buffer_ladder(1), vec![1]);
+        assert_eq!(buffer_ladder(2), vec![2]);
+    }
+
+    /// The ladder always terminates and never yields a zero-size ring — a
+    /// `buffer_size(0)` would be a nonsense argument to libpcap.
+    #[test]
+    fn buffer_ladder_always_terminates_above_zero() {
+        for mb in [0u32, 1, 3, 5, 7, 100, 1024, u32::MAX] {
+            let ladder = buffer_ladder(mb);
+            assert!(!ladder.is_empty(), "ladder for {mb} must not be empty");
+            assert!(
+                ladder.len() < 64,
+                "ladder for {mb} must terminate, got {} entries",
+                ladder.len()
+            );
+            assert!(
+                ladder.iter().all(|&m| m > 0),
+                "ladder for {mb} yielded a zero-size buffer: {ladder:?}"
+            );
+        }
+    }
+
+    // ── Kernel drop accounting (CT1) ─────────────────────────────────────
+
+    /// Build a `pcap::Stat`. The struct's fields are public but its
+    /// constructor is not, so tests transmute-free by going through the
+    /// public field syntax the crate exposes.
+    fn stat(received: u32, dropped: u32, if_dropped: u32) -> pcap::Stat {
+        pcap::Stat {
+            received,
+            dropped,
+            if_dropped,
+        }
+    }
+
+    /// libpcap reports CUMULATIVE per-handle totals, so folding must add the
+    /// DELTA. Two successive readings of 10 then 25 are 25 drops in total, not
+    /// 35 — getting this wrong double-counts every poll for the life of the
+    /// run, which would turn a healthy capture into a permanent red warning.
+    #[test]
+    #[serial_test::serial(kernel_drop_counts)]
+    fn fold_stats_accumulates_deltas_not_absolute_totals() {
+        let before = KERNEL_DROPPED.load(Ordering::Relaxed);
+        let (mut prev_d, mut prev_i) = (0u32, 0u32);
+
+        fold_stats("test0", &stat(100, 10, 0), &mut prev_d, &mut prev_i);
+        fold_stats("test0", &stat(200, 25, 0), &mut prev_d, &mut prev_i);
+
+        let observed = KERNEL_DROPPED.load(Ordering::Relaxed) - before;
+        assert_eq!(
+            observed, 25,
+            "two cumulative readings of 10 then 25 are 25 drops, not 35"
+        );
+        assert_eq!(prev_d, 25, "previous reading must advance to the latest");
+    }
+
+    /// A reading that goes BACKWARDS (counter wrap, or a driver that resets
+    /// its own stats) must not underflow into a ~4-billion-drop delta.
+    #[test]
+    #[serial_test::serial(kernel_drop_counts)]
+    fn fold_stats_saturates_on_a_backwards_counter() {
+        let before = KERNEL_DROPPED.load(Ordering::Relaxed);
+        let (mut prev_d, mut prev_i) = (500u32, 0u32);
+
+        fold_stats("test1", &stat(10, 3, 0), &mut prev_d, &mut prev_i);
+
+        let observed = KERNEL_DROPPED.load(Ordering::Relaxed) - before;
+        assert_eq!(
+            observed, 0,
+            "a backwards counter must contribute 0, not underflow"
+        );
+        assert_eq!(prev_d, 3, "previous reading still resyncs to the new value");
+    }
+
+    /// Interface drops are tracked separately from ring-buffer drops, because
+    /// the remedy differs: `-B/--buffer` fixes the first and cannot fix the
+    /// second.
+    #[test]
+    #[serial_test::serial(kernel_drop_counts)]
+    fn fold_stats_separates_interface_drops_from_buffer_drops() {
+        let before_kernel = KERNEL_DROPPED.load(Ordering::Relaxed);
+        let before_iface = IFACE_DROPPED.load(Ordering::Relaxed);
+        let (mut prev_d, mut prev_i) = (0u32, 0u32);
+
+        fold_stats("test2", &stat(1000, 0, 7), &mut prev_d, &mut prev_i);
+
+        assert_eq!(
+            KERNEL_DROPPED.load(Ordering::Relaxed) - before_kernel,
+            0,
+            "an interface drop is not a kernel-buffer drop"
+        );
+        assert_eq!(
+            IFACE_DROPPED.load(Ordering::Relaxed) - before_iface,
+            7,
+            "interface drops must be counted in their own total"
+        );
+    }
+
+    /// A clean poll (nothing dropped) must not touch the totals at all — a
+    /// healthy capture polls this once a second for its whole life.
+    #[test]
+    #[serial_test::serial(kernel_drop_counts)]
+    fn fold_stats_is_a_no_op_when_nothing_dropped() {
+        let before = kernel_drop_counts();
+        let (mut prev_d, mut prev_i) = (4u32, 9u32);
+
+        fold_stats("test3", &stat(5000, 4, 9), &mut prev_d, &mut prev_i);
+
+        assert_eq!(
+            kernel_drop_counts(),
+            before,
+            "an unchanged reading must not move either counter"
+        );
     }
 }

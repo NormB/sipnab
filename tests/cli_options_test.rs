@@ -1110,6 +1110,50 @@ fn hexdump_with_count_and_color_never() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  --cores ON A SOURCE THAT CANNOT USE IT (G6)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// `--cores N` with a live device runs single-threaded — parallel
+/// reconstruction shards a saved capture and has no streaming equivalent. That
+/// used to happen in silence: the operator asked for N cores, got one, and
+/// nothing in the run said so. The device name is deliberately bogus so the
+/// test needs no interface and no capture privileges; the warning is emitted
+/// while planning, before anything is opened.
+#[test]
+fn cores_with_a_live_device_warns_that_it_is_ignored() {
+    let (_stdout, stderr, _code) = run(&["-N", "--cores", "8", "-d", "sipnab-no-such-dev0"]);
+    assert!(
+        stderr.contains("--cores 8 is ignored"),
+        "a discarded --cores request must be reported, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("-I"),
+        "the warning must name the flag that would honour it, got: {stderr}"
+    );
+}
+
+/// The mirror image: `--cores N -I <file>` is exactly what the parallel reader
+/// is for, so it must run without the warning. A warning that fired here would
+/// be noise on the one invocation that does use every core.
+#[test]
+fn cores_with_an_input_file_does_not_warn() {
+    let fixture = sip_call_fixture();
+    let (_stdout, stderr, code) = run(&[
+        "-N",
+        "--cores",
+        "2",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--report",
+    ]);
+    assert_eq!(code, 0, "parallel offline reconstruction must succeed");
+    assert!(
+        !stderr.contains("is ignored"),
+        "the honoured case must stay quiet, got: {stderr}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  ERROR CASES
 // ═══════════════════════════════════════════════════════════════════════
 

@@ -10,22 +10,23 @@ sipnab itself is dual-licensed **MIT OR Apache-2.0** (see `LICENSE-MIT` and
 This file is generated from the dependency graph, not maintained by hand, so it
 cannot drift from what actually ships. It lists the Rust crates reached from
 `sipnab` through normal and build edges with `--features full` — the released
-gnu build, of which the musl build is a subset — plus the system libraries the
-platform links at runtime. Dev-dependencies are excluded: test harnesses are not
-part of any distributed artifact.
+gnu build, of which the musl build is a subset — plus the non-cargo libraries
+the artifacts either link from the host or compile in. Dev-dependencies are
+excluded: test harnesses are not part of any distributed artifact.
 
 Each entry gives the SPDX expression the crate declares in its own manifest.
 Full licence texts are published at <https://spdx.org/licenses/> under those
 identifiers.
 
 
-## System libraries
+## System and bundled libraries
 
-Linked at runtime and provided by the host, never redistributed.
+Libraries cargo does not resolve. Most are provided by the host and linked at runtime, which redistributes nothing. The static musl artifacts are the exception: they compile libpcap — and, inside it, netmap — into the binary, so those two are genuinely redistributed there and their BSD notices are reproduced below for that reason. The last column says which case each library falls under.
 
 | Library | Licence | How sipnab uses it |
 |---|---|---|
-| libpcap | BSD-3-Clause | Packet capture. Linked dynamically; required by every build that includes the `native` feature, which is all of them. |
+| libpcap | BSD-3-Clause | Packet capture; required by every build, since they all include the `native` feature. The gnu builds and the `.deb` link the host's shared libpcap and redistribute nothing. The static musl builds compile libpcap from source (see `docker/cross/`) and link it statically, so those artifacts do carry a copy of it — which is what BSD-3-Clause's binary-distribution clause covers. |
+| netmap | BSD-2-Clause | Kernel-bypass capture backend, reached only as a libpcap capture module for `netmap:<ifname>` device names. It is header-only, so there is no netmap library to link: three headers from `luigirizzo/netmap` are compiled into libpcap's `pcap-netmap.o`. That object is inside the statically linked libpcap in the **musl artifacts only**, so netmap code is redistributed there and BSD-2-Clause requires this notice to accompany it. The gnu builds use the host's libpcap and carry no netmap code of sipnab's making. |
 | libasound (alsa-lib) | LGPL-2.1-or-later | ALSA playback, reached only through the separately compiled `libsipnab_audio` plugin, which the binary `dlopen`s lazily. sipnab does not link it at load time, does not statically link it, and does not redistribute it — the `.deb` declares it as a Recommends and the static musl builds omit audio entirely. Dynamic linking against a system-provided copy is what keeps LGPL-2.1 section 6 satisfied without any obligation reaching sipnab's own source. |
 
 ## Multi-licensed crates and the licence elected

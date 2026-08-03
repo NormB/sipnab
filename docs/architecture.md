@@ -146,8 +146,21 @@ EOF.
   `Debug` impls, `--tls-key`/keylog material never logged.
 - **D13 — RTP is first-class.** sipnab discovers streams heuristically even
   without SIP/SDP; `rtp/` never depends on a dialog existing.
-- **D15/D16 — Privilege drop + process isolation.** sipnab drops root right
-  after socket open; active responses run in an isolated child.
+- **D15 — Privilege drop.** sipnab drops root right after socket open, then
+  sets `PR_SET_NO_NEW_PRIVS` and disables core dumps (`src/privilege.rs`);
+  `--chroot` is available for daemon deployments.
+- **D16 — Process isolation: specified, not shipped.** D16
+  (`docs/design/implementation-plan-v6.md:564`) called for scanner-kill and the
+  REST API to run in forked children behind a Unix socket pair. **Neither
+  does.** Scanner-kill runs in the `scanner-kill` *thread*
+  (`src/process_isolation.rs`) and the REST/MCP servers run as tasks on a shared
+  runtime thread (`src/app/servers.rs`), all in one address space alongside the
+  parsers, the stores, TLS key material and bearer tokens. Treat the API bind
+  address and key accordingly — and note that `panic = "abort"`
+  (`Cargo.toml:262`) means a panic on any thread ends the whole process, so
+  threads buy no fault containment either. The analysis of whether to close this
+  gap, and why most of it should stay open, is in
+  `docs/design/process-isolation-and-hot-path-cost.md`.
 - **D17 — Warn and continue.** Malformed input must never crash the
   process; parsers set `parse_error` and keep going (`docs/fault-model.md`).
 

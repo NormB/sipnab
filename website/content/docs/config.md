@@ -63,7 +63,7 @@ Packet capture defaults.
 | `device` | string | -- | Default network interface |
 | `portrange` | string | `"5060-5061"` | SIP **signalling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyse at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes |
-| `buffer` | integer | `2` | Kernel capture buffer size in MiB |
+| `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device) |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |

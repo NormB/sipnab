@@ -41,7 +41,7 @@ fn type_lines(body: &str) -> std::collections::HashMap<String, String> {
         .collect()
 }
 
-/// The `/metrics` exposition declares all ten expected metric families with
+/// The `/metrics` exposition declares every expected metric family with
 /// the correct `# TYPE` (counter/gauge/histogram).
 #[test]
 fn metrics_expose_expected_families_with_types() {
@@ -58,6 +58,14 @@ fn metrics_expose_expected_families_with_types() {
         ("sipnab_rtp_streams_total", "counter"),
         ("sipnab_capture_packets_total", "counter"),
         ("sipnab_reassembly_timeouts_total", "counter"),
+        // Capture quality: three losses with three different remedies, kept
+        // under three names, plus the gauge that rolls them up for a
+        // dashboard. Declared here so a rename cannot silently drop the one
+        // block that says whether the rest of the scrape is complete.
+        ("sipnab_capture_kernel_dropped_packets_total", "counter"),
+        ("sipnab_capture_interface_dropped_packets_total", "counter"),
+        ("sipnab_capture_invalid_timestamps_total", "counter"),
+        ("sipnab_capture_quality_degraded", "gauge"),
         ("sipnab_pdd_seconds", "histogram"),
         ("sipnab_mos", "histogram"),
         ("sipnab_jitter_ms", "histogram"),

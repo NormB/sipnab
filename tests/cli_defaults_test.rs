@@ -46,7 +46,8 @@ fn default_output_is_none() {
     assert!(cli.output.is_none(), "output should be None by default");
 }
 
-/// `buffer` defaults to `None`, deferring to the OS capture-buffer size.
+/// `buffer` defaults to `None` on the CLI struct; the effective size is
+/// applied later in `app::bootstrap` from `capture::DEFAULT_BUFFER_MB`.
 #[test]
 fn default_buffer_is_none() {
     let cli = defaults();
@@ -836,6 +837,21 @@ fn default_max_reassembly() {
         cli.max_reassembly_limit(&sipnab::config::Config::default()),
         10_000,
         "the resolved default is still 10000"
+    );
+}
+
+/// `cores` defaults to 1 — the single-threaded path.
+///
+/// Load-bearing beyond documentation drift: `app::bootstrap` warns when
+/// `--cores > 1` is combined with a live source, because parallel
+/// reconstruction is offline-only. A default above 1 would fire that warning on
+/// every live capture nobody asked for it on.
+#[test]
+fn default_cores_is_one() {
+    assert_eq!(
+        defaults().cores,
+        1,
+        "--cores must default to the single-threaded path"
     );
 }
 

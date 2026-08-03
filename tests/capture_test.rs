@@ -151,6 +151,39 @@ fn bpf_filter_with_count() {
     assert_eq!(packets.len(), 3, "Filter + count should give exactly 3");
 }
 
+// ── Immediate mode / ring format (CT7) ─────────────────────────────────
+
+/// The library default keeps immediate mode, i.e. exactly what every capture
+/// asked for before the setting existed. Only `app::bootstrap`, which knows
+/// whether a human is watching, turns it off — an embedder building a
+/// `CaptureConfig::default()` must not have its ring format changed under it.
+#[test]
+fn default_config_keeps_immediate_mode() {
+    assert!(CaptureConfig::default().immediate_mode);
+}
+
+/// Immediate mode is a live-device concern: it decides the kernel ring format
+/// (TPACKET_V2 vs V3), and a file has no ring. Reading the fixture with the
+/// flag off must therefore be byte-identical to reading it with the flag on —
+/// proving the new field cannot disturb offline analysis.
+#[test]
+fn immediate_mode_does_not_affect_file_capture() {
+    let batched = collect_packets(CaptureConfig {
+        immediate_mode: false,
+        ..Default::default()
+    });
+    let interactive = collect_packets(CaptureConfig {
+        immediate_mode: true,
+        ..Default::default()
+    });
+    assert_eq!(batched.len(), 10, "the fixture still reads in full");
+    assert_eq!(batched.len(), interactive.len());
+    for (b, i) in batched.iter().zip(interactive.iter()) {
+        assert_eq!(b.data, i.data, "file capture must ignore immediate mode");
+        assert_eq!(b.timestamp, i.timestamp);
+    }
+}
+
 // ── Writer roundtrip ───────────────────────────────────────────────────
 
 /// Writing all fixture packets with `PcapWriter` and re-reading the file

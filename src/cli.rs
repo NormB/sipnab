@@ -275,7 +275,10 @@ pub struct Cli {
     )]
     pub output: Option<String>,
 
-    /// Kernel capture buffer size in MiB.
+    /// Kernel capture buffer size in MiB (default 64). The ring libpcap fills
+    /// and sipnab drains: raise it on busy links, lower it on small hosts or
+    /// when capturing many interfaces at once (the cost is per device). See
+    /// `docs/tuning-capture.md`.
     #[arg(
         help_heading = "Capture",
         short = 'B',

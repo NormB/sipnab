@@ -221,6 +221,21 @@ impl<T: WindowClock> TumblingWindow<T> {
     /// fits. Does not book the event — call [`Self::record`] once the action
     /// actually happened.
     pub(crate) fn allows(&mut self, now: T) -> bool {
+        self.allows_with_reserved(now, 0)
+    }
+
+    /// [`Self::allows`], counting `reserved` events that have already been
+    /// allowed but not yet booked.
+    ///
+    /// The gap between "allowed" and "booked" is deliberate: the budget is
+    /// spent by [`Self::record`] once the action succeeded, so an allowed-but-
+    /// failed spawn does not consume capacity it never used. A caller that
+    /// *decides* an action under a lock and *performs* it after the lock drops
+    /// widens that gap to hold several decisions at once, and each of them
+    /// would consult a count none of them had yet incremented — a limit of N
+    /// would let through N plus however many were in flight. Declaring the
+    /// in-flight ones here closes that without moving the booking.
+    pub(crate) fn allows_with_reserved(&mut self, now: T, reserved: u32) -> bool {
         if self.limit == 0 {
             return true;
         }
@@ -231,7 +246,7 @@ impl<T: WindowClock> TumblingWindow<T> {
                 self.count = 0;
             }
         }
-        self.count < self.limit
+        self.count.saturating_add(reserved) < self.limit
     }
 
     /// Book one event against the current window.
@@ -1383,6 +1398,50 @@ mod tests {
         assert!(w.allows(at(0)), "an unbooked check must not consume budget");
         w.record();
         assert!(!w.allows(at(0)), "the booked event did consume it");
+    }
+
+    /// An event that has been allowed but not yet booked still counts, when
+    /// declared, so a caller that decides now and acts later cannot overspend.
+    ///
+    /// This is what keeps `--exec-rate-limit` meaning the same thing after the
+    /// event-exec path moved its `fork`/`exec` out of the batch loop's locked
+    /// section: the decision stayed put, the spawn (and so the `record`) moved,
+    /// and the in-flight decision is declared here in the meantime.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_reserved_event_counts_against_the_budget_before_it_is_booked() {
+        let mut w = TumblingWindow::new(1, 1);
+        assert!(w.allows(at(0)), "the first event fits");
+        assert!(
+            !w.allows_with_reserved(at(0), 1),
+            "one allowed-but-unbooked event fills a limit of 1"
+        );
+
+        // Declaring nothing is exactly the old behaviour.
+        let mut plain = TumblingWindow::new(2, 1);
+        assert!(plain.allows_with_reserved(at(0), 0));
+        plain.record();
+        assert!(plain.allows_with_reserved(at(0), 0));
+        assert!(
+            !plain.allows_with_reserved(at(0), 1),
+            "one booked plus one reserved fills a limit of 2"
+        );
+
+        // A zero limit disables the window, reservations included.
+        let mut off = TumblingWindow::new(0, 1);
+        assert!(off.allows_with_reserved(at(0), u32::MAX));
+
+        // The window still rolls: reservations do not pin an expired window.
+        let mut rolls = TumblingWindow::new(1, 1);
+        // The first check is what starts the window; booking before it would
+        // be wiped by the roll it triggers.
+        assert!(rolls.allows(at(0)));
+        rolls.record();
+        assert!(!rolls.allows_with_reserved(at(0), 0));
+        assert!(
+            rolls.allows_with_reserved(at(5), 0),
+            "a new window starts empty"
+        );
     }
 
     /// Drops are logged at 1, 10, 100, … and nowhere in between.

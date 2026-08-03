@@ -949,9 +949,40 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "pdd_p50_ms": 120,
     "pdd_p95_ms": 850,
     "pdd_p99_ms": 2100
+  },
+  "capture_quality": {
+    "kernel_dropped_packets": 0,
+    "interface_dropped_packets": 0,
+    "invalid_timestamps": 0,
+    "degraded": false
   }
 }
 ```
+
+`capture_quality` says how much of the wire the rest of the response is drawn
+from. Read it before the counts, not after: with `degraded` true, every number
+above it is a floor rather than a total, and the `timing` percentiles may have
+been computed from substituted clock readings.
+
+The three counters stay apart because their remedies disagree:
+
+- **`kernel_dropped_packets`** — the capture ring was full when the packet
+  arrived. Raise `-B`/`--buffer`, narrow the BPF filter, or cut `--snaplen`.
+- **`interface_dropped_packets`** — the NIC or its driver discarded the packet
+  before libpcap saw it. Look at the NIC, the driver or the mirror: **a bigger
+  buffer cannot recover these.**
+- **`invalid_timestamps`** — the pcap timestamp was unusable, so the packet
+  carries the wall clock instead. Nothing was lost; treat post-dial delay,
+  jitter, MOS and duration for this run as unreliable.
+
+Summing them would name one problem where there are three, and "raise the
+buffer" is the wrong answer to two of them.
+
+`degraded` is `true` when any of the three is non-zero. `false` means nothing
+was *observed* to go wrong — not that the capture provably saw every packet.
+Loss upstream of the capture point (an oversubscribed SPAN port, a tap
+mirroring one direction, a filter that excluded the traffic) is invisible to
+all three counters.
 
 ---
 
@@ -1025,6 +1056,10 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_kill_responses_sent_total{mode}` | counter | Scanner-kill responses sent, by source mode: `raw` (source-spoofed via a raw socket) or `ephemeral` (sipnab's own port). Alert on unexpected `ephemeral` to catch a silent spoof fallback. |
 | `sipnab_capture_packets_total` | counter | Packets the capture handed to the processing pipeline since the process started. Counted before parsing, so a frame sipnab cannot parse still counts — it arrived. One process-wide total covering every input (`-I` files, live devices, HEP) and every worker of the parallel pipeline, identical on both servers. A line that stops climbing means packets stopped arriving. |
 | `sipnab_reassembly_timeouts_total` | counter | IP fragments whose datagram never completed, plus TCP streams that went idle, dropped once older than the 30-second reassembly TTL. Capacity evictions stay out of this number: those say the entry cap is too small, not that a peer stopped sending. |
+| `sipnab_capture_kernel_dropped_packets_total` | counter | Packets the kernel discarded because the capture ring buffer was full when they arrived (`ps_drop`). Non-zero means the analysis is incomplete: dialogs may be missing messages, and RTP loss figures overstate what was on the wire. The remedy is a larger `-B`/`--buffer`, a narrower BPF filter, or a smaller `--snaplen`. Always zero for a `-I` file replay, which has no ring. |
+| `sipnab_capture_interface_dropped_packets_total` | counter | Packets the interface or its driver discarded before libpcap ever saw them (`ps_ifdrop`). Counted apart from the kernel drops because **a larger `-B` cannot recover these** — the link is delivering faster than the host accepts, so the answer is at the NIC, the driver, or the mirror. Alerting on a sum of the two drop counters points the operator at the wrong remedy half the time. |
+| `sipnab_capture_invalid_timestamps_total` | counter | Packets whose pcap timestamp was unusable and were stamped with the wall clock instead. No packet is lost, so the counts elsewhere in the scrape stay right — but every timing figure derived from the run is not: post-dial delay, RFC 3550 jitter, MOS and call duration all read from a substituted clock. |
+| `sipnab_capture_quality_degraded` | gauge | `1` when any of the three counters above is non-zero, `0` otherwise. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing was **observed** to go wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
 | `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding: `one_way_audio`, `nat_mismatch`, `no_media`. A dialog with two findings counts under both. All three types appear on every scrape, at `0` where nothing raises them. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
@@ -1034,7 +1069,7 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total` and `sipnab_capture_backpressure_blocks_total` count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say. The rest — dialogs, messages, responses, streams, diagnosis findings — describe what sipnab tracks right now, and they fall as dialogs and streams age out of their stores. Alert on the current value or on a ratio there, never on `increase()`.
+Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total`, `sipnab_capture_backpressure_blocks_total` and the three capture-quality counters (`sipnab_capture_kernel_dropped_packets_total`, `sipnab_capture_interface_dropped_packets_total`, `sipnab_capture_invalid_timestamps_total`) count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say. The rest — dialogs, messages, responses, streams, diagnosis findings — describe what sipnab tracks right now, and they fall as dialogs and streams age out of their stores. Alert on the current value or on a ratio there, never on `increase()`.
 
 `sipnab_security_alerts_total{type}` reads differently from the rest, and the difference matters to an alert rule. `AlertEngine::fire` records each alert under its rule name, so the family carries only the types that have actually fired and stays absent from the scrape entirely until the first one does. An absent series therefore means "no alert of that type has fired since this process started", not "the metric is unavailable" — the reading it carried up to 0.5.74, when nothing fed the family at all. `firing_an_alert_moves_the_metric` in `tests/metrics_alert_wiring_test.rs` holds the recording call to that behaviour.
 

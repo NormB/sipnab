@@ -1505,6 +1505,12 @@ No parameters. Returns:
     { "port": 8090, "messages": 2430 },
     { "port": 5080, "messages": 598 }
   ],
+  "capture_quality": {
+    "kernel_dropped_packets": 0,
+    "interface_dropped_packets": 0,
+    "invalid_timestamps": 0,
+    "degraded": false
+  },
   "capture_identity": {
     "instance": "1f4a17c8e2b91d40-1",
     "dialog_generation": 412,
@@ -1528,6 +1534,25 @@ No parameters. Returns:
 > `unanalysed_busiest_ports` names the service port — destination of a request,
 > source of a response — never the ephemeral port, which differs on every
 > dialog and identifies nothing.
+
+> **`capture_quality` says how much of the wire the other counts are drawn
+> from.** Read it first. With `degraded` true, every count in this response is
+> a floor rather than a total, and any timing figure elsewhere in the session
+> — post-dial delay, jitter, MOS, call duration — may have been computed from
+> a substituted clock.
+>
+> The three counters are separate because the fixes disagree.
+> `kernel_dropped_packets` means the capture ring was full: raise
+> `-B`/`--buffer`, narrow the BPF filter, or cut `--snaplen`.
+> `interface_dropped_packets` means the NIC or its driver dropped the packet
+> before libpcap saw it, and a bigger buffer cannot recover those.
+> `invalid_timestamps` loses no packet at all — it makes the run's timing
+> unreliable. Summing them names one problem where there are three.
+>
+> `degraded` is `false` when nothing was *observed* to go wrong, which is not
+> the same as the capture provably having seen every packet: loss upstream of
+> the capture point, such as an oversubscribed SPAN port or a tap mirroring
+> one direction, is invisible to all three counters.
 
 ### Tool argument enums
 

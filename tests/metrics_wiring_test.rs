@@ -136,3 +136,75 @@ fn reassembly_timeouts_total_is_exposed() {
     let v = require(&body, "sipnab_reassembly_timeouts_total");
     assert_eq!(v, 0.0, "the fixture times out no reassembly");
 }
+
+/// The capture-quality block reaches the scrape as four separate series.
+///
+/// Before this the three counters existed as process globals and were warned
+/// about on stderr, and no scrape carried them: a dashboard could show a
+/// healthy `sipnab_capture_packets_total` for a run that had dropped a third
+/// of the wire, with nothing on the same page to say so.
+///
+/// A file replay drops nothing, so the values are legitimately zero here.
+/// Zero is the point: an absent series makes an alert rule no-data forever,
+/// which reads the same as "fine" on a dashboard and is not.
+#[test]
+fn capture_quality_reaches_the_scrape_as_separate_series() {
+    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[]);
+    let body = srv.get("/metrics").body;
+
+    for family in [
+        "sipnab_capture_kernel_dropped_packets_total",
+        "sipnab_capture_interface_dropped_packets_total",
+        "sipnab_capture_invalid_timestamps_total",
+    ] {
+        assert!(
+            body.contains(&format!("# TYPE {family} counter")),
+            "{family} must be declared as a counter"
+        );
+        assert_eq!(
+            require(&body, family),
+            0.0,
+            "{family} must read 0 for a file replay, which has no capture ring"
+        );
+    }
+
+    assert!(
+        body.contains("# TYPE sipnab_capture_quality_degraded gauge"),
+        "the roll-up must be a gauge — it is a state, not a running total"
+    );
+    assert_eq!(
+        require(&body, "sipnab_capture_quality_degraded"),
+        0.0,
+        "nothing was observed wrong replaying {RTP_PCAP}, so the roll-up must \
+         be 0"
+    );
+}
+
+/// The two drop counters are never collapsed into one series.
+///
+/// The remedies disagree — a bigger `-B`/`--buffer` answers a kernel-ring
+/// drop and can do nothing at all about an interface drop — so a single
+/// "dropped" series would send an operator to the wrong fix half the time.
+/// This is a naming contract, asserted on the wire where an alert rule reads
+/// it rather than in the struct.
+#[test]
+fn kernel_and_interface_drops_are_never_one_series() {
+    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[]);
+    let body = srv.get("/metrics").body;
+
+    assert!(
+        sample(&body, "sipnab_capture_kernel_dropped_packets_total").is_some()
+            && sample(&body, "sipnab_capture_interface_dropped_packets_total").is_some(),
+        "both drop counters must be present under their own names"
+    );
+    for collapsed in [
+        "sipnab_capture_dropped_packets_total",
+        "sipnab_capture_drops_total",
+        "sipnab_capture_lost_packets_total",
+    ] {
+        assert!(
+            !body.contains(collapsed),
+            "`{collapsed}` sums losses with different remedies into one series"
+        );
+    }
+}

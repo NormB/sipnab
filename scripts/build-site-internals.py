@@ -167,6 +167,12 @@ DOCS_TO_SITE = {
     "mcp-walkthrough.md": "mcp-walkthrough.md",
     "sip-lint-rules.md": "sip-lint-rules.md",
     "benchmarks.md": "benchmarks.md",
+    # Registering the page in build-site-pages.py's PAGES only makes the page
+    # exist; this map is what makes other site pages LINK to it. Missing here,
+    # troubleshooting.md's three pointers at the drop diagnosis rewrote to
+    # GitHub blob URLs and the site's own high-loss workflow ended by leaving
+    # the site.
+    "tuning-capture.md": "tuning-capture.md",
 }
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")

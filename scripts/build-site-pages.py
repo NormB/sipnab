@@ -231,6 +231,25 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "it, the severity and basis it reports under, and how to suppress it "
         "in CI.",
     ),
+    # Registered with the page itself, for the reason the sip-lint-rules entry
+    # above records: `docs/troubleshooting.md` sends a reader here three times
+    # for the drop diagnosis, and troubleshooting IS mirrored. Registered in
+    # build-wiki.py alone, all three of those rewrote to a GitHub blob URL, so
+    # the site's own high-loss workflow ended by leaving the site.
+    (
+        "docs/tuning-capture.md",
+        "tuning-capture.md",
+        "Tuning capture on a busy server",
+        "Tuning Capture",
+        # 24, not 12: weight 12 was already taken by api-clients.md, and
+        # `docs_page_weights_are_unique_and_descriptions_present` requires it to
+        # be unique. Ordering in the sidebar comes from the explicit path lists
+        # in the nav_group macros, not from this number.
+        24,
+        "Size the kernel capture ring, read the kernel and interface drop "
+        "counters, tell the two apart, and decide between the `any` device "
+        "and a named interface.",
+    ),
 ]
 
 BANNER = (
