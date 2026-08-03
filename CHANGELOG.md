@@ -8,6 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.76] - Unreleased
+
+Nothing yet. `Cargo.toml` moved to 0.5.76 so that work landing after the
+0.5.75 tag reports a version distinguishable from the released one — a build
+of this tree calling itself 0.5.75 would be indistinguishable from the
+artifact, which is exactly the confusion a version number exists to prevent.
+
 ## [0.5.75] - 2026-08-03
 
 ### Added
