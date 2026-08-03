@@ -13,8 +13,15 @@
 # links) and the separate fuzz workspace compile independently. Catching them
 # locally turns a 10-minute red-CI round-trip into seconds before push.
 #
-# Bypass for emergencies (use sparingly) -- skips ALL gates:
-#   SKIP_FMT_HOOK=1 git push ...
+# Plus ONE conditional gate, at the end: validation against the real capture
+# corpus named by SIPNAB_CORPUS. It runs only when that variable resolves to a
+# readable directory, and says so in one line when it does not. Unlike the five
+# above, CI can never take this one over -- the captures carry PII and do not
+# leave the machine that recorded them.
+#
+# Bypass for emergencies (use sparingly):
+#   SKIP_FMT_HOOK=1    git push ...   # skips ALL gates, corpus included
+#   SKIP_CORPUS_HOOK=1 git push ...   # skips ONLY the corpus gate
 #
 # Activate once per clone:
 #   git config core.hooksPath .githooks
@@ -267,6 +274,281 @@ for commit in $tag_commits; do
 	fi
 	printf '%bOK%b\n' "$GREEN" "$NC"
 done
+
+# -- Conditional gate: the real capture corpus --------------------------------
+# The standing rule in this project is 100% validation against the real capture
+# corpus, and anything short of 100% counts as a critical failure. Nothing
+# enforced that between one manual run and the next: on 2026-08-03 a corpus test
+# turned out to have been failing on every real capture for WEEKS, unnoticed,
+# because no automation ever ran it.
+#
+# CI cannot be that automation. The corpus is traffic recorded off live networks
+# and carries PII in every packet, so nobody commits it, uploads it or caches
+# it -- it does not leave the machine that captured it. A hosted runner has
+# nothing to validate against. The moment before a push is the only enforcement
+# point that exists.
+#
+# CONDITIONAL, not mandatory. A contributor without the corpus must still be
+# able to push, so an absent or unreadable SIPNAB_CORPUS prints one line and
+# falls through. Printing that line is the whole point: silence in a column of
+# OK lines reads as "corpus validated", and a skipped check nobody knows about
+# is precisely the hole this gate closes. VALIDATED and NOT VALIDATED are
+# different words on purpose, and neither one of them is silence.
+#
+# LAST in the hook, after five cheap gates that fail in seconds. Waiting a
+# minute on the corpus only to be told the tree does not compile wastes the
+# minute; this way every fast verdict lands first.
+#
+# ---- Every corpus binary, and no subset. What the 8-minute figure measured ----
+# Measured here (14 cores, corpus 8.8 GB across 137 files, warm page cache),
+# binaries already built:
+#
+#   all eleven, ONE `cargo test` invocation, --profile profiling ......  87 s
+#   the same eleven, one invocation EACH, --profile profiling ......... 379 s
+#   the nine `*corpus*` binaries, one invocation, DEV profile ......... 460 s
+#
+# Two separate findings, and together they remove the reason to subset.
+#
+# One invocation, not a loop: the in-process `finished in` times sum to 86 s
+# either way, so the extra 293 s is pure cargo -- a dependency-graph re-resolve
+# per start, plus contention on the shared package-cache lock when any other
+# cargo is running. The loop reads better and costs five times the wall clock.
+#
+# --profile profiling, not dev: 70 s against 460 s for the same nine binaries.
+# The corpus is 8.8 GB of packets and the parsers are the whole workload, so an
+# unoptimized build is where the eight-minute figure came from. Not --release
+# either: [profile.release] sets panic = "abort", and an aborting test process
+# dies before libtest prints its `failures:` list or its `test result:` line --
+# the gate would block the push and be unable to name what broke, which is the
+# one thing it has to do. `profiling` inherits release (lto, codegen-units = 1)
+# and restores panic = "unwind".
+#
+# So the whole corpus costs about ninety seconds, and at ninety seconds a subset
+# buys nothing worth its cost. The eleven do not overlap: diagnosis claims and
+# message retention, ICMP evidence for signalling and for media separately,
+# conformance-rule hit rates, `nat_mismatch`/`no_media` firing where they should,
+# detector clocks against the capture's own timeline, every documented filter
+# field and alias, behavioural scanner alerts backed by an outcome, the two
+# silent-loss fixes, `-I` input-set accounting, and RTP-quality provenance.
+# Dropping any one leaves that class of real-capture regression with nothing
+# watching it -- which is exactly how the failure above survived for weeks.
+#
+# Eleven and not the nine whose names contain "corpus": input_set_accounting_test
+# and rtp_quality_provenance_test read SIPNAB_CORPUS too, and cost 17 s of the
+# 87. "100% of the corpus tests" has to mean all of the ones that read it, which
+# is also why the list below comes from the tree instead of from this comment --
+# eleven is what it measured, not what it is fixed at.
+#
+# The BUILD is the real cost, not the run, and it is the one number worth
+# knowing before this gate surprises anyone:
+#
+#   corpus run, everything already built ............................  87 s
+#   profiling rebuild after a lib change, then the run .............. 413 s
+#
+# lto = true and codegen-units = 1 mean every one of those binaries relinks
+# with full LTO. Two things make it the right trade anyway. target/profiling
+# persists, so a second push that touches no source pays 87 s, not 413. And the
+# alternative is worse in the common case, not better: the dev profile costs
+# 460 s of RUN on EVERY push and never amortizes anything.
+#
+# To take the wait off the push itself, keep the profile warm while working:
+#   cargo test --all-features --profile profiling --no-run
+#
+# Emergency bypass, deliberately its OWN variable. SKIP_FMT_HOOK=1 switches off
+# every gate in this hook, which is far too much to reach for when the only
+# problem is a corpus that is temporarily unavailable. SKIP_CORPUS_HOOK=1 drops
+# this gate and leaves the other five standing, and prints a line loud enough
+# that the push it let through stays on the record. Awkward on purpose: it is
+# not the variable anyone already has in their shell history.
+
+# DERIVED from the tree, never hand-listed. Every top-level tests/*.rs is a
+# cargo test target, so "the corpus suite" is exactly those that name the
+# variable. The hand-kept alternative is the defect `.githooks/pre-commit`
+# already records against its WASM export list: a fixed list cannot catch a NEW
+# member, which is the one thing the guard is for. The first draft DID hand-list
+# them, and it went stale within the hour -- a twelfth corpus binary landed in
+# tests/ while this gate was still being reviewed, and the hand-kept version
+# would have run eleven of twelve and printed VALIDATED.
+CORPUS_TESTS=$(grep -lE '\bSIPNAB_CORPUS\b' tests/*.rs 2>/dev/null \
+	| sed -e 's|^tests/||' -e 's|\.rs$||' | sort || true)
+
+# ---- Naming what failed -----------------------------------------------------
+# This gate has to capture cargo's output rather than let it stream: it drives
+# every corpus binary in one run, and the per-gate summary this hook is built
+# around would drown. Capturing is not licence to discard. pre-commit learned
+# that the expensive way -- printing `FAIL` and a "run it yourself" line made
+# whoever hit it pay for a SECOND full suite run just to learn the name of the
+# test, and until that run finished they could not tell whether the break was
+# theirs or already on HEAD. Here that second run is ninety seconds of parsing
+# 8.8 GB. So every failure path below prints the part of the capture that names
+# the problem, writes the whole capture beside it, and stays bounded.
+CORPUS_LOG_DIR=$(git rev-parse --git-dir 2>/dev/null || echo .)
+
+# Print at most <max> lines of stdin, indented, then say how many were withheld
+# and where the rest lives. awk rather than a shell loop: POSIX sh has no
+# `local`, and this hook runs under `set -eu` where a stray global bites.
+#
+# `logpath`, NOT `log`. mawk -- /usr/bin/awk on Debian and Ubuntu -- refuses
+# `-v log=...` with "cannot command line assign to log: type clash or keyword",
+# because log() is a built-in. It refuses at RUN time, so the gate still ran, the
+# suite still failed, the push was still blocked, and every line naming the
+# failing test was replaced by an awk error. A gate that blocks without saying
+# what broke is the exact defect this section exists to prevent, and it took
+# running the hook to find: shellcheck, `dash -n` and gawk are all happy with it.
+emit_capped() { # emit_capped <max-lines> <log-path>   (reads stdin)
+	awk -v max="$1" -v logpath="$2" '
+		NR <= max { printf "    %s\n", $0; next }
+		{ extra++ }
+		END {
+			if (extra > 0) {
+				printf "    ... %d more line(s) in %s\n", extra, logpath
+			}
+		}'
+}
+
+# Which of the five states this run is in. Resolved before anything prints, so
+# the gate says one thing and then does exactly that thing.
+corpus_state=run
+if [ "${SKIP_CORPUS_HOOK:-0}" = "1" ]; then
+	corpus_state=bypassed
+elif [ -z "$CORPUS_TESTS" ]; then
+	# Skip rather than fail closed on a crate with no corpus targets -- the
+	# same courtesy the fuzz gate extends to a missing fuzz/ and the feature
+	# gate to an undefined combination. Without it every throwaway fixture
+	# crate in scripts/test-pre-push.sh would be blocked.
+	corpus_state=absent
+elif [ -z "${SIPNAB_CORPUS:-}" ]; then
+	corpus_state=notset
+elif [ ! -d "$SIPNAB_CORPUS" ] || [ ! -r "$SIPNAB_CORPUS" ] || [ ! -x "$SIPNAB_CORPUS" ]; then
+	# -d, -r AND -x: a directory you cannot read gives an empty walk, and an
+	# empty walk is a corpus test passing over nothing. "Set but wrong" has to
+	# report as loudly as "not set", never as a pass.
+	corpus_state=unreadable
+fi
+
+case "$corpus_state" in
+bypassed)
+	printf '%b  corpus: BYPASSED (SKIP_CORPUS_HOOK=1) -- real captures NOT validated%b\n' \
+		"$YELLOW" "$NC"
+	;;
+absent)
+	printf '%b  corpus: NOT VALIDATED -- no corpus test targets in this crate%b\n' \
+		"$YELLOW" "$NC"
+	;;
+notset)
+	printf '%b  corpus: NOT VALIDATED -- SIPNAB_CORPUS is unset%b\n' "$YELLOW" "$NC"
+	printf '    Point it at a capture directory to validate: SIPNAB_CORPUS=/path/to/pcaps git push\n'
+	;;
+unreadable)
+	printf '%b  corpus: NOT VALIDATED -- SIPNAB_CORPUS is not a readable directory%b\n' \
+		"$YELLOW" "$NC"
+	printf '    SIPNAB_CORPUS=%s\n' "$SIPNAB_CORPUS"
+	;;
+run)
+	# Positional parameters, not a string of arguments: this hook reads its
+	# stdin above and never reads "$@", and `set --` keeps shellcheck's
+	# word-splitting warning honest instead of silenced.
+	set -- --all-features --profile profiling --color never
+	corpus_count=0
+	for corpus_test in $CORPUS_TESTS; do
+		set -- "$@" --test "$corpus_test"
+		corpus_count=$((corpus_count + 1))
+	done
+	printf '  corpus: %d test binaries against %s ... ' "$corpus_count" "$SIPNAB_CORPUS"
+	set +e
+	CORPUS_OUTPUT=$(cargo test "$@" 2>&1)
+	CORPUS_RC=$?
+	set -e
+	if [ "$CORPUS_RC" -eq 0 ]; then
+		printf '%bVALIDATED%b\n' "$GREEN" "$NC"
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		CORPUS_LOG="$CORPUS_LOG_DIR/sipnab-pre-push-corpus.log"
+		printf '%s\n' "$CORPUS_OUTPUT" > "$CORPUS_LOG"
+		# Extractions from here on are greps that may legitimately match
+		# nothing, and `set -eu` would turn "matched nothing" into an aborted
+		# report -- the defect this section replaces.
+		set +e
+		# Name the BINARY as well as the test. A dozen binaries share one
+		# capture and several carry similarly named cases, so a bare test name
+		# does not say which `--test` to re-run. `Running tests/x.rs (...)`
+		# precedes each binary's block; `unittests src/lib.rs` is the lib form.
+		CORPUS_WHERE=$(printf '%s\n' "$CORPUS_OUTPUT" | awk '
+			/^ *Running / { bin = ($2 == "unittests") ? $3 : $2; next }
+			/^test .* \.\.\. FAILED$/ {
+				name = $0
+				sub(/^test /, "", name)
+				sub(/ \.\.\. FAILED$/, "", name)
+				printf "%s :: %s\n", bin, name
+			}')
+		CORPUS_FAILED=$(printf '%s\n' "$CORPUS_OUTPUT" \
+			| sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' | sort -u)
+		if [ -n "$CORPUS_FAILED" ]; then
+			printf '  %s corpus test(s) failed:\n' \
+				"$(printf '%s\n' "$CORPUS_WHERE" | wc -l | tr -d ' ')"
+			printf '%s\n' "$CORPUS_WHERE" | emit_capped 10 "$CORPUS_LOG"
+			# libtest collects each failure under `---- <name> stdout ----`,
+			# which carries the panic location and the assertion message --
+			# the two facts that decide whether the break is yours or was
+			# already there. Three deep is enough to see a pattern.
+			printf '%s\n' "$CORPUS_FAILED" | head -3 | while IFS= read -r corpus_name; do
+				corpus_block=$(printf '%s\n' "$CORPUS_OUTPUT" | awk -v pfx="---- $corpus_name " '
+					inb && index($0, "---- ") == 1 { exit }
+					inb && (/^failures:/ || /^test result:/) { exit }
+					index($0, pfx) == 1 { inb = 1; next }
+					inb && n == 0 && /^[[:space:]]*$/ { next }
+					inb { print; if (++n >= 12) exit }')
+				if [ -n "$corpus_block" ]; then
+					printf '\n  %s\n' "$corpus_name"
+					printf '%s\n' "$corpus_block" | emit_capped 12 "$CORPUS_LOG"
+				fi
+			done
+			CORPUS_SUMMARY=$(printf '%s\n' "$CORPUS_OUTPUT" | grep '^test result: FAILED')
+			if [ -n "$CORPUS_SUMMARY" ]; then
+				printf '\n'
+				printf '%s\n' "$CORPUS_SUMMARY" | emit_capped 5 "$CORPUS_LOG"
+			fi
+			CORPUS_FIRST=$(printf '%s\n' "$CORPUS_WHERE" | head -1)
+			CORPUS_BIN=$(printf '%s\n' "$CORPUS_FIRST" \
+				| sed -n 's|^tests/\(.*\)\.rs :: .*$|\1|p')
+			CORPUS_NAME=$(printf '%s\n' "$CORPUS_FIRST" | sed -n 's|^.* :: ||p')
+			printf '\n'
+			if [ -n "$CORPUS_BIN" ]; then
+				printf '  Reproduce: SIPNAB_CORPUS=%s cargo test --all-features --profile profiling --test %s %s -- --exact --nocapture\n' \
+					"$SIPNAB_CORPUS" "$CORPUS_BIN" "$CORPUS_NAME"
+			else
+				printf '  Reproduce: SIPNAB_CORPUS=%s cargo test --all-features --profile profiling %s -- --exact --nocapture\n' \
+					"$SIPNAB_CORPUS" "$CORPUS_NAME"
+			fi
+		else
+			# No `test ... FAILED` line means the run never got that far. A
+			# compile error names a file and a line, so print those; anything
+			# else (a signal, a linker failure, an OOM kill) has no structure
+			# to key on, so print the tail. The tail beats nothing.
+			CORPUS_ERRORS=$(printf '%s\n' "$CORPUS_OUTPUT" \
+				| grep -E '^(error|warning)(\[[^]]*\])?:|^ +--> ')
+			if [ -n "$CORPUS_ERRORS" ]; then
+				printf '  The corpus suite did not build:\n'
+				printf '%s\n' "$CORPUS_ERRORS" | emit_capped 20 "$CORPUS_LOG"
+			else
+				printf '  The run ended without naming a test (exit %s). Last lines:\n' "$CORPUS_RC"
+				printf '%s\n' "$CORPUS_OUTPUT" | tail -n 20 | emit_capped 20 "$CORPUS_LOG"
+			fi
+		fi
+		set -e
+		printf '  Full output: %s\n' "$CORPUS_LOG"
+		printf '\n'
+		printf '%bPush blocked: the real capture corpus did not validate.%b\n' "$RED" "$NC"
+		printf 'Anything short of 100%% against this corpus is a critical failure.\n'
+		printf 'Fix the finding. Do not weaken the test to make the gate quiet --\n'
+		printf 'the last time nothing ran this, a test failed on every capture for\n'
+		printf 'weeks and the tree looked green the whole time.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_CORPUS_HOOK=1 git push\n'
+		exit 1
+	fi
+	;;
+esac
 
 printf '%bAll required pre-push checks passed.%b\n' "$GREEN" "$NC"
 exit 0

@@ -87,6 +87,12 @@ println!("{}",x+y) ;
 EOF
 }
 
+# Corpus-gate environment, as globals rather than two more positional
+# parameters: every call site below already passes SKIP_FMT_HOOK and a stdin
+# line, and only the corpus scenarios care about these.
+HOOK_CORPUS_DIR=
+HOOK_CORPUS_SKIP=
+
 # Run the hook with cwd = throwaway crate. We deliberately do NOT pass through
 # the caller's SKIP_FMT_HOOK; each case sets it explicitly.
 run_hook() {
@@ -102,8 +108,15 @@ run_hook() {
 	else
 		: >"$TMP/refs.in"
 	fi
-	( cd "$CRATE" && env -u SKIP_FMT_HOOK ${1:+SKIP_FMT_HOOK="$1"} "$HOOK" \
-		<"$TMP/refs.in" ) >"$TMP/out.log" 2>&1
+	# SIPNAB_CORPUS and SKIP_CORPUS_HOOK are unset unless a scenario asks for
+	# them. Inheriting the caller's SIPNAB_CORPUS would make every scenario
+	# above behave differently on a machine that holds the corpus, which is
+	# every machine where this script gets run in anger.
+	( cd "$CRATE" && env -u SKIP_FMT_HOOK -u SIPNAB_CORPUS -u SKIP_CORPUS_HOOK \
+		${1:+SKIP_FMT_HOOK="$1"} \
+		${HOOK_CORPUS_DIR:+SIPNAB_CORPUS="$HOOK_CORPUS_DIR"} \
+		${HOOK_CORPUS_SKIP:+SKIP_CORPUS_HOOK="$HOOK_CORPUS_SKIP"} \
+		"$HOOK" <"$TMP/refs.in" ) >"$TMP/out.log" 2>&1
 }
 
 # -- GIVEN unformatted Rust, THEN hook blocks --------------------------------
@@ -364,6 +377,233 @@ else
 	bad "tag gate blocked a tag deletion"
 	sed 's/^/    /' "$TMP/out.log"
 fi
+
+# -- Corpus gate --------------------------------------------------------------
+# SCENARIO: the conditional corpus gate
+#   Given a crate with corpus test targets and a readable SIPNAB_CORPUS,
+#     when the suite passes, then the push is ALLOWED and the output says
+#     VALIDATED;
+#     when a corpus test fails, then the push is BLOCKED and the output NAMES
+#     the failing binary and test.
+#   Given SIPNAB_CORPUS unset, or set to something that is not a readable
+#     directory, then the push is ALLOWED and the output says NOT VALIDATED --
+#     never nothing, because silence in a column of OK lines reads as a pass.
+#   Given SKIP_CORPUS_HOOK=1, then the push is ALLOWED and the output says
+#     BYPASSED.
+#
+# The gate cannot be exercised against the real corpus from here: those
+# captures carry PII, never leave the machine that recorded them, and are not
+# present on any machine that merely checked out this repository. What IS
+# testable, and what these cases cover, is the hook's own contract -- which
+# binaries it selects, which of the five states it lands in, whether it blocks,
+# and whether a failure arrives with a name attached.
+CORPUS_DIR="$TMP/fixture-corpus"
+mkdir -p "$CORPUS_DIR"
+
+# The fixture needs [profile.profiling]: the gate runs `--profile profiling`,
+# because the release profile's panic = "abort" kills a failing test process
+# before libtest prints the `failures:` list the gate reads back.
+cat >"$CRATE/Cargo.toml" <<'EOF'
+[package]
+name = "throwaway"
+version = "0.0.0"
+edition = "2021"
+
+[features]
+default = ["native"]
+native = []
+tls = []
+api = []
+wasm = []
+
+[profile.profiling]
+inherits = "release"
+panic = "unwind"
+EOF
+
+# Two stand-ins for real corpus binaries. The gate finds its targets by
+# grepping tests/*.rs for SIPNAB_CORPUS, so naming the variable is what puts a
+# file in the suite -- and asserting on it proves the gate passed it through to
+# cargo rather than merely deciding to run.
+write_corpus_tests() { # $1 = "pass" | "fail"
+	cat >"$CRATE/tests/corpus_alpha_test.rs" <<'EOF'
+#[test]
+fn alpha_reads_the_corpus() {
+    assert!(
+        std::env::var("SIPNAB_CORPUS").is_ok(),
+        "the gate must pass SIPNAB_CORPUS through to cargo"
+    );
+}
+EOF
+	if [ "$1" = "fail" ]; then
+		cat >"$CRATE/tests/corpus_beta_test.rs" <<'EOF'
+#[test]
+fn beta_finds_a_regression_on_every_capture() {
+    let _ = std::env::var("SIPNAB_CORPUS");
+    panic!("induced corpus regression");
+}
+EOF
+	else
+		cat >"$CRATE/tests/corpus_beta_test.rs" <<'EOF'
+#[test]
+fn beta_finds_a_regression_on_every_capture() {
+    assert!(std::env::var("SIPNAB_CORPUS").is_ok());
+}
+EOF
+	fi
+	( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+}
+
+# GIVEN no corpus targets at all, THEN the gate skips rather than fails closed.
+rm -f "$CRATE"/tests/corpus_*_test.rs
+HOOK_CORPUS_DIR="$CORPUS_DIR"
+HOOK_CORPUS_SKIP=
+if run_hook ""; then
+	if grep -q "corpus: NOT VALIDATED -- no corpus test targets" "$TMP/out.log"; then
+		ok "corpus gate skips a crate with no corpus targets, and says so"
+	else
+		bad "corpus gate allowed a crate with no corpus targets but did not say so"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+else
+	bad "corpus gate BLOCKED a crate that has no corpus targets"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# GIVEN a readable corpus and a passing suite, THEN allowed and VALIDATED.
+write_corpus_tests pass
+HOOK_CORPUS_DIR="$CORPUS_DIR"
+HOOK_CORPUS_SKIP=
+if run_hook ""; then
+	if grep -q "corpus: 2 test binaries against $CORPUS_DIR ... VALIDATED" "$TMP/out.log"; then
+		ok "corpus gate runs every derived binary and reports VALIDATED"
+	else
+		bad "corpus gate allowed the push without reporting VALIDATED"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+else
+	bad "corpus gate BLOCKED a passing corpus suite"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# GIVEN a corpus test that fails, THEN blocked AND the failure is named.
+# A gate that only prints FAIL costs whoever hit it a second full run of a
+# multi-minute suite just to learn which test broke.
+write_corpus_tests fail
+HOOK_CORPUS_DIR="$CORPUS_DIR"
+HOOK_CORPUS_SKIP=
+if run_hook ""; then
+	bad "corpus gate ALLOWED a push with a failing corpus test"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "corpus gate blocks a push with a failing corpus test"
+	if grep -q "beta_finds_a_regression_on_every_capture" "$TMP/out.log"; then
+		ok "corpus failure output NAMES the failing test"
+	else
+		bad "corpus failure output does not name the failing test"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+	if grep -q "tests/corpus_beta_test.rs ::" "$TMP/out.log"; then
+		ok "corpus failure output names the failing BINARY too"
+	else
+		bad "corpus failure output does not name the failing binary"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+	if grep -q "induced corpus regression" "$TMP/out.log"; then
+		ok "corpus failure output carries the panic message"
+	else
+		bad "corpus failure output withheld the panic message"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+	if grep -q "Reproduce: SIPNAB_CORPUS=.* --test corpus_beta_test " "$TMP/out.log"; then
+		ok "corpus failure output offers a single-test reproduce command"
+	else
+		bad "corpus failure output has no reproduce command"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+	if grep -q "Full output: .*sipnab-pre-push-corpus.log" "$TMP/out.log"; then
+		ok "corpus failure output points at the full capture on disk"
+	else
+		bad "corpus failure output does not point at the full capture"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+fi
+
+# GIVEN SIPNAB_CORPUS unset, THEN allowed -- and the output must SAY it did not
+# validate. This is the case that must never look like a pass.
+write_corpus_tests fail
+HOOK_CORPUS_DIR=
+HOOK_CORPUS_SKIP=
+if run_hook ""; then
+	if grep -q "corpus: NOT VALIDATED -- SIPNAB_CORPUS is unset" "$TMP/out.log"; then
+		ok "unset SIPNAB_CORPUS allows the push and says NOT VALIDATED"
+	else
+		bad "unset SIPNAB_CORPUS allowed the push SILENTLY"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+	if grep -q "VALIDATED" "$TMP/out.log" && ! grep -q "NOT VALIDATED" "$TMP/out.log"; then
+		bad "unset SIPNAB_CORPUS reported a bare VALIDATED"
+		sed 's/^/    /' "$TMP/out.log"
+	else
+		ok "unset SIPNAB_CORPUS never claims the corpus was validated"
+	fi
+else
+	bad "unset SIPNAB_CORPUS BLOCKED the push (must stay conditional)"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# GIVEN SIPNAB_CORPUS pointing at something that is not a readable directory,
+# THEN allowed and reported. An unreadable directory walks to zero files, and a
+# corpus test over zero files passes while proving nothing.
+HOOK_CORPUS_DIR="$TMP/definitely-not-a-directory"
+HOOK_CORPUS_SKIP=
+if run_hook ""; then
+	if grep -q "corpus: NOT VALIDATED -- SIPNAB_CORPUS is not a readable directory" "$TMP/out.log"; then
+		ok "unreadable SIPNAB_CORPUS allows the push and says NOT VALIDATED"
+	else
+		bad "unreadable SIPNAB_CORPUS allowed the push without saying so"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+else
+	bad "unreadable SIPNAB_CORPUS BLOCKED the push (must stay conditional)"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# GIVEN a failing suite but SKIP_CORPUS_HOOK=1, THEN allowed and BYPASSED.
+HOOK_CORPUS_DIR="$CORPUS_DIR"
+HOOK_CORPUS_SKIP=1
+if run_hook ""; then
+	if grep -q "corpus: BYPASSED (SKIP_CORPUS_HOOK=1)" "$TMP/out.log"; then
+		ok "SKIP_CORPUS_HOOK=1 bypasses the corpus gate and says BYPASSED"
+	else
+		bad "SKIP_CORPUS_HOOK=1 bypassed the gate SILENTLY"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+else
+	bad "SKIP_CORPUS_HOOK=1 did not bypass a failing corpus suite"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# ...and the bypass must be NARROW. SKIP_FMT_HOOK=1 already switches off every
+# gate; a corpus escape hatch that did the same would make "the corpus is
+# unavailable today" a reason to push unformatted, lint-dirty code.
+cat >"$CRATE/src/main.rs" <<'EOF'
+fn   main( ) {
+let x=1   ;
+println!("{}",x) ;
+}
+EOF
+HOOK_CORPUS_DIR="$CORPUS_DIR"
+HOOK_CORPUS_SKIP=1
+if run_hook ""; then
+	bad "SKIP_CORPUS_HOOK=1 also switched off the format gate (too broad)"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "SKIP_CORPUS_HOOK=1 leaves the other gates standing"
+fi
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+HOOK_CORPUS_DIR=
+HOOK_CORPUS_SKIP=
 
 # -- Summary ------------------------------------------------------------------
 printf '\n--- test-pre-push summary: %d passed, %d failed ---\n' "$PASS" "$FAIL"
