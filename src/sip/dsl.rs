@@ -474,6 +474,13 @@ pub fn select_dialogs<'a>(
     // renderers themselves are handed a dialog's streams, never the store.
     // Resolving once here rather than per surface is also what stops stderr,
     // `--report` and the JSON disagreeing about the same capture.
+    //
+    // Absent on wasm32, where `crate::pipeline` is not compiled at all: that
+    // build has no capture path, so it never observes an ICMP error and has
+    // nothing to resolve. Gated on the same condition as the module rather
+    // than on a feature, because the module's own gate is the target arch and
+    // any other spelling would drift from it.
+    #[cfg(not(target_arch = "wasm32"))]
     crate::pipeline::resolve_icmp_media(stream_store);
 
     let mut by_call: std::collections::HashMap<&'a str, Vec<&'a RtpStream>> =
