@@ -2124,8 +2124,8 @@ fn no_documentation_table_repeats_a_row() {
     // the duplicates it exists to find simply stop being looked for.
     assert_eq!(
         files.len(),
-        120,
-        "found {} tracked markdown files, expected 120. More is fine — bump \
+        121,
+        "found {} tracked markdown files, expected 121. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
