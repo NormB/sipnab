@@ -118,7 +118,7 @@ Because gate 2 runs the whole suite, **every commit takes minutes**, and gate 5
 means adding a test obliges you to update the count in
 `website/templates/index.html` in the same commit.
 
-**`pre-push`** adds four hard gates, all of which mirror CI exactly and any of
+**`pre-push`** adds seven hard gates, all of which mirror CI exactly and any of
 which blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
@@ -127,8 +127,11 @@ which blocks the push:
 | `cargo clippy --all-features --all-targets -- -D warnings` | Broader than pre-commit's `--features full`: also lints tests, benches, examples, and every feature-gated path. |
 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |
 | `cd fuzz && cargo check` | `fuzz/` is a separate workspace nothing else compiles. |
+| `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
+| `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
+| `codespell` over CI's path list | Spelling likewise, and it reads `src/` too — the hits that broke CI were in doc comments. |
 
-`SKIP_FMT_HOOK=1 git push` bypasses **all four** — it is an emergency valve,
+`SKIP_FMT_HOOK=1 git push` bypasses **all seven** — it is an emergency valve,
 not a clippy-only escape, and CI will run the same gates anyway. Verify the
 hooks themselves with `scripts/test-pre-commit.sh` and
 `scripts/test-pre-push.sh`.

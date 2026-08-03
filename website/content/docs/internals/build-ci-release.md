@@ -278,16 +278,21 @@ rustdoc and three of the eleven combinations before anything leaves the
 machine, and CI runs the rest. Moving them into the pre-commit hook buys
 nothing — it is the same wait, on every commit instead of every push.
 
-[`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) adds five hard gates that `cargo test`
+[`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) adds seven hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
-cargo check`, and a check of the reduced feature combinations `tls`, `api` and
-`wasm`. Rustdoc lints and the separate fuzz workspace compile independently of
-the test build, so these are exactly the failures that otherwise appear ten
-minutes later in CI. `SKIP_FMT_HOOK=1` bypasses all of them. If you use it,
-expect CI to notice. After those five comes one gate that is not hard —
-the corpus gate below, which runs only when the machine holds the
-capture corpus.
+cargo check`, a check of the reduced feature combinations `tls`, `api` and
+`wasm`, and the two prose linters — Vale and codespell. Rustdoc lints and the
+separate fuzz workspace compile independently of the test build, and no cargo
+command reads prose at all, so these are exactly the failures that otherwise
+appear ten minutes later in CI. The prose pair arrived last and for cause: on
+2026-08-03 Vale turned main red with 12 passive-voice errors and codespell
+followed with two spelling hits in `src/` doc comments, each found only after
+a push. A missing Vale or codespell binary reports `NOT CHECKED` rather than
+passing, because a gate that goes quiet when its tool is absent is worse than
+no gate. `SKIP_FMT_HOOK=1` bypasses all of them. If you use it, expect CI to
+notice. After those seven comes one gate that is not hard — the corpus gate
+below, which runs only when the machine holds the capture corpus.
 
 Those gates let their tool write straight to the terminal instead of capturing
 it, so a failure arrives with the rustfmt diff, the clippy lint or the rustdoc
@@ -330,7 +335,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the five hard gates. Each of those fails in
+**When it runs.** Last, after the seven hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:

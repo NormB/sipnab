@@ -4,11 +4,15 @@
 # Hard gate: refuse to push code that fails any of
 #   * `cargo fmt --all -- --check`,
 #   * `cargo clippy --all-features --all-targets -- -D warnings`,
-#   * `cargo doc --no-deps --all-features --workspace` (RUSTDOCFLAGS -D warnings), or
-#   * `cd fuzz && cargo check`.
+#   * `cargo doc --no-deps --all-features --workspace` (RUSTDOCFLAGS -D warnings),
+#   * `cd fuzz && cargo check`,
+#   * `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md`, or
+#   * `codespell` over the same paths CI passes it.
 # These are the exact gaps that break CI -- unformatted, lint-dirty, doc-broken,
-# or fuzz-broken Rust must never reach the remote, since CI runs all four as
-# blocking gates. The doc and fuzz gates matter because neither is built by
+# fuzz-broken, or misspelt work must never reach the remote, since CI runs all
+# six as blocking gates. The two prose gates arrived last and for cause: on
+# 2026-08-03 Vale turned main red with 12 passive-voice errors, and codespell
+# followed with two "pre-empt ==> preempt" hits, each found only after a push. The doc and fuzz gates matter because neither is built by
 # `cargo test` or `clippy --all-targets`: rustdoc lints (e.g. private intra-doc
 # links) and the separate fuzz workspace compile independently. Catching them
 # locally turns a 10-minute red-CI round-trip into seconds before push.
@@ -549,6 +553,64 @@ run)
 	fi
 	;;
 esac
+
+# -- Hard gate: prose linters -------------------------------------------------
+# Vale and codespell are CI-blocking and BOTH broke main on 2026-08-03: 12
+# passive-voice errors, then two "pre-empt ==> preempt" hits, each caught only
+# after the push. Neither is built by cargo, so every local check up to this
+# point in the hook passes while CI goes red.
+#
+# Missing tool reports as NOT CHECKED, never as a pass -- the same rule the
+# corpus gate follows, and for the same reason: a gate that goes quiet when its
+# tool is absent is worse than no gate, because green then means nothing.
+prose_fail=0
+
+printf '  vale (prose style) ... '
+if ! command -v vale >/dev/null 2>&1; then
+	printf '%bNOT CHECKED -- vale is not installed%b\n' "$YELLOW" "$NC"
+	printf '    CI runs it and it blocks. Install from https://vale.sh to check here.\n'
+elif vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >/tmp/.sipnab-vale.$$ 2>&1; then
+	printf '%bOK%b\n' "$GREEN" "$NC"
+	rm -f /tmp/.sipnab-vale.$$
+else
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	tail -40 /tmp/.sipnab-vale.$$
+	rm -f /tmp/.sipnab-vale.$$
+	prose_fail=1
+fi
+
+# CI invokes codespell over this exact path list; keep them identical.
+CODESPELL_PATHS="src tests docs website benches harness scripts README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md"
+printf '  codespell (spelling) ... '
+CS=""
+if command -v codespell >/dev/null 2>&1; then
+	CS=codespell
+elif [ -n "${CODESPELL_BIN:-}" ] && [ -x "${CODESPELL_BIN}" ]; then
+	CS="$CODESPELL_BIN"
+fi
+if [ -z "$CS" ]; then
+	printf '%bNOT CHECKED -- codespell is not installed%b\n' "$YELLOW" "$NC"
+	printf '    CI runs it and it blocks. `pipx install codespell`, or point\n'
+	printf '    CODESPELL_BIN at one in a venv, to check here.\n'
+elif $CS $CODESPELL_PATHS --skip ./.git >/tmp/.sipnab-cs.$$ 2>&1; then
+	printf '%bOK%b\n' "$GREEN" "$NC"
+	rm -f /tmp/.sipnab-cs.$$
+else
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	tail -30 /tmp/.sipnab-cs.$$
+	rm -f /tmp/.sipnab-cs.$$
+	prose_fail=1
+fi
+
+if [ "$prose_fail" -ne 0 ]; then
+	printf '\n'
+	printf '%bPush blocked: a prose gate CI enforces is failing.%b\n' "$RED" "$NC"
+	printf 'Fix the wording rather than reaching for the bypass -- these are the\n'
+	printf 'cheapest gates in the set and the two that most recently turned main red.\n'
+	printf '\n'
+	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+	exit 1
+fi
 
 printf '%bAll required pre-push checks passed.%b\n' "$GREEN" "$NC"
 exit 0

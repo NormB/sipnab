@@ -157,6 +157,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/build.md",
             "docs/examples.md",
             "website/content/docs/mcp.md",
+            "CONTRIBUTING.md",
         ],
     ),
     // useradd / systemctl / certbot / claude-cli, in the deployment scenarios
@@ -398,6 +399,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+            // CONTRIBUTING's pre-push table quotes the feature-matrix gate,
+            // whose whole point is the `--tests` cargo flag: without it the
+            // matrix compiles no test file and passes over nothing.
+            "CONTRIBUTING.md",
         ],
     ),
     (
