@@ -54,12 +54,12 @@ dropped frame, and the UI appears to stall under load rather than degrade.
 **Rule.** When a path needs both stores, take the **dialog store first, then
 the stream store**. If it also needs the alert engine, take that **last**, and
 never take a store lock while already holding `alerts`. Prefer not to overlap
-the two store guards at all; where they do overlap, the order above is what
+the two store guards at all. Where they do overlap, the order above is what
 makes it safe.
 
 **Why.** Two locks acquired in opposite orders on two threads is the textbook
-deadlock. Non-overlapping guards make the question moot; a single consistent
-order answers it when they cannot be kept disjoint.
+deadlock. Non-overlapping guards make the question moot, and a single consistent
+order answers it when the code cannot keep them disjoint.
 
 > **Corrected 2026-08-03.** This rule used to read *"never hold both write
 > locks simultaneously"*, and claimed *"the batch and `--cores` appliers hold
@@ -95,9 +95,9 @@ exactly why this page writes the rule down.
 **The `stores → alerts` edge — closed on the batch path, and the rule stays
 anyway.** Until `LK1`, the batch loop took `alert_engine.write()` *inside* the
 locked body, so the real order on that path was dialog → stream → alerts, and
-it was written down nowhere. It no longer is: findings, per-message output and
-the `--alert-exec` / `--on-dialog-exec` / `--on-quality-exec` spawns are queued
-while the guards are held and replayed by `DeferredEffects::drain` after both
+nobody had written it down. That is no longer so: findings, per-message output and
+the `--alert-exec` / `--on-dialog-exec` / `--on-quality-exec` spawns queue up
+while the code holds the guards, and `DeferredEffects::drain` replays them after both
 guards drop ([`batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs)). The alert engine's write
 lock is now taken with **no** store lock held.
 
@@ -106,10 +106,10 @@ that and the edge is one line away from coming back. What made it survivable
 before was luck rather than design: `security_findings`
 ([`mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)) takes `alerts.read()` and **no**
 store lock, so the reverse edge that would have closed the cycle never
-existed. That was a property of which tools happened to have been written. The
+existed. That was a property of which tools somebody happened to write. The
 first MCP tool or REST handler that reads an alert and *then* a dialog creates
-`alerts → stores`; the first packet-path change that re-nests the alert lock
-recreates `stores → alerts`; either alone is harmless, and both together
+`alerts → stores`. The first packet-path change that re-nests the alert lock
+recreates `stores → alerts`. Either alone is harmless, and both together
 deadlock the capture thread. Written down here because nothing else says it.
 Background: `LK1` in [`backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md), analysed as R2 in
 [`process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md)
@@ -118,15 +118,15 @@ Background: `LK1` in [`backlog.md`](https://github.com/NormB/sipnab/blob/main/do
 **The sub-rule `LK1` leaves behind: decide under the guard, perform after it.**
 Nothing that can block runs under a store guard — no `fork`/`exec`, no
 `write(2)`, no third lock. A packet's side effects are *decided* while the
-guards are held, because that is where the store is, and *performed* once they
-have dropped, because that is where nothing waits on them.
+code holds the guards, because that is where the store is, and *performed* once
+the guards drop, because that is where nothing waits on them.
 [`DeferredEffects::drain()`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) is what carries them
 across: the output, the alert findings and the queued hook commands travel out
 of the locked body as data, and
 [`EventExecEngine::dispatch_pending()`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs) spawns
-the children afterwards. A rate limit survives being split in half because a
-decision parked between the two halves is declared to the window at the moment
-it is made —
+the children afterwards. A rate limit survives the split in half because a
+decision parked between the two halves reaches the window at the moment
+it happens —
 [`TumblingWindow::allows_with_reserved()`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs) — so
 `--exec-rate-limit N` still means N and not N plus whatever was in flight.
 
@@ -136,7 +136,7 @@ A regression here does not announce itself. It is one line: a `fire_*` call, an
 is byte-identical either way, so no output test can see it. The only thing that
 notices is `side_effects_are_raised_under_the_guards_and_performed_after_them`,
 which asserts on *when* rather than *what*: both guards still unreadable
-(`try_read().is_none()`) while nothing has been spawned and the queue holds the
+(`try_read().is_none()`) while nothing has spawned yet and the queue holds the
 decision.
 
 **Fails as.** A hang, not a crash: the TUI stops repainting, the REST API stops
@@ -165,8 +165,8 @@ sequenceDiagram
 </pre>
 
 The batch applier is the other shape, and the one to check a new lock against.
-Both guards are live for the whole per-packet body; everything with a side
-effect is queued inside it and replayed once they are gone:
+Both guards stay live for the whole per-packet body. Everything with a side
+effect queues up inside it, and replays once they lift:
 
 <pre class="mermaid">
 sequenceDiagram

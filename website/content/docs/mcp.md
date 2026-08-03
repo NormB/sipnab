@@ -1535,10 +1535,10 @@ No parameters. Returns:
 > source of a response — never the ephemeral port, which differs on every
 > dialog and identifies nothing.
 
-> **`capture_quality` says how much of the wire the other counts are drawn
+> **`capture_quality` says how much of the wire the other counts draw
 > from.** Read it first. With `degraded` true, every count in this response is
 > a floor rather than a total, and any timing figure elsewhere in the session
-> — post-dial delay, jitter, MOS, call duration — may have been computed from
+> — post-dial delay, jitter, MOS, call duration — may rest on
 > a substituted clock.
 >
 > The three counters are separate because the fixes disagree.

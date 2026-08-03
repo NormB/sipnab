@@ -90,8 +90,8 @@ this page carried for a year happens to have been correct — but it is now a
 measurement, and re-checking it is three commands.
 
 **And the same trap is open again, which is worth stating rather than
-quietly re-opening.** This A/B spans 0.5.18 → 0.5.47 and was run on 2026-07-27.
-It says nothing about anything released since; releases after 0.5.47 have
+quietly re-opening.** This A/B spans 0.5.18 → 0.5.47, measured on 2026-07-27.
+It says nothing about anything released since. Releases after 0.5.47 have
 changed capture-path defaults (the kernel ring buffer moved 2 → 64 MiB, and
 `poll(2)` came out of the per-packet path), so there is a live reason to expect
 movement — in either direction — that nobody has measured. Do **not** restate

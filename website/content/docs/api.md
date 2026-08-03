@@ -959,10 +959,10 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
 }
 ```
 
-`capture_quality` says how much of the wire the rest of the response is drawn
+`capture_quality` says how much of the wire the rest of the response draws
 from. Read it before the counts, not after: with `degraded` true, every number
 above it is a floor rather than a total, and the `timing` percentiles may have
-been computed from substituted clock readings.
+may rest on substituted clock readings.
 
 The three counters stay apart because their remedies disagree:
 
@@ -972,7 +972,7 @@ The three counters stay apart because their remedies disagree:
   before libpcap saw it. Look at the NIC, the driver or the mirror: **a bigger
   buffer cannot recover these.**
 - **`invalid_timestamps`** — the pcap timestamp was unusable, so the packet
-  carries the wall clock instead. Nothing was lost; treat post-dial delay,
+  carries the wall clock instead. Nothing went missing, but treat post-dial delay,
   jitter, MOS and duration for this run as unreliable.
 
 Summing them would name one problem where there are three, and "raise the
@@ -1058,8 +1058,8 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_reassembly_timeouts_total` | counter | IP fragments whose datagram never completed, plus TCP streams that went idle, dropped once older than the 30-second reassembly TTL. Capacity evictions stay out of this number: those say the entry cap is too small, not that a peer stopped sending. |
 | `sipnab_capture_kernel_dropped_packets_total` | counter | Packets the kernel discarded because the capture ring buffer was full when they arrived (`ps_drop`). Non-zero means the analysis is incomplete: dialogs may be missing messages, and RTP loss figures overstate what was on the wire. The remedy is a larger `-B`/`--buffer`, a narrower BPF filter, or a smaller `--snaplen`. Always zero for a `-I` file replay, which has no ring. |
 | `sipnab_capture_interface_dropped_packets_total` | counter | Packets the interface or its driver discarded before libpcap ever saw them (`ps_ifdrop`). Counted apart from the kernel drops because **a larger `-B` cannot recover these** — the link is delivering faster than the host accepts, so the answer is at the NIC, the driver, or the mirror. Alerting on a sum of the two drop counters points the operator at the wrong remedy half the time. |
-| `sipnab_capture_invalid_timestamps_total` | counter | Packets whose pcap timestamp was unusable and were stamped with the wall clock instead. No packet is lost, so the counts elsewhere in the scrape stay right — but every timing figure derived from the run is not: post-dial delay, RFC 3550 jitter, MOS and call duration all read from a substituted clock. |
-| `sipnab_capture_quality_degraded` | gauge | `1` when any of the three counters above is non-zero, `0` otherwise. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing was **observed** to go wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
+| `sipnab_capture_invalid_timestamps_total` | counter | Packets whose pcap timestamp did not parse, which stamped with the wall clock instead. No packet goes missing, so the counts elsewhere in the scrape stay right — but every timing figure derived from the run is not: post-dial delay, RFC 3550 jitter, MOS and call duration all read from a substituted clock. |
+| `sipnab_capture_quality_degraded` | gauge | `1` when any of the three counters above exceeds zero, `0` otherwise. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing **surfaced** as wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
 | `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding: `one_way_audio`, `nat_mismatch`, `no_media`. A dialog with two findings counts under both. All three types appear on every scrape, at `0` where nothing raises them. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |

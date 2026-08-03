@@ -1,6 +1,6 @@
 # Tuning capture on a busy server
 
-sipnab's defaults are chosen for a busy production link, not for a laptop
+sipnab defaults to a busy production link rather than a laptop
 demo. This page is what to change when they are still not enough, in the order
 worth changing them.
 
@@ -75,7 +75,7 @@ Small or embedded host — cap the memory instead:
 sudo sipnab -N -d eth0 -B 8
 ```
 
-> **`-B` alone may buy less than you think.** The ring is divided into
+> **`-B` alone may buy less than you think.** libpcap divides the ring into
 > fixed-size slots whose size comes from `--snaplen`, so how many *packets*
 > 64 MiB holds depends on the snapshot length and on whether NIC offloads are
 > on — anywhere from ~1,000 to ~41,000 — and on whether you named an interface
@@ -105,7 +105,7 @@ instead. This host will tolerate a smaller burst before dropping — watch the
 drop counters, and set -B/--buffer explicitly to pin a size.
 ```
 
-An explicit small `-B` is honoured exactly and never promoted upward: `-B 1` on a
+sipnab honours an explicit small `-B` exactly and never promotes it upward: `-B 1` on a
 constrained box means 1 MiB.
 
 ---
@@ -138,7 +138,7 @@ This is the correct first response to sustained drops with a busy CPU. Halving
 the traffic that reaches userspace is worth more than any buffer size.
 
 > **Careful with RTP.** Filtering to `port 5060` alone gives you signalling with
-> no media, so every stream is orphaned and every MOS figure disappears. If you
+> no media, so every stream turns orphan and every MOS figure disappears. If you
 > want quality metrics, the filter must admit the negotiated media ports too.
 
 ---
@@ -154,7 +154,7 @@ busy server it is the expensive kind of incomplete.
 
 **On Linux, snaplen also determines how many packets your ring can hold —
 on the TPACKET_V2 ring.** Which ring you get depends on the run mode, and the
-subsection at the end of this section is the rule; read it before applying the
+subsection at the end of this section is the rule. Read it before applying the
 arithmetic here to a headless capture. libpcap's `create_ring()` sizes each slot
 in the V2 ring from the snapshot length:
 
@@ -197,7 +197,7 @@ slot stays at the full snaplen:
 
 So out of the box — default device, default snaplen — a 64 MiB ring holds about
 a thousand packets, **milliseconds of slack and roughly forty times less than
-the same memory would buy at a smaller snaplen.** Before the default was raised
+the same memory would buy at a smaller snaplen.** Before this raised the default
 from 2 MiB, that same arithmetic gave **31 slots**.
 
 Note what this means: naming an interface explicitly *and* disabling offloads is
@@ -237,7 +237,7 @@ use `-S`/`--limitlen` instead. That is a parser bound, not a capture bound.
 
 Modern libpcap on Linux can use the block-based **TPACKET_V3** ring, which sizes
 its blocks independently of the snapshot length and so does not have the
-capacity cliff described above. Whether you get it is decided by one flag, and
+capacity cliff described above. One flag decides whether you get it, and
 sipnab decides that flag for you.
 
 The rule is in libpcap's `prepare_tpacket_socket()`:
@@ -280,7 +280,7 @@ headless run `--snaplen` and the offload settings still matter for capture
 fidelity and for copy cost, but they are no longer what decides how many packets
 the ring holds.
 
-**Unverified on hardware.** That V3 is selected, and what it is worth, are
+**Unverified on hardware.** Whether the kernel selects V3, and what that is worth, rest on
 reasoned from libpcap's source and not measured. `strace -e trace=setsockopt`
 for `PACKET_VERSION`, and `KERNEL_DROPPED` under load against a V2 baseline, are
 the two checks that would settle it.
@@ -308,7 +308,7 @@ smaller, it comes back **wrong**, exactly as §1 describes for dropped packets.
 `any` is the setting that does not lose calls.
 
 It is also the slowest and least capable device sipnab can open, on four
-counts. Three are performance; one is a second correctness cost that runs the
+counts. Three are performance. One is a second correctness cost that runs the
 other way.
 
 ### What `any` costs you
@@ -316,18 +316,18 @@ other way.
 **1. It forfeits about 40x of your ring capacity — on the V2 ring, so on the
 TUI.** §4 has the mechanism and the run-mode rule that scopes it:
 libpcap's `create_ring()` sizes each TPACKET_V2 slot from the snaplen, and the
-clamp that cuts a slot down to MTU+18 is guarded by
+clamp that cuts a slot down to MTU+18 sits behind
 `if (handle->linktype == DLT_EN10MB)`. **`any` reports `DLT_LINUX_SLL2`, so
 that clamp never runs.** Every slot is the full 65535-byte snaplen regardless
 of interface MTU, and no `ethtool` setting can reach it — the guard tests the
 link type, not the offloads. At the 64 MiB default that is ~1,000 slots against
 ~41,000 for a named Ethernet interface with offloads off. Before the default
-buffer was raised from 2 MiB, the same arithmetic gave `any` just **31 slots**.
+buffer still defaulted to 2 MiB, the same arithmetic gave `any` just **31 slots**.
 
 **2. It cannot go promiscuous.** `capture_live()` in `src/capture/live.rs`
-computes `let use_promisc = config.promisc && device != "any";` — the
+computes `let use_promisc = config.promisc && device != "any"` — the
 pseudo-device does not support promiscuous mode, so sipnab does not ask for it. Promisc is on by default for a named
-device and `--no-promisc` turns it off; on `any` there is nothing to turn off.
+device and `--no-promisc` turns it off. On `any` there is nothing to turn off.
 The consequence is that **`any` misses traffic not addressed to the host**,
 which matters on precisely the deployment where you would want it: a SPAN port
 or tap feeding mirrored calls the capture host is not a party to. That is a
@@ -359,17 +359,22 @@ ring the traffic you *do* want is competing for.
 
 ### Which one is right
 
-**Stay on `any` when** you are diagnosing rather than monitoring; when you do
-not yet know which interface the traffic is on; when SIP genuinely crosses
-loopback or container bridges and you have not enumerated those interfaces; or
-when the drop counters from §1 read `no drops`. If it is not dropping, it is
-not costing you anything worth this trade.
+**Stay on `any`** when any of these hold:
 
-**Name your interfaces when** §1 shows sustained `kernel buffer` drops; when
-you are running a long-lived headless capture on a known topology; when you
-need promiscuous mode because the traffic is mirrored to you rather than
-addressed to you; or when you have several busy interfaces and one thread
-cannot drain them all.
+- You are diagnosing rather than monitoring.
+- You do not yet know which interface carries the traffic.
+- SIP genuinely crosses loopback or container bridges and you have not
+  enumerated those interfaces.
+- The drop counters from §1 read `no drops`. If it is not dropping, it is not
+  costing you anything worth this trade.
+
+**Name your interfaces** when any of these hold:
+
+- §1 shows sustained `kernel buffer` drops.
+- You are running a long-lived headless capture on a known topology.
+- You need promiscuous mode because the switch mirrors the traffic to you
+  rather than addressing it to you.
+- You have several busy interfaces and one thread cannot drain them all.
 
 ### The recommendation for a busy server
 
@@ -388,10 +393,10 @@ Then name those interfaces and open them in parallel:
 sudo sipnab -N -d eth0,eth1 --multi-device -B 256 "port 5060 or port 5061"
 ```
 
-Naming the devices buys all four counts at once: the slots are now clampable to
+Naming the devices buys all four counts at once: the slots are now clamped to
 MTU+18 so the same 64 MiB holds tens of thousands of packets instead of ~1,000,
 promiscuous mode is back, there is one capture thread per interface, and
-nothing is spent on `docker0`. Neither half works alone — `any` cannot reach
+nothing goes to `docker0`. Neither half works alone — `any` cannot reach
 the clamp however you set `ethtool`, and a named device with offloads on is
 still stuck at ~65 KB slots (§4).
 
@@ -473,7 +478,7 @@ Note that this already makes the §5 choice: it names `eth0` rather than taking
 `any`, so confirm no SIP leg lives on loopback or a container bridge before
 adopting it.
 
-Then read the drop line at the end. If it says `no drops`, you are done — and
+Then read the drop line at the end. If it says `no drops`, stop there — and
 you can walk the settings *back* to recover fidelity. If it does not, work down
 §2 → §3 → §5 → §6 → §7 in that order, and re-measure after each change rather
 than applying all of them at once.

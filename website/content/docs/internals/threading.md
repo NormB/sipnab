@@ -164,9 +164,9 @@ flow's packets share a host pair and therefore a worker.
   **both** write guards across the entire per-packet body. This page
   previously said both write locks were never held at once; that was never
   true of the batch path.
-- **Side effects are queued, not performed, under the guards.** Alert
+- **The guards queue side effects rather than performing them.** Alert
   findings, per-message output and the `--alert-exec` / `--on-dialog-exec` /
-  `--on-quality-exec` spawns are collected while the guards are held and
+  `--on-quality-exec` spawns accumulate while the code holds the guards, and
   replayed by `DeferredEffects::drain` after both drop, so no `fork`/`exec`, no
   stdout write and no `AlertEngine` lock happens inside the critical section.
   Until that change the batch loop took the alert engine's write lock nested

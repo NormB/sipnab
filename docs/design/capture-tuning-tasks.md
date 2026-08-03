@@ -1,7 +1,9 @@
 # Capture tuning — working task list
 
 A execution checklist, not a design doc. Opened 2026-08-03 on branch
-`agent/capture-tuning-UNREVIEWED`. The reasoning behind each item lives in
+`agent/capture-tuning-UNREVIEWED`; that branch was squashed onto `main` the
+same day and cut as 0.5.77, so the ticked items below are shipped rather than
+in flight. The reasoning behind each item lives in
 [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
 and the `CT*`/`G*`/`LK*`/`PI*`/`PR*` entries in
 [`backlog.md`](backlog.md); this page is only *what is left to do, in what
@@ -96,7 +98,24 @@ order*.
   `side_effects_are_raised_under_the_guards_and_performed_after_them` proves
   the guards are still held (`try_read().is_none()`) while `outcomes().spawned`
   is 0 and `pending_depth()` is 1 — because nothing about a capture's OUTPUT
-  changes if this regresses. **Reasoned, not measured.**
+  changes if this regresses. The *performance* claim is **reasoned, not
+  measured**; the *parity* claim is measured, below.
+  - **Output parity settled, and the one outlier explained.** A pre-LK1 and a
+    post-LK1 release binary, differing in exactly three files
+    (`src/app/batch.rs`, `src/output/event_exec.rs`,
+    `src/security/alerting.rs`) and nothing else, agree byte for byte over the
+    whole reference corpus once the two fields that cannot match across
+    processes — the fail2ban jail line's `Local::now()` and
+    `std::process::id()` — are normalized away. The one file that mismatched
+    on an early normalized sweep was re-run on an idle box, 60 paired
+    iterations plus 60 self-versus-self iterations per binary: **0
+    mismatches**, one distinct output hash per binary, and the *same* hash for
+    both. It was not nondeterminism and not an ordering bug. The early
+    normalizer stripped the PID and left the timestamp, and that file's
+    detectors output spans a wall-clock second — replaying it with a PID-only
+    normalizer reproduces the mismatch 29 times in 40, while 14 runs in 40
+    carry more than one second in their own output. A partial normalizer, not
+    `DeferredEffects`.
 - [x] **G6 — `--cores N` silently ignored on live capture.** Shipped as a
   warning rather than a refusal: unlike the neighbouring `--cores` +
   `--json`/`-O` check, which exits 2 because that combination emits nothing,
