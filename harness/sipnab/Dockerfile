@@ -21,5 +21,7 @@ COPY --from=builder /build/target/release/sipnab /usr/local/bin/sipnab
 COPY harness/sipnab/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY harness/scripts/rotate-token.sh /usr/local/bin/rotate-token.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/rotate-token.sh
+RUN useradd -U -u 1000 appuser && chown -R 1000:1000 /usr/local/bin/sipnab /usr/local/bin/entrypoint.sh /usr/local/bin/rotate-token.sh
+USER 1000
 # Runs as root: live capture needs CAP_NET_RAW and the MCP bind is >=1024.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
