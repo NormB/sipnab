@@ -432,7 +432,7 @@ fn every_catalogued_rule_is_explainable() {
     let mut session = McpSession::start(OPTIONS_PING, &[]);
     // Read out of the library so a rule added later has to appear here too.
     let ids: Vec<&'static str> = sipnab::sip::lint::RULES.iter().map(|r| r.id).collect();
-    assert_eq!(ids.len(), 26, "the catalogue size moved: {}", ids.len());
+    assert_eq!(ids.len(), 29, "the catalogue size moved: {}", ids.len());
 
     for id in ids {
         let payload = ok_payload(&session.call("explain_rule", serde_json::json!({"rule_id": id})));

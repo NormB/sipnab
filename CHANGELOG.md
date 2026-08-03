@@ -12,6 +12,32 @@ entry that carries them.
 
 ### Added
 
+- **Three more conformance rules: the dialog target, and reliable
+  provisionals.** A 2xx answer to `INVITE` with no `Contact` (RFC 3261 §12.1.1)
+  creates a dialog with no remote target, so the call answers and then cannot
+  be acknowledged or hung up cleanly. A provisional demanding `100rel` with no
+  `RSeq` (RFC 3262 §3) asks its receiver to acknowledge a response it cannot
+  name. And a reliable provisional the dialog never acknowledged with a `PRACK`
+  (RFC 3262 §4), which the caller hears as ringing that never becomes a call.
+
+  The `PRACK` rule is the first dialog-scoped rule with a truncation guard. A
+  capture is a window, not a transcript, and the naive version fires on every
+  dialog whose file stopped between the provisional and the acknowledgement. It
+  reports only where the capture already proved it saw the rest: the dialog
+  carries a final response to the `INVITE`, so an absent `PRACK` is genuinely
+  absent rather than off the end of the file.
+
+  The `Contact` rule immediately caught three of this repository's own
+  fixtures, which claimed to be conformant calls while answering `INVITE`
+  without a `Contact`. The fixtures were wrong and are fixed.
+
+  Corpus evidence, and it does not say the same thing for all three. The
+  `Contact` rule is well exercised: 1,989 2xx answers to `INVITE`, every one
+  carrying a `Contact`, so the rule reaches its own code path 1,989 times and
+  declines each time. The two RFC 3262 rules are not exercised — the corpus
+  holds exactly one reliable provisional and one `PRACK` — and the rules page
+  says so rather than presenting their zero as a measurement.
+
 - **RFC 4028 session timers, four rules.** The linter knew nothing about
   session timers, which are a routine interop breaker: a call that drops at
   exactly 30 minutes is almost always a refresher nobody claimed. All four read

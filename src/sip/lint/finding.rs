@@ -181,7 +181,11 @@ impl RuleMeta {
 /// `SIP-`-prefixed rules that still need the whole dialog rather than one
 /// message. Kept as an explicit list because the prefix cannot express it and a
 /// silent misclassification would run a rule with too little context.
-const DIALOG_SCOPED: &[&str] = &[ACK_CSEQ_MISMATCH.id, TO_TAG_IN_INITIAL_REQUEST.id];
+const DIALOG_SCOPED: &[&str] = &[
+    ACK_CSEQ_MISMATCH.id,
+    TO_TAG_IN_INITIAL_REQUEST.id,
+    PRACK_MISSING.id,
+];
 
 /// A single conformance defect, with the evidence and the citation attached.
 ///
@@ -411,6 +415,46 @@ pub const ACK_CSEQ_MISMATCH: RuleMeta = RuleMeta {
     section: "17.1.1.3",
 };
 
+/// A 2xx answer to `INVITE` carrying no `Contact`.
+pub const CONTACT_MISSING_IN_2XX: RuleMeta = RuleMeta {
+    id: "SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX",
+    title: "2xx to INVITE carries no Contact header field",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §12.1.1: "The UAS MUST add a Contact header field to the response."
+    // Without it the caller has no remote target for the dialog, so the ACK
+    // and every in-dialog request afterwards have nowhere to go.
+    section: "12.1.1",
+};
+
+/// A reliable provisional response with no `RSeq`.
+pub const RELIABLE_PROVISIONAL_WITHOUT_RSEQ: RuleMeta = RuleMeta {
+    id: "SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ",
+    title: "provisional requires 100rel and carries no RSeq",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3262,
+    // §3: "In addition, it MUST contain a Require header field containing the
+    // option tag 100rel, and MUST include an RSeq header field." A receiver
+    // cannot acknowledge what it cannot number, so the PRACK never comes.
+    section: "3",
+};
+
+/// A reliable provisional the dialog never acknowledged with `PRACK`.
+pub const PRACK_MISSING: RuleMeta = RuleMeta {
+    id: "SIP-3262-4-PRACK-MISSING",
+    title: "reliable provisional never acknowledged by a PRACK",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 3262,
+    // §4: "Assuming the response is to be transmitted reliably, the UAC MUST
+    // create a new request with method PRACK." Dialog-scoped, and guarded: one
+    // message cannot say whether a PRACK followed, and a capture that ends
+    // mid-transaction has not shown that it did not.
+    section: "4",
+};
+
 /// `Session-Expires` smaller than the `Min-SE` in the same request.
 pub const SESSION_EXPIRES_BELOW_MIN_SE: RuleMeta = RuleMeta {
     id: "SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE",
@@ -619,6 +663,9 @@ pub const RULES: &[RuleMeta] = &[
     TO_TAG_IN_INITIAL_REQUEST,
     CSEQ_METHOD_MISMATCH,
     ACK_CSEQ_MISMATCH,
+    CONTACT_MISSING_IN_2XX,
+    RELIABLE_PROVISIONAL_WITHOUT_RSEQ,
+    PRACK_MISSING,
     SESSION_EXPIRES_BELOW_MIN_SE,
     SESSION_EXPIRES_TOO_SMALL,
     MIN_SE_TOO_SMALL,

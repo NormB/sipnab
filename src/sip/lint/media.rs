@@ -711,6 +711,7 @@ mod tests {
              From: <sip:alice@example.com>;tag=1928301774\r\n\
              Call-ID: media-fixture-1\r\n\
              CSeq: 1 INVITE\r\n\
+             Contact: <sip:bob@192.0.2.2>\r\n\
              Content-Type: application/sdp\r\n\
              Content-Length: {}\r\n\
              \r\n{body}",
@@ -727,6 +728,7 @@ mod tests {
              From: <sip:alice@example.com>;tag=1928301774\r\n\
              Call-ID: media-fixture-1\r\n\
              CSeq: 1 INVITE\r\n\
+             Contact: <sip:bob@192.0.2.2>\r\n\
              Content-Type: application/sdp\r\n\
              Content-Length: {}\r\n\
              \r\n{body}",
