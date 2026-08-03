@@ -458,6 +458,23 @@ pub struct Cli {
     )]
     pub strip_secrets: Option<String>,
 
+    /// Resolve a frame pointer emitted by a previous run and print that frame,
+    /// then exit. Takes `<source>#<ordinal>` or `<source>#<ordinal>@<digest>`,
+    /// the form carried by the `frame` field of `--json-dialogs`, `--report`,
+    /// the REST API and MCP.
+    ///
+    /// With a digest, the frame's bytes are checked against it: a capture that
+    /// was rotated, truncated or recompressed since the pointer was made is
+    /// REFUSED rather than answered with whatever now sits at that position.
+    /// Without one — the form a human types — the frame is printed and marked
+    /// UNVERIFIED, because there is nothing to check it against.
+    #[arg(
+        help_heading = "Name resolution",
+        long = "show-frame",
+        value_name = "POINTER"
+    )]
+    pub show_frame: Option<String>,
+
     // ── Matching ─────────────────────────────────────────────────────
     /// SIP payload match-expression (the sngrep/sipgrep positional match
     /// expression). A regex tested against the whole raw SIP message; once any

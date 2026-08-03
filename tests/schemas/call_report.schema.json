@@ -84,6 +84,11 @@
     },
     "icmp_media": {
       "$ref": "#/$defs/icmp_media"
+    },
+    "frame": {
+      "type": "string",
+      "description": "Pointer to the frame this dialog opened in, as `<source>#<ordinal>@<digest>`. Follow it with `sipnab --show-frame`, which checks the digest and refuses when the capture changed since the pointer was made. Optional, and absent rather than null when the dialog has no frame (live capture): absent means unknown, and a value that is present is always a real pointer.",
+      "pattern": "^.+#[0-9]+(@[0-9a-f]{16})?$"
     }
   },
   "$defs": {

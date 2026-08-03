@@ -382,6 +382,7 @@ See the [Name Resolution](@/docs/keybindings.md#name-resolution) keys for in-TUI
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--strip-secrets` | `<OUTPUT>` | -- | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. sipnab never touches the input and writes the output atomically. |
+| `--show-frame` | `<POINTER>` | -- | Resolve a frame pointer emitted by a previous run and print that frame, then exit. Takes `<source>#<ordinal>` or `<source>#<ordinal>@<digest>` — the form the `frame` field of `--json-dialogs`, `--report`, the REST API and MCP carries. With a digest, the bytes are checked against it and a capture that changed since the pointer was made is REFUSED, with nothing written to stdout. Without one, the frame is printed and marked `UNVERIFIED`. |
 
 Note: with resolution active, sipnab saves name mappings into a pcapng Name
 Resolution Block — on both the TUI save path and the headless `-O --pcapng`
@@ -394,6 +395,8 @@ and DSB TLS secrets back, and decrypts with them. See
 
 **Examples**
 
+- `sipnab --show-frame 'capture.pcap#41@6f3a1c02b8d4e795'` — print the frame a dialog opened in, verifying the capture has not changed since
+- `sipnab --show-frame 'capture.pcap#41'` — same frame, printed as `UNVERIFIED` because the short form carries nothing to check against
 - `sipnab -N -I capture.pcapng --strip-secrets clean.pcapng` — write a sanitized copy of a pcapng with every Decryption Secrets Block removed
 - `sipnab -N -I tls-call.pcapng --strip-secrets tls-call-clean.pcapng` — strip embedded TLS secrets from a decrypted-session capture before sharing it in a support ticket
 

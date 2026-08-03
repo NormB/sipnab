@@ -378,6 +378,18 @@ struct DialogJson {
     /// which keeps a clean capture's JSON the size it was before this existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     icmp_media: Option<IcmpMediaJson>,
+    /// Pointer to the frame this dialog opened in, `<source>#<ordinal>@<digest>`.
+    ///
+    /// The same value `DialogSummary.frame` carries on REST and MCP. It is
+    /// repeated here rather than shared because this type is a different wire
+    /// shape (`from`/`to`, `diagnosis`, `sdp_timeline`), and `--json-dialogs`
+    /// renders through this one — a fact worth stating, since assuming the two
+    /// shapes were one is exactly how this field first shipped reaching REST
+    /// and MCP but not `--json-dialogs`.
+    ///
+    /// Omitted, never null, when the dialog has no frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame: Option<String>,
     /// Associated RTP streams.
     streams: Vec<StreamJson>,
 }
@@ -634,6 +646,9 @@ pub fn dialog_to_json(
         // through every caller of this function would leave the most diagnostic
         // packet in a capture unread by whichever caller forgot.
         icmp_media: build_icmp_media_json(&crate::pipeline::icmp_media_findings(), &dialog.call_id),
+        // The dialog's own record of where it opened, not `messages.first()`,
+        // which compaction can replace with a later message.
+        frame: dialog.first_frame.as_ref().map(ToString::to_string),
         streams: stream_jsons,
     };
 

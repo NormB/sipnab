@@ -902,6 +902,13 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         });
     }
 
+    // --show-frame <pointer>: follow a pointer a previous run emitted and print
+    // that frame. Needs no config, no capture and no privileges -- it reads one
+    // frame out of one file.
+    if let Some(ref pointer) = cli.show_frame {
+        return Some(show_frame(pointer));
+    }
+
     // --strip-secrets: write a DSB-free copy of the input pcapng. The input
     // is never modified; the output is written atomically.
     if let Some(ref out) = cli.strip_secrets {
@@ -992,6 +999,99 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
 }
 
 /// Handle `--mint-token`: mint a signed bearer token, print it, and return
+/// Follow one frame pointer and print the frame, or refuse and say why.
+///
+/// The refusals are the reason this exists. Returning the bytes at an ordinal
+/// without checking them is the failure the whole provenance feature is built
+/// to avoid: the caller gets a frame, believes it is the frame the finding was
+/// about, and has no way to tell the capture was rotated underneath them. So a
+/// digest mismatch is an error, not a warning printed above the bytes.
+///
+/// # Returns
+///
+/// `0` when the frame was found (verified, or unverified and labelled as
+/// such), `1` when the pointer could not be honoured, `2` when it did not
+/// parse.
+fn show_frame(pointer: &str) -> i32 {
+    use crate::capture::resolve::{Resolution, ResolveError, parse_pointer, resolve};
+
+    let parsed = match parse_pointer(pointer) {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::error!(
+                "not a frame pointer: {pointer}\n\
+                 expected <source>#<ordinal>, optionally #<ordinal>@<digest> — \
+                 the form the `frame` field of --json-dialogs, --report, REST \
+                 and MCP emits"
+            );
+            return 2;
+        }
+    };
+
+    match resolve(&parsed) {
+        Ok(Resolution::Verified(bytes)) => {
+            println!("VERIFIED  {pointer}");
+            println!(
+                "{} bytes, frame {} of {}",
+                bytes.len(),
+                parsed.origin.ordinal,
+                parsed.source
+            );
+            println!();
+            print!("{}", crate::output::hexdump::hexdump(&bytes));
+            0
+        }
+        Ok(Resolution::Unverified(bytes)) => {
+            // Printed, but never called "found": the pointer carried no digest,
+            // so these are the bytes at that position and nothing establishes
+            // they are the bytes the pointer was made against.
+            println!("UNVERIFIED  {pointer}");
+            println!(
+                "{} bytes, frame {} of {}",
+                bytes.len(),
+                parsed.origin.ordinal,
+                parsed.source
+            );
+            println!(
+                "The pointer carried no digest, so these bytes were not checked \
+                 against anything. If the capture changed since the pointer was \
+                 made, this is the wrong frame and nothing here can tell."
+            );
+            println!();
+            print!("{}", crate::output::hexdump::hexdump(&bytes));
+            0
+        }
+        Err(ResolveError::Changed { source, ordinal }) => {
+            tracing::error!(
+                "refusing: {source} frame {ordinal} is not the frame this \
+                 pointer was made against. The capture was rotated, truncated \
+                 or rewritten since then. Showing you what is there now would \
+                 look like an answer and be the wrong one."
+            );
+            1
+        }
+        Err(ResolveError::NoSuchFrame {
+            source,
+            ordinal,
+            frames_present,
+        }) => {
+            tracing::error!(
+                "refusing: {source} holds {frames_present} frame(s), so there is \
+                 no frame {ordinal}"
+            );
+            1
+        }
+        Err(ResolveError::Unreadable { source, cause }) => {
+            tracing::error!("refusing: cannot read {source}: {cause}");
+            1
+        }
+        Err(ResolveError::Malformed(t)) => {
+            tracing::error!("not a frame pointer: {t}");
+            2
+        }
+    }
+}
+
 /// the exit code — or `None` when the flag is absent. The body is
 /// feature-swapped so the caller contains no `cfg`.
 ///

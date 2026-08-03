@@ -397,13 +397,19 @@ file, so a frame keeps the same pointer whether it was read on its own, from a
 directory, or as one of a glob — which is what makes it usable for comparing
 two runs over the same capture.
 
-The digest is there so that following the pointer can tell you when it no
-longer means what it meant. A capture that was rotated, truncated or
-recompressed since the run yields a digest mismatch, and the resolver
-(`sipnab::capture::resolve`) refuses rather than returning whatever now sits at
-that position. There is no CLI command for this yet: today the pointer is a
-stable identifier for API and MCP consumers, and resolving one requires the
-library. Following a pointer from the command line is tracked separately.
+Follow one with `sipnab --show-frame`:
+
+```bash
+sipnab --show-frame 'capture.pcap#41@6f3a1c02b8d4e795'
+```
+
+The digest is what lets it tell you when the pointer no longer means what it
+meant. A capture rotated, truncated or recompressed since the run yields a
+mismatch, and `--show-frame` **refuses** rather than printing whatever now sits
+at that position — nothing goes to stdout, so a hexdump can never be mistaken
+for an answer. The short form `capture.pcap#41`, which is what a human types,
+prints the frame and labels it `UNVERIFIED`, because there is nothing to check
+it against.
 
 The key is absent, not null, when the dialog has no frame: live capture has no
 file to point back into. Absent means unknown, and a `frame` that is present is
