@@ -2173,8 +2173,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 436,
-        "walked {tables} tables, expected 436. More is fine — bump this. FEWER \
+        tables, 437,
+        "walked {tables} tables, expected 437. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
