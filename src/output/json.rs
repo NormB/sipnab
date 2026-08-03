@@ -199,6 +199,110 @@ struct QualityIntervalJson {
     packets: u64,
 }
 
+/// What ICMP said about this capture's media, as it appears on a dialog.
+///
+/// # Why a dialog carries capture-wide counters
+///
+/// A media flow is not a dialog. Most of these findings belong to no call at
+/// all — on one real corpus, 205 of 514 errors matched nothing the capture
+/// held and one more quoted too little to be keyed on a flow — so `findings`
+/// here can only ever be the subset whose attribution NAMED this dialog. The
+/// `capture` block travels with it so that a consumer reading one call can
+/// still tell that further evidence exists: without it, a `--call-report`
+/// showing no findings would be indistinguishable from a capture that drew no
+/// ICMP at all, and "looks clean because the surface cannot show it" is the
+/// defect this field was added to remove. The complete ledger, findings and
+/// all, is rendered capture-wide by `--report`.
+#[derive(Serialize)]
+struct IcmpMediaJson {
+    /// Run-wide outcome counters. Present whenever the capture drew any ICMP
+    /// error quoting non-SIP traffic.
+    capture: IcmpMediaCaptureJson,
+    /// The findings whose attribution named this dialog, busiest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    findings: Vec<IcmpMediaFindingJson>,
+}
+
+/// Run-wide media ICMP counters.
+///
+/// Three separate outcomes, never collapsed: `attributed + unattributed ==
+/// errors`, and `sum(finding.errors) + unkeyed + untracked_flows == errors`. An
+/// `unkeyed` error is one whose quote stopped before the ports, so it has no
+/// flow to match — a THIRD state, not "matched nothing", and folding it into
+/// `unattributed` alone would lose which of the two a reader is looking at.
+#[derive(Serialize)]
+struct IcmpMediaCaptureJson {
+    /// ICMP errors quoting a datagram that was not a SIP request.
+    errors: u64,
+    /// How many of those were tied to media: the quote was RTP or RTCP, or the
+    /// flow matched a tracked stream, or both.
+    media: u64,
+    /// How many reached a tracked stream or an SDP-advertised endpoint.
+    attributed: u64,
+    /// How many matched nothing this capture holds. The evidence is real; only
+    /// the stream is unknown.
+    unattributed: u64,
+    /// How many quoted too little to name a flow at all.
+    unkeyed: u64,
+    /// How many reached no flow entry because the flow cap was full.
+    untracked_flows: u64,
+    /// How many were not tallied against an endpoint because the endpoint cap
+    /// was full.
+    untallied_endpoints: u64,
+    /// Distinct quoted flows retained across the capture.
+    flows: usize,
+}
+
+/// One quoted flow the network reported as undeliverable.
+#[derive(Serialize)]
+struct IcmpMediaFindingJson {
+    /// Which rule tied this flow to tracked media: `flow`, `ssrc`, `endpoint`,
+    /// `sdp_endpoint` or `none`.
+    ///
+    /// Never omitted and never defaulted. The five are not equally strong
+    /// claims — `flow` is an exact directed 5-tuple match, `none` is no match
+    /// at all — and a consumer that cannot tell them apart would present a
+    /// guess with the confidence of a measurement.
+    attribution: &'static str,
+    /// `address:port` that sent the datagram that failed.
+    source: String,
+    /// `address:port` of the socket that did not answer. The thing to look at.
+    unreachable_endpoint: String,
+    /// Address of the device that reported the failure. Not the fault.
+    reported_by: String,
+    /// Transport the failed datagram used.
+    transport: &'static str,
+    /// The network's own words, e.g. `port unreachable`.
+    description: String,
+    /// Raw ICMP type byte.
+    icmp_type: u8,
+    /// Raw ICMP code byte.
+    icmp_code: u8,
+    /// How many errors named this flow. Exact, not the retained-sample count.
+    errors: u64,
+    /// What the quoted payload was: `rtp`, `rtcp`, `unread` or `not_media`.
+    /// Distinct from `attribution` — what the router quoted, versus what
+    /// sipnab could tie it to.
+    payload: &'static str,
+    /// RTP payload type, when the quote reached an RTP header.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_type: Option<u8>,
+    /// RTCP packet type, when the quote reached an RTCP header.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rtcp_packet_type: Option<u8>,
+    /// SSRC read out of the quote, `0x`-prefixed, when it carried one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ssrc: Option<String>,
+    /// How many tracked streams the attribution rule matched. Zero for an
+    /// SDP-only match, which by definition has no stream behind it.
+    streams: usize,
+    /// `Call-ID`s of the affected dialogs, when the match named any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    call_ids: Vec<String>,
+    /// Plain-language rendering, identical to the one stderr prints.
+    hint: String,
+}
+
 /// JSON representation of a complete dialog.
 #[derive(Serialize)]
 struct DialogJson {
@@ -262,6 +366,18 @@ struct DialogJson {
     /// definitions of one thing waiting to disagree.
     #[serde(skip_serializing_if = "Option::is_none")]
     signaling_diagnosis: Option<SignalingDiagnosis>,
+    /// What ICMP said about this capture's MEDIA, when it said anything.
+    ///
+    /// Distinct from `signaling_diagnosis.icmp_unreachable`, which is keyed by
+    /// `Call-ID` off a quoted SIP request. These are keyed by the quoted
+    /// datagram's own 5-tuple, because a media datagram carries no `Call-ID` —
+    /// so the two answer different questions ("why did this call fail to set
+    /// up" versus "why could nobody hear anything") and are never merged.
+    ///
+    /// Omitted entirely when the capture drew no ICMP quoting non-SIP traffic,
+    /// which keeps a clean capture's JSON the size it was before this existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icmp_media: Option<IcmpMediaJson>,
     /// Associated RTP streams.
     streams: Vec<StreamJson>,
 }
@@ -512,6 +628,12 @@ pub fn dialog_to_json(
         // call sites would only create a way for one of them to forget.
         signaling_diagnosis: Some(crate::sip::diagnosis::diagnose_signaling(&dialog.messages))
             .filter(|d| !d.is_empty()),
+        // Read from the run's resolved set for the same reason
+        // `signaling_diagnosis` is computed here rather than passed in: it is a
+        // property of the capture this dialog came from, and threading it
+        // through every caller of this function would leave the most diagnostic
+        // packet in a capture unread by whichever caller forgot.
+        icmp_media: build_icmp_media_json(&crate::pipeline::icmp_media_findings(), &dialog.call_id),
         streams: stream_jsons,
     };
 
@@ -528,6 +650,77 @@ pub fn stream_to_json(stream: &RtpStream) -> String {
     let json = build_stream_json(stream);
     serde_json::to_string_pretty(&json)
         .unwrap_or_else(|e| format!("{{\"error\":\"serialization failed: {e}\"}}"))
+}
+
+/// Project one resolved media finding onto the wire.
+///
+/// The tier is written unconditionally. There is deliberately no code path
+/// here that can emit a finding without one — an untiered finding reads as an
+/// exact match to anything that does not know the difference, which is worse
+/// than not emitting it.
+fn build_icmp_media_finding_json(
+    finding: &crate::pipeline::MediaIcmpFinding,
+) -> IcmpMediaFindingJson {
+    use crate::pipeline::QuotedMediaKind;
+    let (payload_type, rtcp_packet_type) = match finding.payload {
+        QuotedMediaKind::Rtp { payload_type, .. } => (Some(payload_type), None),
+        QuotedMediaKind::Rtcp { packet_type, .. } => (None, Some(packet_type)),
+        QuotedMediaKind::Unread | QuotedMediaKind::NotMedia => (None, None),
+    };
+    IcmpMediaFindingJson {
+        attribution: finding.attribution_tier(),
+        source: finding.source.clone(),
+        unreachable_endpoint: finding.unreachable_endpoint.clone(),
+        reported_by: finding.reported_by.clone(),
+        transport: finding.transport,
+        description: finding.description.clone(),
+        icmp_type: finding.icmp_type,
+        icmp_code: finding.icmp_code,
+        errors: finding.errors,
+        payload: finding.payload_kind(),
+        payload_type,
+        rtcp_packet_type,
+        ssrc: finding.payload.ssrc().map(|s| format!("0x{s:08x}")),
+        streams: finding.streams,
+        call_ids: finding.call_ids.clone(),
+        hint: finding.hint.clone(),
+    }
+}
+
+/// The media ICMP block for one dialog, or `None` when the capture drew none.
+///
+/// `None` and "an empty findings list" are different answers and only the
+/// first is representable: a capture that recorded media ICMP always emits the
+/// `capture` counters even for a dialog no finding named, because the point of
+/// the block is that a reader of one call can see the evidence exists.
+///
+/// Takes the resolved set rather than reading the process-global one so the
+/// projection can be tested against a known set of findings.
+fn build_icmp_media_json(
+    resolved: &crate::pipeline::ResolvedIcmpMedia,
+    call_id: &str,
+) -> Option<IcmpMediaJson> {
+    let report = resolved.report();
+    if report.errors == 0 {
+        return None;
+    }
+    Some(IcmpMediaJson {
+        capture: IcmpMediaCaptureJson {
+            errors: report.errors,
+            media: report.media,
+            attributed: report.attributed,
+            unattributed: report.unattributed,
+            unkeyed: report.unkeyed,
+            untracked_flows: report.untracked_flows,
+            untallied_endpoints: report.untallied_endpoints,
+            flows: report.flows.len(),
+        },
+        findings: resolved
+            .findings_for(call_id)
+            .into_iter()
+            .map(build_icmp_media_finding_json)
+            .collect(),
+    })
 }
 
 /// Build the internal `StreamJson` struct from an `RtpStream`, deriving
@@ -1270,5 +1463,207 @@ mod tests {
         assert!(parsed["loss_pct"].is_number());
         assert!(parsed["packets"].is_number());
         assert_eq!(parsed["ssrc"], "0x12345678");
+    }
+
+    // ── ICMP media on the per-dialog document ──────────────────────────
+
+    /// One finding at `matched`, naming `call_ids`.
+    fn media_finding(
+        matched: crate::pipeline::MediaMatch,
+        call_ids: &[&str],
+    ) -> crate::pipeline::MediaIcmpFinding {
+        crate::pipeline::MediaIcmpFinding {
+            source: "192.0.2.1:40000".to_string(),
+            unreachable_endpoint: "192.0.2.2:20000".to_string(),
+            reported_by: "192.0.2.9".to_string(),
+            transport: "UDP",
+            description: "port unreachable".to_string(),
+            icmp_type: 3,
+            icmp_code: 3,
+            errors: 4,
+            payload: crate::pipeline::QuotedMediaKind::Rtp {
+                ssrc: 0x0BAD_F00D,
+                payload_type: 0,
+            },
+            matched,
+            streams: 1,
+            call_ids: call_ids.iter().map(|s| (*s).to_string()).collect(),
+            hint: "audio sent that way is discarded".to_string(),
+        }
+    }
+
+    /// A resolved set holding one finding per tier, all naming `call_id`,
+    /// with counters that exercise all three outcomes.
+    fn resolved_one_per_tier(call_id: &str) -> crate::pipeline::ResolvedIcmpMedia {
+        use crate::pipeline::MediaMatch;
+        let flows: Vec<_> = [
+            MediaMatch::Flow,
+            MediaMatch::Ssrc,
+            MediaMatch::Endpoint,
+            MediaMatch::SdpEndpoint,
+        ]
+        .into_iter()
+        .map(|m| media_finding(m, &[call_id]))
+        .chain(std::iter::once(media_finding(MediaMatch::None, &[])))
+        .collect();
+        crate::pipeline::ResolvedIcmpMedia::new(crate::pipeline::IcmpMediaReport {
+            // 5 flows x 4 errors, plus 3 that never reached a flow at all.
+            errors: 23,
+            media: 20,
+            attributed: 16,
+            unattributed: 7,
+            unkeyed: 3,
+            untracked_flows: 0,
+            untallied_endpoints: 0,
+            flows,
+            endpoints: Vec::new(),
+        })
+    }
+
+    /// Every emitted finding names its attribution tier.
+    ///
+    /// This is the whole point of the field. A consumer that cannot tell a
+    /// `none`-tier guess from a `flow`-tier exact 5-tuple match will present
+    /// both with the same confidence, which is worse than emitting neither —
+    /// so a finding without `attribution` must never be representable.
+    #[test]
+    fn every_emitted_media_finding_names_its_attribution_tier() {
+        let resolved = resolved_one_per_tier("call-1@example.com");
+        let block = build_icmp_media_json(&resolved, "call-1@example.com")
+            .expect("a capture with errors must emit the block");
+        let v = serde_json::to_value(&block).expect("serializes");
+
+        let findings = v["findings"].as_array().expect("findings array");
+        assert_eq!(findings.len(), 4, "four tiers named this call");
+        let mut tiers: Vec<&str> = Vec::new();
+        for (i, f) in findings.iter().enumerate() {
+            let tier = f
+                .get("attribution")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| {
+                    panic!("finding {i} reached a consumer with no attribution tier: {f}")
+                });
+            assert!(
+                ["flow", "ssrc", "endpoint", "sdp_endpoint", "none"].contains(&tier),
+                "finding {i} names an unknown tier {tier:?}"
+            );
+            tiers.push(tier);
+        }
+        tiers.sort_unstable();
+        assert_eq!(tiers, ["endpoint", "flow", "sdp_endpoint", "ssrc"]);
+    }
+
+    /// The three outcomes stay three: `unkeyed` is not folded into anything.
+    ///
+    /// A quote that stopped before the ports has no flow to match — a THIRD
+    /// state, not "matched nothing" — and #98's invariants
+    /// (`attributed + unattributed == errors`, and
+    /// `sum(flow errors) + unkeyed + untracked == errors`) are only checkable
+    /// while the counters stay apart.
+    #[test]
+    fn the_capture_block_keeps_unkeyed_as_its_own_outcome() {
+        let resolved = resolved_one_per_tier("call-1@example.com");
+        let block = build_icmp_media_json(&resolved, "call-1@example.com").expect("block");
+        let v = serde_json::to_value(&block).expect("serializes");
+        let c = &v["capture"];
+
+        let n = |k: &str| {
+            c.get(k)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| panic!("capture block dropped `{k}`: {c}"))
+        };
+        assert_eq!(n("unkeyed"), 3, "unkeyed must survive as its own count");
+        assert_eq!(
+            n("attributed") + n("unattributed"),
+            n("errors"),
+            "every error is attributed or unattributed, never neither nor both"
+        );
+        let per_flow: u64 = resolved.report().flows.iter().map(|f| f.errors).sum();
+        assert_eq!(
+            per_flow + n("unkeyed") + n("untracked_flows"),
+            n("errors"),
+            "every error reaches a flow, or is counted as unkeyed or untracked"
+        );
+    }
+
+    /// A dialog no finding named still learns that evidence exists.
+    ///
+    /// Without the capture counters, a report showing nothing would be
+    /// indistinguishable from a capture that drew no ICMP at all — "looks
+    /// clean because the surface cannot show it" is the defect being removed.
+    #[test]
+    fn a_dialog_no_finding_named_still_carries_the_capture_counters() {
+        let resolved = resolved_one_per_tier("call-1@example.com");
+        let block = build_icmp_media_json(&resolved, "someone-else@example.com")
+            .expect("the capture drew errors, so the block is emitted");
+        let v = serde_json::to_value(&block).expect("serializes");
+
+        assert_eq!(v["capture"]["errors"], 23);
+        assert!(
+            v.get("findings").is_none(),
+            "no finding named this dialog, so none may be attached: {v}"
+        );
+    }
+
+    /// A capture that drew no media ICMP emits no block at all.
+    ///
+    /// Silence when there is nothing to say keeps a clean capture's JSON the
+    /// size it was before this existed.
+    #[test]
+    fn a_capture_with_no_media_icmp_emits_no_block() {
+        let empty = crate::pipeline::ResolvedIcmpMedia::default();
+        assert!(build_icmp_media_json(&empty, "call-1@example.com").is_none());
+    }
+
+    /// The payload kind travels beside the tier, not instead of it.
+    #[test]
+    fn a_finding_reports_the_quoted_payload_beside_its_tier() {
+        let resolved = resolved_one_per_tier("call-1@example.com");
+        let block = build_icmp_media_json(&resolved, "call-1@example.com").expect("block");
+        let v = serde_json::to_value(&block).expect("serializes");
+        let f = &v["findings"][0];
+
+        assert_eq!(f["payload"], "rtp", "the quote was an RTP header: {f}");
+        assert_eq!(f["payload_type"], 0);
+        assert_eq!(f["ssrc"], "0x0badf00d");
+        assert!(
+            f.get("rtcp_packet_type").is_none(),
+            "an RTP quote has no RTCP packet type: {f}"
+        );
+    }
+
+    /// The whole dialog document carries the block, not just the projection.
+    ///
+    /// The projection can be right while nothing wires it into the document a
+    /// consumer actually reads, which was the state this task started from.
+    #[test]
+    #[serial_test::serial(icmp_evidence)]
+    fn the_dialog_document_carries_the_media_block() {
+        let msg = make_invite();
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
+
+        crate::pipeline::reset_icmp_evidence();
+        let before: serde_json::Value =
+            serde_json::from_str(&dialog_to_json(&dialog, &[], &MediaDiagnosis::default()))
+                .expect("valid JSON");
+        assert!(
+            before.get("icmp_media").is_none(),
+            "a capture with no media ICMP must not grow a block: {before}"
+        );
+
+        crate::pipeline::publish_icmp_media_for_test(resolved_one_per_tier(&dialog.call_id));
+        let after: serde_json::Value =
+            serde_json::from_str(&dialog_to_json(&dialog, &[], &MediaDiagnosis::default()))
+                .expect("valid JSON");
+        crate::pipeline::reset_icmp_evidence();
+
+        let block = after
+            .get("icmp_media")
+            .unwrap_or_else(|| panic!("the dialog document dropped the media block: {after}"));
+        assert_eq!(block["capture"]["errors"], 23);
+        assert_eq!(
+            block["findings"].as_array().expect("findings array").len(),
+            4
+        );
     }
 }

@@ -52,16 +52,24 @@ fn read_fixture_all_packets() {
 }
 
 /// Every captured packet has non-empty data, positive caplen/origlen with no
-/// truncation, no interface (file capture), and link type DLT_EN10MB.
+/// truncation, the source file it was read from, and link type DLT_EN10MB.
 #[test]
 fn packets_have_valid_metadata() {
     let packets = collect_packets(CaptureConfig::default());
+    let source = fixture_path().display().to_string();
     for pkt in &packets {
         assert!(!pkt.data.is_empty(), "Packet data must not be empty");
         assert!(pkt.caplen > 0, "caplen must be positive");
         assert!(pkt.origlen > 0, "origlen must be positive");
         assert_eq!(pkt.caplen, pkt.origlen, "Fixture packets are not truncated");
-        assert!(pkt.interface.is_none(), "File captures have no interface");
+        // A replayed packet names the file it came from. Downstream — the
+        // pcapng export above all — this is the only thing that tells the
+        // members of a multi-file input set apart.
+        assert_eq!(
+            pkt.interface.as_deref(),
+            Some(source.as_str()),
+            "a file capture stamps its source file"
+        );
         assert_eq!(pkt.link_type, 1, "Fixture uses DLT_EN10MB (1)");
     }
 }

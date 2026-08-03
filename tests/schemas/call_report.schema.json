@@ -81,9 +81,173 @@
     },
     "signaling_diagnosis": {
       "$ref": "#/$defs/signaling_diagnosis"
+    },
+    "icmp_media": {
+      "$ref": "#/$defs/icmp_media"
     }
   },
   "$defs": {
+    "icmp_media": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What ICMP said about this capture's MEDIA. Keyed by the quoted datagram's own 5-tuple, not by Call-ID, because a media datagram carries none — so this is a different question from signaling_diagnosis.icmp_unreachable and the two are never merged. Omitted entirely when the capture drew no ICMP quoting non-SIP traffic. `capture` is capture-wide and travels with every dialog so a reader of one call can see that evidence exists; `findings` holds only the findings whose attribution named THIS dialog.",
+      "required": [
+        "capture"
+      ],
+      "properties": {
+        "capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Run-wide outcome counters. Three separate outcomes, never collapsed: attributed + unattributed == errors, and sum(finding.errors) + unkeyed + untracked_flows == errors.",
+          "required": [
+            "errors",
+            "media",
+            "attributed",
+            "unattributed",
+            "unkeyed",
+            "untracked_flows",
+            "untallied_endpoints",
+            "flows"
+          ],
+          "properties": {
+            "errors": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "media": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "attributed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unattributed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unkeyed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "untracked_flows": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "untallied_endpoints": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "flows": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/icmp_media_finding"
+          }
+        }
+      }
+    },
+    "icmp_media_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One quoted flow the network reported as undeliverable.",
+      "required": [
+        "attribution",
+        "source",
+        "unreachable_endpoint",
+        "reported_by",
+        "transport",
+        "description",
+        "icmp_type",
+        "icmp_code",
+        "errors",
+        "payload",
+        "streams",
+        "hint"
+      ],
+      "properties": {
+        "attribution": {
+          "description": "Which rule tied this flow to tracked media. REQUIRED and enumerated: the five tiers are not equally strong claims — `flow` is an exact directed 5-tuple match, `none` is no match at all — and a consumer that cannot tell them apart would present a guess with the confidence of a measurement. A finding without this field is worse than no finding.",
+          "enum": [
+            "flow",
+            "ssrc",
+            "endpoint",
+            "sdp_endpoint",
+            "none"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "unreachable_endpoint": {
+          "type": "string"
+        },
+        "reported_by": {
+          "type": "string"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "icmp_type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "icmp_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "payload": {
+          "description": "What the router quoted, as opposed to what sipnab tied it to. A quote can be unmistakably RTP and match nothing, or match a stream exactly with no payload left to read.",
+          "enum": [
+            "rtp",
+            "rtcp",
+            "unread",
+            "not_media"
+          ]
+        },
+        "payload_type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127
+        },
+        "rtcp_packet_type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "ssrc": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{8}$"
+        },
+        "streams": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "call_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hint": {
+          "type": "string"
+        }
+      }
+    },
     "timing": {
       "type": "object",
       "additionalProperties": false,

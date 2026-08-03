@@ -247,9 +247,36 @@ mermaid conventions — `sequenceDiagram` only, no markdown links inside a fence
 and a prose line above every one. What it cannot catch is prose that has
 quietly become false. That is still a human's job.
 
+A failing gate names what failed. Gate 1 prints every clippy diagnostic with
+its file and line. Gate 2 prints the name of each failing test, then the panic
+location and assertion message for the first three, then the
+`test result: FAILED` summary and a command that re-runs one test on its own.
+Both gates write the whole capture to `.git/sipnab-pre-commit-clippy.log` or
+`.git/sipnab-pre-commit-tests.log` and print that path, and both cap what
+reaches the terminal at twenty diagnostic lines and twelve lines of panic.
+When the suite fails to compile, gate 2 prints the compile errors instead. When
+it dies without naming a test at all, gate 2 prints the last twenty lines
+rather than nothing. A passing run still prints one line per gate.
+
+Both gates capture their tool's output rather than let it stream, because gate
+5 reads the test run back for the homepage count and a streamed clippy would
+bury the per-gate summary. That capture used to swallow the answer: a failure
+printed `FAIL` and a "run it yourself" line, so whoever hit it paid for a
+second full suite run to learn the name of the test, and could not tell until
+that run finished whether the break was theirs or already on `HEAD`. Settling
+that one question cost an extraction of a pristine `HEAD` into a scratch
+directory.
+
 That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
 a test obliges you to update `website/templates/index.html` in the same commit.
+
+Three checks stay out of the hook on purpose: the eleven-combination feature
+matrix, Vale prose linting, and rustdoc. The hook already costs minutes and
+each of those adds more. [`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) picks up
+rustdoc and three of the eleven combinations before anything leaves the
+machine, and CI runs the rest. Moving them into the pre-commit hook buys
+nothing — it is the same wait, on every commit instead of every push.
 
 [`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) adds five hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --all-features --all-targets
@@ -259,6 +286,10 @@ cargo check`, and a check of the reduced feature combinations `tls`, `api` and
 the test build, so these are exactly the failures that otherwise appear ten
 minutes later in CI. `SKIP_FMT_HOOK=1` bypasses all of them. If you use it,
 expect CI to notice.
+
+Those gates let their tool write straight to the terminal instead of capturing
+it, so a failure arrives with the rustfmt diff, the clippy lint or the rustdoc
+warning already on screen. Nothing to withhold, and nothing to fix there.
 
 The reduced-combination gate is the newest and the least obvious. Every other
 check in that hook builds with `--all-features`, which cannot see `#[cfg]`-gating

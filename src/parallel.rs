@@ -33,6 +33,28 @@
 //! carrier case where SDP advertises a separate media IP, so the SDP lands on a
 //! different worker than the RTP — and is likewise resolved globally at merge
 //! (`crate::rtp::stream_store::StreamStore::reassociate_all`).
+//!
+//! # The sweep runs once, after the merge
+//!
+//! The single-threaded receive loop sweeps every five seconds of capture time:
+//! it flags RTP streams that no dialog claims as orphaned, and compacts dialogs
+//! that have gone idle. This module used to do neither, so the same bytes gave
+//! two answers. On one reference-corpus set `--cores 4` reported no orphaned
+//! streams at all where the single-threaded path reported 80, and the report's
+//! "Orphaned Streams:" header was absent entirely — those streams appeared in
+//! the ordinary RTP section instead, reading as though they belonged to a call.
+//!
+//! `final_sweep` closes that, and runs exactly ONCE, after the merge, at the
+//! capture's final timestamp. Not per worker: a call's SIP does not stay on one
+//! worker (see above), and a worker only sees the packets of its own host
+//! pairs, so its local last timestamp can be minutes behind the capture's. A
+//! per-worker sweep would measure each fragment against its own clock and
+//! produce a THIRD answer, matching neither path — worse than the divergence it
+//! replaced, because it would look right.
+//!
+//! The "now" comes from `crate::app::batch::SweepClock`, the same capture clock
+//! the single-threaded loop uses, so the result is a function of the bytes
+//! rather than of how fast the machine read them.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -56,11 +78,55 @@ pub fn shard_for(src: IpAddr, dst: IpAddr, jobs: usize) -> usize {
 
 use std::thread;
 
+use crate::app::batch::{ORPHAN_AFTER, SweepClock};
 use crate::capture::PacketProcessor;
 use crate::capture::channel::PacketRx;
 use crate::capture::parse::ParsedPacket;
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
+
+/// Sweep the MERGED stores once, at the capture's final timestamp.
+///
+/// The two calls answer different questions and both are needed. `mark_orphaned`
+/// is analysis: it classifies streams no dialog ever claimed, which is what puts
+/// them under the report's "Orphaned Streams:" heading instead of among the
+/// media of real calls. `compact_idle` is the memory bound: it evicts messages
+/// from dialogs that have gone quiet, keeping the ones that say what the dialog
+/// did. Running only the first leaves the parallel path retaining every message
+/// the capture held; running only the second leaves every orphan unflagged.
+///
+/// Call this AFTER
+/// [`reassociate_all`](crate::rtp::stream_store::StreamStore::reassociate_all).
+/// Orphan status is sticky, and cross-worker association is not resolved until
+/// that pass runs — sweeping first would permanently flag streams whose SDP
+/// merely landed on another worker.
+///
+/// # Arguments
+///
+/// * `clock` — the run's capture clock, fed every packet the reader saw.
+/// * `ds` / `ss` — the merged stores, swept in place.
+///
+/// # Side effects
+///
+/// Flags streams on `ss`, drops messages from idle dialogs on `ds` (counted
+/// into its lifetime retention totals, which the batch summary reports), and
+/// logs a `debug!` line naming what compaction shed. Does nothing at all when
+/// the run read no packets, because then there is no capture time to measure
+/// against and nothing in the stores to sweep.
+fn final_sweep(clock: &SweepClock, ds: &mut DialogStore, ss: &mut StreamStore) {
+    let Some(now) = clock.final_now() else {
+        return;
+    };
+    ss.mark_orphaned(now.get(), ORPHAN_AFTER);
+    let compacted = ds.compact_idle(now.get());
+    if compacted.messages_evicted > 0 {
+        tracing::debug!(
+            "idle-dialog compaction: dropped {} messages from {} dialogs",
+            compacted.messages_evicted,
+            compacted.dialogs_compacted
+        );
+    }
+}
 
 /// Configuration for the offline parallel reconstruction engine.
 #[derive(Clone)]
@@ -237,10 +303,14 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
 
     // Dispatcher: cheap host-pair peek, shard the RAW packet to a worker. A packet
     // the peek can't read routes to worker 0 (still correct via its own reassembly).
+    // The dispatcher is also the only place that sees EVERY packet's timestamp, so
+    // it is where the capture clock for the post-merge sweep is kept.
     let mut dropped: u64 = 0;
+    let mut clock = SweepClock::new(true);
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(200)) {
             Ok(packet) => {
+                clock.observe(packet.timestamp);
                 let s = match crate::capture::parse::peek_host_pair(&packet) {
                     Some((a, b)) => shard_for(a, b, n),
                     None => 0,
@@ -278,6 +348,7 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
         }
     }
     ss.reassociate_all();
+    final_sweep(&clock, &mut ds, &mut ss);
 
     ReconResult {
         dialog_store: ds,
@@ -300,6 +371,21 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
 /// (~8192) identical to the old per-packet bound.
 const BATCH: usize = 128;
 
+/// Reader state that spans the WHOLE `-I` set rather than one member of it.
+///
+/// Bundled because all three are shared for the same reason: `--count 100`
+/// over four files means a hundred packets in total, a worker that dies is
+/// counted once for the run, and the sweep's "now" is the last timestamp of
+/// the set — not of whichever file happened to be read last.
+struct ReadProgress {
+    /// Packets read so far, measured against the `--count` budget.
+    count: u64,
+    /// Raw packets lost because a worker's shard channel had closed.
+    dropped: u64,
+    /// Capture clock, fed every packet, read once by [`final_sweep`].
+    clock: SweepClock,
+}
+
 /// Read every packet of an already-opened capture into the per-worker batches,
 /// flushing a batch to its worker whenever it fills.
 ///
@@ -318,8 +404,7 @@ fn shard_opened(
     capture_config: &crate::capture::CaptureConfig,
     txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
     batches: &mut [Vec<crate::capture::packet::Packet>],
-    count: &mut u64,
-    dropped: &mut u64,
+    progress: &mut ReadProgress,
 ) -> anyhow::Result<bool> {
     use crate::capture::file::pcap_ts_to_chrono;
     use crate::capture::packet::Packet;
@@ -329,7 +414,7 @@ fn shard_opened(
     tracing::info!("Reading from '{}'", path.display());
     loop {
         if let Some(max) = capture_config.count
-            && *count >= max
+            && progress.count >= max
         {
             tracing::debug!("Reached packet count limit ({max})");
             return Ok(false);
@@ -344,6 +429,10 @@ fn shard_opened(
                     None,
                     link_type,
                 );
+                // Observed here rather than in the workers: this is the only
+                // stage that sees every packet of every file, and the sweep's
+                // "now" has to be the SET's last timestamp.
+                progress.clock.observe(packet.timestamp);
                 let s = match crate::capture::parse::peek_host_pair(&packet) {
                     Some((a, b)) => shard_for(a, b, n),
                     None => 0,
@@ -352,9 +441,9 @@ fn shard_opened(
                 if batches[s].len() >= BATCH {
                     let full = std::mem::replace(&mut batches[s], Vec::with_capacity(BATCH));
                     let weight = full.len() as u64;
-                    *dropped += shard_send(&txs[s], full, weight);
+                    progress.dropped += shard_send(&txs[s], full, weight);
                 }
-                *count += 1;
+                progress.count += 1;
             }
             Err(pcap::Error::NoMorePackets) => return Ok(true),
             Err(e) => {
@@ -460,8 +549,11 @@ pub fn run_offline_parallel_file(
     // worker's batch. A batch is flushed (one channel hop for ~BATCH packets)
     // when it fills, and any partial batches are flushed once the whole SET is
     // read. One thread, one copy, one hop per batch.
-    let mut count: u64 = 0;
-    let mut dropped: u64 = 0;
+    let mut progress = ReadProgress {
+        count: 0,
+        dropped: 0,
+        clock: SweepClock::new(true),
+    };
     let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
     for (i, path) in paths.iter().enumerate() {
         let is_first = i == 0;
@@ -498,8 +590,7 @@ pub fn run_offline_parallel_file(
             capture_config,
             &txs,
             &mut batches,
-            &mut count,
-            &mut dropped,
+            &mut progress,
         ) {
             Ok(true) => {}
             Ok(false) => break,
@@ -513,10 +604,11 @@ pub fn run_offline_parallel_file(
     for (s, b) in batches.into_iter().enumerate() {
         if !b.is_empty() {
             let weight = b.len() as u64;
-            dropped += shard_send(&txs[s], b, weight);
+            progress.dropped += shard_send(&txs[s], b, weight);
         }
     }
     drop(txs);
+    let dropped = progress.dropped;
     if dropped > 0 {
         tracing::warn!(
             "parallel reconstruction lost {dropped} packet(s): a worker thread \
@@ -542,6 +634,7 @@ pub fn run_offline_parallel_file(
         }
     }
     ss.reassociate_all();
+    final_sweep(&progress.clock, &mut ds, &mut ss);
     Ok(ReconResult {
         dialog_store: ds,
         stream_store: ss,
@@ -693,6 +786,45 @@ mod tests {
         assert!(
             r.rtp_count >= 1,
             "promoted heuristic packets must count as RTP"
+        );
+    }
+
+    /// The channel-fed entry point sweeps its merged stores too.
+    ///
+    /// `run_offline_parallel_file` is what `-I` reaches; this one is reached by
+    /// `--multi-device`, and it merged and returned without sweeping just the
+    /// same. The stream here is announced by no SDP and lives for two minutes
+    /// of capture time against a thirty-second timeout, so the only correct
+    /// answer is "orphaned" — and the capture epoch is years in the past, so a
+    /// sweep reading the wall clock would flag it for the wrong reason and a
+    /// sweep reading nothing would not flag it at all.
+    #[cfg(feature = "native")]
+    #[test]
+    fn channel_fed_cores_path_sweeps_after_the_merge() {
+        use crate::capture::packet::Packet;
+        let base = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+        let (tx, rx) = crate::capture::channel::packet_channel(1024);
+        for n in 0..20u16 {
+            let mut payload = vec![0x80, 0x00];
+            payload.extend_from_slice(&(n + 1).to_be_bytes());
+            payload.extend_from_slice(&(160 * (u32::from(n) + 1)).to_be_bytes());
+            payload.extend_from_slice(&0x1122_3344u32.to_be_bytes());
+            payload.extend_from_slice(&[0xaa; 160]);
+            let frame = eth_ipv4_udp(40000, 40002, &payload);
+            let len = frame.len();
+            // Six seconds apart, so the capture spans just under two minutes.
+            let ts = base + chrono::TimeDelta::seconds(i64::from(n) * 6);
+            tx.send(Packet::new(ts, frame, len, len, None, 1))
+                .expect("worker pool must accept packets");
+        }
+        drop(tx);
+        let r = run_offline_parallel(rx, pcfg(2));
+        assert_eq!(r.stream_store.len(), 1, "the fixture holds one RTP stream");
+        assert_eq!(
+            r.stream_store.orphaned_count(),
+            1,
+            "a stream no dialog claimed, two minutes old in capture time, must \
+             be flagged orphaned by the post-merge sweep"
         );
     }
 

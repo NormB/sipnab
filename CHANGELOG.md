@@ -96,6 +96,58 @@ entry that carries them.
 
 ### Fixed
 
+- **A pcapng frame names the capture file it actually came from.** Reading a
+  set — `-I a.pcap -I b.pcap`, a directory, a glob — and writing `--pcapng`
+  recorded a SINGLE Interface Description Block named after the FIRST input,
+  with every Enhanced Packet Block pointing at it. Frames read out of the
+  second file claimed, in the exported file's own metadata, to have been
+  captured from the first, and nothing looked wrong: the file opens, the frame
+  count is right, and a reader has no reason to doubt it. That is worse than
+  recording no source at all, because an exported pcapng is evidence. Each
+  input now gets its own IDB and each frame references the one it came from,
+  for repeated `-I`, a directory and a glob alike.
+
+- **ICMP media findings reach the machine-readable surfaces.** A finding could
+  be recorded, attributed and printed on stderr while `--report`,
+  `--json-dialogs`, the REST dialog document and MCP all saw nothing —
+  evidence that reaches no consumer, the same shape as the RTCP Extended
+  Reports and the Prometheus counters this cycle already fixed. On the
+  reference corpus the structured surfaces carried none of the findings stderr
+  carried. Each finding now travels with its attribution tier as a stable
+  token, because a flow-level guess and an exact five-tuple match are not the
+  same claim and no surface may emit one without saying which it is. A media
+  flow is not a dialog, so the section is capture-wide — a large share of these
+  errors name no call at all, and hanging them off dialogs would have hidden
+  exactly those.
+
+- **A hook that fails says so.** `--on-dialog` and `--on-quality` are an
+  automated-response path — an operator wires one to a firewall command and,
+  seeing nothing in the log, concludes the ban landed. The reaper matched the
+  child's exit status with a wildcard and discarded it, so a command that
+  exited 7 and one that exited 0 produced byte-identical output: silence.
+  Silence meaning "it worked" and silence meaning "it never worked" are the
+  two answers an operator must never have to tell apart. Exit status is now
+  reported, alongside counts of what settled, what never finished and what
+  the rate limiter suppressed.
+
+- **`--cores N` compacts and flags orphans, like the single-threaded path.**
+  The receive loop sweeps every five seconds of capture time; the parallel
+  path never swept at all, so the two modes answered differently on the same
+  input — on one reference set `--cores 4` reported no orphaned streams where
+  single-threaded reported 613. A `final_sweep` now runs exactly once, after
+  the merge, against the merged capture clock: per-worker sweeping would
+  measure each fragment against its own clock. Order matters and is pinned —
+  orphan marking before compaction, because compaction sheds the messages
+  orphan detection reads.
+
+- **The pre-commit hook names what failed.** Clippy and the test run both
+  printed `FAIL` and a "run it yourself" line, so whoever hit it paid for a
+  second full run of the same suite just to learn the name of the test — and
+  until that run finished could not tell whether the break was theirs or
+  already on HEAD. Every failure path now prints the part of the capture that
+  names the problem, writes the whole capture beside it, and stays bounded: a
+  wall of text on every commit is read as carefully as no text.
+
 - **A generated docs page can no longer ship unreachable.** Registering the
   rules page produced a published page that no nav pointed at, reachable only
   by a URL nobody had. The gate that existed covered `docs/internals/` only,

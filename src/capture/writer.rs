@@ -177,16 +177,31 @@ pub struct PcapWriter {
     /// Whether a DSB has already been written to the current file.
     dsb_written: bool,
     /// pcapng interface table: index = the `interface_id` stamped on EPBs.
-    /// Entry 0 is the constructor-supplied capture source; a further entry
-    /// is appended (with an IDB written mid-stream) the first time a packet
-    /// arrives from a not-yet-seen (interface name, link type) pair. Carried
-    /// across rotation so every split file re-emits the full set of IDBs.
+    /// An entry is appended (with an IDB written just before the packet's
+    /// own block) the first time a packet arrives from a not-yet-seen
+    /// (source name, link type) pair. Carried across rotation so every split
+    /// file re-emits the full set of IDBs.
+    ///
+    /// Starts EMPTY, even when the constructor was told a capture source:
+    /// see [`default_source`](Self::default_source).
     interfaces: Vec<InterfaceEntry>,
+    /// The capture source the constructor was told about (`--interface`, or
+    /// the `-I` argument), used to name the FIRST interface when the first
+    /// packet carries no source of its own.
+    ///
+    /// It is only a fallback because the constructor's idea of the source can
+    /// be coarser than the packets': `-I /captures` names a directory, and no
+    /// frame was ever captured from a directory. Writing its IDB eagerly made
+    /// that guess interface 0 of every export — either a phantom interface
+    /// with no packets on it, or (when the guess happened to be one member of
+    /// a multi-file set) the name every frame of every OTHER member was
+    /// attributed to. Deferring it lets the first packet's own source win.
+    default_source: Option<String>,
 }
 
 /// One entry of the writer's pcapng interface table (index = interface_id):
-/// the source name recorded as the IDB `if_name` option (`None` for the
-/// unnamed default interface) and the link type its IDB declares. Devices
+/// the source name recorded as the IDB `if_name` option (`None` when the
+/// source had no identity to record) and the link type its IDB declares. Devices
 /// can report different link types (e.g. `eth0` = Ethernet, `any` = Linux
 /// SLL), and so can the members of a multi-file input set, so an entry is
 /// identified by BOTH — one IDB declares exactly one link type.
@@ -271,10 +286,11 @@ impl PcapWriter {
             );
         }
 
-        let interfaces = vec![InterfaceEntry {
-            name: interface.filter(|n| !n.is_empty()).map(|n| n.to_string()),
-            link_type,
-        }];
+        // No IDB yet: the first packet decides what interface 0 is called,
+        // falling back to `default_source` only if it carries no source of
+        // its own. See the field's documentation.
+        let interfaces: Vec<InterfaceEntry> = Vec::new();
+        let default_source = interface.filter(|n| !n.is_empty()).map(str::to_string);
 
         // Classic pcap keeps header bytes out of the `--split` accounting
         // (its 24-byte global header has always been uncounted); pcapng
@@ -313,6 +329,7 @@ impl PcapWriter {
             export_mode,
             dsb_written: false,
             interfaces,
+            default_source,
         })
     }
 
@@ -394,13 +411,18 @@ impl PcapWriter {
                 // from an entry's needs an entry of its own — matching on the
                 // name alone silently decoded it as the other link type.
                 //
-                // Packets with no source identity (file replay, synthetic)
-                // belong to the constructor-supplied entry 0 as long as its
-                // link type agrees; a multi-file input set whose members were
-                // captured on different link layers is exactly the case where
-                // it does not. The table stays tiny (one entry per
-                // interface/link-type pair), so a linear scan per packet is
-                // cheap — the common single-interface case matches entry 0.
+                // A packet's source is its OWN name when it has one — the
+                // capture device for live, the capture FILE for replay. Two
+                // inputs at the same link type are otherwise indistinguishable
+                // here, and every frame of the second one was attributed to
+                // the first: an export that names the wrong origin with no
+                // hint that it is guessing.
+                //
+                // Packets with no source identity at all (synthetic) belong
+                // to any entry whose link type agrees. The table stays tiny
+                // (one entry per source/link-type pair), so a linear scan per
+                // packet is cheap — the common single-source case matches
+                // entry 0.
                 let name = packet.interface.as_deref().filter(|n| !n.is_empty());
                 let existing = self.interfaces.iter().position(|e| {
                     e.link_type == packet.link_type && (name.is_none() || e.name.as_deref() == name)
@@ -408,13 +430,25 @@ impl PcapWriter {
                 let interface_id = match existing {
                     Some(id) => id as u32,
                     None => {
-                        let idb = build_idb(packet.link_type, name);
+                        // The constructor-supplied source names the FIRST
+                        // interface only, and only when the packet brought no
+                        // name of its own. A later entry exists because this
+                        // packet's source or link type is genuinely different,
+                        // so borrowing the constructor's name for it would
+                        // assert an origin nothing established.
+                        let idb_name = name.or_else(|| {
+                            self.interfaces
+                                .is_empty()
+                                .then_some(self.default_source.as_deref())
+                                .flatten()
+                        });
+                        let idb = build_idb(packet.link_type, idb_name);
                         let idb_bytes = writer
                             .write_pcapng_block(idb)
                             .map_err(|e| anyhow::anyhow!("PCAP-NG IDB write error: {e}"))?;
                         self.bytes_written += idb_bytes as u64;
                         self.interfaces.push(InterfaceEntry {
-                            name: name.map(str::to_string),
+                            name: idb_name.map(str::to_string),
                             link_type: packet.link_type,
                         });
                         (self.interfaces.len() - 1) as u32
@@ -603,6 +637,12 @@ impl PcapWriter {
     /// and no operator signal. Call this when capture ends and report
     /// the error.
     pub fn finish(&mut self) -> Result<()> {
+        // A capture that yielded no packets still has to say what it was a
+        // capture OF. Interface 0's IDB is normally written by the first
+        // packet (which knows its own source); with no packets at all, the
+        // constructor's source is the only thing known, and a section with no
+        // IDB would leave the export saying nothing about where it came from.
+        self.ensure_pcapng_interface()?;
         match &mut self.backend {
             WriterBackend::Pcap(w) => w.flush().context("flushing pcap output at end of capture"),
             WriterBackend::PcapNg(writer) => {
@@ -613,6 +653,35 @@ impl PcapWriter {
                     .context("flushing pcapng output at end of capture")
             }
         }
+    }
+
+    /// Write interface 0's IDB from the constructor-supplied source if no
+    /// packet has established one yet. No-op for classic pcap and for a
+    /// pcapng file that already has an interface.
+    ///
+    /// The IDB is written even when no source name is known, because a
+    /// pcapng section with no Interface Description Block at all is not
+    /// merely uninformative: libpcap refuses to open it ("the capture file
+    /// has no Interface Description Blocks"), so an export that happened to
+    /// contain no packets would be unreadable by sipnab itself, by tcpdump,
+    /// and by every other libpcap consumer.
+    fn ensure_pcapng_interface(&mut self) -> Result<()> {
+        let WriterBackend::PcapNg(writer) = &mut self.backend else {
+            return Ok(());
+        };
+        if !self.interfaces.is_empty() {
+            return Ok(());
+        }
+        let name = self.default_source.as_deref();
+        let idb_bytes = writer
+            .write_pcapng_block(build_idb(self.link_type_raw, name))
+            .map_err(|e| anyhow::anyhow!("PCAP-NG IDB write error: {e}"))?;
+        self.bytes_written += idb_bytes as u64;
+        self.interfaces.push(InterfaceEntry {
+            name: name.map(str::to_string),
+            link_type: self.link_type_raw,
+        });
+        Ok(())
     }
 
     /// Force rotation to a new output file.
@@ -633,6 +702,13 @@ impl PcapWriter {
     /// pcapng, 0 for classic pcap), resets `dsb_written`/`file_opened_at`, and
     /// logs the rotation at info level.
     pub fn rotate(&mut self) -> Result<()> {
+        // The file about to be closed must be readable on its own, and a
+        // pcapng section with no IDB is not — see
+        // [`ensure_pcapng_interface`](Self::ensure_pcapng_interface). Only
+        // reachable when rotation fires before the first packet (a duration
+        // split, or SIGUSR1 on an idle capture).
+        self.ensure_pcapng_interface()?;
+
         self.sequence += 1;
         let new_path = rotated_path(&self.base_path, self.sequence);
 
@@ -1843,6 +1919,167 @@ mod tests {
                     NgBlock::Epb { interface_id: 1 },
                 ],
                 "same name, new link type => its own interface"
+            );
+        }
+
+        /// Two sources at the SAME link type get one IDB each, and every EPB
+        /// references the source it actually came from.
+        ///
+        /// The link-type rule alone separates inputs captured on different
+        /// link layers. Two ordinary Ethernet captures collapsed onto the
+        /// constructor's interface 0, so the export named `a.pcap` as the
+        /// origin of every frame read out of `b.pcap` — a claim the file
+        /// makes with no hint that it is a guess.
+        #[test]
+        fn pcapng_two_sources_same_link_type_get_their_own_idbs() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("twofiles.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("a.pcap"),
+                )
+                .unwrap();
+                w.write(&pkt_on("a.pcap", 1, 40)).unwrap();
+                w.write(&pkt_on("b.pcap", 1, 40)).unwrap();
+                w.write(&pkt_on("a.pcap", 1, 40)).unwrap();
+                w.write(&pkt_on("b.pcap", 1, 40)).unwrap();
+                w.finish().unwrap();
+            }
+
+            assert_eq!(
+                read_ng_blocks(&path),
+                vec![
+                    NgBlock::Idb {
+                        name: Some("a.pcap".to_string()),
+                        linktype: 1,
+                    },
+                    NgBlock::Epb { interface_id: 0 },
+                    NgBlock::Idb {
+                        name: Some("b.pcap".to_string()),
+                        linktype: 1,
+                    },
+                    NgBlock::Epb { interface_id: 1 },
+                    NgBlock::Epb { interface_id: 0 },
+                    NgBlock::Epb { interface_id: 1 },
+                ],
+                "same link type, different source file => its own interface"
+            );
+        }
+
+        /// The first packet's own source names interface 0, even when the
+        /// constructor was told something else.
+        ///
+        /// `-I /captures` hands the writer a DIRECTORY as its capture source,
+        /// and no frame was ever captured from a directory. Writing that guess
+        /// as interface 0 up front left a phantom interface with no packets on
+        /// it in every directory export.
+        #[test]
+        fn pcapng_first_packet_source_names_interface_zero() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("dirsource.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("/captures"),
+                )
+                .unwrap();
+                w.write(&pkt_on("/captures/a.pcap", 1, 40)).unwrap();
+                w.finish().unwrap();
+            }
+
+            assert_eq!(
+                read_ng_blocks(&path),
+                vec![
+                    NgBlock::Idb {
+                        name: Some("/captures/a.pcap".to_string()),
+                        linktype: 1,
+                    },
+                    NgBlock::Epb { interface_id: 0 },
+                ],
+                "the file the frame came from names interface 0, not the -I directory"
+            );
+        }
+
+        /// The constructor's source names interface 0 only. A second entry
+        /// exists because that packet's source or link type is genuinely
+        /// different, so it must not borrow the constructor's name.
+        #[test]
+        fn pcapng_later_interface_does_not_borrow_the_constructor_source() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("noborrow.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    113,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("first.pcap"),
+                )
+                .unwrap();
+                // Unnamed sources: the first takes the constructor's name,
+                // the second (a different link layer) has no established
+                // origin and must be recorded as having none.
+                w.write(&pkt_unnamed(113, 40)).unwrap();
+                w.write(&pkt_unnamed(1, 40)).unwrap();
+                w.finish().unwrap();
+            }
+
+            let names: Vec<_> = read_ng_blocks(&path)
+                .into_iter()
+                .filter_map(|b| match b {
+                    NgBlock::Idb { name, .. } => Some(name),
+                    NgBlock::Epb { .. } => None,
+                })
+                .collect();
+            assert_eq!(
+                names,
+                vec![Some("first.pcap".to_string()), None],
+                "only interface 0 may be named by the constructor's source"
+            );
+        }
+
+        /// A capture that yielded no packets still records what it was a
+        /// capture OF: `finish()` writes interface 0's IDB from the
+        /// constructor's source rather than leaving a section that says
+        /// nothing about its origin.
+        #[test]
+        fn pcapng_empty_capture_still_declares_its_source() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("nopackets.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("eth0"),
+                )
+                .unwrap();
+                w.finish().unwrap();
+            }
+
+            assert_eq!(
+                read_ng_blocks(&path),
+                vec![NgBlock::Idb {
+                    name: Some("eth0".to_string()),
+                    linktype: 1,
+                }],
+                "an empty export still names its capture source"
             );
         }
 
