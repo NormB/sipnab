@@ -65,7 +65,7 @@ drifted.
 | [`tests/snapshots/`](https://github.com/NormB/sipnab/blob/main/tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](https://github.com/NormB/sipnab/blob/main/tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/schemas/`](https://github.com/NormB/sipnab/blob/main/tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
-| [`tests/pcap-samples/`](https://github.com/NormB/sipnab/blob/main/tests/pcap-samples) — real captures | Checked in; never regenerated. |
+| [`tests/pcap-samples/`](https://github.com/NormB/sipnab/blob/main/tests/pcap-samples) — capture fixtures | Ten are synthetic: `python3 tests/gen-pcap-samples.py` rewrites them, and the same script in check mode reports any that have drifted from it. Nothing regenerates the rest; they stay as checked in. |
 | [`tests/install-sh/`](https://github.com/NormB/sipnab/blob/main/tests/install-sh) — installer cases | Hand-maintained; exercised by the `install-sh` CI job. |
 | [`fuzz/corpus/`](https://github.com/NormB/sipnab/blob/main/fuzz/corpus) — fuzz seeds | Grown by `cargo fuzz run` (nightly). Note nothing on the stable toolchain reads this directory: `fuzz_corpus_replay` drives its own in-file seed set. To make a reproducer run in every `cargo test`, add it to `smoke_fuzz_test` as well. |
 

@@ -32,14 +32,14 @@ use support::{McpSession, call_tool_with_args, ok_payload};
 /// Verified independently of the linter, through two other tools on the same
 /// capture: `get_sdp_timeline` reports `mode: "sendrecv"` on all six exchanges,
 /// and `rtp_stats` reports exactly one stream — 355 packets,
-/// 172.16.98.145:8000 -> 172.16.98.1:8000 — with nothing coming back. That is
+/// 203.0.113.145:8000 -> 203.0.113.1:8000 — with nothing coming back. That is
 /// the defect `OBS-3264-6.1-DIRECTION-UNMET` names, and no linter reading
 /// message text can see it: both halves of the offer/answer are perfectly legal
 /// SDP.
 const B2BUA: &str = "tests/pcap-samples/b2bua-asterisk.pcapng";
 
 /// The dialog in [`B2BUA`] carrying the one-way media.
-const B2BUA_CALL: &str = "37686afc57ce24ac655742b3644a7bb8@172.16.98.101:5060";
+const B2BUA_CALL: &str = "b2bua-leg-synth@203.0.113.101:5060";
 
 /// A capture whose first `OPTIONS` ping carries neither a `Max-Forwards` header
 /// field nor an RFC 3261 branch cookie.
@@ -50,7 +50,7 @@ const B2BUA_CALL: &str = "37686afc57ce24ac655742b3644a7bb8@172.16.98.101:5060";
 const OPTIONS_PING: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
 
 /// The dialog in [`OPTIONS_PING`] whose first message trips two message rules.
-const OPTIONS_CALL: &str = "fab24225-14f8a735-e063ce6@176.9.39.206";
+const OPTIONS_CALL: &str = "options-ping-c-synth@198.51.100.206";
 
 /// Findings for one call, as `(rule_id, severity)` pairs.
 fn rule_ids(payload: &serde_json::Value) -> Vec<String> {

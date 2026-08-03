@@ -132,7 +132,7 @@ fn codec_negotiation_distinguishes_absent_sdp_from_an_unanswered_offer() {
     let v = call_tool(
         CAPTURE,
         "check_codec_negotiation",
-        serde_json::json!({"call_id": "0076da05-6f74-4bd0-8351-179edaca8596"}),
+        serde_json::json!({"call_id": "options-ping-a-synth@192.168.10.13"}),
     );
     assert_eq!(
         v["result"], "no_sdp_in_capture",
@@ -155,7 +155,7 @@ fn codec_negotiation_names_a_static_payload_type_with_no_rtpmap() {
     let v = call_tool(
         CAPTURE,
         "check_codec_negotiation",
-        serde_json::json!({"call_id": "NA4y5nr9Jk"}),
+        serde_json::json!({"call_id": "codec-reject-synth"}),
     );
     let offered: Vec<String> = serde_json::from_value(v["offered"].clone()).expect("offered");
     assert_eq!(

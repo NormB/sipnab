@@ -363,15 +363,15 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
   "schema_version": 1,
   "dialogs": [
     {
-      "call_id": "1-4461@127.0.1.1",
+      "call_id": "call-1-synth@192.0.2.10",
       "state": "Registered",
       "method": "REGISTER",
-      "from_user": "ua1",
-      "to_user": "ua1",
+      "from_user": "ua-a",
+      "to_user": "ua-a",
       "msg_count": 7,
-      "duration_sec": 0.003,
-      "created_at": "2016-11-17T21:52:35.303348+00:00",
-      "updated_at": "2016-11-17T21:52:35.307346+00:00",
+      "duration_sec": 0.036,
+      "created_at": "2016-11-17T21:52:35.303349+00:00",
+      "updated_at": "2016-11-17T21:52:35.339349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -380,15 +380,15 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       }
     },
     {
-      "call_id": "2-4461@127.0.1.1",
+      "call_id": "call-2-synth@192.0.2.10",
       "state": "Registered",
       "method": "REGISTER",
-      "from_user": "ua1",
-      "to_user": "ua1",
+      "from_user": "ua-a",
+      "to_user": "ua-a",
       "msg_count": 7,
-      "duration_sec": 5.005,
-      "created_at": "2016-11-17T21:52:35.401366+00:00",
-      "updated_at": "2016-11-17T21:52:40.406369+00:00",
+      "duration_sec": 0.036,
+      "created_at": "2016-11-17T21:52:35.403349+00:00",
+      "updated_at": "2016-11-17T21:52:35.439349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -400,7 +400,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
   "returned": 2,
   "total_matched": 1334,
   "truncated": true,
-  "next_cursor": "2016-11-17T21:52:35.401366+00:00|2-4461@127.0.1.1"
+  "next_cursor": "2016-11-17T21:52:35.403349+00:00|call-2-synth@192.0.2.10"
 }
 ```
 
@@ -489,15 +489,15 @@ invalid_params (-32602) naming the offending value.
   "schema_version": 1,
   "dialogs": [
     {
-      "call_id": "73-4461@127.0.1.1",
+      "call_id": "call-1197-synth@192.0.2.10",
       "state": "Failed",
       "method": "REGISTER",
-      "from_user": "ua1",
-      "to_user": "ua1",
+      "from_user": "ua-a",
+      "to_user": "ua-a",
       "msg_count": 6,
-      "duration_sec": 0.005,
-      "created_at": "2016-11-17T21:52:42.501366+00:00",
-      "updated_at": "2016-11-17T21:52:42.507352+00:00",
+      "duration_sec": 0.03,
+      "created_at": "2016-11-17T21:54:34.903349+00:00",
+      "updated_at": "2016-11-17T21:54:34.933349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -509,7 +509,7 @@ invalid_params (-32602) naming the offending value.
   "returned": 1,
   "total_matched": 6,
   "truncated": true,
-  "next_cursor": "2016-11-17T21:52:42.501366+00:00|73-4461@127.0.1.1"
+  "next_cursor": "2016-11-17T21:54:34.903349+00:00|call-1197-synth@192.0.2.10"
 }
 ```
 
@@ -948,11 +948,11 @@ negotiates `sendrecv` in both directions, and the capture carries 355 RTP
 packets in one:
 
 ```jsonc
-// lint_dialog { "call_id": "37686afc57ce24ac655742b3644a7bb8@172.16.98.101:5060",
+// lint_dialog { "call_id": "b2bua-leg-synth@203.0.113.101:5060",
 //               "rulesets": ["observed"] }
 {
   "schema_version": 1,
-  "call_id": "37686afc57ce24ac655742b3644a7bb8@172.16.98.101:5060",
+  "call_id": "b2bua-leg-synth@203.0.113.101:5060",
   "rulesets": ["observed"],
   "severity_min": "info",
   "message_count": 15,
@@ -1054,10 +1054,10 @@ finding new ones.
 | `index` | u32 | Required. Zero-based position in the dialog. Out of range returns invalid_params (-32602) naming the message count. |
 
 ```jsonc
-// validate_message { "call_id": "fab24225-14f8a735-e063ce6@176.9.39.206", "index": 0 }
+// validate_message { "call_id": "options-ping-c-synth@198.51.100.206", "index": 0 }
 {
   "schema_version": 1,
-  "call_id": "fab24225-14f8a735-e063ce6@176.9.39.206",
+  "call_id": "options-ping-c-synth@198.51.100.206",
   "message_index": 0,
   "message_count": 2,
   "finding_count": 2,
@@ -1235,14 +1235,14 @@ same window without a filter answers `total_matched: 247`:
   "schema_version": 1,
   "dialogs": [
     {
-      "call_id": "12-4461@127.0.1.1",
-      "created_at": "2016-11-17T21:52:36.401371+00:00",
+      "call_id": "call-10-synth@192.0.2.10",
+      "created_at": "2016-11-17T21:52:36.203349+00:00",
       "final_status_code": 403,
       "state": "Failed"
     },
     {
-      "call_id": "48-4461@127.0.1.1",
-      "created_at": "2016-11-17T21:52:40.001366+00:00",
+      "call_id": "call-25-synth@192.0.2.10",
+      "created_at": "2016-11-17T21:52:37.703349+00:00",
       "final_status_code": 403,
       "state": "Failed"
     }

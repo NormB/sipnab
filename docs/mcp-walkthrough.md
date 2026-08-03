@@ -981,12 +981,12 @@ problem is one-way audio, and the hint names the direction that is missing.
 `488 Not Acceptable Here` is usually blamed on codecs. Check rather than assume:
 
 ```json
-{"name": "check_codec_negotiation", "arguments": {"call_id": "NA4y5nr9Jk"}}
+{"name": "check_codec_negotiation", "arguments": {"call_id": "codec-reject-synth"}}
 ```
 
 ```json
 {
-  "call_id": "NA4y5nr9Jk",
+  "call_id": "codec-reject-synth",
   "final_status_code": 488,
   "offered": ["PCMU"],
   "answered": [],
