@@ -253,14 +253,13 @@ const CASES: &[Case] = &[
                 .is_some_and(|s| s.iter().any(|s| s["packets"].as_u64().unwrap_or(0) > 0))
         },
     },
-    Case {
-        expr: "rtp.orphaned == true",
-        want: |d| {
-            d["streams"]
-                .as_array()
-                .is_some_and(|s| s.iter().any(|s| s["orphaned"] == true))
-        },
-    },
+    // `rtp.orphaned` is deliberately absent. It was withdrawn as a filter field
+    // — see the note in `docs/filter-dsl.md` and
+    // `rtp_orphaned_is_refused_with_a_reason` in `src/sip/dsl.rs`, which pins
+    // that asking for it is an error rather than a silent no-match. A row here
+    // asserted the opposite and made this whole test exit 2 on every real
+    // capture, which nothing noticed because the corpus suite needs
+    // `SIPNAB_CORPUS` and CI never sets it.
     Case {
         expr: "rtp.codec == 'PCMU'",
         want: |d| {

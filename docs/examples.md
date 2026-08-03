@@ -90,7 +90,7 @@ INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060  Failed  408 Req
 
 **What to look for:**
 
-- The `--problems` **flag** matches `retransmits > 0 OR state == 'Failed'` — a deliberately narrow sweep. The same-named **DSL alias**, reached with `--filter problems`, is much broader: `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`. Don't conflate the two. If both come back empty, the capture is probably clean.
+- The `--problems` **flag** matches `retransmits > 0 OR state == 'Failed'` — a deliberately narrow sweep. The same-named **DSL alias**, reached with `--filter problems`, is much broader: `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`. Don't conflate the two. If both come back empty, the capture is probably clean.
 - The end-of-capture summary distinguishes RTP packets from RTP streams: `852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams`. A capture with media but no SIP usually means the SIP signaling happened off-pcap (different VLAN, different host, different port).
 
 **Pitfalls:**

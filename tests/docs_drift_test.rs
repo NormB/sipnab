@@ -2571,3 +2571,59 @@ fn the_published_amr_wb_tables_match_the_model() {
          gate is no longer reading it."
     );
 }
+
+/// Every alias the documentation spells out in full must expand to exactly what
+/// `expand_alias` returns.
+///
+/// `problems` is the one alias documented verbatim, in `docs/examples.md` and
+/// its site mirror `website/content/docs/cookbook.md`, precisely because a
+/// reader is told not to conflate it with the narrower `--problems` flag. That
+/// makes the quoted expansion load-bearing, and it had drifted: both files
+/// listed `OR rtp.orphaned == true`, a field withdrawn from the DSL, so the
+/// docs promised a broader sweep than the code performs AND named a field that
+/// `--filter` now refuses outright.
+///
+/// Nothing caught it. `rtp_orphaned_is_refused_with_a_reason` in `src/sip/dsl.rs`
+/// pins the refusal and `expand_alias`'s own test pins that the alias does not
+/// contain "orphaned", but neither reads the documentation. This does.
+#[test]
+fn a_documented_alias_expands_to_what_the_code_expands_it_to() {
+    let want = sipnab::sip::dsl::expand_alias("problems").expect("the problems alias exists");
+    let normalise = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let want = normalise(want);
+
+    let mut checked = 0;
+    for rel in ["docs/examples.md", "website/content/docs/cookbook.md"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+
+        // The expansion is quoted in backticks and is the only backticked span
+        // in these files that opens with the alias's first predicate.
+        let opener = want
+            .split(" OR ")
+            .next()
+            .expect("the expansion has at least one predicate");
+        let found = text
+            .split('`')
+            .find(|span| span.trim_start().starts_with(opener))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{rel} no longer quotes the `problems` expansion (nothing \
+                     backticked starts with {opener:?}). If the documentation \
+                     stopped spelling the alias out, delete this gate rather \
+                     than letting it pass by finding nothing."
+                )
+            });
+
+        assert_eq!(
+            normalise(found),
+            want,
+            "{rel} documents the `problems` alias as expanding differently from \
+             `expand_alias`. A reader building on the quoted expression gets a \
+             different set of dialogs than `--filter problems` returns."
+        );
+        checked += 1;
+    }
+
+    assert_eq!(checked, 2, "both the doc and its site mirror must be read");
+}
