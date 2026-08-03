@@ -929,6 +929,7 @@ it, and the suppression syntax.
 | `call_id` | string | Required. The call to lint. |
 | `rulesets` | string[]? | Selectors, OR-ed together. Omit it, or pass an empty list, for the whole catalogue. |
 | `severity_min` | string? | Drops quieter findings: `info` (default), `notice`, `warning`, `error`. |
+| `suppression_file` | string? | Bare filename of a suppression list inside `--mcp-file-root`. Wins outright over discovery. |
 
 Selectors take two forms. The catalogue's own names — `all`, `must`, `rfc`
 (MUST and SHOULD together), `interop`, `observation` (`observed` also works)
@@ -992,6 +993,48 @@ tool:
 - `OBS-5761-5.1.1-RTCP-MUX-UNANSWERED` needs the endpoint pairs RTCP arrived
   on. The stream store folds an RTCP report into the stream it describes and
   keeps no record of where it landed, so no MCP tool raises this rule.
+
+#### Suppression, and what it must tell you
+
+A project silences rules with a `.sipnablint` — one identifier per line, or a
+prefix ending `*`, with `#` starting a comment. [SIP conformance
+rules](sip-lint-rules.md) documents the pattern syntax.
+
+sipnab looks for one beside the capture, then climbs toward the project root
+and stops there. A capture that sits outside any project — a corpus mount, a
+share, `/tmp` — adopts nothing from above itself, because inheriting a
+stranger's suppression list would switch off rules nobody here turned off.
+`suppression_file` overrides the search outright, and a file it names that
+sipnab cannot open returns invalid_params rather than quietly linting with every
+rule on.
+
+Two response fields carry the consequences, and every call includes both, even
+when every number is zero:
+
+```jsonc
+"suppressions": {
+  "file": "/srv/captures/.sipnablint",   // null when none applied
+  "patterns": ["OBS-*", "SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING"],
+  "findings_suppressed": 4
+},
+"findings_withheld": { "suppressed": 4, "below_severity": 2, "capped": 0 }
+```
+
+A response carrying no field and a response carrying zero must not be the same
+bytes. The first says nothing about whether the run hid findings. The second
+says it hid none.
+
+The three counts stay apart because they send you to three different places:
+something you wrote down silenced it, your severity floor dropped it, or there
+was simply too much of it and the per-rule cap stopped after 25.
+`capped` is the only lower bound of the three — a rule may stop evaluating once
+it hits the cap, and nothing can count what it then never raises. `suppressed`
+and `below_severity` are exact, which is why suppression deliberately does not
+short-circuit the rule.
+
+The response names the file rather than merely acknowledging one. "4 findings
+suppressed" leaves you nothing to act on when the search walked up three
+directories to find the file that did it.
 
 ### `validate_message`
 

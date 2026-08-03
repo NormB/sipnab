@@ -398,9 +398,13 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 251 -> 252 when the `lint_dialog` section of `docs/mcp.md` gained
     // a link to `sip-lint-rules.md`: the tool reference names the rule
     // catalogue rather than restating the rules beside it.
+    // Raised 252 -> 254 when `.sipnablint` was documented on both sides of that
+    // pair — the MCP page's suppression section links to the rule catalogue for
+    // the pattern syntax, and the catalogue links back to the MCP page for the
+    // response fields that report what a suppression silenced.
     assert_eq!(
-        seen, 252,
-        "extractor found {seen} wiki links, expected 252. More is fine — bump \
+        seen, 254,
+        "extractor found {seen} wiki links, expected 254. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

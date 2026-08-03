@@ -59,8 +59,163 @@ pub use finding::{
 pub use media::{ObservedMedia, ObservedRtcp, ObservedStream};
 pub use message::malformation_reasons;
 
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
 use crate::sip::dialog::SipDialog;
 use crate::sip::message::SipMessage;
+
+/// The file a project keeps its lint suppressions in.
+pub const SUPPRESSION_FILENAME: &str = ".sipnablint";
+
+/// How far above a capture the search for [`SUPPRESSION_FILENAME`] may climb.
+///
+/// A capture can sit anywhere — a corpus mount, `/tmp`, a colleague's home —
+/// and silently adopting a suppression list belonging to an unrelated tree
+/// would switch rules off that nobody in this project turned off. The cap is a
+/// backstop behind the project-root rule in [`SuppressionFile::discover`],
+/// which is the real bound.
+const MAX_DISCOVERY_DEPTH: usize = 8;
+
+/// A `.sipnablint` that was found and read.
+///
+/// Carries the path as well as the patterns because "3 findings suppressed" is
+/// unactionable when discovery walked up four directories to get there — the
+/// operator has to know *which* file to edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuppressionFile {
+    /// Where the patterns came from.
+    path: PathBuf,
+    /// The patterns, in file order.
+    patterns: Vec<String>,
+}
+
+impl SuppressionFile {
+    /// Read a suppression list from an explicit path.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the read error. A named file that cannot be read is an
+    /// error rather than an empty list: a caller that pointed at a file has
+    /// stated an intent, and quietly linting with every rule on would be the
+    /// opposite of what they asked for.
+    pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path)?;
+        let config = LintConfig::new().suppress_list(&text);
+        Ok(Self {
+            path: path.to_path_buf(),
+            patterns: config.suppressions().to_vec(),
+        })
+    }
+
+    /// Find the `.sipnablint` that governs a capture, or `None`.
+    ///
+    /// `start` is the directory holding the capture. That directory always
+    /// counts. Above it the search climbs only while still inside a project —
+    /// the nearest ancestor holding a `.git` — so a capture in a corpus mount
+    /// that belongs to no project adopts nothing from above itself.
+    #[must_use]
+    pub fn discover(start: &Path) -> Option<PathBuf> {
+        let here = start.join(SUPPRESSION_FILENAME);
+        if here.is_file() {
+            return Some(here);
+        }
+        // No project above this capture means no upward search at all.
+        let root = Self::project_root(start)?;
+        let mut dir = start.parent();
+        while let Some(d) = dir {
+            let candidate = d.join(SUPPRESSION_FILENAME);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if d == root {
+                break;
+            }
+            dir = d.parent();
+        }
+        None
+    }
+
+    /// The nearest ancestor of `start` (inclusive) holding a `.git`.
+    fn project_root(start: &Path) -> Option<PathBuf> {
+        let mut dir = start;
+        for _ in 0..MAX_DISCOVERY_DEPTH {
+            if dir.join(".git").exists() {
+                return Some(dir.to_path_buf());
+            }
+            dir = dir.parent()?;
+        }
+        None
+    }
+
+    /// Where the patterns came from.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The patterns, in file order.
+    #[must_use]
+    pub fn patterns(&self) -> &[String] {
+        &self.patterns
+    }
+}
+
+/// Why the configuration withheld a finding a rule actually raised.
+///
+/// Kept as three values rather than one boolean because they answer different
+/// operator questions — "you asked me not to see this", "there was too much of
+/// it", "it was below your floor" — and a single "hidden" count says something
+/// was withheld without saying why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Withheld {
+    /// A suppression pattern matched the rule identifier.
+    Suppressed,
+    /// The rule is quieter than the configured minimum severity.
+    BelowSeverity,
+    /// The rule already contributed [`LintConfig::max_per_rule`] findings.
+    Capped,
+}
+
+/// How many findings each reason withheld from one run.
+///
+/// Always reported, including when every field is zero. A response carrying no
+/// counts and a response carrying zeroes must not be the same bytes: the first
+/// says nothing about whether anything was hidden, and the second says nothing
+/// was.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct WithheldCounts {
+    /// Findings a suppression pattern silenced.
+    pub suppressed: usize,
+    /// Findings dropped for sitting below the minimum severity.
+    pub below_severity: usize,
+    /// Findings dropped by the per-rule, per-dialog cap.
+    ///
+    /// A lower bound, and the only one of the three that is: a rule may also
+    /// stop evaluating once it has hit the cap, and nothing can count the
+    /// findings it then never raises. The other two counts are exact, because
+    /// suppression and the severity floor deliberately do not short-circuit.
+    pub capped: usize,
+}
+
+impl WithheldCounts {
+    /// Whether anything at all was withheld.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.suppressed > 0 || self.below_severity > 0 || self.capped > 0
+    }
+}
+
+/// The findings of one run, and what the configuration kept back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LintOutcome {
+    /// What survived the configuration.
+    pub findings: Vec<Finding>,
+    /// What did not, by reason.
+    pub withheld: WithheldCounts,
+}
 
 /// A named subset of the catalogue.
 ///
@@ -244,19 +399,49 @@ impl LintConfig {
         &self.suppressions
     }
 
-    /// Whether `rule` runs and reports under this configuration.
+    /// Adopt every pattern from a loaded [`SuppressionFile`].
     #[must_use]
-    pub fn enabled(&self, rule: &RuleMeta) -> bool {
-        if !self.ruleset.contains(rule) {
-            return false;
-        }
-        if rule.severity < self.min_severity {
-            return false;
-        }
-        !self
+    pub fn with_suppression_file(mut self, file: &SuppressionFile) -> Self {
+        self.suppressions.extend(file.patterns().iter().cloned());
+        self
+    }
+
+    /// Whether the selected ruleset contains `rule` at all.
+    ///
+    /// Separate from [`Self::withheld_reason`] because the two are different
+    /// facts. A rule outside the selected ruleset was never asked for, so its
+    /// findings are not "withheld" from anybody and must not be counted as
+    /// though something were being kept back.
+    #[must_use]
+    pub fn selected(&self, rule: &RuleMeta) -> bool {
+        self.ruleset.contains(rule)
+    }
+
+    /// Why a finding from `rule` would be withheld, ignoring the per-rule cap.
+    ///
+    /// Suppression is tested before severity so a rule that is both explicitly
+    /// suppressed and below the floor reports as suppressed — the more
+    /// actionable of the two answers, because it names something the operator
+    /// wrote down.
+    #[must_use]
+    pub fn withheld_reason(&self, rule: &RuleMeta) -> Option<Withheld> {
+        if self
             .suppressions
             .iter()
             .any(|p| suppression_matches(p, rule.id))
+        {
+            return Some(Withheld::Suppressed);
+        }
+        if rule.severity < self.min_severity {
+            return Some(Withheld::BelowSeverity);
+        }
+        None
+    }
+
+    /// Whether `rule` runs and reports under this configuration.
+    #[must_use]
+    pub fn enabled(&self, rule: &RuleMeta) -> bool {
+        self.selected(rule) && self.withheld_reason(rule).is_none()
     }
 
     /// Every rule this configuration would run.
@@ -290,6 +475,8 @@ pub(crate) struct FindingSink<'a> {
     findings: Vec<Finding>,
     /// How many findings each rule has already contributed, by identifier.
     counts: Vec<(&'static str, usize)>,
+    /// What the configuration kept back, by reason.
+    withheld: WithheldCounts,
 }
 
 impl<'a> FindingSink<'a> {
@@ -299,15 +486,25 @@ impl<'a> FindingSink<'a> {
             config,
             findings: Vec::new(),
             counts: Vec::new(),
+            withheld: WithheldCounts::default(),
         }
     }
 
     /// Whether a rule is worth evaluating at all.
     ///
-    /// Rules call this before doing work a suppressed rule would waste — the
-    /// media rules in particular walk every observed stream.
+    /// Deliberately does **not** short-circuit on suppression or on the
+    /// severity floor, though it once did. Skipping a suppressed rule saves
+    /// the work of evaluating it and destroys the only thing that could have
+    /// counted its findings: a rule that never runs raises nothing, so
+    /// `suppressed: 3` cannot be reconstructed afterwards from anything. The
+    /// count is the whole point of the disclosure, so the rule runs and
+    /// [`Self::push`] drops and counts the result.
+    ///
+    /// What still short-circuits is the pair that costs nothing to report:
+    /// a rule outside the selected ruleset, which was never asked for, and a
+    /// rule already at its cap, whose overflow is unbounded by construction.
     pub(crate) fn wants(&self, rule: &RuleMeta) -> bool {
-        if !self.config.enabled(rule) {
+        if !self.config.selected(rule) {
             return false;
         }
         self.config.max_per_rule == 0 || self.count_of(rule.id) < self.config.max_per_rule
@@ -321,7 +518,12 @@ impl<'a> FindingSink<'a> {
             .map_or(0, |(_, n)| *n)
     }
 
-    /// Record a finding, unless the configuration rejects it.
+    /// Record a finding, or count the reason the configuration rejected it.
+    ///
+    /// Every rejection increments exactly one counter. A rejection that
+    /// returns without counting is the defect this whole path exists to
+    /// prevent — it hands the caller a short finding list with nothing to say
+    /// the list is short.
     pub(crate) fn push(
         &mut self,
         rule: &RuleMeta,
@@ -330,7 +532,22 @@ impl<'a> FindingSink<'a> {
         expected: impl Into<String>,
         explanation: impl Into<String>,
     ) {
-        if !self.wants(rule) {
+        // Never asked for: not withheld from anyone, so not counted.
+        if !self.config.selected(rule) {
+            return;
+        }
+        if let Some(reason) = self.config.withheld_reason(rule) {
+            match reason {
+                Withheld::Suppressed => self.withheld.suppressed += 1,
+                Withheld::BelowSeverity => self.withheld.below_severity += 1,
+                // `withheld_reason` never returns this; the cap is per-sink
+                // state and is handled below.
+                Withheld::Capped => self.withheld.capped += 1,
+            }
+            return;
+        }
+        if self.config.max_per_rule != 0 && self.count_of(rule.id) >= self.config.max_per_rule {
+            self.withheld.capped += 1;
             return;
         }
         match self.counts.iter_mut().find(|(k, _)| *k == rule.id) {
@@ -344,6 +561,15 @@ impl<'a> FindingSink<'a> {
             expected,
             explanation,
         ));
+    }
+
+    /// The findings and the counts, ordered by message index then rule id.
+    pub(crate) fn finish_outcome(self) -> LintOutcome {
+        let withheld = self.withheld;
+        LintOutcome {
+            findings: self.finish(),
+            withheld,
+        }
     }
 
     /// The collected findings, ordered by message index then rule identifier.
@@ -378,6 +604,31 @@ impl Linter {
     #[must_use]
     pub fn config(&self) -> &LintConfig {
         &self.config
+    }
+
+    /// Run the message-scoped rules against one message, keeping the counts.
+    #[must_use]
+    pub fn lint_message_detailed(&self, msg: &SipMessage, message_index: usize) -> LintOutcome {
+        let mut sink = FindingSink::new(&self.config);
+        message::lint(msg, message_index, &mut sink);
+        sink.finish_outcome()
+    }
+
+    /// Run every rule against a dialog and its media, keeping the counts.
+    ///
+    /// The counts are the reason this exists beside
+    /// [`Self::lint_dialog_with_media`]: a caller that reports findings to a
+    /// human or an agent has to be able to say what it did not report.
+    #[must_use]
+    pub fn lint_dialog_with_media_detailed(
+        &self,
+        dialog: &SipDialog,
+        media: &ObservedMedia,
+    ) -> LintOutcome {
+        let mut sink = FindingSink::new(&self.config);
+        self.run_signalling(dialog, &mut sink);
+        media::lint(dialog, media, &mut sink);
+        sink.finish_outcome()
     }
 
     /// Run the message-scoped rules against one message.
@@ -578,12 +829,207 @@ mod tests {
     /// The sink drops a suppressed rule, and says so through `wants` before the
     /// rule does any work.
     #[test]
-    fn sink_drops_suppressed_rules() {
+    fn sink_drops_suppressed_rules_and_counts_every_one() {
         let config = LintConfig::new().suppress(BRANCH_COOKIE.id);
         let mut sink = FindingSink::new(&config);
-        assert!(!sink.wants(&BRANCH_COOKIE));
+
+        // `wants` deliberately still says yes. It used to say no, which saved
+        // the work of evaluating a suppressed rule and destroyed the only
+        // thing that could count its findings — the rule never ran, so there
+        // was nothing to count and `suppressed: 3` could not be reconstructed
+        // from anything afterwards.
+        assert!(
+            sink.wants(&BRANCH_COOKIE),
+            "a suppressed rule must still evaluate, or its findings cannot be \
+             counted and the caller is handed a short list with nothing saying \
+             it is short"
+        );
+
+        for i in 0..3 {
+            sink.push(&BRANCH_COOKIE, i, "o", "e", "x");
+        }
+        let outcome = sink.finish_outcome();
+        assert!(
+            outcome.findings.is_empty(),
+            "suppressed findings are dropped"
+        );
+        assert_eq!(
+            outcome.withheld.suppressed, 3,
+            "every dropped finding is counted, not just the first"
+        );
+        assert_eq!(outcome.withheld.below_severity, 0);
+        assert_eq!(outcome.withheld.capped, 0);
+    }
+
+    /// The three reasons are counted apart, because they mean different things.
+    ///
+    /// "You asked me not to see this", "there was too much of it" and "it was
+    /// below your floor" send an operator to three different places. One
+    /// combined `hidden` count would say something was withheld without saying
+    /// why, which is only marginally better than saying nothing.
+    #[test]
+    fn withheld_reasons_are_counted_separately() {
+        // MAX_FORWARDS_RANGE is a Notice, below a Warning floor.
+        let config = LintConfig::new()
+            .with_min_severity(Severity::Warning)
+            .suppress(BRANCH_COOKIE.id)
+            .with_max_per_rule(1);
+        let mut sink = FindingSink::new(&config);
+
+        sink.push(&BRANCH_COOKIE, 0, "o", "e", "x"); // suppressed
+        sink.push(&MAX_FORWARDS_RANGE, 1, "o", "e", "x"); // below floor
+        sink.push(&MAX_FORWARDS_MISSING, 2, "o", "e", "x"); // kept
+        sink.push(&MAX_FORWARDS_MISSING, 3, "o", "e", "x"); // capped
+
+        let outcome = sink.finish_outcome();
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.withheld.suppressed, 1);
+        assert_eq!(outcome.withheld.below_severity, 1);
+        assert_eq!(outcome.withheld.capped, 1);
+        assert!(outcome.withheld.any());
+    }
+
+    /// A clean run reports zeroes rather than nothing.
+    #[test]
+    fn a_run_that_withheld_nothing_still_reports_counts() {
+        let config = LintConfig::new();
+        let mut sink = FindingSink::new(&config);
         sink.push(&BRANCH_COOKIE, 0, "o", "e", "x");
-        assert!(sink.finish().is_empty());
+        let outcome = sink.finish_outcome();
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.withheld, WithheldCounts::default());
+        assert!(!outcome.withheld.any());
+    }
+
+    /// A scratch directory tree for the discovery tests, removed on drop.
+    struct Tree(std::path::PathBuf);
+
+    impl Tree {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("sipnab-lintdisc-{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch dir");
+            Self(dir)
+        }
+        fn mkdir(&self, rel: &str) -> std::path::PathBuf {
+            let d = self.0.join(rel);
+            std::fs::create_dir_all(&d).expect("mkdir");
+            d
+        }
+        fn touch(&self, rel: &str) {
+            let f = self.0.join(rel);
+            if let Some(parent) = f.parent() {
+                std::fs::create_dir_all(parent).expect("mkdir");
+            }
+            std::fs::write(&f, "SIP-3261-20-URI-BRACKETS\n").expect("write");
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A `.sipnablint` beside the capture is found.
+    #[test]
+    fn discovery_finds_the_file_beside_the_capture() {
+        let t = Tree::new("beside");
+        let caps = t.mkdir("caps");
+        t.touch("caps/.sipnablint");
+        assert_eq!(
+            SuppressionFile::discover(&caps),
+            Some(caps.join(SUPPRESSION_FILENAME))
+        );
+    }
+
+    /// Inside a project, discovery climbs to the project root and stops there.
+    #[test]
+    fn discovery_climbs_to_the_project_root() {
+        let t = Tree::new("climb");
+        t.mkdir("proj/.git");
+        let caps = t.mkdir("proj/captures/today");
+        t.touch("proj/.sipnablint");
+        assert_eq!(
+            SuppressionFile::discover(&caps),
+            Some(t.0.join("proj").join(SUPPRESSION_FILENAME))
+        );
+    }
+
+    /// A capture in a directory that belongs to no project adopts nothing from
+    /// above it.
+    ///
+    /// The case that matters: a corpus mount, `/tmp`, or a colleague's share.
+    /// Silently inheriting somebody else's suppression list would switch rules
+    /// off that nobody in this project turned off, and the run would look
+    /// clean for a reason found four directories away.
+    #[test]
+    fn discovery_refuses_to_climb_out_of_an_unrelated_tree() {
+        let t = Tree::new("unrelated");
+        // A suppression file above the capture, and no `.git` anywhere.
+        t.touch(".sipnablint");
+        let caps = t.mkdir("corpus/vendor-drop");
+        assert_eq!(
+            SuppressionFile::discover(&caps),
+            None,
+            "no project above the capture means no upward search"
+        );
+    }
+
+    /// The file nearest the capture wins over one higher up.
+    #[test]
+    fn discovery_prefers_the_closest_file() {
+        let t = Tree::new("closest");
+        t.mkdir("proj/.git");
+        let caps = t.mkdir("proj/captures");
+        t.touch("proj/.sipnablint");
+        t.touch("proj/captures/.sipnablint");
+        assert_eq!(
+            SuppressionFile::discover(&caps),
+            Some(caps.join(SUPPRESSION_FILENAME))
+        );
+    }
+
+    /// Loading reads the patterns and remembers where they came from.
+    #[test]
+    fn a_loaded_file_remembers_its_own_path() {
+        let t = Tree::new("load");
+        let caps = t.mkdir("caps");
+        std::fs::write(
+            caps.join(SUPPRESSION_FILENAME),
+            "# carrier rewrites these\nOBS-*, SIP-3261-20-URI-BRACKETS\n",
+        )
+        .expect("write");
+        let file = SuppressionFile::load(caps.join(SUPPRESSION_FILENAME)).expect("load");
+        assert_eq!(file.path(), caps.join(SUPPRESSION_FILENAME));
+        assert_eq!(file.patterns(), ["OBS-*", "SIP-3261-20-URI-BRACKETS"]);
+
+        let config = LintConfig::new().with_suppression_file(&file);
+        assert!(!config.enabled(&PT_UNDECLARED));
+        assert!(!config.enabled(&URI_BRACKETS));
+        assert!(config.enabled(&MAX_FORWARDS_MISSING));
+    }
+
+    /// A named file that cannot be read is an error, never an empty list.
+    #[test]
+    fn a_missing_named_suppression_file_is_an_error() {
+        let t = Tree::new("missing");
+        assert!(SuppressionFile::load(t.0.join("nope.sipnablint")).is_err());
+    }
+
+    /// A rule outside the selected ruleset is not "withheld" from anybody.
+    ///
+    /// Counting it would report a media rule as suppressed on a `syntax` run,
+    /// which reads as "something was hidden from you" when the caller simply
+    /// did not ask for it.
+    #[test]
+    fn a_rule_outside_the_ruleset_is_not_counted_as_withheld() {
+        let config = LintConfig::new().with_ruleset(Ruleset::Syntax);
+        let mut sink = FindingSink::new(&config);
+        sink.push(&PT_UNDECLARED, 0, "o", "e", "x");
+        let outcome = sink.finish_outcome();
+        assert!(outcome.findings.is_empty());
+        assert_eq!(outcome.withheld, WithheldCounts::default());
     }
 
     /// Findings come back ordered by message index, then by rule identifier —
