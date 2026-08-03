@@ -8,9 +8,45 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [0.5.75] - 2026-08-02
+## [0.5.75] - 2026-08-03
 
 ### Added
+
+- **A frame read from a capture can be named, and the name can be followed
+  back to the bytes.** sipnab tells you a call failed because the far end
+  never answered, that a stream lost 4% of its packets, that a message
+  violates RFC 3261 — each drawn from specific bytes in a specific capture,
+  and until now none of them said which bytes. That is fine while the reader
+  is the person holding the capture. It stops being fine the moment the
+  conclusion travels into a ticket, a mail to a carrier, or an agent's
+  context, where it becomes an assertion with nothing behind it. The problem
+  was never that sipnab is wrong; it is that sipnab could not be checked.
+
+  Every frame read from a file now carries a pointer, rendered
+  `<source>#<ordinal>`, and `capture::resolve` follows one back to the frame.
+  The ordinal counts within ONE file rather than across the run, so the same
+  frame keeps its name however the run was invoked — read alone, as a
+  directory, or as the second of a glob. A run-global counter would have been
+  simpler and useless, because two runs could then never be compared.
+
+  Following a pointer has four outcomes and never blurs them: the frame is
+  there and its digest matches, the frame is there and no digest was recorded
+  to check, the frame is there and the digest DIFFERS, or the frame is not
+  there at all. The third refuses rather than returning bytes. A pointer that
+  resolves to the wrong frame is worse than no pointer — it manufactures
+  confidence, exactly as naming the wrong input file in an exported pcapng
+  did — and "the capture was rotated since this pointer was made" is not
+  something a reader can otherwise detect. `Unverified` stays a distinct
+  answer from `Verified` for the same reason: "nobody checked these bytes" and
+  "these are the bytes the finding was about" are different statements.
+
+  Digesting every frame costs nothing measurable — 0.41s against a 0.42s
+  baseline over a 100 MB capture — and uses FNV-1a rather than
+  `DefaultHasher`, whose output is explicitly unstable across Rust releases
+  and would silently stop verifying valid frames after a toolchain upgrade.
+
+  Nothing emits these pointers yet. `docs/design/packet-provenance.md` sets
+  out the remaining stages.
 
 - **Three more conformance rules: the dialog target, and reliable
   provisionals.** A 2xx answer to `INVITE` with no `Contact` (RFC 3261 §12.1.1)
@@ -143,6 +179,17 @@ entry that carries them.
   of the MCP tool reference left the site for a GitHub blob URL.
 
 ### Fixed
+
+- **The documented `problems` alias no longer names a field `--filter`
+  refuses.** `rtp.orphaned` was withdrawn as a DSL field — it asked whether a
+  stream *belonging to this dialog* was orphaned, a contradiction, so it
+  matched nothing anywhere while `NOT rtp.orphaned` matched everything — but
+  `docs/examples.md` and the site cookbook both still spelled it out inside
+  the `problems` alias. So the published documentation promised a broader
+  sweep than `--filter problems` performs and named a field that exits 2, and
+  anyone building on the quoted expression got an error listing fields that
+  do not include what they had just copied. A gate now compares the quoted
+  expansion in both documents against `expand_alias` itself.
 
 - **A pcapng frame names the capture file it actually came from.** Reading a
   set — `-I a.pcap -I b.pcap`, a directory, a glob — and writing `--pcapng`
