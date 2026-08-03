@@ -1022,8 +1022,7 @@ fn every_site_internals_page_is_in_the_docs_dropdown() {
     );
 }
 
-/// Every OPERATOR page the generator writes is reachable from the Docs
-/// dropdown too.
+/// Every OPERATOR page the generator writes is reachable from EVERY docs nav.
 ///
 /// The sibling test above covers `docs/internals/` only, and the gap it leaves
 /// is the same one it was written to close. Registering
@@ -1034,10 +1033,21 @@ fn every_site_internals_page_is_in_the_docs_dropdown() {
 /// repository keeps finding in its own code — a capability built, tested,
 /// documented and not connected.
 ///
+/// THREE navs, not one. The first version of this test read `base.html` alone
+/// and passed while `sip-lint-rules.md` was missing from the sidebar in
+/// `page.html` and `section.html` — the nav every reader actually uses once
+/// they are inside the docs. A gate that checks one of two routes reports the
+/// page as reachable and is worse than no gate, because it is believed. The
+/// two navs are spelled differently on purpose here: the dropdown carries
+/// `@/docs/<page>` anchors, the sidebar passes bare filenames to
+/// `macros::nav_group(paths=[…])`, and matching one shape against the other
+/// would silently find nothing.
+///
 /// Ground truth is `PAGES` in the generator, read out of the script rather
-/// than restated, so a page added there has to appear in the nav or fail here.
+/// than restated, so a page added there has to appear in every nav or fail
+/// here.
 #[test]
-fn every_site_operator_page_is_in_the_docs_dropdown() {
+fn every_site_operator_page_is_in_every_docs_nav() {
     let script = read("scripts/build-site-pages.py");
     // The site filename is the SECOND string of each PAGES tuple, on the line
     // after the `"docs/….md",` source path. Keyed off the source path so a
@@ -1055,6 +1065,7 @@ fn every_site_operator_page_is_in_the_docs_dropdown() {
         pages.len()
     );
 
+    // Nav 1: the header dropdown, one `<a>` per page.
     let base = markdown::blank_tera_comments(&read("website/templates/base.html"));
     let mut missing = Vec::new();
     for page in &pages {
@@ -1063,14 +1074,52 @@ fn every_site_operator_page_is_in_the_docs_dropdown() {
             l.contains(&path) && l.contains("<a ") && l.contains("href=") && l.contains("get_url")
         });
         if !linked {
-            missing.push(path);
+            missing.push(format!("base.html dropdown: {path}"));
         }
     }
+
+    // Navs 2 and 3: the in-page sidebar, built from `nav_group(paths=[…])`
+    // lists of bare filenames. Both templates carry their own copy of the
+    // list, so a page added to one and not the other is reachable from a
+    // section index and not from a page, or the reverse.
+    // Both compiled once, outside the loop: `clippy::regex_creation_in_loops`
+    // is denied by `--all-targets`, which the pre-commit clippy run does not
+    // pass and CI does.
+    let group_re = regex::Regex::new(r#"nav_group\([^)]*paths\s*=\s*\[([^\]]*)\]"#).expect("regex");
+    let name_re = regex::Regex::new(r#""([a-z0-9-]+\.md)""#).expect("regex");
+    for template in [
+        "website/templates/page.html",
+        "website/templates/section.html",
+    ] {
+        let src = markdown::blank_tera_comments(&read(template));
+        let listed: std::collections::BTreeSet<String> = group_re
+            .captures_iter(&src)
+            .flat_map(|c| {
+                name_re
+                    .captures_iter(&c[1])
+                    .map(|m| m[1].to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            listed.len() >= 18,
+            "{template} yielded only {} sidebar entries — the nav_group call \
+             shape changed and this gate is no longer reading the sidebar",
+            listed.len()
+        );
+        for page in &pages {
+            if !listed.contains(page) {
+                missing.push(format!("{template} sidebar: {page}"));
+            }
+        }
+    }
+
     assert!(
         missing.is_empty(),
-        "these generated operator pages have no anchor in the Docs dropdown in \
-         website/templates/base.html, so the only route to them is a direct \
-         URL:\n  {}",
+        "these generated operator pages are unreachable from a docs nav, so a \
+         reader gets to them only by a URL they do not have. Add the page to \
+         the dropdown in base.html AND to the matching nav_group in both \
+         page.html and section.html:\n  {}",
         missing.join("\n  ")
     );
 }

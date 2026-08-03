@@ -313,6 +313,9 @@ ordinary update.
 | `stats` | -- | Aggregate counters (dialog_count, stream_count, etc.) |
 | `capture_status` | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | `triage_call` | `call_id` | First-pass verdict: signalling problem, media problem, both, or none, with evidence |
+| `lint_dialog` | `call_id`, `rulesets?`, `severity_min?` | Conformance findings for one call, declaration against observation included, each with its RFC and section |
+| `validate_message` | `call_id`, `index` | Conformance findings for one message, read alone |
+| `explain_rule` | `rule_id` | The catalogue entry behind one rule identifier: citation, basis, scope, selectors |
 | `check_codec_negotiation` | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
 | `diagnose_registration` | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | `explain_response_code` | `code` | IANA registry meaning and class for a SIP status code |
@@ -901,6 +904,185 @@ first for the second sends you hunting a reply that was never expected.
 `applicable: false` means the dialog carries no `REGISTER`. It says so rather
 than reporting a healthy registration for a call that never attempted one.
 
+### `lint_dialog`
+
+Conformance, which is not the question `triage_call` answers. That tool asks
+why a call failed. This one asks whether the traffic obeys the specification. A
+call can complete over messages that break four MUSTs, and a fully conformant
+call can hit a busy signal.
+
+The rules that earn this tool its place compare the declaration against the
+observation. sipnab holds the signalling and the RTP in one process, so it can
+report that the SDP declared PCMU on payload type 0 while the wire carried
+payload type 8, that RTP arrived on a port no `m=` line advertised, that
+`sendrecv` promised media in both directions and the capture holds it in one,
+or that the packet spacing contradicts `a=ptime`. A linter reading message text
+reaches none of that, because the defect sits in neither message.
+
+The RFC 3261 syntax rules and the RFC 3264 offer/answer rules run alongside
+them. Everything citing RFC 4566, 3551 or 5761 belongs to the observation half.
+[SIP conformance rules](sip-lint-rules.md) lists every rule, the section behind
+it, and the suppression syntax.
+
+| Name | Type | Description |
+|---|---|---|
+| `call_id` | string | Required. The call to lint. |
+| `rulesets` | string[]? | Selectors, OR-ed together. Omit it, or pass an empty list, for the whole catalogue. |
+| `severity_min` | string? | Drops quieter findings: `info` (default), `notice`, `warning`, `error`. |
+
+Selectors take two forms. The catalogue's own names — `all`, `must`, `rfc`
+(MUST and SHOULD together), `interop`, `observation` (`observed` also works)
+and `syntax` — and one per RFC the rules cite: `rfc3261`, `rfc3264`, `rfc4566`,
+`rfc3551`, `rfc5761`. An unknown selector returns invalid_params (-32602)
+naming the whole vocabulary, so a typo such as `rfc3621` cannot quietly select
+nothing and hand back an empty list that reads as a clean call.
+
+The example runs against `tests/pcap-samples/b2bua-asterisk.pcapng`. Its SDP
+negotiates `sendrecv` in both directions, and the capture carries 355 RTP
+packets in one:
+
+```jsonc
+// lint_dialog { "call_id": "37686afc57ce24ac655742b3644a7bb8@172.16.98.101:5060",
+//               "rulesets": ["observed"] }
+{
+  "schema_version": 1,
+  "call_id": "37686afc57ce24ac655742b3644a7bb8@172.16.98.101:5060",
+  "rulesets": ["observed"],
+  "severity_min": "info",
+  "message_count": 15,
+  "rtp_streams_observed": 1,
+  "finding_count": 1,
+  "severity_counts": { "error": 0, "warning": 1, "notice": 0, "info": 0 },
+  "findings": [
+    {
+      "rule_id": "OBS-3264-6.1-DIRECTION-UNMET",
+      "severity": "warning",
+      "basis": "observation",
+      "rfc": 3264,
+      "section": "6.1",
+      "message_index": 0,
+      "observed": "355 RTP packets observed, none of them toward one negotiated endpoint",
+      "expected": "media in both directions, as a=sendrecv promised",
+      "explanation": "§6.1 makes sendrecv a promise to send as well as receive. ..."
+    }
+  ],
+  "rules_not_evaluated": [
+    {
+      "reason": "needs the endpoint pairs RTCP arrived on. ...",
+      "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"]
+    }
+  ],
+  "rule_catalogue": "docs/sip-lint-rules.md"
+}
+```
+
+`rfc` and `section` stay separate fields rather than prose inside the
+explanation, and that is the whole point of the shape. An agent quotes RFC 3264
+§6.1 out of the data instead of inventing a section number that reads
+plausibly, and `explain_rule` turns the identifier back into the citation and
+the link.
+
+`rules_not_evaluated` names what the run could not settle, grouped by reason. A
+rule that found nothing and a rule that never ran leave the same empty finding
+list behind, and only this field separates them. Two reasons appear on this
+tool:
+
+- No RTP reached the call, so the `OBS-` rules had nothing to compare the
+  declaration against.
+- `OBS-5761-5.1.1-RTCP-MUX-UNANSWERED` needs the endpoint pairs RTCP arrived
+  on. The stream store folds an RTCP report into the stream it describes and
+  keeps no record of where it landed, so no MCP tool raises this rule.
+
+### `validate_message`
+
+The same rules against one message, named by its zero-based index — the shape a
+CI job or a header-level argument with a vendor wants. `lint_dialog` reports
+`message_index` on every finding, so this tool narrows a hit rather than
+finding new ones.
+
+| Name | Type | Description |
+|---|---|---|
+| `call_id` | string | Required. |
+| `index` | u32 | Required. Zero-based position in the dialog. Out of range returns invalid_params (-32602) naming the message count. |
+
+```jsonc
+// validate_message { "call_id": "fab24225-14f8a735-e063ce6@176.9.39.206", "index": 0 }
+{
+  "schema_version": 1,
+  "call_id": "fab24225-14f8a735-e063ce6@176.9.39.206",
+  "message_index": 0,
+  "message_count": 2,
+  "finding_count": 2,
+  "severity_counts": { "error": 0, "warning": 2, "notice": 0, "info": 0 },
+  "findings": [
+    {
+      "rule_id": "SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING",
+      "severity": "warning", "basis": "must", "rfc": 3261, "section": "8.1.1.6",
+      "message_index": 0,
+      "observed": "no Max-Forwards header field",
+      "expected": "Max-Forwards: 70",
+      "explanation": "§8.1.1.6 makes a UAC insert one into every request it originates. ..."
+    },
+    {
+      "rule_id": "SIP-3261-8.1.1.7-BRANCH-COOKIE",
+      "severity": "warning", "basis": "must", "rfc": 3261, "section": "8.1.1.7",
+      "message_index": 0,
+      "observed": "top Via branch without the z9hG4bK prefix",
+      "expected": "branch=z9hG4bK...",
+      "explanation": "§8.1.1.7 makes every compliant branch begin with z9hG4bK. ..."
+    }
+  ],
+  "rules_not_evaluated": [
+    { "reason": "reads a dialog's messages against each other, and this tool reads one message alone. Call lint_dialog.",
+      "rule_ids": ["SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST", "..."] },
+    { "reason": "compares the declaration against the observed media, and this tool reads one message alone. Call lint_dialog.",
+      "rule_ids": ["OBS-3264-6.1-PT-UNDECLARED", "..."] },
+    { "reason": "needs the endpoint pairs RTCP arrived on. ...",
+      "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"] }
+  ],
+  "rule_catalogue": "docs/sip-lint-rules.md"
+}
+```
+
+That example runs against `tests/pcap-samples/sip-488-codec-reject.pcapng`,
+whose first `OPTIONS` ping carries neither a `Max-Forwards` header field nor
+the RFC 3261 branch cookie.
+
+Twelve of the twenty-two rules skip on a one-message run, which is why the
+response names them. Reach for `lint_dialog` first and use this to confirm one
+message.
+
+### `explain_rule`
+
+Turns a rule identifier back into its catalogue entry, so an identifier lifted
+out of a finding, a CI log or a suppression file resolves without a round trip
+to the source.
+
+```jsonc
+// explain_rule { "rule_id": "OBS-3264-6.1-DIRECTION-UNMET" }
+{
+  "schema_version": 1,
+  "rule_id": "OBS-3264-6.1-DIRECTION-UNMET",
+  "title": "sendrecv negotiated, media observed one way",
+  "severity": "warning",
+  "basis": "observation",
+  "rfc": 3264,
+  "section": "6.1",
+  "citation": "RFC 3264 §6.1",
+  "url": "https://www.rfc-editor.org/rfc/rfc3264#section-6.1",
+  "scope": "media",
+  "rulesets": ["all", "observation", "observed", "rfc3264"],
+  "rule_catalogue": "docs/sip-lint-rules.md"
+}
+```
+
+`rulesets` lists every selector that reaches this rule, so any entry passes
+straight back as a `lint_dialog` `rulesets` value. `scope` says what the rule
+has to read before it can run: `message`, `dialog` or `media`.
+
+An unknown identifier returns invalid_params (-32602) listing all twenty-two,
+because an empty answer would read as "that rule found nothing".
+
 ### `explain_response_code`
 
 The IANA registry, not an agent's recollection.
@@ -1237,7 +1419,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.74",
+  "version": "0.5.75",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep

@@ -8,6 +8,73 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.75] - 2026-08-02
+
+### Added
+
+- **The conformance linter is reachable from an agent.** 0.5.74 shipped the
+  linter as a library module with 83 unit tests and corpus-measured hit rates,
+  and registered no MCP tool for it. The capability existed and nothing could
+  call it — the same shape as the RTCP Extended Reports that were parsed and
+  dropped, and the Prometheus metrics that were declared and never incremented.
+  Three tools close it:
+
+  `lint_dialog` runs the whole catalogue against one call, media included, and
+  is described to the model with the declaration-versus-observation rules
+  first, because those are the ones no other tool can run: SDP declaring PCMU
+  on payload type 0 while the wire carries payload type 8, RTP arriving on a
+  port no `m=` line advertised, `sendrecv` negotiated with media flowing one
+  way. `validate_message` checks one message by index. `explain_rule` turns an
+  identifier from a finding, a CI log or a suppression file back into its
+  catalogue entry with a link to the cited section.
+
+  Findings cross the wire exactly as the library shapes them, `rfc` and
+  `section` as separate typed fields rather than folded into the explanation.
+  That is the whole point of the shape: an agent quotes RFC 3264 section 6.1
+  out of the data instead of inventing a section number that reads plausibly.
+
+  `rulesets` narrows a run by catalogue name (`all`, `must`, `rfc`, `interop`,
+  `observation`, `syntax`) or by the RFC a rule cites (`rfc3261`, `rfc3264`,
+  `rfc4566`, `rfc3551`, `rfc5761`), and only RFCs the catalogue really cites
+  parse — `rfc3621` is one transposition from `rfc3261`, and accepting it would
+  have selected nothing and returned an empty finding list that reads as a
+  clean call.
+
+  Every response names the rules the run could not evaluate, grouped by reason.
+  A rule that found nothing and a rule that never ran leave identical finding
+  lists behind, and only that field separates them.
+  `OBS-5761-5.1.1-RTCP-MUX-UNANSWERED` is named there on every call: the stream
+  store folds an RTCP report into the stream it describes and keeps no record
+  of the endpoint pair it arrived on, which is exactly what RFC 5761 section
+  5.1.1 asks about, so no MCP tool can raise it yet.
+
+  Measured over the local corpus: 24,062 dialogs across 60 captures, every one
+  linted and message-checked through the MCP surface with zero tool errors.
+
+### Changed
+
+- **The homepage advertises the binary size the artifact actually is.** The
+  v0.5.74 release build tripped its own honesty gate — the musl binary is
+  10,926,024 bytes against a 10 MB ceiling — so the claim moves to 12 MB rather
+  than the number being hidden, across the homepage, the architecture tile,
+  `install.md`, the build page and the WASM plugin design note.
+
+- **`docs/sip-lint-rules.md` is on the website.** It was registered in the wiki
+  generator and not the site one, so a reader following the rule catalogue out
+  of the MCP tool reference left the site for a GitHub blob URL.
+
+### Fixed
+
+- **A generated docs page can no longer ship unreachable.** Registering the
+  rules page produced a published page that no nav pointed at, reachable only
+  by a URL nobody had. The gate that existed covered `docs/internals/` only,
+  and the first attempt to widen it read the header dropdown alone — which
+  passed while the page was missing from the sidebar that every reader inside
+  the docs actually uses. `every_site_operator_page_is_in_every_docs_nav` now
+  reads the generator's own page registry and requires an entry in all three
+  navs: the dropdown in `base.html`, and the `nav_group` lists in `page.html`
+  and `section.html`.
+
 ## [0.5.74] - 2026-08-02
 
 ### Added

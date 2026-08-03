@@ -1017,11 +1017,23 @@ fn docs_current_version_markers_match_cargo() {
             include_str!("../website/content/docs/mcp-walkthrough.md"),
             r"sipnab (\d+\.\d+\.\d+) \(",
         ),
-        (
-            "website/content/docs/api.md",
-            include_str!("../website/content/docs/api.md"),
-            r"as of (\d+\.\d+\.\d+)",
-        ),
+        // `website/content/docs/api.md` used to be gated here on an
+        // `as of <version>` marker, and the entry is gone for the same reason
+        // the benchmark pages lost theirs.
+        //
+        // The sentence it tracked said "as of <version> nothing in the capture
+        // path records into sipnab_security_alerts_total", and this gate
+        // advanced that version on every release. The recording call landed in
+        // `AlertEngine::fire`, `firing_an_alert_moves_the_metric` stopped being
+        // ignored, and the sentence became false — while this gate went on
+        // dutifully renumbering it, which made a stale claim look freshly
+        // checked. The gate was not failing to catch the rot. It was dressing
+        // it up.
+        //
+        // The paragraph now describes what the metric does and dates the old
+        // behaviour as history ("up to 0.5.74"), which must NOT track
+        // Cargo.toml. Nothing on that page names a current version any more, so
+        // nothing there belongs in this list.
         // The `server_capabilities` sample in the diagnostic cookbook. It is
         // real captured output, so it names the build that produced it — which
         // is exactly why it needs gating rather than trusting: the recipes are
@@ -1691,7 +1703,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
         .collect();
     assert_eq!(
         registered.len(),
-        25,
+        28,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2161,8 +2173,8 @@ fn no_documentation_table_repeats_a_row() {
     // tables could stop being walked and the gate would still report the
     // documentation as scanned.
     assert_eq!(
-        tables, 432,
-        "walked {tables} tables, expected 432. More is fine — bump this. FEWER \
+        tables, 436,
+        "walked {tables} tables, expected 436. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
