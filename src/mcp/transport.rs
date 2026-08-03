@@ -41,6 +41,21 @@ use rmcp::ServiceExt;
 /// Takes over the process's `stdin`/`stdout` as the JSON-RPC wire and
 /// reads/writes them until the client closes stdin — nothing else in the
 /// process may print to stdout while this runs.
+///
+/// # Shutdown
+///
+/// This function handles no signals, deliberately: it returns when the
+/// transport ends, and the caller (`app::servers::Prepared::run`) then sets
+/// `mcp_stdio_done`. Process exit is the batch loop's job, because the MCP
+/// server shares the process with a capture that also has to be stopped.
+///
+/// That split is worth stating because it hid a leak. This function returning
+/// was treated as "the process will now exit", and for a file capture it did:
+/// the source drains, the packet loop ends, and the keep-alive loop sees the
+/// flag. Under a LIVE capture the packet loop never ends on its own, so the
+/// flag was set and nothing ever read it — every disconnected client left a
+/// process behind, still capturing. The packet loop now checks the same flag
+/// and requests shutdown; see `app::batch::run`.
 pub async fn serve_stdio(server: SipnabMcp) -> anyhow::Result<()> {
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let service = server.serve(transport).await?;

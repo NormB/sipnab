@@ -377,7 +377,7 @@ See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--strip-secrets` | `<OUTPUT>` | -- | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. sipnab never touches the input and writes the output atomically. |
-| `--show-frame` | `<POINTER>` | -- | Resolve a frame pointer emitted by a previous run and print that frame, then exit. Takes `<source>#<ordinal>` or `<source>#<ordinal>@<digest>` — the form the `frame` field of `--json-dialogs`, `--report`, the REST API and MCP carries. With a digest, the bytes are checked against it and a capture that changed since the pointer was made is REFUSED, with nothing written to stdout. Without one, the frame is printed and marked `UNVERIFIED`. |
+| `--show-frame` | `<POINTER>` | -- | Resolve a frame pointer from a previous run, print that frame, then exit. Takes `<source>#<ordinal>` or `<source>#<ordinal>@<digest>` — the form the `frame` field of `--json-dialogs`, `--report`, the REST API and MCP carries. With a digest, sipnab checks the bytes against it and refuses a capture that changed after sipnab minted the pointer, writing nothing to stdout. Without one, sipnab prints the frame and marks it `UNVERIFIED`. |
 
 Note: with resolution active, sipnab saves name mappings into a pcapng Name
 Resolution Block — on both the TUI save path and the headless `-O --pcapng`

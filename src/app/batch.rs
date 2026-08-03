@@ -1367,6 +1367,33 @@ impl BatchRunner {
                 break;
             }
 
+            // The stdio MCP client owns this process's lifetime, and a LIVE
+            // capture has to check that here rather than after the loop.
+            //
+            // A file capture drains and the channel disconnects, so the loop
+            // breaks on its own and reaches the keep-alive loop below, which
+            // polls the same flag. A live capture never disconnects: the only
+            // other exit is a signal. So a client that closed stdin -- which is
+            // exactly how an MCP client shuts a stdio server down -- left the
+            // process running, still capturing, until someone killed it by
+            // hand. Every connect leaked another one.
+            //
+            // Checked before the recv rather than after, so a silent link
+            // (no packets, recv timing out) still notices the client is gone.
+            //
+            // `request_shutdown` rather than a bare `break`: the live capture
+            // thread is still blocked in libpcap and only stops when it sees
+            // this flag (capture/live.rs). Breaking alone left the loop and
+            // then blocked forever joining that thread -- the process still
+            // did not exit, it just stopped reading. Routing through the
+            // shutdown flag makes a vanished client take the identical path
+            // SIGTERM already takes, which is the path that is known to work.
+            if mcp_stdio_client_gone(servers.as_ref().and_then(|s| s.mcp_stdio_done.as_ref())) {
+                tracing::info!("MCP client disconnected — shutting down");
+                signals::request_shutdown();
+                break;
+            }
+
             // Periodic sweep of reassembly state and orphan detection (every
             // 5 seconds of capture time, which is wall time only when live).
             if let Some(now) = sweep_clock.take_due(sweep_interval) {
