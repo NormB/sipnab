@@ -564,6 +564,15 @@ fn read_opened_inner(
     // an unstamped packet is one the pcapng writer cannot tell apart from the
     // previous file's, and it then names the wrong file as its origin.
     let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
+    // Position within THIS file, which is not the same question as `count`.
+    // `count` is run-global: it drives `--count` and the "N packets total"
+    // summary, and it keeps rising across a set. This one restarts at zero for
+    // every file, because a frame is identified by the file it lives in plus
+    // where it sits in that file. Counting across the run would give the same
+    // bytes a different name depending on how the run was invoked, and a
+    // pointer that moves with the command line cannot be compared between two
+    // runs.
+    let mut ordinal: u64 = 0;
     // First and last packet of THIS file, tracked unconditionally: `prev_ts`
     // above is the replay pacing state and is only written in replay mode.
     let mut span: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
@@ -633,7 +642,7 @@ fn read_opened_inner(
                     *prev_ts = Some(ts);
                 }
 
-                let packet = Packet::with_source(
+                let mut packet = Packet::with_source(
                     ts,
                     pkt.data.to_vec(),
                     pkt.header.caplen as usize,
@@ -645,6 +654,13 @@ fn read_opened_inner(
                     Some(std::sync::Arc::clone(&source)),
                     link_type,
                 );
+                // Stamped here, beside the source, because these two together
+                // are what makes the frame nameable. Set before the send: once
+                // the packet is on the channel this thread cannot amend it, and
+                // a consumer that inferred the ordinal from arrival order would
+                // be wrong the moment anything reorders or drops.
+                packet.origin = Some(crate::capture::packet::FrameOrigin { ordinal });
+                ordinal += 1;
 
                 if tx.send(packet).is_err() {
                     tracing::debug!("Receiver dropped, stopping file reader");

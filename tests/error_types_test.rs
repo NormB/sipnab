@@ -212,6 +212,7 @@ fn unsupported_link_type_is_matchable() {
         interface: None,
         link_type: 147, // DLT_USER0 — not supported
         pre_parsed: None,
+        origin: None,
     };
     let err =
         sipnab::capture::parse::parse_packet(&pkt).expect_err("unsupported link type must error");
