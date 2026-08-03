@@ -144,7 +144,7 @@ fn call_report_schema_validates_output() {
         "-I",
         "tests/pcap-samples/sip-488-codec-reject.pcapng",
         "--call-report",
-        "NA4y5nr9Jk",
+        "codec-reject-synth",
         "--json",
         "--no-cli-print",
     ]);

@@ -192,7 +192,7 @@ fn a_call_split_across_two_files_is_stitched_back_together() {
 /// sharding in `src/parallel.rs` is by host pair, and its module doc used to
 /// assert that "a call's SIP between the same two hosts likewise stays
 /// together". A proxied call has no single host pair: `sip-proxy.pcap` carries
-/// ONE Call-ID across three of them (10.33.6.100↔.101, .100↔.102, .101↔.102),
+/// ONE Call-ID across three of them (192.0.2.100↔.101, .100↔.102, .101↔.102),
 /// so its eleven messages shard to different workers. `DialogStore::merge` then
 /// kept whichever fragment held *more* messages and discarded the other's
 /// message list outright — measured 7 of 11 messages at cores 2, 3, 4 and 8.
