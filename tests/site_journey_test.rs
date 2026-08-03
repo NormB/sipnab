@@ -3300,8 +3300,8 @@ fn packaging_scripts_reference_existing_paths() {
     // packaging references stop being checked without the gate noticing, and a
     // reference to a nonexistent path is precisely what this exists to catch.
     assert_eq!(
-        checked, 56,
-        "packaging path scan saw {checked} references, expected 56. More is \
+        checked, 57,
+        "packaging path scan saw {checked} references, expected 57. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );

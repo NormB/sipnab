@@ -281,23 +281,51 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Vale's Google package is fetched by `vale sync` from the config's
-      # `Packages =` line, so the styles are not vendored here. The project's own
-      # rules and vocabulary ARE committed, under .vale/styles/sipnab and
-      # .vale/styles/config.
+      # Vale's Google package is not vendored here; it is fetched below. The
+      # project's own rules and vocabulary ARE committed, under
+      # .vale/styles/sipnab and .vale/styles/config.
       - name: Install Vale
         env:
           VALE_VERSION: '3.16.0'
+          # Pinned by content, not just by tag: a release asset can be replaced
+          # after publication. This hash is the one in Vale's own published
+          # manifest (vale_3.16.0_checksums.txt), so it is upstream's record of
+          # what it shipped rather than a note of whatever we happened to fetch.
+          VALE_SHA256: '1049f4a585ccd1af96dcf4bdc16800cb3ce426b432da2b27893def42dcfe0ccb'
         run: |
           set -euo pipefail
           curl -fsSL -o vale.tar.gz \
             "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          echo "${VALE_SHA256}  vale.tar.gz" | sha256sum -c -
           tar xzf vale.tar.gz vale
           sudo install -m 0755 vale /usr/local/bin/vale
           vale --version
 
-      - name: Sync Vale styles
-        run: vale sync
+      # `vale sync` reads the `Packages =` URL from .vale.ini and unpacks whatever
+      # it gets, with no integrity check available anywhere in that path. Doing the
+      # fetch here instead buys the checksum. The stakes are lower than for the
+      # binaries above -- the package is 36 YAML rule files, so a substitution
+      # changes which prose passes lint rather than executing anything -- but it is
+      # the same unpinned-fetch shape, and it is the last one in CI.
+      #
+      # Keep VALE_GOOGLE_URL identical to `Packages =` in .vale.ini. A test holds
+      # the two together, because a drifting pair would lint against one package
+      # locally and a different one here.
+      - name: Install Vale styles
+        env:
+          VALE_GOOGLE_URL: 'https://github.com/errata-ai/Google/releases/download/v0.7.0/Google.zip'
+          VALE_GOOGLE_SHA256: 'dddb3dca035a067fe9ab13a1d8d8f89cb63e8b83ab4cf1934a935d60cd91d697'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o Google.zip "${VALE_GOOGLE_URL}"
+          echo "${VALE_GOOGLE_SHA256}  Google.zip" | sha256sum -c -
+          # No post-condition check on the extracted directory, deliberately. The
+          # checksum already fixes the archive, so its layout is not in question,
+          # and the next step cannot pass without the styles present. Naming the
+          # extracted path here would also assert a gitignored directory exists,
+          # which is true on a machine that has synced and false in a fresh
+          # checkout -- a test that passes locally and fails in CI.
+          unzip -q -o Google.zip -d .vale/styles/
 
       # Published docs only; docs/design, docs/research and docs/superpowers are
       # exempted by glob sections in .vale.ini because they are working
@@ -344,10 +372,15 @@ jobs:
       - name: Install Zola
         env:
           ZOLA_VERSION: '0.19.2'
+          # Same pin as the Pages workflow installs; see the comment there for why
+          # a tag alone is not enough. Zola publishes no checksum manifest, so the
+          # hash is recorded from the artifact served at v0.19.2.
+          ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
         run: |
           set -euo pipefail
           curl -fsSL -o zola.tar.gz \
             "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
           tar xzf zola.tar.gz
           sudo install -m 0755 zola /usr/local/bin/zola
           zola --version
