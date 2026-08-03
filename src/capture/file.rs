@@ -659,7 +659,10 @@ fn read_opened_inner(
                 // the packet is on the channel this thread cannot amend it, and
                 // a consumer that inferred the ordinal from arrival order would
                 // be wrong the moment anything reorders or drops.
-                packet.origin = Some(crate::capture::packet::FrameOrigin { ordinal });
+                packet.origin = Some(crate::capture::packet::FrameOrigin {
+                    ordinal,
+                    digest: Some(crate::capture::packet::frame_digest(&packet.data)),
+                });
                 ordinal += 1;
 
                 if tx.send(packet).is_err() {

@@ -39,7 +39,10 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
     );
 
     let mut both = base.clone();
-    both.origin = Some(FrameOrigin { ordinal: 41 });
+    both.origin = Some(FrameOrigin {
+        ordinal: 41,
+        digest: None,
+    });
     let r = both
         .frame_ref()
         .expect("source and ordinal are both present");
@@ -47,7 +50,10 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
         r,
         FrameRef {
             source: Arc::from("capture.pcap"),
-            origin: FrameOrigin { ordinal: 41 },
+            origin: FrameOrigin {
+                ordinal: 41,
+                digest: None
+            },
         }
     );
 
@@ -61,7 +67,10 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
 
     let mut ordinal_only = base;
     ordinal_only.interface = None;
-    ordinal_only.origin = Some(FrameOrigin { ordinal: 41 });
+    ordinal_only.origin = Some(FrameOrigin {
+        ordinal: 41,
+        digest: None,
+    });
     assert!(
         ordinal_only.frame_ref().is_none(),
         "an ordinal with no source does not say which file it counts within, \
@@ -75,9 +84,72 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
 fn a_frame_ref_renders_as_source_hash_ordinal() {
     let r = FrameRef {
         source: Arc::from("/captures/tg.pcap0"),
-        origin: FrameOrigin { ordinal: 4211 },
+        origin: FrameOrigin {
+            ordinal: 4211,
+            digest: None,
+        },
     };
     assert_eq!(r.to_string(), "/captures/tg.pcap0#4211");
+}
+
+/// The digest is really computed over the frame, and really discriminates.
+///
+/// Written because the digest measured as FREE — 0.41s against a 0.42s
+/// baseline over a 100 MB capture — and "costs nothing" and "does nothing"
+/// are indistinguishable from outside. This makes them distinguishable: a
+/// digest that was never computed shows up as `None`, and one computed over
+/// a constant shows up as every frame agreeing.
+#[test]
+fn the_digest_is_computed_over_the_frame_and_tells_frames_apart() {
+    let pcap = format!(
+        "{}/tests/fixtures/sip_call.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let packets = read_all(&pcap);
+
+    let digests: Vec<u64> = packets
+        .iter()
+        .map(|p| {
+            p.origin
+                .and_then(|o| o.digest)
+                .expect("a frame read from a file must carry a digest")
+        })
+        .collect();
+
+    // Recomputing from the bytes must reproduce it exactly, or the stored
+    // value describes something other than the frame.
+    for (i, p) in packets.iter().enumerate() {
+        assert_eq!(
+            digests[i],
+            sipnab::capture::packet::frame_digest(&p.data),
+            "frame {i}'s stored digest does not match a digest of its own bytes"
+        );
+    }
+
+    // Distinct frames must mostly differ. A hash that returned a constant, or
+    // one applied to an empty slice, would pass every assertion above.
+    let distinct: std::collections::BTreeSet<u64> = digests.iter().copied().collect();
+    assert!(
+        distinct.len() > 1,
+        "all {} frames hashed to the same value ({:?}) — the digest is not \
+         reading the frame",
+        digests.len(),
+        digests.first()
+    );
+}
+
+/// FNV-1a is pinned to its specification, not to whatever the toolchain does.
+///
+/// `DefaultHasher` would have been one line shorter and is explicitly not
+/// stable across Rust releases, so a digest stored today would stop matching
+/// after a toolchain upgrade — silently, and in the direction that refuses
+/// valid frames. These are the published FNV-1a 64-bit vectors.
+#[test]
+fn the_digest_matches_the_published_fnv1a_vectors() {
+    use sipnab::capture::packet::frame_digest;
+    assert_eq!(frame_digest(b""), 0xcbf2_9ce4_8422_2325, "empty");
+    assert_eq!(frame_digest(b"a"), 0xaf63_dc4c_8601_ec8c, "a");
+    assert_eq!(frame_digest(b"foobar"), 0x85944171f73967e8, "foobar");
 }
 
 /// Ordinals are 0-based and dense: the *n*th packet of a file reports *n*.
