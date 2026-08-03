@@ -30,4 +30,7 @@ RUN git clone --depth 1 https://github.com/voipmonitor/sniffer.git
 WORKDIR /usr/src/sniffer
 RUN ./configure && make -j"$(nproc)" && make install && voipmonitor --version
 
+RUN useradd -U -u 1000 appuser && chown -R 1000:1000 /usr/src/sniffer
+USER 1000
+
 ENTRYPOINT ["voipmonitor"]
