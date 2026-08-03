@@ -543,6 +543,239 @@ pub struct SdpTimelineParams {
     pub call_id: String,
 }
 
+/// Parameters for `lint_dialog`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct LintDialogParams {
+    /// Call-ID to lint.
+    pub call_id: String,
+    /// Rule selectors, OR-ed together. Omit for every rule.
+    ///
+    /// Either a named subset of the catalogue (`all`, `must`, `rfc`,
+    /// `interop`, `observation`/`observed`, `syntax`) or an RFC the rules read
+    /// from (`rfc3261`, `rfc3264`, `rfc4566`, `rfc3551`, `rfc5761`).
+    pub rulesets: Option<Vec<String>>,
+    /// Drop findings quieter than this: `info`, `notice`, `warning`, `error`.
+    pub severity_min: Option<String>,
+}
+
+/// Parameters for `validate_message`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ValidateMessageParams {
+    /// Call-ID holding the message.
+    pub call_id: String,
+    /// Zero-based position of the message within the dialog.
+    pub index: u32,
+}
+
+/// Parameters for `explain_rule`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ExplainRuleParams {
+    /// Rule identifier, e.g. "OBS-3264-6.1-PT-UNDECLARED".
+    pub rule_id: String,
+}
+
+/// One entry in the `rulesets` list: a named subset, or an RFC number.
+///
+/// The catalogue's own vocabulary comes from
+/// [`Ruleset::from_name`](crate::sip::lint::Ruleset::from_name) rather than a
+/// second table here, so a ruleset added to the engine is selectable over MCP
+/// the day it lands. The RFC form exists because an agent that has just read a
+/// citation asks for "the RFC 3264 rules", and `rfc` alone already means
+/// something else in the catalogue — MUST and SHOULD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuleSelector {
+    /// A named subset of the catalogue.
+    Set(crate::sip::lint::Ruleset),
+    /// Every rule reading from one RFC.
+    Rfc(u32),
+}
+
+impl RuleSelector {
+    /// Parse one selector name, or `None` when it names nothing.
+    fn parse(name: &str) -> Option<Self> {
+        let lower = name.trim().to_ascii_lowercase();
+        // `observed` is the word an agent reaches for after reading a finding
+        // whose basis is `observation`. Accepted here rather than in the
+        // engine: the catalogue keeps one spelling per concept, and a
+        // convenience alias belongs at the surface that needs it.
+        if lower == "observed" {
+            return Some(Self::Set(crate::sip::lint::Ruleset::Observation));
+        }
+        if let Some(set) = crate::sip::lint::Ruleset::from_name(&lower) {
+            return Some(Self::Set(set));
+        }
+        // Only an RFC the catalogue really cites. `rfc3621` is one keystroke
+        // from `rfc3261` and would otherwise parse, select nothing, and return
+        // an empty finding list — which reads exactly like a clean call. A
+        // refusal naming the vocabulary cannot be misread that way.
+        lower
+            .strip_prefix("rfc")
+            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            .and_then(|n| n.parse().ok())
+            .filter(|n| crate::sip::lint::RULES.iter().any(|r| r.rfc == *n))
+            .map(Self::Rfc)
+    }
+
+    /// Whether this selector picks `rule`.
+    fn contains(self, rule: &crate::sip::lint::RuleMeta) -> bool {
+        match self {
+            Self::Set(set) => set.contains(rule),
+            Self::Rfc(n) => rule.rfc == n,
+        }
+    }
+}
+
+/// Every selector name a caller may pass, for help text and error messages.
+///
+/// The RFC half is derived from the catalogue rather than listed, so a rule
+/// citing a new RFC becomes selectable — and appears in the refusal that names
+/// the vocabulary — without anyone remembering to add it here.
+fn rule_selector_names() -> Vec<String> {
+    let mut names: Vec<String> = crate::sip::lint::Ruleset::names()
+        .iter()
+        .map(|n| (*n).to_string())
+        .collect();
+    names.push("observed".to_string());
+    let mut rfcs: Vec<u32> = crate::sip::lint::RULES.iter().map(|r| r.rfc).collect();
+    rfcs.sort_unstable();
+    rfcs.dedup();
+    names.extend(rfcs.into_iter().map(|n| format!("rfc{n}")));
+    names
+}
+
+/// Parse the `rulesets` argument, refusing an unknown name by naming the set.
+///
+/// An unrecognised selector could reasonably be ignored. It must not be: a
+/// caller that asks for `rfc3621` and is handed the full catalogue reads more
+/// findings than it selected and believes the filter worked.
+fn parse_rule_selectors(names: Option<&Vec<String>>) -> Result<Vec<RuleSelector>, rmcp::ErrorData> {
+    let Some(names) = names else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for name in names {
+        let selector = RuleSelector::parse(name).ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                format!(
+                    "unknown ruleset '{name}'. Valid selectors: {}",
+                    rule_selector_names().join(", ")
+                ),
+                None,
+            )
+        })?;
+        out.push(selector);
+    }
+    Ok(out)
+}
+
+/// Parse the `severity_min` argument, refusing an unknown name by naming the set.
+fn parse_min_severity(
+    name: Option<&String>,
+) -> Result<crate::sip::lint::Severity, rmcp::ErrorData> {
+    match name {
+        None => Ok(crate::sip::lint::Severity::Info),
+        Some(n) => crate::sip::lint::Severity::from_name(n).ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                format!("unknown severity '{n}'. Valid values: info, notice, warning, error"),
+                None,
+            )
+        }),
+    }
+}
+
+/// What a lint run had to read, which decides which rules could fire at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LintRun {
+    /// One message, read alone — `validate_message`.
+    OneMessage,
+    /// A whole dialog, with or without RTP attributed to it — `lint_dialog`.
+    WholeDialog {
+        /// Whether at least one RTP stream was attributed to the call.
+        media: bool,
+    },
+}
+
+/// The rules this run could not settle, grouped by the reason each was skipped.
+///
+/// A conformance report listing four findings reads as "these four defects and
+/// nothing else". Where a rule never got the input it needs that reading is
+/// wrong, and the finding list cannot say so — a rule that did not run and a
+/// rule that found nothing produce identical output. So the response names
+/// them, the same way `DialogPage` reports the rows it withheld.
+///
+/// Grouped rather than listed one rule at a time because the reason is the
+/// long half and `validate_message` skips twelve rules for three reasons. A
+/// per-rule list repeated the same paragraph eleven times, which costs an agent
+/// its context window for no information.
+fn skipped_rules(run: LintRun) -> Vec<serde_json::Value> {
+    let mut groups: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
+    for (rule_id, reason) in skip_reasons(run) {
+        match groups.iter_mut().find(|(r, _)| *r == reason) {
+            Some((_, ids)) => ids.push(rule_id),
+            None => groups.push((reason, vec![rule_id])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(reason, rule_ids)| serde_json::json!({ "reason": reason, "rule_ids": rule_ids }))
+        .collect()
+}
+
+/// Each skipped rule and why, before grouping.
+fn skip_reasons(run: LintRun) -> Vec<(&'static str, &'static str)> {
+    use crate::sip::lint::{RTCP_MUX_UNANSWERED, RULES, Scope};
+    RULES
+        .iter()
+        .filter_map(|rule| {
+            // Checked before the scope arms, and in both runs: the stream
+            // store folds an RTCP report into the stream it describes and
+            // keeps no record of the endpoint pair it landed on, which is
+            // exactly what RFC 5761 §5.1.1 asks about. So this rule cannot
+            // fire over MCP even with media in hand, and pointing the caller
+            // at `lint_dialog` for it would be a dead end.
+            let reason = if rule.id == RTCP_MUX_UNANSWERED.id {
+                Some(
+                    "needs the endpoint pairs RTCP arrived on. The stream store \
+                     folds RTCP into the stream it reports on and keeps no record \
+                     of where it landed, so no MCP tool can raise this rule.",
+                )
+            } else {
+                match (run, rule.scope()) {
+                    (LintRun::OneMessage, Scope::Dialog) => Some(
+                        "reads a dialog's messages against each other, and this \
+                         tool reads one message alone. Call lint_dialog.",
+                    ),
+                    (LintRun::OneMessage, Scope::Media) => Some(
+                        "compares the declaration against the observed media, and \
+                         this tool reads one message alone. Call lint_dialog.",
+                    ),
+                    (LintRun::WholeDialog { media: false }, Scope::Media) => Some(
+                        "no RTP stream was attributed to this call, so there is \
+                         nothing to compare the declaration against.",
+                    ),
+                    _ => None,
+                }
+            };
+            reason.map(|reason| (rule.id, reason))
+        })
+        .collect()
+}
+
+/// Count findings by severity, so a caller can size a report without walking it.
+fn severity_counts(findings: &[crate::sip::lint::Finding]) -> serde_json::Value {
+    use crate::sip::lint::Severity;
+    let count = |s: Severity| findings.iter().filter(|f| f.severity == s).count();
+    serde_json::json!({
+        "error": count(Severity::Error),
+        "warning": count(Severity::Warning),
+        "notice": count(Severity::Notice),
+        "info": count(Severity::Info),
+    })
+}
+
 /// Parameters for `search_by_time`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -2395,6 +2628,238 @@ impl SipnabMcp {
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Conformance findings for one call, media included.
+    ///
+    /// # Returns
+    ///
+    /// The findings exactly as [`crate::sip::lint::Finding`] serialises them —
+    /// `rule_id`, `severity`, `basis`, `rfc`, `section`, `message_index`,
+    /// `observed`, `expected`, `explanation` — plus severity counts, the
+    /// selectors applied, and the rules this run could not settle.
+    ///
+    /// `rfc` and `section` stay separate fields rather than being folded into
+    /// the explanation. A citation an agent can read is a citation it can
+    /// check, and the alternative is a plausible-looking section number nobody
+    /// can trace.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown `call_id`, an unknown ruleset
+    /// selector, or an unknown severity name.
+    #[tool(
+        name = "lint_dialog",
+        description = "Checks one call for SIP conformance defects and returns \
+                       structured findings. The declaration-versus-observation \
+                       rules come first because no other tool can run them: SDP \
+                       declaring PCMU on payload type 0 while the wire carries \
+                       payload type 8, RTP arriving on a port no m= line \
+                       advertised, sendrecv negotiated with media flowing one \
+                       way, packet spacing contradicting a=ptime, a payload size \
+                       the negotiated codec cannot produce. sipnab holds the \
+                       signalling and the RTP in one process, so those \
+                       comparisons are available here and are invisible to a \
+                       linter that reads message text. The RFC 3261 syntax rules \
+                       and the RFC 3264 offer/answer rules run alongside them. \
+                       Each finding carries the rule identifier, severity, \
+                       basis, and the RFC number and section as separate fields, \
+                       with what the capture held beside what the section calls \
+                       for. Optional 'rulesets' narrows the run (all, must, rfc, \
+                       interop, observation/observed, syntax, or rfc3261, \
+                       rfc3264, rfc4566, rfc3551, rfc5761) and 'severity_min' \
+                       drops the quieter findings. The response names every rule \
+                       that had no input to read, so a short list is not \
+                       mistaken for a clean call."
+    )]
+    pub async fn lint_dialog(
+        &self,
+        Parameters(params): Parameters<LintDialogParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let selectors = parse_rule_selectors(params.rulesets.as_ref())?;
+        let min_severity = parse_min_severity(params.severity_min.as_ref())?;
+
+        let payload = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+
+            let ss = self.stream_store.read();
+            // The projection the linter reads, built from the same
+            // `streams_for` view every other per-call tool uses, so a stream
+            // this server attributes to the call is a stream the linter sees.
+            let media =
+                crate::sip::lint::ObservedMedia::from_streams(ss.streams_for(&params.call_id));
+            let stream_count = media.streams().len();
+
+            let config = crate::sip::lint::LintConfig::new().with_min_severity(min_severity);
+            let findings =
+                crate::sip::lint::Linter::new(config).lint_dialog_with_media(dialog, &media);
+            // Selection runs over the findings rather than over the config,
+            // because `LintConfig` holds one ruleset and the argument is a
+            // list. Every rule is independent of every other, so filtering
+            // afterwards selects the same set a per-ruleset run would.
+            let findings: Vec<crate::sip::lint::Finding> = findings
+                .into_iter()
+                .filter(|f| {
+                    selectors.is_empty()
+                        || crate::sip::lint::rule_by_id(f.rule_id)
+                            .is_some_and(|r| selectors.iter().any(|s| s.contains(r)))
+                })
+                .collect();
+
+            // An empty list runs the whole catalogue, the same as an omitted
+            // one — the convention `security_findings.kinds` already follows.
+            // What the response must never do is echo `rulesets: []` beside a
+            // full run, which reads as a filter that selected nothing and
+            // found nothing anyway.
+            let applied: Vec<&str> = params
+                .rulesets
+                .as_deref()
+                .filter(|names| !names.is_empty())
+                .map(|names| names.iter().map(String::as_str).collect())
+                .unwrap_or_else(|| vec!["all"]);
+
+            serde_json::json!({
+                "schema_version": 1,
+                "call_id": dialog.call_id,
+                "rulesets": applied,
+                "severity_min": min_severity.as_str(),
+                "message_count": dialog.messages.len(),
+                "rtp_streams_observed": stream_count,
+                "finding_count": findings.len(),
+                "severity_counts": severity_counts(&findings),
+                "findings": findings,
+                "rules_not_evaluated": skipped_rules(LintRun::WholeDialog {
+                    media: stream_count > 0,
+                }),
+                "rule_catalogue": "docs/sip-lint-rules.md",
+            })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Conformance findings for one message of a call, read alone.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown `call_id` or an out-of-range
+    /// `index`.
+    #[tool(
+        name = "validate_message",
+        description = "Checks one SIP message of a call, named by its zero-based \
+                       index, against the message-scoped conformance rules, and \
+                       returns findings in the same shape as lint_dialog: rule \
+                       identifier, severity, basis, RFC number and section as \
+                       separate fields, what the message held and what the \
+                       section calls for. Reads that message alone, so the rules \
+                       needing a dialog or the observed media do not run; the \
+                       response names each of them."
+    )]
+    pub async fn validate_message(
+        &self,
+        Parameters(params): Parameters<ValidateMessageParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+            let index = params.index as usize;
+            let msg = dialog.messages.get(index).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!(
+                        "index {index} out of range for dialog with {} messages",
+                        dialog.messages.len()
+                    ),
+                    None,
+                )
+            })?;
+
+            let linter = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new());
+            let findings = linter.lint_message(msg, index);
+
+            serde_json::json!({
+                "schema_version": 1,
+                "call_id": dialog.call_id,
+                "message_index": index,
+                "message_count": dialog.messages.len(),
+                "finding_count": findings.len(),
+                "severity_counts": severity_counts(&findings),
+                "findings": findings,
+                "rules_not_evaluated": skipped_rules(LintRun::OneMessage),
+                "rule_catalogue": "docs/sip-lint-rules.md",
+            })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// The catalogue entry behind one rule identifier.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when the identifier is not in the catalogue.
+    /// The refusal lists every identifier that is, because the alternative —
+    /// an empty answer — reads as "this rule found nothing".
+    #[tool(
+        name = "explain_rule",
+        description = "Returns the catalogue entry behind one conformance rule \
+                       identifier, such as OBS-3264-6.1-PT-UNDECLARED: its \
+                       title, severity, basis, the RFC number and section it \
+                       reads from, a link to that section on rfc-editor.org, \
+                       what the rule has to read before it can run, and every \
+                       ruleset selector that reaches it. An unknown identifier \
+                       returns invalid_params listing the whole catalogue."
+    )]
+    pub async fn explain_rule(
+        &self,
+        Parameters(params): Parameters<ExplainRuleParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let rule = crate::sip::lint::rule_by_id(&params.rule_id).ok_or_else(|| {
+            let known: Vec<&str> = crate::sip::lint::RULES.iter().map(|r| r.id).collect();
+            rmcp::ErrorData::invalid_params(
+                format!(
+                    "'{}' is not a rule in the catalogue. The {} rules are: {}",
+                    params.rule_id,
+                    known.len(),
+                    known.join(", ")
+                ),
+                None,
+            )
+        })?;
+
+        // Every selector that would include this rule, and none that would
+        // not, so the field is directly usable as `lint_dialog.rulesets`
+        // rather than being a fact about the catalogue the caller has to
+        // translate. `rule_selectors_round_trip` holds it to that contract.
+        let rulesets: Vec<String> = rule_selector_names()
+            .into_iter()
+            .filter(|name| RuleSelector::parse(name).is_some_and(|s| s.contains(rule)))
+            .collect();
+
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            serde_json::json!({
+                "schema_version": 1,
+                "rule_id": rule.id,
+                "title": rule.title,
+                "severity": rule.severity.as_str(),
+                "basis": rule.basis.as_str(),
+                "rfc": rule.rfc,
+                "section": rule.section,
+                "citation": rule.citation(),
+                "url": rule.url(),
+                "scope": rule.scope().as_str(),
+                "rulesets": rulesets,
+                "rule_catalogue": "docs/sip-lint-rules.md",
+            }),
+        )?]))
     }
 
     /// List capture files in the configured root.
@@ -4468,5 +4933,301 @@ mod tests {
             opted["runtime"]["mcp_file_root"],
             "/var/spool/sipnab-exports"
         );
+    }
+
+    // ── The conformance-linter tools ────────────────────────────────
+
+    /// Every selector `rule_selector_names` advertises parses back, and it
+    /// advertises every RFC the catalogue actually cites.
+    ///
+    /// The RFC half is derived from `RULES` rather than listed, so this is the
+    /// gate that keeps the derivation honest: a rule citing a new RFC has to
+    /// become selectable, and the refusal that names the vocabulary has to
+    /// name it too.
+    #[test]
+    fn every_advertised_rule_selector_parses() {
+        let names = rule_selector_names();
+        for name in &names {
+            assert!(
+                RuleSelector::parse(name).is_some(),
+                "{name} is advertised as a selector and does not parse"
+            );
+        }
+        for rule in crate::sip::lint::RULES {
+            let expected = format!("rfc{}", rule.rfc);
+            assert!(
+                names.contains(&expected),
+                "{} cites RFC {} and no {expected} selector is offered",
+                rule.id,
+                rule.rfc
+            );
+        }
+        assert!(RuleSelector::parse("observed").is_some(), "alias for basis");
+        assert!(RuleSelector::parse("rfc").is_some(), "catalogue name");
+        assert!(RuleSelector::parse("rfc99x").is_none(), "not a number");
+        assert!(RuleSelector::parse("nonsense").is_none());
+        // One keystroke from rfc3261, and nothing cites it. Accepting it would
+        // return an empty finding list that reads as a clean call.
+        assert!(RuleSelector::parse("rfc3621").is_none(), "uncited RFC");
+    }
+
+    /// `explain_rule` reports the selectors that would include the rule, and
+    /// only those.
+    ///
+    /// The field exists to be passed straight back as `lint_dialog.rulesets`.
+    /// A selector listed there that does not select the rule sends a caller
+    /// away with an empty finding list and no reason for it.
+    #[tokio::test]
+    async fn explain_rule_lists_selectors_that_really_select_it() {
+        for rule in crate::sip::lint::RULES {
+            let result = empty_server()
+                .explain_rule(Parameters(ExplainRuleParams {
+                    rule_id: rule.id.to_string(),
+                }))
+                .await
+                .expect("explain_rule");
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+            assert_eq!(v["rfc"], rule.rfc, "{}", rule.id);
+            assert_eq!(v["section"], rule.section, "{}", rule.id);
+            assert_eq!(v["url"], rule.url(), "{}", rule.id);
+
+            let listed: Vec<String> = serde_json::from_value(v["rulesets"].clone()).unwrap();
+            let expected: Vec<String> = rule_selector_names()
+                .into_iter()
+                .filter(|n| RuleSelector::parse(n).is_some_and(|s| s.contains(rule)))
+                .collect();
+            assert_eq!(listed, expected, "{}", rule.id);
+            assert!(
+                listed.contains(&"all".to_string()) && listed.contains(&format!("rfc{}", rule.rfc)),
+                "{} must be reachable by `all` and by its own RFC: {listed:?}",
+                rule.id
+            );
+        }
+    }
+
+    /// An unknown rule identifier is refused, and the refusal names the
+    /// catalogue rather than returning an empty answer that reads as "clean".
+    #[tokio::test]
+    async fn explain_rule_refuses_an_unknown_identifier_by_name() {
+        let err = empty_server()
+            .explain_rule(Parameters(ExplainRuleParams {
+                rule_id: "SIP-9999-1-INVENTED".to_string(),
+            }))
+            .await
+            .expect_err("an unknown rule must not succeed");
+        assert!(
+            err.message.contains("SIP-9999-1-INVENTED")
+                && err.message.contains(crate::sip::lint::BRANCH_COOKIE.id),
+            "the refusal must name the bad identifier and the real ones: {}",
+            err.message
+        );
+    }
+
+    /// An unknown ruleset selector is refused by name.
+    ///
+    /// Ignoring it and running the whole catalogue is the dangerous
+    /// alternative: the caller reads more findings than it selected and
+    /// believes the filter worked.
+    #[test]
+    fn an_unknown_ruleset_is_refused_and_the_vocabulary_named() {
+        let err = parse_rule_selectors(Some(&vec!["rfc3621".to_string()]))
+            .expect_err("a typo'd RFC number must not silently widen the run");
+        assert!(
+            err.message.contains("rfc3621") && err.message.contains("observation"),
+            "the refusal must name the bad selector and the valid ones: {}",
+            err.message
+        );
+        assert!(
+            parse_rule_selectors(None)
+                .expect("omitted is legal")
+                .is_empty(),
+            "no selector means no filtering"
+        );
+    }
+
+    /// An unknown severity is refused by name too.
+    #[test]
+    fn an_unknown_severity_is_refused_by_name() {
+        let err = parse_min_severity(Some(&"catastrophe".to_string()))
+            .expect_err("an unknown severity must not silently become info");
+        assert!(err.message.contains("catastrophe"), "{}", err.message);
+        assert_eq!(
+            parse_min_severity(Some(&"WARN".to_string())).expect("alias"),
+            crate::sip::lint::Severity::Warning
+        );
+    }
+
+    /// The rules that could not run are reported, grouped by reason.
+    ///
+    /// A rule that did not run and a rule that found nothing produce identical
+    /// finding lists, so without this an agent reads "no findings" as "clean".
+    #[test]
+    fn a_run_names_the_rules_it_could_not_evaluate() {
+        let with_media = skipped_rules(LintRun::WholeDialog { media: true });
+        let ids: Vec<&str> = with_media
+            .iter()
+            .flat_map(|g| g["rule_ids"].as_array().unwrap())
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [crate::sip::lint::RTCP_MUX_UNANSWERED.id],
+            "with media in hand only the RTCP rule is out of reach"
+        );
+
+        let no_media = skipped_rules(LintRun::WholeDialog { media: false });
+        let ids: Vec<&str> = no_media
+            .iter()
+            .flat_map(|g| g["rule_ids"].as_array().unwrap())
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for rule in crate::sip::lint::RULES {
+            if rule.scope() == crate::sip::lint::Scope::Media {
+                assert!(ids.contains(&rule.id), "{} needs media", rule.id);
+            }
+        }
+
+        // One message reaches neither the dialog rules nor the media ones, and
+        // the reasons are grouped rather than repeated per rule.
+        let one = skipped_rules(LintRun::OneMessage);
+        assert_eq!(one.len(), 3, "three reasons, not twelve copies: {one:?}");
+        let skipped: usize = one
+            .iter()
+            .map(|g| g["rule_ids"].as_array().unwrap().len())
+            .sum();
+        let message_scoped = crate::sip::lint::RULES
+            .iter()
+            .filter(|r| r.scope() == crate::sip::lint::Scope::Message)
+            .count();
+        assert_eq!(
+            skipped + message_scoped,
+            crate::sip::lint::RULES.len(),
+            "every rule is either message-scoped or accounted for as skipped"
+        );
+    }
+
+    /// `lint_dialog` returns the citation as data, not folded into prose.
+    ///
+    /// The whole reason `rfc` and `section` are fields is that an agent can
+    /// cite RFC 3261 §8.1.1.6 instead of inventing a section that reads
+    /// plausibly. Flattening them into the explanation would leave the tool
+    /// working and the guarantee gone.
+    #[tokio::test]
+    async fn lint_dialog_returns_rfc_and_section_as_separate_fields() {
+        // The stock INVITE fixture carries no Max-Forwards, which §8.1.1.6
+        // makes a UAC insert into every request it originates.
+        let server = server_with_dialog("lint-1@example.com");
+        let result = server
+            .lint_dialog(Parameters(LintDialogParams {
+                call_id: "lint-1@example.com".to_string(),
+                rulesets: None,
+                severity_min: None,
+            }))
+            .await
+            .expect("lint_dialog");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        let findings = v["findings"].as_array().expect("findings array");
+        let hit = findings
+            .iter()
+            .find(|f| f["rule_id"] == crate::sip::lint::MAX_FORWARDS_MISSING.id)
+            .unwrap_or_else(|| panic!("the INVITE has no Max-Forwards: {v}"));
+        assert_eq!(hit["rfc"], 3261, "rfc is a number, not prose");
+        assert_eq!(hit["section"], "8.1.1.6", "section is a string, not prose");
+        assert_eq!(hit["severity"], "warning");
+        assert_eq!(hit["basis"], "must");
+        assert!(hit["observed"].is_string() && hit["expected"].is_string());
+        assert_eq!(hit["message_index"], 0);
+        assert_eq!(v["rtp_streams_observed"], 0);
+    }
+
+    /// A ruleset selector narrows the run, and an RFC selector that no rule
+    /// cites returns nothing rather than everything.
+    #[tokio::test]
+    async fn lint_dialog_rulesets_narrow_the_findings() {
+        let server = server_with_dialog("lint-2@example.com");
+        let run = async |sets: Option<Vec<&str>>, min: Option<&str>| {
+            let result = server
+                .lint_dialog(Parameters(LintDialogParams {
+                    call_id: "lint-2@example.com".to_string(),
+                    rulesets: sets
+                        .map(|s| s.into_iter().map(str::to_string).collect::<Vec<String>>()),
+                    severity_min: min.map(str::to_string),
+                }))
+                .await
+                .expect("lint_dialog");
+            serde_json::from_str::<serde_json::Value>(&text_of(&result)).unwrap()
+        };
+
+        let all = run(None, None).await;
+        assert!(all["finding_count"].as_u64().unwrap_or(0) > 0);
+
+        // Every finding here cites RFC 3261, so RFC 3264 must select none of
+        // them — an empty answer, not the full catalogue.
+        let other_rfc = run(Some(vec!["rfc3264"]), None).await;
+        assert_eq!(other_rfc["finding_count"], 0, "{other_rfc}");
+        assert_eq!(other_rfc["rulesets"][0], "rfc3264");
+
+        let same_rfc = run(Some(vec!["rfc3261"]), None).await;
+        assert_eq!(same_rfc["finding_count"], all["finding_count"]);
+
+        // `severity_min` drops the quieter findings, and it is the engine's
+        // own filter rather than a second implementation here.
+        let loud = run(None, Some("error")).await;
+        assert_eq!(loud["finding_count"], 0, "nothing here is an error: {loud}");
+        assert_eq!(loud["severity_min"], "error");
+
+        // An empty list runs everything, and the echo has to agree with that.
+        // Reporting `rulesets: []` beside a full run describes a filter that
+        // selected nothing, next to findings that came from every rule.
+        let empty = run(Some(vec![]), None).await;
+        assert_eq!(empty["finding_count"], all["finding_count"]);
+        assert_eq!(
+            empty["rulesets"],
+            serde_json::json!(["all"]),
+            "an empty selector list runs the whole catalogue and must say so: \
+             {empty}"
+        );
+    }
+
+    /// `validate_message` reads one message and says which rules it could not
+    /// reach, so its shorter list is not read as a cleaner message.
+    #[tokio::test]
+    async fn validate_message_reports_the_rules_it_could_not_reach() {
+        let server = server_with_dialog("lint-3@example.com");
+        let result = server
+            .validate_message(Parameters(ValidateMessageParams {
+                call_id: "lint-3@example.com".to_string(),
+                index: 0,
+            }))
+            .await
+            .expect("validate_message");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert_eq!(v["message_index"], 0);
+        assert_eq!(v["message_count"], 2);
+        let ids: Vec<&str> = v["rules_not_evaluated"]
+            .as_array()
+            .expect("groups")
+            .iter()
+            .flat_map(|g| g["rule_ids"].as_array().unwrap())
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&crate::sip::lint::PT_UNDECLARED.id)
+                && ids.contains(&crate::sip::lint::ACK_CSEQ_MISMATCH.id),
+            "a message-only run reaches neither the media nor the dialog \
+             rules and has to say so: {ids:?}"
+        );
+
+        let err = server
+            .validate_message(Parameters(ValidateMessageParams {
+                call_id: "lint-3@example.com".to_string(),
+                index: 99,
+            }))
+            .await
+            .expect_err("out of range");
+        assert!(err.message.contains("out of range"), "{}", err.message);
     }
 }

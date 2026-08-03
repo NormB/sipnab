@@ -395,9 +395,12 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 248 -> 249 when the RTCP XR section of `docs/filter-dsl.md`
     // gained a cross-link to `mos-and-codecs.md`, where the rule it depends on
     // — a far end's reported figures never move sipnab's own — is written out.
+    // Raised 251 -> 252 when the `lint_dialog` section of `docs/mcp.md` gained
+    // a link to `sip-lint-rules.md`: the tool reference names the rule
+    // catalogue rather than restating the rules beside it.
     assert_eq!(
-        seen, 251,
-        "extractor found {seen} wiki links, expected 251. More is fine — bump \
+        seen, 252,
+        "extractor found {seen} wiki links, expected 252. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
