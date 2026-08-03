@@ -216,6 +216,21 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "production servers over SSH or HTTP, HEP capture hosts, TLS "
         "endpoints, fleets, and headless automation.",
     ),
+    # Registered when the conformance linter reached MCP. The page was in
+    # build-wiki.py's PAGES and not this one, so `docs/mcp.md`'s link to it
+    # rewrote to a GitHub blob URL: a site reader following the rule catalogue
+    # from the tool reference left the site. Weight 23 puts it after the other
+    # reference pages (18-22) rather than reordering any of them.
+    (
+        "docs/sip-lint-rules.md",
+        "sip-lint-rules.md",
+        "SIP conformance rules",
+        "SIP Conformance Rules",
+        23,
+        "Every rule the SIP conformance linter runs, the RFC section behind "
+        "it, the severity and basis it reports under, and how to suppress it "
+        "in CI.",
+    ),
 ]
 
 BANNER = (

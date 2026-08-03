@@ -1022,6 +1022,59 @@ fn every_site_internals_page_is_in_the_docs_dropdown() {
     );
 }
 
+/// Every OPERATOR page the generator writes is reachable from the Docs
+/// dropdown too.
+///
+/// The sibling test above covers `docs/internals/` only, and the gap it leaves
+/// is the same one it was written to close. Registering
+/// `docs/sip-lint-rules.md` in `build-site-pages.py` produced a published page
+/// that no anchor pointed at: `site_pages_mirror_is_current` was green, the
+/// file existed, Zola rendered it, and the only route to it was a URL nobody
+/// had. A page shipped where no reader can reach it is the defect this
+/// repository keeps finding in its own code — a capability built, tested,
+/// documented and not connected.
+///
+/// Ground truth is `PAGES` in the generator, read out of the script rather
+/// than restated, so a page added there has to appear in the nav or fail here.
+#[test]
+fn every_site_operator_page_is_in_the_docs_dropdown() {
+    let script = read("scripts/build-site-pages.py");
+    // The site filename is the SECOND string of each PAGES tuple, on the line
+    // after the `"docs/….md",` source path. Keyed off the source path so a
+    // description mentioning a filename cannot be mistaken for an entry.
+    let re =
+        regex::Regex::new(r#""docs/[a-z0-9-]+\.md",\s*\n\s*"([a-z0-9-]+\.md)","#).expect("regex");
+    let pages: Vec<String> = re
+        .captures_iter(&script)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        pages.len() >= 18,
+        "found only {} entries in build-site-pages.py PAGES — the tuple shape \
+         changed and this gate is no longer reading the registry",
+        pages.len()
+    );
+
+    let base = markdown::blank_tera_comments(&read("website/templates/base.html"));
+    let mut missing = Vec::new();
+    for page in &pages {
+        let path = format!("@/docs/{page}");
+        let linked = base.lines().any(|l| {
+            l.contains(&path) && l.contains("<a ") && l.contains("href=") && l.contains("get_url")
+        });
+        if !linked {
+            missing.push(path);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these generated operator pages have no anchor in the Docs dropdown in \
+         website/templates/base.html, so the only route to them is a direct \
+         URL:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 /// The workflow-inventory heading counts the workflows. Keep it honest.
 ///
 /// `build-ci-release.md` opens its inventory with "The N workflows" and then
