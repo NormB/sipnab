@@ -285,7 +285,9 @@ cargo check`, and a check of the reduced feature combinations `tls`, `api` and
 `wasm`. Rustdoc lints and the separate fuzz workspace compile independently of
 the test build, so these are exactly the failures that otherwise appear ten
 minutes later in CI. `SKIP_FMT_HOOK=1` bypasses all of them. If you use it,
-expect CI to notice.
+expect CI to notice. After those five comes one gate that is not hard —
+the corpus gate below, which runs only when the machine holds the
+capture corpus.
 
 Those gates let their tool write straight to the terminal instead of capturing
 it, so a failure arrives with the rustfmt diff, the clippy lint or the rustdoc
@@ -302,6 +304,112 @@ combinations, not eleven: `tls` and `api` are the ones that *exclude* `native`,
 where the breakage lives, and `wasm` is the most distant target. The full matrix
 stays in CI. CI skips a combination the crate does not define, the way the
 fuzz gate skips a missing `fuzz/`.
+
+### The corpus gate
+
+The last thing `pre-push` does differs from the five
+gates above in one way: it runs only when it can. `SIPNAB_CORPUS` names a
+directory of real captures — traffic recorded off live networks, with PII in
+every packet. The rule for that corpus is 100% validation, and anything short of
+100% counts as a critical failure. Nothing enforced that rule between one manual
+run and the next. On 2026-08-03 a corpus test turned out to have failed on every
+real capture for weeks. Nobody knew, because no automation ever ran it.
+
+CI cannot close that gap. Nobody commits, uploads, or caches those captures, and
+they never leave the machine that recorded them, so a hosted runner has nothing
+to validate against. The moment before a push is the only enforcement point that
+remains, which is why this one gate lives in a hook and has no CI counterpart
+anywhere in the ten workflows above.
+
+**What runs.** One `cargo test` invocation, all features, under the `profiling`
+profile, covering every top-level `tests/*.rs` that names `SIPNAB_CORPUS` — twelve
+targets today, and the ones with `corpus` in the name are not all of them:
+`input_set_accounting_test` and `rtp_quality_provenance_test` read the corpus
+too. The hook greps the tree for that list instead of carrying its own copy,
+because a hand-kept list cannot catch a *new* corpus binary, which is the one
+thing this gate exists for. The first draft did hand-keep the list, and it went
+stale inside an hour, when a twelfth binary landed mid-review.
+
+**When it runs.** Last, after the five hard gates. Each of those fails in
+seconds, and spending a minute on the corpus only to hear that the tree does not
+compile wastes the minute. The gate then reaches one of five states — a run, or
+one of the four reasons not to run — and each prints its own line:
+
+- **`SIPNAB_CORPUS` resolves to a readable directory.** The gate runs the suite
+  and prints `corpus: N test binaries against <dir> ... VALIDATED`. Push allowed.
+- **The same, but a corpus test fails.** The gate prints `FAIL`, names the binary
+  and test that broke, and **blocks the push**.
+- **`SIPNAB_CORPUS` unset.** Push allowed, and the gate prints
+  `corpus: NOT VALIDATED -- SIPNAB_CORPUS is unset`.
+- **`SIPNAB_CORPUS` set to anything other than a readable directory.** Push
+  allowed, and the gate prints
+  `corpus: NOT VALIDATED -- SIPNAB_CORPUS is not a readable directory`.
+- **No `tests/*.rs` names `SIPNAB_CORPUS`.** Push allowed, and the gate prints
+  `corpus: NOT VALIDATED -- no corpus test targets in this crate`.
+- **`SKIP_CORPUS_HOOK=1`.** Push allowed, and the gate prints
+  `corpus: BYPASSED (SKIP_CORPUS_HOOK=1) -- real captures NOT validated`.
+
+Silence is not one of the options. Whoever lacks the corpus still pushes, and
+the output still says which of those happened. `VALIDATED` and `NOT VALIDATED`
+are different words on purpose: silence in a column of `OK` lines reads as a
+pass, and a skipped check nobody knows about is the hole this gate closes.
+
+A directory the process cannot read counts as unreadable, not as empty. An
+unreadable directory walks to zero files, and a corpus test over zero files
+passes while proving nothing.
+
+**Naming what failed.** This gate captures cargo's output rather than letting it
+stream, so it follows the same discipline as pre-commit gates 1 and 2: it prints
+the binary and test name for each failure, the panic location and assertion
+message for the first three, and the `test result: FAILED` summary, then writes
+the whole capture to `.git/sipnab-pre-push-corpus.log` and prints that path. It
+caps the terminal at ten names and twelve lines of panic. It also prints a
+single-test reproduce command, because the alternative costs whoever hit it
+another full pass over 8.8 GB just to learn which test broke.
+
+**Why the `profiling` profile.** Measured on a 14-core machine against an 8.8 GB
+corpus of 137 files with a warm page cache:
+
+- every corpus binary, one `cargo test` invocation, `profiling` — **87 s**
+- the same binaries, one `cargo test` invocation *each*, `profiling` — **379 s**
+- the nine `*corpus*` binaries, one invocation, **dev** profile — **460 s**
+- a `profiling` rebuild after a library change, then the run — **413 s**
+
+Three decisions come out of those numbers. One invocation rather than a loop: the
+in-process `finished in` times sum to 86 s either way, so the extra 293 s is
+cargo re-resolving the dependency graph on every start and queueing on the
+shared package-cache lock. An optimized profile rather than dev: 8.8 GB of
+packets makes the parsers the entire workload, and the dev profile pays 460 s of
+run time on *every* push without ever amortizing anything. And `profiling`
+rather than `release`, because `[profile.release]` sets `panic = "abort"` — an
+aborting test process dies before the test harness prints its `failures:` list,
+so the gate would block a push and then fail to name what broke. `profiling`
+inherits release and restores `panic = "unwind"`.
+
+That also settles the question of a subset. At 87 s for everything, dropping a
+binary saves seconds and gives up a whole class of real-capture regression:
+diagnosis claims and message retention, ICMP evidence for signalling and for
+media separately, conformance-rule hit rates, `nat_mismatch` and `no_media`
+firing only where the capture supports them, detector clocks against the
+capture's own timeline, every documented filter field and alias, behavioural
+scanner alerts backed by an outcome, the two silent-loss fixes, `-I` input-set
+accounting, and RTP-quality provenance. Losing any one of those is how the
+failure above survived for weeks.
+
+The build, not the run, is what makes this gate feel slow. `lto = true` and
+`codegen-units = 1` relink every corpus binary with full LTO whenever the
+library changes. `target/profiling` persists between pushes, so a second push
+that touches no source pays 87 s rather than 413. Building those binaries under
+the `profiling` profile while working moves the wait off the push entirely. The
+gate's own comment in `.githooks/pre-push` carries the exact build-only command.
+
+**How to bypass.** `SKIP_CORPUS_HOOK=1 git push` drops this gate and leaves the
+other five standing. That is a second variable rather than a reuse of
+`SKIP_FMT_HOOK`, and deliberately so: `SKIP_FMT_HOOK=1` switches off formatting,
+clippy, rustdoc, fuzz, and the feature combinations as well, which is far too
+much to give up because a corpus is temporarily unavailable. It is also not a
+variable anybody already has in their shell history. Either way the output names
+the bypass, so a push that took it stays on the record.
 
 Both hooks have their own test scripts —
 [`test-pre-commit.sh`](https://github.com/NormB/sipnab/blob/main/scripts/test-pre-commit.sh) and
