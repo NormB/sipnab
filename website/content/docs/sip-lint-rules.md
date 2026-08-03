@@ -168,6 +168,39 @@ These read one message on its own.
 | `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 §20.22](https://www.rfc-editor.org/rfc/rfc3261#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. |
 | `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. |
 | `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 §8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.5) | The `CSeq` method disagrees with the request line. |
+| `SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE` | error | must | [RFC 4028 §7.1](https://www.rfc-editor.org/rfc/rfc4028#section-7.1) | One message carries a `Session-Expires` smaller than the `Min-SE` beside it, so it asks for a refresh interval it has already declared too short. |
+| `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL` | warning | must | [RFC 4028 §4](https://www.rfc-editor.org/rfc/rfc4028#section-4) | `Session-Expires` sits below the 90-second absolute minimum. |
+| `SIP-4028-5-MIN-SE-TOO-SMALL` | warning | must | [RFC 4028 §5](https://www.rfc-editor.org/rfc/rfc4028#section-5) | `Min-SE` sits below 90 seconds, wherever it appears. |
+| `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 §9](https://www.rfc-editor.org/rfc/rfc4028#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. |
+
+### Session timers, and the section number that is easy to get wrong
+
+RFC 4028 numbers its behaviour sections 7 UAC, **8 Proxy, 9 UAS** — and the
+refresher obligation belongs to the UAS, so it cites §9. Recalling it as §8
+sends a reader to the proxy's rules, which say something different about the
+same header field. The citation here came from the table of contents in RFC
+4028 rather than from memory, for the same reason the angle-bracket rule cites the
+Section 20 preamble instead of §20.10.
+
+All four session-timer rules read one message on its own. Two header fields
+that contradict each other sit in the same request, a floor is a fixed number,
+and a 2xx either names a refresher or does not. None of it needs the dialog.
+
+The refresher rule is the one with false-positive potential, so three guards
+fence it: the message has to be a response, its status has to be 2xx, and its
+`CSeq` method has to be `INVITE`.
+
+Measured against the local corpus, where all four rules report zero. That
+number means nothing on its own — a rule that never fires and a rule with
+nothing to find produce the same row — so a probe took it apart. The corpus holds
+1,849 messages carrying `Session-Expires`, of which 471 are 2xx answers to
+`INVITE`, and every one of those 471 names a refresher. The rule reaches its
+own code path 471 times and declines each time, which is silence with evidence
+behind it rather than a rule that cannot fire. The 358 values in the corpus
+that carry no refresher are all requests, where a UAC proposes a timer and §9
+places no obligation. No `Session-Expires` anywhere in the corpus sits below
+90, so both floor rules are quiet for the same checkable reason. A request offering a timer is the UAC
+proposing rather than answering, and §9 puts the obligation on the answer.
 
 ### Why the bracket rules split in two
 

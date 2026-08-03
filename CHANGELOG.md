@@ -12,6 +12,28 @@ entry that carries them.
 
 ### Added
 
+- **RFC 4028 session timers, four rules.** The linter knew nothing about
+  session timers, which are a routine interop breaker: a call that drops at
+  exactly 30 minutes is almost always a refresher nobody claimed. All four read
+  one message on its own, so a message linted alone still settles them.
+  `Session-Expires` below the `Min-SE` carried beside it (§7.1) contradicts
+  itself inside a single request and draws a 422 from any UAS honouring the
+  floor. `Session-Expires` and `Min-SE` each below the 90-second minimum (§4,
+  §5). And a 2xx answer to `INVITE` that negotiates a timer without naming a
+  refresher (§9), where both ends can end up believing the other refreshes.
+
+  The §9 citation was checked against the table of contents in RFC 4028 rather
+  than recalled, and the check earned itself: the behaviour sections run 7 UAC,
+  8 Proxy, 9 UAS, and the recollection that put UAS at §8 would have sent
+  readers to the proxy's rules about the same header field.
+
+  All four report zero against the local corpus, and that number was taken
+  apart rather than trusted. The corpus carries 1,849 messages with
+  `Session-Expires`, 471 of them 2xx answers to `INVITE`, and every one of the
+  471 names a refresher — so the rule reaches its own code path 471 times and
+  declines each time. Nothing in the corpus sits below the 90-second floor
+  either. Silence with evidence behind it, rather than a rule that cannot fire.
+
 - **The linter's suppression file exists now, and it cannot hide silently.**
   `LintConfig::suppress_list` parsed the file *shape* and nothing loaded a file
   or exposed a way to name one, so the `.sipnablint` a CI user needs on day one

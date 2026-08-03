@@ -18,6 +18,7 @@ use super::FindingSink;
 use super::finding::{
     BRANCH_COOKIE, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED, CSEQ_METHOD_MISMATCH,
     HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING, MAX_FORWARDS_RANGE,
+    MIN_SE_TOO_SMALL, REFRESHER_MISSING, SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL,
     URI_BRACKETS, URI_PARAM_DEMOTED,
 };
 
@@ -176,6 +177,113 @@ pub(crate) fn lint(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     max_forwards(msg, index, sink);
     branch_cookie(msg, index, sink);
     cseq_method(msg, index, sink);
+    session_timers(msg, index, sink);
+}
+
+/// The RFC 4028 floor, in seconds, for both `Session-Expires` and `Min-SE`.
+const SESSION_TIMER_FLOOR: u32 = 90;
+
+/// The delta-seconds at the head of a `Session-Expires` or `Min-SE` value.
+///
+/// Both header fields carry `delta-seconds` followed by optional
+/// semicolon-separated parameters, so the number stops at the first `;`.
+fn timer_seconds(raw: &str) -> Option<u32> {
+    raw.split(';').next()?.trim().parse().ok()
+}
+
+/// Whether a `Session-Expires` value names a refresher.
+fn has_refresher(raw: &str) -> bool {
+    raw.split(';').skip(1).any(|p| {
+        p.split('=')
+            .next()
+            .is_some_and(|n| n.trim().eq_ignore_ascii_case("refresher"))
+    })
+}
+
+/// RFC 4028 session timers: the floors, the ordering, and the refresher.
+///
+/// Message-scoped on purpose. Every check here reads one message against
+/// itself — two header fields that contradict each other, a value below a
+/// fixed floor, or a 2xx that negotiates a timer without saying who refreshes
+/// it — so none of them needs the dialog, and a message linted alone still
+/// settles them.
+fn session_timers(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    let session_expires = msg.header("Session-Expires");
+    let min_se = msg.header("Min-SE");
+
+    if let Some(raw) = session_expires
+        && let Some(secs) = timer_seconds(raw)
+        && secs < SESSION_TIMER_FLOOR
+    {
+        sink.push(
+            &SESSION_EXPIRES_TOO_SMALL,
+            index,
+            format!("Session-Expires: {secs}"),
+            format!("Session-Expires at least {SESSION_TIMER_FLOOR}"),
+            "§4 puts the absolute minimum for Session-Expires at 90 seconds. Below it the \
+             refresh traffic costs more than the state it keeps alive, and equipment that \
+             enforces the floor answers 422 rather than accepting the session.",
+        );
+    }
+
+    if let Some(raw) = min_se
+        && let Some(secs) = timer_seconds(raw)
+        && secs < SESSION_TIMER_FLOOR
+    {
+        sink.push(
+            &MIN_SE_TOO_SMALL,
+            index,
+            format!("Min-SE: {secs}"),
+            format!("Min-SE at least {SESSION_TIMER_FLOOR}"),
+            "§5 makes the value MUST NOT be less than 90 seconds wherever it appears. A \
+             lower floor advertises a willingness the specification does not permit, and \
+             the far end may hold you to it.",
+        );
+    }
+
+    // The two header fields contradicting each other in one message. Checked
+    // after the floors so a message breaking both reports both, which is the
+    // honest answer: raising the Session-Expires above 90 would still leave it
+    // below a Min-SE of 1800.
+    if let (Some(se_raw), Some(min_raw)) = (session_expires, min_se)
+        && let (Some(se), Some(min)) = (timer_seconds(se_raw), timer_seconds(min_raw))
+        && se < min
+    {
+        sink.push(
+            &SESSION_EXPIRES_BELOW_MIN_SE,
+            index,
+            format!("Session-Expires: {se} beside Min-SE: {min}"),
+            "Session-Expires greater than or equal to Min-SE",
+            "§7.1 makes Session-Expires greater than or equal to any Min-SE carried with \
+             it. The message asks for a refresh interval it has already declared too \
+             short, so a UAS honouring the floor rejects it with 422 Session Interval Too \
+             Small and the call never starts.",
+        );
+    }
+
+    // A 2xx to INVITE that negotiates a timer has to say who refreshes it.
+    let answers_invite = !msg.is_request
+        && msg.status_code.is_some_and(|c| (200..300).contains(&c))
+        && msg
+            .cseq()
+            .is_some_and(|(_, m)| m.eq_ignore_ascii_case("INVITE"));
+    if answers_invite
+        && let Some(raw) = session_expires
+        && !has_refresher(raw)
+    {
+        sink.push(
+            &REFRESHER_MISSING,
+            index,
+            format!(
+                "Session-Expires: {} with no refresher parameter",
+                raw.trim()
+            ),
+            "Session-Expires: <delta-seconds>;refresher=uac|uas",
+            "§9 makes the UAS set the refresher parameter in the 2xx response. Without it \
+             both ends may believe the other refreshes, and the session ends at the timer \
+             on a call neither side wanted to drop.",
+        );
+    }
 }
 
 /// RFC 3261 §8.1.1 — the five header fields no SIP message may omit.
@@ -462,6 +570,177 @@ mod tests {
             .into_iter()
             .map(|f| f.rule_id)
             .collect()
+    }
+
+    /// A 2xx to INVITE, with whatever extra header lines the test needs.
+    fn ok_to_invite(extra: &[&str]) -> String {
+        let mut out = String::from(
+            "SIP/2.0 200 OK\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n\
+             To: <sip:bob@example.net>;tag=a6c85cf\r\n\
+             From: <sip:alice@example.com>;tag=1928301774\r\n\
+             Call-ID: a84b4c76e66710\r\n\
+             CSeq: 314159 INVITE\r\n\
+             Content-Length: 0\r\n",
+        );
+        for line in extra {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+        out.push_str("\r\n");
+        out
+    }
+
+    /// An INVITE asking for a refresh interval it has already called too short.
+    ///
+    /// The two header fields contradict each other inside one message, which is
+    /// why this needs no dialog: a UAS honouring the floor answers 422 and the
+    /// call never starts.
+    #[test]
+    fn session_expires_below_min_se_is_reported() {
+        let raw = clean_invite().replace(
+            "Content-Length: 0\r\n",
+            "Session-Expires: 120\r\nMin-SE: 1800\r\nContent-Length: 0\r\n",
+        );
+        assert!(
+            ids(&raw).contains(&SESSION_EXPIRES_BELOW_MIN_SE.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    /// Session-Expires at or above Min-SE is silent.
+    #[test]
+    fn session_expires_at_or_above_min_se_is_silent() {
+        for (se, min) in [(1800, 1800), (3600, 90)] {
+            let raw = clean_invite().replace(
+                "Content-Length: 0\r\n",
+                &format!("Session-Expires: {se}\r\nMin-SE: {min}\r\nContent-Length: 0\r\n"),
+            );
+            assert!(
+                !ids(&raw).contains(&SESSION_EXPIRES_BELOW_MIN_SE.id),
+                "Session-Expires {se} against Min-SE {min} is legal: {:?}",
+                ids(&raw)
+            );
+        }
+    }
+
+    /// Both floors fire below 90, and stay quiet at exactly 90.
+    #[test]
+    fn the_ninety_second_floors_are_inclusive() {
+        let below = clean_invite().replace(
+            "Content-Length: 0\r\n",
+            "Session-Expires: 60\r\nMin-SE: 45\r\nContent-Length: 0\r\n",
+        );
+        let got = ids(&below);
+        assert!(got.contains(&SESSION_EXPIRES_TOO_SMALL.id), "{got:?}");
+        assert!(got.contains(&MIN_SE_TOO_SMALL.id), "{got:?}");
+
+        // 90 is the minimum, not the first illegal value.
+        let at = clean_invite().replace(
+            "Content-Length: 0\r\n",
+            "Session-Expires: 90\r\nMin-SE: 90\r\nContent-Length: 0\r\n",
+        );
+        let got = ids(&at);
+        assert!(!got.contains(&SESSION_EXPIRES_TOO_SMALL.id), "{got:?}");
+        assert!(!got.contains(&MIN_SE_TOO_SMALL.id), "{got:?}");
+    }
+
+    /// A message breaking the floor and the ordering reports both.
+    ///
+    /// Raising Session-Expires to 90 would still leave it under a Min-SE of
+    /// 1800, so reporting only one would send the operator round twice.
+    #[test]
+    fn a_message_breaking_the_floor_and_the_ordering_reports_both() {
+        let raw = clean_invite().replace(
+            "Content-Length: 0\r\n",
+            "Session-Expires: 60\r\nMin-SE: 1800\r\nContent-Length: 0\r\n",
+        );
+        let got = ids(&raw);
+        assert!(got.contains(&SESSION_EXPIRES_TOO_SMALL.id), "{got:?}");
+        assert!(got.contains(&SESSION_EXPIRES_BELOW_MIN_SE.id), "{got:?}");
+    }
+
+    /// The delta-seconds stops at the first parameter.
+    ///
+    /// `Session-Expires: 1800;refresher=uas` is 1800 seconds, not a parse
+    /// failure and not 1800-with-junk. Reading the whole value as a number
+    /// would silence every conformant timer in existence.
+    #[test]
+    fn parameters_do_not_confuse_the_delta_seconds() {
+        assert_eq!(timer_seconds("1800;refresher=uas"), Some(1800));
+        assert_eq!(timer_seconds("  90  "), Some(90));
+        assert_eq!(timer_seconds("not-a-number"), None);
+    }
+
+    /// A 2xx to INVITE negotiating a timer must name the refresher.
+    #[test]
+    fn a_2xx_without_a_refresher_is_reported() {
+        let raw = ok_to_invite(&["Session-Expires: 1800"]);
+        assert!(ids(&raw).contains(&REFRESHER_MISSING.id), "{:?}", ids(&raw));
+    }
+
+    /// Either refresher value satisfies the rule, in any case.
+    #[test]
+    fn a_2xx_naming_a_refresher_is_silent() {
+        for value in [
+            "Session-Expires: 1800;refresher=uas",
+            "Session-Expires: 1800;refresher=uac",
+            "Session-Expires: 1800 ;REFRESHER=UAS",
+        ] {
+            let raw = ok_to_invite(&[value]);
+            assert!(
+                !ids(&raw).contains(&REFRESHER_MISSING.id),
+                "{value} names a refresher: {:?}",
+                ids(&raw)
+            );
+        }
+    }
+
+    /// The refresher rule is confined to 2xx answers to INVITE.
+    ///
+    /// The guard that keeps this rule off most of a capture. A request carries
+    /// no refresher by rule -- §9 puts the obligation on the UAS response --
+    /// and a 200 to REGISTER or a 180 Ringing is not the message §9 governs.
+    /// Without these three checks the rule fires on ordinary conformant
+    /// traffic, which is how a linter gets switched off in week one.
+    #[test]
+    fn the_refresher_rule_ignores_requests_and_non_invite_answers() {
+        // A request carrying Session-Expires: the UAC offers, it does not answer.
+        let request = clean_invite().replace(
+            "Content-Length: 0\r\n",
+            "Session-Expires: 1800\r\nContent-Length: 0\r\n",
+        );
+        assert!(
+            !ids(&request).contains(&REFRESHER_MISSING.id),
+            "{:?}",
+            ids(&request)
+        );
+
+        // A 200 to REGISTER.
+        let register = ok_to_invite(&["Session-Expires: 1800"])
+            .replace("CSeq: 314159 INVITE", "CSeq: 314159 REGISTER");
+        assert!(
+            !ids(&register).contains(&REFRESHER_MISSING.id),
+            "{:?}",
+            ids(&register)
+        );
+
+        // A provisional answer to INVITE.
+        let ringing = ok_to_invite(&["Session-Expires: 1800"]).replace("200 OK", "180 Ringing");
+        assert!(
+            !ids(&ringing).contains(&REFRESHER_MISSING.id),
+            "{:?}",
+            ids(&ringing)
+        );
+
+        // And a 2xx that negotiates no timer at all.
+        let no_timer = ok_to_invite(&[]);
+        assert!(
+            !ids(&no_timer).contains(&REFRESHER_MISSING.id),
+            "{:?}",
+            ids(&no_timer)
+        );
     }
 
     /// The clean fixture trips nothing.

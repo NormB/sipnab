@@ -411,6 +411,59 @@ pub const ACK_CSEQ_MISMATCH: RuleMeta = RuleMeta {
     section: "17.1.1.3",
 };
 
+/// `Session-Expires` smaller than the `Min-SE` in the same request.
+pub const SESSION_EXPIRES_BELOW_MIN_SE: RuleMeta = RuleMeta {
+    id: "SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE",
+    title: "Session-Expires below the Min-SE carried beside it",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 4028,
+    // §7.1: "If a Min-SE header is included in the initial session refresh
+    // request, the value of the Session-Expires MUST be greater than or equal
+    // to the value in Min-SE." The two headers contradict each other inside one
+    // message, so this needs no dialog context to settle.
+    section: "7.1",
+};
+
+/// `Session-Expires` below the 90-second floor.
+pub const SESSION_EXPIRES_TOO_SMALL: RuleMeta = RuleMeta {
+    id: "SIP-4028-4-SESSION-EXPIRES-TOO-SMALL",
+    title: "Session-Expires below the 90-second minimum",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 4028,
+    // §4: "The absolute minimum for the Session-Expires header field is 90
+    // seconds."
+    section: "4",
+};
+
+/// `Min-SE` below the 90-second floor.
+pub const MIN_SE_TOO_SMALL: RuleMeta = RuleMeta {
+    id: "SIP-4028-5-MIN-SE-TOO-SMALL",
+    title: "Min-SE below the 90-second minimum",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 4028,
+    // §5: "When present in a request or response, its value MUST NOT be less
+    // than 90 seconds."
+    section: "5",
+};
+
+/// A 2xx answer to `INVITE` carrying `Session-Expires` with no `refresher`.
+pub const REFRESHER_MISSING: RuleMeta = RuleMeta {
+    id: "SIP-4028-9-REFRESHER-MISSING",
+    title: "2xx to INVITE negotiates a session timer without naming the refresher",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 4028,
+    // §9, UAS Behavior — NOT §8, which is Proxy Behavior. "The UAS MUST set the
+    // value of the refresher parameter in the Session-Expires header field in
+    // the 2xx response." Checked against the RFC's table of contents rather
+    // than recalled: the numbering runs 7 UAC, 8 Proxy, 9 UAS, and getting it
+    // one out would send a reader to the wrong party's rules.
+    section: "9",
+};
+
 /// An answer sharing no media format with the offer it answers.
 pub const ANSWER_NO_COMMON_FORMAT: RuleMeta = RuleMeta {
     id: "SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT",
@@ -566,6 +619,10 @@ pub const RULES: &[RuleMeta] = &[
     TO_TAG_IN_INITIAL_REQUEST,
     CSEQ_METHOD_MISMATCH,
     ACK_CSEQ_MISMATCH,
+    SESSION_EXPIRES_BELOW_MIN_SE,
+    SESSION_EXPIRES_TOO_SMALL,
+    MIN_SE_TOO_SMALL,
+    REFRESHER_MISSING,
     ANSWER_NO_COMMON_FORMAT,
     ANSWER_EXTRA_FORMAT,
     ANSWER_DIRECTION_ILLEGAL,
