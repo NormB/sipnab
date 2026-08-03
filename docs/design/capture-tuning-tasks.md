@@ -183,9 +183,11 @@ alone.
 
 ### 4b. Stale by drift
 
-- [x] **D5 — `benchmarks.md` numbers are pinned to 0.5.47**; the crate is at
-  0.5.76. The page has an A/B section proving the numbers held to 0.5.47 — redo
-  it, or date-stamp the claim honestly.
+- [x] **D5 — `benchmarks.md` numbers are pinned to 0.5.47** while the crate has
+  moved many releases past it. Resolved by date-stamping the claim honestly
+  rather than by re-measuring: the page now says when it was last measured and
+  that it does not track the crate version. No crate version is named here, so
+  this entry cannot go stale the way the page it describes did.
 - [ ] **D6 — Sweep `docs/design/*.md` for in-flight language** — "being
   addressed", "uncommitted", "the working tree carries", "shipped 0.5.NN" —
   and resolve each to shipped, dropped, or still-open. *Partly done:* the

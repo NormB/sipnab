@@ -8,12 +8,99 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [0.5.76] - Unreleased
+## [0.5.77] - Unreleased
 
-Nothing yet. `Cargo.toml` moved to 0.5.76 so that work landing after the
-0.5.75 tag reports a version distinguishable from the released one — a build
-of this tree calling itself 0.5.75 would be indistinguishable from the
-artifact, which is exactly the confusion a version number exists to prevent.
+Nothing yet. `Cargo.toml` moved to 0.5.77 so that work landing after the
+0.5.76 entry below reports a version distinguishable from it — a build of this
+tree calling itself 0.5.76 would be indistinguishable from the tree that entry
+describes, which is exactly the confusion a version number exists to prevent.
+
+## [0.5.76] - 2026-08-03
+
+### Fixed
+
+- **A capture that lost packets said nothing about it.** libpcap has reported
+  kernel-ring and interface drops through `pcap_stats()` since forever and
+  sipnab never called it, so a run that dropped half the wire produced the
+  same confident report as a complete one. Every conclusion downstream — a
+  dialog that "never got a 200", a stream "losing 4%" — inherited the gap
+  silently, which is the worst failure a capture tool has. The counters are
+  now polled on a timer, warned about on the first drop, summarised at exit,
+  and carried into `/v1/stats`, the MCP `stats` tool and Prometheus alongside
+  the invalid-timestamp count, which had the identical gap: a run with
+  unusable pcap timestamps has unreliable post-dial delay, jitter and MOS and
+  no surface said so. They stay three counters rather than one total because
+  the remedies disagree — a kernel drop wants a bigger buffer, an interface
+  drop cannot be recovered by one, and a bad timestamp loses no packet at all.
+
+- **`-B/--buffer` was documented in MiB and implemented in megabytes, and went
+  negative past 2047.** The multiplier was decimal, so every value handed to
+  libpcap was ~4.8% smaller than the one asked for; and the product was cast
+  to a C `int` unbounded, so `--buffer 2148` reached
+  `pcap_set_buffer_size()` as −2,146,967,296. It is a MiB multiplier now, on
+  saturating arithmetic, clamped to the largest whole MiB that fits a positive
+  `i32`, and page-aligned for 4, 16 and 64 KiB pages.
+
+- **The receive loop waited for packets it already had.** `poll(2)` ran before
+  every packet, including when the mmap'd ring still held data. The wait moved
+  to the ring-empty path.
+
+- **`--cores N` on a live source silently ran on one core.** `--cores` selects
+  offline parallel reconstruction, which needs the whole file up front, so a
+  live device and `--multi-device` fall through to the single-threaded path —
+  correctly, and until now without a word. An operator sizing a host on its
+  core count was doing it on a false premise. It warns; it does not refuse,
+  because the output is complete and only the parallelism is missing.
+
+- **`architecture.md` said active responses "run in an isolated child".** They
+  run in a thread, and have since D15 was written.
+
+### Changed
+
+- **The kernel capture buffer defaults to 64 MiB instead of 2 MiB.** 2 MiB
+  holds a few milliseconds of a busy trunk. A larger fixed default can fail
+  where a smaller one worked — a constrained host, a locked-down container —
+  so the open halves down a ladder to a 2 MiB floor and reports the size it
+  actually got, because a bigger default must never turn a working capture
+  into a failing one.
+
+- **The per-packet critical section no longer forks, locks or writes.**
+  `--on-dialog-exec`, `--on-quality-exec` and `--alert-exec` each reached
+  `Command::spawn()` — a real `fork`/`exec`, hundreds of microseconds against
+  a per-packet budget of hundreds of nanoseconds — while both store write
+  locks were held, with the alert engine's own lock taken as a third beneath
+  them on an ordering rule written down nowhere; per-message output went
+  straight at the stdout sink, putting `write(2)` in there too. All three are
+  now decided under the guards, where they need the store, and performed after
+  the guards drop, where they do not. Rate-limit budgets, queue-depth caps and
+  child reaping are unchanged: a decision parked between the two is declared to
+  the rate window, so `--exec-rate-limit N` still means N.
+
+### Security
+
+- **`$SIPNAB_AUDIO_PLUGIN` was `dlopen`ed ahead of the trusted paths.** An
+  environment variable selected native, unsandboxed code into a process
+  holding TLS key material, bearer tokens and the capture handle — including
+  when that process had gained `cap_net_raw` at `execve` and so had inherited
+  its environment from an unprivileged invoker. It is tried last now, and only
+  when the process gained no privileges at exec and the file is a regular file
+  owned by root or the invoker, not group- or world-writable, in a directory
+  that is not either.
+
+### Added
+
+- **`docs/tuning-capture.md`** — how to size the ring, read the drop counters,
+  tell a kernel drop from an interface drop, and why `any` costs what it costs
+  against named interfaces.
+
+- **netmap in the static musl builds.** libpcap moves to 1.10.6 (the first
+  release that reports netmap in `pcap_lib_version()`, so its presence can be
+  asserted rather than assumed) and the image build fails if `pcap-netmap.o` is
+  not in the archive.
+
+**Not measured.** The throughput changes here are reasoned from syscall counts
+and libpcap's ring arithmetic, not benchmarked against a live NIC at line rate.
+The drop counters added above are the instrument that measurement needs.
 
 ## [0.5.75] - 2026-08-03
 
