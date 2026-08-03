@@ -7,4 +7,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+RUN useradd -U -u 1000 appuser && chown -R 1000:1000 /usr/local/bin/entrypoint.sh
+USER 1000
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
