@@ -189,6 +189,9 @@ pub fn capture_live(
     // will not give us that much. See `buffer_ladder`.
     let mut opened = None;
     let mut open_err = None;
+    // The size the kernel actually granted, which is what the drop warning has
+    // to quote. It is not `config.buffer_mb` whenever the ladder stepped down.
+    let mut granted_mb = config.buffer_mb;
     for (attempt, mb) in buffer_ladder(config.buffer_mb).into_iter().enumerate() {
         let result = pcap::Capture::from_device(device)
             .with_context(|| format!("Failed to open device '{device}'"))
@@ -233,6 +236,7 @@ pub fn capture_live(
                         config.buffer_mb,
                     );
                 }
+                granted_mb = effective_buffer_mb(mb);
                 opened = Some(cap);
                 break;
             }
@@ -328,7 +332,13 @@ pub fn capture_live(
         if last_stats.elapsed() >= STATS_INTERVAL {
             last_stats = std::time::Instant::now();
             match cap.stats() {
-                Ok(stat) => fold_stats(device, &stat, &mut prev_dropped, &mut prev_if_dropped),
+                Ok(stat) => fold_stats(
+                    device,
+                    &stat,
+                    granted_mb,
+                    &mut prev_dropped,
+                    &mut prev_if_dropped,
+                ),
                 // Not fatal: some capture backends do not implement stats. The
                 // capture is still good; only the loss visibility is missing.
                 Err(e) => tracing::debug!("pcap_stats unavailable on '{device}': {e}"),
@@ -412,7 +422,13 @@ pub fn capture_live(
     // Final reading, so drops in the last STATS_INTERVAL are not lost — on a
     // short `--duration` run that window is most of the capture.
     if let Ok(stat) = cap.stats() {
-        fold_stats(device, &stat, &mut prev_dropped, &mut prev_if_dropped);
+        fold_stats(
+            device,
+            &stat,
+            granted_mb,
+            &mut prev_dropped,
+            &mut prev_if_dropped,
+        );
     }
     let (dropped, if_dropped) = kernel_drop_counts();
     if dropped > 0 || if_dropped > 0 {
@@ -458,9 +474,20 @@ const MAX_BUFFER_MB: u32 = 2047;
 /// Saturating throughout, and clamped to [`MAX_BUFFER_MB`], so no input can
 /// produce a negative or wrapped size.
 fn buffer_size_bytes(mb: u32) -> i32 {
-    let clamped = mb.min(MAX_BUFFER_MB);
-    let bytes = (clamped as u64).saturating_mul(1024 * 1024);
+    let bytes = u64::from(effective_buffer_mb(mb)).saturating_mul(1024 * 1024);
     i32::try_from(bytes).unwrap_or(i32::MAX)
+}
+
+/// The size actually asked of libpcap for a request of `mb`.
+///
+/// [`buffer_ladder`] does not clamp — it starts at what the operator asked for
+/// — so above [`MAX_BUFFER_MB`] the requested figure and the effective one part
+/// company. Both [`buffer_size_bytes`] and the size reported to the operator go
+/// through here, so the number in the message is the number libpcap was given.
+/// Reporting the raw request instead would tell someone who passed
+/// `--buffer 5000` that they have a 5000 MiB ring, when they have 2047.
+fn effective_buffer_mb(mb: u32) -> u32 {
+    mb.min(MAX_BUFFER_MB)
 }
 
 /// Capture-buffer sizes to try, largest first, starting from `requested`.
@@ -552,7 +579,20 @@ pub fn kernel_drop_counts() -> (u64, u64) {
 /// Adds to [`KERNEL_DROPPED`] / [`IFACE_DROPPED`] and, the first time either
 /// goes non-zero, logs one `warn` naming the device — the operator needs to
 /// know that the run is lossy while it is still running, not afterwards.
-fn fold_stats(device: &str, stat: &pcap::Stat, prev_dropped: &mut u32, prev_if: &mut u32) {
+///
+/// `buffer_mb` is the ring the kernel actually granted, not the one requested,
+/// and the warning quotes it. It used to quote a hardcoded "default 2 MiB",
+/// which was wrong from the moment [`DEFAULT_BUFFER_MB`] became 64: an operator
+/// dropping packets at the default read that they were on a small buffer with
+/// room to grow, when they were already 32x above the figure they were shown.
+/// The size in use is both the number they need and the one that cannot drift.
+fn fold_stats(
+    device: &str,
+    stat: &pcap::Stat,
+    buffer_mb: u32,
+    prev_dropped: &mut u32,
+    prev_if: &mut u32,
+) {
     use std::sync::atomic::Ordering::Relaxed;
     // Saturating: a handle that somehow reports a lower total than last time
     // (a driver quirk, or a counter wrap) must not underflow into a huge delta.
@@ -566,18 +606,28 @@ fn fold_stats(device: &str, stat: &pcap::Stat, prev_dropped: &mut u32, prev_if: 
     KERNEL_DROPPED.fetch_add(d_drop, Relaxed);
     IFACE_DROPPED.fetch_add(d_if, Relaxed);
     if !DROP_REPORTED.swap(true, Relaxed) {
-        tracing::warn!(
-            "PACKETS ARE BEING DROPPED on '{device}' (kernel buffer: {}, \
-             interface/driver: {}). The analysis for this run is INCOMPLETE — \
-             dialogs may be missing messages and RTP loss figures will \
-             overstate what was on the wire. Raise the kernel capture buffer \
-             with -B/--buffer (default 2 MiB), narrow the capture with a BPF \
-             filter, or reduce --snaplen. Interface drops are not fixed by a \
-             bigger buffer; they point at the NIC or driver.",
-            stat.dropped,
-            stat.if_dropped,
-        );
+        tracing::warn!("{}", drop_warning(device, stat, buffer_mb));
     }
+}
+
+/// Build the first-drop warning.
+///
+/// Separate from [`fold_stats`] so it can be asserted on. `DROP_REPORTED` is a
+/// process-global latch that fires once per run, so a test that drove the
+/// warning through `fold_stats` would depend on being the first test to reach
+/// it — which is to say it would pass or fail on test ordering. Returning the
+/// string makes the operator-facing text checkable without touching the latch.
+fn drop_warning(device: &str, stat: &pcap::Stat, buffer_mb: u32) -> String {
+    format!(
+        "PACKETS ARE BEING DROPPED on '{device}' (kernel buffer: {}, \
+         interface/driver: {}). The analysis for this run is INCOMPLETE — \
+         dialogs may be missing messages and RTP loss figures will overstate \
+         what was on the wire. This run's kernel capture buffer is \
+         {buffer_mb} MiB: raise it with -B/--buffer, narrow the capture with a \
+         BPF filter, or reduce --snaplen. Interface drops are not fixed by a \
+         bigger buffer; they point at the NIC or driver.",
+        stat.dropped, stat.if_dropped,
+    )
 }
 
 /// Convert a pcap `libc::timeval` to a chrono UTC datetime.
@@ -1066,8 +1116,8 @@ mod tests {
         let before = KERNEL_DROPPED.load(Ordering::Relaxed);
         let (mut prev_d, mut prev_i) = (0u32, 0u32);
 
-        fold_stats("test0", &stat(100, 10, 0), &mut prev_d, &mut prev_i);
-        fold_stats("test0", &stat(200, 25, 0), &mut prev_d, &mut prev_i);
+        fold_stats("test0", &stat(100, 10, 0), 64, &mut prev_d, &mut prev_i);
+        fold_stats("test0", &stat(200, 25, 0), 64, &mut prev_d, &mut prev_i);
 
         let observed = KERNEL_DROPPED.load(Ordering::Relaxed) - before;
         assert_eq!(
@@ -1085,7 +1135,7 @@ mod tests {
         let before = KERNEL_DROPPED.load(Ordering::Relaxed);
         let (mut prev_d, mut prev_i) = (500u32, 0u32);
 
-        fold_stats("test1", &stat(10, 3, 0), &mut prev_d, &mut prev_i);
+        fold_stats("test1", &stat(10, 3, 0), 64, &mut prev_d, &mut prev_i);
 
         let observed = KERNEL_DROPPED.load(Ordering::Relaxed) - before;
         assert_eq!(
@@ -1105,7 +1155,7 @@ mod tests {
         let before_iface = IFACE_DROPPED.load(Ordering::Relaxed);
         let (mut prev_d, mut prev_i) = (0u32, 0u32);
 
-        fold_stats("test2", &stat(1000, 0, 7), &mut prev_d, &mut prev_i);
+        fold_stats("test2", &stat(1000, 0, 7), 64, &mut prev_d, &mut prev_i);
 
         assert_eq!(
             KERNEL_DROPPED.load(Ordering::Relaxed) - before_kernel,
@@ -1127,12 +1177,100 @@ mod tests {
         let before = kernel_drop_counts();
         let (mut prev_d, mut prev_i) = (4u32, 9u32);
 
-        fold_stats("test3", &stat(5000, 4, 9), &mut prev_d, &mut prev_i);
+        fold_stats("test3", &stat(5000, 4, 9), 64, &mut prev_d, &mut prev_i);
 
         assert_eq!(
             kernel_drop_counts(),
             before,
             "an unchanged reading must not move either counter"
+        );
+    }
+
+    /// The drop warning must quote the buffer THIS run got, not a constant.
+    ///
+    /// It used to read "(default 2 MiB)", hardcoded, and stayed that way when
+    /// `DEFAULT_BUFFER_MB` became 64. An operator dropping packets at the
+    /// default was told they were on 2 MiB — so the obvious remedy, "raise the
+    /// buffer", looked untried when they were already 32x above the figure in
+    /// front of them. The number in the message is the one they act on, so it
+    /// has to come from the run.
+    #[test]
+    fn the_drop_warning_quotes_the_buffer_this_run_actually_got() {
+        let msg = drop_warning("eth0", &stat(1000, 12, 3), 64);
+        assert!(
+            msg.contains("kernel capture buffer is 64 MiB"),
+            "the operator needs the size in use, got: {msg}"
+        );
+
+        // A ladder step-down is exactly when the requested size and the real
+        // one differ, and exactly when quoting the wrong one misleads most.
+        let stepped = drop_warning("eth0", &stat(1000, 12, 3), 8);
+        assert!(
+            stepped.contains("kernel capture buffer is 8 MiB"),
+            "after a ladder step-down the granted size is what matters: {stepped}"
+        );
+
+        assert!(
+            !msg.contains("default 2 MiB"),
+            "no hardcoded default: that is the claim that went stale, {msg}"
+        );
+        assert!(
+            msg.contains("(kernel buffer: 12, interface/driver: 3)"),
+            "both drop counts stay separate in the text: {msg}"
+        );
+    }
+
+    /// Above the ceiling, the reported size must be the one libpcap got.
+    ///
+    /// `buffer_ladder` deliberately does not clamp — it starts at what was
+    /// asked for — so the requested and effective sizes diverge past
+    /// `MAX_BUFFER_MB`. Reporting the request would tell someone who passed
+    /// `--buffer 5000` that they have a 5000 MiB ring while `buffer_size_bytes`
+    /// handed the kernel 2047 MiB, and they would go looking for the drops
+    /// anywhere but the buffer.
+    #[test]
+    fn an_over_ceiling_request_reports_the_clamped_size_not_the_request() {
+        assert_eq!(
+            effective_buffer_mb(5000),
+            MAX_BUFFER_MB,
+            "past the C-int ceiling the effective size is the clamp"
+        );
+        assert_eq!(
+            effective_buffer_mb(64),
+            64,
+            "an ordinary size passes through untouched"
+        );
+        // The reported figure and the bytes libpcap receives must agree.
+        assert_eq!(
+            buffer_size_bytes(5000),
+            (MAX_BUFFER_MB as i32) * 1024 * 1024,
+            "the clamp the message quotes is the clamp the bytes went through"
+        );
+
+        let msg = drop_warning("eth0", &stat(1, 1, 0), effective_buffer_mb(5000));
+        assert!(
+            msg.contains(&format!("kernel capture buffer is {MAX_BUFFER_MB} MiB")),
+            "the operator must see the ring they have, not the one they asked \
+             for: {msg}"
+        );
+    }
+
+    /// Whatever the default becomes, the warning must never state a different
+    /// one. This is the assertion the old text would have failed the moment
+    /// `DEFAULT_BUFFER_MB` moved off 2.
+    #[test]
+    fn the_drop_warning_never_states_a_default_that_can_drift() {
+        let msg = drop_warning("eth0", &stat(1, 1, 0), crate::capture::DEFAULT_BUFFER_MB);
+        assert!(
+            msg.contains(&format!(
+                "kernel capture buffer is {} MiB",
+                crate::capture::DEFAULT_BUFFER_MB
+            )),
+            "a default-buffer run must report the default it truly has: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("default"),
+            "the message must quote the live value, never name a default: {msg}"
         );
     }
 }

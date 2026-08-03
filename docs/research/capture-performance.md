@@ -8,7 +8,10 @@ the complexity when the previous phase proves insufficient.
 ## Current state (baseline)
 
 sipnab captures via **libpcap** (the `pcap` crate). Live loop in
-`src/capture/live.rs:99-249`:
+`capture_live()` (`src/capture/live.rs`). Symbols rather than line numbers
+throughout this page: the ranges it used to cite had all rotted by the time the
+work below landed, and a citation that silently points at the wrong code is
+worse than none.
 
 - `immediate_mode` is **run-mode-dependent** (`immediate_mode_for()` in
   `src/app/bootstrap.rs`): on for the TUI, off for every headless run, which is
@@ -24,14 +27,17 @@ sipnab captures via **libpcap** (the `pcap` crate). Live loop in
 
 **Where loss happens under load (not the NIC — the pipeline):**
 
-1. **Channel backpressure (primary):** capture→processing is a
-   `crossbeam_channel::bounded(10_000)` (`src/main.rs:428`). When processing
-   (TUI render, RTP analysis, audio export) lags, the queue fills and
-   `tx.send` stalls the capture thread → kernel drops. ~10k RTP pps fills it in
-   ~1 s; bursts fill it far faster.
+1. **Channel backpressure (primary):** capture→processing was a
+   `crossbeam_channel::bounded(10_000)`. When processing (TUI render, RTP
+   analysis, audio export) lagged, the queue filled and `tx.send` stalled the
+   capture thread → kernel drops; ~10k RTP pps filled it in ~1 s, bursts far
+   faster. Now an auto-grow capped queue (`src/capture/channel.rs`) — see the
+   Phase 1 entry below for what replaced it.
 2. **Per-packet allocation:** every packet does `pkt.data.to_vec()`
-   (`live.rs:221`, `src/capture/packet.rs:39-42`) — heap alloc + memcpy per packet.
-3. **Buffer size:** 2 MiB default fills in ~10 ms at a few hundred Mbps of media.
+   (in `capture_live()`, into `Packet::new`) — heap alloc + memcpy per packet.
+   Still open.
+3. **Buffer size:** the 2 MiB default filled in ~10 ms at a few hundred Mbps of
+   media. Addressed — see the baseline bullet above and the Phase 1 entry below.
 4. **No kernel acceleration beyond libpcap defaults** (typically TPACKET_V2);
    no AF_PACKET ring, AF_XDP, or XDP/eBPF prefilter.
 
@@ -47,15 +53,22 @@ selected RTP) is often a bigger win than faster raw capture.
 Low risk, no backend change, helps every platform. Expected ~20–30% throughput
 and a large cut in pipeline-induced drops.
 
-- [ ] Raise default kernel buffer 2 MiB → 64 MiB (`--buffer-mb` default in
-      `src/capture/mod.rs`); document a 128 MiB recommendation for gigabit media.
+- [x] **Done:** default kernel buffer raised 2 MiB → 64 MiB
+      (`DEFAULT_BUFFER_MB` in `src/capture/native.rs`). The open walks a ladder
+      that halves to a 2 MiB floor, so a host that cannot give 64 MiB still
+      captures rather than failing to start, and says which size it got.
+      `-B/--buffer` is a MiB multiplier on saturating arithmetic clamped to
+      `MAX_BUFFER_MB` (2047, the last whole MiB that fits a positive C `int`);
+      it was decimal-megabyte arithmetic that handed libpcap a negative size
+      above 2047. `pcap_stats` drops are polled on a timer and surfaced.
+      See `docs/tuning-capture.md` for the gigabit-media sizing guidance.
 - [x] **Done:** the capture→processing channel is now an auto-grow, capped queue
       (`src/capture/channel.rs`) — unbounded storage (frees segments when idle) +
       a `bounded(capacity)` semaphore for backpressure. Capacity derives from
       `[capture] buffer_budget_mb` / `--buffer-budget` (default 64 MiB);
       `sipnab_capture_queue_depth_packets` / `_backpressure_blocks_total` exported.
-- [ ] Buffer pool to eliminate per-packet `to_vec()` (`live.rs:221`) — recycle
-      fixed buffers instead of allocating per packet.
+- [ ] Buffer pool to eliminate per-packet `to_vec()` (in `capture_live()`) —
+      recycle fixed buffers instead of allocating per packet.
 - [ ] Stronger default auto-BPF filter when none supplied (push more drops into
       the kernel; e.g. SIP ports + configured RTP ranges).
 - [ ] Investigate whether the `pcap` crate v2 exposes **TPACKET_V3**
