@@ -20,6 +20,8 @@
 
 use std::path::PathBuf;
 
+#[path = "support/corpus.rs"]
+mod corpus_support;
 #[path = "support/run.rs"]
 mod run_support;
 
@@ -180,10 +182,13 @@ fn a_directory_whose_captures_are_deeper_says_so() {
 /// subdirectories, and the run reported the 15 as though they were everything.
 #[test]
 fn corpus_directory_reports_what_it_did_not_enter() {
-    let Ok(dir) = std::env::var("SIPNAB_CORPUS") else {
-        eprintln!("SIPNAB_CORPUS not set — skipping");
+    // The skip is announced on stderr by `corpus_support::root`, once per test
+    // binary. It used to be an `eprintln!` that libtest captured and discarded
+    // on success, so this gate reported `ok` while never running.
+    let Some(root) = corpus_support::root() else {
         return;
     };
+    let dir = root.to_string_lossy().into_owned();
     let subdirs = std::fs::read_dir(&dir)
         .expect("read corpus dir")
         .filter_map(Result::ok)

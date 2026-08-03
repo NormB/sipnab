@@ -59,15 +59,17 @@ const MAX_SCANNED: usize = 60;
 /// media is describing the capture, not the calls in it.
 const MAX_FLAGGED_SHARE: f64 = 0.75;
 
+#[path = "support/corpus.rs"]
+mod corpus_support;
+
 /// The corpus root, or `None` when `SIPNAB_CORPUS` is unset.
+///
+/// The skip is announced on stderr by [`corpus_support::root`], once per test
+/// binary. It used to be an `eprintln!` that libtest captured and discarded on
+/// success, so this suite reported `ok` while proving nothing about real
+/// traffic.
 fn corpus_root() -> Option<PathBuf> {
-    match std::env::var("SIPNAB_CORPUS") {
-        Ok(dir) => Some(PathBuf::from(dir)),
-        Err(_) => {
-            eprintln!("SIPNAB_CORPUS not set — skipping");
-            None
-        }
-    }
+    corpus_support::root()
 }
 
 /// Every regular file under `root`, recursively, in sorted order.
