@@ -224,13 +224,13 @@ def _self_test() -> None:
             "Sleep 1s\n"
         )
         badges = parse_tape(tape)
-        assert all(b.label != "sipnab -I x.pcap" for b in badges), "hidden Type leaked"
+        if not all(b.label != "sipnab -I x.pcap" for b in badges): raise AssertionError("hidden Type leaked")
         labels = [b.label for b in badges]
-        assert labels == ["↓", "↓", "Enter"], labels
-        assert abs(badges[0].start - 2.0) < 1e-9, badges[0]
+        if labels != ["↓", "↓", "Enter"]: raise AssertionError(labels)
+        if not abs(badges[0].start - 2.0) < 1e-9: raise AssertionError(badges[0])
         # First ↓ is clipped by the second at 2.1.
-        assert abs(badges[0].end - 2.1) < 1e-9, badges[0]
-        assert abs(badges[2].start - 2.2) < 1e-9, badges[2]
+        if not abs(badges[0].end - 2.1) < 1e-9: raise AssertionError(badges[0])
+        if not abs(badges[2].start - 2.2) < 1e-9: raise AssertionError(badges[2])
     print("self-test OK")
 
 
