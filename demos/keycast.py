@@ -203,6 +203,19 @@ def overlay(in_gif: Path, out_gif: Path, tape: Path) -> int:
     return 0
 
 
+def _check(ok: bool, what: str, detail: object = "") -> None:
+    """Assert without `assert`, so `python -O` cannot delete the check.
+
+    `python -O` strips every `assert` statement. This function used bare
+    asserts, so under `-O` the whole body vanished, `_self_test` fell through,
+    and it printed "self-test OK" having verified nothing -- a green signal
+    that was not evidence. `raise` is not stripped.
+    """
+    if not ok:
+        suffix = f": {detail}" if detail != "" else ""
+        raise AssertionError(f"{what}{suffix}")
+
+
 def _self_test() -> None:
     import tempfile
 
@@ -224,13 +237,17 @@ def _self_test() -> None:
             "Sleep 1s\n"
         )
         badges = parse_tape(tape)
-        assert all(b.label != "sipnab -I x.pcap" for b in badges), "hidden Type leaked"
+        _check(
+            all(b.label != "sipnab -I x.pcap" for b in badges),
+            "a Hidden Type leaked into the badges",
+            [b.label for b in badges],
+        )
         labels = [b.label for b in badges]
-        assert labels == ["↓", "↓", "Enter"], labels
-        assert abs(badges[0].start - 2.0) < 1e-9, badges[0]
+        _check(labels == ["↓", "↓", "Enter"], "unexpected badge labels", labels)
+        _check(abs(badges[0].start - 2.0) < 1e-9, "first badge starts late", badges[0])
         # First ↓ is clipped by the second at 2.1.
-        assert abs(badges[0].end - 2.1) < 1e-9, badges[0]
-        assert abs(badges[2].start - 2.2) < 1e-9, badges[2]
+        _check(abs(badges[0].end - 2.1) < 1e-9, "first badge not clipped", badges[0])
+        _check(abs(badges[2].start - 2.2) < 1e-9, "Enter badge mistimed", badges[2])
     print("self-test OK")
 
 
