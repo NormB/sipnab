@@ -262,3 +262,148 @@ fn group_by_source(packets: &[Packet]) -> std::collections::BTreeMap<String, Vec
     }
     out
 }
+
+// ── following a pointer back to the bytes ─────────────────────────────
+
+use sipnab::capture::resolve::{Resolution, ResolveError, parse_pointer, resolve};
+
+/// `<source>#<ordinal>` round-trips, and nonsense is refused rather than
+/// guessed at.
+///
+/// Splitting on the LAST `#` matters: a capture path may contain one and an
+/// ordinal never does, so `rsplit_once` is the only split that survives a
+/// path like `/captures/run#3/tg.pcap0`.
+#[test]
+fn a_pointer_parses_from_its_rendered_form() {
+    let r = parse_pointer("/captures/tg.pcap0#4211").expect("well formed");
+    assert_eq!(r.source.as_ref(), "/captures/tg.pcap0");
+    assert_eq!(r.origin.ordinal, 4211);
+    assert_eq!(
+        r.origin.digest, None,
+        "text carries no digest, so a parsed pointer must not claim one"
+    );
+
+    let odd = parse_pointer("/captures/run#3/tg.pcap0#7").expect("path containing a hash");
+    assert_eq!(odd.source.as_ref(), "/captures/run#3/tg.pcap0");
+    assert_eq!(odd.origin.ordinal, 7);
+
+    for bad in [
+        "capture.pcap",
+        "#4",
+        "capture.pcap#",
+        "capture.pcap#-1",
+        "capture.pcap#x",
+    ] {
+        assert!(
+            matches!(parse_pointer(bad), Err(ResolveError::Malformed(_))),
+            "{bad:?} is not a pointer and must be refused, not interpreted"
+        );
+    }
+}
+
+/// A pointer with no digest resolves, and says nothing was checked.
+#[test]
+fn a_pointer_without_a_digest_resolves_as_unverified() {
+    let pcap = format!(
+        "{}/tests/fixtures/sip_call.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let packets = read_all(&pcap);
+    let want = packets[2].data.to_vec();
+
+    let got = resolve(&parse_pointer(&format!("{pcap}#2")).expect("parse")).expect("resolve");
+    assert_eq!(got.bytes(), &want[..], "resolved the wrong frame");
+    assert!(
+        !got.is_verified(),
+        "nothing was checked, so this must report UNVERIFIED — reporting it as \
+         verified is how an unchecked byte string becomes evidence"
+    );
+    assert!(matches!(got, Resolution::Unverified(_)));
+}
+
+/// A pointer carrying the digest the run recorded resolves as verified.
+#[test]
+fn a_pointer_carrying_its_digest_resolves_as_verified() {
+    let pcap = format!(
+        "{}/tests/fixtures/sip_call.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let packets = read_all(&pcap);
+    let pointer = packets[3].frame_ref().expect("frame 3 has a pointer");
+    assert!(
+        pointer.origin.digest.is_some(),
+        "the reader must have recorded a digest, or this test proves nothing"
+    );
+
+    let got = resolve(&pointer).expect("resolve");
+    assert!(got.is_verified(), "digest matched, so this is verified");
+    assert_eq!(got.bytes(), &packets[3].data[..]);
+}
+
+/// An ordinal past the end of the capture is refused, and says how many
+/// frames are really there.
+#[test]
+fn an_ordinal_past_the_end_is_refused_with_the_real_count() {
+    let pcap = format!(
+        "{}/tests/fixtures/sip_call.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let present = read_all(&pcap).len() as u64;
+
+    let err = resolve(&parse_pointer(&format!("{pcap}#100000")).expect("parse"))
+        .expect_err("there is no frame 100000");
+    match err {
+        ResolveError::NoSuchFrame {
+            frames_present,
+            ordinal,
+            ..
+        } => {
+            assert_eq!(frames_present, present);
+            assert_eq!(ordinal, 100_000);
+        }
+        other => panic!("expected NoSuchFrame, got {other:?}"),
+    }
+}
+
+/// A capture that changed under the pointer is refused, not returned.
+///
+/// This is the assertion the whole module exists for. The frame IS there and
+/// the read succeeds — returning it would look completely normal, and would
+/// hand back bytes that are not the ones the finding was about. Proven by
+/// pointing a real digest at a real capture whose frame differs.
+#[test]
+fn a_capture_that_changed_is_refused_rather_than_returned() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let a = dir.join("sip_call.pcap");
+    let b = dir.join("udp_5060.pcap");
+
+    // A pointer made against one capture, aimed at another. Frame 0 exists in
+    // both, so nothing about the read fails — only the digest disagrees.
+    let mut pointer = read_all(a.to_str().expect("utf-8"))[0]
+        .frame_ref()
+        .expect("frame 0 has a pointer");
+    pointer.source = std::sync::Arc::from(b.to_str().expect("utf-8"));
+
+    match resolve(&pointer) {
+        Err(ResolveError::Changed { ordinal, .. }) => assert_eq!(ordinal, 0),
+        Ok(r) => panic!(
+            "returned {} bytes for a frame that is not the one the pointer was \
+             made against — this is the fabrication the digest exists to stop",
+            r.bytes().len()
+        ),
+        Err(other) => panic!("expected Changed, got {other}"),
+    }
+}
+
+/// A source that will not open is refused, naming the source.
+#[test]
+fn an_unreadable_source_is_refused_by_name() {
+    let err = resolve(&parse_pointer("/nonexistent/nowhere.pcap#0").expect("parse"))
+        .expect_err("that file does not exist");
+    match err {
+        ResolveError::Unreadable { source, .. } => {
+            assert_eq!(source, "/nonexistent/nowhere.pcap");
+        }
+        other => panic!("expected Unreadable, got {other:?}"),
+    }
+}

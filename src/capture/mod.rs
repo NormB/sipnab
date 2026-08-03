@@ -33,6 +33,10 @@ pub mod pcap_reader;
 #[cfg(feature = "native")]
 pub mod pcapng_meta;
 pub mod reassembly;
+// Following a frame pointer means re-reading a capture file, which is
+// libpcap's job, so this shares `file`'s gate rather than inventing its own.
+#[cfg(feature = "native")]
+pub mod resolve;
 #[cfg(feature = "tls")]
 pub mod rsa_key;
 #[cfg(feature = "tls")]
