@@ -6,4 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY scenarios/ /harness/scenarios/
 COPY run-uas.sh run-uac-loop.sh /harness/
 RUN chmod +x /harness/run-uas.sh /harness/run-uac-loop.sh
+RUN useradd -U -u 1000 appuser && chown -R 1000:1000 /harness
+USER 1000
 WORKDIR /harness/scenarios
