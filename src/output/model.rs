@@ -65,6 +65,16 @@ pub struct DialogSummary {
     pub updated_at: String,
     /// Transaction timing metrics.
     pub timing: TimingSummary,
+    /// Pointer to the frame this dialog opened in, as `<source>#<ordinal>`.
+    ///
+    /// Feed it to `sipnab --show-frame` to get the bytes back, which either
+    /// returns the frame or refuses because the capture changed. Omitted
+    /// entirely when the dialog has no frame -- live capture, or any path
+    /// that did not carry one. An absent key means "not known here", and is
+    /// deliberately not an empty string or a zero ordinal, both of which
+    /// would read as a real pointer to frame 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
 }
 
 impl From<&SipDialog> for DialogSummary {
@@ -100,6 +110,10 @@ impl From<&SipDialog> for DialogSummary {
                 retransmits: d.timing.total_retransmits(),
                 duration_ms,
             },
+            // From the dialog's own record of where it opened, not from
+            // `d.messages.first()`, which compaction can replace with a
+            // later message.
+            frame: d.first_frame.as_ref().map(ToString::to_string),
         }
     }
 }

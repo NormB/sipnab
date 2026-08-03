@@ -100,8 +100,23 @@ pub struct FrameRef {
 }
 
 impl std::fmt::Display for FrameRef {
+    /// `<source>#<ordinal>` — plus `@<digest>` when the reader recorded one.
+    ///
+    /// The digest has to survive being written down. A pointer is only useful
+    /// once it leaves the process, and the moment it is a string in a JSON
+    /// document the in-memory `u64` is gone; without it in the text, following
+    /// the pointer later can return bytes but can never tell you the capture
+    /// was rotated or truncated first. That is the confident-wrong-answer this
+    /// feature exists to prevent, so the verifiable form is the default one.
+    ///
+    /// The short form stays legal on input, because `capture.pcap#4212` is
+    /// what a human types. It resolves UNVERIFIED and says so.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}#{}", self.source, self.origin.ordinal)
+        write!(f, "{}#{}", self.source, self.origin.ordinal)?;
+        if let Some(d) = self.origin.digest {
+            write!(f, "@{d:016x}")?;
+        }
+        Ok(())
     }
 }
 

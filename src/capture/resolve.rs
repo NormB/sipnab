@@ -140,17 +140,24 @@ impl std::error::Error for ResolveError {}
 /// is empty, or when what follows the `#` is not a non-negative integer.
 pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
     let malformed = || ResolveError::Malformed(text.to_string());
-    let (source, ordinal) = text.rsplit_once('#').ok_or_else(malformed)?;
+    let (source, tail) = text.rsplit_once('#').ok_or_else(malformed)?;
     if source.is_empty() {
         return Err(malformed());
     }
+    // Split on the LAST `#` above, so a path containing `#` keeps it; the tail
+    // is ours, and an optional `@<digest>` lives there rather than in the
+    // source, where a path could legitimately contain `@`.
+    let (ordinal, digest) = match tail.split_once('@') {
+        Some((o, d)) => {
+            let parsed = u64::from_str_radix(d, 16).map_err(|_| malformed())?;
+            (o, Some(parsed))
+        }
+        None => (tail, None),
+    };
     let ordinal: u64 = ordinal.parse().map_err(|_| malformed())?;
     Ok(FrameRef {
         source: std::sync::Arc::from(source),
-        origin: super::packet::FrameOrigin {
-            ordinal,
-            digest: None,
-        },
+        origin: super::packet::FrameOrigin { ordinal, digest },
     })
 }
 

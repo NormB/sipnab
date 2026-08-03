@@ -122,6 +122,30 @@ pub struct SipDialog {
     /// Source port of the initial message (stable across message
     /// compaction, unlike `messages.first()`).
     pub src_port: u16,
+    /// Frame the dialog opened in, captured when the dialog was created.
+    ///
+    /// Stored rather than read back from `messages.first()`, for the same
+    /// reason `src_port` is. `compact_idle` selects *anchors*, not position 0.
+    /// In the common case the anchor set does include the opening request, so
+    /// the two agree -- measured, not assumed: mutating the projection to read
+    /// `messages.first()` still passes
+    /// `the_real_compaction_path_leaves_the_opening_frame_alone`.
+    ///
+    /// They diverge when position 0 is not an anchor, which
+    /// `retained_indices` decides via `carries_dialog_outcome`: a dialog whose
+    /// first retained message is a retransmission, or one adopted from a
+    /// mid-dialog message, can lose position 0 while surviving. Then
+    /// `messages.first()` is a later message, and reporting its frame as the
+    /// dialog's opening frame is a pointer to real bytes that are not the
+    /// bytes described -- a confident wrong answer, which is the failure this
+    /// whole feature exists to prevent.
+    ///
+    /// Storing it also removes the dependency rather than reasoning about it,
+    /// which is worth more than the bytes it costs.
+    ///
+    /// `None` for live capture and any path where the message carried no
+    /// frame. Absent means unknown, never guessed.
+    pub first_frame: Option<crate::capture::packet::FrameRef>,
     /// Destination port of the initial message.
     pub dst_port: u16,
     /// Transaction timing measurements.
@@ -291,6 +315,7 @@ impl SipDialog {
             dst_addr: msg.dst_addr,
             src_port: msg.src_port,
             dst_port: msg.dst_port,
+            first_frame: msg.frame.clone(),
             tags: Vec::new(),
             timing: DialogTiming::default(),
             sdp_timeline: Vec::new(),

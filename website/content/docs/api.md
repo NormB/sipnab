@@ -388,11 +388,31 @@ dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
         "retransmits": 2
       },
       "created_at": "2026-04-13T10:30:00Z",
-      "updated_at": "2026-04-13T10:30:03Z"
+      "updated_at": "2026-04-13T10:30:03Z",
+      "frame": "capture.pcap#41@6f3a1c02b8d4e795"
     }
   ]
 }
 ```
+
+`frame` identifies the frame the dialog opened in, as
+`<source>#<ordinal>@<digest>`: the capture it came from, the frame's position
+within that file, and a digest of the frame's bytes. The ordinal is per source
+file, so a frame keeps the same pointer whether it was read on its own, from a
+directory, or as one of a glob — which is what makes it usable for comparing
+two runs over the same capture.
+
+The digest is there so that following the pointer can tell you when it no
+longer means what it meant. A capture that was rotated, truncated or
+recompressed since the run yields a digest mismatch, and the resolver
+(`sipnab::capture::resolve`) refuses rather than returning whatever now sits at
+that position. There is no CLI command for this yet: today the pointer is a
+stable identifier for API and MCP consumers, and resolving one requires the
+library. Following a pointer from the command line is tracked separately.
+
+The key is absent, not null, when the dialog has no frame: live capture has no
+file to point back into. Absent means unknown, and a `frame` that is present is
+always a real pointer.
 
 The list rows carry `from_user`/`to_user`, not the `from`/`to` used by the
 single-dialog and report endpoints below. The two shapes come from different
