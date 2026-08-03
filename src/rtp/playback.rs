@@ -424,7 +424,7 @@ fn vet_override(_path: &Path) -> Result<(), OverrideRefusal> {
 /// unsandboxed code in a process that holds TLS key material, bearer tokens and
 /// the capture handle. This path is the only candidate an outside party can
 /// influence, so it is deliberately tried **last**: a trusted plugin, when one
-/// is installed, always wins and the variable cannot pre-empt it. It is honoured
+/// is installed, always wins and the variable cannot preempt it. It is honoured
 /// at all only for a genuinely unprivileged process pointing at a file that
 /// nobody else can rewrite — and it says so loudly when it is used, because a
 /// developer override that goes unnoticed in production is the same bug again.
@@ -758,7 +758,7 @@ mod tests {
     }
 
     /// A vetted override is appended after every trusted path, so an installed
-    /// plugin always loads first and the variable cannot pre-empt it.
+    /// plugin always loads first and the variable cannot preempt it.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(sipnab_audio_plugin_env)]
