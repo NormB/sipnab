@@ -602,14 +602,42 @@ mod tests {
 
     /// Fire the dialog hook `n` times, pausing so each child has exited before
     /// the next fire reaps it. Returns the ledger after a final reap.
+    /// Fire `n` events and wait until every child they spawned has been reaped.
+    ///
+    /// Waits on the outcome, not on a clock. The previous version slept a fixed
+    /// 10 ms per fire and reaped once, which assumes `sh -c` can start, run and
+    /// exit inside that window. On a loaded machine it cannot, and the caller
+    /// then reads zero outcomes for children that are alive and about to
+    /// succeed or fail -- a test that reports "the hook did not fail" when the
+    /// hook simply had not finished failing yet.
+    ///
+    /// That went red in CI while passing 20/20 locally, which is the signature
+    /// of this exact bug: a sleep long enough on an idle box and too short on a
+    /// busy one. The loop below is bounded, so a genuinely stuck child still
+    /// fails the test rather than hanging it.
     fn fire_n(engine: &mut EventExecEngine, n: usize) -> ExecOutcomeCounts {
         let dialog = make_dialog();
         for _ in 0..n {
             engine.fire_dialog_event(&dialog);
-            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        engine.reap_children();
-        engine.outcomes()
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            engine.reap_children();
+            let out = engine.outcomes();
+            // Every child that was spawned has now been accounted for, either
+            // as a success or a failure. Cumulative across calls, which is what
+            // the callers assert on.
+            if out.succeeded + out.failed >= out.spawned {
+                return out;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waited 30s and {} of {} spawned hooks were never reaped",
+                out.spawned - (out.succeeded + out.failed),
+                out.spawned
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     /// The reaper carries the exit status out instead of matching it with a
