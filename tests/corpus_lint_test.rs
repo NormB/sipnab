@@ -46,15 +46,17 @@ const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 /// on everything", not "fires often".
 const IMPLAUSIBLE_HIT_RATE: f64 = 0.95;
 
+#[path = "support/corpus.rs"]
+mod corpus_support;
+
 /// The corpus root, or `None` when `SIPNAB_CORPUS` is unset.
+///
+/// The skip is announced on stderr by [`corpus_support::root`], once per test
+/// binary. It used to be an `eprintln!` that libtest captured and discarded on
+/// success, so this suite reported `ok` while proving nothing about real
+/// traffic.
 fn corpus_root() -> Option<PathBuf> {
-    match std::env::var("SIPNAB_CORPUS") {
-        Ok(dir) => Some(PathBuf::from(dir)),
-        Err(_) => {
-            eprintln!("SIPNAB_CORPUS not set — skipping");
-            None
-        }
-    }
+    corpus_support::root()
 }
 
 /// Every regular file under `root`, recursively, in sorted order.

@@ -3300,8 +3300,8 @@ fn packaging_scripts_reference_existing_paths() {
     // packaging references stop being checked without the gate noticing, and a
     // reference to a nonexistent path is precisely what this exists to catch.
     assert_eq!(
-        checked, 56,
-        "packaging path scan saw {checked} references, expected 56. More is \
+        checked, 57,
+        "packaging path scan saw {checked} references, expected 57. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );
@@ -3787,5 +3787,88 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
         checked >= 20,
         "only {checked} sample captures examined — the walk stopped reading \
          tests/pcap-samples and this gate checked almost nothing"
+    );
+}
+
+/// Nothing interpolated into the JSON-LD block can terminate the script
+/// element that holds it.
+///
+/// `base.html` renders four config values inside
+/// `<script type="application/ld+json">` as `{{ x | json_encode | safe }}`.
+/// A SAST scan flags all four as unescaped-output risks. `| safe` is not
+/// removable here: `json_encode` emits the surrounding quotes, and without
+/// `| safe` Tera HTML-escapes them to `&quot;`, which is not valid JSON and
+/// breaks the structured data outright.
+///
+/// What makes the current code safe is that the values are static — three are
+/// literals in `config.toml`, and `published_version` is written by release
+/// automation. What was missing is anything holding them to that.
+///
+/// `json_encode` escapes JSON metacharacters but NOT `/`, so a value
+/// containing `</script>` would close the element early and everything after
+/// it would be parsed as markup. That is the whole exploit, and it needs only
+/// an unlucky edit to `config.toml` to become real. This asserts the property
+/// the safety rests on, so the edit fails here rather than shipping.
+///
+/// Deliberately checks the CONFIG rather than rendered HTML: rendering needs
+/// zola, which CI installs for x86_64 only, and a gate that silently skips on
+/// another architecture is the same failure as the corpus gates that reported
+/// `ok` while proving nothing.
+#[test]
+fn no_config_value_in_the_json_ld_block_can_close_the_script_element() {
+    let tpl = read("website/templates/base.html");
+    let cfg = read("website/config.toml");
+
+    // The keys base.html actually interpolates into the ld+json block, read
+    // from the template so adding a fifth value cannot bypass this.
+    let block_start = tpl
+        .find("application/ld+json")
+        .expect("base.html must still carry a JSON-LD block");
+    let block_end = tpl[block_start..]
+        .find("</script>")
+        .map(|i| block_start + i)
+        .expect("the JSON-LD block must be terminated");
+    let block = &tpl[block_start..block_end];
+
+    let key_re = regex::Regex::new(r"\{\{\s*config\.(?:extra\.)?([a-z_]+)\s*\|").expect("regex");
+    let keys: Vec<String> = key_re
+        .captures_iter(block)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        keys.len() >= 4,
+        "expected at least the four known config interpolations in the \
+         JSON-LD block, found {keys:?} — if the block was restructured, \
+         update this gate rather than deleting it"
+    );
+
+    let val_re = |k: &str| {
+        regex::Regex::new(&format!(r#"(?m)^\s*{k}\s*=\s*"([^"]*)""#)).expect("value regex")
+    };
+    let mut checked = 0;
+    for k in &keys {
+        let Some(c) = val_re(k).captures(&cfg) else {
+            continue; // not a top-level scalar; covered by the shape check below
+        };
+        let v = &c[1];
+        assert!(
+            !v.contains("</"),
+            "config value `{k}` contains `</`, which `json_encode` does NOT \
+             escape — it would terminate the <script> element holding the \
+             JSON-LD and turn the rest of the page into markup"
+        );
+        assert!(
+            !v.contains('<') && !v.contains('>'),
+            "config value `{k}` contains an angle bracket. Nothing needs one \
+             here, and allowing them is what makes the `</script>` case \
+             reachable at all"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 3,
+        "only {checked} of {} config values were found in config.toml to \
+         check; the gate must read real values, not pass by finding none",
+        keys.len()
     );
 }

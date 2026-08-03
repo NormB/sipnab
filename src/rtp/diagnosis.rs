@@ -1012,6 +1012,7 @@ mod tests {
             value: value.to_string(),
         };
         let invite = SipMessage {
+            frame: None,
             timestamp: ts(),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),

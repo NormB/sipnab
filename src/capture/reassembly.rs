@@ -672,6 +672,7 @@ mod tests {
         payload: &[u8],
     ) -> ParsedPacket {
         ParsedPacket {
+            frame: None,
             timestamp: Utc::now(),
             src_addr: src,
             dst_addr: dst,
@@ -700,6 +701,7 @@ mod tests {
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         ParsedPacket {
+            frame: None,
             timestamp: Utc::now(),
             src_addr: src,
             dst_addr: dst,

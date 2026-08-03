@@ -61,6 +61,18 @@ pub struct ParsedPacket {
     pub transport: TransportProto,
     /// Transport-layer payload bytes (e.g., SIP message body, RTP packet).
     pub payload: bytes::Bytes,
+    /// Pointer back to the frame this was parsed out of, when it has one.
+    ///
+    /// Carried across the parse boundary because it dies here otherwise: the
+    /// [`crate::capture::packet::Packet`] knows its source and ordinal, and
+    /// everything downstream — dialogs, streams, findings, reports — is built
+    /// from `ParsedPacket` and never sees the `Packet` again. A fact with no
+    /// route back to its bytes is an assertion, which is the whole of #128.
+    ///
+    /// `None` for synthetic packets, which is most of the ones built by hand
+    /// in tests. That is the honest value: a packet nobody read from anything
+    /// has no provenance, and a downstream guess would be worse than the gap.
+    pub frame: Option<crate::capture::packet::FrameRef>,
     /// IP fragment identification (IPv4 16-bit `Identification`, or the IPv6
     /// Fragment extension header's 32-bit `Identification`) for reassembly
     /// keying. `None` when the packet is not fragmented.
@@ -1227,6 +1239,22 @@ fn slice_link_layer(link_type: i32, data: &[u8]) -> Result<SlicedPacket<'_>, Cap
 /// # Ok::<(), sipnab::CaptureError>(())
 /// ```
 pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
+    let mut parsed = parse_packet_unstamped(packet)?;
+    // Stamp provenance once, at the boundary, rather than threading it through
+    // the encapsulation recursion. Every return path in the header walk --
+    // plain, IP-in-IP, GRE, SCTP, the pre-parsed HEP shortcut -- funnels back
+    // through here, so one assignment covers all of them. A parameter carried
+    // down through `parse_inner_ip` and `parse_gre` would be one more thing the
+    // next decapsulation path could forget to pass, and a frame that silently
+    // loses its pointer is indistinguishable from one that never had one.
+    parsed.frame = packet.frame_ref();
+    Ok(parsed)
+}
+
+/// [`parse_packet`] without the provenance stamp — the header walk itself.
+///
+/// Split out so the stamp has exactly one site. Callers want `parse_packet`.
+fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
     // Short-circuit: when the packet's source already knows the
     // addressing (e.g. HEP listener that reads it from HEP chunks),
     // skip link/IP/transport parsing and produce a ParsedPacket
@@ -1238,6 +1266,7 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
         let transport = ip_protocol_to_transport(meta.ip_protocol)
             .ok_or(CaptureError::UnsupportedIpProtocol(meta.ip_protocol))?;
         return Ok(ParsedPacket {
+            frame: None,
             timestamp: packet.timestamp,
             src_addr: meta.src_addr,
             dst_addr: meta.dst_addr,
@@ -1546,6 +1575,7 @@ fn extract_parsed_packet(
             .unwrap_or_default();
 
         return Ok(ParsedPacket {
+            frame: None,
             timestamp,
             src_addr,
             dst_addr,
@@ -1575,6 +1605,7 @@ fn extract_parsed_packet(
         });
         let (src_port, dst_port, payload) = extracted.unwrap_or((0, 0, bytes::Bytes::new()));
         return Ok(ParsedPacket {
+            frame: None,
             timestamp,
             src_addr,
             dst_addr,
@@ -1597,6 +1628,7 @@ fn extract_parsed_packet(
 
     match transport_slice {
         TransportSlice::Udp(udp) => Ok(ParsedPacket {
+            frame: None,
             timestamp,
             src_addr,
             dst_addr,
@@ -1613,6 +1645,7 @@ fn extract_parsed_packet(
             from_hep: false,
         }),
         TransportSlice::Tcp(tcp) => Ok(ParsedPacket {
+            frame: None,
             timestamp,
             src_addr,
             dst_addr,

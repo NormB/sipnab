@@ -30,10 +30,17 @@ use sipnab::rtp::stream::StreamKey;
 use sipnab::rtp::stream_store::{ClockGrounding, StreamStore};
 use sipnab::sip::dialog_store::DialogStore;
 
+#[path = "support/corpus.rs"]
+mod corpus_support;
+
 /// Resolve the corpus in capture order, or `None` when `SIPNAB_CORPUS` is
 /// unset. A ring buffer wraps, so filename order is not capture order.
 fn corpus() -> Option<Vec<PathBuf>> {
-    let dir = std::env::var("SIPNAB_CORPUS").ok()?;
+    // `corpus_support::root` announces the skip on stderr, once per test
+    // binary. The call sites below used to `eprintln!` it, which libtest
+    // captures and discards on success — so these gates reported `ok` while
+    // never touching a capture.
+    let dir = corpus_support::root()?.to_string_lossy().into_owned();
     let files = sipnab::capture::input_set::resolve(
         std::slice::from_ref(&dir),
         &sipnab::capture::input_set::ResolveOptions::default(),
@@ -115,7 +122,6 @@ fn replay(paths: &[PathBuf], apply_rtcp: bool) -> Vec<(StreamKey, Observed, Cloc
 #[test]
 fn corpus_rtcp_never_moves_the_measurement() {
     let Some(paths) = corpus() else {
-        eprintln!("SIPNAB_CORPUS not set — skipping");
         return;
     };
     let with_rtcp = replay(&paths, true);
@@ -172,7 +178,6 @@ fn corpus_rtcp_never_moves_the_measurement() {
 #[test]
 fn corpus_ungrounded_clock_yields_no_jitter_measurement() {
     let Some(paths) = corpus() else {
-        eprintln!("SIPNAB_CORPUS not set — skipping");
         return;
     };
     let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
@@ -244,7 +249,6 @@ fn corpus_ungrounded_clock_yields_no_jitter_measurement() {
 #[test]
 fn corpus_rtcp_is_recognized_by_content_not_by_port() {
     let Some(paths) = corpus() else {
-        eprintln!("SIPNAB_CORPUS not set — skipping");
         return;
     };
     let (tx, rx) = sipnab::capture::channel::packet_channel(1 << 16);
@@ -301,7 +305,6 @@ fn corpus_rtcp_is_recognized_by_content_not_by_port() {
 #[test]
 fn corpus_xr_voip_metrics_are_retained_not_discarded() {
     let Some(paths) = corpus() else {
-        eprintln!("SIPNAB_CORPUS not set — skipping");
         return;
     };
 
@@ -405,7 +408,6 @@ fn corpus_xr_voip_metrics_are_retained_not_discarded() {
 #[test]
 fn corpus_xr_never_becomes_the_local_measurement() {
     let Some(paths) = corpus() else {
-        eprintln!("SIPNAB_CORPUS not set — skipping");
         return;
     };
 
