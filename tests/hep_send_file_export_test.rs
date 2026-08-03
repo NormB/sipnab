@@ -37,7 +37,6 @@ use std::net::UdpSocket;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Instant;
 
 include!("support/timeout.rs");
 
@@ -46,6 +45,11 @@ include!("support/timeout.rs");
 /// unrelated startup lines, and a substring match on those would let this test
 /// pass while the run said nothing about the capture leaving the machine.
 const NOTICE_ANCHOR: &str = "capture FILE";
+
+/// The line `batch.rs` writes once the HEP sender's socket exists. Nothing can
+/// have left the machine before it, which is what makes it a usable ordering
+/// landmark for `the_announcement_precedes_anything_that_could_transmit`.
+const SENDER_ANCHOR: &str = "HEP sender targeting";
 
 /// Bind a loopback collector socket and return it with the port it got.
 fn bound_collector() -> (UdpSocket, u16) {
@@ -71,12 +75,11 @@ struct ExportRun {
     bytes: usize,
     /// How many of them began with the `HEP3` magic.
     hep3: usize,
-    /// When the first datagram arrived, if any did.
-    first_datagram_at: Option<Instant>,
     /// Everything the run wrote to stderr.
     stderr: String,
-    /// When the announcement line was seen on stderr, if it was.
-    notice_at: Option<Instant>,
+    /// The same stderr, split into the lines the run emitted, in the order it
+    /// emitted them. One process writing one stream orders these absolutely.
+    stderr_lines: Vec<String>,
     /// The process exit code.
     code: Option<i32>,
 }
@@ -84,16 +87,22 @@ struct ExportRun {
 /// Run `sipnab -N -I <fixture> --hep-send 127.0.0.1:<port>` against a
 /// collector this test owns, draining both the socket and stderr while it
 /// runs, and return what was observed.
-///
-/// Both drains are timestamped so a caller can assert the operator was told
-/// *before* anything left, which is the whole point of an announcement.
 fn run_export(collector: UdpSocket, port: u16) -> ExportRun {
+    run_export_at_log_level(collector, port, "warn")
+}
+
+/// As `run_export`, at a chosen `SIPNAB_LOG` level.
+///
+/// The ordering test needs `info`, because the landmark it orders the
+/// announcement against is an `info` line. Everything else runs at `warn`, so
+/// that the assertions on announcement *content* keep matching against a
+/// stderr that holds essentially nothing else.
+fn run_export_at_log_level(collector: UdpSocket, port: u16, level: &str) -> ExportRun {
     let target = format!("127.0.0.1:{port}");
     let pcap = fixture_capture();
 
     // Drain the collector on its own thread: the run must not block on a full
-    // socket buffer, and the arrival time of the first datagram is an
-    // assertion below.
+    // socket buffer.
     collector
         .set_read_timeout(Some(test_timeout(5)))
         .expect("collector read timeout");
@@ -101,46 +110,38 @@ fn run_export(collector: UdpSocket, port: u16) -> ExportRun {
     let collector_thread = thread::spawn(move || {
         let mut buf = [0u8; 65535];
         let (mut datagrams, mut bytes, mut hep3) = (0usize, 0usize, 0usize);
-        let mut first_at: Option<Instant> = None;
         while let Ok((n, _from)) = collector.recv_from(&mut buf) {
             datagrams += 1;
             bytes += n;
             if n >= 4 && &buf[..4] == b"HEP3" {
                 hep3 += 1;
             }
-            first_at.get_or_insert_with(Instant::now);
         }
-        let _ = count_tx.send((datagrams, bytes, hep3, first_at));
+        let _ = count_tx.send((datagrams, bytes, hep3));
     });
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I", &pcap, "--hep-send", &target, "--no-cli-print"])
-        .env("SIPNAB_LOG", "warn")
+        .env("SIPNAB_LOG", level)
         .env("NO_COLOR", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn sipnab --hep-send");
 
-    // Read stderr line by line so the announcement can be timestamped as it
-    // arrives; tracing writes each event to stderr unbuffered.
+    // Read stderr line by line and keep the sequence: the order in which the
+    // run wrote these lines is itself an assertion below.
     let err_pipe = child.stderr.take().expect("stderr pipe");
     let err_thread = thread::spawn(move || {
-        let mut text = String::new();
-        let mut notice_at: Option<Instant> = None;
-        for line in BufReader::new(err_pipe).lines().map_while(Result::ok) {
-            if line.contains(NOTICE_ANCHOR) && notice_at.is_none() {
-                notice_at = Some(Instant::now());
-            }
-            text.push_str(&line);
-            text.push('\n');
-        }
-        (text, notice_at)
+        BufReader::new(err_pipe)
+            .lines()
+            .map_while(Result::ok)
+            .collect::<Vec<String>>()
     });
 
     let status = child.wait().expect("wait for sipnab");
-    let (stderr, notice_at) = err_thread.join().expect("join stderr reader");
-    let (datagrams, bytes, hep3, first_datagram_at) = count_rx
+    let stderr_lines = err_thread.join().expect("join stderr reader");
+    let (datagrams, bytes, hep3) = count_rx
         .recv_timeout(test_timeout(20))
         .expect("collector thread must report a count");
     collector_thread.join().expect("join collector thread");
@@ -149,9 +150,8 @@ fn run_export(collector: UdpSocket, port: u16) -> ExportRun {
         datagrams,
         bytes,
         hep3,
-        first_datagram_at,
-        stderr,
-        notice_at,
+        stderr: stderr_lines.join("\n"),
+        stderr_lines,
         code: status.code(),
     }
 }
@@ -214,35 +214,70 @@ fn hep_send_on_a_file_source_announces_what_leaves_the_machine() {
     );
 }
 
-/// The operator gets the announcement *before* the first datagram leaves.
+/// The operator gets the announcement *before* anything can transmit.
 ///
 /// A warning that arrives after the capture has already been forwarded is a
 /// record, not a warning.
+///
+/// Ordered against the line reporting the HEP sender's construction, not
+/// against a datagram's arrival. The sender's socket does not exist until that
+/// line is written, so no byte of the capture can have left before it — which
+/// makes this the stronger of the two claims, and the announcement clears it by
+/// the whole of `plan()`.
+///
+/// It is also the only one of the two a test can decide. Timestamping a pipe
+/// read against a socket read orders this process's *observations*, not the
+/// run's *events*: two channels, two reader threads, and a scheduling margin of
+/// tens of microseconds either way. That is what the earlier form of this test
+/// compared, and CI failed it at 105.82µs against code whose ordering was
+/// correct. Two lines on one stderr stream, written by one process, carry a
+/// real happens-before — `plan()` emits the announcement and must return before
+/// `batch` can build a sender at all.
 #[test]
-fn the_announcement_precedes_the_first_datagram() {
+fn the_announcement_precedes_anything_that_could_transmit() {
     let (sock, port) = bound_collector();
-    let run = run_export(sock, port);
+    let run = run_export_at_log_level(sock, port, "info");
 
-    let notice_at = run.notice_at.unwrap_or_else(|| {
-        panic!(
-            "no file-export announcement was seen on stderr at all; \
-             stderr said:\n{}",
-            run.stderr
-        )
-    });
-    let first_datagram_at = run.first_datagram_at.unwrap_or_else(|| {
-        panic!(
-            "no datagram reached the collector, so this test cannot order the \
-             announcement against it; stderr said:\n{}",
-            run.stderr
-        )
-    });
+    let announced = run
+        .stderr_lines
+        .iter()
+        .position(|l| l.contains(NOTICE_ANCHOR))
+        .unwrap_or_else(|| {
+            panic!(
+                "no file-export announcement was seen on stderr at all; \
+                 stderr said:\n{}",
+                run.stderr
+            )
+        });
+    let sender_built = run
+        .stderr_lines
+        .iter()
+        .position(|l| l.contains(SENDER_ANCHOR))
+        .unwrap_or_else(|| {
+            panic!(
+                "no `{SENDER_ANCHOR}` line was seen, so this test has lost the \
+                 landmark it orders the announcement against. Restore that line \
+                 or re-anchor this test on whatever now reports the sender \
+                 coming up; stderr said:\n{}",
+                run.stderr
+            )
+        });
 
     assert!(
-        notice_at <= first_datagram_at,
-        "the announcement must reach the operator before any of the capture \
-         does; it arrived {:?} after the first datagram",
-        notice_at.duration_since(first_datagram_at)
+        announced < sender_built,
+        "the announcement must reach the operator before a sender exists to \
+         forward the capture; it came {} line(s) after one did:\n{}",
+        announced - sender_built,
+        run.stderr
+    );
+
+    // Without this the ordering above could hold in a run that exported
+    // nothing, which is not the run the operator needed warning about.
+    assert!(
+        run.datagrams > 0,
+        "the run forwarded nothing, so the announcement it made was about an \
+         export that never happened; stderr said:\n{}",
+        run.stderr
     );
 }
 
