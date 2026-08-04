@@ -35,19 +35,43 @@ BINDIR := $(ROOT)/target/release
 BIN := $(BINDIR)/sipnab
 CRATE_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(ROOT)/Cargo.toml | head -1)
 
+# SIPNAB_BIN=<path> renders against an already-built binary instead of compiling.
+# The VERSION CHECK STILL APPLIES -- that is the whole point, and why this is an
+# override of the build step and not of the check.
+#
+# It exists because the render host and the build host need not be the same
+# machine. opensips-1, which carries vhs, ttyd and the fonts, has 1 GB of RAM
+# and a toolchain below the crate's rust-version, so it cannot build sipnab at
+# all; pointing it at the published release artifact for its architecture is the
+# only way it can render a truthful demo. A binary that disagrees with
+# Cargo.toml is still refused, whatever its provenance.
+ifdef SIPNAB_BIN
+BIN := $(SIPNAB_BIN)
+BINDIR := $(dir $(SIPNAB_BIN))
+endif
+
 # Build it if missing or stale, then prove the binary that will render agrees
 # with the tree. The check is the point: a version skew here is invisible in
 # the output -- it just quietly records an old UI -- so it must fail loudly
 # rather than produce a plausible-looking wrong GIF.
 .PHONY: check-bin
 check-bin:
+ifdef SIPNAB_BIN
+	@test -x "$(BIN)" || { echo "demos: SIPNAB_BIN=$(BIN) is not executable"; exit 1; }
+	@echo "demos: using prebuilt $(BIN) (no cargo build)"
+else
 	@cd $(ROOT) && cargo build --release --features tui --bin sipnab
+endif
 	@got=$$("$(BIN)" --version | awk '{print $$2}'); \
 	if [ "$$got" != "$(CRATE_VERSION)" ]; then \
 		echo "demos: refusing to render -- $(BIN) reports $$got, Cargo.toml says $(CRATE_VERSION)."; \
 		echo "       Rendering now would publish a screenshot of code that is not this tree."; \
 		exit 1; \
 	fi; \
+	case "$$("$(BIN)" --version)" in \
+		*tui*) ;; \
+		*) echo "demos: refusing to render -- $(BIN) has no tui feature; every tape drives the TUI."; exit 1 ;; \
+	esac; \
 	echo "demos: rendering against $(BIN) ($$got)"
 
 TAPES := 01-intro 02-mark-delta 04-filter \
