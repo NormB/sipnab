@@ -423,9 +423,16 @@ fn wiki_intra_docs_links_resolve() {
     // message. They had already drifted apart once (message said 271 while the
     // assertion compared 273), which makes the failure text lie about what it
     // wants. Change both or neither.
+    // Raised 274 -> 279 by the MCP walkthrough's "three shapes" rework, counted
+    // rather than assumed: the at-a-glance bullet list became a table so each
+    // shape links to the section documenting it (+3), and the "always on"
+    // section's stale prose pointer ("use 2C or 4", naming headings that had
+    // been renamed away) became two real links to the SSH-tunnel and
+    // outside-your-network sections (+2). The wiki mirror is ONE copy, not two,
+    // so unlike the docs_drift table gate this is +5 and not +10.
     assert_eq!(
-        seen, 274,
-        "extractor found {seen} wiki links, expected 274. More is fine — bump \
+        seen, 279,
+        "extractor found {seen} wiki links, expected 279. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

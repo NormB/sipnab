@@ -63,6 +63,23 @@ config block looks like:
 
 ## Choosing a transport
 
+*Three arrangements. The question is where sipnab runs, and whether anything
+has to keep listening on the server.*
+
+```mermaid
+flowchart LR
+    subgraph S1["1. Same machine"]
+        A1[agent] <-->|stdio pipe| B1[sipnab]
+    end
+    subgraph S2["2. Remote, nothing listening"]
+        A2[agent on laptop] -->|ssh| B2[sipnab on server]
+        B2 -.->|stdio over the ssh pipe| A2
+    end
+    subgraph S3["3. Remote, always on"]
+        A3[agent on laptop] <-->|HTTP + token| B3[sipnab service on server]
+    end
+```
+
 Both quick starts below are about *where sipnab runs*, not where the agent
 runs. The distinction that matters is whether anything has to keep listening
 on the server:

@@ -6,6 +6,35 @@ tree. This page is the function-level trace through it.
 
 ## The program spine
 
+*Startup is a straight line with exactly one branch. The shape first, then
+what each step does.*
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Main as main
+    participant Cli
+    participant Boot as bootstrap
+    participant Plan as RunPlan
+    participant Mode as run mode entry
+
+    Main->>Cli: parse_args
+    Main->>Boot: init_logging, run_startup_commands
+    Main->>Cli: validate
+    Main->>Boot: load_config
+    Main->>Boot: install_panic_hook
+    Main->>Boot: plan(cli, config)
+    Boot-->>Plan: source, capture_config, policy, filter, mode
+    alt mode == CoresFile
+        Main->>Mode: run_cores_file (no capture thread)
+    else Tui or Batch
+        Main->>Boot: launch(source, capture_config)
+        Boot-->>Main: capture handle + PacketRx
+        Note over Boot,Main: chroot, privilege drop, runtime hardening
+        Main->>Mode: run_tui_mode or batch::run
+    end
+```
+
 `main()` is deliberately thin — ten numbered steps in 94 lines of
 [`main.rs`](../../src/main.rs), each delegating to
 [`app/bootstrap.rs`](../../src/app/bootstrap.rs). The order matters: logging
@@ -35,35 +64,6 @@ are all skipped. For the other two modes `launch()` builds the channel, starts
 the capture thread, waits for the readiness handshake, then chroots, drops
 privileges, and applies runtime hardening. sipnab sheds privileges after the
 socket exists and before it parses the first packet.
-
-Startup is a straight line with exactly one branch, which is easier to follow
-as a sequence.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Main as main
-    participant Cli
-    participant Boot as bootstrap
-    participant Plan as RunPlan
-    participant Mode as run mode entry
-
-    Main->>Cli: parse_args
-    Main->>Boot: init_logging, run_startup_commands
-    Main->>Cli: validate
-    Main->>Boot: load_config
-    Main->>Boot: install_panic_hook
-    Main->>Boot: plan(cli, config)
-    Boot-->>Plan: source, capture_config, policy, filter, mode
-    alt mode == CoresFile
-        Main->>Mode: run_cores_file (no capture thread)
-    else Tui or Batch
-        Main->>Boot: launch(source, capture_config)
-        Boot-->>Main: capture handle + PacketRx
-        Note over Boot,Main: chroot, privilege drop, runtime hardening
-        Main->>Mode: run_tui_mode or batch::run
-    end
-```
 
 ## The six hops
 

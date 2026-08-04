@@ -2202,9 +2202,15 @@ fn no_documentation_table_repeats_a_row() {
     // page costs this counter, exactly as the two entries above record. The
     // tool-table row it also adds grew a table that already existed, which
     // this gate does not count.
+    // Raised 460 -> 462 by the "three shapes" table in
+    // `docs/mcp-walkthrough.md`, counted rather than guessed: one table there
+    // and one in the generated site mirror — the same page twice, which is what
+    // a mirrored page costs this counter, exactly as the entries above record.
+    // It replaced a bullet list with a table so each shape could link to the
+    // section that documents it, which is why this is +2 and not +1 per shape.
     assert_eq!(
-        tables, 460,
-        "walked {tables} tables, expected 460. More is fine — bump this. FEWER \
+        tables, 462,
+        "walked {tables} tables, expected 462. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

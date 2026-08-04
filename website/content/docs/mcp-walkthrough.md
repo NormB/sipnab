@@ -73,12 +73,14 @@ flowchart LR
     end
 </pre>
 
-- **Same machine** — no network, no credentials. The agent starts sipnab.
-- **Remote, nothing listening** — the agent starts sipnab *through SSH*. Your
-  SSH key is the authentication and the server needs no configuration at all.
-  This is the one most people want.
-- **Remote, always on** — sipnab runs as a service so a capture survives
-  between agent sessions. Costs a token, a port, and usually a unit file.
+Each shape has its own section, which opens with a detailed diagram of that
+one arrangement:
+
+| Shape | What it costs you | Where to read it |
+|---|---|---|
+| **1 — Same machine** | Nothing. No network, no credentials; the agent starts sipnab. | [Run sipnab and your agent on the same machine](#run-sipnab-and-your-agent-on-the-same-machine) |
+| **2 — Remote, nothing listening** | An SSH key you almost certainly already have. The agent starts sipnab *through SSH*, so the server needs no configuration at all. **Most people want this one.** | [Connect Claude Code on your laptop to sipnab on a server](#connect-claude-code-on-your-laptop-to-sipnab-on-a-server) |
+| **3 — Remote, always on** | A token, a port, and usually a unit file. Buys you a capture that survives between agent sessions. | [Keep a capture running between agent sessions](#keep-a-capture-running-between-agent-sessions) |
 
 Two invariants that apply everywhere:
 
@@ -144,8 +146,26 @@ itself):
 
 ## Run sipnab and your agent on the same machine
 
+*Shape 1. Nothing listens, nothing to configure, nothing outlives the session.*
+
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant You as you (laptop)
+    participant CC as Claude Code (laptop)
+    participant SN as sipnab (laptop, child process)
+
+    You-&gt;&gt;CC: claude mcp add sipnab -- sipnab --mcp -N -I capture.pcap
+    CC-&gt;&gt;SN: start as a child process
+    Note over CC,SN: no port, no token, no deployment
+    CC-&gt;&gt;SN: JSON-RPC on stdin
+    SN--&gt;&gt;CC: JSON-RPC on stdout
+    Note over CC,SN: session ends -&gt; sipnab exits with it
+</pre>
+
 The MCP client launches sipnab as a child process and talks JSON-RPC over
-the pipe. No port, no token, nothing to deploy.
+the pipe. No port, no token, nothing to deploy. Because stdout *is* the wire,
+this process cannot also be your TUI — run a second one if you want both.
 
 <!-- "1A."/"1B." are labels, not sentences: the word after opens the heading.
 Same Vale misfire as the numbered sections in examples.md. -->
@@ -231,11 +251,7 @@ bearer token. Three wirings, in increasing order of setup.
 
 ### Connect Claude Code on your laptop to sipnab on a server
 
-*Ad-hoc. Nothing listens on the server; SSH-launched stdio.*
-
-The MCP "command" is `ssh`. Claude Code starts it on your laptop, SSH carries it
-to the server, and sipnab's JSON-RPC travels back down the same pipe — so
-nothing listens on the server and there is no token to manage:
+*Shape 2. Ad-hoc. Nothing listens on the server; SSH-launched stdio.*
 
 <pre class="mermaid">
 sequenceDiagram
@@ -254,8 +270,10 @@ sequenceDiagram
     Note over CC,SN: session ends -&gt; sipnab exits, nothing left running
 </pre>
 
-The MCP "command" is simply `ssh`. Nothing listens on the server; your SSH
-key is the authentication; when the session ends, nothing keeps running.
+The MCP "command" is `ssh`. Claude Code starts it on your laptop, SSH carries
+it to the server, and sipnab's JSON-RPC travels back down the same pipe. So
+nothing listens on the server, your SSH key is the authentication, there is no
+token to manage, and when the session ends nothing keeps running.
 
 1. **[server]** Do [Step 0](#step-0-install-sipnab-every-server-once).
    That's *all* the server setup there is.
@@ -333,12 +351,28 @@ sessions](#keep-a-capture-running-between-agent-sessions).
 
 ### Keep a capture running between agent sessions
 
-*Persistent HTTP service with a bearer token.*
+*Shape 3. Persistent HTTP service with a bearer token.*
+
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Adm as you (server, once)
+    participant SVC as sipnab service (server)
+    participant CC as Claude Code (laptop)
+
+    Adm-&gt;&gt;SVC: systemd starts sipnab --mcp -N --mcp-transport http
+    Note over SVC: the capture runs continuously, outliving every session
+    CC-&gt;&gt;SVC: JSON-RPC over HTTP, with a bearer token
+    SVC--&gt;&gt;CC: JSON-RPC response
+    Note over CC,SVC: agent disconnects -&gt; the capture keeps running
+</pre>
 
 For a capture that runs continuously and answers agents whenever they ask.
 Keep this shape on a trusted network (LAN/VPN): the token authenticates,
-but the transport is plaintext HTTP. Across untrusted networks use 2C
-or 4.
+but the transport is plaintext HTTP. Across untrusted networks, use
+[an SSH tunnel](#keep-a-capture-running-without-exposing-a-port) or
+[put it behind a proxy that terminates TLS](#reach-sipnab-from-outside-your-network)
+instead.
 
 1. **[server]** Do [Step 0](#step-0-install-sipnab-every-server-once).
 
@@ -930,17 +964,7 @@ rules as scenarios 2B and 4.
 
 ## Diagnose a real problem with the tools
 
-Everything above gets sipnab *connected*. This section is what to do next.
-
-Each recipe is a question an operator actually arrives with, the tool calls
-that answer it, and **real output** — every block below comes from running the
-tool against a capture in `tests/pcap-samples/`, not from writing plausible
-JSON. You can reproduce any of them.
-
-You do not type these calls. You ask your agent the question in the heading and
-it selects the tools. The calls appear here so you can tell whether it picked
-well, and so you can recognise the answer when it comes back. The full
-per-tool reference is in [MCP server](@/docs/mcp.md).
+*Everything above gets sipnab connected. This is what to do once it answers.*
 
 <pre class="mermaid">
 flowchart TD
@@ -955,6 +979,16 @@ flowchart TD
 
 `triage_call` first, always. It answers the one question that decides which
 half of the stack to look at, and getting it wrong costs an hour.
+
+Each recipe below is a question an operator actually arrives with, the tool
+calls that answer it, and **real output** — every block comes from running the
+tool against a capture in `tests/pcap-samples/`, not from writing plausible
+JSON. You can reproduce any of them.
+
+You do not type these calls. You ask your agent the question in the heading and
+it selects the tools. The calls appear here so you can tell whether it picked
+well, and so you can recognise the answer when it comes back. The full
+per-tool reference is in [MCP server](@/docs/mcp.md).
 
 ### Find out why a single call failed
 

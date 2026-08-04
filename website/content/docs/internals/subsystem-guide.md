@@ -14,6 +14,35 @@ tree. This page is the function-level trace through it.
 
 ## The program spine
 
+*Startup is a straight line with exactly one branch. The shape first, then
+what each step does.*
+
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Main as main
+    participant Cli
+    participant Boot as bootstrap
+    participant Plan as RunPlan
+    participant Mode as run mode entry
+
+    Main-&gt;&gt;Cli: parse_args
+    Main-&gt;&gt;Boot: init_logging, run_startup_commands
+    Main-&gt;&gt;Cli: validate
+    Main-&gt;&gt;Boot: load_config
+    Main-&gt;&gt;Boot: install_panic_hook
+    Main-&gt;&gt;Boot: plan(cli, config)
+    Boot--&gt;&gt;Plan: source, capture_config, policy, filter, mode
+    alt mode == CoresFile
+        Main-&gt;&gt;Mode: run_cores_file (no capture thread)
+    else Tui or Batch
+        Main-&gt;&gt;Boot: launch(source, capture_config)
+        Boot--&gt;&gt;Main: capture handle + PacketRx
+        Note over Boot,Main: chroot, privilege drop, runtime hardening
+        Main-&gt;&gt;Mode: run_tui_mode or batch::run
+    end
+</pre>
+
 `main()` is deliberately thin — ten numbered steps in 94 lines of
 [`main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs), each delegating to
 [`app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs). The order matters: logging
@@ -43,35 +72,6 @@ are all skipped. For the other two modes `launch()` builds the channel, starts
 the capture thread, waits for the readiness handshake, then chroots, drops
 privileges, and applies runtime hardening. sipnab sheds privileges after the
 socket exists and before it parses the first packet.
-
-Startup is a straight line with exactly one branch, which is easier to follow
-as a sequence.
-
-<pre class="mermaid">
-sequenceDiagram
-    autonumber
-    participant Main as main
-    participant Cli
-    participant Boot as bootstrap
-    participant Plan as RunPlan
-    participant Mode as run mode entry
-
-    Main-&gt;&gt;Cli: parse_args
-    Main-&gt;&gt;Boot: init_logging, run_startup_commands
-    Main-&gt;&gt;Cli: validate
-    Main-&gt;&gt;Boot: load_config
-    Main-&gt;&gt;Boot: install_panic_hook
-    Main-&gt;&gt;Boot: plan(cli, config)
-    Boot--&gt;&gt;Plan: source, capture_config, policy, filter, mode
-    alt mode == CoresFile
-        Main-&gt;&gt;Mode: run_cores_file (no capture thread)
-    else Tui or Batch
-        Main-&gt;&gt;Boot: launch(source, capture_config)
-        Boot--&gt;&gt;Main: capture handle + PacketRx
-        Note over Boot,Main: chroot, privilege drop, runtime hardening
-        Main-&gt;&gt;Mode: run_tui_mode or batch::run
-    end
-</pre>
 
 ## The six hops
 
