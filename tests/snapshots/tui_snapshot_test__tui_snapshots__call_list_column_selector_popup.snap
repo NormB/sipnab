@@ -1,15 +1,15 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 1007
+assertion_line: 1057
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-  # ▲   Metho From To┌ Columns ───────────────────────────┐Date   PDD    Duratio
-> [ ]1  INVIT 1001 10│> [x] #                             │+0.000 1000ms 1m2s
-  [ ]2  INVIT 1003 10│  [x] Method                        │+5.000        1.0s
-  [ ]3  INVIT 1005 10│  [x] From                          │+5.000        2.0s
+  # ▲   Method    Fro┌ Columns ───────────────────────────┐te     PDD    Duratio
+> [ ]1  INVITE    100│> [x] #                             │.000s  1000ms 1m2s
+  [ ]2  INVITE    100│  [x] Method                        │.000s         1.0s
+  [ ]3  INVITE    100│  [x] From                          │.000s         2.0s
                      │  [x] To                            │
                      │  [x] Source                        │
                      │  [x] Destination                   │

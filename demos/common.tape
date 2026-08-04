@@ -2,8 +2,12 @@
 #   Output website/static/demos/<name>.gif
 #   Source demos/common.tape
 #   <script...>
-# Rendered from the repo root against the installed `sipnab` (0.5.x) so the
-# terminal cwd resolves tests/pcap-samples/*. See demos/Makefile.
+# Rendered from the repo root so the terminal cwd resolves tests/pcap-samples/*.
+# The `sipnab` these tapes invoke is the one BUILT FROM THIS TREE: demos/Makefile
+# prepends target/release to PATH and refuses to render if that binary's version
+# disagrees with Cargo.toml. Do not run a tape directly with bare `vhs` -- it
+# would pick up whatever sipnab is installed and can silently record an old UI.
+# See the Makefile header for the truncated-Method incident that caused this.
 # FontFamily MUST be a monospace font that is actually installed (verify with
 # `fc-list`). Naming a missing font (e.g. "JetBrains Mono" on a bare box) makes
 # ttyd fall back with broken metrics: stretched letter-spacing, clipped glyphs.

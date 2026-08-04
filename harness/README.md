@@ -5,18 +5,26 @@ and exposes **sipnab as an MCP server** so an external system (e.g. your
 laptop) can diagnose the SIP/RTP traffic flowing through **`opensips-1`**
 using an AI agent.
 
-```text
-  ┌─────────┐   INVITE/REGISTER/...    ┌────────────────────────────────┐
-  │ sipp-uac│ ───────────────────────▶ │  opensips-1  (owns netns)      │
-  │ .0.21   │                          │   ├─ rtpengine  (media anchor)  │
-  └─────────┘                          │   └─ sipnab     (capture + MCP) │
-  ┌─────────┐ ◀───────────────────────  │                                │
-  │ sipp-uas│      relayed call         │  publishes :5060/udp :8731     │
-  │ .0.20   │                          │            :30000-30050/udp     │
-  └─────────┘                          └────────────────┬───────────────┘
-                                                         │ MCP HTTP :8731
-        your laptop  ──────── Bearer token ──────────────┘
-        (Claude agent: list_dialogs, find_problems, rtp_stats, ...)
+```mermaid
+flowchart LR
+    UAC["sipp-uac<br/>.0.21"]
+    UAS["sipp-uas<br/>.0.20"]
+
+    subgraph NS["opensips-1 — owns the network namespace"]
+        OS["opensips-1<br/>.0.10<br/>registrar + stateful proxy"]
+        RTPE["rtpengine<br/>media anchor"]
+        SNB["sipnab<br/>live capture + MCP server"]
+        RTPE -.->|"joins netns"| OS
+        SNB -.->|"joins netns"| OS
+    end
+
+    UAC -->|"INVITE / REGISTER / ..."| OS
+    OS -->|"relayed call"| UAS
+
+    LAPTOP["your laptop<br/>Claude agent: list_dialogs,<br/>find_problems, rtp_stats, ..."]
+    SNB -->|"MCP HTTP :8731<br/>Bearer token"| LAPTOP
+
+    NS -.- PORTS["published on the host:<br/>:5060/udp · :8731/tcp · :30000-30050/udp"]
 ```
 
 Because OpenSIPS anchors **all media through rtpengine**, every SIP message

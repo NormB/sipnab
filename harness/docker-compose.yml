@@ -12,7 +12,7 @@
 # every RTP packet transits the opensips-1 network namespace -- a single
 # capture point for sipnab. An external system (your laptop) reaches the
 # sipnab MCP server on <host>:${MCP_PORT} and can also register/call into
-# opensips-1 on <host>:${SIP_PORT}/udp.
+# opensips-1 on <host>:${SIP_HOST_PORT}/udp.
 
 name: ${COMPOSE_PROJECT_NAME:-sipnab-harness}
 

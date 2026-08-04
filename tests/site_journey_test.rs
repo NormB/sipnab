@@ -1764,7 +1764,10 @@ mod search_demo_narrowing {
     ///
     /// # Returns
     /// The repo-relative pcap path and the search queries in tape order.
-    fn tape_pcap_and_queries(tape: &str) -> (String, Vec<String>) {
+    ///
+    /// Shared with `demo_terminal_method_rendering`, which replays the same
+    /// tape at the same geometry to assert what the recording actually shows.
+    pub(super) fn tape_pcap_and_queries(tape: &str) -> (String, Vec<String>) {
         let cmd = regex::Regex::new(r#"(?m)^Type "sipnab [^"]*-I ([^"\s]+)"#).unwrap();
         let pcap = cmd
             .captures(tape)
@@ -1836,6 +1839,140 @@ mod search_demo_narrowing {
                  {pcap_rel} (full-text fallback scans raw messages, e.g. \
                  Allow: headers) — the list never visibly narrows, so the \
                  filter demo demonstrates nothing"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Demo-terminal method rendering: at the tape's real cell geometry, every SIP
+// method in the demo pcap must reach the screen WHOLE. Shipped broken for two
+// weeks and reported as "the home page - search tab content still shows
+// truncated methods": the 2026-07-20 fix widened the Method column to
+// Length(9) so SUBSCRIBE would fit, and the Search tab still rendered
+// "SUBSCR". The constraint was honest; the flex pool was not. At 88 columns
+// the `.max(4)` floors on From/To over-claimed 3 cells, and ratatui rebalances
+// an over-claiming row by taking cells back out of the fixed columns -- Method
+// absorbing the largest share, all 3 of them here -- so the widening could
+// never reach the screen. The gate that shipped alongside that fix asserted
+// the requested `Constraint`, which is a request and not a rendered width, so
+// it stayed green for every one of the two weeks the defect was live. This
+// gate reads the rendered buffer instead.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "tui")]
+mod demo_terminal_method_rendering {
+    use super::{read, repo};
+    use crossterm::event::KeyCode;
+    use ratatui::{Terminal, backend::TestBackend};
+    use sipnab::tui::App;
+    use sipnab::tui::call_list::{SortColumn, displayed_dialogs};
+
+    /// Cell geometry of demos/common.tape: 1200x700 px, Padding 10, DejaVu
+    /// Sans Mono at FontSize 20. Measured empirically (`stty size` inside a
+    /// VHS probe tape) — xterm.js rounds glyph metrics, so px/font arithmetic
+    /// over-estimates the grid: the naive figure is 98x28, the real one 88x27.
+    /// Independently confirmed against the shipped recording, whose status
+    /// line occupies exactly 88 cells and is cut mid-word at "F9 Ad".
+    const DEMO_COLS: u16 = 88;
+    /// Row half of the measured 88x27 VHS grid; see `DEMO_COLS` above.
+    const DEMO_ROWS: u16 = 27;
+
+    /// The terminal buffer as one string per row.
+    fn buffer_rows(term: &Terminal<TestBackend>) -> Vec<String> {
+        let buf = term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Every method the demo pcap puts on screen — unfiltered and under each
+    /// query the tape types — must render as its whole token at the demo's
+    /// real 88-column geometry.
+    ///
+    /// Mutation check: restore the `.max(4)` floors on `from_w`/`to_w` in
+    /// `compute_column_widths` and this fails on the unfiltered screen with
+    /// `"SUBSCRIBE"` absent (it renders `SUBSCR`), which is precisely the
+    /// pixels the homepage Search tab shipped.
+    #[test]
+    fn demo_terminal_renders_every_sip_method_whole() {
+        let tape = read("demos/04-filter.tape");
+        let (pcap_rel, queries) = super::search_demo_narrowing::tape_pcap_and_queries(&tape);
+        let pcap = repo().join(&pcap_rel);
+        assert!(pcap.is_file(), "tape references missing pcap: {pcap_rel}");
+
+        // Load through the real file-open path, exactly as the tape does.
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('O'));
+        app.handle_key(KeyCode::Tab);
+        app.open_path_clear_for_test();
+        for c in pcap.to_string_lossy().chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS)).unwrap();
+
+        // The tape lingers 3s on the unfiltered list before typing anything;
+        // that screen carries every method in the capture, SUBSCRIBE included.
+        assert_methods_render_whole(&mut app, &mut term, "unfiltered dialog list", "");
+
+        // Then each query it types, on the same screen the recording shows.
+        for q in &queries {
+            app.handle_key(KeyCode::Char('/'));
+            for c in q.chars() {
+                app.handle_key(KeyCode::Char(c));
+            }
+            let typed = app.search_query().to_string();
+            assert_methods_render_whole(&mut app, &mut term, &format!("search \"/{q}\""), &typed);
+            app.handle_key(KeyCode::Esc);
+        }
+    }
+
+    /// The distinct methods a viewer should be able to read for `query`.
+    ///
+    /// Derived from the dialog store rather than hardcoded, so re-cutting the
+    /// demo pcap cannot silently narrow what this gate covers.
+    fn expected_methods(app: &App, query: &str) -> Vec<String> {
+        let store = app.dialog_store_ref().read();
+        let mut methods: Vec<String> =
+            displayed_dialogs(&store, None, query, SortColumn::Index, true)
+                .iter()
+                .map(|d| d.method.as_str().to_string())
+                .collect();
+        methods.sort();
+        methods.dedup();
+        methods
+    }
+
+    /// Render the current screen and assert every method on it is readable in
+    /// full — the effect, not the `Constraint` that was requested.
+    fn assert_methods_render_whole(
+        app: &mut App,
+        term: &mut Terminal<TestBackend>,
+        what: &str,
+        query: &str,
+    ) {
+        term.draw(|f| app.render(f)).unwrap();
+        let rows = buffer_rows(term);
+        let expected = expected_methods(app, query);
+        assert!(
+            !expected.is_empty(),
+            "{what}: no dialogs on screen, so this gate would assert nothing"
+        );
+        for method in &expected {
+            assert!(
+                rows.iter().any(|r| r.contains(method.as_str())),
+                "{what}: at {DEMO_COLS}x{DEMO_ROWS} the Method column never renders \
+                 {method:?} whole — the viewer, and every frame of the recorded demo, \
+                 sees it cut. A wide enough Method `Constraint` is not sufficient: \
+                 check that the column widths do not over-subscribe the row (see \
+                 column_widths_never_oversubscribe_the_terminal).\n--- screen ---\n{}",
+                rows.join("\n")
             );
         }
     }

@@ -874,15 +874,28 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
         // Method is 9 so the longest common method (SUBSCRIBE) never truncates.
         let fixed: u16 = 49 + overhead;
         let flex = total_width.saturating_sub(fixed);
-        // Src/Dst each prefer 2/5 of the flex pool (min 11), but below ~83
-        // cols `flex` is too small for two 11-wide address columns, so the
-        // `.max(11)` floor would push `addr_each * 2` past `flex` and overflow
-        // the pool. Clamp to `flex / 2` so the two address columns together
-        // never exceed the available flex width.
-        let addr_each = (flex * 2 / 5).max(11).min(flex / 2);
-        let from_to_pool = flex.saturating_sub(addr_each * 2);
-        let from_w = (from_to_pool / 2).max(4);
-        let to_w = from_to_pool.saturating_sub(from_w).max(4);
+        // The four flex columns (From, To, Source, Destination) must fit
+        // `flex` EXACTLY. Claiming more does not shrink them: ratatui's layout
+        // solver balances the row by taking cells back out of the *fixed*
+        // columns, and Method absorbs the largest share of it — the whole
+        // deficit at 88 cols (Method 9 -> 6), and 4 of 7 at 80 cols (Method
+        // 9 -> 5, State -1, Date -2). That is how "SUBSCRIBE" still rendered
+        // as "SUBSCR" in the 88-column demo terminal long after the Method
+        // constraint itself was widened to 9: the constraint was honest and
+        // the pool was not, so widening Method alone could never reach the
+        // screen. Every cell handed out below has to be one this pool owns.
+        //
+        // Src/Dst each still prefer 2/5 of the pool (min 11), but From/To's
+        // floor of 4 each is now reserved FIRST, so a minimum is only ever
+        // taken while the pool can still pay for it. `saturating_sub(8)`
+        // is that reservation; it also drives `addr_each` to 0 rather than
+        // overflowing once the pool is smaller than From/To's own floor.
+        let addr_each = (flex * 2 / 5).max(11).min(flex.saturating_sub(8) / 2);
+        // Exact, not saturating: `addr_each * 2 <= flex` holds by the clamp
+        // above, so the remainder below is what is genuinely left over.
+        let from_to_pool = flex - addr_each * 2;
+        let from_w = from_to_pool / 2;
+        let to_w = from_to_pool - from_w;
         vec![
             Constraint::Length(5),
             Constraint::Length(9),
@@ -1187,8 +1200,15 @@ mod tests {
 
     /// Regression: below 120 cols the Method column was `Length(8)`, which
     /// truncated `SUBSCRIBE` (9 chars) — visible on any 80-119-col terminal
-    /// and in the 98-col demo GIFs. The Method column is a key field and must
-    /// never truncate a standard SIP method.
+    /// and in the demo recordings.
+    ///
+    /// NECESSARY BUT NOT SUFFICIENT, and the gap shipped: this assertion has
+    /// been green since 2026-07-20 while the homepage Search tab still showed
+    /// `SUBSCR`, because a `Constraint` is a request, not a rendered width.
+    /// See `column_widths_never_oversubscribe_the_terminal` below for the
+    /// invariant that makes the request honest, and
+    /// `demo_terminal_renders_every_sip_method_whole` in
+    /// `tests/site_journey_test.rs` for what actually reaches the screen.
     #[test]
     fn method_column_fits_longest_sip_method_below_120_cols() {
         // Longest common SIP methods: SUBSCRIBE(9), REGISTER(8), OPTIONS(7).
@@ -1200,6 +1220,46 @@ mod tests {
                 "Method column at {width} cols must be >= 9 to fit SUBSCRIBE, \
                  got {:?}",
                 widths[1]
+            );
+        }
+    }
+
+    /// The 11 columns must never claim more cells than the terminal has.
+    ///
+    /// This is the gate the 2026-07-20 Method widening needed and did not
+    /// get. When the columns over-claim, ratatui rebalances by taking cells
+    /// back out of the fixed columns, and Method absorbs the largest share:
+    /// the entire 3-cell deficit at 88 cols (Method 9 -> 6) and 4 of the 7
+    /// at 80 cols (Method 9 -> 5). So `Length(9)` bought nothing at the
+    /// measured 88-column VHS demo terminal — the constraint read 9 and the
+    /// screen read `SUBSCR`, and the committed 80-col snapshots recorded
+    /// `INVIT`. 34 of the 59 widths in 61..=119 were over-subscribed.
+    ///
+    /// Below 61 cols the fixed columns alone (49) plus overhead (12) cannot
+    /// fit, so 61 is the narrowest width at which any allocation can hold.
+    #[test]
+    fn column_widths_never_oversubscribe_the_terminal() {
+        // 10 inter-column gaps (`.column_spacing(1)`) + 2 for the `"> "`
+        // highlight symbol; see `compute_column_widths`.
+        const OVERHEAD: u16 = 12;
+        for width in 61u16..=200 {
+            let widths = compute_column_widths(width);
+            let sum: u16 = widths
+                .iter()
+                .map(|c| match c {
+                    Constraint::Length(n) => *n,
+                    other => panic!("non-Length constraint {other:?} at {width} cols"),
+                })
+                .sum();
+            assert!(
+                sum + OVERHEAD <= width,
+                "at {width} cols the columns claim {sum} + {OVERHEAD} overhead = {} \
+                 cells in a {width}-cell row; ratatui charges the {}-cell deficit back \
+                 to the fixed columns, Method absorbing the largest share, so a \
+                 standard method renders truncated no matter what Length(..) the \
+                 Method column asks for. widths: {widths:?}",
+                sum + OVERHEAD,
+                sum + OVERHEAD - width,
             );
         }
     }

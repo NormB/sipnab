@@ -687,26 +687,39 @@ pub(in crate::tui) fn render_filter_text_field(
 
 /// Render the filter dialog as a centered popup overlay (sngrep-style).
 ///
-/// Layout:
+/// Layout, drawn to scale at the fixed 56-column by 20-row popup size set
+/// below, so every column stop in the figure is the one the code paints:
+///
 /// ```text
-/// +- Filter -----------------------------------------+
-/// |                                                    |
-/// |  SIP From:    [                             ]      |
-/// |  SIP To:      [                             ]      |
-/// |  Source:      [                             ]      |
-/// |  Destination: [                             ]      |
-/// |  Payload:     [                             ]      |
-/// |  ──────────────────────────────────────────────    |
-/// |  REGISTER [*]          OPTIONS  [ ]                |
-/// |  INVITE   [*]          PUBLISH  [ ]                |
-/// |  SUBSCRIBE[ ]          MESSAGE  [ ]                |
-/// |  NOTIFY   [ ]          REFER    [ ]                |
-/// |  INFO     [ ]          UPDATE   [ ]                |
-/// |                                                    |
-/// |     [ Filter ]              [ Cancel ]             |
-/// |                                                    |
-/// +----------------------------------------------------+
+/// + Filter ----------------------------------------------+
+/// |                                                      |
+/// |  SIP From:    [                                   ]  |
+/// |  SIP To:      [                                   ]  |
+/// |  Source:      [                                   ]  |
+/// |  Destination: [                                   ]  |
+/// |  Payload:     [                                   ]  |
+/// |  ──────────────────────────────────────────────────  |
+/// |  All       [ ]                                       |
+/// |  REGISTER  [*]             OPTIONS   [ ]             |
+/// |  INVITE    [*]             PUBLISH   [ ]             |
+/// |  SUBSCRIBE [ ]             MESSAGE   [ ]             |
+/// |  NOTIFY    [ ]             REFER     [ ]             |
+/// |  INFO      [ ]             UPDATE    [ ]             |
+/// |                                                      |
+/// |     [ Filter ]                 [ Cancel ]            |
+/// |  (inline parse error appears here)                   |
+/// |                                                      |
+/// |                                                      |
+/// +------------------------------------------------------+
 /// ```
+///
+/// The method grid is filled a row at a time, left cell then right, in
+/// `FILTER_METHODS` order. The `All` master checkbox sits above the grid it
+/// governs and shows checked only while every method is checked, so the
+/// mixed selection drawn here leaves it clear; by default every method is
+/// checked and every marker reads `[*]`. The last painted row appears only
+/// when Enter fails to parse the typed values, and the live version is
+/// prefixed with a warning sign.
 ///
 /// # Arguments
 /// * `frame` - Frame to draw into.
