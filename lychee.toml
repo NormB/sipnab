@@ -73,6 +73,27 @@ exclude = [
   # results between runs and the old entry aged out, which is why this surfaced
   # now rather than when the link landed in 2092d3a.
   'linkedin\.com',
+  # The IEEE Registration Authority's EtherType public listing, cited by
+  # docs/encapsulations.md as the authoritative source for every EtherType value
+  # in it. RFC 9542 hands that question to the IEEE rather than IANA, so this is
+  # the primary source and not a convenience link.
+  #
+  # It timed out the Quality job with zero dead links. NOT a slow-page case, so
+  # raising `timeout` the way kamailio.org warranted above would not have helped:
+  # measured three times back to back from a residential connection, HTTP 200 in
+  # 0.24s, 0.24s and 0.31s for 1,863,318 bytes, TTFB 0.08s, and HEAD answers 200
+  # in 0.06s. Nothing here is slow.
+  #
+  # The runner is refused, not delayed -- the same datacenter-range treatment as
+  # the Patreon entry above. Some client-shape filtering also exists: an earlier
+  # fetch from a different HTTP client on this same machine got HTTP 418, while
+  # curl gets 200 with both a default and a browser user-agent, so it is not a
+  # simple user-agent block either.
+  #
+  # Excluded rather than delinked. The value of citing it is that a reader can
+  # check the numbers against the body that assigns them; dropping the URL to
+  # satisfy a link checker would remove the provenance the page exists to carry.
+  'standards-oui\.ieee\.org',
 ]
 
 exclude_path = [
