@@ -1708,7 +1708,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
         .collect();
     assert_eq!(
         registered.len(),
-        28,
+        29,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2190,9 +2190,21 @@ fn no_documentation_table_repeats_a_row() {
     // this cycle edited most heavily — `rest-api.md`, `mcp.md`,
     // `THIRD-PARTY-NOTICES.md` — grew ROWS inside tables that already existed,
     // which this gate does not count.
+    // Raised 448 -> 454 by `docs/encapsulations.md`, counted rather than
+    // guessed: three tables on the page (link types, EtherTypes, tunnels above
+    // the link layer) and three in its generated site mirror — the same page
+    // twice, which is what a mirrored page costs this counter, exactly as the
+    // tuning-capture entry above records.
+    // Raised 454 -> 460 by the `capture_health` MCP tool, counted rather than
+    // guessed: three tables in its `docs/mcp.md` section (the parameter, the
+    // `attachment` codes, the `undecodable_by_reason` codes) and three in the
+    // generated site mirror — the same page twice, which is what a mirrored
+    // page costs this counter, exactly as the two entries above record. The
+    // tool-table row it also adds grew a table that already existed, which
+    // this gate does not count.
     assert_eq!(
-        tables, 448,
-        "walked {tables} tables, expected 448. More is fine — bump this. FEWER \
+        tables, 460,
+        "walked {tables} tables, expected 460. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

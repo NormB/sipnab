@@ -429,8 +429,16 @@ fn run_pcap_load(
             link_type,
         );
 
-        let Ok(parsed) = crate::capture::parse::parse_packet(&capture_pkt) else {
-            continue;
+        // Count the frames this path cannot read, exactly as the batch path
+        // does. Opening a capture in the TUI is the same question as running
+        // it headless, so "sipnab could not decode any of this" must not be a
+        // fact only the headless run gets told.
+        let parsed = match crate::capture::parse::parse_packet(&capture_pkt) {
+            Ok(p) => p,
+            Err(e) => {
+                crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
+                continue;
+            }
         };
         if parsed.payload.is_empty() {
             continue;
@@ -670,6 +678,7 @@ mod tests {
     /// overflow the timestamp conversion (which panics in debug builds)
     /// while loading.
     #[test]
+    #[serial_test::serial(invalid_timestamps, undecodable_tally)]
     fn load_pcap_with_out_of_range_usec_does_not_panic() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();

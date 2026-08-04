@@ -364,6 +364,26 @@ pub struct Cli {
     #[arg(help_heading = "Capture", long, value_name = "FILE")]
     pub bpf_file: Option<String>,
 
+    /// Also capture ALL traffic on the UDP tunnel ports, so SIP inside GTP-U,
+    /// VXLAN or GENEVE reaches sipnab. Defaults to 2152,4789,6081 when given
+    /// with no value; pass a comma-separated list for non-standard ports
+    /// (e.g. `--capture-tunnels=8472` for Linux's pre-IANA VXLAN port).
+    ///
+    /// OFF by default because it is not a narrowing filter: BPF cannot walk a
+    /// GTP-U extension-header chain to reach the inner port, so the only way
+    /// to cover these is to take everything on the port. On a mobile core or a
+    /// data-centre fabric that is the entire user plane. Without it the
+    /// auto-generated filter still sees VLAN/QinQ/PPPoE/MPLS-encapsulated SIP,
+    /// which cost nothing to add. Ignored when you supply your own filter.
+    #[arg(
+        help_heading = "Capture",
+        long,
+        value_name = "PORTS",
+        num_args = 0..=1,
+        default_missing_value = crate::app::bootstrap::TUNNEL_PORTS_DEFAULT_LIST,
+    )]
+    pub capture_tunnels: Option<String>,
+
     /// Stop after receiving N packets. Counts every packet received from the
     /// capture source; for a HEP listener that includes packets later dropped
     /// by the source allowlist, rate limiter, or authentication.
@@ -2288,6 +2308,33 @@ mod tests {
         assert!(Cli::parse_from_args(["sipnab", "-p"]).no_promisc);
         assert!(Cli::parse_from_args(["sipnab", "--no-promisc"]).no_promisc);
         assert!(!Cli::parse_from_args(["sipnab"]).no_promisc);
+    }
+
+    /// `--capture-tunnels` takes an optional value: bare it means the three
+    /// IANA tunnel ports, with `=` it means exactly what was typed, and absent
+    /// it stays `None` so the auto-filter keeps its narrow default.
+    ///
+    /// The bare form's default is the `TUNNEL_PORTS_DEFAULT_LIST` constant the
+    /// filter builder resolves, so the flag's advertised default and the ports
+    /// actually captured cannot drift apart.
+    #[test]
+    fn capture_tunnels_optional_value() {
+        assert_eq!(
+            Cli::parse_from_args(["sipnab", "--capture-tunnels"])
+                .capture_tunnels
+                .as_deref(),
+            Some(crate::app::bootstrap::TUNNEL_PORTS_DEFAULT_LIST)
+        );
+        assert_eq!(
+            Cli::parse_from_args(["sipnab", "--capture-tunnels=8472"])
+                .capture_tunnels
+                .as_deref(),
+            Some("8472")
+        );
+        assert_eq!(
+            Cli::parse_from_args(["sipnab"]).capture_tunnels.as_deref(),
+            None
+        );
     }
 
     /// `--kill-spoof` defaults to auto, parses raw/ephemeral, and rejects

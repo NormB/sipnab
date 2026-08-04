@@ -957,6 +957,7 @@ mod tests {
     /// A negative `tv_usec` falls back to "now" without panicking and bumps
     /// the invalid-timestamp counter.
     #[test]
+    #[serial_test::serial(invalid_timestamps)]
     fn negative_usec_does_not_panic_and_is_counted() {
         // Corrupted tv_usec: `as u32` wraps -1 to u32::MAX, and the old
         // `* 1000` overflowed (panic in debug builds). Must instead fall
@@ -971,6 +972,7 @@ mod tests {
 
     /// `tv_usec >= 1_000_000` is corrupt: falls back to "now" and counts.
     #[test]
+    #[serial_test::serial(invalid_timestamps)]
     fn oversized_usec_falls_back_and_is_counted() {
         // tv_usec must be < 1_000_000; 5_000_000 is corrupt.
         let before = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
@@ -983,6 +985,7 @@ mod tests {
     /// An unrepresentable `tv_sec` (i64::MAX) falls back to "now" and
     /// counts.
     #[test]
+    #[serial_test::serial(invalid_timestamps)]
     fn out_of_range_sec_falls_back_and_is_counted() {
         let before = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
         let dt = pcap_ts_to_chrono(tv(i64::MAX, 0));

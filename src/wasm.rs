@@ -108,7 +108,17 @@ impl SipnabSession {
             let link_type = pkt.link_type as i32;
             let capture_pkt = Packet::new(ts, pkt.data, caplen, orig_len, pkt.interface, link_type);
 
-            if let Ok(parsed) = parse_packet(&capture_pkt) {
+            // The browser analyser counts undecodable frames like every other
+            // entry point. A user who drags in a capture sipnab cannot read
+            // must not be shown an empty result that looks like a clean one.
+            let parsed = match parse_packet(&capture_pkt) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
+                    None
+                }
+            };
+            if let Some(parsed) = parsed {
                 if !parsed.payload.is_empty() {
                     if sip::is_sip_message(&parsed.payload) {
                         if let Ok(sip_msg) = parse_sip(

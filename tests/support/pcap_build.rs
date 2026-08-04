@@ -159,15 +159,28 @@ pub fn invite_with_padded_headers(call_id: &str, pad_headers: usize) -> Vec<u8> 
 /// Timestamps advance 1 ms per frame so dialog durations and ordering are
 /// well-defined rather than all-zero.
 pub fn write_pcap(path: &Path, frames: &[Vec<u8>]) {
+    write_pcap_with_linktype(path, frames, 1);
+}
+
+/// Write `frames` as a little-endian pcap declaring link type `network`.
+///
+/// The link type is the whole point for the undecodable-frame suite: a
+/// capture sipnab has no decoder for is the case whose failure mode was a
+/// confident zero, and it can only be built by choosing the DLT in the file
+/// header. `write_pcap` is this with `network = 1` (Ethernet).
+///
+/// Timestamps advance 1 ms per frame so dialog durations and ordering are
+/// well-defined rather than all-zero.
+pub fn write_pcap_with_linktype(path: &Path, frames: &[Vec<u8>], network: u32) {
     let mut out = Vec::new();
-    // magic, version 2.4, thiszone, sigfigs, snaplen, network=1 (Ethernet)
+    // magic, version 2.4, thiszone, sigfigs, snaplen, network
     out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
     out.extend_from_slice(&2u16.to_le_bytes());
     out.extend_from_slice(&4u16.to_le_bytes());
     out.extend_from_slice(&0i32.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&65535u32.to_le_bytes());
-    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&network.to_le_bytes());
 
     for (i, f) in frames.iter().enumerate() {
         let usec = (i as u32) * 1_000;

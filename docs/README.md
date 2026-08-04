@@ -42,6 +42,9 @@ you want.
   one-way audio, high loss, NAT issues: what to run and what to look for.
 - **[Tuning capture](tuning-capture.md)** — are you dropping packets, and what
   to change when you are. Kernel buffer, BPF, snaplen, driver drops, `--cores`.
+- **[Encapsulations](encapsulations.md)** — MPLS, PPPoE, GTP-U or VXLAN wraps
+  your SIP and you want to know whether sipnab can read it. What decodes, what
+  does not, and what sipnab says when it cannot.
 - **[Filter and search](filter-dsl.md)** — narrow to what matters with the
   filter DSL (`method == 'INVITE' and rtp.mos < 3.5`) or the diagnostic
   aliases (`--filter codec-asym`).

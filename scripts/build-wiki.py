@@ -39,6 +39,7 @@ PAGES: dict[str, str] = {
     "examples.md": "Cookbook",
     "troubleshooting.md": "Troubleshooting",
     "tuning-capture.md": "Tuning-Capture",
+    "encapsulations.md": "Encapsulations",
     "tui-walkthrough.md": "TUI-Walkthrough",
     "backers.md": "Backers",
     "keybindings.md": "Keybindings",
@@ -77,7 +78,8 @@ PAGES: dict[str, str] = {
 # install first, internals last. Order within a group is the reading order.
 GROUPS: list[tuple[str, list[str]]] = [
     ("Getting started", ["install.md", "examples.md", "troubleshooting.md",
-                         "tuning-capture.md", "backers.md"]),
+                         "tuning-capture.md", "encapsulations.md",
+                         "backers.md"]),
     ("Using the TUI", ["tui-walkthrough.md", "keybindings.md", "theme-guide.md"]),
     ("CLI & automation", ["cli-reference.md", "filter-dsl.md", "output-formats.md",
                           "sip-response-codes.md",

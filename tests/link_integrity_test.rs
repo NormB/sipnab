@@ -410,9 +410,22 @@ fn wiki_intra_docs_links_resolve() {
     // `benchmarks.md` +1. The `any`-versus-named section added to
     // `tuning-capture.md` contributed none — it cites source paths inline
     // rather than linking out.
+    // Raised 268 -> 271 by the encapsulation-aware auto-BPF work: the new
+    // "A live capture that sees nothing" section in `troubleshooting.md` links
+    // to `tuning-capture.md` (buffer sizing before --capture-tunnels) and back
+    // into its own symptom index twice.
+    // Raised 271 -> 274 by `encapsulations.md`, diffed per file rather than
+    // assumed: the new page links out twice (`troubleshooting.md` for what each
+    // undecodable reason means, `cli-reference.md` for `--capture-tunnels`), and
+    // the docs index gains one entry pointing at it.
+    //
+    // NB the expected count appears TWICE below — in the assertion and in the
+    // message. They had already drifted apart once (message said 271 while the
+    // assertion compared 273), which makes the failure text lie about what it
+    // wants. Change both or neither.
     assert_eq!(
-        seen, 268,
-        "extractor found {seen} wiki links, expected 268. More is fine — bump \
+        seen, 274,
+        "extractor found {seen} wiki links, expected 274. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
@@ -841,8 +854,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // count. Adding a docs page fails this once, deliberately: bump the number.
     // Raised 34 -> 35 by `tuning-capture.md`.
     assert_eq!(
-        checked, 35,
-        "docs-page walk saw {checked} pages, expected 35. More is fine — bump \
+        checked, 36,
+        "docs-page walk saw {checked} pages, expected 36. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );

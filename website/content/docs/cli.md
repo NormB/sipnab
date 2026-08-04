@@ -208,6 +208,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
 | `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode (sipgrep `-p`). Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
 | `--bpf-file` | `<FILE>` | -- | Read BPF filter from a file |
+| `--capture-tunnels` | `[<PORTS>]` | off | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default because it is not a narrowing filter — BPF cannot walk a GTP-U extension-header chain to the inner port, so covering these means taking the whole port, which on a mobile core is the entire user plane. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth) |
 | `--duration` | `<DURATION>` | -- | Stop after duration (e.g., `30s`, `5m`, `1h`) |
 | `--autostop` | `<CONDITION>` | -- | Autostop condition (e.g., `filesize:100`, `duration:60`) |
@@ -215,6 +216,61 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--replay` | -- | off | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
 | `<BPF_FILTER>...` | positional | -- | BPF display filter expression (trailing positional args) |
+
+> **The auto-generated filter looks through VLAN, QinQ, PPPoE and MPLS.**
+> On a live capture with no filter of your own, sipnab installs one built from
+> `--portrange`. It is not a bare `portrange 5060-5061`: that one matches the
+> outer headers only, so on a tagged trunk, a PPPoE access link or an MPLS
+> core it matches **nothing**, and the kernel discards the frames where no
+> sipnab counter, metric or report can see them. You get "No SIP traffic
+> found" on a link carrying calls.
+>
+> The generated filter adds an encapsulated arm instead, covering one VLAN tag
+> (802.1Q, 802.1ad or 0x9100), QinQ, PPPoE Session, VLAN over PPPoE, and one or
+> two MPLS labels, for IPv4 and IPv6, UDP and TCP. The arm still demands a
+> signalling port, so it matches more of the *same* traffic, not a new class of
+> it: VLAN-tagged RTP reaches sipnab no more often than untagged RTP did.
+>
+> **It covers cooked captures too**, so omitting `-d` costs you nothing. The
+> arm asks "does this frame carry an encapsulation?" through libpcap's
+> `ether proto`, which resolves to the right byte offset for whatever link type
+> the filter compiles against — offset 12 on Ethernet, 14 on Linux cooked v1,
+> 0 on Linux cooked v2, and a constant false on raw IP and the two loopback
+> link types, which carry no protocol field at all. Measured on a capture of
+> each type with `tcpdump -d`.
+>
+> Asking the same question with a fixed `ether[12:2]` is the trap this avoids.
+> That offset holds the EtherType on Ethernet and part of the link-layer
+> address on a cooked capture, so an arm written that way compiles, runs and
+> matches nothing there: 1 of 11 encapsulated SIP frames on cooked v1 and
+> cooked v2, against 11 of 11 on Ethernet. Cooked is what Linux gives you when
+> you name no interface, so that shape would have left the default invocation
+> blind.
+>
+> Two limits worth knowing. On the encapsulated arm an IPv4 header carrying
+> **options** stays unmatched. A BPF byte offset has to be a constant, so the
+> arm cannot multiply the IHL nibble into the port offset the way libpcap's own
+> `portrange` does. The untagged `portrange` handles those, so this costs you
+> only IPv4-options traffic that is *also* encapsulated.
+>
+> And one filter string serving three link types has to carry all three sets of
+> inner offsets, because BPF offers no way to ask which link type it compiled
+> against. Seven offsets get probed on every link type, four of which belong to
+> a different link header. Those four can fire only on a frame that already
+> carries one of the six encapsulating protocols, and only if its bytes at the
+> wrong offset spell a complete IPv4-or-IPv6 header with a signalling port —
+> so the worst case is a stray tagged packet reaching userspace, where the
+> parser rejects it. Ordinary traffic never reaches those probes, because the
+> outer `ether proto` test is exact.
+>
+> **UDP tunnels are opt-in.** GTP-U, VXLAN and GENEVE are not covered by
+> default and sipnab says so at startup. BPF cannot parse a variable-length
+> GTP-U extension-header chain to reach the inner port, so the only way to
+> cover them is to capture everything on the port — see `--capture-tunnels`.
+>
+> **A filter you supply is never rewritten.** It goes to `pcap_compile`
+> exactly as typed. If it looks encapsulation-blind, sipnab says so once and
+> still uses your expression.
 
 > **What you get when you omit `-d`.** The default is not the same everywhere,
 > and the difference decides whether you see loopback traffic:
@@ -290,6 +346,34 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > went missing. Set the range correctly *before* the capture, because no rerun
 > recovers it.
 
+> **`NOT DECODED` is the other line to read before the totals.** `--portrange`
+> is about SIP sipnab chose not to analyse; this is about frames it could not
+> read at all — an unsupported link type, an EtherType carrying no IP, an IP
+> protocol that is no transport, a truncated frame, a decode error. Such a
+> frame counts as a packet (it arrived) and reaches no message, dialog or
+> stream, so on its own the summary reports the same thing whether the capture
+> held no SIP or sipnab understood none of it:
+>
+> ```text
+> NOT DECODED: 49 of 49 frame(s) (100.0%) produced nothing and are in none of
+> the counts above. Reasons: unsupported link type 0 (49). NOTHING IN THIS
+> CAPTURE WAS READ — every frame failed to decode, so the totals above describe
+> no traffic whatsoever and a zero among them is not evidence of absence.
+> ```
+>
+> Every reason carries the number that identifies it, because that number is
+> what you act on: `unsupported link type 0` says the file is `DLT_NULL` and
+> `editcap -T ether in.pcap out.pcap` converts it. A small count is normal —
+> ARP is undecodable by definition and appears on any Ethernet capture — so
+> read the share, not the count. When the share is high, sipnab additionally
+> refuses to state "No SIP traffic found" as a finding, because it has no basis
+> for one. The same breakdown appears as a `NOT DECODED (capture-wide)` section
+> in `--report`, and as `sipnab_capture_undecodable_frames_total{reason}` plus
+> `sipnab_capture_undecoded_fraction` on `/metrics`.
+>
+> `docs/troubleshooting.md` tables what each reason means and what to do about
+> it.
+
 **Examples**
 
 - `sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000` — record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range
@@ -303,6 +387,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N --input /var/captures/ --input-name 'edge1-*' --recursive --json` — pick one host's captures out of a tree holding several
 - `sipnab -N --input capture.pcap --limitlen 512 --no-reassembly --quiet-bad-parse` — scan a pcap sipgrep-style: parse only the first 512 bytes of each packet, every packet standalone (no reassembly), without parse-error noise
 - `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --duration 5m` — capture for 5 minutes using a BPF filter read from sip.bpf, without putting the interface into promiscuous mode (sipgrep -p)
+- `sudo sipnab -N --device eth0 --capture-tunnels --buffer 64 --duration 5m` — capture SIP travelling inside GTP-U, VXLAN or GENEVE as well as the encapsulations the auto-filter already covers. This takes **every** packet on ports 2152, 4789 and 6081, so the same command widens the kernel buffer; check the drop counters in the summary before trusting a long run
+- `sudo sipnab -N --device eth0 --capture-tunnels=8472 --portrange 5060-5080 --report` — cover a Linux VXLAN fabric on its pre-IANA port 8472 instead of the three defaults, across a widened signalling range
 - `sudo sipnab --device eth0 --portrange 5060-5090 --buffer 8 --buffer-budget 256 --duration 1h` — monitor an hour of traffic across a wide SIP port range with enlarged capture buffers
 - `sipnab -N --input capture.pcap --replay --limitlen 1500 --no-rtp` — replay signaling only from a pcap, parsing at most 1500 bytes of each packet
 - `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --snaplen 9000 --count 500` — stop after 500 packets that pass the sip.bpf filter, non-promiscuous, with the snapshot length sized for jumbo frames

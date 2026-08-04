@@ -163,7 +163,11 @@ pub fn run_tui_mode(
             }),
             Some(rx.meter()),
         ) {
-            Ok(h) => Some(h),
+            // The bound address is returned as well as logged, because
+            // `--metrics 127.0.0.1:0` lets the OS pick the port. Nothing here
+            // needs it yet — the server already logs it — so it is dropped
+            // explicitly rather than carried as an unnamed tuple element.
+            Ok((_bound_addr, h)) => Some(h),
             Err(e) => {
                 tracing::error!("Failed to start metrics server: {e}");
                 None

@@ -1059,7 +1059,17 @@ pub struct CaptureQualityJson {
     /// Packets whose pcap timestamp was unusable and were stamped with the
     /// wall clock instead. Timing figures for this run are unreliable.
     pub invalid_timestamps: u64,
-    /// `true` when any of the three counters above is non-zero.
+    /// Frames that arrived intact and produced nothing, because no decoder in
+    /// sipnab could read them.
+    ///
+    /// Nothing was dropped and no byte is missing — the analysis simply saw
+    /// none of it. Non-zero means a zero elsewhere in this response may mean
+    /// "unknown" rather than "none", and a reader that cannot ask a follow-up
+    /// question has no other way to tell those apart. Not folded into
+    /// `degraded`: ordinary ARP is an undecodable frame on almost every
+    /// capture, so a flag including it would always be true.
+    pub undecodable_frames: u64,
+    /// `true` when any of the three LOSS counters above is non-zero.
     ///
     /// Named for the direction there is evidence for. `false` means nothing
     /// was **observed** to go wrong — not that the capture provably saw every
@@ -1075,6 +1085,7 @@ impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
             kernel_dropped_packets: q.kernel_dropped_packets,
             interface_dropped_packets: q.interface_dropped_packets,
             invalid_timestamps: q.invalid_timestamps,
+            undecodable_frames: q.undecodable_frames,
             degraded: q.degraded(),
         }
     }
@@ -1192,6 +1203,406 @@ pub struct StreamPage {
     pub next_cursor: Option<String>,
     /// Which capture this page came from, and which revision of its stores.
     pub capture_identity: crate::provenance::CaptureEtag,
+}
+
+// ── capture_health ──────────────────────────────────────────────────────
+//
+// `capture_health` is meant to run on a busy production server carrying
+// other people's calls, reached over MCP from somewhere else. It answers
+// three questions no sipnab deployment has ever been able to answer: does
+// the capture path drop packets under real load, what is on that wire that
+// sipnab cannot decode, and what does the encapsulation-aware BPF filter
+// cost. Every one of those answers is a number.
+//
+// That machine's traffic is confidential, which makes this both the
+// highest-value and the highest-risk surface here. The guarantee is
+// therefore STRUCTURAL, not documentary: the response type below is
+// integers, codes and one proportion, with no `String` anywhere in it or
+// anything nested in it. A type that cannot represent packet content cannot
+// leak packet content, so the guarantee survives a reviewer having a bad day
+// and a comment going stale. It is the same discipline that makes
+// `unless_declared` in `capture::declared_media` safe: that function cannot
+// construct a `T`, so it can only ever suppress and never assert.
+//
+// `a_populated_capture_health_response_carries_no_string_value_anywhere`
+// enforces it by walking a serialized response and failing on any string
+// value at any depth.
+
+/// Longest window `capture_health` will hold one MCP call open for.
+///
+/// A tool call is synchronous from the agent's side: the handler occupies a
+/// request slot and the caller waits. Clients cancel a call that has not
+/// answered — 60 seconds is the common default — so a window that can run for
+/// minutes turns a diagnostic into a denial of service against the agent that
+/// asked for it. 30 seconds keeps the whole call, including transport and
+/// serialization, inside half of that budget while still being a window worth
+/// having: on a trunk carrying 10,000 packets per second it observes 300,000
+/// packets, which is enough for a drop rate to mean something.
+///
+/// Requests above the cap are clamped rather than refused, and the response
+/// reports `requested_seconds` beside `applied_seconds` so the clamp is
+/// visible instead of silent.
+pub const MAX_SAMPLE_SECONDS: u32 = 30;
+
+/// How long `capture_health` should watch the counters for.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CaptureHealthParams {
+    /// Seconds to wait between the two counter snapshots. Clamped to 30; zero
+    /// is refused.
+    pub sample_seconds: u32,
+}
+
+/// What this server has packets from, as a code rather than a name.
+///
+/// A dedicated "nothing attached" variant exists because the alternative is
+/// the failure this whole release is about: a tool with nothing to read
+/// returning zeros, which is indistinguishable from a healthy quiet wire.
+///
+/// No code is zero. A zeroed or defaulted struct therefore cannot be mistaken
+/// for a real answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CaptureAttachment {
+    /// No capture context was ever attached to this server.
+    NotAttached = 1,
+    /// A live interface.
+    LiveInterface = 2,
+    /// A capture file being replayed.
+    ReplayedFile = 3,
+}
+
+/// Which kind of frame sipnab could not decode, as a code.
+///
+/// The number that goes with it travels separately, in
+/// [`UndecodableReasonCount::number`], because the number IS the fact: DLT 0
+/// says `editcap -T ether` will fix the file, EtherType 0x8847 says the span
+/// port is mirroring MPLS. There is deliberately no label field — a
+/// human-readable name belongs in `docs/mcp.md`, not on the wire, where it
+/// would be a string in a response that must not carry one.
+///
+/// No code is zero, for the reason given on [`CaptureAttachment`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum UndecodableReasonCode {
+    /// The pcap link type has no decoder here. `number` is the DLT.
+    UnsupportedLinkType = 1,
+    /// The link layer named a payload that is not IP. `number` is the
+    /// EtherType, or null when the link layer records none.
+    NotIp = 2,
+    /// An IP header decoded but its payload is no transport sipnab handles.
+    /// `number` is the outermost IP protocol, or null when unrecorded.
+    NoTransport = 3,
+    /// The frame is shorter than a header it claims. `number` is null.
+    Truncated = 4,
+    /// A decoder rejected the bytes. `number` is null.
+    DecodeError = 5,
+}
+
+impl UndecodableReasonCode {
+    /// Split a capture-side reason into its code and the number it carries.
+    ///
+    /// Matched exhaustively on purpose: a variant added to
+    /// [`crate::capture::UndecodableReason`] must be given a code here rather
+    /// than being swept into a catch-all that reports it as something else.
+    fn split(reason: crate::capture::UndecodableReason) -> (Self, Option<i64>) {
+        use crate::capture::UndecodableReason as R;
+        match reason {
+            R::UnsupportedLinkType(dlt) => (Self::UnsupportedLinkType, Some(i64::from(dlt))),
+            R::NotIp(ethertype) => (Self::NotIp, ethertype.map(i64::from)),
+            R::NoTransport(protocol) => (Self::NoTransport, protocol.map(i64::from)),
+            R::Truncated => (Self::Truncated, None),
+            R::DecodeError => (Self::DecodeError, None),
+        }
+    }
+}
+
+/// Serialize an integer-coded response enum, and describe it as an integer.
+///
+/// Hand-written rather than derived because serde renders a unit variant as
+/// its NAME — a string on the wire, in the one response that must not carry
+/// one. Writing the discriminant keeps the no-string guarantee absolute
+/// instead of carving out an exception the walker would then have to trust.
+macro_rules! integer_coded_enum {
+    ($ty:ty) => {
+        impl Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_u8(*self as u8)
+            }
+        }
+
+        impl JsonSchema for $ty {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                std::borrow::Cow::Borrowed(stringify!($ty))
+            }
+
+            fn json_schema(
+                generator: &mut rmcp::schemars::SchemaGenerator,
+            ) -> rmcp::schemars::Schema {
+                u8::json_schema(generator)
+            }
+        }
+    };
+}
+
+integer_coded_enum!(CaptureAttachment);
+integer_coded_enum!(UndecodableReasonCode);
+
+/// The window `capture_health` actually observed.
+///
+/// Three numbers rather than one, because they can disagree and the
+/// difference is the caller's business: `requested_seconds` is what was
+/// asked for, `applied_seconds` is what the cap allowed, and `observed_ms`
+/// is what the wall clock says elapsed. A rate computed against the number
+/// that was asked for rather than the one that was observed is wrong by
+/// however long the runtime took to wake the handler up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CaptureHealthWindow {
+    /// `sample_seconds` as the caller sent it.
+    pub requested_seconds: u32,
+    /// What the cap allowed, at most [`MAX_SAMPLE_SECONDS`].
+    pub applied_seconds: u32,
+    /// Wall-clock milliseconds between the two snapshots.
+    pub observed_ms: u64,
+}
+
+/// The capture-path counters at one instant, or their change across a window.
+///
+/// The four loss channels are kept apart rather than summed because their
+/// remedies disagree — see [`crate::output::prometheus::CaptureQuality`],
+/// which is where these numbers come from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CaptureCounters {
+    /// Packets handed to the processing pipeline.
+    pub packets: u64,
+    /// Packets the kernel discarded because the capture ring was full. Raise
+    /// `-B`/`--buffer`, narrow the filter, or cut `--snaplen`.
+    pub kernel_dropped: u64,
+    /// Packets the NIC or its driver discarded before libpcap saw them. A
+    /// bigger buffer cannot recover these.
+    pub interface_dropped: u64,
+    /// Packets whose pcap timestamp was unusable, so every timing figure from
+    /// this run rests on a substituted clock.
+    pub invalid_timestamps: u64,
+    /// Frames that arrived intact and produced nothing, because no decoder
+    /// here could read them.
+    pub undecodable_frames: u64,
+}
+
+impl CaptureCounters {
+    /// This snapshot minus an earlier one.
+    ///
+    /// Saturating: the counters are monotonic within a run, but a reset
+    /// between the two reads must not underflow into an enormous delta that
+    /// reads as a catastrophic loss event.
+    fn since(self, earlier: Self) -> Self {
+        Self {
+            packets: self.packets.saturating_sub(earlier.packets),
+            kernel_dropped: self.kernel_dropped.saturating_sub(earlier.kernel_dropped),
+            interface_dropped: self
+                .interface_dropped
+                .saturating_sub(earlier.interface_dropped),
+            invalid_timestamps: self
+                .invalid_timestamps
+                .saturating_sub(earlier.invalid_timestamps),
+            undecodable_frames: self
+                .undecodable_frames
+                .saturating_sub(earlier.undecodable_frames),
+        }
+    }
+}
+
+/// Frames counted against one undecodable reason, with the number that names
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct UndecodableReasonCount {
+    /// Which reason. See the code table in `docs/mcp.md`.
+    pub reason: UndecodableReasonCode,
+    /// The DLT, EtherType or IP protocol the reason carries. Null when the
+    /// reason carries no number, or when the decoder never recorded one.
+    pub number: Option<i64>,
+    /// Frames counted against this reason since the process started.
+    pub frames: u64,
+    /// Frames counted against it inside the observed window.
+    pub frames_in_window: u64,
+}
+
+/// What the capture path did, as totals and as deltas across one window.
+///
+/// Numbers only, by construction. See the section comment above
+/// [`MAX_SAMPLE_SECONDS`] for why that is the design rather than a
+/// convention.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CaptureHealth {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// What this server has packets from, or that it has nothing.
+    pub attachment: CaptureAttachment,
+    /// The window the deltas below were measured over.
+    pub window: CaptureHealthWindow,
+    /// Counters since the process started.
+    pub totals: CaptureCounters,
+    /// Their change across the observed window — the rates live here.
+    pub in_window: CaptureCounters,
+    /// `undecodable_frames / packets` since the process started, or `0.0`
+    /// when nothing was captured, which is "nothing was observed to fail"
+    /// rather than "everything failed".
+    pub undecoded_fraction: f64,
+    /// The same proportion computed over the window alone. A run that started
+    /// on an unreadable encapsulation and has since been fixed shows a high
+    /// total and a low window figure, and the pair is the only way to tell
+    /// that from a link that is still unreadable now.
+    pub undecoded_fraction_in_window: f64,
+    /// Per-reason breakdown, busiest first, each with the number it carries.
+    pub undecodable_by_reason: Vec<UndecodableReasonCount>,
+    /// Frames counted in `totals.undecodable_frames` whose specific number is
+    /// absent from `undecodable_by_reason`, because the capture carried more
+    /// distinct numbers than the fixed-slot tables hold. Reported rather than
+    /// hidden: a breakdown that quietly fails to add up to its total is the
+    /// same confident wrong answer the tally itself exists to remove.
+    pub undecodable_reasons_dropped: u64,
+    /// Dialogs held right now.
+    pub dialogs_tracked: usize,
+    /// RTP streams held right now.
+    pub streams_tracked: usize,
+}
+
+/// One reading of the process-global capture counters.
+///
+/// Internal: it carries [`crate::capture::UndecodableTally`], which is not
+/// part of the response shape. Only [`build_health`] turns it into one.
+struct HealthSample {
+    /// The scalar counters at this instant.
+    counters: CaptureCounters,
+    /// The per-reason breakdown at this instant, busiest first.
+    reasons: Vec<crate::capture::UndecodableTally>,
+    /// Frames whose reason overflowed the fixed-slot tables.
+    reasons_dropped: u64,
+}
+
+impl HealthSample {
+    /// Read every capture counter this process keeps.
+    ///
+    /// Relaxed atomic loads and one walk of the reason tables. Nothing here
+    /// opens a device, starts a thread, or touches the capture in any way —
+    /// which is the property that lets `capture_health` run against a live
+    /// production capture at all.
+    fn read() -> Self {
+        let quality = crate::output::prometheus::CaptureQuality::current();
+        let report = crate::capture::undecodable_report();
+        Self {
+            counters: CaptureCounters {
+                packets: crate::capture::captured_packets(),
+                kernel_dropped: quality.kernel_dropped_packets,
+                interface_dropped: quality.interface_dropped_packets,
+                invalid_timestamps: quality.invalid_timestamps,
+                // From the report rather than from `quality`, so the total and
+                // the breakdown below it come from one read and cannot
+                // disagree about the same window.
+                undecodable_frames: report.frames,
+            },
+            reasons: report.reasons,
+            reasons_dropped: report.reasons_dropped,
+        }
+    }
+}
+
+/// Which capture this server is attached to, from its context.
+fn attachment_of(context: Option<&CaptureContext>) -> CaptureAttachment {
+    match context {
+        None => CaptureAttachment::NotAttached,
+        Some(c) if c.live => CaptureAttachment::LiveInterface,
+        Some(_) => CaptureAttachment::ReplayedFile,
+    }
+}
+
+/// Clamp a requested window to the cap, refusing zero.
+///
+/// Zero is an error rather than an empty window because a response of zero
+/// deltas is exactly what a healthy quiet capture looks like, and the caller
+/// would have no way to tell the two apart.
+fn resolve_sample_seconds(requested: u32) -> Result<u32, rmcp::ErrorData> {
+    if requested == 0 {
+        return Err(rmcp::ErrorData::invalid_params(
+            "sample_seconds must be at least 1. A zero-second window observes \
+             nothing, and a response of zero deltas reads as a quiet capture."
+                .to_string(),
+            None,
+        ));
+    }
+    Ok(requested.min(MAX_SAMPLE_SECONDS))
+}
+
+/// `undecodable / packets`, or `0.0` when nothing was captured.
+///
+/// Zero rather than NaN: a NaN serializes as `null`, which an agent reads as
+/// "no answer" when the truth is "nothing was observed to fail".
+fn undecoded_fraction(undecodable: u64, packets: u64) -> f64 {
+    if packets == 0 {
+        return 0.0;
+    }
+    undecodable as f64 / packets as f64
+}
+
+/// Build the response from two readings of the counters.
+///
+/// Pure, and separate from the handler on purpose: the counters are
+/// process-global atomics that every other test in this binary also moves, so
+/// the arithmetic is proved here against fixed inputs rather than against a
+/// shared process.
+fn build_health(
+    attachment: CaptureAttachment,
+    window: CaptureHealthWindow,
+    before: &HealthSample,
+    after: &HealthSample,
+    dialogs_tracked: usize,
+    streams_tracked: usize,
+) -> CaptureHealth {
+    let in_window = after.counters.since(before.counters);
+    let undecodable_by_reason = after
+        .reasons
+        .iter()
+        .map(|tally| {
+            // A reason absent from the earlier reading first appeared inside
+            // the window, so all of its frames belong to the window.
+            let earlier = before
+                .reasons
+                .iter()
+                .find(|b| b.reason == tally.reason)
+                .map_or(0, |b| b.frames);
+            let (reason, number) = UndecodableReasonCode::split(tally.reason);
+            UndecodableReasonCount {
+                reason,
+                number,
+                frames: tally.frames,
+                frames_in_window: tally.frames.saturating_sub(earlier),
+            }
+        })
+        .collect();
+
+    CaptureHealth {
+        schema_version: 1,
+        attachment,
+        window,
+        undecoded_fraction: undecoded_fraction(
+            after.counters.undecodable_frames,
+            after.counters.packets,
+        ),
+        undecoded_fraction_in_window: undecoded_fraction(
+            in_window.undecodable_frames,
+            in_window.packets,
+        ),
+        totals: after.counters,
+        in_window,
+        undecodable_by_reason,
+        undecodable_reasons_dropped: after.reasons_dropped,
+        dialogs_tracked,
+        streams_tracked,
+    }
 }
 
 /// Render one RTP stream as the MCP JSON object, MOS grounding included.
@@ -3454,6 +3865,90 @@ impl SipnabMcp {
             }),
         )?]))
     }
+
+    /// Capture-path counters sampled twice, with the totals and the deltas.
+    ///
+    /// # Why this samples rather than captures
+    ///
+    /// The tool does **not** start a capture. When sipnab runs with `--mcp`
+    /// attached to a live interface, the counters are already accumulating,
+    /// so a rate is two reads and a wait. That is not merely the cheap
+    /// implementation, it is the safe one: there is no capture to open, no
+    /// device to name, no file to write, and therefore no path from this
+    /// handler to a transmitting flag or to a byte of anybody's traffic. An
+    /// implementation that spawned its own capture to measure one would have
+    /// all of those.
+    ///
+    /// # Why the response is numbers only
+    ///
+    /// This runs on production servers carrying other people's calls. See the
+    /// section comment above [`MAX_SAMPLE_SECONDS`]: the response type has no
+    /// `String` in it or in anything nested in it, so it cannot represent
+    /// packet content at all.
+    #[tool(
+        name = "capture_health",
+        description = "Returns capture-path counters read twice, once at the \
+                       call and once after the sampling window: packets, \
+                       kernel drops, interface drops, invalid timestamps and \
+                       undecodable frames, as run totals and as deltas across \
+                       the window, plus the undecoded fraction, the \
+                       per-reason breakdown of frames no decoder here could \
+                       read with the DLT, EtherType or IP protocol each one \
+                       carries, the dialogs and streams held, and whether a \
+                       live capture, a file replay or nothing at all is \
+                       attached. Starts no capture. Every value is a number: \
+                       the response type carries no text from any packet. \
+                       sample_seconds is clamped to 30 and zero is refused.",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn capture_health(
+        &self,
+        Parameters(params): Parameters<CaptureHealthParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let applied_seconds = resolve_sample_seconds(params.sample_seconds)?;
+
+        // Read the attachment before the wait, from the same lock discipline
+        // every other handler uses: take the guard, copy what is needed, drop
+        // it. Nothing here may be held across the sleep below.
+        let attachment = {
+            let state = self.capture.read();
+            let attachment = attachment_of(state.context.as_ref());
+            drop(state);
+            attachment
+        };
+
+        let before = HealthSample::read();
+        let started = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_secs(u64::from(applied_seconds))).await;
+        // What the clock says, not what was asked for. A runtime under load
+        // wakes the handler late, and a rate divided by the requested window
+        // is then wrong by the difference.
+        let observed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let after = HealthSample::read();
+
+        let (dialogs_tracked, streams_tracked) = {
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let counts = (ds.len(), ss.len());
+            drop(ss);
+            drop(ds);
+            counts
+        };
+
+        let payload = build_health(
+            attachment,
+            CaptureHealthWindow {
+                requested_seconds: params.sample_seconds,
+                applied_seconds,
+                observed_ms,
+            },
+            &before,
+            &after,
+            dialogs_tracked,
+            streams_tracked,
+        );
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -4792,6 +5287,11 @@ mod tests {
             "kernel_dropped_packets",
             "interface_dropped_packets",
             "invalid_timestamps",
+            // The fourth channel: frames that arrived intact and that no
+            // decoder here could read. Without it a reader cannot tell a
+            // dialog_count of 0 that means "none" from one that means
+            // "sipnab could not read this capture".
+            "undecodable_frames",
         ] {
             assert!(
                 q[field].is_u64(),
@@ -5659,5 +6159,518 @@ mod tests {
             .await
             .expect_err("out of range");
         assert!(err.message.contains("out of range"), "{}", err.message);
+    }
+
+    // ── capture_health ──────────────────────────────────────────────────
+    //
+    // This tool is meant to run on a busy production server carrying other
+    // people's calls, reached over MCP from somewhere else. Its response is
+    // therefore the one place in this file where a leak of packet content
+    // would be worst, and the design answer is structural rather than
+    // documentary: the response type is integers and codes, so it cannot
+    // represent a byte of a packet. The tests below are what hold that.
+
+    /// Every value in a serialized `CaptureHealth` — at any depth.
+    ///
+    /// Object KEYS are skipped deliberately. A key is a field name written in
+    /// this file and fixed at compile time; a VALUE is the only place a byte
+    /// off the wire could ever land. Walking keys would flag every struct
+    /// field and make the gate meaningless.
+    fn json_leaves(value: &serde_json::Value, strings: &mut Vec<String>, leaves: &mut usize) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for v in map.values() {
+                    json_leaves(v, strings, leaves);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for v in items {
+                    json_leaves(v, strings, leaves);
+                }
+            }
+            serde_json::Value::String(s) => {
+                strings.push(s.clone());
+                *leaves += 1;
+            }
+            _ => *leaves += 1,
+        }
+    }
+
+    /// The walker finds a string nested inside an array inside an object.
+    ///
+    /// Without this the no-string gate could pass because the walker never
+    /// recursed, which is the way a recursive checker fails silently.
+    #[test]
+    fn the_json_leaf_walker_finds_a_string_nested_two_levels_down() {
+        let v = serde_json::json!({"a": 1, "b": [{"c": "leaked"}, {"d": 2}]});
+        let (mut strings, mut leaves) = (Vec::new(), 0usize);
+        json_leaves(&v, &mut strings, &mut leaves);
+        assert_eq!(strings, vec!["leaked".to_string()]);
+        assert_eq!(leaves, 3);
+    }
+
+    /// A fully populated `CaptureHealth`, every enum variant represented.
+    fn populated_health() -> CaptureHealth {
+        CaptureHealth {
+            schema_version: 1,
+            attachment: CaptureAttachment::LiveInterface,
+            window: CaptureHealthWindow {
+                requested_seconds: 90,
+                applied_seconds: MAX_SAMPLE_SECONDS,
+                observed_ms: 30_004,
+            },
+            totals: CaptureCounters {
+                packets: 1_000_000,
+                kernel_dropped: 12,
+                interface_dropped: 3,
+                invalid_timestamps: 1,
+                undecodable_frames: 250_000,
+            },
+            in_window: CaptureCounters {
+                packets: 40_000,
+                kernel_dropped: 2,
+                interface_dropped: 1,
+                invalid_timestamps: 0,
+                undecodable_frames: 10_000,
+            },
+            undecoded_fraction: 0.25,
+            undecoded_fraction_in_window: 0.25,
+            undecodable_by_reason: vec![
+                UndecodableReasonCount {
+                    reason: UndecodableReasonCode::NotIp,
+                    number: Some(0x8847),
+                    frames: 200_000,
+                    frames_in_window: 8_000,
+                },
+                UndecodableReasonCount {
+                    reason: UndecodableReasonCode::UnsupportedLinkType,
+                    number: Some(0),
+                    frames: 40_000,
+                    frames_in_window: 1_500,
+                },
+                UndecodableReasonCount {
+                    reason: UndecodableReasonCode::NoTransport,
+                    number: Some(47),
+                    frames: 8_000,
+                    frames_in_window: 400,
+                },
+                UndecodableReasonCount {
+                    reason: UndecodableReasonCode::Truncated,
+                    number: None,
+                    frames: 1_500,
+                    frames_in_window: 90,
+                },
+                UndecodableReasonCount {
+                    reason: UndecodableReasonCode::DecodeError,
+                    number: None,
+                    frames: 500,
+                    frames_in_window: 10,
+                },
+            ],
+            undecodable_reasons_dropped: 7,
+            dialogs_tracked: 42,
+            streams_tracked: 18,
+        }
+    }
+
+    /// No value anywhere in a populated `capture_health` response is a string.
+    ///
+    /// This test IS the confidentiality argument for the tool. Reviewer
+    /// vigilance and a comment beside a field both rot; a type that cannot
+    /// hold a string cannot leak one. If a `String` is ever added to
+    /// `CaptureHealth` or anything nested in it, this fails.
+    #[test]
+    fn a_populated_capture_health_response_carries_no_string_value_anywhere() {
+        let value = serde_json::to_value(populated_health()).expect("serialize CaptureHealth");
+        let (mut strings, mut leaves) = (Vec::new(), 0usize);
+        json_leaves(&value, &mut strings, &mut leaves);
+
+        assert_eq!(
+            strings,
+            Vec::<String>::new(),
+            "capture_health returned string value(s). This tool samples a live \
+             production capture carrying other people's calls, and a response \
+             type that can hold a string can hold a From: header. Carry the \
+             number instead and put the label in docs/mcp.md."
+        );
+        // Pinned so the gate above cannot pass by walking nothing.
+        assert_eq!(
+            leaves, 40,
+            "the response shape changed: 40 leaf values were expected. Recount \
+             deliberately — a drop here means the walker stopped reaching part \
+             of the tree, which is how the string check goes quietly vacuous."
+        );
+    }
+
+    /// Both enums travel as small integers, and no code is zero.
+    ///
+    /// Integers rather than names because a serde unit variant is a STRING on
+    /// the wire, and one string field is the whole leak surface. No code is
+    /// zero so a zeroed or defaulted struct can never be mistaken for a real
+    /// answer — the same reason `attachment` exists at all.
+    #[test]
+    fn the_response_enums_travel_as_non_zero_integer_codes() {
+        for (attachment, code) in [
+            (CaptureAttachment::NotAttached, 1),
+            (CaptureAttachment::LiveInterface, 2),
+            (CaptureAttachment::ReplayedFile, 3),
+        ] {
+            assert_eq!(
+                serde_json::to_value(attachment).expect("serialize"),
+                serde_json::json!(code)
+            );
+        }
+        for (reason, code) in [
+            (UndecodableReasonCode::UnsupportedLinkType, 1),
+            (UndecodableReasonCode::NotIp, 2),
+            (UndecodableReasonCode::NoTransport, 3),
+            (UndecodableReasonCode::Truncated, 4),
+            (UndecodableReasonCode::DecodeError, 5),
+        ] {
+            assert_eq!(
+                serde_json::to_value(reason).expect("serialize"),
+                serde_json::json!(code)
+            );
+        }
+    }
+
+    /// Each `UndecodableReason` splits into its code and the number it carries.
+    #[test]
+    fn every_undecodable_reason_splits_into_a_code_and_its_number() {
+        use crate::capture::UndecodableReason as R;
+        let cases = [
+            (
+                R::UnsupportedLinkType(0),
+                UndecodableReasonCode::UnsupportedLinkType,
+                Some(0i64),
+            ),
+            (
+                R::UnsupportedLinkType(113),
+                UndecodableReasonCode::UnsupportedLinkType,
+                Some(113),
+            ),
+            (
+                R::NotIp(Some(0x8847)),
+                UndecodableReasonCode::NotIp,
+                Some(34_887),
+            ),
+            (R::NotIp(None), UndecodableReasonCode::NotIp, None),
+            (
+                R::NoTransport(Some(47)),
+                UndecodableReasonCode::NoTransport,
+                Some(47),
+            ),
+            (
+                R::NoTransport(None),
+                UndecodableReasonCode::NoTransport,
+                None,
+            ),
+            (R::Truncated, UndecodableReasonCode::Truncated, None),
+            (R::DecodeError, UndecodableReasonCode::DecodeError, None),
+        ];
+        for (reason, code, number) in cases {
+            assert_eq!(UndecodableReasonCode::split(reason), (code, number));
+        }
+    }
+
+    /// The sampling window is clamped to the cap, and zero is refused.
+    #[test]
+    fn the_sample_window_is_clamped_to_the_cap_and_zero_is_refused() {
+        assert_eq!(MAX_SAMPLE_SECONDS, 30);
+        assert_eq!(resolve_sample_seconds(1).expect("1 second"), 1);
+        assert_eq!(resolve_sample_seconds(29).expect("29 seconds"), 29);
+        assert_eq!(resolve_sample_seconds(30).expect("30 seconds"), 30);
+        assert_eq!(resolve_sample_seconds(31).expect("31 clamps"), 30);
+        assert_eq!(resolve_sample_seconds(u32::MAX).expect("MAX clamps"), 30);
+
+        let err = resolve_sample_seconds(0).expect_err("zero must be refused");
+        assert_eq!(
+            err.message,
+            "sample_seconds must be at least 1. A zero-second window observes \
+             nothing, and a response of zero deltas reads as a quiet capture."
+        );
+    }
+
+    /// Totals, deltas and both fractions, computed from two snapshots.
+    #[test]
+    fn capture_health_reports_totals_deltas_and_both_undecoded_fractions() {
+        use crate::capture::{UndecodableReason as R, UndecodableTally};
+
+        let before = HealthSample {
+            counters: CaptureCounters {
+                packets: 400,
+                kernel_dropped: 1,
+                interface_dropped: 2,
+                invalid_timestamps: 3,
+                undecodable_frames: 50,
+            },
+            reasons: vec![UndecodableTally {
+                reason: R::NotIp(Some(0x8847)),
+                frames: 50,
+            }],
+            reasons_dropped: 0,
+        };
+        let after = HealthSample {
+            counters: CaptureCounters {
+                packets: 800,
+                kernel_dropped: 9,
+                interface_dropped: 6,
+                invalid_timestamps: 3,
+                undecodable_frames: 200,
+            },
+            reasons: vec![
+                UndecodableTally {
+                    reason: R::NotIp(Some(0x8847)),
+                    frames: 150,
+                },
+                UndecodableTally {
+                    reason: R::UnsupportedLinkType(113),
+                    frames: 50,
+                },
+            ],
+            reasons_dropped: 4,
+        };
+
+        let health = build_health(
+            CaptureAttachment::LiveInterface,
+            CaptureHealthWindow {
+                requested_seconds: 2,
+                applied_seconds: 2,
+                observed_ms: 2_001,
+            },
+            &before,
+            &after,
+            42,
+            18,
+        );
+
+        assert_eq!(health.schema_version, 1);
+        assert_eq!(health.attachment, CaptureAttachment::LiveInterface);
+        assert_eq!(health.window.requested_seconds, 2);
+        assert_eq!(health.window.applied_seconds, 2);
+        assert_eq!(health.window.observed_ms, 2_001);
+
+        assert_eq!(
+            health.totals,
+            CaptureCounters {
+                packets: 800,
+                kernel_dropped: 9,
+                interface_dropped: 6,
+                invalid_timestamps: 3,
+                undecodable_frames: 200,
+            }
+        );
+        assert_eq!(
+            health.in_window,
+            CaptureCounters {
+                packets: 400,
+                kernel_dropped: 8,
+                interface_dropped: 4,
+                invalid_timestamps: 0,
+                undecodable_frames: 150,
+            }
+        );
+
+        // 200/800 over the run, 150/400 across the window: both exact in
+        // binary floating point, so these are equalities and not tolerances.
+        assert_eq!(health.undecoded_fraction, 0.25);
+        assert_eq!(health.undecoded_fraction_in_window, 0.375);
+
+        assert_eq!(
+            health.undecodable_by_reason,
+            vec![
+                UndecodableReasonCount {
+                    reason: UndecodableReasonCode::NotIp,
+                    number: Some(34_887),
+                    frames: 150,
+                    frames_in_window: 100,
+                },
+                UndecodableReasonCount {
+                    reason: UndecodableReasonCode::UnsupportedLinkType,
+                    number: Some(113),
+                    frames: 50,
+                    frames_in_window: 50,
+                },
+            ],
+            "each reason keeps its number, its run total and its window delta"
+        );
+        assert_eq!(health.undecodable_reasons_dropped, 4);
+        assert_eq!(health.dialogs_tracked, 42);
+        assert_eq!(health.streams_tracked, 18);
+    }
+
+    /// A capture with nothing on it reports a zero fraction, not a division by
+    /// zero rendered as `null`.
+    #[test]
+    fn an_empty_window_reports_a_zero_undecoded_fraction() {
+        let sample = HealthSample {
+            counters: CaptureCounters::default(),
+            reasons: Vec::new(),
+            reasons_dropped: 0,
+        };
+        let health = build_health(
+            CaptureAttachment::NotAttached,
+            CaptureHealthWindow {
+                requested_seconds: 1,
+                applied_seconds: 1,
+                observed_ms: 1_000,
+            },
+            &sample,
+            &sample,
+            0,
+            0,
+        );
+        assert_eq!(health.undecoded_fraction, 0.0);
+        assert_eq!(health.undecoded_fraction_in_window, 0.0);
+        // A NaN would serialize as `null`, which an agent reads as "no answer"
+        // rather than "nothing was undecodable".
+        let value = serde_json::to_value(&health).expect("serialize");
+        assert_eq!(value["undecoded_fraction"], serde_json::json!(0.0));
+        assert_eq!(
+            value["undecoded_fraction_in_window"],
+            serde_json::json!(0.0)
+        );
+    }
+
+    /// The attachment code names live, file, and nothing at all.
+    #[test]
+    fn the_attachment_code_distinguishes_live_file_and_nothing_attached() {
+        assert_eq!(attachment_of(None), CaptureAttachment::NotAttached);
+        let ctx = |live| CaptureContext {
+            live,
+            name: "eth0".to_string(),
+            started: std::time::Instant::now(),
+            writing_to: None,
+        };
+        assert_eq!(
+            attachment_of(Some(&ctx(true))),
+            CaptureAttachment::LiveInterface
+        );
+        assert_eq!(
+            attachment_of(Some(&ctx(false))),
+            CaptureAttachment::ReplayedFile
+        );
+    }
+
+    /// A zero window is refused by the tool itself, before it sleeps.
+    #[tokio::test]
+    async fn capture_health_refuses_a_zero_second_window() {
+        let server = empty_server();
+        let err = server
+            .capture_health(Parameters(CaptureHealthParams { sample_seconds: 0 }))
+            .await
+            .expect_err("a zero-second window must be refused");
+        assert_eq!(
+            err.message,
+            "sample_seconds must be at least 1. A zero-second window observes \
+             nothing, and a response of zero deltas reads as a quiet capture."
+        );
+    }
+
+    /// End to end: the tool waits the window out and says nothing is attached.
+    ///
+    /// `empty_server()` has no `CaptureContext`, so the honest answer is
+    /// "nothing attached" rather than a set of zeros that look like a silent
+    /// but healthy wire.
+    #[tokio::test]
+    async fn capture_health_observes_a_real_window_and_reports_no_attachment() {
+        let server = empty_server();
+        let started = std::time::Instant::now();
+        let result = server
+            .capture_health(Parameters(CaptureHealthParams { sample_seconds: 1 }))
+            .await
+            .expect("capture_health");
+        let elapsed = started.elapsed();
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("json");
+
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["attachment"], 1, "1 is 'no capture attached': {v}");
+        assert_eq!(v["window"]["requested_seconds"], 1);
+        assert_eq!(v["window"]["applied_seconds"], 1);
+        assert_eq!(v["dialogs_tracked"], 0);
+        assert_eq!(v["streams_tracked"], 0);
+
+        // The COUNTERS are deliberately not asserted here, and the first draft
+        // of this test asserting `in_window.packets == 0` is why. They are
+        // process-global atomics that every other test in this binary also
+        // moves, so any value pinned against them is a value another test can
+        // change — the test failed on a full `cargo test` run and passed on a
+        // filtered one, which is the worst failure mode a gate can have. Their
+        // arithmetic is pinned exactly, against fixed inputs, in
+        // `capture_health_reports_totals_deltas_and_both_undecoded_fractions`.
+        //
+        // What this test owns is the wiring, and the exact claim available for
+        // that is the SHAPE that reached the wire.
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value
+                .as_object()
+                .expect("object")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(&v),
+            vec![
+                "attachment",
+                "dialogs_tracked",
+                "in_window",
+                "schema_version",
+                "streams_tracked",
+                "totals",
+                "undecodable_by_reason",
+                "undecodable_reasons_dropped",
+                "undecoded_fraction",
+                "undecoded_fraction_in_window",
+                "window",
+            ]
+        );
+        for block in ["totals", "in_window"] {
+            assert_eq!(
+                keys(&v[block]),
+                vec![
+                    "interface_dropped",
+                    "invalid_timestamps",
+                    "kernel_dropped",
+                    "packets",
+                    "undecodable_frames",
+                ],
+                "{block} lost or gained a counter"
+            );
+        }
+        assert_eq!(
+            keys(&v["window"]),
+            vec!["applied_seconds", "observed_ms", "requested_seconds"]
+        );
+
+        // The wall clock is the one field no test can pin to a single value.
+        // What IS exact is that the handler really waited: a tool that
+        // returned instantly would report a window it never observed.
+        assert!(
+            elapsed >= std::time::Duration::from_secs(1),
+            "the handler returned in {elapsed:?} without waiting out the window"
+        );
+        let observed = v["window"]["observed_ms"].as_u64().expect("observed_ms");
+        assert!(
+            (1_000..10_000).contains(&observed),
+            "observed_ms was {observed}, which is not one second of wall clock"
+        );
+    }
+
+    /// The tool is registered and annotated `readOnlyHint`.
+    ///
+    /// The annotation is a promise to the client, so it is checked on the
+    /// registered tool rather than read off the attribute in the source.
+    #[test]
+    fn capture_health_is_registered_and_annotated_read_only() {
+        let router = SipnabMcp::tool_router();
+        let tool = router
+            .get("capture_health")
+            .expect("capture_health must be registered");
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .expect("capture_health must carry tool annotations");
+        assert_eq!(annotations.read_only_hint, Some(true));
     }
 }

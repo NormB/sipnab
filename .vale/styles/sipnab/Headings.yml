@@ -51,7 +51,11 @@ exceptions:
   # that says "Rtp streams" is wrong, not styled. ---
   - DTLS
   - DTMF
+  # Link-layer encapsulations. The IEEE spells these with internal capitals;
+  # "Ethertypes" and "Macsec" would be renamings, not sentence case.
+  - EtherTypes
   - HEP
+  - MACsec
   - MOS
   # Codec names and the ITU-T Recommendations that specify them. "Amr-wb" is a
   # renamed codec, not a styled heading, and G.113 is a document number.

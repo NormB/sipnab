@@ -1460,8 +1460,15 @@ fn diagnose_nat_mismatch() {
     );
 }
 
-// Note: h263-over-rtp.pcap uses DLT_NULL (link type 0) which is not
-// supported by sipnab's parse_packet(). Skipped from pcap-based tests.
+// h263-over-rtp.pcap is DLT_NULL (link type 0). It used to be skipped here
+// because parse_packet() could not read that link type — and the skip note was
+// the only place that fact was written down. It never reached runtime, so the
+// file reported "No SIP traffic found." and exited 0 while holding an INVITE
+// on port 5060, which is the failure this comment was quietly describing.
+//
+// DLT_NULL and DLT_LOOP now decode; the fixture is exercised end to end in
+// tests/link_layer_decap_test.rs, which pins exact counts (4 SIP messages,
+// 1 dialog, 1 RTP stream of 45 packets — 49 frames, the whole file).
 
 // ═══════════════════════════════════════════════════════════════════════
 // Additional: Stream eviction under capacity limit

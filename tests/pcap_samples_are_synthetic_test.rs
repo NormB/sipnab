@@ -2,9 +2,10 @@
 
 //! The generated sample captures must stay free of anything identifying.
 //!
-//! Ten fixtures under `tests/pcap-samples/` are written by
-//! `tests/gen-pcap-samples.py` precisely so that their provenance is a
-//! reviewable diff rather than an assertion. That property decays the moment
+//! Thirteen fixtures under `tests/pcap-samples/` are written by
+//! `tests/gen-pcap-samples.py` and `tests/gen-link-type-samples.py` precisely
+//! so that their provenance is a reviewable diff rather than an assertion.
+//! That property decays the moment
 //! someone edits one by hand, drops a capture from a lab in beside them, or
 //! regenerates from a template that still carries a real address — and
 //! nothing about the resulting file looks wrong. The repository is public, so
@@ -26,7 +27,12 @@
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
-/// The fixtures `tests/gen-pcap-samples.py` writes.
+/// The fixtures `tests/gen-pcap-samples.py` and
+/// `tests/gen-link-type-samples.py` write.
+///
+/// The three link-type fixtures are the second generator's; they carry the
+/// link-layer framings — DLT_LOOP, and PPPoE inside Linux cooked capture v1
+/// and v2 — that had decoder code and no capture behind it.
 ///
 /// The last entry is the fuzz-corpus copy of `sip-register.pcap`; it is the
 /// same bytes in a second place, and a regeneration that updates one and not
@@ -42,6 +48,9 @@ const GENERATED: &[&str] = &[
     "tests/pcap-samples/sip-over-tcp.pcap",
     "tests/pcap-samples/b2bua-asterisk.pcapng",
     "tests/pcap-samples/sipp-branch-scenario.pcapng",
+    "tests/pcap-samples/loopback-dlt-loop.pcap",
+    "tests/pcap-samples/linux-sll-pppoe.pcap",
+    "tests/pcap-samples/linux-sll2-pppoe.pcap",
     "fuzz/corpus/pcap_reader/sip-register.pcap",
 ];
 

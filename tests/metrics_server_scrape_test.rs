@@ -150,3 +150,58 @@ fn standalone_scrape_publishes_wired_counters() {
         );
     }
 }
+
+/// The undecodable-frame series must be readable HERE, on the standalone
+/// server, and not only on the REST API's `/metrics`.
+///
+/// This is the claim that has to be proved rather than assumed. This repo
+/// already carries series that exist on one scrape surface and not the other
+/// — `sipnab_rtp_streams_total{status}` is `--api` only, so a panel built on
+/// it against `--metrics` stays permanently blank — and the docs page for
+/// this feature states "both". A test that read the formatter instead of the
+/// socket could not tell those apart.
+///
+/// The counter is process-global, so this asserts only that the series is
+/// PRESENT and that the fraction is emitted even when nothing failed: another
+/// test in this binary moves the same counter, and pinning an exact total
+/// here would make the two order-dependent.
+#[test]
+fn standalone_scrape_publishes_the_undecodable_series() {
+    // A link type with no decoder, driven through the real swallow site.
+    let mut processor = PacketProcessor::new();
+    let packet = Packet::new(chrono::Utc::now(), vec![0x00; 64], 64, 64, None, 147);
+    let _ = processor.process(&packet);
+
+    let addr = free_addr();
+    let _handle = start_metrics_server(
+        addr,
+        answered_call(),
+        Arc::new(RwLock::new(StreamStore::new(100))),
+        None,
+        None,
+    )
+    .expect("metrics server binds");
+
+    let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp:?}");
+
+    let frames = resp
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix(
+                r#"sipnab_capture_undecodable_frames_total{reason="unsupported_link_type_147"} "#,
+            )
+        })
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .expect("the standalone scrape must carry the per-reason series, with its DLT number");
+    assert!(
+        frames >= 1,
+        "the reason series must count the frame this test fed, got {frames}"
+    );
+
+    assert!(
+        resp.lines()
+            .any(|l| l.starts_with("sipnab_capture_undecoded_fraction ")),
+        "the fraction gauge must be on this surface too; body was:\n{resp}"
+    );
+}

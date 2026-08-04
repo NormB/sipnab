@@ -8,6 +8,133 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.80] - 2026-08-04
+
+### Breaking
+
+- **`start_metrics_server` now returns `(SocketAddr, JoinHandle<()>)`** instead
+  of `JoinHandle<()>`. Library callers must destructure; the CLI is unaffected.
+
+  Read this even though it is a patch-level bump. Cargo resolves `^0.5.78` to
+  this release, so a build depending on the old signature breaks without
+  warning. That is the pre-1.0 policy this project states at the top of this
+  file — the API is not stable and a break may land in any release — but the
+  practical consequence is worth spelling out rather than leaving to be
+  discovered at compile time.
+
+  The change exists because the address was previously discoverable only by
+  reading a log line. With `--metrics 127.0.0.1:0` the OS assigns the port, and
+  a caller had no way to learn it. Returning it also removed a genuine
+  time-of-check/time-of-use race in the test suite: the old helper bound `:0`,
+  took the assigned address, then released the port so the server could rebind
+  it, and under a full-suite run another test could take it in between.
+
+### Fixed
+
+- **A capture full of INVITEs could be reported as "No SIP traffic found", and
+  nothing said otherwise.** Given frames it could not decode, sipnab printed
+  `N packets captured, 0 SIP messages` and `No SIP traffic found.` — output
+  textually identical to a capture it had read perfectly that genuinely held no
+  SIP. An operator had no way to tell "there is no SIP here" from "I could not
+  read one single frame of this".
+
+  Two proven instances were sitting in this repository's own test corpus.
+  `DTMFsipinfo.pcap` is PPPoE-encapsulated (EtherType `0x8864`), the access
+  encapsulation on DSL and much FTTH. `h263-over-rtp.pcap` is `DLT_NULL`, and
+  its first frame carries `INVITE sip:auto@localhost SIP/2.0` on UDP 5060 — 49
+  of 49 frames were dropped at debug level, exit 0, while `--hexdump`, the
+  escape hatch that error message recommends, printed nothing at all because it
+  runs on parsed packets. A comment in `rtp_integration_test.rs` had recorded
+  the `DLT_NULL` limitation for months; it never reached runtime.
+
+  Both now decode, and the class behind them is closed: every frame the parser
+  cannot turn into a packet is counted by reason, carrying the number that
+  identifies it — the DLT, the EtherType, the IP protocol. The count reaches the
+  run summary, `--report`, `--json`, `/v1/stats`, MCP `stats` and the Prometheus
+  capture family, and `No SIP traffic found.` is never printed unqualified after
+  a failed decode. A run that could read nothing now says so emphatically.
+
+  Measured against 62 real captures totalling 4,616,136 frames: **19 files carry
+  frames sipnab could not decode, 5,653 in total**, one file at 9.0%. None of it
+  was visible before.
+
+- **`--cores` could invent a host pair out of unrelated bytes.** On a frame
+  tagged with the legacy QinQ EtherType `0x9100`, the shard peek read at an
+  offset it had not advanced past the tag. A TCI with PCP=2 gives a first byte
+  of `0x4X`, which passes the "is this IPv4?" nibble check, so the peek returned
+  addresses assembled from TTL, protocol and checksum bytes. Reproduced, fixed,
+  and pinned both ways: the correct pair asserted present, that exact
+  fabrication asserted absent.
+
+- **The Ethernet tag walk was unbounded over attacker-controlled bytes.** It
+  terminated, but a 64 KB frame of repeated tags walked ~16k iterations. Now
+  capped, with the cap justified against what 802.1Q and 802.1ad actually permit
+  and matched to `etherparse`'s own limit so the peek and the full parse cannot
+  disagree.
+
+- **MPLS accepted label stacks that the defining RFCs forbid.** The
+  bottom-label cross-check covered only the two Explicit NULLs, so a stack
+  bottomed with the Router Alert label (1, illegal at the bottom per RFC 3032
+  §2.1), the Entropy Label Indicator (7, always followed by the entropy label
+  per RFC 6790 §4.2) or the GAL (13, "MUST always be followed by an ACH" per
+  RFC 5586 §4.2) was decoded as though it carried a user packet.
+
+### Added
+
+- **Tunnel decapsulation.** SIP wrapped in any of these is now read rather than
+  discarded: MPLS (`0x8847`/`0x8848` and IP protocol 137), NSH (`0x894F`),
+  PPPoE Session (`0x8864`), PBB I-TAG (`0x88E7`), MACsec (`0x88E5`), legacy
+  QinQ (`0x9100`), GRE Transparent Ethernet Bridging (`0x6558`), GTP-U (UDP
+  2152 — how VoLTE signalling crosses a mobile core), VXLAN (4789), GENEVE
+  (6081), Teredo (3544), and AH (IP protocol 51, which authenticates without
+  encrypting, so its payload was readable and was being thrown away). Link
+  types `DLT_NULL` (0) and `DLT_LOOP` (108) join the four already supported.
+
+  Encapsulations that are recognised but genuinely cannot be decoded report
+  that rather than vanishing: UDP-encapsulated ESP (4500) and
+  confidentiality-protected MACsec are named as encrypted. MACsec that is
+  integrity-protected but *not* encrypted is read normally — the distinction
+  turns on TCI bits whose position had to be settled from IEEE 802.1AE's Annex C
+  conformance vectors, because Figure 9-4 of the 2018 standard is defective.
+
+  The governing rule throughout: **over-eager decapsulation is worse than the
+  silence it replaces.** A missed tunnel is now counted and named; a false one
+  would invent a call — inner addresses and ports assembled from unrelated
+  bytes — with nothing marking the flow fictional. UDP ports 2152, 4789 and 6081
+  all occur as the ephemeral source port of ordinary RTP, so every port-keyed
+  decoder is required to reject a realistic RTP packet on its own port, and that
+  is a test rather than an aspiration. L2TPv3 over UDP is refused outright: its
+  cookie length is signalled on the control channel and guessing it is precisely
+  how a decapsulator fabricates a flow.
+
+- **`--capture-tunnels[=<PORTS>]`**, opt-in, for capturing UDP-tunnelled SIP
+  live. BPF cannot parse a variable-length GTP-U header to reach the inner port,
+  so covering these means capturing everything on those ports — a firehose on a
+  mobile core, and not something to switch on by default. The default path warns
+  and names the flag rather than omitting them silently.
+
+### Changed
+
+- **The auto-generated live-capture filter now sees encapsulated SIP.** With no
+  explicit `--filter`, sipnab installed `portrange 5060-5061`, which libpcap
+  compiles against the EtherType chain it knows — so on an encapsulated link it
+  matched nothing, in the kernel, where no userspace counter could ever see it.
+  Measured with tcpdump against the PPPoE fixture: 0 of 32 frames before, 32 of
+  32 after, while a plain-Ethernet capture is unchanged at 23 and 250 frames of
+  RTP noise stay excluded.
+
+  The filter is built from absolute `ether[N:M]` offsets rather than libpcap's
+  `vlan`/`mpls`/`pppoes` qualifiers. Those qualifiers cannot express this: their
+  offset shift is cumulative and leaks across `or`, and they are *compile
+  errors* on `DLT_LINUX_SLL`, `SLL2`, `RAW` and `NULL` — which is what sipnab
+  opens when no interface is named, so using them would have stopped captures
+  starting. 27 → 133 BPF instructions, 3% of the 4096 limit.
+
+  **Known limit:** the added arms are Ethernet-shaped, so on `SLL`/`SLL2` they
+  compile but sit inert and only untagged traffic matches. Naming a real
+  interface is the workaround, and it is documented on both the CLI reference
+  and the troubleshooting page.
+
 ## [0.5.78] - 2026-08-04
 
 ### Fixed

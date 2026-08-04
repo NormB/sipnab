@@ -250,6 +250,19 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "counters, tell the two apart, and decide between the `any` device "
         "and a named interface.",
     ),
+    (
+        "docs/encapsulations.md",
+        "encapsulations.md",
+        "Encapsulations",
+        "Encapsulations",
+        # 25: the next free weight. `docs_page_weights_are_unique_and_
+        # descriptions_present` requires uniqueness; sidebar order comes from
+        # the nav_group path lists, not from this number.
+        25,
+        "Which link types, EtherTypes and tunnels sipnab can read a SIP dialog "
+        "out of, which it cannot, and what it reports when a frame will not "
+        "decode.",
+    ),
 ]
 
 BANNER = (

@@ -20,6 +20,7 @@ the cause from there.
 | "Audio dies as soon as they answer" / works internally, not externally | [NAT traversal issues](#nat-traversal-issues) |
 | "The phones keep dropping off" / no inbound calls arrive | [Registration failures](#registration-failures) |
 | "Something is hammering the PBX" / probes across unknown extensions | [SIP scanner detection](#sip-scanner-detection) |
+| "No SIP traffic found" on a link you know carries calls | [A live capture that sees nothing](#a-live-capture-that-sees-nothing) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -58,6 +59,34 @@ sipnab -N -I capture.pcap --problems --json
 > **live** capture the range becomes the kernel BPF filter, so the traffic never
 > reaches sipnab and nothing reports it missing -- set the range before you
 > capture.
+
+> **Second, check sipnab could read the capture at all.** A frame on a link
+> type, EtherType or IP protocol sipnab has no decoder for produces nothing:
+> it counts as a packet (it arrived) and contributes to no message, dialog
+> or stream. sipnab reports those separately, with the numbers that name them:
+>
+> ```text
+> NOT DECODED: 49 of 49 frame(s) (100.0%) produced nothing and are in none of
+> the counts above. Reasons: unsupported link type 0 (49). NOTHING IN THIS
+> CAPTURE WAS READ -- every frame failed to decode, so the totals above
+> describe no traffic whatsoever and a zero among them is not evidence of
+> absence.
+> ```
+>
+> This is the difference between *there is no SIP in this capture* and *I could
+> not read one single frame of this*, which the totals alone render identically.
+> When the share is high, treat every zero on this page as **unknown**, not as
+> a finding, and fix the decode first.
+>
+> The number in each reason is what you act on:
+>
+> | Reason | What it means | What to do |
+> |---|---|---|
+> | `unsupported link type N` | The pcap's DLT has no decoder here. `0` is `DLT_NULL` (BSD loopback), `9` is PPP, `276` is Linux cooked v2. | Convert it: `editcap -T ether in.pcap out.pcap`. If the link type is one sipnab should read, open an issue naming the number. |
+> | `not IP (EtherType 0xNNNN)` | The frame decoded and carried no IP. `0x0806` is ARP, `0x8847` MPLS, `0x88CC` LLDP. | ARP and LLDP are ordinary background -- expect a few on any Ethernet capture. A large MPLS or PPPoE share means the mirror is giving you the encapsulated form. |
+> | `no transport (IP protocol N)` | IP decoded; its payload is no transport sipnab handles. `50` is ESP, `47` GRE, `89` OSPF. | ESP encrypts the SIP inside it, so the capture cannot yield it; take the capture inside the tunnel instead. |
+> | `truncated frame` | The frame is shorter than a header it declares. | Raise `--snaplen` on the capture, or re-take it. |
+> | `decode error` | The decoder rejected the bytes outright. | Usually a corrupt or mis-declared file; try `editcap` or `tshark -r` on it. |
 
 ---
 
@@ -507,6 +536,64 @@ sipnab decodes G.711 audio (mu-law/A-law) from captured RTP streams and writes a
 Open the WAV in any audio player or Audacity.
 
 ---
+
+## A live capture that sees nothing
+
+`sipnab -d eth0` runs, exits cleanly, and reports **No SIP traffic found** --
+but you know the link carries calls, and `tcpdump -i eth0` shows them.
+
+Check what sipnab asked the kernel for. Run with `SIPNAB_LOG=info` and read the
+`Auto-generated BPF filter:` line. Then take that exact expression to tcpdump
+against the same interface, or against a capture from it:
+
+```
+tcpdump -r sample.pcap -nn 'portrange 5060-5061' | wc -l
+```
+
+Zero there means the filter never matched, and this is the failure mode with
+no other symptom: the **kernel** drops the frames before sipnab sees them, so
+no counter, metric, `NOT DECODED` line or report can show them missing. An
+empty result reads as "there were no calls".
+
+The usual cause is encapsulation. A port filter matches the outer headers
+only, so SIP inside a VLAN tag, QinQ, PPPoE or MPLS never matches one.
+Confirm by comparing:
+
+```
+tcpdump -r sample.pcap -nn 'portrange 5060-5061'            | wc -l   # 0
+tcpdump -r sample.pcap -nn 'pppoes and portrange 5060-5061' | wc -l   # 32
+```
+
+**If you passed your own filter (a positional expression or `--bpf-file`),
+that is the cause.** sipnab uses your expression exactly as typed and never
+edits it. Drop it and let sipnab generate one: the generated filter carries an
+arm for VLAN, QinQ, PPPoE, VLAN-over-PPPoE and one or two MPLS labels, and that
+arm fires on Ethernet and on both Linux cooked headers alike. Omitting `-d` on
+Linux therefore costs no encapsulation coverage. On raw IP from a tun device
+and on the two loopback headers the arm compiles away to nothing, which costs
+you nothing either: none of those link types carries a tag to begin with.
+
+Two cases the generated filter still does not cover:
+
+- **SIP inside a UDP tunnel** (GTP-U, VXLAN, GENEVE). Off by default, and
+  sipnab warns about it at startup. BPF cannot reach the inner port, so the
+  only way to cover it is to take the whole port -- add `--capture-tunnels`
+  and size the buffer for the extra volume first ([Tuning
+  capture](tuning-capture.md)).
+- **SIP on a port outside `--portrange`** -- widen it (see [Start
+  here](#start-here-one-pass-over-everything)).
+
+One more thing the encapsulated arm cannot reach: an IPv4 header carrying
+**options**, because a BPF byte offset has to be a constant and the arm cannot
+multiply the IHL nibble into the port offset. The untagged `portrange` handles
+those, so the gap needs IPv4 options *and* an encapsulation together.
+
+To confirm which of these you are looking at, run the generated filter and a
+plain `portrange` over the same capture and compare the counts. Against the
+repository's PPPoE-over-Ethernet sample the plain filter matches 0 of 32 frames
+and the generated one matches all 32. Wrap the same SIP in a Linux cooked
+header and the numbers hold: 11 encapsulations, 11 matched, on Ethernet,
+cooked v1 and cooked v2 alike.
 
 ## Still stuck?
 

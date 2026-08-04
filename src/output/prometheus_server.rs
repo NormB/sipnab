@@ -117,7 +117,7 @@ pub fn start_metrics_server(
     stream_store: Arc<RwLock<StreamStore>>,
     basic_auth: Option<String>,
     capture_meter: Option<crate::capture::channel::CaptureMeter>,
-) -> anyhow::Result<std::thread::JoinHandle<()>> {
+) -> anyhow::Result<(SocketAddr, std::thread::JoinHandle<()>)> {
     // Fail closed on a non-loopback bind without authentication, matching
     // the REST API and MCP HTTP transports (SN-02). An unauthenticated
     // metrics endpoint on a routable address publishes dialog/message/
@@ -141,6 +141,11 @@ pub fn start_metrics_server(
 
     // Log the actual bound address: with port 0 the OS assigns an ephemeral
     // port, so logging `bind_addr` would print ":0" (mirrors the REST API/HEP).
+    // Returned to the caller, not just logged. With `--metrics 127.0.0.1:0`
+    // the OS picks the port, and a log line is not a value a caller can use;
+    // handing it back is what lets a test bind :0 and still know where to
+    // connect. That is the whole reason the port-reservation race below could
+    // exist at all -- see the note on the test helper.
     let actual_addr = listener.local_addr().unwrap_or(bind_addr);
     tracing::info!("Prometheus metrics server listening on {actual_addr}");
 
@@ -195,7 +200,7 @@ pub fn start_metrics_server(
         })
         .map_err(|e| anyhow::anyhow!("Failed to spawn metrics server thread: {e}"))?;
 
-    Ok(handle)
+    Ok((actual_addr, handle))
 }
 
 /// Write a minimal `Connection: close` HTTP response with a plain-text body.
@@ -596,11 +601,21 @@ mod tests {
     use std::io::Read;
     use std::net::TcpStream;
 
-    /// Reserve a free localhost port by binding to :0, then release it so the
-    /// metrics server can claim it. (Standard small-race test pattern.)
-    fn free_addr() -> SocketAddr {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap()
+    /// Bind target for every server test: let the OS choose the port and read
+    /// the real one back from `start_metrics_server`.
+    ///
+    /// This replaces a `free_addr()` helper that bound `:0`, took the assigned
+    /// address, and then DROPPED the listener so the server could rebind it.
+    /// That window was a genuine TOCTOU: under a full-suite run another test
+    /// could take the port in between. It was not theoretical -- three
+    /// different tests in this module (`unknown_path_returns_404`,
+    /// `allows_loopback_bind_without_auth`, `basic_auth_enforced`) were each
+    /// observed failing that way, while all of them passed in isolation.
+    ///
+    /// Never releasing the port makes the race structurally impossible rather
+    /// than merely unlikely, which is why this is not a retry loop.
+    fn ephemeral() -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], 0))
     }
 
     /// Send a raw HTTP request and return the full response as a string.
@@ -685,9 +700,8 @@ mod tests {
     /// `sipnab_` body.
     #[test]
     fn metrics_endpoint_returns_200_with_body() {
-        let addr = free_addr();
-        let _handle = start_metrics_server(
-            addr,
+        let (addr, _handle) = start_metrics_server(
+            ephemeral(),
             populated_dialog_store(),
             populated_stream_store(),
             None,
@@ -708,9 +722,8 @@ mod tests {
     /// Any path other than `/metrics` returns 404.
     #[test]
     fn unknown_path_returns_404() {
-        let addr = free_addr();
-        let _handle = start_metrics_server(
-            addr,
+        let (addr, _handle) = start_metrics_server(
+            ephemeral(),
             Arc::new(RwLock::new(DialogStore::new(10, false))),
             Arc::new(RwLock::new(StreamStore::new(10))),
             None,
@@ -726,9 +739,8 @@ mod tests {
     /// challenge), correct credentials get 200.
     #[test]
     fn basic_auth_enforced() {
-        let addr = free_addr();
-        let _handle = start_metrics_server(
-            addr,
+        let (addr, _handle) = start_metrics_server(
+            ephemeral(),
             Arc::new(RwLock::new(DialogStore::new(10, false))),
             Arc::new(RwLock::new(StreamStore::new(10))),
             Some("user:pass".to_string()),
@@ -820,7 +832,7 @@ mod tests {
     #[test]
     fn allows_loopback_bind_without_auth() {
         let handle = start_metrics_server(
-            free_addr(),
+            ephemeral(),
             Arc::new(RwLock::new(DialogStore::new(10, false))),
             Arc::new(RwLock::new(StreamStore::new(10))),
             None,
@@ -871,14 +883,41 @@ mod tests {
     /// server's, so "the REST scrape has it" proves nothing here — and this
     /// is the server an operator points Prometheus at when running without
     /// `--api`.
+    ///
+    /// Like `for_scrape_loads_capture_quality`, the state is ESTABLISHED
+    /// rather than read: comparing the collector's block against a second live
+    /// `CaptureQuality::current()` compares two reads of a counter other tests
+    /// move, which fails on interleaving and passes on a collector that had
+    /// stopped reading.
     #[test]
+    #[serial_test::serial(undecodable_tally)]
     fn collect_metrics_carries_capture_quality() {
+        crate::capture::reset_undecodable_frames();
+        let mut proc = crate::capture::PacketProcessor::new();
+        for _ in 0..2 {
+            let data = vec![0u8; 64];
+            let n = data.len();
+            proc.process(&crate::capture::Packet::new(
+                chrono::Utc::now(),
+                data,
+                n,
+                n,
+                None,
+                147,
+            ));
+        }
+
         let m = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
         assert_eq!(
-            m.capture_quality,
-            crate::output::prometheus::CaptureQuality::current(),
+            m.capture_quality.undecodable_frames, 2,
             "the standalone collector must read the live capture counters, \
-             not a default"
+             not a default: {:?}",
+            m.capture_quality
+        );
+        assert_ne!(
+            m.capture_quality,
+            crate::output::prometheus::CaptureQuality::default(),
+            "a default block would publish zero over a lossy run"
         );
 
         let body = crate::output::prometheus::format_metrics(&m);
@@ -890,5 +929,6 @@ mod tests {
         ] {
             assert!(body.contains(family), "{family} missing from the scrape");
         }
+        crate::capture::reset_undecodable_frames();
     }
 }

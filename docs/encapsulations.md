@@ -1,0 +1,204 @@
+# Encapsulations
+
+What sipnab can read a SIP dialog out of, what it cannot, and — the part that
+matters most — what it tells you when it cannot.
+
+**Sources.** The **IEEE Registration Authority** assigns EtherTypes, not IANA.
+[RFC 9542](https://www.rfc-editor.org/rfc/rfc9542.html) states it plainly:
+
+<!-- vale off -->
+> Neither EtherTypes nor LSAPs are assigned by IANA; they are assigned by the
+> IEEE Registration Authority.
+<!-- vale on -->
+
+Values below come from the IEEE RA public
+listing at <https://standards-oui.ieee.org/ethertype/eth.txt>, retrieved
+2026-08-04, cross-checked against IANA's *informational* mirror at
+<https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml>,
+whose own header reads *"Not assigned by IANA."*
+
+This is the one place the project's "when in doubt, use the RFC" rule does not
+resolve on its own: for EtherTypes the RFC hands the question to a different
+standards body. Use the IEEE RA listing for the *value* and the current RFC for
+the *semantics*.
+
+## Two errors in the IEEE listing
+
+Registries are no more infallible than RFCs, and both of these would mislead
+someone implementing from the listing alone.
+
+- **`0x8848` carries the wrong protocol text.** The listing gives it
+  `"8847: MPLS (multiprotocol label switching) label stack - unicast"` — the
+  `0x8847` entry duplicated, wrong identifier and wrong cast.
+  [RFC 5332](https://www.rfc-editor.org/rfc/rfc5332.html) assigns `0x8848` to
+  MPLS with an **upstream-assigned** label.
+- **`0x894F` cites a superseded draft**, `draft-ietf-sfc-nsh-18`, published as
+  [RFC 8300](https://www.rfc-editor.org/rfc/rfc8300.html) in January 2018. That
+  one is *stale rather than wrong* — the draft and the RFC define the same
+  header — and the two cases do not belong in the same bucket.
+
+## Why this page exists
+
+sipnab used to answer a question it had not understood. Given a capture whose
+frames it could not decode, it reported:
+
+```text
+sipnab: 49 packets captured, 0 SIP messages, 0 RTP packets across 0 streams
+No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061).
+```
+
+That output was identical whether sipnab had read every frame and found no SIP,
+or had failed to read a single frame of a capture full of INVITEs. Two such
+captures were in this repository's own test corpus.
+
+A missed encapsulation is now **counted and named**, with the number that
+identifies it — the link type, the EtherType, the IP protocol. See
+[Troubleshooting](troubleshooting.md) for what each reason means.
+
+## The rule that governs decapsulation
+
+Over-eager decapsulation is worse than the silence it replaces.
+
+A silent drop loses a call. A false decapsulation **invents** one — inner
+addresses, inner ports, an inner dialog — assembled from bytes that never
+described any of it, with nothing marking the flow fictional.
+
+This bites hardest on port-keyed tunnels. A UDP port is not a protocol
+identity: 2152, 4789 and 6081 all occur as the *ephemeral source* port of
+ordinary RTP media. So every decapsulator validates structurally — reserved
+bits, version fields, length self-consistency, the shape of the first inner
+header — and declines the moment anything disagrees. Each port-keyed decoder
+has a test proving it rejects a realistic RTP packet arriving on its own port.
+
+When the choice is between missing a tunnel and fabricating a flow, sipnab
+misses the tunnel. A miss stays visible. A fabrication does not.
+
+## Link types
+
+| DLT | Name | Status |
+|---|---|---|
+| 1 | Ethernet | decoded |
+| 0 | BSD loopback (`DLT_NULL`) | decoded — address family in host byte order |
+| 108 | OpenBSD loopback (`DLT_LOOP`) | decoded — address family always big-endian |
+| 12 | Raw IP | decoded |
+| 113 | Linux cooked v1 (`SLL`) | decoded |
+| 276 | Linux cooked v2 (`SLL2`) | decoded |
+| any other | — | **counted and named** as `unsupported link type N` |
+
+Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD, which is why
+0 and 108 matter for the common "SIP server listening on loopback" case.
+
+## EtherTypes
+
+| EtherType | Protocol | Reference | Status |
+|---|---|---|---|
+| `0x0800` | IPv4 | RFC 894 | decoded |
+| `0x86DD` | IPv6 | RFC 2464 | decoded |
+| `0x8100` | C-VLAN tag | IEEE 802.1Q | skipped to reach IP |
+| `0x88A8` | S-VLAN tag | IEEE 802.1Q | skipped to reach IP |
+| `0x9100` | legacy QinQ | **unregistered** | skipped to reach IP |
+| `0x8864` | PPPoE Session | RFC 2516 | decapsulated |
+| `0x8863` | PPPoE Discovery | RFC 2516 | recognised, never decapsulated |
+| `0x8847` | MPLS unicast | RFC 5332 | decapsulated |
+| `0x8848` | MPLS upstream-assigned | RFC 5332 | decapsulated |
+| `0x894F` | NSH | RFC 8300 | decapsulated |
+| `0x88E7` | PBB I-TAG | IEEE 802.1Q | decapsulated to the customer frame |
+| `0x88E5` | MACsec | IEEE 802.1AE | see below |
+| any other | — | — | **counted and named** with its hex value |
+
+`0x9100` is genuinely absent from the IEEE RA listing — no assignee, no
+protocol text — while every neighbour has both. No standards body ever
+registered it: it is legacy vendor usage, still common on older carrier gear.
+Supporting it concedes to deployed equipment rather than to any specification.
+Do not "correct" it away after checking a registry and finding nothing.
+
+PPPoE Discovery is deliberately never decapsulated: its payload is TLV tags, so
+reading it as an IP header would report addresses the wire never carried.
+
+### MACsec is not always encrypted
+
+The SecTAG's `E` and `C` bits distinguish confidentiality from integrity.
+sipnab decodes an integrity-protected frame that carries **no** encryption as
+the ordinary readable plaintext it is. Only a genuinely encrypted payload gets
+reported as encrypted. Treating all of `0x88E5` as opaque would write off
+recoverable calls.
+
+IEEE 802.1AE's own Annex C conformance vectors settled those bit positions,
+because Figure 9-4 of the 2018 standard is defective — it labels two bits with
+names appearing nowhere else in the document.
+
+## Tunnels above the link layer
+
+| Encapsulation | Key | Reference | Status |
+|---|---|---|---|
+| IP-in-IP / 6-in-4 | IP proto 4 / 41 | RFC 2003 / RFC 4213 | decoded |
+| GRE | IP proto 47 | RFC 2784 | decoded |
+| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | RFC 7637 §3.2 | decoded |
+| MPLS-in-IP | IP proto 137 | RFC 4023 | decoded |
+| AH | IP proto 51 | RFC 4302 | **traversed** — AH authenticates without encrypting, so the payload is readable |
+| ESP | IP proto 50 | RFC 4303 | encrypted — sipnab names it, never guesses |
+| GTP-U | UDP 2152 | 3GPP TS 29.281 | decoded |
+| VXLAN | UDP 4789 | RFC 7348 | decoded |
+| GENEVE | UDP 6081 | RFC 8926 | decoded |
+| Teredo | UDP 3544 | RFC 4380 | decoded |
+| UDP-encapsulated ESP | UDP 4500 | RFC 3948 | encrypted — sipnab names it, never guesses |
+| L2TPv2 | UDP 1701 | RFC 2661 | data messages only |
+| L2TPv3 over UDP | UDP 1701 | RFC 3931 | **refused** — see below |
+
+**L2TPv3 over UDP is deliberately not decoded.** RFC 3931 §4.1 says:
+
+<!-- vale off -->
+> The Session ID alone provides the necessary context for all further packet
+> processing, including the presence, size, and value of the Cookie.
+<!-- vale on -->
+
+The cookie runs to 0, 4 or 8 octets, and only the control channel carries that
+length — along with the pseudowire type. Guessing between those is precisely
+how a decapsulator invents a flow.
+
+**One shared budget bounds nesting.** It covers every layer of a frame, so a
+frame combining MACsec, MPLS, GTP-U and IP-in-IP cannot walk further than one
+using a single encapsulation repeatedly. sipnab refuses an over-nested frame
+rather than following it.
+
+## Live capture needs the tunnel-aware filter
+
+With no explicit `--filter`, sipnab generates a BPF filter that matches SIP
+inside VLAN, QinQ, PPPoE and MPLS as well as untagged traffic. **UDP-tunnelled
+SIP is not covered by default**: BPF cannot parse a variable-length GTP-U header
+to reach the inner port, so covering those means capturing every packet on those
+ports. Use `--capture-tunnels` to opt in — see the
+[CLI reference](cli-reference.md).
+
+The tunnel-aware arm covers `SLL` and `SLL2` — what sipnab opens on Linux when
+you name no interface — as well as Ethernet, so omitting `-d` costs no
+encapsulation coverage. It selects the encapsulation through libpcap's
+`ether proto`, which libpcap resolves to the right offset for each link type
+while compiling.
+
+One limit worth knowing before you rely on a live capture: on the encapsulated
+arm, an IPv4 header carrying **options** stays unmatched, because a BPF index
+has to be constant and the arm cannot multiply the IHL nibble. The untagged arm
+handles those.
+
+## What "not supported" means here
+
+sipnab drops nothing on this page silently. An encapsulation sipnab does not
+decode still increments a counter keyed by the number it did not recognise, and
+that count reaches the run summary, `--report`, `--json`, `/v1/stats`, MCP
+`stats`, and the Prometheus capture family. A capture producing no SIP *and* no
+undecodable frames is a finding. One producing no SIP and a pile of undecodable
+frames says something else entirely, and sipnab says it differently.
+
+## How this page stays true
+
+An end-to-end test backs every "decoded" row for a tunnel, in
+`tests/tunnel_integration_test.rs` that carries a real INVITE through
+`parse_packet` into the SIP parser and asserts the method and Call-ID —
+MPLS, MPLS-in-IP, NSH, PBB, MACsec (integrity-only), VXLAN, GTP-U, GRE-TEB and
+AH each have one. PPPoE and the loopback link types have their own suites.
+GENEVE, Teredo and L2TP rely on unit tests over crafted frames rather than an
+end-to-end INVITE. That is a weaker proof, and this page says so rather than
+letting the table imply otherwise.
+
+No measurement on this page comes from a live NIC.

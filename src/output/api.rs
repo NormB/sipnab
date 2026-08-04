@@ -895,13 +895,17 @@ async fn get_stream(
 /// 200 with `{schema_version, dialogs{total,active,completed,failed,
 /// cancelled}, streams{total,orphaned}, timing{pdd_p50_ms,pdd_p95_ms,
 /// pdd_p99_ms}, capture_quality{kernel_dropped_packets,
-/// interface_dropped_packets, invalid_timestamps, degraded}}`; the
-/// percentiles are `null` when no dialog has a PDD. 401/503 from the guard.
+/// interface_dropped_packets, invalid_timestamps, undecodable_frames,
+/// degraded}}`; the percentiles are `null` when no dialog has a PDD. 401/503
+/// from the guard.
 ///
 /// `capture_quality` says how much of the wire the counts above are drawn
 /// from. Without it every number here reads as a total when it may be a
 /// floor, and the timing percentiles read as measured when the clock they
-/// came from may have been substituted.
+/// came from may have been substituted. `undecodable_frames` answers the
+/// question one layer further in: whether the counts describe traffic sipnab
+/// READ, or a capture it could not decode at all — a zero dialog count means
+/// opposite things in the two cases and used to render identically.
 ///
 /// # Side effects
 ///
@@ -972,6 +976,7 @@ async fn get_stats(
             "kernel_dropped_packets": quality.kernel_dropped_packets,
             "interface_dropped_packets": quality.interface_dropped_packets,
             "invalid_timestamps": quality.invalid_timestamps,
+            "undecodable_frames": quality.undecodable_frames,
             "degraded": quality.degraded(),
         },
     })))
@@ -1384,6 +1389,9 @@ mod tests {
             "kernel_dropped_packets",
             "interface_dropped_packets",
             "invalid_timestamps",
+            // Frames that arrived intact and decoded to nothing. A zero
+            // dialog count means opposite things with and without this.
+            "undecodable_frames",
         ] {
             assert!(
                 q[field].is_u64(),

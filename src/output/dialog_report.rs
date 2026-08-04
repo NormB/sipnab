@@ -176,7 +176,54 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
     // ── What ICMP said about media ──────────────────────────────────
     write_icmp_media_section(&mut out, &crate::pipeline::icmp_media_findings());
 
+    // ── What never decoded ──────────────────────────────────────────
+    write_undecodable_section(&mut out, &crate::capture::undecodable_report());
+
     out
+}
+
+/// Append the capture-wide undecodable-frame section, or nothing.
+///
+/// Read from the run's tally rather than taken as an argument, for the reason
+/// the ICMP section reads its own: a frame that never decoded is not a
+/// `SipDialog` and not an `RtpStream`, so it can arrive through neither slice,
+/// and a report built only from those two can never mention it.
+///
+/// It belongs in `--report` specifically because that is the surface an
+/// operator reads to answer "what is in this capture". An empty dialog table
+/// is the answer to that question when the capture was read; when it was not,
+/// the empty table is not an answer at all — and the two used to render as
+/// the same blank report.
+///
+/// Not narrowed by `--filter`: a filter selects dialogs, and these frames
+/// reached none. Omitted entirely when everything decoded, so a clean report
+/// is unchanged.
+fn write_undecodable_section(out: &mut String, report: &crate::capture::UndecodableReport) {
+    if report.frames == 0 {
+        return;
+    }
+
+    let _ = writeln!(out);
+    let _ = writeln!(out, "NOT DECODED (capture-wide):");
+    let _ = writeln!(
+        out,
+        "{} frame(s) produced no packet at all and are in none of the tables above.",
+        report.frames
+    );
+    let _ = writeln!(out, "{:<48} {:>10}", "Reason", "Frames");
+    let _ = writeln!(out, "{}", "-".repeat(59));
+    for tally in &report.reasons {
+        let _ = writeln!(out, "{:<48} {:>10}", tally.reason.to_string(), tally.frames);
+    }
+    if report.reasons_dropped > 0 {
+        // Never silently absent: a breakdown that does not add up to the
+        // total is the same defect as the total not existing.
+        let _ = writeln!(
+            out,
+            "{:<48} {:>10}",
+            "(reason not retained — more distinct than the tally holds)", report.reasons_dropped
+        );
+    }
 }
 
 /// Append the capture-wide ICMP media section, or nothing.

@@ -304,15 +304,36 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         Some(CaptureSource::Live { .. }) | None => true,
         Some(_) => false,
     };
+    //
+    // The filter is encapsulation-aware because the previous one was not, and
+    // that is the worst shape a capture bug can take: `portrange 5060-5061`
+    // matches 0 of the 32 PPPoE-encapsulated SIP frames in
+    // `tests/pcap-samples/DTMFsipinfo.pcap`. The frames were discarded by the
+    // KERNEL, so no userspace counter, metric or report could see them — the
+    // operator got "No SIP traffic found" on a link carrying calls. See
+    // `auto_bpf_filter` for why this cannot be written with libpcap's `vlan` /
+    // `mpls` / `pppoes` qualifiers.
+    let tunnel_ports = resolve_tunnel_ports(cli)?;
     if capture_config.bpf_filter.is_none() && is_live {
         let (lo, hi) = portrange;
-        capture_config.bpf_filter = Some(if lo == hi {
-            format!("port {lo}")
-        } else {
-            format!("portrange {lo}-{hi}")
-        });
-        if let Some(ref filter) = capture_config.bpf_filter {
-            tracing::info!("Auto-generated BPF filter: {filter}");
+        let filter = auto_bpf_filter(lo, hi, &tunnel_ports);
+        tracing::info!("Auto-generated BPF filter: {filter}");
+        if let Some(msg) = tunnel_omission_notice(&tunnel_ports) {
+            tracing::warn!("{msg}");
+        }
+        capture_config.bpf_filter = Some(filter);
+    } else if is_live && let Some(ref filter) = capture_config.bpf_filter {
+        // Their expression, unmodified — but say what it cannot see.
+        if let Some(msg) = explicit_filter_encap_notice(filter) {
+            tracing::warn!("{msg}");
+        }
+        if !tunnel_ports.is_empty() {
+            tracing::warn!(
+                "--capture-tunnels is ignored: this run uses the BPF filter you \
+                 supplied, and sipnab does not edit it. Add the tunnel ports to \
+                 your own expression (e.g. `or udp port \
+                 {TUNNEL_PORTS_DEFAULT_LIST}`, one `udp port N` term each)."
+            );
         }
     }
 
@@ -1451,6 +1472,319 @@ fn immediate_mode_for(mode: &RunMode) -> bool {
     matches!(mode, RunMode::Tui)
 }
 
+// ── Auto-generated BPF filter ──────────────────────────────────────────
+
+/// The UDP tunnel ports `--capture-tunnels` covers when given no value:
+/// 2152 (GTP-U), 4789 (VXLAN), 6081 (GENEVE).
+pub const TUNNEL_PORTS_DEFAULT: &[u16] = &[2152, 4789, 6081];
+
+/// [`TUNNEL_PORTS_DEFAULT`] as clap spells it — the flag's
+/// `default_missing_value`, so the two cannot drift.
+pub const TUNNEL_PORTS_DEFAULT_LIST: &str = "2152,4789,6081";
+
+/// Link-layer protocol numbers that put something other than IP next: a
+/// 4-byte VLAN tag (802.1Q, 802.1ad, and the pre-standard 0x9100 some carrier
+/// gear still emits), a PPPoE Session header, or an MPLS label stack
+/// (unicast, multicast).
+///
+/// Matched through libpcap's `ether proto`, which resolves to the right
+/// offset for whatever link type the filter is compiled against — see
+/// [`auto_bpf_filter`].
+const ENCAP_ETHERTYPES: &[u16] = &[0x8100, 0x88a8, 0x9100, 0x8864, 0x8847, 0x8848];
+
+/// Lengths, in bytes, of the link-layer headers that carry a protocol field:
+/// Ethernet (14), `DLT_LINUX_SLL` (16) and `DLT_LINUX_SLL2` (20).
+///
+/// Raw-IP and the two loopback link types are absent on purpose: they have no
+/// protocol field, so `ether proto` is a compile-time FALSE there and no
+/// encapsulated arm can fire — which is correct, since none of them can carry
+/// a VLAN tag, and it also drops the arm's whole instruction cost on those
+/// link types.
+const LINK_HEADER_LENS: &[usize] = &[14, 16, 20];
+
+/// Distances, in bytes, from the end of the link-layer header to the inner IP
+/// header, one per encapsulation shape the filter claims.
+///
+/// 4 — one VLAN tag, or one MPLS label.
+/// 8 — QinQ, a PPPoE Session header, or two MPLS labels.
+/// 12 — one VLAN tag over a PPPoE Session header.
+const ENCAP_DEPTHS: &[usize] = &[4, 8, 12];
+
+/// "One of the two 16-bit port fields at `off` (source) and `off + 2`
+/// (destination) is inside `lo..=hi`", as an absolute-offset BPF term.
+fn port_pair_at(off: usize, lo: u16, hi: u16) -> String {
+    let one = |o: usize| {
+        if lo == hi {
+            format!("ether[{o}:2] = {lo}")
+        } else {
+            format!("(ether[{o}:2] >= {lo} and ether[{o}:2] <= {hi})")
+        }
+    };
+    format!("({} or {})", one(off), one(off + 2))
+}
+
+/// "An IPv4 or IPv6 datagram starts at `ip_off` and carries UDP or TCP with a
+/// signalling port", as absolute-offset BPF terms.
+///
+/// IPv4 is pinned to `0x45` — version 4, header length 5 words — because the
+/// port offset has to be a constant and BPF cannot multiply the IHL nibble
+/// into an index. IPv4 options are therefore missed on the ENCAPSULATED arms
+/// only; the untagged arm is a real libpcap `portrange`, which handles them.
+/// The fragment-offset mask keeps the arm off trailing fragments, which carry
+/// no ports at all, matching what libpcap's own port matching does.
+fn ip_and_ports_at(ip_off: usize, lo: u16, hi: u16) -> String {
+    let v4 = format!(
+        "(ether[{ip_off}] = 0x45 and (ether[{proto}] = 17 or ether[{proto}] = 6) \
+         and ether[{frag}:2] & 0x1fff = 0 and {ports})",
+        proto = ip_off + 9,
+        frag = ip_off + 6,
+        ports = port_pair_at(ip_off + 20, lo, hi),
+    );
+    let v6 = format!(
+        "(ether[{ip_off}] & 0xf0 = 0x60 and (ether[{nh}] = 17 or ether[{nh}] = 6) \
+         and {ports})",
+        nh = ip_off + 6,
+        ports = port_pair_at(ip_off + 40, lo, hi),
+    );
+    format!("({v4} or {v6})")
+}
+
+/// Build the BPF filter sipnab installs when it captures live and the operator
+/// gave no filter of their own.
+///
+/// # Arguments
+///
+/// * `lo` / `hi` — the SIP signalling port range (`--portrange`).
+/// * `tunnel_ports` — UDP ports to take wholesale (see
+///   [`TUNNEL_PORTS_DEFAULT`]); empty for the default, narrow filter.
+///
+/// # Returns
+///
+/// A `pcap_compile`-ready expression: a plain `portrange` for untagged
+/// traffic, one encapsulated arm that pairs a link-aware protocol test with
+/// every inner IP-header offset, plus one `udp port N` per requested tunnel
+/// port.
+///
+/// # Why not `vlan` / `mpls` / `pppoes`
+///
+/// libpcap's encapsulation qualifiers look like the obvious answer and are
+/// wrong here twice over.
+///
+/// They are **stateful**: the first one re-bases the decoding offsets for
+/// everything to its right, cumulatively and across `or`. So the union a
+/// reader expects — `portrange P or (vlan and portrange P) or (pppoes and
+/// portrange P)` — compiles, runs, and matches ZERO PPPoE frames, because the
+/// `vlan` on its left already moved the offsets 4 bytes. Measured: that
+/// expression matches 0 of the 32 PPPoE SIP frames in `DTMFsipinfo.pcap`,
+/// where `portrange P or (pppoes and portrange P)` matches all 32. Worse,
+/// `mpls` followed by `pppoes` is not a wrong answer but a hard
+/// `pcap_compile` error ("unsupported protocol over mpls").
+///
+/// They are also **not portable across link types**. `vlan` and `mpls` are
+/// `pcap_compile` errors on `DLT_LINUX_SLL`/`SLL2` — the Linux `any`
+/// pseudo-device, which is what sipnab opens when `-d` is omitted — and on
+/// `DLT_RAW` (tun) and `DLT_NULL` (loopback): "no VLAN support for Linux
+/// cooked v1". A filter that will not compile does not miss traffic, it stops
+/// the capture from starting.
+///
+/// # Why `ether proto` outside and `ether[N:M]` inside
+///
+/// `ether proto N` carries no state, so it brings back neither defect, and
+/// libpcap resolves it PER LINK TYPE while compiling. Measured with
+/// `tcpdump -d` on a capture of each type: `ldh [12]` on Ethernet, `ldh [14]`
+/// on Linux cooked v1, `ldh [0]` on Linux cooked v2, and a constant false on
+/// raw-IP, `DLT_NULL` and `DLT_LOOP`, which have no protocol field to test.
+/// That is exactly the "is this frame encapsulated" question, asked in the
+/// only way that survives a change of link type.
+///
+/// The first version of these arms asked it with `ether[12:2]` instead. That
+/// is the EtherType on Ethernet and two bytes of the zero-padded link-layer
+/// address on a cooked capture, so the arms compiled, ran, and matched
+/// nothing there: 1 of 11 encapsulated SIP frames on cooked v1 and v2 against
+/// 11 of 11 on Ethernet. Cooked is what `sipnab` opens when no `-d` names an
+/// interface, so that was the DEFAULT invocation.
+///
+/// `ether[N:M]` stays for the inner IP header, because there `ether proto`
+/// has nothing to offer: it only ever tests the outermost protocol field. The
+/// offsets are absolute from the start of the link-layer header, so the arm
+/// has to name one per (link-header length, encapsulation depth) pair —
+/// `LINK_HEADER_LENS` times `ENCAP_DEPTHS`, nine pairs and seven distinct
+/// offsets.
+///
+/// # Coverage, and what it costs
+///
+/// On any of the three link types, the depths in `ENCAP_DEPTHS` are
+/// covered: one VLAN tag (802.1Q / 802.1ad / 0x9100) or one MPLS label; QinQ,
+/// PPPoE Session or two MPLS labels; and one VLAN tag over PPPoE Session.
+/// Each offset covers IPv4 (no options, first fragment) and IPv6, UDP and TCP.
+///
+/// The cost of one filter string serving three link types is that four of the
+/// seven offsets belong to a different link header than the one in front of
+/// any given packet, and get probed anyway. Those probes can only ever fire
+/// on a frame that ALREADY carries one of `ENCAP_ETHERTYPES`, and only if
+/// its bytes at a wrong offset spell a whole IPv4-or-IPv6 header — right
+/// version, UDP or TCP, zero fragment offset — with a port in the signalling
+/// range. Ordinary traffic cannot reach the probes at all, which
+/// `the_outer_link_type_test_keeps_untagged_traffic_out_of_the_encapsulated_arms`
+/// pins with a datagram built to be mistaken for one.
+///
+/// Rejected alternative: three separate arm sets, each guarded so it can only
+/// fire on its own link type. There is no guard to write. libpcap exposes
+/// nothing that distinguishes cooked from Ethernet at compile time —
+/// `inbound`/`outbound` come closest and are a `pcap_compile` ERROR on
+/// Ethernet — and the data-level candidates (the zero padding in `sll_addr`,
+/// the must-be-zero halfword in `sll2_header`) are only conventionally zero.
+/// Guarding on one of those would put the cooked arms right back where they
+/// started, inert and silent, which is the failure being fixed.
+///
+/// Rejected alternative: compile the filter after opening the device, when
+/// the link type is known. `--multi-device` opens several interfaces under
+/// one filter and they need not agree on a link type, and the filter is
+/// logged for the operator to paste into `tcpdump`, where a device-specific
+/// expression would be a trap.
+pub fn auto_bpf_filter(lo: u16, hi: u16, tunnel_ports: &[u16]) -> String {
+    let mut arms: Vec<String> = Vec::with_capacity(2 + tunnel_ports.len());
+
+    // The untagged case stays a real libpcap portrange: it is the only arm
+    // that gets IPv4 options, fragmentation and every link type right.
+    arms.push(if lo == hi {
+        format!("port {lo}")
+    } else {
+        format!("portrange {lo}-{hi}")
+    });
+
+    // Outer: "this frame is encapsulated", asked per link type by libpcap.
+    let encapsulated = ENCAP_ETHERTYPES
+        .iter()
+        .map(|t| format!("ether proto {t:#06x}"))
+        .collect::<Vec<_>>()
+        .join(" or ");
+
+    // Inner: one IP-and-ports test per distinct offset, so the expensive test
+    // is emitted seven times rather than once per (link type, encapsulation).
+    let mut offsets: Vec<usize> = LINK_HEADER_LENS
+        .iter()
+        .flat_map(|len| ENCAP_DEPTHS.iter().map(move |depth| len + depth))
+        .collect();
+    offsets.sort_unstable();
+    offsets.dedup();
+    let inner = offsets
+        .iter()
+        .map(|off| ip_and_ports_at(*off, lo, hi))
+        .collect::<Vec<_>>()
+        .join(" or ");
+
+    arms.push(format!("(({encapsulated}) and ({inner}))"));
+
+    // Opt-in only: these are not narrowing terms, they are the whole port.
+    for port in tunnel_ports {
+        arms.push(format!("udp port {port}"));
+    }
+
+    arms.join(" or ")
+}
+
+/// Resolve `--capture-tunnels` into the UDP ports to take wholesale.
+///
+/// # Returns
+///
+/// The requested ports in the order given, de-duplicated; empty when the flag
+/// was not passed.
+///
+/// # Errors
+///
+/// Returns a `PlanError` (exit code 2) for an empty list or any element that
+/// is not a port number in 1..=65535. Refused rather than skipped: a typo that
+/// silently produced no coverage would leave the operator believing tunnelled
+/// SIP was captured, which is the failure this flag exists to prevent.
+fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
+    let Some(ref list) = cli.capture_tunnels else {
+        return Ok(Vec::new());
+    };
+    let mut ports: Vec<u16> = Vec::new();
+    let mut any = false;
+    for field in list.split(',') {
+        any = true;
+        let text = field.trim();
+        let port: u16 = text.parse().unwrap_or(0);
+        if port == 0 {
+            return Err(PlanError::arg(format!(
+                "Invalid --capture-tunnels port '{text}': expected a \
+                 comma-separated list of UDP ports in 1-65535, e.g. \
+                 --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}"
+            )));
+        }
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    if !any || ports.is_empty() {
+        return Err(PlanError::arg(format!(
+            "--capture-tunnels was given an empty port list; drop the flag, or \
+             pass ports, e.g. --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}"
+        )));
+    }
+    Ok(ports)
+}
+
+/// The sentence the default live path owes the operator about what the
+/// auto-generated filter does NOT cover, or `None` once it covers it.
+///
+/// The encapsulation arms are free — they match the same SIP, wrapped — so
+/// they are always on. UDP tunnels are not free: BPF cannot parse a
+/// variable-length GTP-U extension-header chain to reach the inner port, so
+/// the only way to cover them is to capture the whole port, which on a mobile
+/// core is the entire user plane. Leaving that off is the right default and
+/// leaving it UNSAID is not: the operator would see "No SIP traffic found" on
+/// a link carrying calls and have nothing to act on. That is the same failure
+/// this change fixes, one level up.
+fn tunnel_omission_notice(tunnel_ports: &[u16]) -> Option<String> {
+    if !tunnel_ports.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "The auto-generated filter covers SIP inside VLAN, QinQ, PPPoE and \
+         MPLS, but NOT SIP inside a UDP tunnel (GTP-U 2152, VXLAN 4789, \
+         GENEVE 6081) — BPF cannot reach the inner port, so covering those \
+         means capturing every packet on the port. If this link carries \
+         tunnelled signalling, add --capture-tunnels \
+         (defaults to {TUNNEL_PORTS_DEFAULT_LIST}) and size the buffer for it."
+    ))
+}
+
+/// The sentence an operator-supplied filter earns when it looks
+/// encapsulation-blind, or `None` when it does not.
+///
+/// Their expression is handed to `pcap_compile` exactly as typed — silently
+/// rewriting what someone asked for is worse than the blindness. But a bare
+/// `port 5060` on a tagged link matches nothing, and that reads as "no calls"
+/// rather than "wrong filter", so it is worth a sentence.
+///
+/// Deliberately narrow: it fires only when the filter has a port term and no
+/// sign of encapsulation handling. A filter with no port term at all is
+/// selecting on something else and gets nothing.
+fn explicit_filter_encap_notice(filter: &str) -> Option<String> {
+    let lower = filter.to_ascii_lowercase();
+    if !lower.contains("port") {
+        return None;
+    }
+    let already_aware = ["vlan", "mpls", "pppoes", "ether[", "link[", "radio["]
+        .iter()
+        .any(|token| lower.contains(token));
+    if already_aware {
+        return None;
+    }
+    Some(
+        "Your BPF filter is used as given and was not modified. Note that a \
+         port-based filter is matched against the outer headers only: it will \
+         not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets \
+         are dropped in the kernel where no sipnab counter can report them. \
+         Drop the filter to get sipnab's encapsulation-aware one, or add \
+         --capture-tunnels for UDP-tunnelled signalling."
+            .to_string(),
+    )
+}
+
 /// The message to log when `--cores N` was asked for on a run that cannot use
 /// it, or `None` when the request will be honoured.
 ///
@@ -2022,4 +2356,1131 @@ mod tests {
             err.message
         );
     }
+
+    // ── Encapsulation-aware auto BPF filter ────────────────────────────
+    //
+    // Every count below was first measured with tcpdump 4.99.4 / libpcap
+    // 1.10.4 against the same bytes these tests build, and the assertions
+    // pin those measurements. `> 0` would pass against a filter that
+    // matched the whole link.
+
+    /// `DLT_NULL` — BSD loopback.
+    const DLT_NULL: u32 = 0;
+    /// `DLT_EN10MB` — Ethernet.
+    const DLT_EN10MB: u32 = 1;
+    /// `DLT_RAW` — bare IP, as written into a pcap file (tun devices).
+    const DLT_RAW: u32 = 101;
+    /// `DLT_LOOP` — OpenBSD loopback; `DLT_NULL` with a big-endian AF word.
+    const DLT_LOOP: u32 = 108;
+    /// `DLT_LINUX_SLL` — the Linux cooked header the `any` device used to use.
+    const DLT_LINUX_SLL: u32 = 113;
+    /// `DLT_LINUX_SLL2` — the cooked header the `any` device uses today.
+    const DLT_LINUX_SLL2: u32 = 276;
+
+    /// A SIP body small enough to keep every fixture frame in one datagram.
+    const SIP_BODY: &[u8] = b"OPTIONS sip:probe@example.com SIP/2.0\r\n\r\n";
+
+    /// Write `frames` as a little-endian classic pcap file with `linktype`.
+    ///
+    /// Hand-rolled rather than pulled from a crate so the fixtures are exactly
+    /// the bytes the assertions describe — the whole point here is that the
+    /// kernel filter sees a known frame layout.
+    fn write_pcap(path: &std::path::Path, linktype: u32, frames: &[Vec<u8>]) {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&65535u32.to_le_bytes());
+        out.extend_from_slice(&linktype.to_le_bytes());
+        for (i, f) in frames.iter().enumerate() {
+            out.extend_from_slice(&(1_700_000_000u32 + i as u32).to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(f.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(f.len() as u32).to_le_bytes());
+            out.extend_from_slice(f);
+        }
+        std::fs::write(path, out).expect("write fixture pcap");
+    }
+
+    /// IPv4 (IHL 5, DF, no options) + UDP carrying `payload`.
+    ///
+    /// The flags/fragment word is `0x4000` on purpose: Don't-Fragment set with
+    /// a zero offset, so it exercises the filter's `& 0x1fff = 0` mask instead
+    /// of passing it trivially.
+    fn ipv4_udp(sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
+        let udp_len = 8 + payload.len();
+        let total = 20 + udp_len;
+        let mut v: Vec<u8> = vec![0x45, 0x00];
+        v.extend_from_slice(&(total as u16).to_be_bytes());
+        v.extend_from_slice(&[0x00, 0x2a, 0x40, 0x00, 64, 17, 0x00, 0x00]);
+        v.extend_from_slice(&[192, 0, 2, 1]);
+        v.extend_from_slice(&[198, 51, 100, 1]);
+        v.extend_from_slice(&sport.to_be_bytes());
+        v.extend_from_slice(&dport.to_be_bytes());
+        v.extend_from_slice(&(udp_len as u16).to_be_bytes());
+        v.extend_from_slice(&[0x00, 0x00]);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    /// IPv6 (no extension headers) + UDP carrying `payload`.
+    fn ipv6_udp(sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
+        let udp_len = 8 + payload.len();
+        let mut v: Vec<u8> = vec![0x60, 0x00, 0x00, 0x00];
+        v.extend_from_slice(&(udp_len as u16).to_be_bytes());
+        v.extend_from_slice(&[17, 64]);
+        v.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        v.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        v.extend_from_slice(&sport.to_be_bytes());
+        v.extend_from_slice(&dport.to_be_bytes());
+        v.extend_from_slice(&(udp_len as u16).to_be_bytes());
+        v.extend_from_slice(&[0x00, 0x00]);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    /// A 14-byte Ethernet header (RFC 7042 documentation MACs) with `ethertype`.
+    fn eth(ethertype: u16) -> Vec<u8> {
+        let mut v: Vec<u8> = vec![
+            0x00, 0x00, 0x5e, 0x00, 0x53, 0x01, 0x00, 0x00, 0x5e, 0x00, 0x53, 0x02,
+        ];
+        v.extend_from_slice(&ethertype.to_be_bytes());
+        v
+    }
+
+    /// A 16-byte `DLT_LINUX_SLL` header carrying `ethertype`.
+    ///
+    /// Field order is `struct sll_header` from libpcap's `pcap/sll.h`: packet
+    /// type, hardware type, address length, an 8-byte address field, and the
+    /// protocol LAST, at offset 14. The prose above that struct lists the
+    /// fields in a different order and is wrong; the struct is what libpcap
+    /// writes and what `pcap_compile` indexes.
+    fn sll(ethertype: u16) -> Vec<u8> {
+        let mut v: Vec<u8> = vec![0x00, 0x00, 0x00, 0x01, 0x00, 0x06];
+        v.extend_from_slice(&[0x00, 0x00, 0x5e, 0x00, 0x53, 0x01, 0x00, 0x00]);
+        v.extend_from_slice(&ethertype.to_be_bytes());
+        v
+    }
+
+    /// A 20-byte `DLT_LINUX_SLL2` header carrying `ethertype`.
+    ///
+    /// `struct sll2_header` puts the protocol FIRST, at offset 0, then a
+    /// must-be-zero halfword, a 4-byte interface index, hardware type, packet
+    /// type, address length and an 8-byte address.
+    fn sll2(ethertype: u16) -> Vec<u8> {
+        let mut v: Vec<u8> = Vec::with_capacity(20);
+        v.extend_from_slice(&ethertype.to_be_bytes());
+        v.extend_from_slice(&[0x00, 0x00]);
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        v.extend_from_slice(&[0x00, 0x01, 0x00, 0x06]);
+        v.extend_from_slice(&[0x00, 0x00, 0x5e, 0x00, 0x53, 0x01, 0x00, 0x00]);
+        v
+    }
+
+    /// Builds a link-layer header announcing the protocol it is given.
+    type LinkHeader = fn(u16) -> Vec<u8>;
+
+    /// The link-layer headers a live capture can put in front of SIP, each
+    /// paired with the pcap link type that names it.
+    ///
+    /// Ethernet, Linux cooked v1 and Linux cooked v2 are the three that carry
+    /// a protocol field, so they are the three the encapsulated arms have to
+    /// cover. `sipnab` opens cooked when no `-d` names an interface on Linux,
+    /// which makes the second and third entries the DEFAULT invocation.
+    const LINK_HEADERS: &[(&str, u32, LinkHeader)] = &[
+        ("Ethernet", DLT_EN10MB, eth as LinkHeader),
+        ("Linux cooked v1", DLT_LINUX_SLL, sll as LinkHeader),
+        ("Linux cooked v2", DLT_LINUX_SLL2, sll2 as LinkHeader),
+    ];
+
+    /// A 4-byte 802.1Q/802.1ad tag body: TCI followed by the next EtherType.
+    fn tag(vid: u16, next: u16) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4);
+        v.extend_from_slice(&vid.to_be_bytes());
+        v.extend_from_slice(&next.to_be_bytes());
+        v
+    }
+
+    /// A 4-byte MPLS label stack entry (`label`, TTL 64, bottom-of-stack `s`).
+    fn mpls(label: u32, s: bool) -> Vec<u8> {
+        let word = (label << 12) | (u32::from(s) << 8) | 64;
+        word.to_be_bytes().to_vec()
+    }
+
+    /// An 8-byte PPPoE Session header + PPP protocol field for `inner`
+    /// (`0x0021` IPv4, `0x0057` IPv6).
+    fn pppoe(inner_len: usize, ppp_proto: u16) -> Vec<u8> {
+        let mut v: Vec<u8> = vec![0x11, 0x00, 0x00, 0x01];
+        v.extend_from_slice(&((inner_len + 2) as u16).to_be_bytes());
+        v.extend_from_slice(&ppp_proto.to_be_bytes());
+        v
+    }
+
+    /// Every encapsulation the default filter claims, each wrapping the same
+    /// IPv4/UDP SIP datagram, behind the link-layer header `link` builds:
+    /// `(label, frame)`.
+    ///
+    /// The link header is a parameter because the encapsulated arms are the
+    /// part that used to be Ethernet-shaped: the identical set of frames has
+    /// to match behind a cooked header too.
+    fn encapsulated_sip_frames_on(link: LinkHeader) -> Vec<(&'static str, Vec<u8>)> {
+        let ip = ipv4_udp(5060, 5060, SIP_BODY);
+        let ip6 = ipv6_udp(5061, 5061, SIP_BODY);
+        let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+
+        let mut f = link(0x0800);
+        f.extend_from_slice(&ip);
+        out.push(("untagged", f));
+
+        let mut f = link(0x8100);
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(&ip);
+        out.push(("802.1Q", f));
+
+        let mut f = link(0x88a8);
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(&ip);
+        out.push(("802.1ad single tag", f));
+
+        let mut f = link(0x9100);
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(&ip);
+        out.push(("0x9100 single tag", f));
+
+        let mut f = link(0x88a8);
+        f.extend_from_slice(&tag(10, 0x8100));
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(&ip);
+        out.push(("QinQ", f));
+
+        let mut f = link(0x8100);
+        f.extend_from_slice(&tag(10, 0x8100));
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(&ip);
+        out.push(("QinQ, 0x8100 outer", f));
+
+        let mut f = link(0x8864);
+        f.extend_from_slice(&pppoe(ip.len(), 0x0021));
+        f.extend_from_slice(&ip);
+        out.push(("PPPoE Session", f));
+
+        let mut f = link(0x8100);
+        f.extend_from_slice(&tag(100, 0x8864));
+        f.extend_from_slice(&pppoe(ip.len(), 0x0021));
+        f.extend_from_slice(&ip);
+        out.push(("802.1Q over PPPoE", f));
+
+        let mut f = link(0x8847);
+        f.extend_from_slice(&mpls(16, true));
+        f.extend_from_slice(&ip);
+        out.push(("MPLS, 1 label", f));
+
+        let mut f = link(0x8848);
+        f.extend_from_slice(&mpls(16, false));
+        f.extend_from_slice(&mpls(17, true));
+        f.extend_from_slice(&ip);
+        out.push(("MPLS, 2 labels", f));
+
+        let mut f = link(0x8100);
+        f.extend_from_slice(&tag(100, 0x86dd));
+        f.extend_from_slice(&ip6);
+        out.push(("802.1Q over IPv6", f));
+
+        out
+    }
+
+    /// [`encapsulated_sip_frames_on`] behind an Ethernet header.
+    fn encapsulated_sip_frames() -> Vec<(&'static str, Vec<u8>)> {
+        encapsulated_sip_frames_on(eth)
+    }
+
+    /// Non-SIP traffic in the same encapsulations: RTP on ports 10000/10002,
+    /// behind the link-layer header `link` builds.
+    /// None of it may reach the ring — this is the "not a firehose" gate.
+    fn encapsulated_non_sip_frames_on(link: LinkHeader) -> Vec<(&'static str, Vec<u8>)> {
+        let rtp = ipv4_udp(
+            10000,
+            10002,
+            &[0x80, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+
+        let mut f = link(0x0800);
+        f.extend_from_slice(&rtp);
+        out.push(("untagged RTP", f));
+
+        let mut f = link(0x8100);
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(&rtp);
+        out.push(("802.1Q RTP", f));
+
+        let mut f = link(0x88a8);
+        f.extend_from_slice(&tag(10, 0x8100));
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(&rtp);
+        out.push(("QinQ RTP", f));
+
+        let mut f = link(0x8864);
+        f.extend_from_slice(&pppoe(rtp.len(), 0x0021));
+        f.extend_from_slice(&rtp);
+        out.push(("PPPoE RTP", f));
+
+        let mut f = link(0x8847);
+        f.extend_from_slice(&mpls(16, true));
+        f.extend_from_slice(&rtp);
+        out.push(("MPLS RTP", f));
+
+        out
+    }
+
+    /// [`encapsulated_non_sip_frames_on`] behind an Ethernet header.
+    fn encapsulated_non_sip_frames() -> Vec<(&'static str, Vec<u8>)> {
+        encapsulated_non_sip_frames_on(eth)
+    }
+
+    /// Frames of every UDP-tunnel flavour the opt-in flag covers, each an
+    /// outer IPv4/UDP datagram on the tunnel port.
+    fn udp_tunnel_frames() -> Vec<(&'static str, Vec<u8>)> {
+        [("GTP-U", 2152u16), ("VXLAN", 4789), ("GENEVE", 6081)]
+            .into_iter()
+            .map(|(name, port)| {
+                let mut f = eth(0x0800);
+                f.extend_from_slice(&ipv4_udp(40000, port, SIP_BODY));
+                (name, f)
+            })
+            .collect()
+    }
+
+    /// How many frames of `path` the compiled `filter` accepts.
+    ///
+    /// Goes through libpcap itself, not a re-implementation: this is the same
+    /// `pcap_compile`/`pcap_setfilter` pair the capture thread hands the
+    /// kernel, so a filter that passes here is one the kernel will run.
+    fn count_matching(path: &std::path::Path, filter: &str) -> usize {
+        let mut cap = pcap::Capture::from_file(path).expect("open fixture");
+        cap.filter(filter, true).expect("filter must compile");
+        let mut n = 0usize;
+        loop {
+            match cap.next_packet() {
+                Ok(_) => n += 1,
+                Err(pcap::Error::NoMorePackets) => return n,
+                Err(e) => panic!("reading {}: {e}", path.display()),
+            }
+        }
+    }
+
+    /// Write `frames` to a one-off fixture under `dir` and count the matches.
+    fn count_frames(
+        dir: &std::path::Path,
+        name: &str,
+        linktype: u32,
+        frames: &[Vec<u8>],
+        filter: &str,
+    ) -> usize {
+        let path = dir.join(format!("{name}.pcap"));
+        write_pcap(&path, linktype, frames);
+        count_matching(&path, filter)
+    }
+
+    /// The checked-in PPPoE capture that proved the defect: 32 frames, every
+    /// one of them PPPoE-encapsulated SIP.
+    fn pppoe_fixture() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/pcap-samples/DTMFsipinfo.pcap")
+    }
+
+    /// A plain-Ethernet SIP capture: 23 frames, all on 5060.
+    fn plain_fixture() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/pcap-samples/sip-problem-call.pcap")
+    }
+
+    /// The regression itself, stated as a number.
+    ///
+    /// `portrange 5060-5061` — what sipnab generated for every live capture —
+    /// matches 0 of the 32 PPPoE-encapsulated SIP frames in `DTMFsipinfo.pcap`,
+    /// and the filter this change generates matches all 32. The drop happened
+    /// in the kernel, so no userspace counter could ever have shown it.
+    #[test]
+    fn auto_filter_sees_pppoe_encapsulated_sip_that_portrange_alone_drops() {
+        let fixture = pppoe_fixture();
+        assert_eq!(
+            count_matching(&fixture, "portrange 5060-5061"),
+            0,
+            "the old auto-filter is supposed to be blind here; if this is \
+             non-zero the fixture changed and the rest of this test proves \
+             nothing"
+        );
+        assert_eq!(
+            count_matching(&fixture, &auto_bpf_filter(5060, 5061, &[])),
+            32,
+            "the auto-filter must see every PPPoE-encapsulated SIP frame"
+        );
+    }
+
+    /// Adding encapsulation coverage must not cost the untagged case.
+    #[test]
+    fn auto_filter_still_matches_plain_ethernet_exactly() {
+        let fixture = plain_fixture();
+        assert_eq!(count_matching(&fixture, "portrange 5060-5061"), 23);
+        assert_eq!(
+            count_matching(&fixture, &auto_bpf_filter(5060, 5061, &[])),
+            23,
+            "a union that loses the untagged case is the naive `vlan and ...` \
+             bug in the other direction"
+        );
+    }
+
+    /// Every encapsulation the filter claims, one frame each, all matched.
+    #[test]
+    fn auto_filter_matches_every_claimed_encapsulation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        for (label, frame) in encapsulated_sip_frames() {
+            assert_eq!(
+                count_frames(dir.path(), "one", DLT_EN10MB, &[frame], &filter),
+                1,
+                "{label}: SIP in this encapsulation is invisible to the kernel"
+            );
+        }
+    }
+
+    /// And the whole set at once, so a filter that matched only the last
+    /// disjunct built cannot pass.
+    #[test]
+    fn auto_filter_matches_the_whole_encapsulation_set_in_one_capture() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let frames: Vec<Vec<u8>> = encapsulated_sip_frames()
+            .into_iter()
+            .map(|(_, f)| f)
+            .collect();
+        assert_eq!(frames.len(), 11, "fixture set changed; update the count");
+        assert_eq!(
+            count_frames(
+                dir.path(),
+                "all",
+                DLT_EN10MB,
+                &frames,
+                &auto_bpf_filter(5060, 5061, &[])
+            ),
+            11
+        );
+    }
+
+    /// Not a firehose: encapsulated NON-SIP traffic stays out of the ring.
+    ///
+    /// The failure this guards is the tempting fix — `portrange ... or vlan or
+    /// mpls or pppoes` — which on a trunk port delivers the entire link.
+    #[test]
+    fn auto_filter_matches_no_encapsulated_non_sip_traffic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        for (label, frame) in encapsulated_non_sip_frames() {
+            assert_eq!(
+                count_frames(dir.path(), "neg", DLT_EN10MB, &[frame], &filter),
+                0,
+                "{label}: the filter is delivering traffic that is not SIP"
+            );
+        }
+    }
+
+    /// The IPv6 arm is load-bearing, not decoration: SIP over IPv6 inside a
+    /// VLAN is matched, and the IPv4-only offsets would miss it.
+    #[test]
+    fn auto_filter_matches_encapsulated_ipv6_sip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut frame = eth(0x8100);
+        frame.extend_from_slice(&tag(100, 0x86dd));
+        frame.extend_from_slice(&ipv6_udp(5060, 5060, SIP_BODY));
+        assert_eq!(
+            count_frames(
+                dir.path(),
+                "v6",
+                DLT_EN10MB,
+                &[frame],
+                &auto_bpf_filter(5060, 5061, &[])
+            ),
+            1
+        );
+    }
+
+    /// Both port fields are checked, not just one.
+    ///
+    /// A UA sending from an ephemeral port to a proxy on 5060 is the ordinary
+    /// case, and the reply comes back the other way round. Checking only the
+    /// source (or only the destination) loses half of every call, which on a
+    /// dialog view looks like one-way signalling rather than a filter bug.
+    #[test]
+    fn encapsulated_arms_check_both_the_source_and_the_destination_port() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        for (sport, dport, expected, what) in [
+            (40000u16, 5060u16, 1usize, "request to the proxy"),
+            (5060, 40000, 1, "reply from the proxy"),
+            (5061, 40000, 1, "top of the range, source side"),
+            (40000, 5061, 1, "top of the range, destination side"),
+            (40000, 40001, 0, "neither side is signalling"),
+            (5059, 40000, 0, "just below the range"),
+            (40000, 5062, 0, "just above the range"),
+        ] {
+            let mut frame = eth(0x8100);
+            frame.extend_from_slice(&tag(100, 0x0800));
+            frame.extend_from_slice(&ipv4_udp(sport, dport, SIP_BODY));
+            assert_eq!(
+                count_frames(dir.path(), "pair", DLT_EN10MB, &[frame], &filter),
+                expected,
+                "{sport} -> {dport} inside a VLAN ({what})"
+            );
+        }
+    }
+
+    /// An IPv4 header with `proto`, fragment word `frag`, and a payload whose
+    /// first four bytes are the port pair 5060/5060.
+    ///
+    /// The point is that the port bytes are ALWAYS in signalling range, so the
+    /// only thing that can decide the match is the field under test.
+    fn ipv4_with(proto: u8, frag: u16) -> Vec<u8> {
+        let payload: [u8; 12] = [
+            0x13, 0xc4, 0x13, 0xc4, 0x00, 0x14, 0x00, 0x00, 0x41, 0x42, 0x43, 0x44,
+        ];
+        let total = 20 + payload.len();
+        let mut v: Vec<u8> = vec![0x45, 0x00];
+        v.extend_from_slice(&(total as u16).to_be_bytes());
+        v.extend_from_slice(&[0x00, 0x2a]);
+        v.extend_from_slice(&frag.to_be_bytes());
+        v.extend_from_slice(&[64, proto, 0x00, 0x00]);
+        v.extend_from_slice(&[192, 0, 2, 1]);
+        v.extend_from_slice(&[198, 51, 100, 1]);
+        v.extend_from_slice(&payload);
+        v
+    }
+
+    /// The same IPv4 bytes wrapped in one VLAN tag.
+    fn vlan_wrap(ip: &[u8]) -> Vec<u8> {
+        let mut f = eth(0x8100);
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(ip);
+        f
+    }
+
+    /// The encapsulated arms check the IP protocol, and it matters: without
+    /// it any protocol whose 21st and 23rd payload bytes happen to read as a
+    /// signalling port would be delivered.
+    ///
+    /// The three frames differ in exactly one byte — the protocol field.
+    #[test]
+    fn encapsulated_arms_match_udp_and_tcp_and_nothing_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        for (proto, expected) in [(17u8, 1usize), (6, 1), (47, 0), (50, 0), (1, 0)] {
+            assert_eq!(
+                count_frames(
+                    dir.path(),
+                    "proto",
+                    DLT_EN10MB,
+                    &[vlan_wrap(&ipv4_with(proto, 0x4000))],
+                    &filter
+                ),
+                expected,
+                "IP protocol {proto} inside a VLAN"
+            );
+        }
+    }
+
+    /// A trailing fragment carries no ports, so the bytes at the port offsets
+    /// are payload — matching them would be a false positive.
+    ///
+    /// These frames differ from the matching one only in the fragment word.
+    #[test]
+    fn encapsulated_arms_skip_trailing_fragments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        for (frag, expected, what) in [
+            (0x0000u16, 1usize, "no flags, offset 0"),
+            (0x4000, 1, "DF, offset 0"),
+            (
+                0x2000,
+                1,
+                "MF, offset 0 — the FIRST fragment does carry ports",
+            ),
+            (0x0001, 0, "offset 1"),
+            (0x20b9, 0, "MF, offset 185"),
+        ] {
+            assert_eq!(
+                count_frames(
+                    dir.path(),
+                    "frag",
+                    DLT_EN10MB,
+                    &[vlan_wrap(&ipv4_with(17, frag))],
+                    &filter
+                ),
+                expected,
+                "fragment word {frag:#06x} ({what})"
+            );
+        }
+    }
+
+    /// A KNOWN GAP, pinned so it cannot change silently: on the encapsulated
+    /// arms, IPv4 headers carrying options are not matched.
+    ///
+    /// BPF byte-slice indices must be constants, so the arm cannot multiply
+    /// the IHL nibble into the port offset the way libpcap's own `portrange`
+    /// does. The untagged arm IS a real `portrange`, so the gap exists only
+    /// for encapsulated traffic — which the second half of this test proves,
+    /// so the limitation is never mistaken for a whole-filter one.
+    #[test]
+    fn encapsulated_arms_do_not_match_ipv4_options_but_the_untagged_arm_does() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+
+        // IHL 6: 20 bytes of header + one 4-byte option (RFC 791 NOP padding).
+        let mut ip: Vec<u8> = vec![0x46, 0x00, 0x00, 0x28];
+        ip.extend_from_slice(&[0x00, 0x2a, 0x40, 0x00, 64, 17, 0x00, 0x00]);
+        ip.extend_from_slice(&[192, 0, 2, 1]);
+        ip.extend_from_slice(&[198, 51, 100, 1]);
+        ip.extend_from_slice(&[0x01, 0x01, 0x01, 0x00]);
+        ip.extend_from_slice(&[0x13, 0xc4, 0x13, 0xc4, 0x00, 0x0c, 0x00, 0x00]);
+
+        assert_eq!(
+            count_frames(
+                dir.path(),
+                "opt-vlan",
+                DLT_EN10MB,
+                &[vlan_wrap(&ip)],
+                &filter
+            ),
+            0,
+            "known gap: IPv4 options inside an encapsulation are not reached"
+        );
+
+        let mut untagged = eth(0x0800);
+        untagged.extend_from_slice(&ip);
+        assert_eq!(
+            count_frames(dir.path(), "opt-plain", DLT_EN10MB, &[untagged], &filter),
+            1,
+            "untagged IPv4-with-options must still match — the gap is the \
+             encapsulated arms only, and if this ever returns 0 the base \
+             `portrange` arm has been broken"
+        );
+    }
+
+    /// The filter must COMPILE on every link type a live capture can open.
+    ///
+    /// This is the gate that rules out libpcap's `vlan` / `mpls` / `pppoes`
+    /// qualifiers, which are what a first reading of pcap-filter(7) suggests.
+    /// They are `pcap_compile` ERRORS on `DLT_LINUX_SLL` (the Linux `any`
+    /// pseudo-device — sipnab's default when `-d` is omitted), on `DLT_RAW`
+    /// (tun) and on `DLT_NULL` (BSD loopback): "no VLAN support for Linux
+    /// cooked v1". A filter that fails to compile does not merely miss
+    /// traffic, it stops the capture from starting at all.
+    #[test]
+    fn auto_filter_compiles_on_every_link_type_a_live_capture_can_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[2152]);
+        let ip = ipv4_udp(5060, 5060, SIP_BODY);
+
+        for (label, linktype, frame) in [
+            ("Ethernet", DLT_EN10MB, {
+                let mut f = eth(0x0800);
+                f.extend_from_slice(&ip);
+                f
+            }),
+            ("Linux cooked v1", DLT_LINUX_SLL, {
+                let mut f = sll(0x0800);
+                f.extend_from_slice(&ip);
+                f
+            }),
+            ("Linux cooked v2", DLT_LINUX_SLL2, {
+                let mut f = sll2(0x0800);
+                f.extend_from_slice(&ip);
+                f
+            }),
+            ("Raw IP", DLT_RAW, ip.clone()),
+            ("BSD loopback", DLT_NULL, {
+                let mut f: Vec<u8> = vec![0x02, 0x00, 0x00, 0x00];
+                f.extend_from_slice(&ip);
+                f
+            }),
+            ("OpenBSD loopback", DLT_LOOP, {
+                let mut f: Vec<u8> = vec![0x00, 0x00, 0x00, 0x02];
+                f.extend_from_slice(&ip);
+                f
+            }),
+        ] {
+            // Compiles (count_matching panics if it does not) AND still
+            // delivers the plain SIP frame on that link type.
+            assert_eq!(
+                count_frames(dir.path(), "dlt", linktype, &[frame], &filter),
+                1,
+                "{label}: the auto-filter must compile and still pass untagged \
+                 SIP on this link type"
+            );
+        }
+    }
+
+    // ── Cooked (Linux `any`) captures ──────────────────────────────────
+
+    /// The whole encapsulation set behind a COOKED link header, which is what
+    /// `sipnab` opens when no `-d` names an interface.
+    ///
+    /// This is the residual gap the absolute-offset arms left behind. They
+    /// were written against the Ethernet header, so `ether[12:2]` read the
+    /// EtherType on Ethernet and two bytes of the padded link-layer address on
+    /// `DLT_LINUX_SLL` — a field that is never a tag EtherType. The arms
+    /// compiled, ran, and matched nothing: measured 1 of these 11 frames on
+    /// cooked v1 and 1 of 11 on cooked v2 (the untagged one, via the base
+    /// `portrange`) against 11 of 11 on Ethernet.
+    ///
+    /// The link types are the real ones, not a stand-in: `DLT_LINUX_SLL` is
+    /// the Linux `any` device before libpcap 1.10 and `DLT_LINUX_SLL2` after
+    /// it, so between them they are the default invocation on every Linux
+    /// host sipnab runs on.
+    #[test]
+    fn auto_filter_sees_encapsulated_sip_behind_a_cooked_link_header() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        for (label, linktype, link) in LINK_HEADERS {
+            let frames = encapsulated_sip_frames_on(*link);
+            assert_eq!(frames.len(), 11, "fixture set changed; update the count");
+            for (what, frame) in &frames {
+                assert_eq!(
+                    count_frames(
+                        dir.path(),
+                        "cooked-one",
+                        *linktype,
+                        std::slice::from_ref(frame),
+                        &filter
+                    ),
+                    1,
+                    "{label}: SIP in {what} is invisible to the kernel"
+                );
+            }
+            let all: Vec<Vec<u8>> = frames.into_iter().map(|(_, f)| f).collect();
+            assert_eq!(
+                count_frames(dir.path(), "cooked-all", *linktype, &all, &filter),
+                11,
+                "{label}: the whole encapsulation set in one capture"
+            );
+        }
+    }
+
+    /// And the cooked arms are not a firehose either: the same RTP set that
+    /// must stay out on Ethernet must stay out behind a cooked header.
+    ///
+    /// Worth its own test because the cooked arms probe the inner IP header at
+    /// offsets that belong to a DIFFERENT link header, so a widened arm would
+    /// show up here first.
+    #[test]
+    fn auto_filter_matches_no_encapsulated_non_sip_traffic_on_any_link_header() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        for (label, linktype, link) in LINK_HEADERS {
+            for (what, frame) in encapsulated_non_sip_frames_on(*link) {
+                assert_eq!(
+                    count_frames(dir.path(), "cooked-neg", *linktype, &[frame], &filter),
+                    0,
+                    "{label}: {what} is being delivered and it is not SIP"
+                );
+            }
+        }
+    }
+
+    /// The outer test is the LINK-AWARE `ether proto`, not the Ethernet-only
+    /// `ether[12:2]`, and that is the whole fix.
+    ///
+    /// `ether proto N` is not a byte comparison at a fixed offset: libpcap
+    /// resolves it per link type at compile time — `ether[12:2]` on Ethernet,
+    /// `ether[14:2]` on cooked v1, `ether[0:2]` on cooked v2, and a constant
+    /// FALSE on raw-IP and loopback, which have no protocol field at all.
+    /// Measured with `tcpdump -d` on each. It carries no state, so it does not
+    /// bring back the `vlan` / `mpls` / `pppoes` defect the byte offsets were
+    /// chosen to avoid.
+    #[test]
+    fn auto_filter_selects_encapsulation_with_the_link_aware_ether_proto() {
+        let f = auto_bpf_filter(5060, 5061, &[]);
+        for ethertype in ["0x8100", "0x88a8", "0x9100", "0x8864", "0x8847", "0x8848"] {
+            assert_eq!(
+                f.matches(&format!("ether proto {ethertype}")).count(),
+                1,
+                "{ethertype} must be selected once, through `ether proto`: {f}"
+            );
+        }
+        assert_eq!(
+            f.matches("ether[12:2]").count(),
+            0,
+            "`ether[12:2]` is the EtherType on Ethernet ONLY; on a cooked \
+             capture it reads the link-layer address and the arm sits inert: {f}"
+        );
+    }
+
+    /// The inner IP header is probed at every (link-header length, encapsulation
+    /// depth) pair, because one filter string has to serve all three link types.
+    ///
+    /// Link-header lengths 14 (Ethernet), 16 (cooked v1) and 20 (cooked v2);
+    /// depths 4 (one VLAN tag or one MPLS label), 8 (QinQ, PPPoE Session, two
+    /// MPLS labels) and 12 (one VLAN tag over PPPoE). Nine pairs, seven
+    /// distinct offsets — 24 and 28 each arise twice.
+    #[test]
+    fn auto_filter_probes_every_link_header_length_and_encapsulation_depth() {
+        let f = auto_bpf_filter(5060, 5061, &[]);
+        let mut want: Vec<usize> = LINK_HEADER_LENS
+            .iter()
+            .flat_map(|b| ENCAP_DEPTHS.iter().map(move |d| b + d))
+            .collect();
+        want.sort_unstable();
+        want.dedup();
+        assert_eq!(want, vec![18usize, 20, 22, 24, 26, 28, 32]);
+        for ip_off in &want {
+            assert_eq!(
+                f.matches(&format!("ether[{ip_off}] = 0x45")).count(),
+                1,
+                "no IPv4 probe at offset {ip_off}: {f}"
+            );
+            assert_eq!(
+                f.matches(&format!("ether[{ip_off}] & 0xf0 = 0x60")).count(),
+                1,
+                "no IPv6 probe at offset {ip_off}: {f}"
+            );
+        }
+        assert_eq!(
+            f.matches("] = 0x45").count(),
+            7,
+            "exactly seven IPv4 probes, one per distinct offset: {f}"
+        );
+    }
+
+    /// The exact outer type test is what keeps the offset union honest.
+    ///
+    /// Seven offsets are probed on every link type, four of which belong to a
+    /// different link header than the one in front of the packet. The only
+    /// thing stopping that from reaching ordinary traffic is that the arm
+    /// fires solely for the six encapsulating link-layer protocols.
+    ///
+    /// The frame below is the proof: an ordinary IPv4/UDP datagram on ports
+    /// 40000/40001 whose own header bytes, read four octets in, spell a second
+    /// IPv4/UDP header on port 5060 — identification `0x4500` supplies the
+    /// `0x45`, the source address supplies protocol 17, the header checksum
+    /// supplies a zero fragment word and the UDP checksum supplies the port.
+    /// Untagged it must be dropped; with a tag EtherType in front of the very
+    /// same bytes it must be delivered, which proves the bytes really are what
+    /// the encapsulated arms accept.
+    #[test]
+    fn the_outer_link_type_test_keeps_untagged_traffic_out_of_the_encapsulated_arms() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+
+        let mut decoy: Vec<u8> = vec![0x45, 0x00, 0x00, 0x2a];
+        decoy.extend_from_slice(&[0x45, 0x00]); // identification -> the 0x45
+        decoy.extend_from_slice(&[0x40, 0x00]); // flags / fragment offset
+        decoy.extend_from_slice(&[64, 17]); // TTL, UDP
+        decoy.extend_from_slice(&[0x00, 0x00]); // checksum -> the zero frag word
+        decoy.extend_from_slice(&[192, 17, 2, 1]); // source -> the 17
+        decoy.extend_from_slice(&[198, 51, 100, 1]); // destination
+        decoy.extend_from_slice(&40000u16.to_be_bytes());
+        decoy.extend_from_slice(&40001u16.to_be_bytes());
+        decoy.extend_from_slice(&22u16.to_be_bytes()); // UDP length
+        decoy.extend_from_slice(&5060u16.to_be_bytes()); // UDP checksum -> the port
+        decoy.extend_from_slice(b"not sip at all");
+
+        let mut untagged = eth(0x0800);
+        untagged.extend_from_slice(&decoy);
+        assert_eq!(
+            count_frames(dir.path(), "decoy-plain", DLT_EN10MB, &[untagged], &filter),
+            0,
+            "an untagged datagram must never be read at an encapsulated offset"
+        );
+
+        let mut tagged = eth(0x8100);
+        tagged.extend_from_slice(&decoy);
+        assert_eq!(
+            count_frames(dir.path(), "decoy-tagged", DLT_EN10MB, &[tagged], &filter),
+            1,
+            "the same bytes behind a tag EtherType must match, or the frame \
+             above proves nothing about the outer test"
+        );
+    }
+
+    /// The stateful qualifiers must never appear in a generated filter.
+    ///
+    /// Stated as a source-level gate as well as the compile gate above,
+    /// because the compile failure only shows up on a link type the test
+    /// machine may not have — and because these three words are exactly what
+    /// the next person will reach for.
+    #[test]
+    fn auto_filter_uses_no_stateful_libpcap_qualifier() {
+        for (lo, hi) in [(5060u16, 5061u16), (5060, 5060)] {
+            let f = auto_bpf_filter(lo, hi, &[2152, 4789, 6081]);
+            for word in ["vlan", "mpls", "pppoes"] {
+                assert!(
+                    !f.contains(word),
+                    "generated filter contains the stateful qualifier `{word}`: \
+                     it re-bases offsets for everything to its right (so a union \
+                     of them silently mis-decodes) and it is a pcap_compile error \
+                     on Linux cooked, raw-IP and loopback link types. Filter: {f}"
+                );
+            }
+        }
+    }
+
+    /// A single-port range spells the base term `port N`, not `portrange N-N`,
+    /// and narrows every encapsulated arm to the same single port.
+    #[test]
+    fn auto_filter_single_port_range_uses_port() {
+        let f = auto_bpf_filter(5060, 5060, &[]);
+        assert!(f.starts_with("port 5060 or "), "got: {f}");
+        assert!(!f.contains("portrange"), "got: {f}");
+        assert!(!f.contains(">= 5060"), "got: {f}");
+        assert!(f.contains("ether[38:2] = 5060"), "got: {f}");
+    }
+
+    /// The base term is the untagged `portrange`, first and unchanged.
+    #[test]
+    fn auto_filter_leads_with_the_plain_portrange() {
+        assert!(
+            auto_bpf_filter(5060, 5061, &[]).starts_with("portrange 5060-5061 or "),
+            "the untagged case must stay a plain libpcap portrange — it is the \
+             only arm that handles IPv4 options, fragments and every link type \
+             correctly"
+        );
+        assert!(auto_bpf_filter(5080, 5090, &[]).starts_with("portrange 5080-5090 or "));
+    }
+
+    /// A non-default portrange reaches every encapsulated arm, not just the
+    /// base term.
+    #[test]
+    fn auto_filter_carries_a_custom_portrange_into_every_arm() {
+        let f = auto_bpf_filter(5080, 5090, &[]);
+        assert_eq!(
+            f.matches("5080").count(),
+            29,
+            "one base term + 4 lower bounds (source and destination, v4 and \
+             v6) at each of the 7 inner offsets: {f}"
+        );
+        assert!(!f.contains("5060"), "the default range leaked in: {f}");
+
+        // And it behaves: SIP on 5080 inside a VLAN is matched, 5060 is not.
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (port, expected) in [(5080u16, 1usize), (5090, 1), (5060, 0), (5091, 0)] {
+            let mut frame = eth(0x8100);
+            frame.extend_from_slice(&tag(100, 0x0800));
+            frame.extend_from_slice(&ipv4_udp(port, port, SIP_BODY));
+            assert_eq!(
+                count_frames(dir.path(), "range", DLT_EN10MB, &[frame], &f),
+                expected,
+                "port {port} inside a VLAN"
+            );
+        }
+    }
+
+    // ── Opt-in UDP tunnel ports ────────────────────────────────────────
+
+    /// The default filter must NOT carry the UDP tunnel ports.
+    ///
+    /// BPF cannot walk a GTP-U extension-header chain to the inner port, so
+    /// covering these means capturing EVERYTHING on the port. On a mobile core
+    /// that is the whole user plane.
+    #[test]
+    fn auto_filter_omits_udp_tunnel_ports_by_default() {
+        let f = auto_bpf_filter(5060, 5061, &[]);
+        for port in TUNNEL_PORTS_DEFAULT {
+            assert!(
+                !f.contains(&port.to_string()),
+                "port {port} is in the default filter: {f}"
+            );
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (label, frame) in udp_tunnel_frames() {
+            assert_eq!(
+                count_frames(dir.path(), "tun", DLT_EN10MB, &[frame], &f),
+                0,
+                "{label} traffic must not reach the ring unless asked for"
+            );
+        }
+    }
+
+    /// Asking for them adds exactly one `udp port` term per port, and they
+    /// then match.
+    #[test]
+    fn requested_udp_tunnel_ports_are_appended_and_match() {
+        let f = auto_bpf_filter(5060, 5061, TUNNEL_PORTS_DEFAULT);
+        assert!(
+            f.ends_with(" or udp port 2152 or udp port 4789 or udp port 6081"),
+            "got: {f}"
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (label, frame) in udp_tunnel_frames() {
+            assert_eq!(
+                count_frames(dir.path(), "tun", DLT_EN10MB, &[frame], &f),
+                1,
+                "{label} was requested and must be captured"
+            );
+        }
+        // Still not a firehose in the other direction: ordinary RTP on a
+        // non-tunnel port stays out.
+        for (label, frame) in encapsulated_non_sip_frames() {
+            assert_eq!(
+                count_frames(dir.path(), "neg", DLT_EN10MB, &[frame], &f),
+                0,
+                "{label}"
+            );
+        }
+    }
+
+    /// The three defaults are the IANA-assigned tunnel ports.
+    #[test]
+    fn default_tunnel_ports_are_the_iana_assignments() {
+        assert_eq!(TUNNEL_PORTS_DEFAULT, &[2152u16, 4789, 6081]);
+    }
+
+    /// `--capture-tunnels` with no value means the three defaults; with a
+    /// value it means exactly the ports named, in order, de-duplicated.
+    #[test]
+    fn capture_tunnels_flag_resolves_to_ports() {
+        let mut cli = base_cli();
+        assert_eq!(
+            resolve_tunnel_ports(&cli).expect("no flag"),
+            Vec::<u16>::new()
+        );
+
+        cli.capture_tunnels = Some(TUNNEL_PORTS_DEFAULT_LIST.to_string());
+        assert_eq!(
+            resolve_tunnel_ports(&cli).expect("bare flag"),
+            TUNNEL_PORTS_DEFAULT.to_vec()
+        );
+
+        cli.capture_tunnels = Some("8472, 4789 ,8472".to_string());
+        assert_eq!(
+            resolve_tunnel_ports(&cli).expect("explicit list"),
+            vec![8472u16, 4789],
+            "order is the operator's, duplicates collapse"
+        );
+    }
+
+    /// A malformed port list is an argument error, not a silently empty set.
+    #[test]
+    fn capture_tunnels_rejects_a_malformed_port_list() {
+        let mut cli = base_cli();
+        for bad in ["", "http", "70000", "2152,", "0"] {
+            cli.capture_tunnels = Some(bad.to_string());
+            let err = resolve_tunnel_ports(&cli)
+                .err()
+                .unwrap_or_else(|| panic!("'{bad}' must be refused"));
+            assert_eq!(err.exit_code, 2, "'{bad}'");
+            assert!(
+                err.message.contains("--capture-tunnels"),
+                "'{bad}': the error must name the flag, got: {}",
+                err.message
+            );
+        }
+    }
+
+    // ── The notices ────────────────────────────────────────────────────
+
+    /// The default path SAYS it does not cover UDP-tunnelled SIP, and names
+    /// the flag that does. A silent omission recreates the bug one level up.
+    #[test]
+    fn tunnel_omission_notice_fires_by_default_and_names_the_flag() {
+        let msg = tunnel_omission_notice(&[]).expect("the default path must say so");
+        assert!(msg.contains("--capture-tunnels"), "got: {msg}");
+        for name in ["GTP-U", "VXLAN", "GENEVE"] {
+            assert!(msg.contains(name), "the notice must name {name}: {msg}");
+        }
+        assert_eq!(
+            tunnel_omission_notice(TUNNEL_PORTS_DEFAULT),
+            None,
+            "nothing to warn about once the ports are covered"
+        );
+    }
+
+    /// An operator's own filter is never rewritten, but one that cannot see
+    /// past an encapsulation gets a sentence about it.
+    #[test]
+    fn explicit_filter_encap_notice_fires_only_on_a_blind_port_filter() {
+        let msg = explicit_filter_encap_notice("udp port 5060")
+            .expect("a bare port filter is encapsulation-blind");
+        assert!(msg.contains("not modified"), "got: {msg}");
+        assert!(msg.contains("--capture-tunnels"), "got: {msg}");
+
+        // Already encapsulation-aware, by qualifier or by raw offset.
+        assert_eq!(explicit_filter_encap_notice("vlan and port 5060"), None);
+        assert_eq!(explicit_filter_encap_notice("pppoes and port 5060"), None);
+        assert_eq!(explicit_filter_encap_notice("mpls and port 5060"), None);
+        assert_eq!(
+            explicit_filter_encap_notice("port 5060 or ether[12:2] = 0x8100"),
+            None
+        );
+        // No port term at all: the operator is filtering on something else
+        // entirely and this notice would be noise.
+        assert_eq!(explicit_filter_encap_notice("host 192.0.2.1"), None);
+    }
+
+    // ── plan() wiring ──────────────────────────────────────────────────
+
+    /// A live capture with no explicit filter gets the encapsulation-aware
+    /// filter — the exact string, not something like it.
+    #[test]
+    fn plan_generates_the_encapsulation_aware_filter_for_a_live_capture() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".into());
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert_eq!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some(auto_bpf_filter(5060, 5061, &[]).as_str())
+        );
+    }
+
+    /// `--capture-tunnels` reaches the generated filter.
+    #[test]
+    fn plan_adds_requested_tunnel_ports_to_the_generated_filter() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".into());
+        cli.capture_tunnels = Some(TUNNEL_PORTS_DEFAULT_LIST.to_string());
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert_eq!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some(auto_bpf_filter(5060, 5061, TUNNEL_PORTS_DEFAULT).as_str())
+        );
+    }
+
+    /// `--portrange` reaches the generated filter.
+    #[test]
+    fn plan_generates_the_filter_for_a_custom_portrange() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".into());
+        cli.portrange = Some("5080-5090".into());
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert_eq!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some(auto_bpf_filter(5080, 5090, &[]).as_str())
+        );
+    }
+
+    /// An explicit filter goes to the kernel verbatim. Never rewritten,
+    /// never extended, whatever sipnab thinks of it.
+    #[test]
+    fn plan_never_rewrites_an_explicit_filter() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".into());
+        cli.bpf_filter = vec!["udp".into(), "port".into(), "5060".into()];
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert_eq!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some("udp port 5060"),
+            "the operator's expression must reach the kernel unmodified"
+        );
+    }
+
+    /// Reading a file still gets no auto-filter at all.
+    #[test]
+    fn plan_generates_no_filter_when_reading_a_file() {
+        let mut cli = base_cli();
+        cli.input = vec![FIXTURE_FILE.to_string()];
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert_eq!(plan.capture_config.bpf_filter, None);
+    }
+
+    /// A real capture, for the `-I` paths that resolve their input.
+    const FIXTURE_FILE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 }

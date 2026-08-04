@@ -317,6 +317,7 @@ ordinary update.
 | `security_findings` | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
 | `stats` | -- | Aggregate counters (dialog_count, stream_count, etc.) |
 | `capture_status` | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
+| `capture_health` | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
 | `triage_call` | `call_id` | First-pass verdict: signalling problem, media problem, both, or none, with evidence |
 | `lint_dialog` | `call_id`, `rulesets?`, `severity_min?` | Conformance findings for one call, declaration against observation included, each with its RFC and section |
 | `validate_message` | `call_id`, `index` | Conformance findings for one message, read alone |
@@ -1467,7 +1468,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.78",
+  "version": "0.5.80",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -1509,6 +1510,7 @@ No parameters. Returns:
     "kernel_dropped_packets": 0,
     "interface_dropped_packets": 0,
     "invalid_timestamps": 0,
+    "undecodable_frames": 0,
     "degraded": false
   },
   "capture_identity": {
@@ -1549,10 +1551,148 @@ No parameters. Returns:
 > `invalid_timestamps` loses no packet at all — it makes the run's timing
 > unreliable. Summing them names one problem where there are three.
 >
+> `undecodable_frames` is a fourth channel, and the only one that is about
+> sipnab rather than the host: those frames arrived intact and no decoder here
+> could read them, so the analysis saw none of their contents. Non-zero means a
+> zero elsewhere in this response may mean *unknown* rather than *none* — which
+> matters most to a reader that cannot ask a follow-up question. It stays out
+> of `degraded` because ARP is undecodable by definition and appears on nearly
+> every capture, so a flag including it would always be true.
+>
 > `degraded` is `false` when nothing was *observed* to go wrong, which is not
 > the same as the capture provably having seen every packet: loss upstream of
 > the capture point, such as an oversubscribed SPAN port or a tap mirroring
 > one direction, is invisible to all three counters.
+
+### `capture_health`
+
+Reads the capture counters, waits, and reads them again. The response carries
+the run totals **and** the change across that window, which turns a pile of
+monotonic counters into a rate.
+
+`stats` tells you what the counters say right now. `capture_health` tells you
+what they did over a window you chose, which is the difference between "this
+process has dropped 4 million packets since Tuesday" and "this process is
+dropping packets **now**".
+
+Three questions it answers on a busy production server:
+
+1. **Does the capture path drop packets under load?** Read
+   `in_window.kernel_dropped` and `in_window.interface_dropped`. They stay
+   apart because their fixes disagree — a bigger ring buffer cures the first
+   and does nothing for the second.
+2. **What is on this wire that sipnab cannot decode?** Read
+   `undecodable_by_reason`. Each entry names the reason as a code and carries
+   the number that identifies it: the link type, the EtherType, or the IP
+   protocol.
+3. **What does the encapsulation-aware capture filter cost?** Run the same
+   window twice, once with `--capture-tunnels` and once without, and compare
+   `in_window.packets` against the two drop counters.
+
+| Name | Type | Description |
+|---|---|---|
+| `sample_seconds` | u32 | Seconds to wait between the two reads. Minimum 1, maximum 30. A larger value clamps to 30, and the response reports what you asked for beside what it used. Zero returns an *invalid params* error. |
+
+Returns:
+
+```jsonc
+{
+  "schema_version": 1,
+  "attachment": 2,
+  "window": {
+    "requested_seconds": 10,
+    "applied_seconds": 10,
+    "observed_ms": 10003
+  },
+  "totals": {
+    "packets": 8412990,
+    "kernel_dropped": 1204,
+    "interface_dropped": 0,
+    "invalid_timestamps": 0,
+    "undecodable_frames": 2103247
+  },
+  "in_window": {
+    "packets": 94318,
+    "kernel_dropped": 17,
+    "interface_dropped": 0,
+    "invalid_timestamps": 0,
+    "undecodable_frames": 23610
+  },
+  "undecoded_fraction": 0.24999999,
+  "undecoded_fraction_in_window": 0.2503,
+  "undecodable_by_reason": [
+    { "reason": 2, "number": 34887, "frames": 2061109, "frames_in_window": 23140 },
+    { "reason": 3, "number": 47,    "frames": 41022,   "frames_in_window": 465 },
+    { "reason": 4, "number": null,  "frames": 1116,    "frames_in_window": 5 }
+  ],
+  "undecodable_reasons_dropped": 0,
+  "dialogs_tracked": 2411,
+  "streams_tracked": 4802
+}
+```
+
+> **This tool starts no capture.** With `--mcp` attached to a live interface,
+> the counters already accumulate, so a rate costs two reads and a wait. That
+> is not only the cheap design, it is the safe one: the handler opens no
+> device, names no interface, and writes no file, so no path leads from an MCP
+> call to a capture that transmits or records anything.
+
+> **Every value in this response is a number.** The response type holds
+> integers, codes and two proportions, and it has no string field anywhere in
+> it or in anything nested inside it. A type that cannot represent packet
+> content cannot leak packet content, which is why the reasons below travel as
+> codes and their labels live on this page instead of on the wire. The test
+> `a_populated_capture_health_response_carries_no_string_value_anywhere`
+> serializes a full response and fails on any string value at any depth.
+
+#### `attachment` — what this server has packets from
+
+| Code | Meaning |
+|---|---|
+| `1` | Nothing attached. No capture context reached this server. |
+| `2` | A live interface. |
+| `3` | A capture file replaying. |
+
+Code `1` exists so that a server with nothing to read says so. A row of zeros
+from a tool that never had a capture looks exactly like a healthy quiet wire,
+and no code is `0`, so a defaulted or truncated response can never pass for a
+real answer.
+
+#### `undecodable_by_reason` — the reason codes
+
+| `reason` | Meaning | What `number` carries | Where to start |
+|---|---|---|---|
+| `1` | The pcap link type has no decoder here | The DLT number | `editcap -T ether` converts a `DLT_NULL` (0) or `DLT_LINUX_SLL` (113) file |
+| `2` | The link layer named a payload that is not IP | The EtherType, or `null` when the link layer records none | `34887` is `0x8847`, so the mirror carries MPLS. `2054` is ARP, which every Ethernet capture carries and nothing needs to decode |
+| `3` | An IP header decoded, and its payload is no transport sipnab handles | The outermost IP protocol, or `null` when the decoder recorded none | `47` is GRE and `4`/`41` are IP-in-IP. `--capture-tunnels` widens the filter to reach inside them |
+| `4` | The frame is shorter than a header it claims | `null` | Raise `--snaplen`. A cut frame is a capture setting, not a parser gap |
+| `5` | A decoder rejected the bytes | `null` | Save a sample and open an issue |
+
+The number is the whole point of the entry. "Unsupported link type" names no
+action, and "unsupported link type 0" names three. `frames` counts the whole
+run, `frames_in_window` counts the sample, and an entry whose `frames_in_window`
+is `0` describes a problem that has already stopped.
+
+`undecodable_reasons_dropped` counts frames whose specific number did not fit
+the fixed-slot tables behind these counters. A non-zero value means the
+breakdown adds up to less than `totals.undecodable_frames`, and the field
+exists so that nobody has to discover the shortfall by subtracting.
+
+#### Why 30 seconds is the ceiling
+
+An MCP tool call blocks the agent that made it. The handler holds a request
+slot for the whole window, and clients cancel a call that has not answered —
+60 seconds is the common default. A window that can run for minutes turns a
+diagnostic into a denial of service against the agent that asked for it.
+
+Thirty seconds keeps the whole call inside half of that budget and still buys
+a window worth having. A trunk at 10,000 packets per second puts 300,000
+packets through it, which is enough for a drop rate to mean something. For a
+longer view, call the tool repeatedly and read `totals`.
+
+Divide by `window.observed_ms`, never by `sample_seconds`. A loaded runtime
+wakes the handler late, and the response reports the wall clock precisely so
+that a rate does not inherit that error.
 
 ### Tool argument enums
 

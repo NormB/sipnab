@@ -235,8 +235,16 @@ fn read_into_stores(
             None,
             link_type,
         );
-        let Ok(parsed) = crate::capture::parse::parse_packet(&packet) else {
-            continue;
+        // An agent asking over MCP gets the same accounting a human gets on
+        // the CLI. Dropping the error here would let a tool call report an
+        // empty, confident answer about a capture none of which was read —
+        // the failure mode this counter exists to remove.
+        let parsed = match crate::capture::parse::parse_packet(&packet) {
+            Ok(p) => p,
+            Err(e) => {
+                crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
+                continue;
+            }
         };
         if parsed.payload.is_empty() {
             continue;

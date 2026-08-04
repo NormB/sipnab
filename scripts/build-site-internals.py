@@ -173,6 +173,7 @@ DOCS_TO_SITE = {
     # GitHub blob URLs and the site's own high-loss workflow ended by leaving
     # the site.
     "tuning-capture.md": "tuning-capture.md",
+    "encapsulations.md": "encapsulations.md",
 }
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")

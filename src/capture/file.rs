@@ -748,6 +748,7 @@ mod tests {
     /// Out-of-range/negative `tv_usec` values from a hostile capture must
     /// clamp rather than overflow the u32 nanosecond conversion.
     #[test]
+    #[serial_test::serial(invalid_timestamps)]
     fn pcap_ts_to_chrono_out_of_range_usec_does_not_panic() {
         // A corrupt/hostile pcap can carry tv_usec outside [0, 1_000_000).
         // The microsecond→nanosecond conversion must clamp rather than overflow
@@ -820,6 +821,7 @@ mod tests {
     /// silently substituting "now". Regression for the consistency gap where
     /// `file.rs` fell back without counting while `live.rs` counted+warned.
     #[test]
+    #[serial_test::serial(invalid_timestamps)]
     fn fallback_to_now_is_counted_like_live() {
         use std::sync::atomic::Ordering;
         let counter = &crate::capture::live::INVALID_PCAP_TIMESTAMPS;

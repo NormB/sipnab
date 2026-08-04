@@ -636,6 +636,7 @@ pub fn run_cores_file(
                     r.stream_store.len(),
                     cli.cores,
                 );
+                report_undecodable(r.total_count);
                 report_icmp_summary(&r.stream_store);
                 report_retention_losses(&r.dialog_store);
                 report_capture_quality();
@@ -787,7 +788,12 @@ fn capture_quality_summary() -> Option<String> {
     let (dropped, if_dropped) = crate::capture::live::kernel_drop_counts();
     let bad_ts =
         crate::capture::live::INVALID_PCAP_TIMESTAMPS.load(std::sync::atomic::Ordering::Relaxed);
-    if dropped == 0 && if_dropped == 0 && bad_ts == 0 {
+    // A fourth channel, and the only one that is about sipnab rather than the
+    // host: a frame that ARRIVED intact and produced nothing because no
+    // decoder here could read it. Omitting it meant a capture sipnab
+    // understood 0% of reported its quality as "fine".
+    let undecodable = crate::capture::undecodable_report();
+    if dropped == 0 && if_dropped == 0 && bad_ts == 0 && undecodable.frames == 0 {
         return None;
     }
 
@@ -810,13 +816,209 @@ fn capture_quality_summary() -> Option<String> {
              with the wall clock (timing analysis is unreliable for this run)"
         ));
     }
+    if undecodable.frames > 0 {
+        // Count and pointer, not the full breakdown: the NOT DECODED notice
+        // prints immediately before this at every one of the three summary
+        // sites, and repeating its reason list verbatim would turn a warning
+        // that only fires when something is wrong into something to skim.
+        parts.push(format!(
+            "{} frame(s) reached sipnab intact and could not be decoded at all, so \
+             nothing in them was analysed (see the NOT DECODED line above for which \
+             link types, EtherTypes and IP protocols)",
+            undecodable.frames
+        ));
+    }
 
     Some(format!(
         "capture quality: {}. THIS ANALYSIS IS INCOMPLETE — the counts above are \
-         what sipnab RECEIVED, not what crossed the wire. See \
+         what sipnab RECEIVED AND UNDERSTOOD, not what crossed the wire. See \
          docs/tuning-capture.md.",
         parts.join("; ")
     ))
+}
+
+/// Share of frames that must fail to decode before the notice stops being
+/// informational and starts refusing to let a zero read as a finding.
+///
+/// Half. Below it, undecodable frames are ordinary background — ARP, LLDP, a
+/// tunnel sipnab does not strip — and a capture full of SIP still reports
+/// every message. At or above it, the totals describe a minority of the
+/// capture, and the honest reading of a zero is "unknown", not "none".
+const BLIND_RUN_SHARE: f64 = 50.0;
+
+/// The reasons in a report, busiest first, each with its number and count.
+///
+/// The number is the deliverable. "Unsupported link type" names no capture
+/// format; "unsupported link type 0" names `DLT_NULL` and the `editcap` that
+/// converts it. "Unknown EtherType" names nothing; "0x8847" names MPLS on the
+/// span port.
+fn reason_list(report: &crate::capture::UndecodableReport) -> String {
+    report
+        .reasons
+        .iter()
+        .map(|t| format!("{} ({})", t.reason, t.frames))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What this run could not decode, as the line a summary prints — or `None`
+/// when every frame decoded.
+///
+/// The sibling of [`capture_quality_summary`] and of
+/// `pipeline::portrange_skip_report`, and the answer to the same shape of
+/// question: the totals sipnab prints describe what it UNDERSTOOD, and
+/// without this line they read as describing the capture.
+///
+/// The defect in full: `tests/pcap-samples/h263-over-rtp.pcap` carries
+/// `INVITE sip:auto@localhost SIP/2.0` on UDP 5060 and, on a link type sipnab
+/// had no decoder for, produced "49 packets captured, 0 SIP messages, 0 RTP
+/// packets across 0 streams", then "No SIP traffic found.", then exit 0 —
+/// character for character what a perfect read of a capture holding no SIP
+/// produces. Nothing in the output separated "there is no SIP here" from "I
+/// could not read one single frame of this".
+///
+/// # Arguments
+///
+/// * `report` — the run's undecodable tally.
+/// * `frames_read` — frames handed to the parser, the denominator for the
+///   share. A zero here suppresses the share rather than dividing by it.
+///
+/// # Returns
+///
+/// The notice, or `None` when nothing failed to decode — a clean run stays
+/// quiet, the same rule [`retention_summary`] follows.
+fn undecodable_summary(
+    report: &crate::capture::UndecodableReport,
+    frames_read: u64,
+) -> Option<String> {
+    if report.frames == 0 {
+        return None;
+    }
+
+    let mut msg = format!("NOT DECODED: {} of {frames_read} frame(s)", report.frames);
+    // Guarding the divide rather than assuming: `frames_read` comes from a
+    // different counter than `report.frames`, and a share of infinity printed
+    // beside a real count would discredit both.
+    let share = if frames_read > 0 {
+        let pct = report.frames as f64 * 100.0 / frames_read as f64;
+        msg.push_str(&format!(" ({pct:.1}%)"));
+        pct
+    } else {
+        0.0
+    };
+    msg.push_str(&format!(
+        " produced nothing and are in none of the counts above. Reasons: {}",
+        reason_list(report)
+    ));
+    if report.reasons_dropped > 0 {
+        msg.push_str(&format!(
+            "; plus {} further frame(s) whose reason was not retained (the capture \
+             carried more distinct reasons than the tally holds)",
+            report.reasons_dropped
+        ));
+    }
+    msg.push('.');
+
+    // Two tiers, because "most of it" and "all of it" are different findings
+    // and the second is the one this whole feature exists for: at 100% the
+    // totals above describe nothing at all, and every one of them is a zero
+    // that means "unknown".
+    if frames_read > 0 && report.frames >= frames_read {
+        msg.push_str(
+            " NOTHING IN THIS CAPTURE WAS READ — every frame failed to decode, so the \
+             totals above describe no traffic whatsoever and a zero among them is not \
+             evidence of absence.",
+        );
+    } else if share >= BLIND_RUN_SHARE {
+        msg.push_str(
+            " THIS ANALYSIS IS MOSTLY BLIND — the totals above describe the minority \
+             of the capture sipnab could read, so a zero among them is not evidence \
+             of absence.",
+        );
+    }
+    Some(msg)
+}
+
+/// The guidance a run prints when it found no SIP at all.
+///
+/// Split out as a pure function because the whole value is in WHICH sentence
+/// it chooses. "No SIP traffic found." is a claim about the wire, and a run
+/// that could not decode the capture has no basis for it — that unqualified
+/// sentence is the defect's last mile, the point where an unread capture is
+/// finally reported to the operator as an empty one.
+///
+/// # Arguments
+///
+/// * `rtp_packets` / `streams` — RTP parsed this run. Any RTP at all proves
+///   the capture was readable, so the media-only message stands unchanged.
+/// * `undecodable` — the run's undecodable tally.
+/// * `frames_read` — frames handed to the parser.
+///
+/// # Returns
+///
+/// The lines to print, in order.
+fn no_sip_guidance(
+    rtp_packets: u64,
+    streams: usize,
+    undecodable: &crate::capture::UndecodableReport,
+    frames_read: u64,
+) -> Vec<String> {
+    // RTP was parsed, so the capture demonstrably decoded: media-only, not
+    // unreadable. Undecodable background here changes nothing.
+    if rtp_packets > 0 {
+        return vec![format!(
+            "No SIP signalling found, but {rtp_packets} RTP packets across {streams} \
+             stream(s) were parsed. Use --report to see stream details."
+        )];
+    }
+
+    if undecodable.frames > 0 {
+        let share = if frames_read > 0 {
+            format!(
+                " ({:.1}%)",
+                undecodable.frames as f64 * 100.0 / frames_read as f64
+            )
+        } else {
+            String::new()
+        };
+        return vec![
+            format!(
+                "No SIP traffic was decoded — but {} of {frames_read} frame(s){share} could \
+                 not be decoded at all, so this is not a finding that the capture contains \
+                 no SIP. Undecodable: {}.",
+                undecodable.frames,
+                reason_list(undecodable)
+            ),
+            "Fix the decode before reading anything into the zero above: convert the \
+             capture (editcap -T ether) or open an issue naming the number(s) reported."
+                .to_string(),
+        ];
+    }
+
+    vec![
+        "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."
+            .to_string(),
+        "Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content.".to_string(),
+    ]
+}
+
+/// Print the undecodable notice for a finished run, when there is one.
+///
+/// Called from all three batch summary sites for the reason
+/// [`report_icmp_summary`] is: a notice that exists on one path and not the
+/// others makes `--cores N` and `--cores 1` disagree about the same capture.
+///
+/// # Arguments
+///
+/// * `frames_read` — frames handed to the parser, for the share.
+///
+/// # Side effects
+///
+/// Writes one line to stderr when anything failed to decode.
+fn report_undecodable(frames_read: u64) {
+    if let Some(msg) = undecodable_summary(&crate::capture::undecodable_report(), frames_read) {
+        eprintln!("{msg}");
+    }
 }
 
 /// Print the ICMP evidence summary for a finished run.
@@ -943,6 +1145,7 @@ pub fn run(
                 result.stream_store.len(),
                 cli.cores,
             );
+            report_undecodable(result.total_count);
             report_icmp_summary(&result.stream_store);
             report_retention_losses(&result.dialog_store);
             report_capture_quality();
@@ -2074,26 +2277,27 @@ impl BatchRunner {
                 );
             }
 
+            // What sipnab could not decode, beside the totals that hide it.
+            // Read once so the notice and the no-SIP guidance below cannot
+            // disagree about the same run.
+            let undecodable = crate::capture::undecodable_report();
+            if let Some(msg) = undecodable_summary(&undecodable, total_count) {
+                eprintln!("{msg}");
+            }
+
             report_icmp_summary(&stream_store.read());
             report_retention_losses(&dialog_store.read());
             report_capture_quality();
 
-            // Helpful guidance when no SIP signalling was found. If RTP was
-            // parsed, the capture was readable — just media-only — so soften
-            // the message rather than implying a parse failure.
+            // Guidance when no SIP signalling was found — and, when the
+            // capture did not decode, a refusal to state that absence as a
+            // finding. See `no_sip_guidance` for why the choice of sentence
+            // is the whole point.
             if counters.sip_count == 0 {
-                if counters.rtp_count > 0 {
-                    eprintln!(
-                        "No SIP signalling found, but {} RTP packets across {stream_count} stream(s) were parsed. Use --report to see stream details.",
-                        counters.rtp_count
-                    );
-                } else {
-                    eprintln!(
-                        "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."
-                    );
-                    eprintln!(
-                        "Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content."
-                    );
+                for line in
+                    no_sip_guidance(counters.rtp_count, stream_count, &undecodable, total_count)
+                {
+                    eprintln!("{line}");
                 }
             }
         }
@@ -3085,27 +3289,276 @@ mod tests {
     /// A clean capture must stay quiet, for the same reason a clean retention
     /// run does: a warning that fires on every run is one operators skim past.
     ///
-    /// Serialized on the same key as the counter tests, because the three
-    /// counters this reads are process-global.
+    /// Every one of the four counters this reads is process-global, and it
+    /// reads each of them TWICE — once directly, once inside
+    /// `capture_quality_summary` — so it holds the key of every group that
+    /// writes one. Holding only `kernel_drop_counts` (which is where this
+    /// started) left the undecodable tally and the invalid-timestamp counter
+    /// free to move between the two reads and flip the branch under it.
     #[test]
-    #[serial_test::serial(kernel_drop_counts)]
+    #[serial_test::serial(invalid_timestamps, kernel_drop_counts, undecodable_tally)]
     fn a_clean_capture_reports_no_quality_loss() {
-        // Only meaningful when nothing else in the process has counted a loss;
-        // a prior test in the same binary may have. Assert the invariant that
-        // actually matters: silence iff all three counters are zero.
+        // One of the four is resettable, so start it from a known zero rather
+        // than from whatever ran before. The other three are monotonic with no
+        // reset, so the invariant that actually matters is asserted instead:
+        // silence iff all four signals are zero.
+        crate::capture::reset_undecodable_frames();
         let (dropped, if_dropped) = crate::capture::live::kernel_drop_counts();
         let bad_ts = crate::capture::live::INVALID_PCAP_TIMESTAMPS
             .load(std::sync::atomic::Ordering::Relaxed);
+        let undecodable = crate::capture::undecodable_frames();
         let summary = capture_quality_summary();
-        if dropped == 0 && if_dropped == 0 && bad_ts == 0 {
+        if dropped == 0 && if_dropped == 0 && bad_ts == 0 && undecodable == 0 {
             assert_eq!(summary, None, "a clean capture must report nothing");
         } else {
             assert!(
                 summary.is_some(),
-                "counters are nonzero ({dropped}/{if_dropped}/{bad_ts}) so the \
-                 summary must not be silent"
+                "counters are nonzero ({dropped}/{if_dropped}/{bad_ts}/{undecodable}) \
+                 so the summary must not be silent"
             );
         }
+    }
+
+    // ── Frames sipnab could not decode ──────────────────────────────
+    //
+    // The defect these gate: a capture sipnab decoded 0% of printed
+    // "N packets captured, 0 SIP messages, 0 RTP packets across 0 streams"
+    // and then "No SIP traffic found.", exit 0 — textually identical to a
+    // clean read of a capture that genuinely holds no SIP.
+
+    /// Build a report by hand so the wording is gated without driving the
+    /// process-global tally.
+    fn undecodable_of(
+        frames: u64,
+        reasons: &[(crate::capture::UndecodableReason, u64)],
+    ) -> crate::capture::UndecodableReport {
+        crate::capture::UndecodableReport {
+            frames,
+            reasons: reasons
+                .iter()
+                .map(|&(reason, frames)| crate::capture::UndecodableTally { reason, frames })
+                .collect(),
+            reasons_dropped: 0,
+        }
+    }
+
+    /// A run that decoded everything says nothing — the same rule the
+    /// retention and capture-quality summaries follow.
+    #[test]
+    fn a_fully_decoded_run_reports_no_undecodable_frames() {
+        assert_eq!(undecodable_summary(&undecodable_of(0, &[]), 4_212), None);
+    }
+
+    /// The notice names the count, the proportion, and every reason WITH its
+    /// number. "Unsupported link type" without the "0" names no capture
+    /// format, and an operator cannot act on it.
+    #[test]
+    fn the_notice_names_the_count_the_share_and_the_numbers() {
+        let msg = undecodable_summary(
+            &undecodable_of(
+                49,
+                &[(
+                    crate::capture::UndecodableReason::UnsupportedLinkType(0),
+                    49,
+                )],
+            ),
+            49,
+        )
+        .expect("49 undecodable frames must be reported");
+        assert!(msg.starts_with("NOT DECODED:"), "wrong prefix: {msg}");
+        assert!(msg.contains("49 of 49 frame(s)"), "counts missing: {msg}");
+        assert!(msg.contains("100.0%"), "share missing: {msg}");
+        assert!(
+            msg.contains("unsupported link type 0 (49)"),
+            "the DLT NUMBER must appear with its count: {msg}"
+        );
+    }
+
+    /// A high share must be EMPHATIC. Getting zero from a capture that was
+    /// almost entirely unreadable is a different statement from getting zero
+    /// from a clean read, and the notice has to say which one happened.
+    #[test]
+    fn a_high_undecodable_share_is_emphatic() {
+        // Half the capture: mostly blind, but something was read.
+        let mostly = undecodable_summary(
+            &undecodable_of(
+                50,
+                &[(
+                    crate::capture::UndecodableReason::UnsupportedLinkType(0),
+                    50,
+                )],
+            ),
+            100,
+        )
+        .expect("reported");
+        assert!(
+            mostly.contains("THIS ANALYSIS IS MOSTLY BLIND"),
+            "half a capture unread must be emphatic: {mostly}"
+        );
+        assert!(
+            mostly.contains("not evidence of absence"),
+            "a blind run must refuse to let a zero read as a finding: {mostly}"
+        );
+
+        // All of it: a different and stronger finding, and the one this whole
+        // counter exists for.
+        let nothing = undecodable_summary(
+            &undecodable_of(
+                49,
+                &[(
+                    crate::capture::UndecodableReason::UnsupportedLinkType(0),
+                    49,
+                )],
+            ),
+            49,
+        )
+        .expect("reported");
+        assert!(
+            nothing.contains("NOTHING IN THIS CAPTURE WAS READ"),
+            "100% unread is not 'mostly': {nothing}"
+        );
+        assert!(
+            !nothing.contains("MOSTLY BLIND"),
+            "the two tiers must not both fire: {nothing}"
+        );
+
+        // One undecodable ARP frame in a healthy capture is normal traffic and
+        // must NOT trigger the emphatic wording, or the signal is worthless.
+        let noise = undecodable_summary(
+            &undecodable_of(1, &[(crate::capture::UndecodableReason::NotIp(None), 1)]),
+            10_000,
+        )
+        .expect("still reported");
+        assert!(
+            !noise.contains("not evidence of absence"),
+            "ordinary non-IP background must not be alarming: {noise}"
+        );
+        assert!(
+            noise.contains("1 of 10000 frame(s)"),
+            "it is still reported, with its numbers: {noise}"
+        );
+    }
+
+    /// Reasons the tally could not keep are declared, so the breakdown never
+    /// silently fails to add up to the total.
+    #[test]
+    fn dropped_reasons_are_declared_not_hidden() {
+        let mut report = undecodable_of(
+            30,
+            &[(
+                crate::capture::UndecodableReason::UnsupportedLinkType(0),
+                26,
+            )],
+        );
+        report.reasons_dropped = 4;
+        let msg = undecodable_summary(&report, 30).expect("reported");
+        assert!(
+            msg.contains("4 further frame(s) whose reason was not retained"),
+            "the unnamed frames must be declared: {msg}"
+        );
+    }
+
+    /// A capture sipnab decoded none of is a QUALITY finding. Before this,
+    /// `capture_quality_summary` returned `None` unless the kernel or the NIC
+    /// had dropped something, so a run that understood 0% reported "fine".
+    #[test]
+    #[serial_test::serial(kernel_drop_counts, undecodable_tally)]
+    fn undecodable_frames_are_a_capture_quality_signal() {
+        crate::capture::reset_undecodable_frames();
+        assert!(
+            !capture_quality_summary().is_some_and(|s| s.contains("could not be decoded")),
+            "precondition: nothing undecodable yet"
+        );
+
+        // Drive the real swallow site: one frame on a link type with no decoder.
+        let mut proc = crate::capture::PacketProcessor::new();
+        let data = vec![0u8; 64];
+        let n = data.len();
+        proc.process(&crate::capture::Packet::new(
+            chrono::Utc::now(),
+            data,
+            n,
+            n,
+            None,
+            147,
+        ));
+
+        let msg = capture_quality_summary()
+            .expect("a frame sipnab could not decode is a quality finding");
+        assert!(
+            msg.contains("1 frame(s) reached sipnab intact and could not be decoded"),
+            "the count must be named: {msg}"
+        );
+        // The reason list is NOT repeated here — `report_undecodable` prints
+        // it immediately above at every summary site — but this line must
+        // point at it rather than leaving the count unexplained.
+        assert!(
+            msg.contains("see the NOT DECODED line above"),
+            "the quality line must point at the breakdown: {msg}"
+        );
+        crate::capture::reset_undecodable_frames();
+    }
+
+    /// With no SIP, no RTP and a clean decode, the unqualified "No SIP traffic
+    /// found." stands — that IS the finding.
+    #[test]
+    fn a_clean_read_with_no_sip_states_it_plainly() {
+        let lines = no_sip_guidance(0, 0, &undecodable_of(0, &[]), 4_212);
+        assert!(
+            lines.iter().any(|l| l == "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."),
+            "a clean read must say so plainly: {lines:?}"
+        );
+    }
+
+    /// With undecodable frames, "No SIP traffic found." must NOT be printed
+    /// unqualified. This is the whole defect: the sentence asserts a fact
+    /// about the wire that the run has no basis for.
+    #[test]
+    fn no_sip_after_a_failed_decode_is_never_stated_as_a_finding() {
+        let lines = no_sip_guidance(
+            0,
+            0,
+            &undecodable_of(
+                49,
+                &[(
+                    crate::capture::UndecodableReason::UnsupportedLinkType(0),
+                    49,
+                )],
+            ),
+            49,
+        );
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("No SIP traffic found."),
+            "the unqualified finding must not appear: {joined}"
+        );
+        assert!(
+            joined.contains("not a finding that the capture contains no SIP"),
+            "the run must disclaim the zero: {joined}"
+        );
+        assert!(
+            joined.contains("unsupported link type 0"),
+            "the reason and its number must be named: {joined}"
+        );
+    }
+
+    /// RTP with no SIP proves the capture WAS readable, so that message is
+    /// unchanged even though a few frames (ARP, say) did not decode.
+    #[test]
+    fn media_only_capture_keeps_its_own_message() {
+        let lines = no_sip_guidance(
+            120,
+            2,
+            &undecodable_of(3, &[(crate::capture::UndecodableReason::NotIp(None), 3)]),
+            500,
+        );
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains(
+                "No SIP signalling found, but 120 RTP packets across 2 stream(s) were parsed"
+            ),
+            "a demonstrably readable capture keeps its message: {joined}"
+        );
     }
 
     /// Kernel-buffer and interface drops must be named SEPARATELY, with their

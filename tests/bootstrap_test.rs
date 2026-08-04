@@ -100,13 +100,24 @@ fn portrange_resolution_and_error() {
 
 /// The BPF filter is auto-generated from the portrange for live captures
 /// only, and never overrides an explicit filter.
+///
+/// The generated expression is encapsulation-aware — it is compared against
+/// `bootstrap::auto_bpf_filter`, whose own tests pin it to exact frame counts
+/// through libpcap. Here the question is only which runs get one.
 #[test]
 fn bpf_autogeneration_rules() {
     let p = bootstrap::plan(&cli(&["-d", "eth0"]), &Config::default()).expect("plan");
     assert_eq!(
         p.capture_config.bpf_filter.as_deref(),
-        Some("portrange 5060-5061"),
-        "live capture with no explicit filter gets the portrange BPF"
+        Some(bootstrap::auto_bpf_filter(5060, 5061, &[]).as_str()),
+        "live capture with no explicit filter gets the auto-generated BPF"
+    );
+    assert!(
+        p.capture_config
+            .bpf_filter
+            .as_deref()
+            .is_some_and(|f| f.starts_with("portrange 5060-5061 or ")),
+        "the untagged portrange must still lead the expression"
     );
 
     let p = bootstrap::plan(
@@ -116,8 +127,32 @@ fn bpf_autogeneration_rules() {
     .expect("plan");
     assert_eq!(
         p.capture_config.bpf_filter.as_deref(),
-        Some("port 5080"),
+        Some(bootstrap::auto_bpf_filter(5080, 5080, &[]).as_str()),
         "degenerate range uses the single-port form"
+    );
+
+    // Opt-in UDP tunnel coverage reaches the generated filter, and only when
+    // asked for: it captures whole ports, so it can never be a default.
+    let p = bootstrap::plan(
+        &cli(&["-d", "eth0", "--capture-tunnels"]),
+        &Config::default(),
+    )
+    .expect("plan");
+    assert_eq!(
+        p.capture_config.bpf_filter.as_deref(),
+        Some(bootstrap::auto_bpf_filter(5060, 5061, bootstrap::TUNNEL_PORTS_DEFAULT).as_str()),
+        "--capture-tunnels adds the tunnel ports"
+    );
+
+    let p = bootstrap::plan(
+        &cli(&["-d", "eth0", "--capture-tunnels=8472"]),
+        &Config::default(),
+    )
+    .expect("plan");
+    assert_eq!(
+        p.capture_config.bpf_filter.as_deref(),
+        Some(bootstrap::auto_bpf_filter(5060, 5061, &[8472]).as_str()),
+        "a custom tunnel port list is honoured verbatim"
     );
 
     // Positional trailing args are the explicit BPF filter (tcpdump-style).

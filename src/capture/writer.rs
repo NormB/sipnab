@@ -862,14 +862,21 @@ fn build_idb(link_type: i32, name: Option<&str>) -> InterfaceDescriptionBlock<'s
 /// Name a pcap link-layer type for an error an operator has to act on.
 ///
 /// The number alone ("1" vs "113") says nothing to someone holding two
-/// captures and wondering which one disagrees, so the four link types sipnab
-/// decodes are named; anything else is reported as its bare DLT value, which
+/// captures and wondering which one disagrees, so every link type sipnab
+/// decodes is named; anything else is reported as its bare DLT value, which
 /// is still what `capinfos` and Wireshark will show.
+///
+/// DLT 0 and DLT 108 are named separately rather than sharing a "loopback"
+/// label: they differ in exactly one way that matters when two captures
+/// disagree — DLT 0's address family is in host byte order and DLT 108's is
+/// always big-endian — so collapsing them would hide the one detail an
+/// operator comparing a Linux capture against a BSD one needs to see.
 fn describe_link_type(link_type: i32) -> String {
     match link_type {
         0 => "NULL/loopback (DLT 0)".to_string(),
         1 => "Ethernet (DLT 1)".to_string(),
         12 => "raw IP (DLT 12)".to_string(),
+        108 => "OpenBSD loopback (DLT 108)".to_string(),
         113 => "Linux SLL (DLT 113)".to_string(),
         276 => "Linux SLL2 (DLT 276)".to_string(),
         other => format!("DLT {other}"),

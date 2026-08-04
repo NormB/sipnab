@@ -11,6 +11,10 @@
 pub mod atomic;
 #[cfg(feature = "native")]
 pub mod channel;
+// SDP-declared media sockets, so a decoder cannot read RTP as a tunnel header.
+// Ungated on purpose: every entry point that parses a packet needs the veto,
+// including the wasm analyser, which has no `native`.
+pub mod declared_media;
 #[cfg(feature = "tls")]
 pub mod decrypt;
 #[cfg(feature = "native")]
@@ -41,6 +45,10 @@ pub mod resolve;
 pub mod rsa_key;
 #[cfg(feature = "tls")]
 pub mod tls;
+// Decapsulators for the wrappings carrier and data-centre traffic arrives in:
+// MPLS, NSH, GTP-U, VXLAN and friends. `parse` drives them; they own no walk
+// of their own.
+pub(crate) mod tunnel;
 pub mod websocket;
 #[cfg(feature = "native")]
 pub mod writer;
@@ -60,6 +68,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use smallvec::{SmallVec, smallvec};
+
+use crate::error::CaptureError;
 
 pub use packet::Packet;
 pub use parse::ParsedPacket;
@@ -86,6 +96,494 @@ static CAPTURED_PACKETS: AtomicU64 = AtomicU64::new(0);
 /// Monotonic count of packets fed to the processing pipeline.
 pub fn captured_packets() -> u64 {
     CAPTURED_PACKETS.load(Ordering::Relaxed)
+}
+
+// ── Frames sipnab could not decode ───────────────────────────────────
+//
+// sipnab's failure mode for an encapsulation it cannot read was a CONFIDENT
+// ZERO. A DLT_NULL capture full of SIP produced "49 packets captured, 0 SIP
+// messages, 0 RTP packets across 0 streams" and then "No SIP traffic found.",
+// exit 0 — output textually IDENTICAL to a capture that was read perfectly and
+// genuinely contained no SIP. The single swallow site logged the error at
+// `debug!`, which is off by default, and returned an empty vector. Nothing
+// counted it, so no summary, report, metric or exit code could tell the two
+// apart.
+//
+// The counters below make "I could not read this" a fact the run reports. Three
+// rules shape them, and each exists because the obvious alternative is wrong:
+//
+//   * **The NUMBER is the whole point.** "Unsupported link type" is useless
+//     without "0"; "unknown EtherType" is useless without "0x8847". An operator
+//     converts a capture, widens a filter, or files a decoder request based on
+//     that number, and a reason without one names no action.
+//   * **This is the hot path.** It runs once per undecodable frame, and on a
+//     capture sipnab cannot read at all that is once per frame. So: no
+//     allocation, no lock, no map. Fixed-slot lock-free tables of atomics,
+//     merged only when a report is asked for.
+//   * **ICMP is not undecodable.** `parse_packet` records the ICMP quote as
+//     dialog evidence and *then* returns `CaptureError::Icmp` — the frame was
+//     understood, it just produces no `ParsedPacket`. Counting it here would
+//     make every capture carrying an ICMP error look partly unread, and the
+//     ICMP summary already reports it.
+
+/// Frames that reached the parser and produced no [`ParsedPacket`] because
+/// sipnab could not decode them. Exact even when the per-reason tables below
+/// overflow, which is why it is kept apart from them.
+static UNDECODABLE_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Distinct numbers each per-reason table can name before it starts reporting
+/// frames as "reason lost" instead.
+///
+/// A capture carries a handful of undecodable link types / EtherTypes / IP
+/// protocols, not hundreds, so this is sized for the real distribution rather
+/// than the worst case: the cost of a miss is a linear scan of this many
+/// relaxed loads on a path that only runs for frames already being discarded.
+pub const UNDECODABLE_REASON_SLOTS: usize = 16;
+
+/// Sentinel for a slot no thread has claimed. Outside every real key
+/// (a DLT is an `i32`, an EtherType a `u16`, an IP protocol a `u8`).
+const TALLY_EMPTY: i64 = i64::MIN;
+
+/// Sentinel key for "the number could not be read from the frame".
+/// Negative, so it cannot collide with a real EtherType or protocol number.
+const TALLY_NO_NUMBER: i64 = -1;
+
+/// Fixed-capacity, lock-free tally of `number -> frames`.
+///
+/// Open-addressed by linear scan and claimed by compare-exchange. A slot is
+/// claimed once and never released, so a reader never sees a key change under
+/// it; two threads racing on the same new key may claim two slots for it,
+/// which [`UndecodableReport`] merges. Frames arriving after every slot is
+/// claimed are counted in `overflow` rather than dropped — the total must stay
+/// exact even when the breakdown cannot.
+struct NumTally {
+    /// Claimed numbers, or [`TALLY_EMPTY`].
+    keys: [std::sync::atomic::AtomicI64; UNDECODABLE_REASON_SLOTS],
+    /// Frames counted against the key at the same index.
+    counts: [AtomicU64; UNDECODABLE_REASON_SLOTS],
+    /// Frames whose number found no free slot, so its identity was lost.
+    overflow: AtomicU64,
+}
+
+impl NumTally {
+    /// An empty tally.
+    const fn new() -> Self {
+        // `[EXPR; N]` needs a `const` item for a non-`Copy` element type;
+        // each repeat evaluates the initializer afresh, which is exactly the
+        // separate-atomic-per-slot this wants.
+        #[expect(
+            clippy::declare_interior_mutable_const,
+            reason = "const-item repeat is the only const way to build an array of atomics; \
+                      each repetition constructs a distinct atomic, never a shared one"
+        )]
+        const EMPTY: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(TALLY_EMPTY);
+        #[expect(
+            clippy::declare_interior_mutable_const,
+            reason = "as above — one fresh zeroed counter per slot"
+        )]
+        const ZERO: AtomicU64 = AtomicU64::new(0);
+        Self {
+            keys: [EMPTY; UNDECODABLE_REASON_SLOTS],
+            counts: [ZERO; UNDECODABLE_REASON_SLOTS],
+            overflow: AtomicU64::new(0),
+        }
+    }
+
+    /// Count one frame against `key`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — the number identifying the reason (DLT, EtherType, IP
+    ///   protocol), or [`TALLY_NO_NUMBER`] when the frame did not state one.
+    ///
+    /// # Side effects
+    ///
+    /// Claims a slot for a number not seen before, or bumps `overflow` when
+    /// every slot is taken. Relaxed throughout: these counters are read by a
+    /// report, never as a happens-before edge for other state.
+    fn bump(&self, key: i64) {
+        for i in 0..UNDECODABLE_REASON_SLOTS {
+            let seen = self.keys[i].load(Ordering::Relaxed);
+            if seen == key {
+                self.counts[i].fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            if seen == TALLY_EMPTY {
+                // Losing the race means another thread claimed this slot: if it
+                // claimed it for the same key, count here anyway; otherwise
+                // walk on.
+                match self.keys[i].compare_exchange(
+                    TALLY_EMPTY,
+                    key,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        self.counts[i].fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                    Err(won_by) if won_by == key => {
+                        self.counts[i].fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        self.overflow.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Append this tally's non-empty slots to `out`, merging any key that a
+    /// race split across two slots, and return the overflow count.
+    fn collect(
+        &self,
+        reason_of: impl Fn(i64) -> UndecodableReason,
+        out: &mut Vec<UndecodableTally>,
+    ) -> u64 {
+        for i in 0..UNDECODABLE_REASON_SLOTS {
+            let key = self.keys[i].load(Ordering::Relaxed);
+            if key == TALLY_EMPTY {
+                continue;
+            }
+            let frames = self.counts[i].load(Ordering::Relaxed);
+            if frames == 0 {
+                continue; // claimed but not yet counted
+            }
+            let reason = reason_of(key);
+            match out.iter_mut().find(|t| t.reason == reason) {
+                Some(t) => t.frames += frames,
+                None => out.push(UndecodableTally { reason, frames }),
+            }
+        }
+        self.overflow.load(Ordering::Relaxed)
+    }
+
+    /// Clear every slot and the overflow count.
+    fn reset(&self) {
+        for i in 0..UNDECODABLE_REASON_SLOTS {
+            self.keys[i].store(TALLY_EMPTY, Ordering::Relaxed);
+            self.counts[i].store(0, Ordering::Relaxed);
+        }
+        self.overflow.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Frames whose pcap link type sipnab has no decoder for, by DLT number.
+static UNSUPPORTED_LINK_TYPE: NumTally = NumTally::new();
+/// Frames that decoded but carry no IP layer, by EtherType.
+static NOT_IP: NumTally = NumTally::new();
+/// Frames whose IP payload is no transport sipnab handles, by IP protocol.
+static NO_TRANSPORT: NumTally = NumTally::new();
+/// Frames shorter than the header they claim.
+static TRUNCATED_FRAMES: AtomicU64 = AtomicU64::new(0);
+/// Frames a decoder rejected outright.
+static DECODE_ERRORS: AtomicU64 = AtomicU64::new(0);
+
+/// Why one frame produced no [`ParsedPacket`], with the number that names it.
+///
+/// The number is not decoration. "Unsupported link type" tells an operator
+/// nothing; "unsupported link type 0" tells them the file is `DLT_NULL` and
+/// `editcap -T ether` will convert it. "Not IP" tells them nothing; "EtherType
+/// 0x8847" tells them the span port is mirroring MPLS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UndecodableReason {
+    /// The pcap link type has no decoder in sipnab. Carries the DLT number.
+    UnsupportedLinkType(i32),
+    /// The link layer decoded and named a payload that is not IP. Carries the
+    /// EtherType when the link layer states one (`None` for link types that
+    /// do not, such as `DLT_RAW`, or a frame too short to reach it).
+    NotIp(Option<u16>),
+    /// An IP header decoded but its payload is no transport sipnab handles.
+    ///
+    /// Carries the protocol number from the frame's **outermost** IP header,
+    /// which is the number a filter or a decoder request is written against.
+    /// For a tunnel whose inner packet is the one lacking a transport that is
+    /// the tunnel's own protocol (4, 41, 47) rather than the inner one —
+    /// still true, and still the layer to look at first. `None` when the
+    /// frame's link type puts the IP header at no fixed offset.
+    NoTransport(Option<u8>),
+    /// The frame is shorter than a header it claims. A snaplen or a cut
+    /// capture, not a parser gap.
+    Truncated,
+    /// A decoder rejected the bytes.
+    DecodeError,
+}
+
+impl UndecodableReason {
+    /// Stable identifier for this reason, for use as a metric label value.
+    ///
+    /// Carries the same number the [`Display`](std::fmt::Display) form does:
+    /// a label that collapsed every DLT into `unsupported_link_type` would
+    /// make the series unactionable in exactly the way the sentence would.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::UnsupportedLinkType(dlt) => format!("unsupported_link_type_{dlt}"),
+            Self::NotIp(Some(et)) => format!("not_ip_ethertype_0x{et:04x}"),
+            Self::NotIp(None) => "not_ip_ethertype_unrecorded".to_string(),
+            Self::NoTransport(Some(p)) => format!("no_transport_ip_protocol_{p}"),
+            Self::NoTransport(None) => "no_transport_ip_protocol_unrecorded".to_string(),
+            Self::Truncated => "truncated_frame".to_string(),
+            Self::DecodeError => "decode_error".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for UndecodableReason {
+    /// The operator-facing sentence, always carrying the number.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedLinkType(dlt) => write!(f, "unsupported link type {dlt}"),
+            Self::NotIp(Some(et)) => write!(f, "not IP (EtherType 0x{et:04X})"),
+            Self::NotIp(None) => write!(f, "not IP (EtherType not recorded)"),
+            Self::NoTransport(Some(p)) => write!(f, "no transport (IP protocol {p})"),
+            Self::NoTransport(None) => write!(f, "no transport (IP protocol not recorded)"),
+            Self::Truncated => write!(f, "truncated frame"),
+            Self::DecodeError => write!(f, "decode error"),
+        }
+    }
+}
+
+/// Frames counted against one [`UndecodableReason`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UndecodableTally {
+    /// Why those frames produced nothing.
+    pub reason: UndecodableReason,
+    /// How many frames.
+    pub frames: u64,
+}
+
+/// What this run could not decode at all.
+///
+/// The counts sipnab prints describe what it understood. This describes what
+/// reached it and produced nothing — the difference between "there is no SIP
+/// here" and "I could not read one single frame of this", which the output
+/// otherwise renders identically. Report it beside any packet count.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UndecodableReport {
+    /// Total frames that produced no parsed packet. Exact: counted apart from
+    /// the per-reason tables so a table that overflowed cannot understate it.
+    pub frames: u64,
+    /// Per-reason breakdown, most frames first, ties by label so the report
+    /// is deterministic.
+    pub reasons: Vec<UndecodableTally>,
+    /// Frames counted in `frames` whose specific number is NOT in `reasons`,
+    /// because the capture carried more distinct numbers than
+    /// [`UNDECODABLE_REASON_SLOTS`]. Reported rather than hidden: a breakdown
+    /// that quietly failed to add up to the total would be the same class of
+    /// confident-wrong-answer this whole tally exists to remove.
+    pub reasons_dropped: u64,
+}
+
+/// Frames this run could not decode, as one number.
+///
+/// The cheap read for a `/metrics` scrape: a single relaxed load, where
+/// [`undecodable_report`] walks the reason tables.
+///
+/// # Returns
+///
+/// Monotonic count of frames that reached the parser and produced no parsed
+/// packet, since the process started or the last [`reset_undecodable_frames`].
+#[must_use]
+pub fn undecodable_frames() -> u64 {
+    UNDECODABLE_FRAMES.load(Ordering::Relaxed)
+}
+
+/// The full undecodable breakdown for this run.
+///
+/// # Returns
+///
+/// An [`UndecodableReport`]; all zeroes and an empty breakdown when every
+/// frame decoded.
+#[must_use]
+pub fn undecodable_report() -> UndecodableReport {
+    let mut reasons = Vec::new();
+    let mut dropped = 0u64;
+    dropped += UNSUPPORTED_LINK_TYPE.collect(
+        |k| UndecodableReason::UnsupportedLinkType(k as i32),
+        &mut reasons,
+    );
+    dropped += NOT_IP.collect(
+        |k| {
+            UndecodableReason::NotIp(if k == TALLY_NO_NUMBER {
+                None
+            } else {
+                Some(k as u16)
+            })
+        },
+        &mut reasons,
+    );
+    dropped += NO_TRANSPORT.collect(
+        |k| {
+            UndecodableReason::NoTransport(if k == TALLY_NO_NUMBER {
+                None
+            } else {
+                Some(k as u8)
+            })
+        },
+        &mut reasons,
+    );
+    for (count, reason) in [
+        (&TRUNCATED_FRAMES, UndecodableReason::Truncated),
+        (&DECODE_ERRORS, UndecodableReason::DecodeError),
+    ] {
+        let frames = count.load(Ordering::Relaxed);
+        if frames > 0 {
+            reasons.push(UndecodableTally { reason, frames });
+        }
+    }
+    // Busiest first; ties by label so two runs over the same capture print the
+    // same order.
+    reasons.sort_unstable_by(|a, b| {
+        b.frames
+            .cmp(&a.frames)
+            .then_with(|| a.reason.label().cmp(&b.reason.label()))
+    });
+    UndecodableReport {
+        frames: UNDECODABLE_FRAMES.load(Ordering::Relaxed),
+        reasons,
+        reasons_dropped: dropped,
+    }
+}
+
+/// Clear the undecodable tally.
+///
+/// The counters are process-global, so a process that analyses several
+/// captures in sequence (and a test that asserts on exact counts) needs a way
+/// back to zero — the same reason [`crate::pipeline::reset_portrange_skips`]
+/// exists.
+///
+/// # Side effects
+///
+/// Zeroes the total, both scalar reasons, and every slot of the three keyed
+/// tables.
+pub fn reset_undecodable_frames() {
+    UNDECODABLE_FRAMES.store(0, Ordering::Relaxed);
+    TRUNCATED_FRAMES.store(0, Ordering::Relaxed);
+    DECODE_ERRORS.store(0, Ordering::Relaxed);
+    UNSUPPORTED_LINK_TYPE.reset();
+    NOT_IP.reset();
+    NO_TRANSPORT.reset();
+}
+
+/// The numbers the decoder had in hand when it gave up on a frame.
+///
+/// **Never re-derived from the frame's bytes.** `parse.rs` owns the one copy
+/// of the link-layer walk on purpose — its own comment says "two would be two
+/// places for an encapsulated packet's start offset to drift" — and a second
+/// walk here would drift from it exactly on the encapsulations this feature
+/// exists to explain, reporting a wrong EtherType with full confidence. So the
+/// number travels OUT of the failure with the error rather than being
+/// recovered from the bytes afterwards.
+///
+/// A field left `None` means "the decoder did not hand this number out", and
+/// the reason then renders as *not recorded*. That is a true statement an
+/// operator can act on ("sipnab could not read this frame, and cannot yet tell
+/// you which EtherType"); a number produced by a stale second walk would not
+/// be.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameFacts {
+    /// EtherType the link layer named for the payload, when the decoder
+    /// reached it.
+    pub ethertype: Option<u16>,
+    /// Protocol number of the innermost IP header the decoder reached.
+    pub ip_protocol: Option<u8>,
+}
+
+impl FrameFacts {
+    /// Nothing was handed out: every reason that needs a number renders as
+    /// *not recorded*.
+    pub const UNRECORDED: Self = Self {
+        ethertype: None,
+        ip_protocol: None,
+    };
+}
+
+/// Why this error means the frame produced nothing, or `None` when the frame
+/// was in fact understood.
+///
+/// The only `None` is [`CaptureError::Icmp`]: `parse_packet` has already
+/// recorded that frame's quote as dialog evidence by the time it returns the
+/// error, so the frame was read — it simply is not a `ParsedPacket`.
+///
+/// Matched exhaustively on purpose. A variant added later must be classified
+/// deliberately, not swept into "decode error" by a wildcard.
+///
+/// # Arguments
+///
+/// * `err` — what the decoder said.
+/// * `facts` — the numbers the decoder had in hand. Pure input: this function
+///   never looks at frame bytes.
+fn classify_undecodable(err: &CaptureError, facts: FrameFacts) -> Option<UndecodableReason> {
+    Some(match err {
+        CaptureError::UnsupportedLinkType(dlt) => UndecodableReason::UnsupportedLinkType(*dlt),
+        // `NoIpPayload` joins `NotIp` rather than `Truncated`: an "IP layer
+        // with no payload to walk into" is what a well-formed ARP frame
+        // produces (etherparse slices it into `NetSlice::Arp`, which has no
+        // IP payload), and ARP is the single commonest non-IP frame on any
+        // Ethernet capture. Filing it as truncation would send an operator
+        // to raise a snaplen that was never the problem. Genuine truncation
+        // states its `need`/`got` and arrives as `TooShort`.
+        CaptureError::NotIp { .. } | CaptureError::NoIpPayload { .. } => {
+            UndecodableReason::NotIp(facts.ethertype)
+        }
+        // A GRE inner protocol IS an EtherType, and the error carries it, so
+        // this reason is fully named without any help from `facts`.
+        CaptureError::UnsupportedGreProtocol(p) => UndecodableReason::NotIp(Some(*p)),
+        CaptureError::NoTransport => UndecodableReason::NoTransport(facts.ip_protocol),
+        // The pre-parsed (HEP) path states the protocol in the error itself.
+        CaptureError::UnsupportedIpProtocol(p) => UndecodableReason::NoTransport(Some(*p)),
+        CaptureError::TooShort { .. } => UndecodableReason::Truncated,
+        CaptureError::PacketDecode { .. } | CaptureError::EncapTooDeep { .. } => {
+            UndecodableReason::DecodeError
+        }
+        CaptureError::Icmp => return None,
+        // File-format errors are raised by the reader before any frame exists,
+        // so they do not reach this site today. Classified rather than ignored
+        // so that if one ever does it is counted instead of vanishing.
+        CaptureError::NetMonFormat
+        | CaptureError::UnknownFormat { .. }
+        | CaptureError::GzipData
+        | CaptureError::GzipDecode { .. }
+        | CaptureError::GzipTooLarge { .. } => UndecodableReason::DecodeError,
+    })
+}
+
+/// Count one frame the parser could not turn into a [`ParsedPacket`].
+///
+/// # Arguments
+///
+/// * `err` — what the parser said.
+/// * `facts` — the numbers the parser had in hand; [`FrameFacts::UNRECORDED`]
+///   when it handed none out.
+///
+/// # Side effects
+///
+/// Bumps the process-global total and the tally for the classified reason. No
+/// allocation and no lock: this runs once per undecodable frame, which on a
+/// capture sipnab cannot read is once per frame.
+pub fn record_undecodable(err: &CaptureError, facts: FrameFacts) {
+    let Some(reason) = classify_undecodable(err, facts) else {
+        return;
+    };
+    UNDECODABLE_FRAMES.fetch_add(1, Ordering::Relaxed);
+    match reason {
+        UndecodableReason::UnsupportedLinkType(dlt) => {
+            UNSUPPORTED_LINK_TYPE.bump(i64::from(dlt));
+        }
+        UndecodableReason::NotIp(et) => {
+            NOT_IP.bump(et.map_or(TALLY_NO_NUMBER, i64::from));
+        }
+        UndecodableReason::NoTransport(p) => {
+            NO_TRANSPORT.bump(p.map_or(TALLY_NO_NUMBER, i64::from));
+        }
+        UndecodableReason::Truncated => {
+            TRUNCATED_FRAMES.fetch_add(1, Ordering::Relaxed);
+        }
+        UndecodableReason::DecodeError => {
+            DECODE_ERRORS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Output of [`PacketProcessor::process`]: the parsed packets ready from one
@@ -242,12 +740,24 @@ impl PacketProcessor {
     ///
     /// Mutates both reassemblers and the `tcp_sip_leftover` map (inserting,
     /// removing, and — at the `max_sessions` cap — evicting the
-    /// least-recently-updated held partial); logs unparseable packets at
-    /// debug level.
+    /// least-recently-updated held partial); counts every unparseable frame
+    /// into the process-global tally read by [`undecodable_report`], and logs
+    /// it at debug level.
     fn process_inner(&mut self, packet: &Packet) -> ParsedPackets {
         let parsed = match parse_packet(packet) {
             Ok(p) => p,
             Err(e) => {
+                // The one place a frame can vanish. Counted before the log,
+                // because `debug!` is off by default and used to be the only
+                // trace a frame left — which is how a capture sipnab decoded
+                // 0% of reported the same totals as a clean read.
+                //
+                // `UNRECORDED`: `parse_packet` does not yet hand its
+                // link-layer EtherType or innermost IP protocol back to its
+                // caller, so those two reasons render as *not recorded* until
+                // it does. Re-walking `packet` here to recover them is the one
+                // thing this must not do — see [`FrameFacts`].
+                record_undecodable(&e, FrameFacts::UNRECORDED);
                 tracing::debug!("Skipping unparseable packet: {e}");
                 return SmallVec::new();
             }
@@ -1295,7 +1805,13 @@ mod tests {
         }
 
         /// A non-IP frame (ARP EtherType) yields no parsed packets.
+        ///
+        /// Keyed even though it asserts nothing about the tally: the frame it
+        /// feeds is undecodable, so it BUMPS the process-global counter, and a
+        /// test that asserts an exact tally must not have this running beside
+        /// it.
         #[test]
+        #[serial_test::serial(undecodable_tally)]
         fn non_ip_frame_yields_nothing() {
             let mut proc = PacketProcessor::with_max_sessions(16);
             // EtherType 0x0806 (ARP) — not IP, so parse yields no ParsedPacket.
@@ -1308,7 +1824,10 @@ mod tests {
 
         /// Bytes too short to be a valid frame hit the parse-error path and
         /// yield nothing.
+        ///
+        /// Keyed for the reason above: the parse error is counted.
         #[test]
+        #[serial_test::serial(undecodable_tally)]
         fn truncated_garbage_yields_nothing() {
             let mut proc = PacketProcessor::new();
             // Too short to be a valid Ethernet/IP frame -> parse error path.
@@ -1320,6 +1839,426 @@ mod tests {
         fn sweep_is_safe_on_empty_state() {
             let mut proc = PacketProcessor::default();
             proc.sweep(); // exercises both reassembler sweeps with no entries
+        }
+    }
+
+    /// The undecodable-frame tally: a frame the parser cannot turn into a
+    /// [`ParsedPacket`] must be counted, by reason, with the number that
+    /// identifies the reason.
+    ///
+    /// Every test here drives the tally through
+    /// [`PacketProcessor::process`] — the real swallow site — rather than
+    /// calling the recorder directly, so a wiring regression that leaves the
+    /// counter correct but unreached still fails.
+    ///
+    /// The tally is process-global (every worker thread of the parallel
+    /// pipeline has its own `PacketProcessor` and a scrape asks about the
+    /// capture, not about one worker), so these tests reset it on entry and
+    /// hold the `undecodable_tally` serial key.
+    ///
+    /// The key is shared with every other test in this binary that moves the
+    /// tally or asserts on it — `capture::tests::processor`,
+    /// `output::prometheus`, `output::prometheus_server`, `app::batch` and
+    /// `tui::controllers::file_open`. An unkeyed `#[serial]` here would take a
+    /// DIFFERENT lock from those, which is exactly the arrangement that let
+    /// `for_scrape_loads_capture_quality` fail on one run in three.
+    mod undecodable {
+        use super::*;
+        use chrono::Utc;
+
+        /// Wrap raw frame bytes in a `Packet` with an explicit link type.
+        fn packet_dlt(data: Vec<u8>, link_type: i32) -> Packet {
+            let n = data.len();
+            Packet::new(Utc::now(), data, n, n, None, link_type)
+        }
+
+        /// Ethernet frame whose EtherType is `et`, carrying `payload`.
+        fn eth(et: u16, payload: &[u8]) -> Vec<u8> {
+            let mut f = vec![0xAAu8; 6];
+            f.extend_from_slice(&[0xBB; 6]);
+            f.extend_from_slice(&et.to_be_bytes());
+            f.extend_from_slice(payload);
+            f
+        }
+
+        /// Ethernet + IPv4 frame declaring IP protocol `proto` with a 20-byte
+        /// body the transport slicer will not recognise as UDP/TCP/SCTP.
+        fn eth_ipv4_proto(proto: u8) -> Vec<u8> {
+            let mut ip = vec![0x45u8, 0x00];
+            ip.extend_from_slice(&40u16.to_be_bytes()); // total length
+            ip.extend_from_slice(&[0x00, 0x01, 0x40, 0x00, 64, proto, 0x00, 0x00]);
+            ip.extend_from_slice(&[10, 0, 0, 1]);
+            ip.extend_from_slice(&[10, 0, 0, 2]);
+            ip.extend_from_slice(&[0u8; 20]); // opaque protocol body
+            eth(0x0800, &ip)
+        }
+
+        /// A well-formed Ethernet + ARP frame (`who-has target`): decodes
+        /// cleanly and carries no IP layer, which is the `NotIp` path.
+        fn eth_arp(target: [u8; 4]) -> Vec<u8> {
+            let mut arp = vec![0x00, 0x01, 0x08, 0x00, 6, 4, 0x00, 0x01];
+            arp.extend_from_slice(&[0xBB; 6]); // sender MAC
+            arp.extend_from_slice(&[10, 0, 0, 1]); // sender IP
+            arp.extend_from_slice(&[0x00; 6]); // target MAC (unknown)
+            arp.extend_from_slice(&target);
+            eth(0x0806, &arp)
+        }
+
+        /// Ethernet + IPv4 + UDP frame carrying `payload` between two ports —
+        /// the control case that must leave the tally untouched.
+        fn eth_ipv4_udp(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+            let udp_len = 8 + payload.len() as u16;
+            let mut ip = vec![0x45u8, 0x00];
+            ip.extend_from_slice(&(20 + udp_len).to_be_bytes());
+            ip.extend_from_slice(&[0x00, 0x01, 0x40, 0x00, 64, 17, 0x00, 0x00]);
+            ip.extend_from_slice(&[10, 0, 0, 1]);
+            ip.extend_from_slice(&[10, 0, 0, 2]);
+            ip.extend_from_slice(&src_port.to_be_bytes());
+            ip.extend_from_slice(&dst_port.to_be_bytes());
+            ip.extend_from_slice(&udp_len.to_be_bytes());
+            ip.extend_from_slice(&[0x00, 0x00]); // checksum: not computed
+            ip.extend_from_slice(payload);
+            eth(0x0800, &ip)
+        }
+
+        /// Feed `frames` (bytes, link type) through a fresh processor after
+        /// clearing the tally, and return the report.
+        fn tally(frames: &[(Vec<u8>, i32)]) -> UndecodableReport {
+            reset_undecodable_frames();
+            let mut proc = PacketProcessor::new();
+            for (data, dlt) in frames {
+                proc.process(&packet_dlt(data.clone(), *dlt));
+            }
+            undecodable_report()
+        }
+
+        /// A link type sipnab has no decoder for is counted, and the DLT
+        /// NUMBER is carried: "unsupported link type" without the number
+        /// names no capture format an operator can act on.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn unsupported_link_type_carries_the_dlt_number() {
+            let r = tally(&[
+                (vec![0u8; 64], 147),
+                (vec![0u8; 64], 147),
+                (vec![0u8; 64], 143),
+            ]);
+            assert_eq!(r.frames, 3, "every frame failed to decode");
+            assert_eq!(r.reasons_dropped, 0, "three reasons fit the slot table");
+            assert_eq!(
+                r.reasons,
+                vec![
+                    UndecodableTally {
+                        reason: UndecodableReason::UnsupportedLinkType(147),
+                        frames: 2,
+                    },
+                    UndecodableTally {
+                        reason: UndecodableReason::UnsupportedLinkType(143),
+                        frames: 1,
+                    },
+                ],
+                "busiest reason first, each carrying its own DLT number"
+            );
+        }
+
+        /// A frame that decoded but carries no IP layer takes its EtherType
+        /// from what the decoder handed out — 0x8847 (MPLS) here — never from
+        /// a second walk of the bytes.
+        #[test]
+        fn not_ip_takes_the_ethertype_it_is_given() {
+            let reason = classify_undecodable(
+                &CaptureError::NotIp { what: "packet" },
+                FrameFacts {
+                    ethertype: Some(0x8847),
+                    ..FrameFacts::UNRECORDED
+                },
+            );
+            assert_eq!(reason, Some(UndecodableReason::NotIp(Some(0x8847))));
+        }
+
+        /// With no EtherType handed out the reason says *not recorded* rather
+        /// than inventing one. A wrong number stated confidently is worse than
+        /// no number: it is the same defect this tally exists to remove.
+        #[test]
+        fn not_ip_without_a_recorded_ethertype_says_so() {
+            let reason = classify_undecodable(
+                &CaptureError::NotIp { what: "ARP packet" },
+                FrameFacts::UNRECORDED,
+            );
+            assert_eq!(reason, Some(UndecodableReason::NotIp(None)));
+        }
+
+        /// "IP layer with no payload" is the not-IP family, not truncation.
+        /// This is the error a well-formed ARP frame produces, and filing ARP
+        /// under "truncated" would send an operator to raise a snaplen that
+        /// was never the problem.
+        #[test]
+        fn no_ip_payload_is_not_ip_rather_than_truncation() {
+            assert_eq!(
+                classify_undecodable(
+                    &CaptureError::NoIpPayload { what: "packet" },
+                    FrameFacts {
+                        ethertype: Some(0x0806),
+                        ..FrameFacts::UNRECORDED
+                    },
+                ),
+                Some(UndecodableReason::NotIp(Some(0x0806))),
+            );
+            assert_eq!(
+                classify_undecodable(
+                    &CaptureError::TooShort {
+                        what: "Linux SLL2 packet",
+                        need: 20,
+                        got: 10,
+                    },
+                    FrameFacts::UNRECORDED,
+                ),
+                Some(UndecodableReason::Truncated),
+                "a stated need/got IS truncation",
+            );
+        }
+
+        /// IP that carries no transport sipnab handles takes the IP PROTOCOL
+        /// number it is given — 50 (ESP) here.
+        #[test]
+        fn no_transport_takes_the_ip_protocol_it_is_given() {
+            let reason = classify_undecodable(
+                &CaptureError::NoTransport,
+                FrameFacts {
+                    ip_protocol: Some(50),
+                    ..FrameFacts::UNRECORDED
+                },
+            );
+            assert_eq!(reason, Some(UndecodableReason::NoTransport(Some(50))));
+        }
+
+        /// With no protocol handed out the reason says *not recorded*.
+        #[test]
+        fn no_transport_without_a_recorded_protocol_says_so() {
+            let reason = classify_undecodable(&CaptureError::NoTransport, FrameFacts::UNRECORDED);
+            assert_eq!(reason, Some(UndecodableReason::NoTransport(None)));
+        }
+
+        /// Two errors already carry their own number, so they are fully named
+        /// with no help from `FrameFacts`: a GRE inner protocol IS an
+        /// EtherType, and the pre-parsed (HEP) path states its IP protocol.
+        #[test]
+        fn errors_that_carry_their_own_number_need_no_facts() {
+            assert_eq!(
+                classify_undecodable(
+                    &CaptureError::UnsupportedGreProtocol(0x880B),
+                    FrameFacts::UNRECORDED
+                ),
+                Some(UndecodableReason::NotIp(Some(0x880B))),
+            );
+            assert_eq!(
+                classify_undecodable(
+                    &CaptureError::UnsupportedIpProtocol(50),
+                    FrameFacts::UNRECORDED
+                ),
+                Some(UndecodableReason::NoTransport(Some(50))),
+            );
+        }
+
+        /// End to end through the real swallow site: a frame with no IP layer
+        /// and a frame with no usable transport are both counted, and both
+        /// report *not recorded* while `parse_packet` hands no number back.
+        ///
+        /// This is the honest statement of today's plumbing. When the decoder
+        /// starts handing the numbers out, the classifier gates above already
+        /// pin what must then appear here.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn unnumbered_reasons_are_counted_and_reported_as_unrecorded() {
+            let r = tally(&[
+                (eth_arp([10, 0, 0, 2]), 1), // ARP: decodes, carries no IP
+                (eth_arp([10, 0, 0, 3]), 1), // a second ARP frame
+                (eth_ipv4_proto(50), 1),     // ESP: IP, no transport sipnab handles
+            ]);
+            assert_eq!(r.frames, 3, "all three produced no parsed packet");
+            assert_eq!(r.reasons_dropped, 0);
+            assert_eq!(
+                r.reasons,
+                vec![
+                    UndecodableTally {
+                        reason: UndecodableReason::NotIp(None),
+                        frames: 2,
+                    },
+                    UndecodableTally {
+                        reason: UndecodableReason::NoTransport(None),
+                        frames: 1,
+                    },
+                ],
+                "counted and classified, with the number honestly absent"
+            );
+        }
+
+        /// A frame shorter than the link header it claims is counted as
+        /// truncated, not as a decode error: the remedy is a bigger snaplen,
+        /// not a parser fix.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn short_frame_counts_as_truncated() {
+            // DLT_LINUX_SLL2 needs 20 header bytes; 10 is a truncated frame.
+            let r = tally(&[(vec![0u8; 10], 276)]);
+            assert_eq!(r.frames, 1);
+            assert_eq!(
+                r.reasons,
+                vec![UndecodableTally {
+                    reason: UndecodableReason::Truncated,
+                    frames: 1,
+                }]
+            );
+        }
+
+        /// Bytes the decoder rejects outright are counted as a decode error.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn rejected_bytes_count_as_a_decode_error() {
+            // Three bytes on Ethernet: too short for etherparse to slice at all.
+            let r = tally(&[(vec![0x01, 0x02, 0x03], 1)]);
+            assert_eq!(r.frames, 1);
+            assert_eq!(
+                r.reasons,
+                vec![UndecodableTally {
+                    reason: UndecodableReason::DecodeError,
+                    frames: 1,
+                }]
+            );
+        }
+
+        /// A packet sipnab decodes fully leaves the tally at zero. Without
+        /// this the counter could read "everything failed" on a clean capture
+        /// and the whole signal would be worthless.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn a_decoded_packet_is_never_counted() {
+            let r = tally(&[(
+                eth_ipv4_udp(5060, 5060, b"REGISTER sip:x SIP/2.0\r\n\r\n"),
+                1,
+            )]);
+            assert_eq!(r.frames, 0, "a decoded frame is not undecodable");
+            assert!(r.reasons.is_empty());
+        }
+
+        /// ICMP is UNDERSTOOD — `parse_packet` records the quote as dialog
+        /// evidence and then declines to emit a `ParsedPacket`. Counting it
+        /// as undecodable would make every capture carrying an ICMP error
+        /// look partly unread.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn icmp_is_understood_and_not_counted() {
+            // Ethernet + IPv4 + ICMP port-unreachable quoting a UDP datagram.
+            let quoted = {
+                let mut ip = vec![0x45u8, 0x00];
+                ip.extend_from_slice(&28u16.to_be_bytes());
+                ip.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 64, 17, 0x00, 0x00]);
+                ip.extend_from_slice(&[10, 0, 0, 1]);
+                ip.extend_from_slice(&[10, 0, 0, 2]);
+                ip.extend_from_slice(&5060u16.to_be_bytes());
+                ip.extend_from_slice(&5060u16.to_be_bytes());
+                ip.extend_from_slice(&8u16.to_be_bytes());
+                ip.extend_from_slice(&[0x00, 0x00]);
+                ip
+            };
+            let mut icmp = vec![3u8, 3, 0, 0, 0, 0, 0, 0]; // dest unreachable / port
+            icmp.extend_from_slice(&quoted);
+            let mut ip = vec![0x45u8, 0x00];
+            ip.extend_from_slice(&((20 + icmp.len()) as u16).to_be_bytes());
+            ip.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 64, 1, 0x00, 0x00]);
+            ip.extend_from_slice(&[10, 0, 0, 9]);
+            ip.extend_from_slice(&[10, 0, 0, 1]);
+            ip.extend_from_slice(&icmp);
+
+            let r = tally(&[(eth(0x0800, &ip), 1)]);
+            assert_eq!(r.frames, 0, "ICMP is decoded, not undecodable");
+        }
+
+        /// More distinct numbers than the slot table holds: the TOTAL stays
+        /// exact and the frames whose number was lost are reported as lost,
+        /// rather than silently vanishing from the total.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn slot_overflow_keeps_the_total_exact_and_says_what_it_lost() {
+            let frames: Vec<(Vec<u8>, i32)> = (0..UNDECODABLE_REASON_SLOTS + 4)
+                .map(|i| (vec![0u8; 64], 200 + i as i32))
+                .collect();
+            let want = frames.len() as u64;
+            let r = tally(&frames);
+            assert_eq!(r.frames, want, "the total counts every frame");
+            assert_eq!(
+                r.reasons.len(),
+                UNDECODABLE_REASON_SLOTS,
+                "the table holds exactly its capacity"
+            );
+            assert_eq!(r.reasons_dropped, 4, "the four beyond capacity are named");
+            assert_eq!(
+                r.reasons.iter().map(|t| t.frames).sum::<u64>() + r.reasons_dropped,
+                r.frames,
+                "the breakdown plus what it dropped must equal the total"
+            );
+        }
+
+        /// The counter is monotonic across packets until reset, and reset
+        /// returns it to zero.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn reset_clears_the_tally() {
+            let r = tally(&[(vec![0u8; 64], 147)]);
+            assert_eq!(r.frames, 1);
+            reset_undecodable_frames();
+            let after = undecodable_report();
+            assert_eq!(after.frames, 0);
+            assert!(after.reasons.is_empty());
+            assert_eq!(after.reasons_dropped, 0);
+        }
+
+        /// Every reason renders both a human sentence carrying its number and
+        /// a stable metric label. A label without the number is the defect
+        /// this whole tally exists to fix.
+        #[test]
+        fn reasons_render_their_number_in_both_forms() {
+            let cases = [
+                (
+                    UndecodableReason::UnsupportedLinkType(0),
+                    "unsupported link type 0",
+                    "unsupported_link_type_0",
+                ),
+                (
+                    UndecodableReason::NotIp(Some(0x8847)),
+                    "not IP (EtherType 0x8847)",
+                    "not_ip_ethertype_0x8847",
+                ),
+                (
+                    UndecodableReason::NotIp(None),
+                    "not IP (EtherType not recorded)",
+                    "not_ip_ethertype_unrecorded",
+                ),
+                (
+                    UndecodableReason::NoTransport(Some(50)),
+                    "no transport (IP protocol 50)",
+                    "no_transport_ip_protocol_50",
+                ),
+                (
+                    UndecodableReason::NoTransport(None),
+                    "no transport (IP protocol not recorded)",
+                    "no_transport_ip_protocol_unrecorded",
+                ),
+                (
+                    UndecodableReason::Truncated,
+                    "truncated frame",
+                    "truncated_frame",
+                ),
+                (
+                    UndecodableReason::DecodeError,
+                    "decode error",
+                    "decode_error",
+                ),
+            ];
+            for (reason, sentence, label) in cases {
+                assert_eq!(reason.to_string(), sentence);
+                assert_eq!(reason.label(), label);
+            }
         }
     }
 }

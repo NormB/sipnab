@@ -32,6 +32,18 @@ pub struct PrometheusMetrics {
     pub rtp_streams_total: HashMap<String, u64>,
     /// Total captured packets.
     pub capture_packets_total: u64,
+    /// Frames that reached the parser and produced nothing, by reason label
+    /// (see [`crate::capture::UndecodableReason::label`]).
+    ///
+    /// The truthful companion to `capture_packets_total`, which counts frames
+    /// BEFORE parsing and so climbs identically whether sipnab understood them
+    /// or not. Frames whose reason the tally could not retain appear under
+    /// `reason_not_retained`, so the family always sums to
+    /// `capture_undecodable_total`.
+    pub capture_undecodable_frames: HashMap<String, u64>,
+    /// Total of [`Self::capture_undecodable_frames`], kept apart so the
+    /// fraction stays exact even when the per-reason tally overflowed.
+    pub capture_undecodable_total: u64,
     /// Packets currently buffered in the capture→processing queue (gauge).
     pub capture_queue_depth_packets: u64,
     /// Times a capture send had to block because the queue cap was reached.
@@ -93,6 +105,17 @@ pub struct CaptureQuality {
     /// wall clock instead. Non-zero means the run's timing analysis is
     /// unreliable even where no packet was lost.
     pub invalid_timestamps: u64,
+    /// Frames that arrived intact and produced nothing, because no decoder
+    /// here could read them.
+    ///
+    /// The fourth loss channel, and the only one that is about sipnab rather
+    /// than the host: nothing was dropped, the bytes are all present, and the
+    /// analysis still saw none of them. It is what separates "this capture
+    /// holds no SIP" from "I could not read one single frame of this", which
+    /// every count in this response otherwise renders identically.
+    ///
+    /// Deliberately **not** part of [`Self::degraded`] — see that method.
+    pub undecodable_frames: u64,
 }
 
 impl CaptureQuality {
@@ -113,16 +136,20 @@ impl CaptureQuality {
                 interface_dropped_packets,
                 invalid_timestamps: crate::capture::live::INVALID_PCAP_TIMESTAMPS
                     .load(std::sync::atomic::Ordering::Relaxed),
+                undecodable_frames: crate::capture::undecodable_frames(),
             }
         }
         #[cfg(not(feature = "native"))]
         {
-            Self::default()
+            Self {
+                undecodable_frames: crate::capture::undecodable_frames(),
+                ..Self::default()
+            }
         }
     }
 
     /// Whether anything was observed to be wrong with this capture: `true`
-    /// when any of the three counters has moved.
+    /// when any of the three LOSS counters has moved.
     ///
     /// Deliberately not called "complete". `false` means **nothing was
     /// observed to go wrong**, not that the capture provably saw every
@@ -131,6 +158,16 @@ impl CaptureQuality {
     /// the traffic — is invisible to every counter here. The claim is only
     /// ever made in the `true` direction, which is the direction there is
     /// evidence for.
+    ///
+    /// [`Self::undecodable_frames`] is **excluded on purpose**, and this is a
+    /// judgement worth stating rather than a slip. Almost every Ethernet
+    /// capture ever taken carries ARP, and ARP is a frame sipnab decodes and
+    /// correctly declines to analyse — so folding undecodable frames in here
+    /// would make `degraded` true for practically every capture, and a flag
+    /// that is always true carries no information at all. The question
+    /// "how much of this capture did sipnab actually read" has its own answer
+    /// in `sipnab_capture_undecoded_fraction`, which is a proportion and can
+    /// be alerted on with a threshold that means something.
     #[must_use]
     pub fn degraded(&self) -> bool {
         self.kernel_dropped_packets > 0
@@ -168,12 +205,27 @@ impl PrometheusMetrics {
     /// Metrics carrying the process counters, with the store-derived fields
     /// left empty for the caller to fill.
     pub fn for_scrape() -> Self {
+        let undecodable = crate::capture::undecodable_report();
         let mut m = Self {
             capture_packets_total: crate::capture::captured_packets(),
+            capture_undecodable_total: undecodable.frames,
             reassembly_timeouts_total: crate::capture::reassembly::reassembly_timeouts(),
             capture_quality: CaptureQuality::current(),
             ..Self::default()
         };
+        for t in &undecodable.reasons {
+            m.capture_undecodable_frames
+                .insert(t.reason.label(), t.frames);
+        }
+        // Frames whose reason the tally could not keep still belong in the
+        // family, or `sum()` over it would silently understate the total —
+        // the same class of quietly-not-adding-up this whole counter removes.
+        if undecodable.reasons_dropped > 0 {
+            m.capture_undecodable_frames.insert(
+                "reason_not_retained".to_string(),
+                undecodable.reasons_dropped,
+            );
+        }
         for class in RESPONSE_CLASSES {
             m.responses_total.insert(class.to_string(), 0);
         }
@@ -184,6 +236,31 @@ impl PrometheusMetrics {
             m.security_alerts_total.insert(kind, count);
         }
         m
+    }
+
+    /// Share of this run's frames that produced nothing, 0.0–1.0.
+    ///
+    /// The single number that separates "this capture holds no SIP" (0.0,
+    /// beside a zero message count) from "sipnab could not read this capture"
+    /// (1.0, beside the same zero). Both used to render identically on every
+    /// surface sipnab has.
+    ///
+    /// Published even though it is derivable, for the reason
+    /// `sipnab_capture_quality_degraded` is: a labelled family with no members
+    /// is omitted from the exposition entirely, so an alert rule over the
+    /// per-reason series is no-data — not zero — on every healthy scrape, and
+    /// would never fire when a capture first went unreadable.
+    ///
+    /// # Returns
+    ///
+    /// `undecodable / captured`, or `0.0` when no packet was captured (which
+    /// is "nothing was observed to fail", not "everything failed").
+    #[must_use]
+    pub fn undecoded_fraction(&self) -> f64 {
+        if self.capture_packets_total == 0 {
+            return 0.0;
+        }
+        self.capture_undecodable_total as f64 / self.capture_packets_total as f64
     }
 
     /// Count one SIP response under its class label.
@@ -324,6 +401,34 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         out,
         "sipnab_capture_packets_total {}",
         metrics.capture_packets_total
+    );
+    out.push('\n');
+
+    // What the capture counter above does NOT say. `capture_packets_total`
+    // counts frames before parsing, so it climbs identically for a link type
+    // sipnab has no decoder for — which is how a run that understood 0% of a
+    // capture scraped the same as a clean one. These two are the correction:
+    // the per-reason family names WHAT could not be decoded and by which
+    // number, and the fraction says how much of the scrape above to believe.
+    format_labeled_counter(
+        &mut out,
+        "sipnab_capture_undecodable_frames_total",
+        "Frames that reached the parser and produced nothing, by reason (the reason label \
+         carries the DLT / EtherType / IP protocol number)",
+        "reason",
+        &metrics.capture_undecodable_frames,
+    );
+    write_help_type(
+        &mut out,
+        "sipnab_capture_undecoded_fraction",
+        "Share of captured frames sipnab could not decode, 0-1. At 1 the rest of this \
+         scrape describes nothing that was read, and a zero in it is not evidence of absence",
+        "gauge",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_undecoded_fraction {}",
+        metrics.undecoded_fraction()
     );
     out.push('\n');
 
@@ -679,6 +784,166 @@ mod tests {
         assert!(output.contains("sipnab_reassembly_timeouts_total 7"));
     }
 
+    // ── Frames sipnab could not decode ──────────────────────────────
+    //
+    // `sipnab_capture_packets_total` counts frames BEFORE parsing, so it
+    // climbs identically whether sipnab understood them or not: a scrape of a
+    // run that decoded 0% of its capture was indistinguishable from a scrape
+    // of a clean one. These two series are the correction.
+
+    /// Each reason is its own series and the label carries its NUMBER — a
+    /// family that collapsed every DLT into `unsupported_link_type` would be
+    /// as unactionable as the silence it replaces.
+    #[test]
+    fn undecodable_reasons_are_exposed_with_their_numbers() {
+        let mut m = PrometheusMetrics {
+            capture_packets_total: 49,
+            capture_undecodable_total: 49,
+            ..Default::default()
+        };
+        m.capture_undecodable_frames
+            .insert("unsupported_link_type_0".to_string(), 45);
+        m.capture_undecodable_frames
+            .insert("not_ip_ethertype_0x8847".to_string(), 4);
+        let out = format_metrics(&m);
+
+        assert!(
+            out.contains("# TYPE sipnab_capture_undecodable_frames_total counter"),
+            "missing TYPE line: {out}"
+        );
+        assert!(
+            out.contains(
+                r#"sipnab_capture_undecodable_frames_total{reason="unsupported_link_type_0"} 45"#
+            ),
+            "DLT series missing: {out}"
+        );
+        assert!(
+            out.contains(
+                r#"sipnab_capture_undecodable_frames_total{reason="not_ip_ethertype_0x8847"} 4"#
+            ),
+            "EtherType series missing: {out}"
+        );
+    }
+
+    /// The fraction is the one series that separates "no SIP here" from "read
+    /// nothing", so it is emitted on EVERY scrape — including a clean one,
+    /// where an empty labelled family is omitted entirely and an alert over it
+    /// would be no-data rather than zero.
+    #[test]
+    fn the_undecoded_fraction_is_always_published() {
+        let clean = format_metrics(&PrometheusMetrics {
+            capture_packets_total: 4_212,
+            ..Default::default()
+        });
+        assert!(
+            clean.contains("sipnab_capture_undecoded_fraction 0\n"),
+            "a clean run must publish an explicit zero: {clean}"
+        );
+        assert!(
+            !clean.contains("sipnab_capture_undecodable_frames_total{"),
+            "a clean run has no reasons to name: {clean}"
+        );
+
+        let blind = format_metrics(&PrometheusMetrics {
+            capture_packets_total: 49,
+            capture_undecodable_total: 49,
+            ..Default::default()
+        });
+        assert!(
+            blind.contains("sipnab_capture_undecoded_fraction 1\n"),
+            "a run that read nothing must publish 1: {blind}"
+        );
+    }
+
+    /// The fraction's exact arithmetic, including the no-packets case: zero
+    /// captured means "nothing was observed to fail", never "everything did".
+    #[test]
+    fn the_undecoded_fraction_is_exact() {
+        let f = |captured, undecodable| {
+            PrometheusMetrics {
+                capture_packets_total: captured,
+                capture_undecodable_total: undecodable,
+                ..Default::default()
+            }
+            .undecoded_fraction()
+        };
+        assert_eq!(f(0, 0), 0.0, "no packets is not a failed read");
+        assert_eq!(f(49, 49), 1.0);
+        assert_eq!(f(100, 25), 0.25);
+        assert_eq!(f(10_000, 0), 0.0);
+    }
+
+    /// Frames whose reason the tally could not keep still appear in the
+    /// family, so `sum()` over it equals the total. A breakdown that quietly
+    /// failed to add up would be the same defect one layer down.
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn a_scrape_reports_reasons_the_tally_could_not_keep() {
+        crate::capture::reset_undecodable_frames();
+        // More distinct link types than the tally holds slots for.
+        let mut proc = crate::capture::PacketProcessor::new();
+        let distinct = crate::capture::UNDECODABLE_REASON_SLOTS + 3;
+        for i in 0..distinct {
+            let data = vec![0u8; 64];
+            let n = data.len();
+            proc.process(&crate::capture::Packet::new(
+                chrono::Utc::now(),
+                data,
+                n,
+                n,
+                None,
+                600 + i as i32,
+            ));
+        }
+
+        let m = PrometheusMetrics::for_scrape();
+        assert_eq!(m.capture_undecodable_total, distinct as u64);
+        assert_eq!(
+            m.capture_undecodable_frames.get("reason_not_retained"),
+            Some(&3),
+            "the three frames beyond the slot cap must be named: {:?}",
+            m.capture_undecodable_frames
+        );
+        assert_eq!(
+            m.capture_undecodable_frames.values().sum::<u64>(),
+            m.capture_undecodable_total,
+            "the family must sum to the total"
+        );
+        crate::capture::reset_undecodable_frames();
+    }
+
+    /// `for_scrape` must read the process tally. Building from `Default`
+    /// would publish a literal 0 for a run that in fact decoded nothing —
+    /// the exact defect that made `sipnab_capture_packets_total` unusable.
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn for_scrape_reads_the_process_tally() {
+        crate::capture::reset_undecodable_frames();
+        let mut proc = crate::capture::PacketProcessor::new();
+        for _ in 0..7 {
+            let data = vec![0u8; 64];
+            let n = data.len();
+            proc.process(&crate::capture::Packet::new(
+                chrono::Utc::now(),
+                data,
+                n,
+                n,
+                None,
+                147,
+            ));
+        }
+        let m = PrometheusMetrics::for_scrape();
+        assert_eq!(m.capture_undecodable_total, 7);
+        assert_eq!(
+            m.capture_undecodable_frames
+                .get("unsupported_link_type_147"),
+            Some(&7),
+            "the DLT number must reach the label: {:?}",
+            m.capture_undecodable_frames
+        );
+        crate::capture::reset_undecodable_frames();
+    }
+
     /// The active-streams gauge carries its sample value.
     #[test]
     fn gauge_value_correct() {
@@ -825,6 +1090,7 @@ mod tests {
                 kernel_dropped_packets: 11,
                 interface_dropped_packets: 22,
                 invalid_timestamps: 33,
+                undecodable_frames: 0,
             },
             ..Default::default()
         };
@@ -889,9 +1155,46 @@ mod tests {
     /// `for_scrape` loads the capture-quality block from the process
     /// counters, so a collector that builds from it cannot publish a
     /// hard-coded zero over a lossy run.
+    ///
+    /// The state is ESTABLISHED here rather than read. This used to compare
+    /// `m.capture_quality` against a second, live `CaptureQuality::current()`,
+    /// which is not a test of anything: the two reads straddle the counters,
+    /// so any test that moved them in between failed this one, and a
+    /// `for_scrape` that had genuinely stopped reading the process counters
+    /// would still pass whenever nothing moved. Three frames driven through
+    /// the real swallow site give a value only this test knows, and
+    /// `Default::default()` cannot produce it.
     #[test]
+    #[serial_test::serial(undecodable_tally)]
     fn for_scrape_loads_capture_quality() {
+        crate::capture::reset_undecodable_frames();
+        let mut proc = crate::capture::PacketProcessor::new();
+        for _ in 0..3 {
+            let data = vec![0u8; 64];
+            let n = data.len();
+            proc.process(&crate::capture::Packet::new(
+                chrono::Utc::now(),
+                data,
+                n,
+                n,
+                None,
+                147,
+            ));
+        }
+
         let m = PrometheusMetrics::for_scrape();
-        assert_eq!(m.capture_quality, CaptureQuality::current());
+        assert_eq!(
+            m.capture_quality.undecodable_frames, 3,
+            "for_scrape must carry the process counters into the \
+             capture-quality block, not a default: {:?}",
+            m.capture_quality
+        );
+        assert_ne!(
+            m.capture_quality,
+            CaptureQuality::default(),
+            "a hard-coded zero block over a run that decoded nothing is the \
+             whole defect this gates"
+        );
+        crate::capture::reset_undecodable_frames();
     }
 }

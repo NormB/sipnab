@@ -178,6 +178,132 @@ pub struct ReconResult {
     /// gone, so the shard send failed). Zero on a healthy run; nonzero means
     /// the reconstruction is incomplete and was logged at `warn`.
     pub dropped_count: u64,
+    /// Worker threads this run actually used — `cores.max(2)`, which is not
+    /// necessarily the `--cores` the operator typed.
+    ///
+    /// Carried because it is the denominator of every load-balance question,
+    /// including the one [`Self::unshardable_count`] answers: "all on worker 0"
+    /// is a catastrophe across sixteen workers and a tautology across one.
+    pub workers: usize,
+    /// RAW packets the reader made a shard decision about.
+    ///
+    /// Deliberately NOT [`Self::total_count`], which counts what the workers
+    /// PARSED: reassembly turns several raw frames into one parsed packet, and
+    /// a frame no decoder understands is counted here and nowhere else. A
+    /// capture of nothing but ARP has thousands of `packets_read` and a
+    /// `total_count` of zero, so using the latter as the fallback denominator
+    /// would report "4000 of 0".
+    pub packets_read: u64,
+    /// Of those, the ones [`crate::capture::parse::peek_host_pair`] could read
+    /// no host pair from, which therefore fell back to worker 0 instead of
+    /// being sharded across the pool.
+    ///
+    /// The fallback is *correct* — worker 0 owns its own reassembly, so nothing
+    /// is lost — but it is not free, and it used to be invisible. A capture
+    /// whose encapsulation the peek cannot follow (a legacy QinQ tag, a MACsec
+    /// link, a VLAN inside a Linux cooked capture — i.e. `-i any`, the default
+    /// invocation on Linux) sends EVERY packet to worker 0 and reports exactly
+    /// the throughput story of a capture that sharded perfectly. The operator
+    /// sees a slow run and no reason for it. See [`shard_fallback_summary`].
+    pub unshardable_count: u64,
+}
+
+/// Share of a run's packets that must land on the fallback worker before the
+/// notice stops being informational and starts saying the run was not parallel.
+///
+/// Half, the same threshold and the same reasoning as `BLIND_RUN_SHARE` in
+/// [`crate::app::batch`]. Below it, a fallback is ordinary background — ARP,
+/// LLDP, a stray non-IP frame — and the other workers still carry the traffic
+/// that matters. At or above it, the majority of the capture ran on one
+/// worker, and the run's throughput is a statement about worker 0 rather than
+/// about `--cores`.
+const FALLBACK_PILEUP_SHARE: f64 = 50.0;
+
+/// What the shard fallback cost this run, as the line a summary prints — or
+/// `None` when there is nothing to say.
+///
+/// The sibling of `app::batch`'s `undecodable_summary` and
+/// `pipeline::portrange_skip_report`, and the answer to the same shape of
+/// question in the load-balancing dimension: `--cores 16` on a capture the peek
+/// cannot read produces one busy worker, fifteen idle ones, and a summary
+/// identical to a perfectly sharded run.
+///
+/// A pure function rather than an inline `if`, for the reason
+/// `undecodable_summary` is one: the whole value is in WHICH sentence it
+/// chooses and which numbers it names, and a test asserting that "something was
+/// logged" would pass on a notice naming the wrong count or the wrong tier.
+///
+/// # Arguments
+///
+/// * `unshardable` — packets the peek could read no host pair from.
+/// * `packets_read` — raw packets the reader sharded, the denominator for the
+///   share. A zero here suppresses the share rather than dividing by it.
+/// * `workers` — worker threads that actually ran.
+///
+/// # Returns
+///
+/// The notice, or `None` when every packet sharded — a clean run stays quiet,
+/// the same rule `retention_summary` follows — **or** when `workers <= 1`.
+/// That second gate is the contract for callers on the single-threaded path:
+/// [`shard_for`] sends everything to worker 0 when `jobs <= 1`, so there the
+/// count is a tautology and printing it is noise.
+pub fn shard_fallback_summary(
+    unshardable: u64,
+    packets_read: u64,
+    workers: usize,
+) -> Option<String> {
+    if workers <= 1 || unshardable == 0 {
+        return None;
+    }
+
+    let mut msg = format!("NOT SHARDED: {unshardable} of {packets_read} packet(s)");
+    // Guarding the divide rather than assuming: the two counters are
+    // incremented at different places, and a share of infinity printed beside a
+    // real count would discredit both.
+    let share = if packets_read > 0 {
+        let pct = unshardable as f64 * 100.0 / packets_read as f64;
+        msg.push_str(&format!(" ({pct:.1}%)"));
+        pct
+    } else {
+        0.0
+    };
+    msg.push_str(&format!(
+        " carried no host pair the shard peek could read, so they were dispatched to \
+         worker 0 instead of being spread across the {workers} workers."
+    ));
+
+    // Two tiers, because "most of it" and "all of it" are different findings and
+    // the second is the one this notice exists for: at 100% the pool did no
+    // balancing whatsoever and every core past the first was bought and idled.
+    if packets_read > 0 && unshardable >= packets_read {
+        msg.push_str(&format!(
+            " --cores BOUGHT NOTHING ON THIS CAPTURE — every packet ran on worker 0 while \
+             the other {} worker(s) idled, so this run was single-threaded whatever \
+             --cores said. The peek cannot follow this capture's encapsulation; report \
+             its link type.",
+            workers - 1
+        ));
+    } else if share >= FALLBACK_PILEUP_SHARE {
+        msg.push_str(&format!(
+            " MOST OF THIS RUN WAS SINGLE-THREADED — the majority of the capture ran on \
+             worker 0, so --cores bought far less than the {workers} workers suggest. The \
+             peek cannot follow part of this capture's encapsulation; report its link type."
+        ));
+    }
+    Some(msg)
+}
+
+impl ReconResult {
+    /// This run's shard-fallback notice, or `None` when there is nothing to
+    /// say.
+    ///
+    /// The one place that binds the run's counters to
+    /// [`shard_fallback_summary`], so the sentence an operator reads and the
+    /// numbers a caller can assert on cannot drift apart. `run_offline_parallel`
+    /// and `run_offline_parallel_file` both log exactly this.
+    pub fn shard_fallback_notice(&self) -> Option<String> {
+        shard_fallback_summary(self.unshardable_count, self.packets_read, self.workers)
+    }
 }
 
 /// Send one shard item to worker `s`'s channel, returning the number of raw
@@ -306,14 +432,23 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     // The dispatcher is also the only place that sees EVERY packet's timestamp, so
     // it is where the capture clock for the post-merge sweep is kept.
     let mut dropped: u64 = 0;
+    let mut packets_read: u64 = 0;
+    let mut unshardable: u64 = 0;
     let mut clock = SweepClock::new(true);
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(200)) {
             Ok(packet) => {
                 clock.observe(packet.timestamp);
+                packets_read += 1;
                 let s = match crate::capture::parse::peek_host_pair(&packet) {
                     Some((a, b)) => shard_for(a, b, n),
-                    None => 0,
+                    // Counted, not merely tolerated. Two plain `u64` increments
+                    // on the dispatcher's serial path: no atomic, no lock, no
+                    // allocation, and the branch was already here.
+                    None => {
+                        unshardable += 1;
+                        0
+                    }
                 };
                 dropped += shard_send(&txs[s], packet, 1);
             }
@@ -350,13 +485,37 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     ss.reassociate_all();
     final_sweep(&clock, &mut ds, &mut ss);
 
-    ReconResult {
+    let result = ReconResult {
         dialog_store: ds,
         stream_store: ss,
         sip_count,
         rtp_count,
         total_count: total,
         dropped_count: dropped,
+        workers: n,
+        packets_read,
+        unshardable_count: unshardable,
+    };
+    report_shard_fallback(&result);
+    result
+}
+
+/// Log this run's shard-fallback notice, when there is one.
+///
+/// Called from both entry points rather than written inline, for the reason
+/// `app::batch`'s `report_undecodable` is: a notice that exists on one path and
+/// not the other makes `--cores` over a file and `--cores` over a device
+/// disagree about the same capture. `warn` rather than `debug`, and beside the
+/// dropped-packet warning it sits next to, because the default batch log level
+/// is `info` — a `debug!` line here would be the same silence in a new shape.
+///
+/// # Side effects
+///
+/// Emits one `warn!` line when packets fell back to worker 0 on a run with more
+/// than one worker. Silent otherwise.
+fn report_shard_fallback(result: &ReconResult) {
+    if let Some(msg) = result.shard_fallback_notice() {
+        tracing::warn!("{msg}");
     }
 }
 
@@ -382,6 +541,11 @@ struct ReadProgress {
     count: u64,
     /// Raw packets lost because a worker's shard channel had closed.
     dropped: u64,
+    /// Packets whose host pair the cheap peek could not read, which therefore
+    /// fell back to worker 0. Shared across the set for the same reason
+    /// [`Self::dropped`] is: the operator ran one analysis, not four, and a
+    /// per-file share would understate a set whose encapsulation is uniform.
+    unshardable: u64,
     /// Capture clock, fed every packet, read once by [`final_sweep`].
     clock: SweepClock,
 }
@@ -435,7 +599,13 @@ fn shard_opened(
                 progress.clock.observe(packet.timestamp);
                 let s = match crate::capture::parse::peek_host_pair(&packet) {
                     Some((a, b)) => shard_for(a, b, n),
-                    None => 0,
+                    // Counted, not merely tolerated — see the same branch in
+                    // `run_offline_parallel`. One `u64` increment on the
+                    // reader's serial path: no atomic, no lock, no allocation.
+                    None => {
+                        progress.unshardable += 1;
+                        0
+                    }
                 };
                 batches[s].push(packet);
                 if batches[s].len() >= BATCH {
@@ -552,6 +722,7 @@ pub fn run_offline_parallel_file(
     let mut progress = ReadProgress {
         count: 0,
         dropped: 0,
+        unshardable: 0,
         clock: SweepClock::new(true),
     };
     let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
@@ -635,14 +806,19 @@ pub fn run_offline_parallel_file(
     }
     ss.reassociate_all();
     final_sweep(&progress.clock, &mut ds, &mut ss);
-    Ok(ReconResult {
+    let result = ReconResult {
         dialog_store: ds,
         stream_store: ss,
         sip_count,
         rtp_count,
         total_count: total,
         dropped_count: dropped,
-    })
+        workers: n,
+        packets_read: progress.count,
+        unshardable_count: progress.unshardable,
+    };
+    report_shard_fallback(&result);
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -675,6 +851,127 @@ mod tests {
             shard_send(&tx, 3u32, 128),
             128,
             "a lost batch counts every packet in it"
+        );
+    }
+
+    // ── Shard-fallback observability ──────────────────────────────────
+    //
+    // `peek_host_pair` returning `None` sends a packet to worker 0. That is
+    // correct — worker 0 owns its own reassembly — but on a capture whose
+    // encapsulation the peek cannot follow it is EVERY packet, and the run
+    // reports the same summary as one that sharded perfectly. These tests pin
+    // the count and the sentence that says so.
+
+    /// A run where every packet sharded says nothing at all — a clean run stays
+    /// quiet, the same rule the retention and undecodable notices follow.
+    #[test]
+    fn shard_fallback_summary_is_silent_when_every_packet_sharded() {
+        assert_eq!(shard_fallback_summary(0, 4_000_000, 8), None);
+        assert_eq!(shard_fallback_summary(0, 0, 2), None);
+    }
+
+    /// With one worker (or none) the number is a tautology: `shard_for` sends
+    /// everything to worker 0 when `jobs <= 1`, so "all on worker 0" says
+    /// nothing about the capture. Printing it on the single-threaded path is
+    /// noise, and this is the gate that keeps it off.
+    #[test]
+    fn shard_fallback_summary_is_silent_on_the_single_threaded_path() {
+        assert_eq!(shard_fallback_summary(4_000_000, 4_000_000, 1), None);
+        assert_eq!(shard_fallback_summary(4_000_000, 4_000_000, 0), None);
+        // …and the very same numbers DO produce a notice once a second worker
+        // exists, so the gate above is about the worker count and nothing else.
+        assert_ne!(
+            shard_fallback_summary(4_000_000, 4_000_000, 2),
+            None,
+            "two workers must report what one worker suppresses"
+        );
+    }
+
+    /// A handful of unreadable frames among millions is background — ARP, LLDP,
+    /// a stray non-IP frame. The notice names the exact count and share and
+    /// stops there: no emphasis, because nothing emphatic happened.
+    #[test]
+    fn shard_fallback_summary_names_the_exact_count_and_share() {
+        assert_eq!(
+            shard_fallback_summary(12, 4_000_000, 4).as_deref(),
+            Some(
+                "NOT SHARDED: 12 of 4000000 packet(s) (0.0%) carried no host pair the \
+                 shard peek could read, so they were dispatched to worker 0 instead of \
+                 being spread across the 4 workers."
+            )
+        );
+    }
+
+    /// The case this whole notice exists for: nothing sharded, so `--cores 4`
+    /// ran one busy worker and three idle ones and reported the throughput
+    /// story of a perfectly balanced run.
+    #[test]
+    fn shard_fallback_summary_is_emphatic_when_nothing_sharded() {
+        assert_eq!(
+            shard_fallback_summary(4_000_000, 4_000_000, 4).as_deref(),
+            Some(
+                "NOT SHARDED: 4000000 of 4000000 packet(s) (100.0%) carried no host pair \
+                 the shard peek could read, so they were dispatched to worker 0 instead \
+                 of being spread across the 4 workers. --cores BOUGHT NOTHING ON THIS \
+                 CAPTURE — every packet ran on worker 0 while the other 3 worker(s) \
+                 idled, so this run was single-threaded whatever --cores said. The peek \
+                 cannot follow this capture's encapsulation; report its link type."
+            )
+        );
+    }
+
+    /// A majority on the fallback worker is its own finding: the run was mostly
+    /// single-threaded, which is not the same claim as "entirely".
+    #[test]
+    fn shard_fallback_summary_flags_a_mostly_single_threaded_run() {
+        assert_eq!(
+            shard_fallback_summary(3, 4, 2).as_deref(),
+            Some(
+                "NOT SHARDED: 3 of 4 packet(s) (75.0%) carried no host pair the shard \
+                 peek could read, so they were dispatched to worker 0 instead of being \
+                 spread across the 2 workers. MOST OF THIS RUN WAS SINGLE-THREADED — the \
+                 majority of the capture ran on worker 0, so --cores bought far less than \
+                 the 2 workers suggest. The peek cannot follow part of this capture's \
+                 encapsulation; report its link type."
+            )
+        );
+    }
+
+    /// The emphasis threshold is exactly half, and the two tiers do not bleed
+    /// into each other: 49% is quiet, 50% is "mostly", 100% is "bought
+    /// nothing" and never "mostly".
+    #[test]
+    fn shard_fallback_emphasis_thresholds_are_exact() {
+        let mostly = "MOST OF THIS RUN WAS SINGLE-THREADED";
+        let nothing = "--cores BOUGHT NOTHING ON THIS CAPTURE";
+
+        let just_under = shard_fallback_summary(49, 100, 8).expect("49 fell back");
+        assert!(!just_under.contains(mostly), "49% is not a majority");
+        assert!(!just_under.contains(nothing), "49% is not all of it");
+
+        let at_half = shard_fallback_summary(50, 100, 8).expect("50 fell back");
+        assert!(at_half.contains(mostly), "50% is exactly the threshold");
+        assert!(!at_half.contains(nothing), "50% is not all of it");
+
+        let all = shard_fallback_summary(100, 100, 8).expect("100 fell back");
+        assert!(all.contains(nothing), "100% is all of it");
+        assert!(
+            !all.contains(mostly),
+            "the total case must not also claim the majority case"
+        );
+    }
+
+    /// A zero denominator suppresses the share instead of dividing by it: a
+    /// percentage of infinity printed beside a real count would discredit both.
+    #[test]
+    fn shard_fallback_summary_guards_the_zero_denominator() {
+        assert_eq!(
+            shard_fallback_summary(5, 0, 4).as_deref(),
+            Some(
+                "NOT SHARDED: 5 of 0 packet(s) carried no host pair the shard peek could \
+                 read, so they were dispatched to worker 0 instead of being spread across \
+                 the 4 workers."
+            )
         );
     }
 
@@ -754,6 +1051,196 @@ mod tests {
         p.extend_from_slice(&[0x00, 0x00]); // checksum
         p.extend_from_slice(payload);
         p
+    }
+
+    /// Minimal Ethernet ARP request — a frame `peek_host_pair` reads no host
+    /// pair from, which is what makes it the fallback fixture.
+    ///
+    /// ARP is not exotic; it is on every LAN segment. The peek declines it for
+    /// the same structural reason it declines an encapsulation it cannot
+    /// follow, so it drives the counter without depending on any particular
+    /// tunnel's decode state.
+    #[cfg(feature = "native")]
+    fn eth_arp(sender: [u8; 4], target: [u8; 4]) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&[0xFF; 6]); // broadcast dst MAC
+        p.extend_from_slice(&[0xBB; 6]); // src MAC
+        p.extend_from_slice(&[0x08, 0x06]); // EtherType: ARP
+        p.extend_from_slice(&[0x00, 0x01]); // htype: Ethernet
+        p.extend_from_slice(&[0x08, 0x00]); // ptype: IPv4
+        p.push(6); // hlen
+        p.push(4); // plen
+        p.extend_from_slice(&[0x00, 0x01]); // opcode: request
+        p.extend_from_slice(&[0xBB; 6]); // sender MAC
+        p.extend_from_slice(&sender);
+        p.extend_from_slice(&[0x00; 6]); // target MAC
+        p.extend_from_slice(&target);
+        p
+    }
+
+    /// Write `frames` to a classic little-endian pcap file with link type
+    /// `DLT_EN10MB`, returning its path.
+    ///
+    /// Hand-built rather than taken from `tests/pcap-samples` because the
+    /// fallback tests assert an EXACT unshardable count, which needs an exact
+    /// known mix of readable and unreadable frames.
+    #[cfg(feature = "native")]
+    fn write_eth_pcap(dir: &std::path::Path, name: &str, frames: &[Vec<u8>]) -> std::path::PathBuf {
+        use std::io::Write;
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).expect("create the temp pcap");
+        let mut hdr = Vec::new();
+        hdr.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes()); // magic (µs, LE)
+        hdr.extend_from_slice(&2u16.to_le_bytes()); // version major
+        hdr.extend_from_slice(&4u16.to_le_bytes()); // version minor
+        hdr.extend_from_slice(&0i32.to_le_bytes()); // thiszone
+        hdr.extend_from_slice(&0u32.to_le_bytes()); // sigfigs
+        hdr.extend_from_slice(&65535u32.to_le_bytes()); // snaplen
+        hdr.extend_from_slice(&1u32.to_le_bytes()); // DLT_EN10MB
+        f.write_all(&hdr).expect("write the pcap file header");
+        for (i, frame) in frames.iter().enumerate() {
+            let len = u32::try_from(frame.len()).expect("test frame fits a u32");
+            let mut rec = Vec::new();
+            rec.extend_from_slice(&(1_700_000_000u32 + i as u32).to_le_bytes()); // ts_sec
+            rec.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+            rec.extend_from_slice(&len.to_le_bytes()); // incl_len
+            rec.extend_from_slice(&len.to_le_bytes()); // orig_len
+            f.write_all(&rec).expect("write the record header");
+            f.write_all(frame).expect("write the frame");
+        }
+        path
+    }
+
+    /// The channel-fed `--cores` path must COUNT every packet that fell back to
+    /// worker 0, and say so in the run's own notice.
+    ///
+    /// Seven ARP frames and six IP frames: the peek reads a host pair from the
+    /// six and nothing from the seven, so the fallback is the majority and the
+    /// run is mostly single-threaded. Before this counter both numbers were
+    /// invisible — a capture that sharded nothing reported the same summary as
+    /// one that sharded perfectly.
+    ///
+    /// Serialized on `undecodable_tally` because the ARP frames also reach the
+    /// workers' parser, whose reason tally is process-global and asserted on
+    /// exactly elsewhere.
+    #[cfg(feature = "native")]
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn channel_fed_cores_path_counts_every_unshardable_packet() {
+        use crate::capture::packet::Packet;
+        let (tx, rx) = crate::capture::channel::packet_channel(1024);
+        for i in 0..7u8 {
+            let frame = eth_arp([10, 0, 0, i], [10, 0, 0, 200]);
+            let n = frame.len();
+            tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
+                .expect("worker pool must accept packets");
+        }
+        for seq in 1u16..=6 {
+            let mut payload = vec![0x80, 0x00];
+            payload.extend_from_slice(&seq.to_be_bytes());
+            payload.extend_from_slice(&[0, 0, 0, 1]);
+            payload.extend_from_slice(&0xFEEDu32.to_be_bytes());
+            payload.extend_from_slice(&[0xaa; 60]);
+            let frame = eth_ipv4_udp(41000, 42000, &payload);
+            let n = frame.len();
+            tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
+                .expect("worker pool must accept packets");
+        }
+        drop(tx);
+
+        let r = run_offline_parallel(rx, pcfg(2));
+        assert_eq!(r.packets_read, 13, "thirteen raw packets were sharded");
+        assert_eq!(
+            r.unshardable_count, 7,
+            "the seven ARP frames carry no host pair the peek can read"
+        );
+        assert_eq!(r.workers, 2, "pcfg(2) runs two workers");
+        assert_eq!(
+            r.shard_fallback_notice().as_deref(),
+            Some(
+                "NOT SHARDED: 7 of 13 packet(s) (53.8%) carried no host pair the shard \
+                 peek could read, so they were dispatched to worker 0 instead of being \
+                 spread across the 2 workers. MOST OF THIS RUN WAS SINGLE-THREADED — the \
+                 majority of the capture ran on worker 0, so --cores bought far less than \
+                 the 2 workers suggest. The peek cannot follow part of this capture's \
+                 encapsulation; report its link type."
+            )
+        );
+    }
+
+    /// The file-fed `--cores` path — the one `-I` reaches, and the one an
+    /// operator actually runs — counts the same fallback across the whole set.
+    ///
+    /// Three ARP frames and two IP frames in one file. The count is shared
+    /// across the `-I` set for the same reason the loss counter is: the
+    /// operator ran one analysis, not one per file.
+    #[cfg(feature = "native")]
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn file_fed_cores_path_counts_every_unshardable_packet() {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut frames = vec![
+            eth_arp([10, 0, 0, 1], [10, 0, 0, 200]),
+            eth_arp([10, 0, 0, 2], [10, 0, 0, 200]),
+            eth_arp([10, 0, 0, 3], [10, 0, 0, 200]),
+        ];
+        for seq in 1u16..=2 {
+            let mut payload = vec![0x80, 0x00];
+            payload.extend_from_slice(&seq.to_be_bytes());
+            payload.extend_from_slice(&[0, 0, 0, 1]);
+            payload.extend_from_slice(&0xFEEDu32.to_be_bytes());
+            payload.extend_from_slice(&[0xaa; 60]);
+            frames.push(eth_ipv4_udp(41000, 42000, &payload));
+        }
+        let path = write_eth_pcap(dir.path(), "arp-and-ip.pcap", &frames);
+
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(4))
+            .expect("the fixture reads");
+        assert_eq!(r.packets_read, 5, "five raw packets were sharded");
+        assert_eq!(r.unshardable_count, 3, "the three ARP frames fell back");
+        assert_eq!(r.workers, 4, "pcfg(4) runs four workers");
+        assert_eq!(
+            r.shard_fallback_notice().as_deref(),
+            Some(
+                "NOT SHARDED: 3 of 5 packet(s) (60.0%) carried no host pair the shard \
+                 peek could read, so they were dispatched to worker 0 instead of being \
+                 spread across the 4 workers. MOST OF THIS RUN WAS SINGLE-THREADED — the \
+                 majority of the capture ran on worker 0, so --cores bought far less than \
+                 the 4 workers suggest. The peek cannot follow part of this capture's \
+                 encapsulation; report its link type."
+            )
+        );
+    }
+
+    /// A capture whose every frame the peek CAN read reports nothing at all.
+    ///
+    /// The other half of the contract, and the one that keeps the notice worth
+    /// reading: an ordinary Ethernet corpus must stay silent, so a line that
+    /// does appear means something. Run at `--cores 4` against the same corpus
+    /// the core-count-invariance test uses.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_fully_shardable_capture_reports_no_fallback() {
+        use crate::capture::CaptureConfig;
+        let paths = [std::path::PathBuf::from(
+            "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap",
+        )];
+        let r = run_offline_parallel_file(&paths, &CaptureConfig::default(), pcfg(4))
+            .expect("the corpus fixture reads");
+        assert_eq!(
+            r.packets_read, 1042,
+            "the fixture holds 1042 frames, every one of them sharded"
+        );
+        assert_eq!(
+            r.unshardable_count, 0,
+            "plain Ethernet/IPv4 is exactly what the peek reads"
+        );
+        assert_eq!(
+            r.shard_fallback_notice(),
+            None,
+            "a fully sharded run must stay quiet, or the notice means nothing"
+        );
     }
 
     /// The `--cores` path must discover heuristic-only RTP exactly like the
