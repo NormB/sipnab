@@ -198,8 +198,8 @@ pub fn declare(addr: IpAddr, port: u16) {
     let fp = fingerprint(addr, port);
     let bucket = ways(bucket_for(fp));
 
-    // Already known: the overwhelmingly common case, because an offer and its
-    // answer and every re-INVITE re-declare the same sockets.
+    // Already known: the overwhelmingly common case, because an offer, its
+    // answer, and every re-INVITE all name the same sockets again.
     for slot in bucket {
         if slot.load(Ordering::Relaxed) == fp {
             ANY_DECLARED.store(true, Ordering::Release);
