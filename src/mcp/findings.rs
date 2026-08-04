@@ -148,8 +148,8 @@ impl FindingsLog {
             }
             None => (None, 0),
         };
-        let truncated =
-            summary_chars_submitted > MAX_SUMMARY_CHARS || detail_chars_submitted > MAX_DETAIL_CHARS;
+        let truncated = summary_chars_submitted > MAX_SUMMARY_CHARS
+            || detail_chars_submitted > MAX_DETAIL_CHARS;
 
         let seq = self.recorded;
         self.recorded += 1;

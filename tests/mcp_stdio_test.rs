@@ -679,6 +679,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "explain_rule",
         "export_audio",
         "export_capture",
+        "find_correlated",
         "find_problems",
         "get_sdp_timeline",
         "list_captures",
@@ -703,7 +704,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     ];
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 30, "expected exactly 30 MCP tools");
+    assert_eq!(names.len(), 31, "expected exactly 31 MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(

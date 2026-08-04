@@ -346,6 +346,7 @@ ordinary update.
 | `diagnose_registration` | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | `explain_response_code` | `code` | IANA registry meaning and class for a SIP status code |
 | `compare_dialogs` | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
+| `find_correlated` | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | `get_sdp_timeline` | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
 | `search_by_time` | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
 | `list_captures` | -- | Capture files in `--mcp-file-root`, with sizes |
@@ -1171,6 +1172,49 @@ The IANA registry, not an agent's recollection.
 `failure`, because a challenged call has not failed — it is mid-handshake.
 `registered: false` means the code is outside the registry, usually a vendor
 extension. The tool says so rather than inventing a meaning.
+
+### `find_correlated`
+
+Finds the other legs of one call — the far side of a B2BUA, SBC or PBX hop.
+
+```jsonc
+// find_correlated { "call_id": "leg-a@access" }
+{
+  "schema_version": 1,
+  "source_call_id": "leg-a@access",
+  "legs": [
+    { "call_id": "leg-b@core", "score": 100, "strategy": "session_id",
+      "identifier_match": true, "observed_gap_ms": null }
+  ],
+  "total_matched": 1,
+  "heuristic_only": false,
+  "capture_identity": { "instance": "…", "dialog_generation": 41, "stream_generation": 6 }
+}
+```
+
+**Read `strategy`, not just `score`.** Two strategies score 100 and they are not
+the same claim:
+
+| `strategy` | What it means | Survives a B2BUA? |
+|---|---|---|
+| `session_id` | RFC 7989 `Session-ID` matched | **Yes, by design** |
+| `x_call_id` | A configured header matched (`X-Call-ID` by default) | Only if the SBC inserts it |
+| `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
+| `timing_heuristic` | Same endpoint, close in time | Not an identifier at all |
+
+`identifier_match` carries that distinction as a boolean, so a caller can filter
+on it without knowing which names mean what. `heuristic_only` says whether
+*every* returned leg came from a guess — a call tree built only from timing is a
+hypothesis, and an agent that cannot tell presents it as a finding.
+
+`observed_gap_ms` appears **only** for `timing_heuristic`, because there it is
+the evidence: a 15 ms gap on a quiet box and a 1,900 ms gap on a busy SBC score
+identically and mean very different things. On an identifier match it is null,
+since the elapsed time is not why they matched.
+
+A caveat worth stating plainly: most deployments emit no correlation header at
+all. Where none is present, the only strategy left is the bottom row, and on a
+busy SBC unrelated calls routinely share an endpoint inside its window.
 
 ### `compare_dialogs`
 

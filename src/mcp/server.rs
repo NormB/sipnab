@@ -603,6 +603,68 @@ pub struct CompareDialogsParams {
     pub call_id_b: String,
 }
 
+/// Parameters for `find_correlated`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct FindCorrelatedParams {
+    /// Call-ID of the leg to correlate FROM.
+    pub call_id: String,
+    /// Maximum legs to return (1..=1000, default 50).
+    pub limit: Option<u32>,
+}
+
+/// One leg correlated to the requested dialog.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CorrelatedLeg {
+    /// Call-ID of the correlated dialog. Feed it to `get_dialog` for detail.
+    pub call_id: String,
+    /// Confidence, 0-100.
+    pub score: u8,
+    /// WHICH strategy matched, by name. The decisive field.
+    ///
+    /// `session_id` and `x_call_id` both score 100 and are not the same claim:
+    /// one is an RFC 7989 identifier designed to cross a B2BUA, the other a
+    /// vendor header someone configured. `timing_heuristic` is not an
+    /// identifier at all.
+    pub strategy: String,
+    /// True when this strategy compared identifiers. False for a guess.
+    ///
+    /// Present so a caller can filter on the distinction without having to know
+    /// which strategy names mean what.
+    pub identifier_match: bool,
+    /// For `timing_heuristic` only: the observed gap between the two dialogs'
+    /// creation, in milliseconds.
+    ///
+    /// The evidence behind the guess, so a reader can judge it. A 15 ms gap on
+    /// a quiet box and a 1,900 ms gap on a busy SBC score identically and mean
+    /// very different things.
+    pub observed_gap_ms: Option<i64>,
+}
+
+/// What `find_correlated` returns.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct FindCorrelatedResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// The Call-ID that was asked about.
+    pub source_call_id: String,
+    /// Legs correlated to it, best first.
+    pub legs: Vec<CorrelatedLeg>,
+    /// Total correlated legs found, before `limit` truncated the list.
+    pub total_matched: usize,
+    /// True when every returned leg came from a heuristic rather than an
+    /// identifier.
+    ///
+    /// Stated rather than left to inference: a call tree built only from
+    /// timing guesses is a hypothesis, and an agent that cannot tell the
+    /// difference will present it as a finding.
+    pub heuristic_only: bool,
+    /// Which capture and store revision this answer describes.
+    pub capture_identity: crate::provenance::CaptureEtag,
+}
+
 /// Parameters for `export_capture`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -3839,6 +3901,95 @@ impl SipnabMcp {
         )?]))
     }
 
+    /// Find the other legs of this call, and say how each was matched.
+    ///
+    /// The engine behind it has existed in `DialogStore` since long before this
+    /// tool; nothing on the MCP surface could reach it, so every agent asking
+    /// "where did this call go next" got no answer to a question the library
+    /// could already compute.
+    #[tool(
+        name = "find_correlated",
+        description = "Finds other dialogs belonging to the same call — the far \
+                       legs of a B2BUA, SBC or PBX hop. Returns each with a \
+                       score AND the strategy that matched it. Read the \
+                       strategy, not just the score: session_id and x_call_id \
+                       are identifier matches, timing_heuristic is a guess from \
+                       endpoint overlap and elapsed time, and on a busy server \
+                       unrelated calls routinely share an endpoint inside its \
+                       window."
+    )]
+    pub async fn find_correlated(
+        &self,
+        Parameters(params): Parameters<FindCorrelatedParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let limit = resolve_limit(params.limit);
+
+        // Lock discipline: capture first, then the stores, copy out, drop.
+        let payload = {
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
+
+            let source_created = ds.get(&params.call_id).map(|d| d.created_at);
+            let results = ds.find_correlated_scored(&params.call_id);
+            let total_matched = results.len();
+
+            let legs: Vec<CorrelatedLeg> = results
+                .iter()
+                .take(limit)
+                .map(|r| {
+                    use crate::sip::dialog_store::CorrelationReason as R;
+                    let (strategy, identifier_match) = match r.reason {
+                        R::SessionId => ("session_id", true),
+                        R::XCallId => ("x_call_id", true),
+                        R::ViaBranch => ("via_branch", true),
+                        R::TimingHeuristic => ("timing_heuristic", false),
+                        // NO CATCH-ALL, deliberately. `CorrelationReason` is
+                        // `#[non_exhaustive]` for external crates, but this
+                        // match lives in the defining crate, so it is checked
+                        // exhaustively: a new strategy is a COMPILE ERROR here
+                        // rather than something that quietly reports as
+                        // "unknown, not an identifier". Whoever adds the next
+                        // strategy has to decide, in this file, whether it is
+                        // an identifier match — which is exactly the decision
+                        // that must not be made by default.
+                    };
+                    // The gap is the evidence for the guess, so it is attached
+                    // only where it IS the evidence. On an identifier match it
+                    // would be a number with no bearing on why they matched.
+                    let observed_gap_ms = (!identifier_match)
+                        .then(|| {
+                            source_created
+                                .map(|src| (r.dialog.created_at - src).num_milliseconds().abs())
+                        })
+                        .flatten();
+                    CorrelatedLeg {
+                        call_id: r.dialog.call_id.clone(),
+                        score: r.score,
+                        strategy: strategy.to_string(),
+                        identifier_match,
+                        observed_gap_ms,
+                    }
+                })
+                .collect();
+            drop(ds);
+            drop(state);
+
+            let heuristic_only = !legs.is_empty() && legs.iter().all(|l| !l.identifier_match);
+            FindCorrelatedResponse {
+                schema_version: 1,
+                source_call_id: params.call_id.clone(),
+                legs,
+                total_matched,
+                heuristic_only,
+                capture_identity,
+            }
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
     /// Record what the agent concluded, as a log line and nothing else.
     ///
     /// The only write verb on sipnab's network surface. It is safe not because
@@ -4241,6 +4392,32 @@ mod tests {
     }
 
     /// A minimal well-formed INVITE for `call_id`, parsed at `ts`.
+    /// An INVITE carrying one extra header, for correlation tests.
+    ///
+    /// The Via branch differs per call so a `ViaBranch` match cannot be what
+    /// the Session-ID test is actually observing.
+    fn invite_with_header(
+        call_id: &str,
+        name: &str,
+        value: &str,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> crate::sip::SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                &format!("Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK{call_id}"),
+                "From: Alice <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                &format!("{name}: {value}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_at(&raw, ts)
+    }
+
     fn invite(call_id: &str, ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -6983,5 +7160,80 @@ mod tests {
                 "{tool} returned agent-written text; the annotation is no longer a dead end"
             );
         }
+    }
+
+    // ---- find_correlated: the strategy name is the point --------------------
+
+    /// A Session-ID match reports the STANDARD by name, flags itself as an
+    /// identifier match, and carries no timing gap — because the gap is not
+    /// why they matched, and attaching it would invite a reader to weigh it.
+    #[tokio::test]
+    async fn find_correlated_names_the_strategy_that_actually_matched() {
+        const A: &str = "ab30317f1a784dc48ff824d0d3715d86";
+        const B: &str = "47755a9de7794ba387653f2099600ef2";
+        let ds = {
+            let mut ds = DialogStore::new(100, false);
+            ds.process_message(invite_with_header(
+                "leg-a@access",
+                "Session-ID",
+                &format!("{A};remote={B}"),
+                base_ts(),
+            ));
+            ds.process_message(invite_with_header(
+                "leg-b@core",
+                "Session-ID",
+                &format!("{B};remote={A}"),
+                base_ts(),
+            ));
+            Arc::new(RwLock::new(ds))
+        };
+        let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
+
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .find_correlated(Parameters(FindCorrelatedParams {
+                    call_id: "leg-a@access".into(),
+                    limit: None,
+                }))
+                .await
+                .expect("correlates"),
+        ))
+        .unwrap();
+
+        assert_eq!(v["total_matched"], 1);
+        assert_eq!(v["legs"][0]["call_id"], "leg-b@core");
+        assert_eq!(v["legs"][0]["strategy"], "session_id");
+        assert_eq!(v["legs"][0]["identifier_match"], true);
+        assert!(
+            v["legs"][0]["observed_gap_ms"].is_null(),
+            "a timing gap is evidence for a guess, not for an identifier match"
+        );
+        assert_eq!(
+            v["heuristic_only"], false,
+            "an identifier match is not a hypothesis"
+        );
+    }
+
+    /// An unknown Call-ID correlates with nothing, and does NOT claim the
+    /// answer was heuristic — there was no answer at all.
+    #[tokio::test]
+    async fn an_unknown_call_id_returns_nothing_and_claims_nothing() {
+        let server = server_with_dialog("known@x");
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .find_correlated(Parameters(FindCorrelatedParams {
+                    call_id: "never-seen@x".into(),
+                    limit: None,
+                }))
+                .await
+                .expect("answers"),
+        ))
+        .unwrap();
+        assert_eq!(v["total_matched"], 0);
+        assert_eq!(
+            v["heuristic_only"], false,
+            "no legs is not the same as legs we guessed at"
+        );
+        assert!(v["capture_identity"]["dialog_generation"].is_u64());
     }
 }

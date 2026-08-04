@@ -21,7 +21,7 @@
 #[path = "support/mcp.rs"]
 mod support;
 
-use support::{ok_payload, McpSession};
+use support::{McpSession, ok_payload};
 
 /// Any capture will do: findings are about what the agent concluded, not about
 /// what the store holds.
@@ -82,14 +82,21 @@ fn the_flag_arms_the_write_and_the_reply_says_where_it_went() {
 fn remaining_counts_down_across_calls_on_a_live_server() {
     let mut session = McpSession::start(CAPTURE, &["--mcp-allow-save-findings"]);
     let first = ok_payload(&session.call("save_findings", serde_json::json!({ "summary": "one" })));
-    let second = ok_payload(&session.call("save_findings", serde_json::json!({ "summary": "two" })));
+    let second =
+        ok_payload(&session.call("save_findings", serde_json::json!({ "summary": "two" })));
 
     let (a, b) = (
         first["remaining"].as_u64().unwrap_or(0),
         second["remaining"].as_u64().unwrap_or(0),
     );
-    assert!(a > 0 && b == a - 1, "remaining must count down: {a} then {b}");
-    assert_eq!(second["seq"], 1, "sequence numbers are monotonic per process");
+    assert!(
+        a > 0 && b == a - 1,
+        "remaining must count down: {a} then {b}"
+    );
+    assert_eq!(
+        second["seq"], 1,
+        "sequence numbers are monotonic per process"
+    );
 }
 
 /// The tool appears in the registry whether or not it is armed.

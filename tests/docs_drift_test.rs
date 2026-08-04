@@ -1707,9 +1707,11 @@ fn mcp_tool_table_lists_every_registered_tool() {
         .map(|c| c[1].to_string())
         .collect();
     // Raised 29 -> 30 by `save_findings`, the first write verb on this surface.
+    // Raised 30 -> 31 by `find_correlated`, which exposes the multi-leg
+    // correlation engine that had existed in DialogStore with no way to reach it.
     assert_eq!(
         registered.len(),
-        30,
+        31,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2212,9 +2214,11 @@ fn no_documentation_table_repeats_a_row() {
     // Raised 462 -> 464 by the four-strategy correlation table in
     // `docs/internals/domain-primer.md`: one table there and one in the
     // generated site mirror, the same page twice, as the entries above record.
+    // Raised 464 -> 466 by `find_correlated`'s strategy table in docs/mcp.md:
+    // one there and one in the site mirror, the same page twice.
     assert_eq!(
-        tables, 464,
-        "walked {tables} tables, expected 464. More is fine — bump this. FEWER \
+        tables, 466,
+        "walked {tables} tables, expected 466. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

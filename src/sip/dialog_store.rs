@@ -2872,7 +2872,11 @@ mod tests {
 
     /// Build an INVITE message with an X-Call-ID header (for multi-leg correlation).
     /// Build an INVITE carrying an RFC 7989 `Session-ID`.
-    fn make_invite_with_session_id(call_id: &str, session_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_with_session_id(
+        call_id: &str,
+        session_id: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -2885,8 +2889,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE")
     }
 
     /// The case the whole feature exists for: an SBC rewrote the Call-ID, so
@@ -2936,10 +2948,12 @@ mod tests {
             "11111111111111111111111111111111;remote=22222222222222222222222222222222",
             ts,
         ));
-        assert!(store
-            .find_correlated_scored("leg-a@access")
-            .iter()
-            .all(|r| r.reason != CorrelationReason::SessionId));
+        assert!(
+            store
+                .find_correlated_scored("leg-a@access")
+                .iter()
+                .all(|r| r.reason != CorrelationReason::SessionId)
+        );
     }
 
     /// A shared `nil` half must not tie together every call still being set up.

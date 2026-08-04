@@ -224,7 +224,10 @@ impl SessionId {
     #[must_use]
     pub fn deviations(&self) -> Vec<SessionIdDeviation> {
         let mut out = Vec::new();
-        for half in [Some(&self.local), self.remote.as_ref()].into_iter().flatten() {
+        for half in [Some(&self.local), self.remote.as_ref()]
+            .into_iter()
+            .flatten()
+        {
             match half {
                 SessionIdHalf::Uuid {
                     deviation: Some(d), ..
@@ -268,7 +271,10 @@ mod tests {
             a_side.same_session_as(&b_side),
             "swapped halves describe one session"
         );
-        assert!(b_side.same_session_as(&a_side), "and the relation is symmetric");
+        assert!(
+            b_side.same_session_as(&a_side),
+            "and the relation is symmetric"
+        );
     }
 
     #[test]
@@ -297,7 +303,10 @@ mod tests {
         );
         // But the known half still works.
         let same = SessionId::parse(&format!("{NIL};remote={A}")).expect("parses");
-        assert!(first.same_session_as(&same), "the non-nil half still matches");
+        assert!(
+            first.same_session_as(&same),
+            "the non-nil half still matches"
+        );
     }
 
     #[test]
@@ -313,7 +322,10 @@ mod tests {
         let s = SessionId::parse(A).expect("parses");
         assert_eq!(s.local.uuid(), Some(A));
         assert!(s.remote.is_none());
-        assert!(s.legacy_rfc7329_form, "the older form is a fact about the peer");
+        assert!(
+            s.legacy_rfc7329_form,
+            "the older form is a fact about the peer"
+        );
         assert_eq!(s.correlatable(), vec![A], "and it still correlates");
     }
 
@@ -342,7 +354,10 @@ mod tests {
     fn malformed_halves_are_kept_for_reporting_and_excluded_from_matching() {
         for (raw, want) in [
             ("tooshort", SessionIdDeviation::WrongLength),
-            ("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", SessionIdDeviation::NonHex),
+            (
+                "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+                SessionIdDeviation::NonHex,
+            ),
         ] {
             let s = SessionId::parse(raw).expect("parses");
             assert_eq!(s.deviations(), vec![want], "raw was {raw}");
