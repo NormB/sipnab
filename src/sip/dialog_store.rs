@@ -41,6 +41,16 @@ pub fn set_max_messages_per_dialog(limit: usize) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CorrelationReason {
+    /// Matched via the RFC 7989 `Session-ID` header.
+    ///
+    /// The strongest of the three, and the only one that crosses a B2BUA by
+    /// design: an SBC rewrites Call-ID and Via branch, and RFC 7989 exists so
+    /// the session identifier survives that. Scored the same 100 as
+    /// [`Self::XCallId`] because both are identifier matches rather than
+    /// guesses, but reported separately — one is a standard, the other a vendor
+    /// convention, and a reader deciding how much to trust a call tree needs to
+    /// know which they have.
+    SessionId,
     /// Matched via X-Call-ID header.
     XCallId,
     /// Matched via shared Via branch parameter.
@@ -886,6 +896,17 @@ impl DialogStore {
             .flat_map(|m| self.xcid_headers.iter().filter_map(move |h| m.header(h)))
             .collect();
 
+        // Strategy 0 data: every RFC 7989 Session-ID the source dialog carried.
+        // Parsed once here rather than per candidate, and kept as a list
+        // because a dialog can legitimately show the pair converging — `nil`
+        // on the first INVITE, then both halves once the far end answers.
+        let src_session_ids: Vec<crate::sip::session_id::SessionId> = dialog
+            .messages
+            .iter()
+            .filter_map(|m| m.header("Session-ID"))
+            .filter_map(crate::sip::session_id::SessionId::parse)
+            .collect();
+
         // Strategy 2 data: Via branches from INVITE messages in the source dialog
         let src_branches: std::collections::HashSet<&str> = dialog
             .messages
@@ -904,6 +925,30 @@ impl DialogStore {
         for candidate in self.dialogs.values() {
             if candidate.call_id == call_id {
                 continue;
+            }
+
+            // Strategy 0: RFC 7989 Session-ID (score=100). Checked first
+            // because it is the only strategy that survives a B2BUA, so where
+            // it applies it is the answer and the rest are noise.
+            //
+            // `same_session_as` is set intersection, NOT string equality: the
+            // two halves swap perspective across the SBC, so the header VALUES
+            // differ on either side of it while describing one call.
+            if !src_session_ids.is_empty() {
+                let session_match = candidate
+                    .messages
+                    .iter()
+                    .filter_map(|m| m.header("Session-ID"))
+                    .filter_map(crate::sip::session_id::SessionId::parse)
+                    .any(|cand| src_session_ids.iter().any(|src| src.same_session_as(&cand)));
+                if session_match {
+                    results.push(CorrelationResult {
+                        dialog: candidate,
+                        score: 100,
+                        reason: CorrelationReason::SessionId,
+                    });
+                    continue;
+                }
             }
 
             // Strategy 1: correlation-header match (score=100)
@@ -2826,6 +2871,102 @@ mod tests {
     }
 
     /// Build an INVITE message with an X-Call-ID header (for multi-leg correlation).
+    /// Build an INVITE carrying an RFC 7989 `Session-ID`.
+    fn make_invite_with_session_id(call_id: &str, session_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                &format!("Session-ID: {session_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse INVITE")
+    }
+
+    /// The case the whole feature exists for: an SBC rewrote the Call-ID, so
+    /// nothing else ties the legs together, and the two `Session-ID` values are
+    /// DIFFERENT STRINGS because the halves swap perspective across a B2BUA.
+    #[test]
+    fn session_id_correlates_two_legs_across_a_b2bua_that_rewrote_the_call_id() {
+        const A: &str = "ab30317f1a784dc48ff824d0d3715d86";
+        const B: &str = "47755a9de7794ba387653f2099600ef2";
+        let ts = Utc::now();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_with_session_id(
+            "leg-a@access",
+            &format!("{A};remote={B}"),
+            ts,
+        ));
+        store.process_message(make_invite_with_session_id(
+            "leg-b@core",
+            &format!("{B};remote={A}"),
+            ts,
+        ));
+
+        let found = store.find_correlated_scored("leg-a@access");
+        assert_eq!(found.len(), 1, "the far leg must be found");
+        assert_eq!(found[0].dialog.call_id, "leg-b@core");
+        assert_eq!(found[0].score, 100);
+        assert_eq!(
+            found[0].reason,
+            CorrelationReason::SessionId,
+            "and attributed to the standard, not to a timing guess"
+        );
+    }
+
+    /// Mutation guard for the test above: unrelated sessions must NOT
+    /// correlate, or `same_session_as` returning true would pass both.
+    #[test]
+    fn different_session_ids_do_not_correlate() {
+        let ts = Utc::now();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_with_session_id(
+            "leg-a@access",
+            "ab30317f1a784dc48ff824d0d3715d86;remote=47755a9de7794ba387653f2099600ef2",
+            ts,
+        ));
+        store.process_message(make_invite_with_session_id(
+            "unrelated@core",
+            "11111111111111111111111111111111;remote=22222222222222222222222222222222",
+            ts,
+        ));
+        assert!(store
+            .find_correlated_scored("leg-a@access")
+            .iter()
+            .all(|r| r.reason != CorrelationReason::SessionId));
+    }
+
+    /// A shared `nil` half must not tie together every call still being set up.
+    #[test]
+    fn a_shared_nil_half_does_not_correlate_unrelated_setups() {
+        const NIL: &str = "00000000000000000000000000000000";
+        let ts = Utc::now();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_with_session_id(
+            "setup-1@access",
+            &format!("ab30317f1a784dc48ff824d0d3715d86;remote={NIL}"),
+            ts,
+        ));
+        store.process_message(make_invite_with_session_id(
+            "setup-2@access",
+            &format!("47755a9de7794ba387653f2099600ef2;remote={NIL}"),
+            ts,
+        ));
+        assert!(
+            store
+                .find_correlated_scored("setup-1@access")
+                .iter()
+                .all(|r| r.reason != CorrelationReason::SessionId),
+            "nil is absence; two calls both saying 'unknown' are not one call"
+        );
+    }
+
     fn make_invite_with_x_call_id(call_id: &str, x_call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
