@@ -311,6 +311,16 @@ ceiling before serialization. One tool replaces a store wholesale —
 identity in the same critical section that clears the stores, so no answer can
 change meaning without saying so.
 
+One tool accepts a WRITE: `save_findings`, behind `--mcp-allow-save-findings`.
+It does not weaken this rule, and it appears here so nobody has to discover it
+by reading the tool list. What an agent writes goes to the log and reaches
+nothing else — no store, no detector, no report, and no other tool, so it cannot
+return later as evidence the agent then cites. There is no `list_findings`, and
+that omission is the feature. The compiler enforces the dead end, rather than
+this paragraph: the annotation types are `pub(in crate::mcp)`, so no
+analysis path can name them, and widening that visibility is what a reviewer
+should treat as the change that breaks the invariant.
+
 **Why.** An LLM agent drives the MCP surface: it must not be able to
 change what an operator is looking at *and leave it looking like what they were
 looking at*, and an unbounded response is a denial-of-service against the

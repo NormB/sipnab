@@ -353,6 +353,7 @@ ordinary update.
 | `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root` |
 | `shutdown_server` | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | `open_capture` | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
+| `save_findings` | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 | `server_capabilities` | -- | sipnab version and the optional features this binary carries |
 
 ### `list_dialogs`
@@ -1416,6 +1417,52 @@ tool applies. sipnab also refuses a capture that belongs to this run's own `-I`
 set, with the output guard's wording about overwriting — that file is already
 loaded, and reading it again under a new identity would duplicate what the store
 holds.
+
+### `save_findings`
+
+**The only write verb on sipnab's network surface.** Requires
+`--mcp-allow-save-findings`, which is off by default.
+
+```jsonc
+// save_findings { "summary": "the 488 was a codec mismatch", "call_id": "a1b2@10.0.0.7" }
+{
+  "schema_version": 1,
+  "seq": 0,
+  "written_at": "2026-08-04T20:41:07.116Z",
+  "summary_chars_submitted": 29,
+  "detail_chars_submitted": 0,
+  "truncated": false,
+  "recorded_total": 1,
+  "remaining": 999,
+  "readable_over_mcp": false,
+  "delivered_to": "sipnab log (tracing/journald/stderr)",
+  "capture_identity": { "instance": "…", "dialog_generation": 41, "stream_generation": 6 }
+}
+```
+
+It records what the agent concluded, and that is all it does. **The finding goes
+to sipnab's log and nowhere else**: no tool reads it back, it appears in no query
+result, and no analysis consumes it. There is no `list_findings`, deliberately.
+
+That dead end is the entire safety argument. Every response on this surface
+carries attacker-controlled text — `From` display names, `User-Agent` strings,
+raw message snippets — so a write verb reachable from that text must not be able
+to change what an operator is reading, or to come back later as evidence the
+agent then cites. The compiler enforces this rather than convention: the
+annotation types stay private to the MCP module, so no analysis code can name
+them.
+
+Read your findings where operational facts already live — `journalctl -u sipnab`,
+syslog, or stderr. Each line records the agent's claim as the agent's claim,
+never as a measurement of sipnab's own.
+
+Two bounds, both reported rather than silent. sipnab clips text at 500
+characters of `summary` and 4096 of `detail`, setting `truncated` and
+`*_chars_submitted` giving the original length. And one process accepts 1000
+findings, after which writes are **refused** with an error naming the limit —
+never accepted and discarded, because an agent told "recorded" about something
+the server threw away is worse off than one told plainly that it was not.
+`remaining` counts down so the bound is visible before it bites.
 
 ### `capture_status`
 

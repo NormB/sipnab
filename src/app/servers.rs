@@ -273,6 +273,11 @@ pub fn start_servers(
             } else {
                 s
             };
+            let s = if cli.mcp_allow_save_findings {
+                s.with_save_findings()
+            } else {
+                s
+            };
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),
                 None => s,

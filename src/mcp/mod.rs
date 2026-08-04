@@ -35,6 +35,15 @@
 //! The workspace-wide `clippy::await_holding_lock = "deny"` (Cargo.toml
 //! `[workspace.lints]`) enforces this mechanically.
 
+// PRIVATE ON PURPOSE, and it is a guarantee rather than tidiness. `findings`
+// holds what an LLM agent wrote through `save_findings`, and its types are
+// `pub(in crate::mcp)` so nothing outside this module tree can name them. That
+// is what makes "no analysis reads an annotation" a fact the compiler checks
+// instead of a promise this comment makes. Publishing this module would
+// dissolve it silently: everything would still build and every test would
+// still pass.
+mod findings;
+
 pub mod load;
 pub mod server;
 pub mod shape;

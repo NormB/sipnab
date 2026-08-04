@@ -1706,9 +1706,10 @@ fn mcp_tool_table_lists_every_registered_tool() {
         .captures_iter(&server)
         .map(|c| c[1].to_string())
         .collect();
+    // Raised 29 -> 30 by `save_findings`, the first write verb on this surface.
     assert_eq!(
         registered.len(),
-        29,
+        30,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",

@@ -1088,6 +1088,24 @@ pub struct Cli {
     )]
     pub mcp_allow_open_capture: bool,
 
+    /// Permit the `save_findings` MCP tool to record an agent's conclusion.
+    ///
+    /// The ONLY write verb on sipnab's whole network surface, and off by
+    /// default because its caller is a language model reading text an attacker
+    /// may have put on the wire. What makes it safe is not that the text is
+    /// trustworthy: it is that the write reaches nothing. A finding goes to the
+    /// log and is readable by no tool, appears in no query result, and feeds no
+    /// analysis, so it cannot come back as evidence in a later answer.
+    ///
+    /// Bounded at 1000 findings per process, after which writes are REFUSED
+    /// rather than silently dropped — that bound exists to keep an agent in a
+    /// loop from filling the operator's journal.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-allow-save-findings"
+    )]
+    pub mcp_allow_save_findings: bool,
+
     // ── HEP (Homer Encapsulation Protocol) ───────────────────────────
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
     #[arg(

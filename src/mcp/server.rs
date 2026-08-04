@@ -70,6 +70,18 @@ pub struct SipnabMcp {
     allow_shutdown: bool,
     /// Whether `open_capture` may replace the loaded capture.
     allow_open_capture: bool,
+    /// Whether `save_findings` may record an agent's annotation.
+    allow_save_findings: bool,
+    /// Annotations written through `save_findings`.
+    ///
+    /// **Shared, not per-session**, for the same reason `state` below is:
+    /// `SipnabMcp` is cloned per HTTP session, so a plain field would give every
+    /// session a private log and make the counts each one reports meaningless —
+    /// two agents on one server would each be told they held the only findings.
+    ///
+    /// Nothing reads this back. See [`crate::mcp::findings`] for why that is
+    /// structural rather than a convention.
+    findings: Arc<RwLock<crate::mcp::findings::FindingsLog>>,
     /// What this server is attached to, which capture that is, and whether a
     /// load is filling it.
     ///
@@ -146,6 +158,8 @@ impl SipnabMcp {
             protected_inputs: Default::default(),
             allow_shutdown: false,
             allow_open_capture: false,
+            allow_save_findings: false,
+            findings: Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::new())),
             capture: Arc::new(RwLock::new(CaptureState::default())),
             tool_router: Self::tool_router(),
         }
@@ -202,6 +216,18 @@ impl SipnabMcp {
     /// Permit `open_capture` to replace the capture this server holds.
     pub fn with_open_capture(mut self) -> Self {
         self.allow_open_capture = true;
+        self
+    }
+
+    /// Permit `save_findings` to record an agent's annotation.
+    ///
+    /// Off by default like the other two, and for a sharper reason: this is the
+    /// only verb on sipnab's whole network surface that accepts a write, and its
+    /// caller is a language model reading attacker-controlled text off the wire.
+    /// What keeps that safe is not that the text is harmless — it is that an
+    /// annotation reaches nothing. See [`crate::mcp::findings`].
+    pub fn with_save_findings(mut self) -> Self {
+        self.allow_save_findings = true;
         self
     }
 
@@ -604,6 +630,52 @@ pub struct OpenCaptureParams {
     pub filename: String,
 }
 
+/// Parameters for `save_findings`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SaveFindingsParams {
+    /// One-line conclusion. Required.
+    pub summary: String,
+    /// Call-ID this is about, when it is about one. Not checked against the
+    /// store: a note about a call that has since been evicted is still the note
+    /// that mattered, and refusing it would lose exactly the record worth
+    /// keeping.
+    pub call_id: Option<String>,
+    /// Supporting text.
+    pub detail: Option<String>,
+}
+
+/// What `save_findings` did, reported rather than implied.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SaveFindingsResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// Sequence number assigned. Monotonic for the process and never reused,
+    /// so two findings can be ordered even after the older one is evicted.
+    pub seq: u64,
+    /// When it was recorded, RFC 3339 UTC.
+    pub written_at: String,
+    /// Characters of `summary` submitted, before any clipping.
+    pub summary_chars_submitted: usize,
+    /// Characters of `detail` submitted, before any clipping.
+    pub detail_chars_submitted: usize,
+    /// True when either field was shortened to fit. The caller is told rather
+    /// than left to compare lengths.
+    pub truncated: bool,
+    /// Findings this process has accepted, including this one.
+    pub recorded_total: u64,
+    /// Findings this process will still accept. Counts down, so the bound is
+    /// visible before it bites rather than only when it refuses.
+    pub remaining: u64,
+    /// Stated so the caller cannot mistake a write for a readable store.
+    pub readable_over_mcp: bool,
+    /// Where a human actually reads this back.
+    pub delivered_to: String,
+    /// Capture and store generations current when this was recorded.
+    pub capture_identity: crate::provenance::CaptureEtag,
+}
+
 /// Parameters for `shutdown_server`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -990,6 +1062,9 @@ pub struct RuntimeFlags {
     /// Whether `open_capture` may replace the loaded capture
     /// (`--mcp-allow-open-capture`).
     pub mcp_allow_open_capture: bool,
+    /// Whether `save_findings` may record an annotation
+    /// (`--mcp-allow-save-findings`). The only write verb on this surface.
+    pub mcp_allow_save_findings: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2736,6 +2811,7 @@ impl SipnabMcp {
                 mcp_file_root: self.file_root.as_ref().map(|d| d.display().to_string()),
                 mcp_allow_shutdown: self.allow_shutdown,
                 mcp_allow_open_capture: self.allow_open_capture,
+                mcp_allow_save_findings: self.allow_save_findings,
             },
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -3761,6 +3837,108 @@ impl SipnabMcp {
                          different capture_identity.instance as a different capture",
             }),
         )?]))
+    }
+
+    /// Record what the agent concluded, as a log line and nothing else.
+    ///
+    /// The only write verb on sipnab's network surface. It is safe not because
+    /// the text is trustworthy — it is quoted from a wire an attacker may be
+    /// on — but because the write reaches nothing: no store, no detector, no
+    /// other tool, and no later answer. See [`crate::mcp::findings`] for why
+    /// that dead end is enforced by visibility rather than by convention.
+    #[tool(
+        name = "save_findings",
+        description = "Records a one-line conclusion about this capture. WRITE. \
+                       Requires --mcp-allow-save-findings on the server. The \
+                       annotation is appended to sipnab's log for a human to \
+                       read; it is not readable through any tool, does not \
+                       appear in any query result, and no analysis consumes it, \
+                       so it cannot affect a later answer."
+    )]
+    pub async fn save_findings(
+        &self,
+        Parameters(params): Parameters<SaveFindingsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if !self.allow_save_findings {
+            return Err(rmcp::ErrorData::invalid_params(
+                "saving findings is disabled: start sipnab with \
+                 --mcp-allow-save-findings to permit it. A stock server accepts \
+                 no writes at all."
+                    .to_string(),
+                None,
+            ));
+        }
+        // An empty summary is the one input worth refusing. Everything else is
+        // the agent's to phrase, but a blank annotation is a log line that says
+        // nothing while claiming a sequence number.
+        if params.summary.trim().is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                "summary must not be empty: a finding with no text records \
+                 nothing but occupies a sequence number."
+                    .to_string(),
+                None,
+            ));
+        }
+
+        // Lock discipline, per the module doc: take the guards, copy what is
+        // needed, drop them, and only then touch anything that can await.
+        let (capture_identity, written_at) = {
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let etag = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
+            drop(ds);
+            drop(state);
+            (etag, chrono::Utc::now())
+        };
+
+        let recorded = {
+            let mut log = self.findings.write();
+            log.record(
+                written_at,
+                params.call_id.as_deref(),
+                &params.summary,
+                params.detail.as_deref(),
+                &capture_identity.instance,
+                capture_identity.dialog_generation,
+                capture_identity.stream_generation,
+            )
+        };
+        // Refused, not silently dropped: an agent told "recorded" about a
+        // finding this process threw away is worse off than one told plainly
+        // that it was not.
+        let Some(recorded) = recorded else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "this process has already recorded its limit of {} findings \
+                     and will accept no more. Nothing was written. Restart \
+                     sipnab to reset the count; the findings already recorded \
+                     are in the log.",
+                    crate::mcp::findings::MAX_FINDINGS_PER_PROCESS
+                ),
+                None,
+            ));
+        };
+
+        let payload = SaveFindingsResponse {
+            schema_version: 1,
+            seq: recorded.seq,
+            written_at: written_at.to_rfc3339(),
+            summary_chars_submitted: recorded.summary_chars_submitted,
+            detail_chars_submitted: recorded.detail_chars_submitted,
+            truncated: recorded.truncated,
+            recorded_total: recorded.recorded_total,
+            remaining: recorded.remaining,
+            // Both of these are constants, and they are in the response on
+            // purpose: an agent that writes and then looks for a way to read it
+            // back should find the answer in the reply rather than by trying
+            // every tool.
+            readable_over_mcp: false,
+            delivered_to: "sipnab log (tracing/journald/stderr)".to_string(),
+            capture_identity,
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
     /// Stop this sipnab process. Opt-in, dry-run by default.
@@ -6672,5 +6850,138 @@ mod tests {
             .as_ref()
             .expect("capture_health must carry tool annotations");
         assert_eq!(annotations.read_only_hint, Some(true));
+    }
+
+    // ---- save_findings: the one write verb, and its dead end ----------------
+
+    #[tokio::test]
+    async fn save_findings_is_refused_on_a_stock_server() {
+        // Off unless armed, like shutdown_server and open_capture. A default
+        // install must accept no writes at all.
+        let server = server_with_dialog("w1@x");
+        let err = server
+            .save_findings(Parameters(SaveFindingsParams {
+                summary: "anything".into(),
+                call_id: None,
+                detail: None,
+            }))
+            .await
+            .expect_err("a stock server must refuse to record");
+        assert!(
+            format!("{err:?}").contains("--mcp-allow-save-findings"),
+            "the refusal must name the flag that would permit it: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_armed_server_records_and_reports_what_it_did() {
+        let server = server_with_dialog("w2@x").with_save_findings();
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .save_findings(Parameters(SaveFindingsParams {
+                    summary: "the 488 was a codec mismatch".into(),
+                    call_id: Some("w2@x".into()),
+                    detail: None,
+                }))
+                .await
+                .expect("armed server records"),
+        ))
+        .unwrap();
+        assert_eq!(v["seq"], 0);
+        assert_eq!(v["recorded_total"], 1);
+        assert_eq!(v["truncated"], false);
+        // Stated in the reply so an agent does not go hunting for a read tool.
+        assert_eq!(v["readable_over_mcp"], false);
+        // Provenance, same as every other response on this surface.
+        assert!(v["capture_identity"]["dialog_generation"].is_u64());
+    }
+
+    #[tokio::test]
+    async fn an_empty_summary_is_refused_rather_than_recorded() {
+        let server = server_with_dialog("w3@x").with_save_findings();
+        for blank in ["", "   ", "\t\n"] {
+            assert!(
+                server
+                    .save_findings(Parameters(SaveFindingsParams {
+                        summary: blank.into(),
+                        call_id: None,
+                        detail: None,
+                    }))
+                    .await
+                    .is_err(),
+                "a blank summary records nothing but takes a sequence number"
+            );
+        }
+    }
+
+    /// THE test for this feature. Everything else checks that the write works;
+    /// this checks that the write goes NOWHERE, which is the whole safety
+    /// argument for allowing a write verb on a surface an LLM drives while
+    /// reading attacker-controlled text.
+    ///
+    /// Asserts the effect, not the predicate: it writes a marker no capture
+    /// could contain and then reads back through every query tool that could
+    /// plausibly surface it. A test that merely checked "no tool is named
+    /// list_findings" would pass while the text leaked through search.
+    #[tokio::test]
+    async fn a_recorded_finding_is_reachable_from_no_read_tool() {
+        const MARKER: &str = "ZZQX-agent-written-marker-never-on-any-wire";
+        let server = server_with_dialog("w4@x").with_save_findings();
+        server
+            .save_findings(Parameters(SaveFindingsParams {
+                summary: MARKER.into(),
+                call_id: Some("w4@x".into()),
+                detail: Some(MARKER.into()),
+            }))
+            .await
+            .expect("recorded");
+
+        let reads = vec![
+            ("stats", text_of(&server.stats().await.expect("stats"))),
+            (
+                "list_dialogs",
+                text_of(
+                    &server
+                        .list_dialogs(Parameters(ListDialogsParams {
+                            cursor: None,
+                            limit: None,
+                            filter: None,
+                        }))
+                        .await
+                        .expect("list"),
+                ),
+            ),
+            (
+                "tail_dialogs",
+                text_of(
+                    &server
+                        .tail_dialogs(Parameters(TailDialogsParams {
+                            cursor: None,
+                            limit: None,
+                        }))
+                        .await
+                        .expect("tail"),
+                ),
+            ),
+            (
+                "get_dialog",
+                text_of(
+                    &server
+                        .get_dialog(Parameters(GetDialogParams {
+                            call_id: "w4@x".into(),
+                            cursor: None,
+                            max_messages: None,
+                        }))
+                        .await
+                        .expect("get"),
+                ),
+            ),
+        ];
+        for (tool, body) in reads {
+            assert!(
+                !body.contains(MARKER),
+                "{tool} returned agent-written text; the annotation is no longer a dead end"
+            );
+        }
     }
 }
