@@ -26,7 +26,11 @@
 
 VHS := vhs
 FFMPEG := ffmpeg
-ROOT := $(CURDIR)/..
+# `abspath` normalises away the `demos/..`. Without it every target carried a
+# literal `/demos/../` and make -- which matches goals TEXTUALLY -- reported
+# "Nothing to be done" for the very file it was asked to build, because the
+# path a human types is not the string the pattern rule produced.
+ROOT := $(abspath $(CURDIR)/..)
 STATIC := $(ROOT)/website/static/demos
 
 # The binary the tapes drive, built from THIS tree. Prepended to PATH for every
@@ -77,6 +81,23 @@ endif
 TAPES := 01-intro 02-mark-delta 04-filter \
          07-rtp-cli 08-rtp-tui 09-detail 10-multileg
 WEBPS := $(addprefix $(STATIC)/,$(addsuffix .webp,$(TAPES)))
+
+# Short per-demo aliases, e.g. `make -C demos 04-filter`. The header has
+# documented a one-demo invocation since this file was written, but no such
+# target existed: the only rule is `$(STATIC)/%.webp`, and make matches goals
+# textually, so `make -C demos 09-detail.webp` reported "Nothing to be done"
+# for a file it was perfectly able to build. These aliases are what the
+# documentation always meant.
+#
+# `force-<name>` re-renders regardless of timestamps. A fresh `git clone` or
+# `git checkout` gives every file the same mtime, so the .webp routinely looks
+# newer than its .tape and make declines to rebuild -- which is exactly the
+# situation when someone is trying to fix a stale recording.
+.PHONY: $(TAPES) $(addprefix force-,$(TAPES))
+$(TAPES): %: $(STATIC)/%.webp
+$(addprefix force-,$(TAPES)): force-%:
+	@touch $(CURDIR)/$*.tape
+	@$(MAKE) --no-print-directory -C $(CURDIR) $(STATIC)/$*.webp
 
 .PHONY: all hero clean-tmp
 all: $(WEBPS) hero
