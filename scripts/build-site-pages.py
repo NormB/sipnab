@@ -260,7 +260,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # the nav_group path lists, not from this number.
         25,
         "Which link types, EtherTypes and tunnels sipnab can read a SIP dialog "
-        "out of, which it cannot, and what it reports when a frame will not "
+        "out of, which it cannot, and what it reports when a frame does not "
         "decode.",
     ),
 ]
