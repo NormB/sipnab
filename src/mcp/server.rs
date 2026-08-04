@@ -3944,6 +3944,10 @@ impl SipnabMcp {
                     let (strategy, identifier_match) = match r.reason {
                         R::SessionId => ("session_id", true),
                         R::XCallId => ("x_call_id", true),
+                        // An identifier comparison, so `true` — but of the
+                        // MEDIA SESSION rather than the dialog. It is the whole
+                        // RFC 8866 uniqueness tuple, never `sess-id` alone.
+                        R::SdpOrigin => ("sdp_origin", true),
                         R::ViaBranch => ("via_branch", true),
                         R::TimingHeuristic => ("timing_heuristic", false),
                         // NO CATCH-ALL, deliberately. `CorrelationReason` is

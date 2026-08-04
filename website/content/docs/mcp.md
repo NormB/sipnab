@@ -1199,6 +1199,7 @@ the same claim:
 |---|---|---|
 | `session_id` | RFC 7989 `Session-ID` matched | **Yes, by design** |
 | `x_call_id` | A configured header matched (`X-Call-ID` by default) | Only if the SBC inserts it |
+| `sdp_origin` | The RFC 8866 SDP origin tuple matched | Only if the SBC forwards SDP untouched |
 | `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
 | `timing_heuristic` | Same endpoint, close in time | Not an identifier at all |
 

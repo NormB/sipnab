@@ -51,6 +51,17 @@ pub enum CorrelationReason {
     /// convention, and a reader deciding how much to trust a call tree needs to
     /// know which they have.
     SessionId,
+    /// Matched via the RFC 8866 SDP origin tuple.
+    ///
+    /// An identifier comparison, not a guess — but it identifies the MEDIA
+    /// SESSION rather than the dialog, and any SBC that re-originates SDP
+    /// rewrites it. So it is scored below the dedicated correlation headers and
+    /// above a shared Via branch, which crosses a B2BUA not at all.
+    ///
+    /// Compares the whole uniqueness tuple the RFC defines, never `sess-id`
+    /// alone: the RFC recommends deriving `sess-id` from a timestamp, so two
+    /// unrelated calls from one user agent in the same second can share it.
+    SdpOrigin,
     /// Matched via X-Call-ID header.
     XCallId,
     /// Matched via shared Via branch parameter.
@@ -907,6 +918,18 @@ impl DialogStore {
             .filter_map(crate::sip::session_id::SessionId::parse)
             .collect();
 
+        // Strategy 1.5 data: RFC 8866 SDP origin tuples the source dialog
+        // carried. Collected once; the candidate side is parsed per candidate
+        // because most candidates never reach this strategy.
+        let src_origins: std::collections::HashSet<crate::sip::sdp::SdpOriginKey> = dialog
+            .messages
+            .iter()
+            .filter(|m| !m.body.is_empty())
+            .filter_map(|m| crate::sip::sdp::parse_sdp(&m.body).ok())
+            .filter_map(|s| s.origin)
+            .filter_map(|o| crate::sip::sdp::SdpOriginKey::parse(&o))
+            .collect();
+
         // Strategy 2 data: Via branches from INVITE messages in the source dialog
         let src_branches: std::collections::HashSet<&str> = dialog
             .messages
@@ -966,6 +989,30 @@ impl DialogStore {
                     reason: CorrelationReason::XCallId,
                 });
                 continue;
+            }
+
+            // Strategy 1.5: SDP origin tuple (score=90). Between the
+            // correlation headers and the Via branch: it is a real identifier
+            // that the RFC defines as globally unique, but it names the media
+            // session rather than the dialog, and an SBC that re-originates SDP
+            // replaces it.
+            if !src_origins.is_empty() {
+                let origin_match = candidate
+                    .messages
+                    .iter()
+                    .filter(|m| !m.body.is_empty())
+                    .filter_map(|m| crate::sip::sdp::parse_sdp(&m.body).ok())
+                    .filter_map(|s| s.origin)
+                    .filter_map(|o| crate::sip::sdp::SdpOriginKey::parse(&o))
+                    .any(|k| src_origins.contains(&k));
+                if origin_match {
+                    results.push(CorrelationResult {
+                        dialog: candidate,
+                        score: 90,
+                        reason: CorrelationReason::SdpOrigin,
+                    });
+                    continue;
+                }
             }
 
             // Strategy 2: Via branch overlap (score=80). Scan the candidate's
@@ -2871,6 +2918,80 @@ mod tests {
     }
 
     /// Build an INVITE message with an X-Call-ID header (for multi-leg correlation).
+    /// Build an INVITE carrying an SDP body with the given `o=` line.
+    fn make_invite_with_origin(call_id: &str, origin: &str, ts: DateTime<Utc>) -> SipMessage {
+        let sdp = format!(
+            "v=0\r\no={origin}\r\ns=-\r\nc=IN IP4 198.51.100.7\r\nt=0 0\r\n\
+             m=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        );
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                &format!("Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK{call_id}"),
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+                &format!("Content-Length: {}", sdp.len()),
+            ],
+            sdp.as_bytes(),
+        );
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse INVITE")
+    }
+
+    /// A passthrough SBC rewrote the Call-ID and the Via branch but forwarded
+    /// the SDP body untouched, so the RFC 8866 origin tuple still crosses.
+    #[test]
+    fn the_sdp_origin_tuple_correlates_legs_a_passthrough_sbc_rewrote() {
+        const ORIGIN: &str = "alice 2890844526 2890842807 IN IP4 198.51.100.7";
+        let ts = Utc::now();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_with_origin("leg-a@access", ORIGIN, ts));
+        // Same session, later sess-version — the SBC re-anchored nothing, but
+        // a re-INVITE bumped the version. The tuple excludes it on purpose.
+        store.process_message(make_invite_with_origin(
+            "leg-b@core",
+            "alice 2890844526 2890842999 IN IP4 198.51.100.7",
+            ts,
+        ));
+
+        let found = store.find_correlated_scored("leg-a@access");
+        let hit = found
+            .iter()
+            .find(|r| r.reason == CorrelationReason::SdpOrigin)
+            .expect("the origin tuple must correlate the legs");
+        assert_eq!(hit.dialog.call_id, "leg-b@core");
+        assert_eq!(hit.score, 90);
+    }
+
+    /// THE fabrication guard at store level: a shared `sess-id` from two
+    /// different originators must NOT correlate. RFC 8866 recommends deriving
+    /// it from a timestamp, so this collision is ordinary, not contrived.
+    #[test]
+    fn a_shared_sess_id_from_different_originators_does_not_correlate() {
+        let ts = Utc::now();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_with_origin(
+            "call-1@access",
+            "alice 2890844526 2890842807 IN IP4 198.51.100.7",
+            ts,
+        ));
+        store.process_message(make_invite_with_origin(
+            "call-2@access",
+            "bob 2890844526 2890842807 IN IP4 203.0.113.9",
+            ts,
+        ));
+        assert!(
+            store
+                .find_correlated_scored("call-1@access")
+                .iter()
+                .all(|r| r.reason != CorrelationReason::SdpOrigin),
+            "same sess-id, different originator — the tuple must keep them apart"
+        );
+    }
+
     /// Build an INVITE carrying an RFC 7989 `Session-ID`.
     fn make_invite_with_session_id(
         call_id: &str,

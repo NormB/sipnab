@@ -199,15 +199,23 @@ sequenceDiagram
 
 A B2BUA (SBC, PBX) terminates one call and originates another, so one
 human call is two Call-IDs with no shared identifier by default.
-[`dialog_store.rs`](../../src/sip/dialog_store.rs) correlates legs four ways,
+[`dialog_store.rs`](../../src/sip/dialog_store.rs) correlates legs five ways,
 each with a confidence score and each reported under its own reason:
 
 | Reason | Score | Survives a B2BUA? |
 |---|---|---|
 | `SessionId` — RFC 7989 `Session-ID` | 100 | **Yes, by design** |
 | `XCallId` — a configured header, `X-Call-ID` by default | 100 | Only if the SBC inserts it |
+| `SdpOrigin` — the RFC 8866 SDP origin tuple | 90 | Only if the SBC forwards SDP untouched |
 | `ViaBranch` — a shared branch parameter | 80 | No: a new transaction gets a new branch |
 | `TimingHeuristic` — endpoint overlap plus timing | 50 | Not an identifier at all |
+
+`SdpOrigin` compares the whole uniqueness tuple RFC 8866 defines —
+`<username> <sess-id> <nettype> <addrtype> <unicast-address>` — and never
+`sess-id` alone, which the RFC recommends deriving from a timestamp and which
+two unrelated calls from one user agent can therefore share. It excludes
+`sess-version` deliberately, so a re-INVITE for hold or a codec change does not
+break the match.
 
 Two of those scores are 100 and they are not interchangeable. `SessionId` is a
 standard whose entire purpose is surviving intermediaries that rewrite
