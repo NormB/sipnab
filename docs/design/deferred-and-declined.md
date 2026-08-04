@@ -244,8 +244,11 @@ is wrong on the facts. What moved is the verdict, not the evidence.
 > **Rule.** No MCP tool mutates a store, and every response hits a size ceiling
 > before serialization.
 
-There are 24 MCP tools today
-([`server.rs`](../../src/mcp/server.rs), `#[tool(name = …)]` attributes). Four
+There were 24 MCP tools when this analysis was written
+([`server.rs`](../../src/mcp/server.rs), `#[tool(name = …)]` attributes); the
+registry has grown since, and the count is pinned by
+`mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
+The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
 ([`server.rs:2136`](../../src/mcp/server.rs)) writes a pcap, `export_audio`
 ([`server.rs:2177`](../../src/mcp/server.rs)) writes a WAV, `list_captures`

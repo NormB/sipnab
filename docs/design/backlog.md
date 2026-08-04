@@ -737,7 +737,8 @@ it is dependency order crossed with how much wrong-answer surface each removes.
 Where it departs from the obvious reading, the entry says why.
 
 Verified state at the time of writing, so no entry claims a gap that is already
-closed: 28 MCP tools registered; `open_capture` shipped in 0.5.74; the
+closed: 28 MCP tools registered at that time (the registry has grown since;
+the live count is asserted by `mcp_tool_table_lists_every_registered_tool`); `open_capture` shipped in 0.5.74; the
 conformance linter and `lint_dialog` / `validate_message` / `explain_rule`
 shipped in 0.5.75; `ServerCapabilities::builder()` calls `enable_tools()` and
 nothing else, so resources, prompts and sampling are all unimplemented; no
