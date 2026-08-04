@@ -2209,9 +2209,12 @@ fn no_documentation_table_repeats_a_row() {
     // a mirrored page costs this counter, exactly as the entries above record.
     // It replaced a bullet list with a table so each shape could link to the
     // section that documents it, which is why this is +2 and not +1 per shape.
+    // Raised 462 -> 464 by the four-strategy correlation table in
+    // `docs/internals/domain-primer.md`: one table there and one in the
+    // generated site mirror, the same page twice, as the entries above record.
     assert_eq!(
-        tables, 462,
-        "walked {tables} tables, expected 462. More is fine — bump this. FEWER \
+        tables, 464,
+        "walked {tables} tables, expected 464. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

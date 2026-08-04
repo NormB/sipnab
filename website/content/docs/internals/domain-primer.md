@@ -207,11 +207,29 @@ sequenceDiagram
 
 A B2BUA (SBC, PBX) terminates one call and originates another, so one
 human call is two Call-IDs with no shared identifier by default.
-[`dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs) correlates legs three ways,
-each with a confidence score: `XCallId` (a configured header, `X-Call-ID` by
-default), `ViaBranch` (a shared branch parameter), and `TimingHeuristic`
-(endpoint overlap plus timing). The header is the reliable one. The heuristic
-exists because most deployments do not set it.
+[`dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs) correlates legs four ways,
+each with a confidence score and each reported under its own reason:
+
+| Reason | Score | Survives a B2BUA? |
+|---|---|---|
+| `SessionId` — RFC 7989 `Session-ID` | 100 | **Yes, by design** |
+| `XCallId` — a configured header, `X-Call-ID` by default | 100 | Only if the SBC inserts it |
+| `ViaBranch` — a shared branch parameter | 80 | No: a new transaction gets a new branch |
+| `TimingHeuristic` — endpoint overlap plus timing | 50 | Not an identifier at all |
+
+Two of those scores are 100 and they are not interchangeable. `SessionId` is a
+standard whose entire purpose is surviving intermediaries that rewrite
+everything else. `XCallId` is a vendor convention that works only when someone
+configured it. Reporting them separately is what lets a reader tell how far to
+trust a call tree.
+
+The bottom row is the one to be careful with. "Same endpoint IP within two
+seconds" is a guess, and on a busy SBC many unrelated calls share an endpoint IP
+inside that window. It exists because most deployments set no correlation header
+at all — see
+[`session_id.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs) for why the halves of a
+`Session-ID` swap across the SBC, and why matching is therefore set
+intersection rather than string equality.
 
 ## RTP
 

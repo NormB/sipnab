@@ -324,9 +324,11 @@ fn linked_code_targets_exist() {
     // Raised 290 -> 294 by the `LK1` sub-rule appended to internals/invariants.md
     // §2 ("decide under the guard, perform after it"): +4 code links, all in
     // that one page.
+    // Raised 294 -> 295 by the domain primer's link to `session_id.rs`, added
+    // with the four-strategy correlation table. One link, one page.
     assert_eq!(
-        seen, 294,
-        "code-link extraction found {seen} links, expected 294. More links is \
+        seen, 295,
+        "code-link extraction found {seen} links, expected 295. More links is \
          fine — bump this. FEWER means the extractor stopped matching, and \
          every assertion below it silently narrowed."
     );
