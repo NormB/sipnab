@@ -8,6 +8,64 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.78] - 2026-08-04
+
+### Fixed
+
+- **The call list truncated SIP methods, and the fix for that had never
+  reached a screen.** The homepage Search tab clipped every method to six
+  characters, so `REGISTER`, `PUBLISH` and `SUBSCRIBE` each lost their tail.
+  The Method column was widened to nine cells in July precisely so
+  `SUBSCRIBE` would fit, and a test asserted that continuously — green for the
+  entire time the defect was visible.
+
+  A `Constraint` is a *request*, not a rendered width. The four flexible
+  columns over-claimed the row: the eleven-cell floor on the address columns
+  plus the four-cell floors on From and To could total more cells than the row
+  has. Ratatui charges an over-subscribed layout's whole deficit to one column,
+  and it picks a fixed one — Method. So widening Method could never show up on
+  screen: the constraint was honest and the pool was not. From, To, Source and
+  Destination now reserve their floors before the address columns are sized,
+  and the remainder is exact rather than saturating, so every cell handed out
+  is one the row owns.
+
+  The committed TUI snapshots had been recording the truncation as correct
+  output: `Metho`, `INVIT`, `Destinati`, `+0.000`. Even the column header and
+  the six-character `INVITE` were clipped. A new gate walks every terminal
+  width from 61 to 200 and fails if the columns plus their spacing exceed the
+  row; reinstating the old arithmetic fails it while leaving the original
+  Constraint-based test green, which is exactly the gap that let this ship.
+
+### Added
+
+- **A benchmark harness for the live capture path** (`bench/live-capture.sh`).
+  The capture work in 0.5.76 shipped throughput claims reasoned from syscall
+  counts and ring arithmetic, never measured; this is the instrument that can
+  settle them. It replays a synthetic corpus through a `veth` pair in a private
+  network namespace and reads sipnab's own counters. It accepts no capture path
+  — not a denylist, there is no argument through which one could be supplied —
+  and generates its corpus itself. Two controls gate every result: a canary
+  proving the capture point can observe anything at all, since a down link
+  reports zero packets and zero drops exactly like a flawless run, and a
+  calibration proving the drop counters can move at all. 371 assertions run
+  without root, without a namespace and without a capture device.
+
+  **Nothing has been measured with it yet.** Every performance claim in the
+  documentation remains reasoned rather than measured.
+
+### Changed
+
+- The demo recordings are rendered against a binary built from the tree, and
+  the render refuses on a version mismatch. They were previously rendered
+  against whatever `sipnab` happened to be installed, which is how a fix merged
+  in July was still absent from the published screenshot in August.
+
+- The acceptance criterion for capture-loss measurement is corrected in
+  `docs/research/capture-performance.md`. It called for
+  `ethtool -S <iface> | grep rx_dropped`, which is unsatisfiable on the harness
+  interface: the `veth` driver exposes no such counter. The harness reads the
+  counters that exist and says which they are.
+
 ## [0.5.77] - 2026-08-03
 
 **0.5.76 was never published**, so this release carries its entry as well as
