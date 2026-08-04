@@ -46,3 +46,17 @@ build/
 # backstop for when it does not.
 /orph.json
 /*.tmp.json
+
+# Benchmark corpora. bench/README.md tells operators to write corpus.pcap and
+# sweep-<N>.pcap into the working directory, and bench/live-capture.sh generates
+# its own corpus — 138 MB for the headline run, gigabytes at the top of the rate
+# ladder. Same shape as the .profraw files above: a large stray artefact plus an
+# indiscriminate `git add -A`, except this one is also capture-shaped, so a
+# reviewer skimming a diff has no way to tell a synthetic corpus from a real one.
+# Anchored with a leading `/` on purpose: 31 .pcap and .pcapng fixtures under
+# tests/, fuzz/corpus/ and harness/ are TRACKED, and an unanchored `*.pcap` would
+# make the next one un-addable without `git add -f`.
+/*.pcap
+/*.pcapng
+/bench/*.pcap
+/bench/*.pcapng

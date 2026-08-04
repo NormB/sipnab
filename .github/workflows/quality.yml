@@ -338,7 +338,10 @@ jobs:
         with:
           # Reads .codespellrc for skips and the ignore list. The action needs
           # the paths passed explicitly rather than inheriting them from config.
-          path: src tests docs website benches harness scripts README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md
+          # `bench` and `benches` are different directories and both are needed:
+          # `benches/` holds the Criterion targets, `bench/` the operator
+          # harness and its README, which was outside every prose gate here.
+          path: src tests docs website bench benches harness scripts README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md
 
       # Pass one: Markdown that resolves on the filesystem. 257 unique links.
       #

@@ -229,6 +229,34 @@ jobs:
       - name: Test ops/release/platform-table.sh
         run: bash ops/release/test-platform-table.sh
 
+  # bench/live-capture.sh measures the live capture path, so the run itself
+  # needs root, CAP_NET_RAW and a network namespace and can never execute here.
+  # Its `--self-test` deliberately can: the arithmetic, the argv construction,
+  # the counter parsing and the verdict rules are pure functions over strings,
+  # exercised against fixture text with no privileged call. Without this step
+  # they would rot unobserved between the rare occasions an operator runs the
+  # harness for real — the same failure mode as the corpus suite that CI has
+  # never run.
+  #
+  # A separate job rather than a line appended to install-sh's shellcheck: that
+  # step is pinned to `-s sh` for two `#!/bin/sh` files, and every bench script
+  # is `#!/usr/bin/env bash`. Forcing bash through a POSIX parser reports arrays,
+  # `local` and `[[ ]]` as errors, so the shell here is `-s bash`.
+  #
+  # scaling.sh and compare.sh are deliberately NOT in this list yet: scaling.sh
+  # trips SC2046 at its `set -- $(awk ...)`, where the word splitting is the
+  # point. Silencing that correctly is its own change, not a rider on this one.
+  # Pure bash — no Rust toolchain needed.
+  bench-scripts:
+    name: Bench scripts (live-capture.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Shellcheck (bash)
+        run: shellcheck -s bash bench/live-capture.sh
+      - name: Self-test (no root, no netns, no capture device)
+        run: bash bench/live-capture.sh --self-test
+
   # Reduced feature combinations must keep compiling (lib AND test code).
   # --all-features alone let `#[cfg]`-gating rot: at one point 7 of 8
   # reduced combos failed to build. `cargo check --tests` is enough to
@@ -392,7 +420,7 @@ jobs:
     # so install-sh and deb-package could both fail with the one required
     # check on main still green.
     needs: [check, install-sh, deb-package, homebrew-formula, tsan-verdict,
-            features, audit, fuzz-check]
+            bench-scripts, features, audit, fuzz-check]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
