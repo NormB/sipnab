@@ -17,7 +17,11 @@ portrange = "5060-5080"
 # Snapshot length in bytes; 65535 captures full packets.
 snaplen = 65535
 # Kernel capture buffer in MiB — raise on busy links if you see drops.
-buffer = 16
+# The built-in default is 64 (src/capture/native.rs, DEFAULT_BUFFER_MB); this
+# line was 16 while the comment said "raise", which set it to a QUARTER of the
+# default under advice to increase it. Left explicit at the default so copying
+# this file changes nothing you did not ask for.
+buffer = 64
 # Set true to ignore RTP and track signaling only (cheaper).
 no_rtp = false
 
@@ -46,11 +50,14 @@ fraud_detect = false
 # alert_exec = "/usr/local/bin/sipnab-alert-hook"
 
 [limits]
-# Maximum concurrently tracked dialogs.
+# These three are deliberately LOWER than sipnab's own defaults, to show the
+# keys and to bound memory on a small box. Copying them verbatim reduces how
+# much a long capture can track — raise or delete them for a busy server.
+# Maximum concurrently tracked dialogs. (Built-in default: 100000.)
 dialog_limit = 10000
-# Maximum concurrently tracked RTP streams.
+# Maximum concurrently tracked RTP streams. (Built-in default: 50000.)
 max_streams = 4096
-# Maximum in-flight reassembly sessions.
+# Maximum in-flight reassembly sessions. (This one matches the default.)
 max_reassembly = 10000
 # HEP listener inbound rate limit (packets/second).
 hep_rate_limit = 50000

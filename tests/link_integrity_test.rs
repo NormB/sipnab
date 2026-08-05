@@ -433,9 +433,14 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 279 -> 280 by the federated-tracing section's link back to
     // "Collect captures from several SIP servers in one place", the
     // centralised alternative it compares against. One link, one page.
+    // Raised 280 -> 282 by the stale-documentation sweep: docs/examples.md's
+    // MCP tool list now points at docs/mcp.md as the authoritative table
+    // instead of restating a count that had drifted from 25 to 31, and
+    // internals/build-ci-release.md's new `plugins` row links the design note
+    // that priced the feature. One link each, two pages.
     assert_eq!(
-        seen, 280,
-        "extractor found {seen} wiki links, expected 280. More is fine — bump \
+        seen, 282,
+        "extractor found {seen} wiki links, expected 282. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

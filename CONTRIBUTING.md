@@ -107,8 +107,8 @@ git config core.hooksPath .githooks
 **`pre-commit`** runs eight numbered gates: clippy (`--features full`,
 `-D warnings`), the full `cargo test --features full` suite, no
 `unwrap()`/`expect()` in production code, WASM exports in sync with the site's
-JS, the homepage test count plus the site and man-page version strings matching
-`Cargo.toml`, no TODO stubs, a refusal to commit a staged `src/wasm.rs` without
+JS, the homepage test count plus the site version matching `Cargo.toml`, no
+TODO stubs, a refusal to commit a staged `src/wasm.rs` without
 a rebuilt bundle, and an advisory developer-docs coupling notice. Gates 1–5
 and 7 block the commit. Gate 6 prints `WARN: N TODO/FIXME comments` and falls
 through — a count, not a veto — and gate 8 only prints `REVIEW` and a file
@@ -189,10 +189,18 @@ page is rewritten):
 | `theme-guide.md` | `theme.md` |
 | `tui-walkthrough.md` | `tui.md` |
 
-The asymmetries are deliberate: `auth.md`, `library.md`, `fault-model.md` and
-all of `docs/internals/` have **no site counterpart** (the developer docs are
-wiki-only by design), while `api-clients.md`, `build.md` and `integrations.md`
-are **site-only** and hand-maintained.
+The asymmetries are deliberate: `auth.md`, `library.md` and `fault-model.md`
+have **no site counterpart**, while `api-clients.md`, `build.md` and
+`integrations.md` are **site-only** and hand-maintained.
+
+`docs/internals/` *does* publish to the site — ten pages under
+`website/content/docs/internals/`, rendered by
+[`scripts/build-site-internals.py`](scripts/build-site-internals.py) and gated by
+`every_internals_page_is_published_to_the_site` and `site_internals_mirror_is_current`
+in `tests/dev_docs_drift_test.rs`. (Corrected 2026-08-05: this paragraph used to
+list "all of `docs/internals/`" among the pages with no site counterpart and
+call the developer docs "wiki-only by design", contradicting the instruction
+twenty lines above it to run `build-site-internals.py`.)
 
 `benchmarks.md` is the one page that exists on both sides and is deliberately
 **not** generated: the two copies frame the numbers differently on purpose, and
@@ -201,9 +209,22 @@ differ — the measured tables.
 
 Both trees are in the flag-drift corpus in `tests/docs_drift_test.rs` and the
 link corpus in `tests/link_integrity_test.rs`, so each is checked for phantom
-flags and dead links *on its own*. Nothing checks them against **each other** —
-documenting a new flag in `docs/cli-reference.md` and forgetting
-`website/content/docs/cli.md` passes every gate. That parity is yours to keep.
+flags and dead links *on its own*.
+
+They are also checked against **each other**, and the check is a byte
+comparison: `site_pages_mirror_is_current` in `tests/dev_docs_drift_test.rs`
+re-runs [`scripts/build-site-pages.py`](scripts/build-site-pages.py) into a
+temporary directory and fails on any page whose committed output differs from a
+fresh render. So the site copies in the table above are **generated artifacts** —
+edit the `docs/` source and re-run the generator. Hand-editing
+`website/content/docs/cli.md` will be reverted by the next render, and forgetting
+to regenerate fails CI rather than passing it.
+
+*Corrected 2026-08-05: this section used to read "Nothing checks them against
+**each other** — documenting a new flag in `docs/cli-reference.md` and
+forgetting `website/content/docs/cli.md` passes every gate. That parity is yours
+to keep." Both sentences were false, and the advice they gave — hand-maintain
+the generated side — was the opposite of the workflow.*
 
 ### Citing code from the developer docs
 

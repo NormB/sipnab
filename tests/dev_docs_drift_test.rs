@@ -331,9 +331,15 @@ fn linked_code_targets_exist() {
     // had drawn all four auxiliary threads as children of the TUI event loop,
     // which is where `--metrics` being TUI-only hid in plain sight; citing who
     // actually spawns each is the correction. Three links, one page.
+    // Raised 298 -> 300 by the stale-documentation sweep: internals/walkthroughs.md
+    // now cites `tests/mcp_tool_descriptions_test.rs` (it had claimed the D22
+    // description rule was unenforced and cited a shell script that does not
+    // exist), and internals/README.md cites `src/sip/dsl.rs` (its annotation had
+    // the field count backwards). Two links, two pages — both replacing a claim
+    // with the artifact that settles it.
     assert_eq!(
-        seen, 298,
-        "code-link extraction found {seen} links, expected 298. More links is \
+        seen, 300,
+        "code-link extraction found {seen} links, expected 300. More links is \
          fine — bump this. FEWER means the extractor stopped matching, and \
          every assertion below it silently narrowed."
     );

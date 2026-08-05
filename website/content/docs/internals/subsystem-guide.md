@@ -43,7 +43,7 @@ sequenceDiagram
     end
 </pre>
 
-`main()` is deliberately thin — ten numbered steps in 94 lines of
+`main()` is deliberately thin — ten numbered steps in 117 lines of
 [`main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs), each delegating to
 [`app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs). The order matters: logging
 before anything can log, immediate commands (`--setup-caps`,
