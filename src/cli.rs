@@ -756,7 +756,27 @@ pub struct Cli {
     pub group_by: Option<String>,
 
     // ── Dialog ───────────────────────────────────────────────────────
-    /// Maximum number of dialogs to track simultaneously.
+    /// Maximum dialogs the store may hold in TOTAL over the run (default
+    /// 100000). NOT a concurrency limit: nothing removes a completed dialog,
+    /// so this bound scales with UPTIME, not with load.
+    ///
+    /// This help used to say "track simultaneously", which is the reading an
+    /// operator wants and not the behaviour that exists. A box carrying five
+    /// concurrent calls still evicts once 100,000 calls have COMPLETED, and
+    /// eviction drops the OLDEST dialogs — the worst ones to lose for a
+    /// post-mortem. A multi-file set feeds one store, so a 27-file directory
+    /// reaches the cap 27x sooner than one file (#64).
+    ///
+    /// Completed dialogs are retained on purpose: `--report` and
+    /// `--call-report` answer about calls that already ended, and evicting
+    /// them on completion would break exactly the after-the-fact analysis
+    /// sipnab exists for. Whether the right fix is a separate retention window
+    /// for completed dialogs, a time-based bound, or something else is the
+    /// retention umbrella's decision (#160), not this flag's.
+    ///
+    /// The eviction count IS reported wherever a dialog count appears (#68),
+    /// so a run that hits this says so rather than quietly answering from a
+    /// truncated store.
     #[arg(help_heading = "Dialog", short = 'l', long = "limit", value_name = "N")]
     pub limit: Option<u64>,
 

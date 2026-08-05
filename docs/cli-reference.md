@@ -579,7 +579,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `-l`, `--limit` | `<N>` | `100000` | Maximum number of dialogs to track simultaneously (the dialog-state memory bound; lower it for untrusted/high-volume capture) |
+| `-l`, `--limit` | `<N>` | `100000` | Maximum dialogs held in TOTAL over the run. **Not a concurrency limit** — nothing removes a completed dialog, so this bound scales with uptime rather than load: a box carrying five concurrent calls still evicts once 100,000 have completed, oldest first. Lower it for untrusted/high-volume capture |
 | `-R`, `--rotate` | -- | **on** | Evict the oldest dialog at `--limit` capacity (LRU). On by default; kept for back-compat/explicitness |
 | `--no-rotate` | -- | off | Disable rotation: drop *new* dialogs at capacity instead of evicting the oldest (inverts the safe default) |
 | `--dialog-track` | `<METHOD>` | `call-id` | Group messages by `call-id` (one unit per dialog) or `branch` (one per SIP transaction) |
