@@ -527,8 +527,8 @@ mod tests {
     #[test]
     fn a_bumped_sess_version_is_still_the_same_session() {
         let before = SdpOriginKey::parse(ORIGIN_A).expect("parses");
-        let after = SdpOriginKey::parse("alice 2890844526 2890842999 IN IP4 198.51.100.7")
-            .expect("parses");
+        let after =
+            SdpOriginKey::parse("alice 2890844526 2890842999 IN IP4 198.51.100.7").expect("parses");
         assert_eq!(before, after, "a re-INVITE must not break correlation");
     }
 
@@ -538,8 +538,8 @@ mod tests {
     #[test]
     fn a_shared_sess_id_alone_is_not_the_same_session() {
         let one = SdpOriginKey::parse(ORIGIN_A).expect("parses");
-        let other = SdpOriginKey::parse("bob 2890844526 2890842807 IN IP4 203.0.113.9")
-            .expect("parses");
+        let other =
+            SdpOriginKey::parse("bob 2890844526 2890842807 IN IP4 203.0.113.9").expect("parses");
         assert_eq!(one.sess_id, other.sess_id, "same sess-id, by construction");
         assert_ne!(one, other, "but a different session — the tuple decides");
     }

@@ -225,7 +225,10 @@ impl SipnabMcp {
     /// only verb on sipnab's whole network surface that accepts a write, and its
     /// caller is a language model reading attacker-controlled text off the wire.
     /// What keeps that safe is not that the text is harmless — it is that an
-    /// annotation reaches nothing. See [`crate::mcp::findings`].
+    /// annotation reaches nothing: it goes to the log, and no tool, query or
+    /// analysis can read it back. That dead end is enforced by the private
+    /// `findings` module's visibility rather than by convention — which is
+    /// also why this doc cannot link to it.
     pub fn with_save_findings(mut self) -> Self {
         self.allow_save_findings = true;
         self
@@ -4033,8 +4036,9 @@ impl SipnabMcp {
     /// The only write verb on sipnab's network surface. It is safe not because
     /// the text is trustworthy — it is quoted from a wire an attacker may be
     /// on — but because the write reaches nothing: no store, no detector, no
-    /// other tool, and no later answer. See [`crate::mcp::findings`] for why
-    /// that dead end is enforced by visibility rather than by convention.
+    /// other tool, and no later answer. The types that hold it are private to
+    /// this module tree, so no analysis path can name them — the dead end is a
+    /// visibility guarantee the compiler checks, not a convention.
     #[tool(
         name = "save_findings",
         description = "Records a one-line conclusion about this capture. WRITE. \
@@ -7307,7 +7311,10 @@ mod tests {
         .unwrap();
 
         let clock = &v["clock"];
-        assert!(clock["synchronised"].is_boolean(), "clock state must be present");
+        assert!(
+            clock["synchronised"].is_boolean(),
+            "clock state must be present"
+        );
         assert!(clock["available"].is_boolean());
         assert!(clock["max_error_us"].is_i64());
         assert!(clock["est_error_us"].is_i64());

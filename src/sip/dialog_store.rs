@@ -2937,8 +2937,16 @@ mod tests {
             ],
             sdp.as_bytes(),
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE")
     }
 
     /// A passthrough SBC rewrote the Call-ID and the Via branch but forwarded

@@ -21,7 +21,7 @@
 #[path = "support/mcp.rs"]
 mod support;
 
-use support::{ok_payload, McpSession};
+use support::{McpSession, ok_payload};
 
 const CAPTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 

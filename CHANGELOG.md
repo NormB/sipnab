@@ -8,6 +8,62 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.81] - 2026-08-04
+
+Follow a call across an SBC. Two new MCP tools, two new correlation strategies,
+and the provenance a federated setup needs.
+
+### Added
+
+- **`find_correlated` MCP tool.** `DialogStore` has computed scored, deduplicated
+  multi-leg correlations for a long time and nothing on the MCP surface could
+  reach it. Every response now names the STRATEGY that matched, not just a
+  score, plus `identifier_match` as a boolean — two strategies score 100 and are
+  not the same claim.
+- **RFC 7989 `Session-ID` correlation.** The one identifier designed to survive a
+  B2BUA. Matching is set intersection over the non-nil halves, because the two
+  halves swap perspective across an SBC and a string comparison would report
+  "unrelated". `nil` (32 zeros) is absence and never matches.
+- **RFC 8866 SDP origin correlation.** Fallback for SBCs that emit no
+  correlation header. Compares the whole uniqueness tuple the RFC defines, never
+  `sess-id` alone — the RFC recommends deriving that from a timestamp, so two
+  unrelated calls from one user agent can share it. `sess-version` is excluded
+  deliberately, so a re-INVITE for hold does not break the match.
+- **`save_findings` MCP tool**, off by default behind `--mcp-allow-save-findings`.
+  The first write verb on sipnab's network surface. An agent can record a
+  conclusion; nothing can read it back — no tool, no query result, no analysis.
+  That dead end is enforced by module visibility rather than convention.
+- **`capture_identity.node`** on every answer, via `--node-name`, `[capture]
+  node_name`, or the hostname. Says WHICH box saw a fact, which is what an agent
+  querying an SBC and two PBXes at once cannot otherwise know. Deliberately not
+  part of the rotating capture instance: a capture restart is not a topology
+  change.
+- **Clock discipline in `capture_health`** — `synchronised`, `max_error_us`,
+  `est_error_us`, `available`, read from `adjtimex(2)`. Irrelevant within one
+  capture, where a constant offset cancels; decisive across nodes, where the
+  timing heuristic's two-second window is smaller than a day's skew.
+  `find_correlated` carries the same reading as `timing_clock`, and only when a
+  time-based match is actually in the results.
+
+### Fixed
+
+- **`bench/field-report.sh` compared the filter against itself.** It passed the
+  old BPF expression to `--filter`, which is the display-filter DSL; the BPF
+  filter is a trailing positional. That run died on an invalid expression while
+  the report presented it as a completed A/B. Rewritten onto MCP
+  `capture_health`, with the safety gate moved ahead of the version check and
+  mutation-tested against five injected flags.
+- **`--metrics` is a silent no-op in headless mode** — `start_metrics_server` has
+  one call site, in TUI mode. Documented against, and the harness no longer
+  depends on it. The defect itself is tracked separately.
+
+### Documentation
+
+- Every MCP section now opens with its own diagram, and the three deployment
+  shapes link to the sections documenting them.
+- A federated-tracing walkthrough: ask the SBC first, read the strategy before
+  believing the tree, and what federation cannot prove.
+
 ## [0.5.80] - 2026-08-04
 
 ### Breaking

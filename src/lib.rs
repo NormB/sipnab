@@ -63,6 +63,7 @@ pub mod pipeline;
 #[cfg(feature = "plugins")]
 pub mod plugin;
 pub use error::{CaptureError, Error, ParseError};
+pub mod clock;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "native")]
@@ -75,7 +76,6 @@ pub mod privilege;
 #[doc(hidden)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod process_isolation;
-pub mod clock;
 pub mod provenance;
 pub mod rtp;
 pub mod security;

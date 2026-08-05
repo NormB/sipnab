@@ -379,7 +379,10 @@ mod tests {
 
     #[test]
     fn a_node_name_is_clipped_to_characters_and_blanks_are_refused() {
-        assert_eq!(clip_node_name("  sbc-edge-1  ").as_deref(), Some("sbc-edge-1"));
+        assert_eq!(
+            clip_node_name("  sbc-edge-1  ").as_deref(),
+            Some("sbc-edge-1")
+        );
         assert_eq!(clip_node_name("   "), None, "a blank name sets nothing");
         assert_eq!(clip_node_name(""), None);
 
@@ -398,7 +401,10 @@ mod tests {
         let parsed: CaptureEtag = text.parse().expect("round trip");
 
         // The change-detection fields survive, which is what the token is for.
-        assert_eq!(parsed.instance, tag.instance, "parsed {text} lost the instance");
+        assert_eq!(
+            parsed.instance, tag.instance,
+            "parsed {text} lost the instance"
+        );
         assert_eq!(parsed.dialog_generation, tag.dialog_generation);
         assert_eq!(parsed.stream_generation, tag.stream_generation);
         assert!(
@@ -410,7 +416,10 @@ mod tests {
         // change signal, and an etag handed back may have come from another
         // node entirely. Asserted rather than left implicit so nobody "fixes"
         // the loss by packing a hostname into an opaque token.
-        assert!(parsed.node.is_empty(), "the string form must not carry a node");
+        assert!(
+            parsed.node.is_empty(),
+            "the string form must not carry a node"
+        );
         assert!(!tag.node.is_empty(), "but a generated etag always does");
     }
 
