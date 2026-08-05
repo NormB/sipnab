@@ -20,8 +20,8 @@ use super::finding::{
     BRANCH_COOKIE, CONTACT_MISSING_IN_2XX, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED,
     CSEQ_METHOD_MISMATCH, HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING,
     MAX_FORWARDS_RANGE, MIN_SE_TOO_SMALL, REFRESHER_MISSING, RELIABLE_PROVISIONAL_WITHOUT_RSEQ,
-    SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL, SESSION_ID_MALFORMED,
-    SESSION_ID_UPPERCASE, URI_BRACKETS, URI_PARAM_DEMOTED,
+    SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL, SESSION_ID_LEGACY_FORM,
+    SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE, URI_BRACKETS, URI_PARAM_DEMOTED,
 };
 
 /// The five header fields RFC 3261 §8.1.1 makes mandatory in every request and
@@ -623,6 +623,26 @@ fn session_identifier(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>
     // the same order. Zipping therefore pairs each classification with the half
     // that provoked it, and a conforming header empties both sides at once —
     // which is what makes `deviations` the gate rather than a decoration.
+    // RFC 7989 §5 makes `remote` a MUST with a §11 exception for RFC 7329
+    // interworking. Reported before the ABNF deviations because it is a fact
+    // about the header's SHAPE rather than about a half's contents: a
+    // legacy-form header can still carry a perfectly conforming local half.
+    if parsed.legacy_rfc7329_form {
+        sink.push(
+            &SESSION_ID_LEGACY_FORM,
+            index,
+            "Session-ID carries no `remote` parameter".to_string(),
+            "RFC 7989 §5: except for backwards compatibility with RFC 7329, the \
+             `remote` parameter MUST be present",
+            "The header identifies one side only, so correlation works in one \
+             direction and a call crossing a B2BUA can be reported as two \
+             unrelated calls. §11 permits this when the peer really is an RFC \
+             7329 stack, which one message cannot establish — so this names the \
+             peer as an interop observation rather than asserting a violation. \
+             If the peer is modern, the defect is on its side.",
+        );
+    }
+
     let deviations = parsed.deviations();
     let halves = deviating_halves(&parsed);
     // `zip` stops at the shorter side, so a divergence between these two walks
@@ -1382,6 +1402,43 @@ mod tests {
     /// The distinction is the point of splitting the two rules: this value is
     /// unambiguous and sipnab still correlates on it, so calling it malformed
     /// would tell an operator to go and fix a leg that is in fact matching.
+    /// The RFC 7329 legacy form is reported, and reported as INTEROP.
+    ///
+    /// Severity and basis are asserted, not merely presence. A `must` here
+    /// would claim sipnab can tell genuine RFC 7329 interworking from a modern
+    /// peer that simply omits the parameter — a distinction one message cannot
+    /// support, and the reason this rule exists at notice rather than error.
+    #[test]
+    fn a_session_id_without_remote_is_an_interop_notice_not_a_violation() {
+        let got = findings_of(&invite_with_session_id(SESSION_A));
+        assert!(
+            got.iter().any(|(id, _)| *id == SESSION_ID_LEGACY_FORM.id),
+            "a Session-ID with no `remote` must be reported: {got:?}"
+        );
+        assert_eq!(
+            SESSION_ID_LEGACY_FORM.severity,
+            crate::sip::lint::Severity::Notice,
+            "a form RFC 7989 §11 explicitly permits must not shout"
+        );
+        assert_eq!(
+            SESSION_ID_LEGACY_FORM.basis,
+            crate::sip::lint::Basis::Interop,
+            "basis must be interop: §5's MUST carries a §11 exception this rule \
+             cannot rule out from a single message"
+        );
+        assert_eq!(SESSION_ID_LEGACY_FORM.section, "11", "cite the exception");
+
+        // A conforming two-half header must NOT trip it, or the rule fires on
+        // every well-formed Session-ID and says nothing.
+        let both = invite_with_session_id(&format!("{SESSION_A};remote={SESSION_B}"));
+        assert!(
+            !findings_of(&both)
+                .iter()
+                .any(|(id, _)| *id == SESSION_ID_LEGACY_FORM.id),
+            "a conforming Session-ID with both halves must not be reported"
+        );
+    }
+
     #[test]
     fn uppercase_hex_is_reported_separately_from_a_malformed_half() {
         let got = findings_of(&invite_with_session_id(&SESSION_A.to_ascii_uppercase()));

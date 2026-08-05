@@ -546,6 +546,32 @@ pub const SESSION_ID_UPPERCASE: RuleMeta = RuleMeta {
     section: "5",
 };
 
+/// A `Session-ID` carrying no `remote` parameter — the obsoleted RFC 7329 form.
+///
+/// RFC 7989 §5 states it as a MUST with a named exception: "Except for
+/// backwards compatibility with RFC 7329, the 'remote' parameter MUST be
+/// present." §11 details that compatibility case.
+///
+/// Cited to §11 and raised as INTEROP rather than MUST, deliberately. One
+/// message cannot distinguish a peer genuinely interworking with an RFC 7329
+/// stack — which the RFC permits — from one that simply omits the parameter.
+/// Reporting a MUST violation would assert the second when only the first is
+/// observable, and a rule that cannot tell those apart must not claim it can.
+///
+/// It is still worth reporting, at notice, because the consequence is real and
+/// asymmetric: a half-populated Session-ID correlates one direction only, so a
+/// call crossing a B2BUA can be reported as two unrelated calls. The operator
+/// wants to know which peer is doing it even when the peer is within its
+/// rights.
+pub const SESSION_ID_LEGACY_FORM: RuleMeta = RuleMeta {
+    id: "SIP-7989-11-SESSION-ID-LEGACY-FORM",
+    title: "Session-ID has no remote parameter (RFC 7329 form)",
+    severity: Severity::Notice,
+    basis: Basis::Interop,
+    rfc: 7989,
+    section: "11",
+};
+
 /// An answer sharing no media format with the offer it answers.
 pub const ANSWER_NO_COMMON_FORMAT: RuleMeta = RuleMeta {
     id: "SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT",
@@ -710,6 +736,7 @@ pub const RULES: &[RuleMeta] = &[
     REFRESHER_MISSING,
     SESSION_ID_MALFORMED,
     SESSION_ID_UPPERCASE,
+    SESSION_ID_LEGACY_FORM,
     ANSWER_NO_COMMON_FORMAT,
     ANSWER_EXTRA_FORMAT,
     ANSWER_DIRECTION_ILLEGAL,

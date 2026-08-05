@@ -171,6 +171,7 @@ These read one message on its own.
 | `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 §9](https://www.rfc-editor.org/rfc/rfc4028#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. |
 | `SIP-7989-5-SESSION-ID-MALFORMED` | error | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` half is not 32 characters of `[0-9a-f]`, so it is not a `sess-uuid` at all. Correlation drops the half, and across a B2BUA there may be nothing well formed left to match one leg to the other. |
 | `SIP-7989-5-SESSION-ID-UPPERCASE` | warning | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` UUID arrives in uppercase hexadecimal. sipnab compares case-insensitively and still correlates on it; any peer, SBC or log pipeline comparing the header byte for byte sees two identifiers for one session. |
+| `SIP-7989-11-SESSION-ID-LEGACY-FORM` | notice | interop | [RFC 7989 §11](https://www.rfc-editor.org/rfc/rfc7989#section-11) | A `Session-ID` carries no `remote` parameter, the obsoleted RFC 7329 single-UUID form. §5 makes `remote` a MUST with a §11 exception for interworking with that older form, which one message cannot confirm — so this names the peer as an interop observation rather than asserting a violation. Correlation then works in one direction only. |
 
 ### What the corpus can and cannot vouch for
 
