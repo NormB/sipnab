@@ -50,6 +50,18 @@ static MINTED: AtomicU64 = AtomicU64::new(0);
 /// Per-process prefix shared by every instance id this process mints.
 static ORIGIN: OnceLock<String> = OnceLock::new();
 
+/// Operator-supplied name for the box this process runs on.
+///
+/// Process-global and set at most once, deliberately: see [`set_node_name`].
+static NODE_NAME: OnceLock<String> = OnceLock::new();
+
+/// Longest node name carried on the wire.
+///
+/// The value is operator-supplied text that ends up in an LLM's context, so it
+/// gets the same treatment as every other untrusted string on that surface: a
+/// ceiling, applied once, at the point it enters.
+pub const MAX_NODE_NAME: usize = 64;
+
 /// The per-process id prefix: process id and start time, both hex.
 ///
 /// Two runs on one host differ by process id; a reused process id after a
@@ -70,6 +82,68 @@ fn origin() -> &'static str {
 fn mint() -> String {
     let n = MINTED.fetch_add(1, Ordering::Relaxed) + 1;
     format!("{}-{n}", origin())
+}
+
+/// Name this process reports as the box it is watching.
+///
+/// # Why this is NOT part of [`CaptureIdentity`]
+///
+/// `CaptureIdentity` rotates: `open_capture` mints a new instance because a
+/// different capture is loaded. The node does not change when that happens —
+/// it is the same machine — and putting the name inside the rotating value
+/// would make a capture restart look like a topology change to an agent
+/// correlating across several servers. The instance answers "is this the same
+/// capture"; the node answers "is this the same box". Two questions, two
+/// lifetimes.
+///
+/// # Defaults, and what travels
+///
+/// Falls back to the system hostname, then to `"unknown"` when even that is
+/// unavailable. **The default therefore puts the hostname on the wire**, which
+/// is usually what an operator wants and occasionally is not — hence the
+/// override. Documented rather than assumed, the same judgement
+/// `bench/field-report.sh` leaves to its reader.
+///
+/// Clipped to [`MAX_NODE_NAME`] CHARACTERS, never bytes: the name is arbitrary
+/// UTF-8 and a byte index would panic mid-sequence.
+pub fn set_node_name(name: &str) {
+    if let Some(clipped) = clip_node_name(name) {
+        // `set` fails only if something already set it. First writer wins,
+        // which keeps the value stable for the process lifetime — the point.
+        let _ = NODE_NAME.set(clipped);
+    }
+}
+
+/// Normalise an operator-supplied node name, or reject it.
+///
+/// Split out from [`set_node_name`] because that writes a process-global
+/// `OnceLock`: a test that sets it changes the whole process, so "the default
+/// is the hostname" and "an override wins" cannot both be tested in one binary.
+/// This part is pure and therefore testable.
+///
+/// Clips to CHARACTERS, never bytes — the name is arbitrary UTF-8 and a byte
+/// index would panic mid-sequence.
+fn clip_node_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(MAX_NODE_NAME).collect())
+}
+
+/// The node name this process reports.
+///
+/// See [`set_node_name`] for why it never rotates with the capture instance.
+#[must_use]
+pub fn node_name() -> &'static str {
+    NODE_NAME.get_or_init(|| {
+        std::fs::read_to_string("/etc/hostname")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.chars().take(MAX_NODE_NAME).collect())
+            .unwrap_or_else(|| "unknown".to_string())
+    })
 }
 
 /// The identity of the capture a server currently holds.
@@ -117,6 +191,7 @@ impl CaptureIdentity {
     #[must_use]
     pub fn etag(&self, dialog_generation: u64, stream_generation: u64) -> CaptureEtag {
         CaptureEtag {
+            node: node_name().to_string(),
             instance: self.instance.clone(),
             dialog_generation,
             stream_generation,
@@ -140,6 +215,13 @@ impl Default for CaptureIdentity {
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct CaptureEtag {
+    /// Which BOX saw this. Stable for the process; does not rotate with
+    /// `instance`.
+    ///
+    /// Once an agent is querying an SBC and two PBXes at once, "this INVITE was
+    /// answered with 407" is an incomplete fact — answered WHERE usually decides
+    /// whether the SBC rejected it or a PBX did.
+    pub node: String,
     /// Identifies the loaded capture. Opaque; compare it, never parse it.
     pub instance: String,
     /// `DialogStore` mutations since it was created or cleared.
@@ -163,8 +245,15 @@ impl CaptureEtag {
 
 impl std::fmt::Display for CaptureEtag {
     /// `<instance>:<dialog generation>.<stream generation>` — one token, so a
-    /// consumer with a single header or a single string field can carry the
-    /// whole identity.
+    /// consumer with a single header or a single string field can carry it.
+    ///
+    /// **`node` is deliberately absent.** This token answers "did the data
+    /// change", and which box saw it is not part of that question — the
+    /// instance is already unique across nodes, so nothing is ambiguous
+    /// without it. Two further reasons not to add it: the node is
+    /// operator-supplied text that may contain `:` or `.` and would break this
+    /// grammar, and an etag is meant to be opaque, while a hostname invites
+    /// parsing. Provenance travels in the JSON `node` field.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -196,6 +285,11 @@ impl FromStr for CaptureEtag {
             return Err(format!("'{s}' has an empty instance id"));
         }
         Ok(Self {
+            // Empty, never `node_name()`. An etag parsed here may have come
+            // from ANOTHER node, and stamping this process's name on it would
+            // assert provenance that was never in the token. Empty says "this
+            // form does not carry it", which is the truth.
+            node: String::new(),
             instance: instance.to_string(),
             dialog_generation: dialogs
                 .parse()
@@ -266,11 +360,58 @@ mod tests {
     /// The string form must survive a round trip, because write-back hands it
     /// back as a compare-and-set token.
     #[test]
+    /// The node must NOT change when the capture instance does. An agent
+    /// correlating across servers reads a changed node as a changed topology;
+    /// a capture restart is not that.
+    #[test]
+    fn the_node_survives_a_capture_rotation() {
+        let mut id = CaptureIdentity::new();
+        let before = id.etag(1, 2);
+        id.rotate();
+        let after = id.etag(0, 0);
+        assert!(
+            before.is_different_capture(&after),
+            "rotation must change the capture identity"
+        );
+        assert_eq!(
+            before.node, after.node,
+            "...but not the box it was captured on"
+        );
+        assert!(!after.node.is_empty(), "a node name is always reported");
+    }
+
+    #[test]
+    fn a_node_name_is_clipped_to_characters_and_blanks_are_refused() {
+        assert_eq!(clip_node_name("  sbc-edge-1  ").as_deref(), Some("sbc-edge-1"));
+        assert_eq!(clip_node_name("   "), None, "a blank name sets nothing");
+        assert_eq!(clip_node_name(""), None);
+
+        // Arbitrary UTF-8: clipping on a byte index would panic mid-sequence.
+        let long = "🙂".repeat(MAX_NODE_NAME + 20);
+        let clipped = clip_node_name(&long).expect("clips");
+        assert_eq!(clipped.chars().count(), MAX_NODE_NAME);
+    }
+
     fn etag_round_trips_through_its_string_form() {
         let tag = CaptureIdentity::new().etag(12, 34);
         let text = tag.to_string();
         let parsed: CaptureEtag = text.parse().expect("round trip");
-        assert_eq!(parsed, tag, "parsed {text} did not match");
+
+        // The change-detection fields survive, which is what the token is for.
+        assert_eq!(parsed.instance, tag.instance, "parsed {text} lost the instance");
+        assert_eq!(parsed.dialog_generation, tag.dialog_generation);
+        assert_eq!(parsed.stream_generation, tag.stream_generation);
+        assert!(
+            !parsed.is_different_capture(&tag),
+            "the token must still answer the question it exists for"
+        );
+
+        // The round trip is LOSSY, on purpose: `node` is provenance, not a
+        // change signal, and an etag handed back may have come from another
+        // node entirely. Asserted rather than left implicit so nobody "fixes"
+        // the loss by packing a hostname into an opaque token.
+        assert!(parsed.node.is_empty(), "the string form must not carry a node");
+        assert!(!tag.node.is_empty(), "but a generated etag always does");
     }
 
     /// A mangled token is refused rather than defaulted, so a compare-and-set

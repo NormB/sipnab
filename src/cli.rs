@@ -1088,6 +1088,23 @@ pub struct Cli {
     )]
     pub mcp_allow_open_capture: bool,
 
+    /// Name this box reports as, on every answer it gives.
+    ///
+    /// Defaults to the system hostname. It appears in `capture_identity.node`
+    /// on every MCP and REST response, so an agent querying an SBC and two
+    /// PBXes at once can tell WHICH of them saw a given fact — "answered with
+    /// 407" is an incomplete finding until you know where.
+    ///
+    /// Distinct from the capture instance, which rotates when a different
+    /// capture is loaded. The node is the box and stays put, so a capture
+    /// restart does not read as a topology change.
+    ///
+    /// NOTE: the default puts your hostname on the wire, which is usually
+    /// wanted and occasionally not. Set this to override it. Clipped to 64
+    /// characters.
+    #[arg(help_heading = "Output", long = "node-name", value_name = "NAME")]
+    pub node_name: Option<String>,
+
     /// Permit the `save_findings` MCP tool to record an agent's conclusion.
     ///
     /// The ONLY write verb on sipnab's whole network surface, and off by

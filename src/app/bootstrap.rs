@@ -130,6 +130,14 @@ pub struct RunPlan {
 /// pattern, `--filter`/diagnostic/config filter expression, or `--metrics`
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
+    // FIRST, before anything can mint an identity. `set_node_name` writes a
+    // process-global `OnceLock` and the first writer wins, so a later call
+    // would be silently ignored and answers would carry the hostname while the
+    // command line said otherwise.
+    if let Some(name) = cli.node_name.as_deref() {
+        crate::provenance::set_node_name(name);
+    }
+
     // Capture source precedence: -I file > -d device > config device >
     // --hep-listen > auto-detect (deferred to launch()).
     // manual_map: without the `hep` feature the --hep-listen arm cfg-shrinks

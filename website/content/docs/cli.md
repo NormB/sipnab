@@ -532,6 +532,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--tshark-filter` | `<EXPR>` | -- | Generate a tshark-compatible display filter string |
 | `--fail2ban` | -- | off | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (or `--kill-ua`) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me" |
 | `--group-by` | `<FIELD>` | -- | Group output by field (e.g., `call-id`, `from`, `method`) |
+| `--node-name` | `<NAME>` | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers at once tell WHICH one saw a given fact — "answered 407" is incomplete until you know where. Distinct from the capture instance, which rotates when a different capture loads; the node is the box and stays put, so a capture restart does not read as a topology change. **The default puts your hostname on the wire.** Clipped to 64 characters |
 
 **Examples**
 
@@ -539,6 +540,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --plugin ./site-rules.wasm --plugin ./fraud.wasm` — stack two site-specific detections over live traffic; each plugin is sandboxed and a failure in one never stops the capture
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector
+- `sudo sipnab -N -d eth0 --node-name sbc-edge-1 --mcp --mcp-transport http` — one node of a federated setup, naming itself so an agent can attribute each answer to this box rather than another
+- `sudo sipnab -N -d eth0 --node-name pbx-core-2 --report` — override the hostname on a box whose real name should not travel, while still labelling the capture
 - `sipnab -N -I capture.pcap --json-pretty --payload-limit 1000 > messages.json` — export every SIP message from a capture as pretty-printed JSON, truncating displayed payloads to 1000 bytes
 - `sudo sipnab -d eth0 -N --json-pretty --group-by method --line-buffer > live.json` — stream live SIP traffic as pretty-printed JSON grouped by method, flushing after each line for downstream tooling
 - `sipnab -N -I capture.pcap --text-dump --hexdump --proto-number --color never` — dump raw SIP text with hex payloads and IANA protocol numbers, uncolored for log archiving
