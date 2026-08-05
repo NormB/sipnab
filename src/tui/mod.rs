@@ -119,6 +119,17 @@ pub struct App {
     status_error: Option<String>,
     /// Call flow ladder state (selection, scroll, toggles, render caches).
     flow: CallFlowViewState,
+    /// Horizontal headroom the call-flow detail pane had at the last frame
+    /// that drew it: `Some(0)` means the message fits and ←/→ cannot move
+    /// it, `None` means no frame has drawn the pane yet (nothing to
+    /// report). Written by [`App::apply_render_feedback`], read by the
+    /// call-flow controller — the pane width is render-only knowledge, and
+    /// without it a clamped ←/→ press was indistinguishable from a working
+    /// one and so said nothing at all (#188).
+    ///
+    /// Belongs in [`CallFlowViewState`] beside `detail_hscroll`; it sits on
+    /// `App` only because that struct was held by another change.
+    flow_detail_max_hscroll: Option<u16>,
     /// Scroll offset for raw message view.
     raw_msg_scroll: u16,
     /// Scroll offset for the F1 help view (clamped to content height in render).
@@ -144,16 +155,21 @@ pub struct App {
     search_active: bool,
     /// Capture mode label: "Online (device)" or "Offline (filename)".
     capture_mode: String,
-    /// BPF filter string shown in status line 2.
+    /// BPF filter string shown in status line 2: the expression this
+    /// session's capture was compiled with, set once at startup from
+    /// [`TuiOptions::bpf_filter`](crate::tui::state::TuiOptions::bpf_filter)
+    /// via [`TuiOptions::into_app`](crate::tui::state::TuiOptions::into_app).
     ///
-    /// NOT wired: nothing in the binary calls [`App::set_bpf_filter`], and
-    /// [`TuiOptions`](crate::tui::state::TuiOptions) carries no BPF field, so
-    /// in a real session this is always empty and the slot renders blank. The
-    /// comment here used to read "if set via CLI", which is the behaviour a
-    /// reader would assume and is not the behaviour that exists. Wiring it
-    /// means passing `capture_config.bpf_filter` through `TuiOptions`; the
-    /// setter and the render slot are left in place for that, not because
-    /// they work today.
+    /// It is the EFFECTIVE filter — what `bootstrap::plan` handed to libpcap
+    /// — and not what the operator typed, because on a live capture those
+    /// differ: with no filter given, `plan` generates one from
+    /// `--portrange`, and the kernel drops what it does not match. Empty
+    /// therefore means no filter was compiled, which is the normal state for
+    /// `-I` and never the state of a live capture.
+    ///
+    /// Not updated by an in-session `O` file open: that path reads its file
+    /// with no filter at all, and the label above it changes to
+    /// `Offline (…)` while the live capture this describes keeps running.
     bpf_filter: String,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
@@ -284,6 +300,7 @@ impl App {
             active_filter_text: String::new(),
             status_error: None,
             flow: CallFlowViewState::default(),
+            flow_detail_max_hscroll: None,
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,
@@ -905,7 +922,8 @@ impl App {
     /// # Side effects
     ///
     /// Overwrites the scroll offsets (stream detail, flow ladder/detail,
-    /// raw message, diff, help, statistics) and the call-flow row caches
+    /// raw message, diff, help, statistics), the call-flow detail pane's
+    /// h-scroll headroom, and the call-flow row caches
     /// (`cached_msg_count`, `cached_rtp_bar_indices`,
     /// `cached_raw_indices`) for each `Some` field.
     fn apply_render_feedback(&mut self, fb: RenderFeedback) {
@@ -920,6 +938,12 @@ impl App {
         }
         if let Some(v) = fb.flow_detail_hscroll {
             self.flow.detail_hscroll = v;
+        }
+        // Kept as the render measured it, including 0 ("the message fits"):
+        // that is precisely the case the controller has to explain rather
+        // than swallow (#188).
+        if let Some(v) = fb.flow_detail_max_hscroll {
+            self.flow_detail_max_hscroll = Some(v);
         }
         if let Some((count, bars, raws)) = fb.flow_caches {
             self.flow.cached_msg_count = count;
@@ -1177,14 +1201,6 @@ pub fn run_tui_with_pause(
     paused_flag: Option<Arc<AtomicBool>>,
     options: TuiOptions,
 ) -> Result<()> {
-    let TuiOptions {
-        theme,
-        keymap,
-        visible_columns,
-        name_setup,
-        from_to_mode,
-        protected_inputs,
-    } = options;
     // Setup terminal
     terminal::enable_raw_mode()?;
     execute!(
@@ -1207,19 +1223,14 @@ pub fn run_tui_with_pause(
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let mut app = App::new(dialog_store, stream_store, theme, keymap);
+    // Every resolved option reaches the App through one function, which the
+    // snapshot suite calls too — an option that arrives here and is never
+    // handed on renders as an empty slot and nothing else, which is how the
+    // BPF filter went unwired for the life of the status bar.
+    let mut app = options.into_app(dialog_store, stream_store);
     if let Some(flag) = paused_flag {
         app.paused_flag = flag;
     }
-    if let Some(ref cols) = visible_columns {
-        app.call_list.apply_visible_columns(cols);
-    }
-    app.set_from_to_mode(from_to_mode);
-    app.set_protected_inputs(protected_inputs);
-    app.set_resolver(name_setup.resolver);
-    app.set_name_mode(name_setup.mode);
-    app.set_names_save_path(name_setup.save_path);
-    app.set_names_config_path(name_setup.config_path);
     // The F10 column selector's `s` saves into the user's sipnabrc.
     app.set_column_config_path(crate::config::default_user_config_path());
 

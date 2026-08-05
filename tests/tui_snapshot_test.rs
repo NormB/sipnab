@@ -884,6 +884,78 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    // ── Status line 2: the BPF slot ────────────────────────────────────
+    //
+    // The slot is rendered from `App::bpf_filter`, which for the life of the
+    // status bar nothing ever set: the field was settable, so a test that
+    // called the setter would have passed against the broken binary. These
+    // build the `App` the way `run_tui_with_pause` does — through
+    // `TuiOptions::into_app` — and read the drawn row, so what they gate is
+    // the wiring and not the setter.
+
+    /// Build the session `App` from options exactly as the TUI's event loop
+    /// does, then draw one frame and return status line 2 (the second row).
+    fn status_line2_for(bpf_filter: &str, width: u16) -> String {
+        let options = sipnab::tui::TuiOptions {
+            bpf_filter: bpf_filter.to_string(),
+            ..Default::default()
+        };
+        let mut app = options.into_app(
+            Arc::new(RwLock::new(DialogStore::new(100, false))),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        buffer_to_string(&terminal)
+            .lines()
+            .nth(1)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The filter the capture is running with is drawn in the BPF slot. An
+    /// operator asking why the call list is short reads this row, and for
+    /// every session before this wiring existed it was blank.
+    #[test]
+    fn the_capture_filter_is_drawn_in_the_bpf_slot() {
+        let row = status_line2_for("udp port 5060", 80);
+        assert!(
+            row.contains("BPF Filter: udp port 5060"),
+            "the filter the capture compiled is not on the row: {row:?}"
+        );
+    }
+
+    /// A live capture given no filter still runs one — `bootstrap::plan`
+    /// generates it from `--portrange` — and that generated expression is
+    /// what the kernel enforces, so it is what the slot shows. Blank has to
+    /// keep meaning "no filter was compiled". It is wider than any terminal,
+    /// so the row ends in the cut marker rather than at an arbitrary column.
+    #[test]
+    fn the_generated_live_filter_fills_the_slot_instead_of_leaving_it_blank() {
+        let generated = sipnab::app::bootstrap::auto_bpf_filter(5060, 5061, &[]);
+        let row = status_line2_for(&generated, 80);
+        assert!(
+            row.contains("BPF Filter: portrange 5060-5061 or"),
+            "the generated filter is not on the row: {row:?}"
+        );
+        assert!(
+            row.ends_with('…'),
+            "an expression too wide for the row was cut without a marker: {row:?}"
+        );
+    }
+
+    /// A capture with no compiled filter leaves the slot empty, which is the
+    /// only thing that may render as empty — the reading "nothing was
+    /// filtered" has to stay true.
+    #[test]
+    fn a_capture_with_no_filter_leaves_the_bpf_slot_empty() {
+        let row = status_line2_for("", 80);
+        assert!(
+            row.trim_end().ends_with("BPF Filter:"),
+            "something was drawn for a capture that compiled no filter: {row:?}"
+        );
+    }
+
     /// Snapshot: a list containing only a failed (503) dialog, locking in the failure styling.
     #[test]
     fn call_list_failed_dialog_styling() {

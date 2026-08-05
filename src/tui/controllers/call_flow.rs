@@ -271,6 +271,122 @@ fn shrink_detail(app: &mut App) {
     }
 }
 
+/// Display columns one ←/→ press moves the unwrapped detail pane.
+const DETAIL_HSCROLL_STEP: u16 = 4;
+
+/// Every ←/→ press in the call flow view — the one place the two meanings
+/// of those keys are chosen between, and the one place their outcome is
+/// guaranteed to be perceivable.
+///
+/// ←/→ are deliberately dual-bound (help.rs documents both meanings): they
+/// resize the ladder/detail split, except while the detail pane is focused
+/// with wrapping off, where they scroll that pane horizontally instead.
+/// Both meanings can legitimately have nowhere to go — the split at its
+/// limit, the message already fitting the pane — and each of those was, at
+/// some point, a press that moved nothing and said nothing. #184 removed
+/// the resize case; the h-scroll case survived it because the clamp that
+/// erases the movement lives in the render pass, not here (#188).
+///
+/// The invariant this function exists to hold: **after it returns, either
+/// something moved or `status_error` names why nothing did.** The tail
+/// check enforces that structurally rather than trusting each branch, so a
+/// future branch cannot reintroduce a silent mode.
+///
+/// # Arguments
+/// * `app` — application state to mutate.
+/// * `right` — `true` for →, `false` for ←.
+/// * `detail_focused` — whether the split is on AND the detail pane holds
+///   focus (Tab), as resolved by the caller.
+///
+/// # Side effects
+/// Resizes the split or moves `app.flow.detail_hscroll`, and always leaves
+/// a status line message describing what happened or why it could not.
+fn nav_horizontal(app: &mut App, right: bool, detail_focused: bool) {
+    // Cleared first so the check below reads THIS press's message and not a
+    // leftover one: the wrap toggle (`w`) that gets an operator into the
+    // h-scroll mode leaves its own message behind, which would otherwise
+    // stand in for a press that said nothing.
+    app.status_error = None;
+    let before = (app.flow.raw_preview_pct, app.flow.detail_hscroll);
+
+    if detail_focused && !app.flow.detail_wrap {
+        hscroll_detail(app, right);
+    } else if right {
+        shrink_detail(app);
+    } else {
+        grow_detail(app);
+    }
+
+    if (app.flow.raw_preview_pct, app.flow.detail_hscroll) == before && app.status_error.is_none() {
+        // Unreachable while every branch above speaks for itself; kept so
+        // that stops being a thing anyone has to verify by reading them.
+        app.status_error =
+            Some("←/→ have nothing to move here (Tab switches panes, w toggles wrap)".to_string());
+    }
+}
+
+/// Scroll the focused, unwrapped detail pane horizontally by one step.
+///
+/// The reachable offset is bounded by the pane geometry, which only the
+/// render pass knows; it reports the headroom back as
+/// `app.flow_detail_max_hscroll` after every frame that draws the pane.
+/// Reading it here means a press that cannot move anything can say so
+/// immediately, instead of setting an offset the next render silently
+/// clamps away — the shape of the original defect, where both arrows were
+/// inert and mute for as long as no line overflowed (#188).
+///
+/// `None` (no frame has drawn the pane yet) is not "nothing to scroll": it
+/// is "unmeasured", so the request is applied unclamped and the render's
+/// own clamp still bounds it, exactly as before. The event loop draws
+/// before it polls, so `None` is unreachable once a session is running —
+/// it is the headless (test) state.
+///
+/// The reading is one frame old, which only matters inside a single event
+/// drain (a key burst is handled with no frame between its keys). The
+/// render deliberately measures the headroom even while wrapping so that
+/// `w` then → — the sequence in the field report — is answered correctly;
+/// a burst that also changes the selected message can be one press stale,
+/// and the following frame re-measures.
+///
+/// # Arguments
+/// * `app` — application state to mutate.
+/// * `right` — `true` scrolls toward the end of the line, `false` back.
+///
+/// # Side effects
+/// Moves `app.flow.detail_hscroll` and always sets the status line: the new
+/// column when it moved, the reason and the way out when it could not.
+fn hscroll_detail(app: &mut App, right: bool) {
+    let before = app.flow.detail_hscroll;
+    let requested = if right {
+        before.saturating_add(DETAIL_HSCROLL_STEP)
+    } else {
+        before.saturating_sub(DETAIL_HSCROLL_STEP)
+    };
+    let next = match app.flow_detail_max_hscroll {
+        Some(max) => requested.min(max),
+        None => requested,
+    };
+    app.flow.detail_hscroll = next;
+
+    if next != before {
+        app.status_error = Some(match app.flow_detail_max_hscroll {
+            Some(max) => format!("Detail column {next} of {max}"),
+            None => format!("Detail column {next}"),
+        });
+        return;
+    }
+    app.status_error = Some(if app.flow_detail_max_hscroll == Some(0) {
+        // The headline case: nothing on screen is wider than the pane, so
+        // both arrows are pinned at column 0. Name the reason AND the two
+        // keys that give the arrows back their other meanings.
+        "Detail fits the pane; nothing to scroll (w to re-wrap, Tab for the ladder)".to_string()
+    } else if right {
+        "Detail is at the last column (← to scroll back)".to_string()
+    } else {
+        "Detail is at the left edge (→ to scroll right)".to_string()
+    });
+}
+
 /// Handle keys in the call flow view: map, then execute.
 ///
 /// # Arguments
@@ -415,17 +531,12 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         }
         CallFlowAction::GrowDetail => grow_detail(app),
         CallFlowAction::ShrinkDetail => shrink_detail(app),
-        // Arrows drive the focused, unwrapped detail pane horizontally
-        // (the render pass clamps the offset to the widest line);
-        // everywhere else they keep their split-resize meaning.
-        CallFlowAction::NavLeft if detail_focused && !app.flow.detail_wrap => {
-            app.flow.detail_hscroll = app.flow.detail_hscroll.saturating_sub(4);
-        }
-        CallFlowAction::NavRight if detail_focused && !app.flow.detail_wrap => {
-            app.flow.detail_hscroll = app.flow.detail_hscroll.saturating_add(4);
-        }
-        CallFlowAction::NavLeft => grow_detail(app),
-        CallFlowAction::NavRight => shrink_detail(app),
+        // Both meanings of ←/→ — h-scroll the focused unwrapped detail
+        // pane, resize the split everywhere else — are chosen inside
+        // `nav_horizontal`, which is also where "this press moved nothing
+        // and said nothing" is made impossible (#188).
+        CallFlowAction::NavLeft => nav_horizontal(app, false, detail_focused),
+        CallFlowAction::NavRight => nav_horizontal(app, true, detail_focused),
         CallFlowAction::ToggleDetailWrap => {
             app.flow.detail_wrap = !app.flow.detail_wrap;
             app.flow.detail_hscroll = 0;

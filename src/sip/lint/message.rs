@@ -13,13 +13,15 @@
 //! exact wording, and `linter_and_malformations_agree` holds the two together.
 
 use crate::sip::message::SipMessage;
+use crate::sip::session_id::{SessionId, SessionIdDeviation, SessionIdHalf};
 
 use super::FindingSink;
 use super::finding::{
     BRANCH_COOKIE, CONTACT_MISSING_IN_2XX, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED,
     CSEQ_METHOD_MISMATCH, HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING,
     MAX_FORWARDS_RANGE, MIN_SE_TOO_SMALL, REFRESHER_MISSING, RELIABLE_PROVISIONAL_WITHOUT_RSEQ,
-    SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL, URI_BRACKETS, URI_PARAM_DEMOTED,
+    SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL, SESSION_ID_MALFORMED,
+    SESSION_ID_UPPERCASE, URI_BRACKETS, URI_PARAM_DEMOTED,
 };
 
 /// The five header fields RFC 3261 §8.1.1 makes mandatory in every request and
@@ -180,6 +182,7 @@ pub(crate) fn lint(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     session_timers(msg, index, sink);
     dialog_target(msg, index, sink);
     reliable_provisional(msg, index, sink);
+    session_identifier(msg, index, sink);
 }
 
 /// Whether this response answers an `INVITE`, by its own `CSeq`.
@@ -576,6 +579,122 @@ fn cseq_method(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
          files this request under the wrong transaction, so its response reaches the \
          wrong one and the real transaction times out.",
     );
+}
+
+// ── RFC 7989 Session-ID ─────────────────────────────────────────────────
+
+/// The production both `Session-ID` rules hold a half to, quoted from the
+/// RFC 7989 §5 ABNF so the `expected` field is the grammar itself rather than a
+/// paraphrase of it.
+const SESS_UUID_ABNF: &str = "sess-uuid = 32(DIGIT / %x61-66) — 32 lowercase hex characters";
+
+/// Why an unusable half costs more here than a malformed header usually does.
+///
+/// One string, shared by the two shapes of malformation, because the
+/// consequence is identical and an operator reading both should not have to
+/// work out whether the difference in wording meant a difference in effect.
+const MALFORMED_CONSEQUENCE: &str = "§5's ABNF admits exactly 32 characters of [0-9a-f], so this half is not a sess-uuid and \
+     nothing downstream may treat it as one. sipnab drops an unreadable half from correlation \
+     rather than guess at it, and RFC 7989 is the one identifier built to survive a B2BUA: an \
+     SBC rewrites the Call-ID and issues a fresh Via branch, so once this half is gone there is \
+     nothing left tying the two legs together. A call that did cross the border is then reported \
+     as two unrelated calls.";
+
+/// RFC 7989 §5 — each `Session-ID` half is 32 lowercase hexadecimal characters.
+///
+/// The classification comes from [`SessionId::deviations`], which is what makes
+/// this a wiring of that detector rather than a second opinion about the same
+/// bytes: the rule raises exactly what the parser reported and nothing else, so
+/// a header the parser accepts as conforming can never produce a finding here.
+///
+/// §5 calls `Session-ID` a single-instance header field, so only the first one
+/// is read. A message carrying two is a different defect, and claiming it under
+/// this identifier would make the finding unsuppressible without also losing
+/// the ABNF check.
+fn session_identifier(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    let Some(value) = msg.header("Session-ID") else {
+        return;
+    };
+    let Some(parsed) = SessionId::parse(value) else {
+        return;
+    };
+    // `deviations` walks local then remote and yields one entry per half that
+    // departed from the ABNF; `deviating_halves` walks the same two halves in
+    // the same order. Zipping therefore pairs each classification with the half
+    // that provoked it, and a conforming header empties both sides at once —
+    // which is what makes `deviations` the gate rather than a decoration.
+    let deviations = parsed.deviations();
+    let halves = deviating_halves(&parsed);
+    // `zip` stops at the shorter side, so a divergence between these two walks
+    // would drop findings — or worse, pair a deviation with the wrong half and
+    // name the innocent one — and do it without a word. The two live in
+    // different files, so nothing but this line couples them: `deviations`
+    // is `SessionId`'s, `deviating_halves` is here.
+    debug_assert_eq!(
+        deviations.len(),
+        halves.len(),
+        "SessionId::deviations and deviating_halves disagree about how many \
+         halves deviated; zip would silently drop or mispair findings"
+    );
+    for (deviation, (half, length)) in deviations.into_iter().zip(halves) {
+        match deviation {
+            SessionIdDeviation::UppercaseHex => sink.push(
+                &SESSION_ID_UPPERCASE,
+                index,
+                format!("Session-ID {half} carries uppercase hex digits"),
+                SESS_UUID_ABNF,
+                "§5 says it twice: the ABNF admits %x61-66 with no uppercase alternative, and \
+                 the section closes by saying the values are presented as strings of lowercase \
+                 hexadecimal characters. sipnab compares the halves case-insensitively, so \
+                 correlation still works here — but a peer, an SBC or a log pipeline comparing \
+                 the header byte for byte sees two identifiers for one session, which is the \
+                 split RFC 7989 exists to prevent. The case also names the stack that emitted \
+                 it, which is where the fix goes.",
+            ),
+            SessionIdDeviation::WrongLength => sink.push(
+                &SESSION_ID_MALFORMED,
+                index,
+                format!("Session-ID {half} is {length} characters, not 32"),
+                SESS_UUID_ABNF,
+                MALFORMED_CONSEQUENCE,
+            ),
+            SessionIdDeviation::NonHex => sink.push(
+                &SESSION_ID_MALFORMED,
+                index,
+                format!("Session-ID {half} carries a character outside 0-9 and a-f"),
+                SESS_UUID_ABNF,
+                MALFORMED_CONSEQUENCE,
+            ),
+        }
+    }
+}
+
+/// The halves that departed from the ABNF: the name RFC 7989 §5 gives each, and
+/// how many characters it carried, in the order [`SessionId::deviations`]
+/// reports them.
+///
+/// The wire value is deliberately not carried out of here. A `Session-ID` is
+/// attacker-controlled text that ends up in a carrier ticket and in an agent's
+/// context, the length is what settles a wrong-length half, and "a character
+/// outside the set" settles the other — so quoting the bytes would add risk
+/// and no evidence. `nil` halves are absent by construction: the parser
+/// classifies 32 zeros before it tests case, so they carry no deviation.
+fn deviating_halves(parsed: &SessionId) -> Vec<(&'static str, usize)> {
+    [
+        ("local-uuid", Some(&parsed.local)),
+        ("remote-uuid", parsed.remote.as_ref()),
+    ]
+    .into_iter()
+    .filter_map(|(name, half)| Some((name, half?)))
+    .filter_map(|(name, half)| match half {
+        SessionIdHalf::Uuid {
+            value,
+            deviation: Some(_),
+        } => Some((name, value.chars().count())),
+        SessionIdHalf::Malformed { raw, .. } => Some((name, raw.chars().count())),
+        _ => None,
+    })
+    .collect()
 }
 
 /// Tests for the message-scoped rules.
@@ -1205,5 +1324,170 @@ mod tests {
     fn param_name_handles_valueless_flags() {
         assert_eq!(param_name("lr"), "lr");
         assert_eq!(param_name("transport=tcp"), "transport");
+    }
+
+    /// A conforming RFC 7989 `Session-ID`, used as the base for the tests below.
+    const SESSION_A: &str = "ab30317f1a784dc48ff824d0d3715d86";
+
+    /// The far endpoint's half of [`SESSION_A`]'s session.
+    const SESSION_B: &str = "47755a9de7794ba387653f2099600ef2";
+
+    /// An INVITE carrying `value` as its `Session-ID`.
+    fn invite_with_session_id(value: &str) -> String {
+        clean_invite().replace(
+            "Content-Length: 0\r\n",
+            &format!("Session-ID: {value}\r\nContent-Length: 0\r\n"),
+        )
+    }
+
+    /// Findings for `raw`, as `(rule_id, observed)` pairs.
+    fn findings_of(raw: &str) -> Vec<(&'static str, String)> {
+        Linter::new(LintConfig::new())
+            .lint_message(&msg(raw), 0)
+            .into_iter()
+            .map(|f| (f.rule_id, f.observed))
+            .collect()
+    }
+
+    /// A half that is not 32 characters cannot be a `sess-uuid`, and the
+    /// finding says how long it actually was.
+    #[test]
+    fn a_short_session_id_half_is_reported_as_malformed() {
+        let got = findings_of(&invite_with_session_id("deadbeef"));
+        let observed = got
+            .iter()
+            .find(|(id, _)| *id == SESSION_ID_MALFORMED.id)
+            .map(|(_, observed)| observed.as_str())
+            .unwrap_or_else(|| panic!("no malformed finding: {got:?}"));
+        assert_eq!(observed, "Session-ID local-uuid is 8 characters, not 32");
+    }
+
+    /// A half of the right length holding something outside `[0-9a-f]` is
+    /// reported for the character set rather than for the length.
+    #[test]
+    fn a_non_hex_session_id_half_is_reported_for_its_character_set() {
+        let got = findings_of(&invite_with_session_id(&"z".repeat(32)));
+        assert!(
+            got.contains(&(
+                SESSION_ID_MALFORMED.id,
+                "Session-ID local-uuid carries a character outside 0-9 and a-f".to_string(),
+            )),
+            "{} must report a non-hex half: {got:?}",
+            SESSION_ID_MALFORMED.id
+        );
+    }
+
+    /// Uppercase hex is its own finding, and is NOT reported as malformed.
+    ///
+    /// The distinction is the point of splitting the two rules: this value is
+    /// unambiguous and sipnab still correlates on it, so calling it malformed
+    /// would tell an operator to go and fix a leg that is in fact matching.
+    #[test]
+    fn uppercase_hex_is_reported_separately_from_a_malformed_half() {
+        let got = findings_of(&invite_with_session_id(&SESSION_A.to_ascii_uppercase()));
+        assert!(
+            got.contains(&(
+                SESSION_ID_UPPERCASE.id,
+                "Session-ID local-uuid carries uppercase hex digits".to_string(),
+            )),
+            "{} must report an uppercase UUID: {got:?}",
+            SESSION_ID_UPPERCASE.id
+        );
+        assert!(
+            !got.iter().any(|(id, _)| *id == SESSION_ID_MALFORMED.id),
+            "uppercase is still a usable UUID: {got:?}"
+        );
+    }
+
+    /// A conforming header, and a `nil` remote, raise nothing.
+    ///
+    /// The mutation guard for every test above: a rule that fired on the mere
+    /// presence of the header would pass all of them and fail this one. `nil`
+    /// is in here because it is what every initial INVITE carries — RFC 7989
+    /// §5 expects it before the far end has contributed a UUID — so reporting
+    /// it would fire on the first message of practically every conformant call.
+    #[test]
+    fn a_conforming_session_id_raises_no_finding() {
+        for value in [
+            SESSION_A.to_string(),
+            format!("{SESSION_A};remote={SESSION_B}"),
+            format!("{SESSION_A};remote={}", "0".repeat(32)),
+            format!("{};remote={SESSION_B}", "0".repeat(32)),
+        ] {
+            let got = findings_of(&invite_with_session_id(&value));
+            assert!(
+                !got.iter().any(|(id, _)| *id == SESSION_ID_MALFORMED.id
+                    || *id == SESSION_ID_UPPERCASE.id),
+                "{value} is conformant: {got:?}"
+            );
+        }
+    }
+
+    /// Each finding names the half it came from, and the two do not swap.
+    ///
+    /// The rule pairs what `SessionId::deviations` classified with the half
+    /// that provoked it by walking both in the same order. A message whose two
+    /// halves deviate in DIFFERENT ways is the only input that can catch that
+    /// pairing coming apart: with one deviation, or with two of the same kind,
+    /// a swap is invisible.
+    #[test]
+    fn each_session_id_finding_names_the_half_it_came_from() {
+        let raw = invite_with_session_id(&format!(
+            "{};remote=nonsense",
+            SESSION_A.to_ascii_uppercase()
+        ));
+        let got = findings_of(&raw);
+        assert!(
+            got.contains(&(
+                SESSION_ID_UPPERCASE.id,
+                "Session-ID local-uuid carries uppercase hex digits".to_string(),
+            )),
+            "the uppercase finding must name the LOCAL half: {got:?}"
+        );
+        assert!(
+            got.contains(&(
+                SESSION_ID_MALFORMED.id,
+                "Session-ID remote-uuid is 8 characters, not 32".to_string(),
+            )),
+            "the malformed finding must name the REMOTE half: {got:?}"
+        );
+    }
+
+    /// The finding carries RFC 7989 §5 as data, and quotes the ABNF it holds
+    /// the value to.
+    ///
+    /// A lint rule that cannot name the clause it enforces is an opinion, and
+    /// the citation is only checkable because it is a field rather than prose.
+    #[test]
+    fn a_session_id_finding_cites_the_abnf_it_enforces() {
+        let finding = Linter::new(LintConfig::new())
+            .lint_message(&msg(&invite_with_session_id("deadbeef")), 0)
+            .into_iter()
+            .find(|f| f.rule_id == SESSION_ID_MALFORMED.id)
+            .expect("the malformed rule must fire");
+        assert_eq!(finding.rfc, 7989);
+        assert_eq!(finding.section, "5");
+        assert_eq!(finding.citation(), "RFC 7989 §5");
+        assert_eq!(finding.expected, SESS_UUID_ABNF);
+        assert!(
+            finding.expected.contains("32(DIGIT / %x61-66)"),
+            "the expectation must quote the production: {}",
+            finding.expected
+        );
+    }
+
+    /// A message with no `Session-ID` at all is silent.
+    ///
+    /// Most SIP carries no Session-ID whatsoever. A rule that reported its
+    /// absence would fire on nearly every dialog in every capture, which is how
+    /// a linter gets switched off in week one.
+    #[test]
+    fn a_message_without_a_session_id_is_silent() {
+        let got = findings_of(&clean_invite());
+        assert!(
+            !got.iter()
+                .any(|(id, _)| *id == SESSION_ID_MALFORMED.id || *id == SESSION_ID_UPPERCASE.id),
+            "{got:?}"
+        );
     }
 }

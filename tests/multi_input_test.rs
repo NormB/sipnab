@@ -420,6 +420,100 @@ fn the_cores_path_survives_a_truncated_file_like_the_single_threaded_path() {
     );
 }
 
+/// Lay out a two-file set in `dir` whose SECOND member has a link type the
+/// `ether` filter cannot compile against, returning that member's file name.
+///
+/// The fixtures are picked for their real first-packet timestamps, because
+/// resolution orders the set by packet time and the failing member has to land
+/// SECOND for this to be the later-file case at all: `sip-register` (1312180642,
+/// Ethernet) < `loopback-dlt-loop` (1400000000, `DLT_LOOP`). `-I` order does not
+/// decide this. No `editcap` and no synthesised capture is involved, so the
+/// scenario is available on every machine that can run the suite.
+fn set_whose_second_file_rejects_an_ether_filter(dir: &Path) -> &'static str {
+    for name in ["sip-register.pcap", "loopback-dlt-loop.pcap"] {
+        std::fs::copy(samples().join(name), dir.join(name)).expect("copy");
+    }
+    "loopback-dlt-loop.pcap"
+}
+
+/// A BPF filter that compiles against file 1 and not file 2 REFUSES on the
+/// `--cores` path, naming the file — and both readers still account for what
+/// they managed to read.
+///
+/// The parallel reader used to log `Skipping '<file>': ...` and `continue`, so
+/// `--cores N` answered a mixed-link-type set with a report covering the members
+/// the filter happened to fit, exit 0, and no way to tell that from a whole
+/// answer. The single-threaded reader refused the same input. A filter that will
+/// not compile is a static misconfiguration against that file's link type — the
+/// text does not change between files, so it was always going to fail on that
+/// one — and the partial answer that looks complete is the worse of the two
+/// outcomes.
+///
+/// Asserted on the EFFECT, not on a log line's phrasing: the run refuses, the
+/// refusal names the offending file, and the closing tally still says how much
+/// of the set was read. The refusal is not the end of the operator's questions;
+/// "which of the forty" and "how far did it get" are the next two.
+///
+/// Both process exits are asserted, and asserted as the same value. Reader-level
+/// agreement is pinned separately by `parallel::tests::
+/// both_readers_refuse_a_filter_that_will_not_compile_against_a_later_file`,
+/// which compares the two errors as one string; this one covers the level above,
+/// where the agreement used to be lost. `app::batch` joined the capture thread
+/// and downgraded a returned error to `warn!`, so the single-threaded run printed
+/// a whole-looking report and exited 0 while `--cores` exited 1 — one input, two
+/// answers, and the reassuring one on the default path.
+///
+/// Equality alone would be too weak: it holds when both exit 0, which is the
+/// state this test exists to forbid. Both are pinned to 1 as well.
+#[test]
+fn a_bpf_filter_that_fails_on_a_later_file_refuses_the_cores_path_and_names_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let offender = set_whose_second_file_rejects_an_ether_filter(dir.path());
+    let spec = dir.path().to_string_lossy().into_owned();
+    // Compiles against Ethernet; libpcap rejects ethernet addresses on DLT_LOOP.
+    let bpf = "ether host 00:00:00:00:00:01";
+
+    let (_out, single_err, single_code) = run_support::run(
+        &["-N", "-I", &spec, "--no-cli-print", "--cores", "1", bpf],
+        Some("info"),
+    );
+    let (_out, cores_err, cores_code) = run_support::run(
+        &["-N", "-I", &spec, "--no-cli-print", "--cores", "4", bpf],
+        Some("info"),
+    );
+
+    assert_eq!(
+        cores_code,
+        Some(1),
+        "--cores must refuse a filter that cannot compile against file 2, not \
+         drop that file and exit 0 with a report that looks whole:\n{cores_err}"
+    );
+    assert_eq!(
+        single_code,
+        Some(1),
+        "the single-threaded run must refuse too. Its reader returns the same \
+         error; exiting 0 anyway means the report above it is drawn from a \
+         partial read and nothing reading $? can tell:\n{single_err}"
+    );
+    assert_eq!(
+        single_code, cores_code,
+        "one input must not get two different answers depending on --cores"
+    );
+    for (path, err) in [("--cores 1", &single_err), ("--cores 4", &cores_err)] {
+        assert!(
+            err.contains(offender) && err.contains("BPF filter"),
+            "{path} must name the file the filter would not compile against; \
+             'which of the forty' is the operator's first question:\n{err}"
+        );
+        assert!(
+            err.contains("1 of 2 file(s) read in full, 1 skipped"),
+            "{path} must still account for what it read before refusing — a \
+             refusal with no tally leaves the operator guessing how far the set \
+             got:\n{err}"
+        );
+    }
+}
+
 /// A directory reads every capture inside it.
 #[test]
 fn a_directory_reads_every_capture_in_it() {

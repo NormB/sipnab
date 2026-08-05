@@ -1813,6 +1813,12 @@ impl BatchRunner {
         // so a capture truncated by ENOSPC reported success and any
         // `sipnab -O out.pcap && next-step` pipeline ran on partial data.
         let mut output_failed = false;
+        // Set when the capture thread ends in an error or a panic, i.e. the
+        // input was not read to the end. Separate from `output_failed` so the
+        // two causes stay distinguishable in the code even though both land on
+        // the same exit status: one means "what we read was not written", the
+        // other "what we wrote was not all there was to read".
+        let mut capture_failed = false;
         let split_bytes = policy.split_bytes;
         let split_duration = policy.split_duration;
         let portrange = policy.portrange;
@@ -2210,10 +2216,31 @@ impl BatchRunner {
         // 20. Wait for the capture thread to finish
         //     Drop rx first so the capture thread sees a disconnected channel
         drop(rx);
+        // A capture thread that returned Err did NOT read its input to the end,
+        // so every report below is drawn from a partial view. Both failure arms
+        // used to log and fall through to exit 0, which made the run
+        // indistinguishable from a complete one to anything reading `$?`.
+        //
+        // The concrete case that found this: a BPF filter that compiles against
+        // the first file of a set and not against a later one. `capture_files`
+        // returns Err naming the file, the warn! below swallowed it, and the run
+        // printed a whole-looking summary and exited 0 — while `--cores` on the
+        // same input exited 1. Two answers to one question, and the reassuring
+        // one was the default path.
+        //
+        // A clean shutdown is not affected: `capture_live` returns Ok(()) when
+        // the stop signal ends the loop and reserves Err for a failed open, a
+        // rejected filter or a fatal read.
         match handle.thread.join() {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!("Capture thread error: {e}"),
-            Err(_) => tracing::error!("Capture thread panicked"),
+            Ok(Err(e)) => {
+                tracing::error!("Capture did not complete: {e:#}");
+                capture_failed = true;
+            }
+            Err(_) => {
+                tracing::error!("Capture thread panicked; the input was not read to the end");
+                capture_failed = true;
+            }
         }
 
         // 20a. The source is fully drained: flip the flag MCP's tail_dialogs
@@ -2363,7 +2390,7 @@ impl BatchRunner {
         //
         // Reports still print above: a partial capture is worth looking at,
         // it just must not be mistaken for a whole one by a script reading $?.
-        if output_failed {
+        if output_failed || capture_failed {
             std::process::exit(1);
         }
     }

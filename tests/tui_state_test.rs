@@ -4674,4 +4674,280 @@ mod tui_state {
             "All columns should remain visible when applying an empty list"
         );
     }
+
+    // ── Call flow ←/→: a press is never both inert and mute ───────────
+    //
+    // ←/→ carry two meanings in the call flow (resize the split; h-scroll
+    // the focused unwrapped detail pane), and each has a state in which it
+    // legitimately cannot move anything. #184 fixed the resize side. The
+    // h-scroll side survived it because the clamp that erases the movement
+    // runs in the RENDER pass: the controller set an offset, the render
+    // pinned it back, and nothing said so — so with no line wider than the
+    // pane, both arrows were dead and silent indefinitely (#188).
+    //
+    // #184's post-mortem is the reason these assert on the drawn frame and
+    // the status line rather than on `detail_hscroll`: every test that
+    // existed before it asserted the state field the controller wrote, all
+    // of them passed, and the operator still saw nothing happen.
+
+    /// A call flow whose selected message has one header far wider than any
+    /// pane these tests render into, so h-scrolling has somewhere to go.
+    ///
+    /// # Arguments
+    /// * `call_id` - Call-ID for the dialog.
+    /// * `ts` - Capture timestamp.
+    ///
+    /// # Returns
+    /// The parsed INVITE; panics if parsing fails.
+    fn make_wide_invite(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        // A single long token: no whitespace, so nothing can shorten the
+        // widest line except horizontal scrolling.
+        let long_value = "x".repeat(400);
+        let raw = build_sip(
+            "INVITE sip:1002@example.com SIP/2.0",
+            &[
+                "From: \"1001\" <sip:1001@example.com>;tag=t1",
+                "To: \"1002\" <sip:1002@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                &format!("User-Agent: {long_value}"),
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            endpoint_a(),
+            endpoint_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse wide INVITE")
+    }
+
+    /// The drawn main pane: everything between the three status lines at the
+    /// top and the F-key bar at the bottom. This is the region an operator
+    /// watches for movement, and excluding the status line is deliberate —
+    /// a new status message must not be able to masquerade as movement.
+    ///
+    /// # Arguments
+    /// * `term` - Terminal holding the frame to read.
+    ///
+    /// # Returns
+    /// One string per main-area row, joined with newlines.
+    fn main_pane_text(term: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        let buf = term.backend().buffer();
+        let area = *buf.area();
+        (3..area.height.saturating_sub(1))
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Open the call flow of `messages` in a wide terminal and put the view
+    /// into the requested arrow-key mode, drawing a frame afterwards so the
+    /// render pass has measured the detail pane exactly as the event loop
+    /// would before the operator's next key.
+    ///
+    /// # Arguments
+    /// * `messages` - Messages to preload.
+    /// * `focus_detail` - Press Tab, moving focus to the detail pane.
+    /// * `unwrap_detail` - Press `w`, turning detail wrapping off.
+    ///
+    /// # Returns
+    /// The app on the call-flow view and the 200x24 terminal it drew into.
+    fn call_flow_in_arrow_mode(
+        messages: Vec<SipMessage>,
+        focus_detail: bool,
+        unwrap_detail: bool,
+    ) -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
+        let mut app = App::with_processed_messages(messages);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24)).unwrap();
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.current_view(), View::CallFlow(_)));
+        draw(&mut app, &mut term);
+        if focus_detail {
+            app.handle_key(KeyCode::Tab);
+        }
+        if unwrap_detail {
+            app.handle_key(KeyCode::Char('w'));
+        }
+        draw(&mut app, &mut term);
+        (app, term)
+    }
+
+    /// With the detail pane focused, wrapping off and no line wider than the
+    /// pane, → moves nothing on screen and the status line names both the
+    /// reason and the way out (instead of the indefinite silence of #188).
+    #[test]
+    fn a_clamped_horizontal_scroll_names_the_reason_instead_of_doing_nothing_silently() {
+        let t0 = base_ts();
+        // The fixture INVITE's widest header is ~40 columns; the detail pane
+        // of a 200-column terminal is far wider, so nothing overflows.
+        let (mut app, mut term) = call_flow_in_arrow_mode(
+            vec![
+                make_invite("fits@test", "1001", "1002", t0),
+                make_response("fits@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1)),
+            ],
+            true,
+            true,
+        );
+
+        let before = main_pane_text(&term);
+        app.handle_key(KeyCode::Right);
+        draw(&mut app, &mut term);
+
+        assert_eq!(
+            main_pane_text(&term),
+            before,
+            "a message narrower than the pane cannot scroll: the drawn frame must be identical"
+        );
+        let status = app.status_error().unwrap_or_default();
+        assert!(
+            status.contains("fits the pane") && status.contains("nothing to scroll"),
+            "→ moved nothing, so the status line must name the reason; got {status:?}"
+        );
+        assert!(
+            status.contains("w to") && status.contains("Tab"),
+            "the reason must come with the way out (w re-wraps, Tab returns to the ladder); got {status:?}"
+        );
+
+        // ← is the same press in the other direction and must not be silent
+        // either — the original report could not name its conditions
+        // precisely because BOTH arrows were dead.
+        let before = main_pane_text(&term);
+        app.handle_key(KeyCode::Left);
+        draw(&mut app, &mut term);
+        assert_eq!(main_pane_text(&term), before, "← cannot move it either");
+        let status = app.status_error().unwrap_or_default();
+        assert!(
+            status.contains("fits the pane"),
+            "← must name the same reason; got {status:?}"
+        );
+    }
+
+    /// Every ←/→ press in the call flow either moves the drawn frame or
+    /// leaves a fresh status message: the property applies to both arrows in
+    /// all four combinations of pane focus and wrap mode, not just to the
+    /// branch #188 was reported against.
+    #[test]
+    fn every_call_flow_arrow_press_either_moves_the_frame_or_says_why_it_could_not() {
+        let t0 = base_ts();
+        for focus_detail in [false, true] {
+            for unwrap_detail in [false, true] {
+                for arrow in [KeyCode::Left, KeyCode::Right] {
+                    let (mut app, mut term) = call_flow_in_arrow_mode(
+                        vec![
+                            make_invite("fits@test", "1001", "1002", t0),
+                            make_response(
+                                "fits@test",
+                                200,
+                                "OK",
+                                "INVITE",
+                                t0 + TimeDelta::seconds(1),
+                            ),
+                        ],
+                        focus_detail,
+                        unwrap_detail,
+                    );
+                    // Park an unrelated message on the status line first.
+                    // Without it a leftover "Detail wrap: OFF …" from the `w`
+                    // press would stand in for a press that said nothing —
+                    // the false green this gate exists to avoid.
+                    app.handle_key(KeyCode::Char('m'));
+                    assert_eq!(app.status_error(), Some("Mark set"));
+                    draw(&mut app, &mut term);
+
+                    let before = main_pane_text(&term);
+                    app.handle_key(arrow);
+                    draw(&mut app, &mut term);
+
+                    let moved = main_pane_text(&term) != before;
+                    let spoke = app.status_error().is_some_and(|s| s != "Mark set");
+                    assert!(
+                        moved || spoke,
+                        "{arrow:?} with focus_detail={focus_detail} unwrap_detail={unwrap_detail} \
+                         moved nothing and said nothing; status was {:?}",
+                        app.status_error()
+                    );
+                }
+            }
+        }
+    }
+
+    /// The reason-naming must not be bought by disabling the feature: with a
+    /// header wider than the pane, → still visibly scrolls the detail pane
+    /// and reports the column it landed on.
+    #[test]
+    fn a_line_wider_than_the_pane_still_scrolls_and_reports_its_column() {
+        let t0 = base_ts();
+        let (mut app, mut term) = call_flow_in_arrow_mode(
+            vec![
+                make_wide_invite("wide@test", t0),
+                make_response("wide@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1)),
+            ],
+            true,
+            true,
+        );
+
+        let before = main_pane_text(&term);
+        app.handle_key(KeyCode::Right);
+        draw(&mut app, &mut term);
+
+        assert_ne!(
+            main_pane_text(&term),
+            before,
+            "a 400-column header overflows the pane: → must visibly scroll it"
+        );
+        let status = app.status_error().unwrap_or_default();
+        assert!(
+            status.starts_with("Detail column "),
+            "a press that moved must report where it landed; got {status:?}"
+        );
+        assert!(
+            !status.contains("fits the pane"),
+            "an overflowing message must never be reported as fitting; got {status:?}"
+        );
+    }
+
+    /// The headroom the arrows consult is measured even while wrapping is
+    /// on, so the very first → after `w` is answered from the pane the
+    /// operator is actually looking at — a burst of `w` then → arrives in
+    /// one event drain, with no frame in between.
+    #[test]
+    fn the_first_arrow_after_the_wrap_toggle_is_answered_from_the_wrapped_frame() {
+        let t0 = base_ts();
+        // Focused, wrapping still ON: the frame drawn here is the only one
+        // the controller can consult for the presses below.
+        let (mut app, mut term) = call_flow_in_arrow_mode(
+            vec![
+                make_wide_invite("wide@test", t0),
+                make_response("wide@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1)),
+            ],
+            true,
+            false,
+        );
+
+        // `w` and → in one drain, exactly as a fast operator produces them.
+        app.handle_key(KeyCode::Char('w'));
+        app.handle_key(KeyCode::Right);
+        let status = app.status_error().unwrap_or_default();
+        assert!(
+            !status.contains("fits the pane"),
+            "the wrapped frame measured a 400-column header: → must not claim it fits; got {status:?}"
+        );
+
+        let before = main_pane_text(&term);
+        draw(&mut app, &mut term);
+        assert_ne!(
+            main_pane_text(&term),
+            before,
+            "that first press must land as a real scroll, not be clamped away"
+        );
+    }
 }

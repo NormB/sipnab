@@ -633,9 +633,9 @@ fn shard_opened(
 /// `read_set` is split out of [`crate::capture::file::capture_files`] on the
 /// single-threaded path: the closing summary is then reported on EVERY path out
 /// of the read, including the ones that return an error. A BPF filter that will
-/// not compile against the first file still leaves an account to give, and an
-/// account only printed on the happy path is one the operator learns not to
-/// rely on.
+/// not compile against the twelfth file still leaves an account of the eleven
+/// to give, and an account only printed on the happy path is one the operator
+/// learns not to rely on.
 ///
 /// The tally is [`crate::capture::file::ReadTally`] — the single-threaded
 /// reader's type, not a parallel copy of it — so both readers state what they
@@ -646,9 +646,12 @@ fn shard_opened(
 ///
 /// # Errors
 ///
-/// Only for the FIRST file: it cannot be opened, or the BPF filter will not
-/// compile against it. Either proves the whole set unusable before any packet
-/// has been sharded.
+/// When the FIRST file cannot be opened — that proves the whole set unusable
+/// before any packet has been sharded — or when the BPF filter will not compile
+/// against ANY file of the set, wherever in it that file sits. The two are
+/// different kinds of failure and only the first is position-dependent: an open
+/// that fails on a later file means something changed underneath the run, while
+/// a filter that will not compile was always going to fail on that file.
 ///
 /// # Side effects
 ///
@@ -684,17 +687,26 @@ fn shard_set(
         if let Some(ref bpf) = capture_config.bpf_filter
             && let Err(e) = cap.filter(bpf, true)
         {
-            let err = anyhow::anyhow!("Failed to compile BPF filter '{bpf}': {e}");
-            // Counted as a skip either way: a file whose traffic never reached
-            // the workers is data missing from the analysis, and that is true
-            // whether the run then stops or reads on.
+            // Counted as a skip BEFORE the refusal is propagated: a file whose
+            // traffic never reached the workers is data missing from the
+            // analysis, and the caller reports the tally on every path out — so
+            // a run that refuses on file twelve still says it read eleven.
             tally.skipped += 1;
             tally.lost = true;
-            if is_first {
-                return Err(err);
-            }
-            tracing::error!("Skipping '{}': {err:#}", path.display());
-            continue;
+            // Refused wherever in the set it happens, not only on the first
+            // file. The filter text does not change between files, so a failure
+            // is a static misconfiguration against that file's link type, not a
+            // mid-read race like a member vanishing from a rotating directory:
+            // the filter was always going to fail on that file. Reading on
+            // dropped the whole traffic of every member sharing that link type
+            // — a Linux-cooked or DLT_NULL file among Ethernet ones — behind
+            // one log line, and then exited 0 with a report that looked
+            // complete, which is the defect class the summary above exists to
+            // remove. `crate::capture::file::filter_failure` builds the error
+            // so both readers refuse with the same sentence, and so the sentence
+            // NAMES the file: the operator's first question about a forty-file
+            // set is which of the forty.
+            return Err(crate::capture::file::filter_failure(bpf, path, e));
         }
         // A read error stops THIS file, not the set. Truncation is the normal
         // state of a ring buffer — the newest member is still being written when
@@ -750,13 +762,19 @@ fn shard_set(
 ///
 /// # Errors
 ///
-/// When `paths` is empty, or when the FIRST file cannot be opened or its BPF
-/// filter does not compile — opening it is what proves the set usable at all.
-/// A later file that cannot be opened, or that stops reading mid-way (the
-/// normal state of a ring buffer's newest member), is logged and skipped so one
-/// bad member cannot hide the rest of the set. This mirrors
-/// [`crate::capture::file::capture_files`] exactly; without it `--cores` would
-/// abandon a set the single-threaded path reads through.
+/// When `paths` is empty, when the FIRST file cannot be opened — opening it is
+/// what proves the set usable at all — or when the BPF filter does not compile
+/// against any member of the set, first or fortieth. A later file that cannot
+/// be opened, or that stops reading mid-way (the normal state of a ring
+/// buffer's newest member), is logged and skipped so one bad member cannot hide
+/// the rest of the set. This mirrors [`crate::capture::file::capture_files`]
+/// exactly; without it `--cores` would abandon a set the single-threaded path
+/// reads through, and — until the filter arm was made to refuse — would answer
+/// a mixed-link-type set with a confident partial report where `--cores 1`
+/// refused.
+///
+/// The tally is reported before the error is propagated, so a refused run still
+/// states how much of the set it managed to read.
 pub fn run_offline_parallel_file(
     paths: &[std::path::PathBuf],
     capture_config: &crate::capture::CaptureConfig,
@@ -1504,5 +1522,85 @@ mod tests {
             .find(|s| s.codec.as_deref() == Some("opus"));
         let opus = opus.expect("expected an opus stream resolved from the SDP rtpmap");
         assert_eq!(opus.payload_type, 96, "opus carried on dynamic PT 96");
+    }
+
+    /// A two-file set whose SECOND member has a link type the filter cannot
+    /// compile against.
+    ///
+    /// Chosen from the stock fixtures rather than synthesised, because the
+    /// resolver orders a set by first-packet time and the failing member has to
+    /// land SECOND for this to be the later-file case at all:
+    /// `sip-register.pcap` is Ethernet at 1312180642, `loopback-dlt-loop.pcap`
+    /// is `DLT_LOOP` at 1400000000. `ether host ...` compiles against the
+    /// first and libpcap rejects it on the second.
+    #[cfg(feature = "native")]
+    fn set_whose_second_file_rejects_an_ether_filter() -> [std::path::PathBuf; 2] {
+        [
+            std::path::PathBuf::from("tests/pcap-samples/sip-register.pcap"),
+            std::path::PathBuf::from("tests/pcap-samples/loopback-dlt-loop.pcap"),
+        ]
+    }
+
+    /// Both readers REFUSE a BPF filter that will not compile against a later
+    /// file of the set, and both refuse with the same sentence naming that file.
+    ///
+    /// The two used to disagree about the same input, and the disagreement was
+    /// the defect: `capture::file::read_member` returned the error, while
+    /// `shard_set` logged `Skipping ...` and read on, so `--cores N` dropped the
+    /// whole traffic of every member sharing that link type and still produced a
+    /// report that looked like the answer. A filter that will not compile is a
+    /// static misconfiguration against that file's link type — the filter text
+    /// does not change between files, so it was always going to fail on that one
+    /// — and a partial answer that looks complete is worse than no answer.
+    ///
+    /// The assertion is equality of the two errors, not a shape check on each:
+    /// two readers each producing a plausible refusal is how the wordings drift,
+    /// and only comparing them catches a parallel path that refuses in its own
+    /// words. One `filter_failure` produces both, which is also what makes the
+    /// file's name structurally present in each — an operator pointed at forty
+    /// files needs to know which one refused.
+    #[cfg(feature = "native")]
+    #[test]
+    fn both_readers_refuse_a_filter_that_will_not_compile_against_a_later_file() {
+        use crate::capture::CaptureConfig;
+        let paths = set_whose_second_file_rejects_an_ether_filter();
+        for p in &paths {
+            assert!(p.exists(), "fixture missing: {}", p.display());
+        }
+        let cc = CaptureConfig {
+            bpf_filter: Some("ether host 00:00:00:00:00:01".to_string()),
+            ..CaptureConfig::default()
+        };
+
+        // The single-threaded reader is the reference: it has refused here
+        // since the two arms were reconciled.
+        let (tx, _rx) = crate::capture::channel::packet_channel(1024);
+        let single = crate::capture::file::capture_files(&paths, &cc, tx, None).expect_err(
+            "the single-threaded reader must refuse a filter that cannot compile \
+             against file 2",
+        );
+        // Matched rather than `expect_err`: `ReconResult` is not `Debug`, and a
+        // successful run is exactly the failure this test exists to catch, so
+        // it gets the sentence rather than a derive.
+        let parallel = match run_offline_parallel_file(&paths, &cc, pcfg(4)) {
+            Err(e) => e,
+            Ok(_) => panic!(
+                "--cores must refuse the same input the same way; reading on \
+                 drops file 2's entire traffic and still answers as though it \
+                 had read it"
+            ),
+        };
+
+        let (single, parallel) = (format!("{single:#}"), format!("{parallel:#}"));
+        assert_eq!(
+            parallel, single,
+            "both readers must refuse with ONE sentence.\n  single:   {single}\n  \
+             parallel: {parallel}"
+        );
+        assert!(
+            parallel.contains("loopback-dlt-loop.pcap"),
+            "the refusal must name the file it refused on, or a forty-file set \
+             leaves the operator nothing to act on: {parallel}"
+        );
     }
 }

@@ -229,6 +229,74 @@ pub struct TuiOptions {
     /// Capture files this session reads, which the save dialog must never
     /// write over (see [`crate::capture::output_guard`]).
     pub protected_inputs: crate::capture::output_guard::ProtectedInputs,
+    /// The BPF expression this session's capture is actually running with —
+    /// what `bootstrap::plan` resolved and handed to libpcap, NOT the words
+    /// the operator typed. Empty means no filter was compiled at all.
+    ///
+    /// There are two candidate values and only one of them can be shown
+    /// without explaining the wrong thing. A live capture given no filter
+    /// still runs one: `plan` generates an encapsulation-aware expression
+    /// from `--portrange`, and the kernel discards everything it does not
+    /// match before sipnab sees a byte. Carrying the operator's text would
+    /// leave the status slot empty on every default live run, and an empty
+    /// slot reads as "nothing is being filtered" — the false reassurance
+    /// that kept the kernel-dropped PPPoE frames invisible when the
+    /// generated filter was encapsulation-blind. Where the operator DID
+    /// supply an expression the two candidates are the same string: `plan`
+    /// warns about what a supplied filter cannot see and never edits it.
+    ///
+    /// What this value does NOT carry: provenance (the startup log line
+    /// `Auto-generated BPF filter: …` is what says sipnab wrote it), and any
+    /// filter for a capture opened later from inside the TUI — the `O`
+    /// dialog reads its file through `capture::file::open_offline`, which
+    /// compiles no filter at all.
+    pub bpf_filter: String,
+}
+
+impl TuiOptions {
+    /// Build the session's [`App`] and hand it every option in this struct.
+    ///
+    /// The application lives here, as one function over the whole struct,
+    /// because the alternative has already failed once in a way nothing
+    /// could see: `App::bpf_filter` was read by `render_status_line2` from
+    /// the day the status bar was written and no caller ever set it, so the
+    /// "BPF Filter:" slot was blank in every session sipnab ever ran. The
+    /// wiring it was missing sat in an inline block in `run_tui_with_pause`,
+    /// which needs a terminal and so was never covered by a test. Moving it
+    /// into a plain function makes "an option reached the `App`" an
+    /// assertion a snapshot test can make.
+    ///
+    /// # Arguments
+    ///
+    /// * `dialog_store` — shared SIP dialog store, written by the processing
+    ///   thread.
+    /// * `stream_store` — shared RTP stream store, written by the processing
+    ///   thread.
+    ///
+    /// # Returns
+    ///
+    /// The `App` the event loop runs, with theme, keymap, columns, From/To
+    /// mode, protected inputs, BPF status text and name resolution applied.
+    /// The pause flag and the column-config path stay with the caller: they
+    /// are the run's wiring, not presentation resolved from config/CLI.
+    pub fn into_app(
+        self,
+        dialog_store: Arc<RwLock<DialogStore>>,
+        stream_store: Arc<RwLock<StreamStore>>,
+    ) -> App {
+        let mut app = App::new(dialog_store, stream_store, self.theme, self.keymap);
+        if let Some(ref cols) = self.visible_columns {
+            app.call_list.apply_visible_columns(cols);
+        }
+        app.set_from_to_mode(self.from_to_mode);
+        app.set_protected_inputs(self.protected_inputs);
+        app.set_bpf_filter(self.bpf_filter);
+        app.set_resolver(self.name_setup.resolver);
+        app.set_name_mode(self.name_setup.mode);
+        app.set_names_save_path(self.name_setup.save_path);
+        app.set_names_config_path(self.name_setup.config_path);
+        app
+    }
 }
 
 /// A single entry in the file-open browser's directory listing.

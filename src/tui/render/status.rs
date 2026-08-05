@@ -52,6 +52,50 @@ fn line2_used_cols(filter_text: &str, bpf_text: &str) -> usize {
         + display_cols(bpf_text)
 }
 
+/// Fit `bpf` into `cols` rendered columns, marking any cut with `…`.
+///
+/// The BPF slot is the one field on this row that is routinely wider than the
+/// terminal. An operator's own expression is short, but the filter a live
+/// capture runs by default is generated: one portrange arm plus an
+/// encapsulation arm per link-header/tunnel-depth offset, which is well over a
+/// thousand columns. Ratatui would clip that at the right edge and the result
+/// reads as a complete expression that happens to end there — a filter that
+/// says it does less than it does, which is the same lie as the blank slot in
+/// a different shape. The ellipsis says "there is more", and the full text is
+/// on the startup log line the operator can scroll back to or paste.
+///
+/// # Arguments
+/// * `bpf` — the effective filter text.
+/// * `cols` — rendered columns left on the row after the labels and the match
+///   expression.
+///
+/// # Returns
+/// The filter unchanged when it fits; otherwise its leading columns plus `…`,
+/// never wider than `cols`. Zero columns yields the empty string — there is
+/// nowhere to draw, and a marker would push the row wider than the area.
+fn fit_bpf_to_cols(bpf: &str, cols: usize) -> String {
+    if display_cols(bpf) <= cols {
+        return bpf.to_string();
+    }
+    if cols == 0 {
+        return String::new();
+    }
+    // One column is reserved for the marker, so the cut is always visible.
+    let budget = cols - 1;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in bpf.chars() {
+        let w = display_cols(ch.encode_utf8(&mut [0u8; 4]));
+        if used + w > budget {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
 /// Render status line 1 (sngrep-style): `Current Mode: Online (any)    Dialogs: N (N displayed)`
 ///
 /// The mode is colored good/bad for online/offline; a bold `PAUSED`
@@ -134,15 +178,24 @@ pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect
     // text can be multibyte or wide, and byte length would over-count and
     // under-fill the row.
     let filter_text = &app.active_filter_text;
-    let bpf_text = &app.bpf_filter;
-    let used = line2_used_cols(filter_text, bpf_text);
+    // `app.bpf_filter` is the expression this session's capture was compiled
+    // with, so on a live capture it is populated even when the operator typed
+    // nothing — an empty slot here means no filter was compiled, not that
+    // none was asked for. It can be far wider than the row (see
+    // `fit_bpf_to_cols`), so what gets drawn is the fitted text and the fill
+    // is measured from that.
+    let bpf_text = fit_bpf_to_cols(
+        &app.bpf_filter,
+        (area.width as usize).saturating_sub(line2_used_cols(filter_text, "")),
+    );
+    let used = line2_used_cols(filter_text, &bpf_text);
     let trailing_pad = " ".repeat((area.width as usize).saturating_sub(used));
 
     let spans = vec![
         Span::raw(L2_PREFIX),
         Span::styled(filter_text.clone(), yellow),
         Span::raw(L2_MID),
-        Span::styled(bpf_text.clone(), yellow),
+        Span::styled(bpf_text, yellow),
         Span::raw(trailing_pad),
     ];
 
@@ -507,6 +560,51 @@ mod tests {
             line2_used_cols("日本語", "udp"),
             L2_PREFIX.len() + 6 + L2_MID.len() + 3
         );
+    }
+
+    /// A filter that fits the row is left exactly as the capture compiled
+    /// it. The operator pastes this text into `tcpdump`, so a marker on a
+    /// complete expression would send them after traffic that is not missing.
+    #[test]
+    fn a_filter_that_fits_the_row_is_left_verbatim() {
+        assert_eq!(fit_bpf_to_cols("udp port 5060", 40), "udp port 5060");
+        // Exactly filling the row is still a whole expression.
+        assert_eq!(fit_bpf_to_cols("udp port 5060", 13), "udp port 5060");
+        assert_eq!(fit_bpf_to_cols("", 0), "");
+    }
+
+    /// A filter wider than the row is cut with a visible marker rather than
+    /// clipped at the screen edge. The generated live filter is far wider
+    /// than any terminal, and an expression that appears to end where the
+    /// screen ends understates what the kernel is dropping.
+    #[test]
+    fn a_filter_wider_than_the_row_is_cut_with_a_visible_marker() {
+        let long = "portrange 5060-5061 or ((ether proto 0x8100) and (udp))";
+        let fitted = fit_bpf_to_cols(long, 20);
+        assert_eq!(display_cols(&fitted), 20, "cut text overruns the row");
+        assert!(fitted.ends_with('…'), "no cut marker: {fitted:?}");
+        let head = fitted.trim_end_matches('…');
+        assert!(long.starts_with(head), "cut text is not a prefix: {head:?}");
+    }
+
+    /// The cut counts rendered columns, so a wide grapheme cannot push the
+    /// text one column past the row it was measured into.
+    #[test]
+    fn the_cut_counts_columns_so_a_wide_character_cannot_overrun_the_row() {
+        let fitted = fit_bpf_to_cols("日本語です", 5);
+        assert!(
+            display_cols(&fitted) <= 5,
+            "wide text overran the row: {fitted:?}"
+        );
+        assert!(fitted.ends_with('…'), "no cut marker: {fitted:?}");
+    }
+
+    /// With one column left there is still room to say a filter exists.
+    /// Blank is reserved for "no filter was compiled", so it must not be the
+    /// rendering of a filter that had nowhere to go.
+    #[test]
+    fn a_single_free_column_still_marks_that_a_filter_is_in_force() {
+        assert_eq!(fit_bpf_to_cols("udp port 5060", 1), "…");
     }
 
     /// The fill accounting for status line 1 measures the capture-mode

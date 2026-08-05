@@ -915,6 +915,18 @@ pub struct DetailMetrics {
     pub scroll: u16,
     /// Horizontal scroll after clamping (always 0 while wrapping).
     pub hscroll: u16,
+    /// Horizontal headroom this geometry leaves: `max_width - pane width`,
+    /// and `0` when the widest line already fits the pane. Measured
+    /// whether or not wrapping is on — it describes what h-scrolling
+    /// *would* have to work with, so the wrapped frame that precedes a `w`
+    /// press already carries the answer.
+    ///
+    /// Reported back so the *controller* can answer "←/→ can't move this"
+    /// with a reason instead of silence. Only the render knows the pane
+    /// width, so before this existed the controller had no way to tell a
+    /// press that scrolled from a press that was clamped to nothing — and
+    /// the clamped press said nothing at all (#188).
+    pub max_hscroll: u16,
 }
 
 /// Render the message detail panel (right side of the split view).
@@ -1044,6 +1056,9 @@ pub fn render_message_detail(
             max_width,
             scroll: 0,
             hscroll: 0,
+            // A zero-sized pane shows nothing, so nothing can be scrolled
+            // into view — the same "no room to move" the controller reports.
+            max_hscroll: 0,
         };
     }
 
@@ -1063,12 +1078,20 @@ pub fn render_message_detail(
     let viewport = inner.height as usize;
     let max_scroll = total_rows.saturating_sub(viewport);
     let eff_scroll = (scroll_offset as usize).min(max_scroll) as u16;
-    let max_hscroll = if wrap {
+    // Headroom is a property of the content and the pane, not of the wrap
+    // mode, so it is measured even while wrapping: the frame drawn BEFORE
+    // the operator presses `w` is then already able to answer "will ←/→
+    // move anything once wrapping is off?". Measuring it as 0 whenever
+    // wrapping was on made the first press after `w` — the exact sequence
+    // in the field report — decide from a reading that described the
+    // wrapped pane rather than the unwrapped one (#188).
+    let max_hscroll = max_width.saturating_sub(inner.width as usize);
+    // Wrapping has no horizontal offset to apply, however wide the content.
+    let eff_hscroll = if wrap {
         0
     } else {
-        max_width.saturating_sub(inner.width as usize)
+        (hscroll as usize).min(max_hscroll) as u16
     };
-    let eff_hscroll = (hscroll as usize).min(max_hscroll) as u16;
 
     let para = Paragraph::new(display).scroll((eff_scroll, eff_hscroll));
     frame.render_widget(para, inner);
@@ -1087,8 +1110,9 @@ pub fn render_message_detail(
     }
 
     // Horizontal scrollbar on the bottom border when unwrapped lines are
-    // wider than the pane.
-    if max_hscroll > 0 {
+    // wider than the pane. Wrapped lines never overflow horizontally, so
+    // the wrap check is explicit now that `max_hscroll` no longer folds it in.
+    if !wrap && max_hscroll > 0 {
         let mut sb_state = ScrollbarState::new(max_width)
             .viewport_content_length(inner.width as usize)
             .position(eff_hscroll as usize);
@@ -1105,6 +1129,10 @@ pub fn render_message_detail(
         max_width,
         scroll: eff_scroll,
         hscroll: eff_hscroll,
+        // Saturating rather than truncating: a line wider than 65535
+        // columns must still report "there is room to the right", and a
+        // wrapping cast would report the opposite.
+        max_hscroll: u16::try_from(max_hscroll).unwrap_or(u16::MAX),
     }
 }
 

@@ -508,6 +508,44 @@ pub const REFRESHER_MISSING: RuleMeta = RuleMeta {
     section: "9",
 };
 
+/// A `Session-ID` half that is not a `sess-uuid` at all.
+///
+/// The half is unusable, and unusable is expensive here in a way it is not for
+/// most malformed headers: [`crate::sip::session_id`] keeps unparseable halves
+/// out of correlation entirely, so this is the header designed to survive a
+/// B2BUA arriving in a form nothing can match on.
+pub const SESSION_ID_MALFORMED: RuleMeta = RuleMeta {
+    id: "SIP-7989-5-SESSION-ID-MALFORMED",
+    title: "Session-ID half is not 32 hexadecimal characters",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 7989,
+    // §5 ABNF: `sess-uuid = 32(DIGIT / %x61-66)  ;32 chars of [0-9a-f]`. No
+    // RFC 2119 keyword sits beside it and none is needed — the grammar is the
+    // normative statement, the same footing SIP-3261-20.16-CSEQ-MALFORMED
+    // stands on. A value outside the production is not a sess-uuid, so nothing
+    // downstream is entitled to treat it as one.
+    section: "5",
+};
+
+/// A `Session-ID` UUID spelled in uppercase hexadecimal.
+///
+/// Split from [`SESSION_ID_MALFORMED`] because the two ask different things of
+/// the reader. This value is unambiguous and sipnab still correlates on it; the
+/// defect is that a peer comparing the header byte for byte will not.
+pub const SESSION_ID_UPPERCASE: RuleMeta = RuleMeta {
+    id: "SIP-7989-5-SESSION-ID-UPPERCASE",
+    title: "Session-ID UUID in uppercase hexadecimal",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 7989,
+    // §5 says it twice. The ABNF admits `%x61-66` — a to f, lowercase, with no
+    // %x41-46 alternative — and the section's closing sentence is "The UUID
+    // values are presented as strings of lowercase hexadecimal characters,
+    // with the most significant octet of the UUID appearing first."
+    section: "5",
+};
+
 /// An answer sharing no media format with the offer it answers.
 pub const ANSWER_NO_COMMON_FORMAT: RuleMeta = RuleMeta {
     id: "SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT",
@@ -670,6 +708,8 @@ pub const RULES: &[RuleMeta] = &[
     SESSION_EXPIRES_TOO_SMALL,
     MIN_SE_TOO_SMALL,
     REFRESHER_MISSING,
+    SESSION_ID_MALFORMED,
+    SESSION_ID_UPPERCASE,
     ANSWER_NO_COMMON_FORMAT,
     ANSWER_EXTRA_FORMAT,
     ANSWER_DIRECTION_ILLEGAL,
@@ -816,6 +856,23 @@ mod tests {
     fn bracket_rule_cites_the_section_20_preamble() {
         assert_eq!(URI_BRACKETS.rfc, 3261);
         assert_eq!(URI_BRACKETS.section, "20");
+    }
+
+    /// Both `Session-ID` rules cite the section that actually holds the ABNF.
+    ///
+    /// Pinned for the same reason as the bracket rule above. RFC 7989 spends
+    /// Section 4 on how an endpoint constructs and conveys the identifier and
+    /// Section 11 on interworking with RFC 7329, and neither carries the
+    /// grammar. `sess-uuid = 32(DIGIT / %x61-66)` is in Section 5, and a
+    /// finding pointing anywhere else sends the reader to prose that does not
+    /// settle what it claims to settle.
+    #[test]
+    fn the_session_id_rules_cite_the_section_holding_the_abnf() {
+        for rule in [SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE] {
+            assert_eq!(rule.rfc, 7989, "{}", rule.id);
+            assert_eq!(rule.section, "5", "{}", rule.id);
+            assert_eq!(rule.citation(), "RFC 7989 §5", "{}", rule.id);
+        }
     }
 
     /// Severity names round-trip through their parser.

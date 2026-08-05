@@ -1119,7 +1119,7 @@ That example runs against `tests/pcap-samples/sip-488-codec-reject.pcapng`,
 whose first `OPTIONS` ping carries neither a `Max-Forwards` header field nor
 the RFC 3261 branch cookie.
 
-Thirteen of the twenty-nine rules skip on a one-message run, which is why the
+Thirteen of the thirty-one rules skip on a one-message run, which is why the
 response names them. Reach for `lint_dialog` first and use this to confirm one
 message.
 
@@ -1151,7 +1151,7 @@ to the source.
 straight back as a `lint_dialog` `rulesets` value. `scope` says what the rule
 has to read before it can run: `message`, `dialog` or `media`.
 
-An unknown identifier returns invalid_params (-32602) listing all twenty-nine,
+An unknown identifier returns invalid_params (-32602) listing all thirty-one,
 because an empty answer would read as "that rule found nothing".
 
 ### `explain_response_code`

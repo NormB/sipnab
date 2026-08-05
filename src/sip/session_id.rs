@@ -48,6 +48,23 @@
 //! flags the deviation rather than silently normalising it. Whether a vendor
 //! conforms is itself a finding an operator may need; a parser that quietly
 //! repairs the wire destroys the evidence for it.
+//!
+//! # Where the deviations come out
+//!
+//! [`SessionId::deviations`] is not a diagnostic left for someone to read in a
+//! debugger. It is the classifier behind two conformance rules —
+//! [`SIP-7989-5-SESSION-ID-MALFORMED`] and [`SIP-7989-5-SESSION-ID-UPPERCASE`]
+//! in [`crate::sip::lint::message`] — which fire on what it reports and on
+//! nothing else, and which reach an operator through the linter's findings.
+//!
+//! That wiring is the whole value of the detector. Correlation across an SBC
+//! succeeds only when both ends implement RFC 7989 correctly, so when two legs
+//! that plainly belong together do not match, the first question is whether the
+//! identifier they were matched on was well formed. Without the rules, the
+//! answer sat in this module where nothing could ask for it.
+//!
+//! [`SIP-7989-5-SESSION-ID-MALFORMED`]: crate::sip::lint::finding::SESSION_ID_MALFORMED
+//! [`SIP-7989-5-SESSION-ID-UPPERCASE`]: crate::sip::lint::finding::SESSION_ID_UPPERCASE
 
 /// Length of a `sess-uuid` in characters, per the RFC 7989 ABNF.
 const UUID_LEN: usize = 32;

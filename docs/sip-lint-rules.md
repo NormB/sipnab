@@ -169,6 +169,8 @@ These read one message on its own.
 | `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL` | warning | must | [RFC 4028 §4](https://www.rfc-editor.org/rfc/rfc4028#section-4) | `Session-Expires` sits below the 90-second absolute minimum. |
 | `SIP-4028-5-MIN-SE-TOO-SMALL` | warning | must | [RFC 4028 §5](https://www.rfc-editor.org/rfc/rfc4028#section-5) | `Min-SE` sits below 90 seconds, wherever it appears. |
 | `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 §9](https://www.rfc-editor.org/rfc/rfc4028#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. |
+| `SIP-7989-5-SESSION-ID-MALFORMED` | error | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` half is not 32 characters of `[0-9a-f]`, so it is not a `sess-uuid` at all. Correlation drops the half, and across a B2BUA there may be nothing well formed left to match one leg to the other. |
+| `SIP-7989-5-SESSION-ID-UPPERCASE` | warning | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` UUID arrives in uppercase hexadecimal. sipnab compares case-insensitively and still correlates on it; any peer, SBC or log pipeline comparing the header byte for byte sees two identifiers for one session. |
 
 ### What the corpus can and cannot vouch for
 

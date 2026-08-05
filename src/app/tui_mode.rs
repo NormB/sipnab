@@ -39,6 +39,28 @@ fn count_and_check_limit(paused: bool, total_count: &mut u64, max_count: Option<
     matches!(max_count, Some(max) if *total_count >= max)
 }
 
+/// The BPF expression the TUI's status bar reports for this session.
+///
+/// Reads the RESOLVED capture config — the one `bootstrap::plan` finished —
+/// so a live capture that was given no filter reports the encapsulation-aware
+/// expression `plan` generated from `--portrange`, which is the one the kernel
+/// is enforcing. Taking the operator's typed words instead would report
+/// nothing for the default live invocation while packets were being dropped
+/// before sipnab saw them, and the status slot is there to explain exactly
+/// that class of "where did my calls go".
+///
+/// # Arguments
+///
+/// * `capture_config` — the resolved config handed to the capture thread.
+///
+/// # Returns
+///
+/// The effective expression, or an empty string when no filter was compiled
+/// at all (the normal case for `-I` without one).
+fn bpf_status_text(capture_config: &CaptureConfig) -> String {
+    capture_config.bpf_filter.clone().unwrap_or_default()
+}
+
 /// Build the TUI name-resolution setup from CLI flags and config:
 /// construct the resolver (with a reverse-DNS worker when requested), load the
 /// system hosts file plus any operator mapping files, and pick the initial mode.
@@ -200,6 +222,9 @@ pub fn run_tui_mode(
     #[cfg(feature = "metrics")] _metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
+
+    // Read before the capture config moves into the processing thread below.
+    let bpf_filter = bpf_status_text(&capture_config);
 
     let (dialog_store, stream_store) = build_stores(&cli, &config);
 
@@ -456,6 +481,7 @@ pub fn run_tui_mode(
                 &[],
                 cli.recursive,
             ),
+            bpf_filter,
         },
     ) {
         tracing::error!("TUI error: {e}");
@@ -477,12 +503,42 @@ pub fn run_tui_mode(
 /// name-persistence path resolution.
 #[cfg(test)]
 mod tests {
-    use super::{build_stores, count_and_check_limit, names_path_from};
+    use super::{bpf_status_text, build_stores, count_and_check_limit, names_path_from};
+    use crate::capture::CaptureConfig;
     use crate::cli::Cli;
     use crate::config::Config;
     use crate::sip::dialog_store::DialogTracking;
     use clap::Parser as _;
     use std::path::{Path, PathBuf};
+
+    /// The status bar reports the filter the capture is running with, taken
+    /// from the resolved config, so the generated live filter reaches the
+    /// screen exactly as the kernel got it — not a summary of it, which an
+    /// operator would paste into `tcpdump` and get different traffic.
+    #[test]
+    fn the_status_text_is_the_resolved_filter_verbatim() {
+        let generated = crate::app::bootstrap::auto_bpf_filter(5060, 5061, &[]);
+        let config = CaptureConfig {
+            bpf_filter: Some(generated.clone()),
+            ..Default::default()
+        };
+        assert_eq!(bpf_status_text(&config), generated);
+    }
+
+    /// No compiled filter reports an empty string, which is what leaves the
+    /// slot blank. Blank has to mean "nothing was filtered" and nothing else,
+    /// or the one case the slot exists to explain becomes unreadable.
+    #[test]
+    fn no_compiled_filter_reports_an_empty_status_text() {
+        let config = CaptureConfig {
+            bpf_filter: None,
+            ..Default::default()
+        };
+        assert!(
+            bpf_status_text(&config).is_empty(),
+            "a capture with no BPF must not put text in the slot"
+        );
+    }
 
     /// An unpaused packet advances the count and trips the limit on the Nth.
     #[test]

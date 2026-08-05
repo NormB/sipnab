@@ -29,6 +29,12 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) flow_detail_scroll: Option<u16>,
     /// Clamped horizontal scroll of the call-flow detail pane.
     pub(in crate::tui) flow_detail_hscroll: Option<u16>,
+    /// Largest horizontal offset the call-flow detail pane could honour at
+    /// the geometry it just rendered at (`0` = the message fits, so ←/→
+    /// have nowhere to move it). Only the render knows the pane width; the
+    /// controller needs it to explain a press that can't move anything
+    /// instead of leaving it silent (#188).
+    pub(in crate::tui) flow_detail_max_hscroll: Option<u16>,
     /// `(cached_msg_count, cached_rtp_bar_indices, cached_raw_indices)`.
     pub(in crate::tui) flow_caches:
         Option<(usize, std::collections::HashSet<usize>, Vec<Option<usize>>)>,
@@ -389,6 +395,9 @@ pub(in crate::tui) fn render_app(
                     // renderer clamps against the real (wrapped) geometry.
                     fb.flow_detail_scroll = Some(metrics.scroll);
                     fb.flow_detail_hscroll = Some(metrics.hscroll);
+                    // The h-scroll headroom this geometry allows, so the next
+                    // ←/→ press can say why it moved nothing (#188).
+                    fb.flow_detail_max_hscroll = Some(metrics.max_hscroll);
                 }
             }
         }

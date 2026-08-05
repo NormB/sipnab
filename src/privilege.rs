@@ -331,6 +331,27 @@ fn resolve_user(username: &str) -> Result<(u32, u32)> {
 /// correct drop — that one entry is the new egid, which POSIX explicitly allows
 /// an implementation to include in the list.
 ///
+/// # Measured, not merely read
+///
+/// Confirmed on a real macOS host, 2026-08-05, by a probe performing this exact
+/// sequence as root:
+///
+/// ```text
+/// before setgroups:         ngroups=16  egid=0           list=[0 1 2 3 4 5 8 ...]
+/// after setgroups(0,NULL):  ngroups=1   egid=0           list=[0]
+/// after setgid(nobody):     ngroups=1   egid=4294967294  list=[4294967294]
+/// after setuid(nobody):     ngroups=1   egid=4294967294  list=[4294967294]
+/// ```
+///
+/// Two things that reading the source alone would have left as inference. The
+/// second line shows the call writing GID 0 rather than emptying the vector.
+/// The third shows `setgid` CHANGING THE LIST — which is the `cr_gid` aliasing
+/// demonstrated rather than quoted, and the reason reversing these two would
+/// leave the process at egid 0 with an unprivileged uid.
+///
+/// Note also that `nobody` is GID 4294967294 there and 65534 on Linux, so the
+/// tests resolve the account rather than hard-coding either.
+///
 /// # Errors
 ///
 /// Either syscall failing, named individually. Neither is advisory: a process

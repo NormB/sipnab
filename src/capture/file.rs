@@ -495,7 +495,15 @@ fn read_member(
 /// DLT_NULL member among Ethernet ones) while the run still exited 0 with a
 /// confident report. An operator who wants only part of a mixed-link-type set
 /// filtered can select it with `--input-name` and run it separately.
-fn filter_failure(bpf: &str, path: &Path, e: pcap::Error) -> anyhow::Error {
+///
+/// `pub(crate)` for the same reason [`ReadTally`] is: the parallel reader in
+/// [`crate::parallel`] refuses on exactly this condition and must refuse with
+/// exactly this sentence. It used to build its own — `Failed to compile BPF
+/// filter '{bpf}': {e}` — which named the filter and NOT the file, so the one
+/// question an operator has when a forty-file set stops ("which of them?") had
+/// no answer in the error itself. Two constructors are two wordings to keep in
+/// step; one is one.
+pub(crate) fn filter_failure(bpf: &str, path: &Path, e: pcap::Error) -> anyhow::Error {
     anyhow::Error::new(e).context(format!(
         "Failed to compile BPF filter '{bpf}' against '{}'",
         path.display()
