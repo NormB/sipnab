@@ -411,17 +411,18 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 **Read this before using `--dtmf-cleartext`.** DTMF digits keyed after answer are
 PINs, calling-card numbers, account numbers and credit-card numbers with their
 CVVs, and RFC 4733 carries them in the clear no matter how well the signalling
-was protected. So `-t` alone logs everything you diagnose with — that an event
+layer protected the call. So `-t` alone logs everything you diagnose with — that an event
 arrived, its duration, its SSRC, its timestamp — with the digit value replaced by
 `x`:
 
 `DTMF digit='x' duration=200ms ssrc=0xdeadbeef`
 
 `--dtmf-cleartext` adds a second line carrying the value. It is not a display
-setting; it puts a caller's PIN wherever this run's log goes — your terminal, a
+setting. It puts a caller's PIN wherever this run's log goes — your terminal, a
 redirected file, journald, and every aggregator downstream of journald. Turning
-it on takes two deliberate acts, because the cleartext line is emitted at `debug`
-while the masked line stays at `info`: pass the flag **and** raise the level.
+it on takes two deliberate acts, because sipnab writes the cleartext line at
+`debug` while the masked line stays at `info`: pass the flag **and** raise the
+level.
 Either one alone shows you nothing but the mask. Both, in one copyable line:
 
 ```bash

@@ -116,7 +116,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.81 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+   # sipnab 0.5.82 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -1295,7 +1295,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.81",
+  "version": "0.5.82",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,

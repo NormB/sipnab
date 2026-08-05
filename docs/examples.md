@@ -579,7 +579,7 @@ Every registered tool appears, grouped here by what they do. The table in
 `mcp_tool_table_lists_every_registered_tool` in `tests/docs_drift_test.rs`
 asserts it against the registry — the grouping below is a reading aid, not a
 second source of truth. (This list said "all 25 tools" and enumerated 25 until
-2026-08-05, by which point the registry held 31; the six it had never gained
+2026-08-05, by which point the registry held 31. The six it had never gained
 were `capture_health`, `explain_rule`, `find_correlated`, `lint_dialog`,
 `save_findings` and `validate_message`.)
 

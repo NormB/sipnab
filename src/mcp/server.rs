@@ -2201,8 +2201,8 @@ impl SipnabMcp {
         // agent to distrust the analysis too, so the note carries the provenance
         // instead of a marker pair that cannot be placed accurately here.
         Ok(CallToolResult::success(vec![
-            ContentBlock::text(super::shape::untrusted_note()),
             content,
+            ContentBlock::text(super::shape::untrusted_note()),
         ]))
     }
 
@@ -2380,8 +2380,8 @@ impl SipnabMcp {
             v
         };
         Ok(CallToolResult::success(vec![
-            ContentBlock::text(super::shape::untrusted_note()),
             ContentBlock::json(parsed)?,
+            ContentBlock::text(super::shape::untrusted_note()),
         ]))
     }
 
@@ -2438,8 +2438,8 @@ impl SipnabMcp {
             r
         };
         Ok(CallToolResult::success(vec![
-            ContentBlock::text(super::shape::untrusted_note()),
             ContentBlock::text(report),
+            ContentBlock::text(super::shape::untrusted_note()),
         ]))
     }
 
@@ -2599,8 +2599,8 @@ impl SipnabMcp {
             out
         };
         Ok(CallToolResult::success(vec![
-            ContentBlock::text(super::shape::untrusted_note()),
             ContentBlock::json(hits)?,
+            ContentBlock::text(super::shape::untrusted_note()),
         ]))
     }
 

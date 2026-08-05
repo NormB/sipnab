@@ -121,9 +121,9 @@ touching the help failed two assertions in `keybinding_drift_test`.
    [`../design/implementation-plan-phases-8-10.md`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-phases-8-10.md)).
    **(Enforced by [`tests/mcp_tool_descriptions_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/mcp_tool_descriptions_test.rs),
    which fails on any of those four words in a tool description. Corrected
-   2026-08-05: this used to say the rule was unenforced and that `server.rs`
+   2026-08-05: this used to call the rule unenforced and to claim `server.rs`
    cited a `scripts/check-tool-descriptions.sh` that does not exist. Both halves
-   are now wrong — the citation is gone from `server.rs`, and the rule shipped
+   are now wrong — `server.rs` no longer carries the citation, and the rule shipped
    as a Rust test rather than the shell script the plan named. That test also
    carries `the_cited_description_gate_actually_exists`, which fails if the
    dangling citation ever comes back.)**

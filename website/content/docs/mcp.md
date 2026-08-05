@@ -1580,7 +1580,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.81",
+  "version": "0.5.82",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -1976,9 +1976,11 @@ wrapping, so a sender who writes a closing marker into a display name cannot
 step outside the fence. Those code points carry no meaning in SIP, which is what
 makes the rewrite affordable.
 
-**If you write an MCP client:** results from the tools above carry the note as
-the first content block, so `content[0]` is not the payload. Locate the payload
-block rather than indexing position 0.
+**If you write an MCP client:** sipnab appends the note as the LAST content block,
+so `content[0]` is still the payload and existing clients keep working. That
+ordering is deliberate — the note explains the markers, but the markers
+themselves are inline, so placing it after the data costs nothing, and
+putting it first would have broken every client that indexes block 0.
 
 ## stdio invariant
 

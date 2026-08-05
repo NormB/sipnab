@@ -8,6 +8,93 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.82] - 2026-08-05
+
+A pass over things that were declared but not done: a metrics endpoint that
+bound nothing, a flag that claimed to validate, capture text handed to a
+language model unmarked, and four gates that could not fail.
+
+### Security
+
+- **DTMF digits no longer reach the log in cleartext.** Decoded RFC 4733 digits
+  are PINs, calling-card numbers and account numbers. They were written at
+  `info`, so anyone with read access to the log, journald or a shipped
+  aggregate got them. The value is now masked at the decoder, and cleartext
+  needs TWO independent acts — `--dtmf-cleartext` AND raising `SIPNAB_LOG` to
+  debug — so a stale flag in a systemd unit still leaks nothing at the default
+  level. The mask is `x` rather than `*`, because `*` is RFC 4733 event code 10
+  and masking with it would make "the caller pressed star" and "the value is
+  withheld" the same line.
+- **`--stir-shaken` no longer claims to validate.** It read "Validate
+  STIR/SHAKEN identity headers"; sipnab decodes the RFC 8224 PASSporT and never
+  fetches the certificate or checks a signature. On fraud traffic that reads as
+  the exact opposite of the truth. A forged Identity header reports exactly like
+  a genuine one, and the help now says so.
+- **MCP: capture-derived free text is fenced.** sipnab's input is written by
+  whoever sent the packets and its MCP caller is a language model, so a `From`
+  display name reading "ignore previous instructions" arrived in the same
+  channel as sipnab's own words. Free text is now wrapped in
+  `⟦untrusted-capture-data⟧` markers; identifiers stay verbatim so they can be
+  passed back to other tools, and a provenance note explains the split. The
+  fence cannot be forged: its bracket code points are rewritten inside the
+  payload before wrapping.
+- **Every MCP tool declares what it does.** All 31 carry annotations — 26
+  `readOnlyHint`, five writes with `destructiveHint` and `idempotentHint` set
+  explicitly. Previously one tool was annotated and thirty were not, so a host
+  had to treat them all as the worst case or all as harmless.
+- **New gate: the privilege-drop path cannot be silently weakened.** A scan
+  caught `src/privilege.rs` mid-mutation with `PR_SET_DUMPABLE`, the
+  `chdir("/")` after `chroot()`, `drop_supplementary_groups()` and
+  `set_no_new_privs()` all disabled at once. Every one of those still compiles
+  and still passes tests that do not cover it. `scripts/check-privilege-drop.py`
+  reads the source rather than running it, so it also answers when the tree does
+  not build — which is exactly when a half-restored mutation hides behind an
+  unrelated compile error.
+
+### Fixed
+
+- **`--metrics` was a silent no-op headless.** `start_metrics_server` had one
+  call site, in the TUI path, so `sipnab -N --metrics` parsed the address,
+  validated it, refused an unsafe bind — and bound nothing. Every container and
+  systemd unit runs `-N`. Fixing it also removed a hard-zero capture-queue gauge
+  on the newly reachable path, and added a warning for `--cores N`, which still
+  exits before a scrape could land.
+- `check-unwrap.py` failed OPEN: it counted braces with no awareness of string
+  literals, so an unmatched `{` in a string extended a `#[cfg(test)]` exemption
+  over the production code that followed and silently exempted every `unwrap()`
+  there.
+- `--cores` now reports what it read, through the same `ReadTally` the
+  single-threaded path uses, so the two readers cannot drift.
+- Below ~62 columns the TUI call list no longer renders zero-width identity
+  columns.
+- Content-Security-Policy: `script-src-attr 'none'` closes the injected-handler
+  class on the published site.
+
+### Removed
+
+- `VerificationStatus::{Valid, Invalid, NoCert}` — unreachable by construction,
+  since sipnab never fetches the STIR/SHAKEN certificate. The enum is
+  `#[non_exhaustive]`, so a downstream match already carries a wildcard and
+  degrades to an unreachable-pattern warning rather than an error.
+- `tui::run_tui`, `App::filter_dialog_state` and `App::filter_dialog_state_mut`
+  — zero callers. **Library API, technically breaking**, though sipnab is
+  distributed as binaries (.deb, .rpm, tarball, Homebrew) and has never been
+  published to crates.io, so only a git-dependency embedder could be affected.
+
+### Documentation
+
+Ten backlog entries marked open had shipped and four "verified absent" claims
+were false. `CONTRIBUTING.md` told contributors to hand-maintain files that CI
+generates and byte-compares. `contrib/sipnabrc.example` set `buffer = 16` — a
+quarter of the default — under a comment saying "raise". Counts recomputed
+rather than adjusted: 25 → 31 MCP tools, 31 → 30 DSL fields, 12 → 13 features.
+
+### Note for MCP client authors
+
+Tools returning capture-derived data now append a provenance note as an extra
+content block. It is appended LAST, so `content[0]` is still the payload and
+existing clients keep working.
+
 ## [0.5.81] - 2026-08-04
 
 Follow a call across an SBC. Two new MCP tools, two new correlation strategies,
