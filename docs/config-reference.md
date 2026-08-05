@@ -56,6 +56,7 @@ Packet capture defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface |
+| `node_name` | string | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters |
 | `portrange` | string | `"5060-5061"` | SIP **signalling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyse at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes |
 | `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device) |

@@ -134,8 +134,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // process-global `OnceLock` and the first writer wins, so a later call
     // would be silently ignored and answers would carry the hostname while the
     // command line said otherwise.
-    if let Some(name) = cli.node_name.as_deref() {
-        crate::provenance::set_node_name(name);
+    //
+    // CLI first, config second, hostname last — and the ORDER of these two
+    // calls is the precedence, because the first writer wins. Written as a
+    // chain rather than an if/else so adding a third source cannot
+    // accidentally invert it.
+    for candidate in [cli.node_name.as_deref(), config.capture.node_name.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        crate::provenance::set_node_name(candidate);
     }
 
     // Capture source precedence: -I file > -d device > config device >

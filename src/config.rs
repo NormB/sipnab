@@ -47,6 +47,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         "capture",
         [
             "device",
+            "node_name",
             "portrange",
             "snaplen",
             "buffer",
@@ -251,6 +252,12 @@ pub struct SipConfig {
 pub struct CaptureConfig {
     /// Default network interface.
     pub device: Option<String>,
+    /// Name this box reports as, in `capture_identity.node` on every answer.
+    ///
+    /// Defaults to the system hostname. `--node-name` overrides this, so a
+    /// deployed config can name the box while a one-off command relabels it.
+    /// Clipped to 64 characters.
+    pub node_name: Option<String>,
     /// SIP port range.
     pub portrange: Option<String>,
     /// Snapshot length.
@@ -1441,6 +1448,31 @@ filter = "/"
             Some(["X-CID".to_string()].as_slice())
         );
         assert_eq!(config.capture.promisc, Some(false));
+    }
+
+    /// The config key is READ, not merely accepted. A key that parses and is
+    /// then ignored is the defect this tree has hunted repeatedly.
+    #[test]
+    fn the_capture_node_name_key_is_parsed() {
+        let toml_str = "[capture]\nnode_name = \"sbc-edge-1\"\n";
+        let config: Config = toml::from_str(toml_str).expect("parses");
+        assert_eq!(config.capture.node_name.as_deref(), Some("sbc-edge-1"));
+    }
+
+    /// An unknown key under [capture] is still rejected — adding node_name to
+    /// the registry must not have opened the section up.
+    #[test]
+    fn an_unknown_capture_key_is_still_refused() {
+        let toml_str = "[capture]\nnode_nam = \"typo\"\n";
+        let parsed: Result<Config, _> = toml::from_str(toml_str);
+        // Whether it errors or is caught by the key registry, a typo must not
+        // silently become a working config.
+        if let Ok(c) = parsed {
+            assert!(
+                c.capture.node_name.is_none(),
+                "a misspelled key must not set the node name"
+            );
+        }
     }
 
     /// With `[sip]` now a known section, a typo inside it must still be flagged
