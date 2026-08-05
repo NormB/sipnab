@@ -174,8 +174,28 @@ pub fn ladder_split_width(
     required_gap: usize,
     detail_pct: u16,
     total: u16,
+    user_set: bool,
 ) -> u16 {
     let default_ladder = total.saturating_mul(100u16.saturating_sub(detail_pct)) / 100;
+    // An explicit resize beats the automatic label fit. Until the operator moves
+    // the split, widening a multi-participant ladder so its arrow labels fit is
+    // the better default — a ladder reading `INVIT` is harder to use than a
+    // narrow detail pane. The moment they press the key, that stops being a
+    // helpful default and becomes the tool overruling them.
+    //
+    // This is the whole of #184. The widening below has no `detail_pct` term in
+    // it, so wherever it bound, every press moved the percentage and the status
+    // line while the rendered boundary stayed exactly where it was. At the
+    // shipped 88-column demo geometry the default 40% started INSIDE that
+    // region, so ← was dead for all eight presses out of the box. The key
+    // registered. Nothing moved. Nothing said why.
+    //
+    // `detail_pct` is already clamped to 10..=80 by its callers, so honouring it
+    // verbatim still leaves both panes at least a tenth of the width; it cannot
+    // produce the zero-width pane of #151.
+    if user_set {
+        return default_ladder;
+    }
     if n_participants <= 2 {
         return default_ladder;
     }
@@ -284,8 +304,8 @@ mod ladder_split_tests {
     fn two_party_call_keeps_the_configured_split() {
         // The common case must be untouched: 60/40 at 100 cols -> 60,
         // regardless of how demanding the labels are.
-        assert_eq!(ladder_split_width(2, 27, 40, 100), 60);
-        assert_eq!(ladder_split_width(1, 27, 40, 100), 60);
+        assert_eq!(ladder_split_width(2, 27, 40, 100, false), 60);
+        assert_eq!(ladder_split_width(1, 27, 40, 100, false), 60);
     }
 
     /// 3-5 leg ladders widen so a 9-char method still fits every gap.
@@ -295,7 +315,7 @@ mod ladder_split_tests {
         // 4-5 B2BUA legs, the default 60% split gives gaps < 14 (truncation);
         // the widened ladder must restore a method-fitting gap.
         for n in 3..=5usize {
-            let w = ladder_split_width(n, arrow_gap_for_label(9, 1), 40, 98);
+            let w = ladder_split_width(n, arrow_gap_for_label(9, 1), 40, 98, false);
             assert!(
                 min_gap(w, n) >= 14,
                 "n={n}: ladder {w} gives gap {} (< 14, SUBSCRIBE truncates)",
@@ -313,7 +333,7 @@ mod ladder_split_tests {
     fn demo_geometry_fits_the_retx_fold_label() {
         let req = arrow_gap_for_label("INVITE (SDP) (+1 retx)".len(), 1);
         assert_eq!(req, 27);
-        let w = ladder_split_width(3, req, 40, 98);
+        let w = ladder_split_width(3, req, 40, 98, false);
         assert!(
             min_gap(w, 3) >= 27,
             "ladder {w} gives gap {} (< 27, the retx fold label truncates)",
@@ -322,13 +342,64 @@ mod ladder_split_tests {
         assert!(98 - w >= 24, "detail pane starved: {} left", 98 - w);
     }
 
+    /// Every settable step of the split changes the rendered width.
+    ///
+    /// This is the property #184 was missing. Every other test here asserts on
+    /// `raw_preview_pct` — the PREDICATE — and none on the width the layout
+    /// actually receives, so a `ladder_split_width` returning a constant passed
+    /// all of them. The user-visible symptom was exactly that: the key
+    /// registered, the status line ticked to a new percentage, and the boundary
+    /// did not move a column.
+    ///
+    /// Swept over participant counts, label demands and widths rather than one
+    /// fixture, because the plateau's position depends on all three — which is
+    /// why the operator could not state the trigger.
+    #[test]
+    fn once_the_operator_sets_the_split_every_step_moves_the_boundary() {
+        for n in 1..=6usize {
+            for gap in [11usize, 17, 27, 40] {
+                for total in [80u16, 88, 100, 120, 200] {
+                    let mut prev = ladder_split_width(n, gap, 10, total, true);
+                    for pct in (15..=80).step_by(5) {
+                        let w = ladder_split_width(n, gap, pct as u16, total, true);
+                        assert!(
+                            w != prev,
+                            "n={n} gap={gap} total={total}: {pct}% renders the same \
+                             {w}-column ladder as the step before it, so that press \
+                             moves the percentage and nothing else"
+                        );
+                        prev = w;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Until the operator touches it, the label fit still wins.
+    ///
+    /// The other half of the decision: a multi-participant ladder opens wide
+    /// enough to read, because one showing `INVIT` is worse than a narrow detail
+    /// pane. Only an explicit press gives that up.
+    #[test]
+    fn the_untouched_split_still_widens_to_fit_arrow_labels() {
+        let gap = arrow_gap_for_label(12, 0);
+        let auto = ladder_split_width(4, gap, 40, 88, false);
+        let honoured = ladder_split_width(4, gap, 40, 88, true);
+        assert!(
+            auto > honoured,
+            "with four participants an untouched ladder should widen past the 40% \
+             split to fit its labels (auto={auto}, honoured={honoured}); equal \
+             means the label fit stopped doing anything"
+        );
+    }
+
     /// An oversized label demand is capped so the detail pane keeps its floor.
     #[test]
     fn pathological_label_demand_is_bounded() {
         // OpenSIPS' 42-char reason phrase must not eat the detail pane:
         // the gap demand is capped and the label truncates instead.
         let req = arrow_gap_for_label(42, 1);
-        let w = ladder_split_width(3, req, 40, 98);
+        let w = ladder_split_width(3, req, 40, 98, false);
         assert!(98 - w >= 24, "detail pane starved: {} left", 98 - w);
     }
 
@@ -356,7 +427,7 @@ mod ladder_split_tests {
         // sub-floor total saturates to 0 then `.max(default_ladder)` -> 12.
         // The result is exactly 12: not 0 (the underflow the `.max` guards
         // against) and not an over-wide pane.
-        let w = ladder_split_width(3, 27, 40, 20);
+        let w = ladder_split_width(3, 27, 40, 20, false);
         assert_eq!(w, 12, "sub-floor total must fall back to the default split");
     }
 
@@ -366,7 +437,7 @@ mod ladder_split_tests {
         // Even a 6-leg ladder with demanding labels must leave the detail
         // pane usable width.
         let total = 98;
-        let w = ladder_split_width(6, 28, 40, total);
+        let w = ladder_split_width(6, 28, 40, total, false);
         assert!(total - w >= 24, "detail pane starved: {} left", total - w);
     }
 }

@@ -536,6 +536,18 @@ pub(in crate::tui) struct CallFlowViewState {
     pub(in crate::tui) raw_preview: bool,
     /// Split percentage for the raw preview (right) pane (10..=80, default 40).
     pub(in crate::tui) raw_preview_pct: u16,
+    /// Whether the operator has moved the split themselves.
+    ///
+    /// Until they do, a multi-participant ladder may widen past
+    /// [`Self::raw_preview_pct`] so its arrow labels fit — a good default,
+    /// because an unread ladder with truncated labels is harder to use than a
+    /// narrow detail pane. Once they press the resize key, the percentage is
+    /// honoured verbatim and labels truncate instead.
+    ///
+    /// Without this flag the widening had no off switch, so ←/→ moved the
+    /// percentage while the rendered boundary stayed put: the key registered,
+    /// the status line updated, and nothing moved (#184).
+    pub(in crate::tui) raw_preview_pct_user_set: bool,
     /// Whether extended (multi-leg) flow is active.
     pub(in crate::tui) extended: bool,
     /// Call-IDs of the checkbox-selected dialogs this flow merges, in
@@ -582,6 +594,7 @@ impl Default for CallFlowViewState {
             detail_focused: false,
             raw_preview: true,
             raw_preview_pct: 40,
+            raw_preview_pct_user_set: false,
             extended: false,
             merged_calls: Vec::new(),
             transaction_filter: None,

@@ -225,6 +225,7 @@ pub(in crate::tui) fn render_app(
                         required_gap,
                         app.flow.raw_preview_pct,
                         main_area.width,
+                        app.flow.raw_preview_pct_user_set,
                     );
                     let [left, right] =
                         Layout::horizontal([Constraint::Length(ladder_w), Constraint::Min(0)])
