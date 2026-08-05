@@ -478,12 +478,61 @@ fn child_drops_to_nobody_and_cannot_climb_back() {
     );
     assert_eq!((gid, egid), (want_gid, want_gid), "and both group ids");
 
+    // The property is "no group of the INVOKING user survived", not "the list is
+    // empty" — and those are not the same statement across platforms.
+    //
+    // POSIX leaves it IMPLEMENTATION-DEFINED whether getgroups() reports the
+    // effective GID alongside the supplementary list. Linux omits it, so a
+    // cleared list reads 0. The BSDs, macOS among them, include it, so a cleared
+    // list reads 1 and that single entry IS the new egid. Asserting the count
+    // therefore measured the platform rather than the drop: it failed on macOS
+    // for a process that had in fact given up every supplementary group, while
+    // saying "supplementary groups survived" — a confident wrong answer of
+    // exactly the kind this suite exists to prevent.
+    //
+    // Requiring every entry to equal the target gid states the security property
+    // directly and holds on both. It is not vacuous on either: on Linux the list
+    // is empty and any survivor shows up as a foreign entry; on macOS the list
+    // holds exactly the egid and any survivor shows up beside it. A retained
+    // `admin` or `wheel` membership — the case actually worth catching, because
+    // it is a route back to root that a uid of `nobody` conceals — fails here on
+    // both platforms.
+    //
+    // The old assertion reported only a count, which is why its CI failure could
+    // not distinguish "the egid, as the BSDs report it" from "a surviving admin
+    // membership". This one names the offending gids.
+    //
     // SAFETY: getgroups(0, NULL) asks only for the count and writes nothing.
     let ngroups = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
-    assert_eq!(
-        ngroups, 0,
-        "supplementary groups survived the drop — the process is still in every \
-         group the invoking user was, whatever its uid now says"
+    assert!(
+        ngroups >= 0,
+        "getgroups(0, NULL) failed: {}",
+        std::io::Error::last_os_error()
+    );
+    let mut groups = vec![0 as libc::gid_t; ngroups as usize];
+    if ngroups > 0 {
+        // SAFETY: the buffer and its length are passed together, and the length
+        // is the count the call above just reported, so getgroups cannot write
+        // past the end.
+        let got = unsafe { libc::getgroups(ngroups, groups.as_mut_ptr()) };
+        assert!(
+            got >= 0,
+            "getgroups failed: {}",
+            std::io::Error::last_os_error()
+        );
+        groups.truncate(got as usize);
+    }
+    let survivors: Vec<libc::gid_t> = groups
+        .iter()
+        .copied()
+        .filter(|g| *g != want_gid as libc::gid_t)
+        .collect();
+    assert!(
+        survivors.is_empty(),
+        "supplementary groups survived the drop: {survivors:?}. The process is \
+         still in {} group(s) other than its new primary {want_gid}, so a uid \
+         reading `nobody` still carries everything those groups can reach.",
+        survivors.len()
     );
 
     // SAFETY: setuid/setgid are expected to be refused here; the return value
