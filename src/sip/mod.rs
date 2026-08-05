@@ -35,24 +35,6 @@ pub use parser::parse_sip;
 pub use response_codes::explain_response_code;
 pub use sdp::{SdpConnection, SdpCrypto, SdpDirection, SdpMedia, SdpSession, parse_sdp};
 
-/// Known SIP request methods for quick first-line detection.
-const SIP_METHODS: &[&[u8]] = &[
-    b"INVITE",
-    b"ACK",
-    b"BYE",
-    b"CANCEL",
-    b"REGISTER",
-    b"OPTIONS",
-    b"PRACK",
-    b"SUBSCRIBE",
-    b"NOTIFY",
-    b"PUBLISH",
-    b"INFO",
-    b"REFER",
-    b"MESSAGE",
-    b"UPDATE",
-];
-
 /// Quick check whether `data` looks like the start of a SIP message.
 ///
 /// # Arguments
@@ -66,38 +48,61 @@ const SIP_METHODS: &[&[u8]] = &[
 /// or a SIP request line (`METHOD SP ... SIP/2.0`). Only inspects the first
 /// line — does **not** validate the entire message. Inputs shorter than
 /// 8 bytes always return `false`.
+///
+/// # One sniffer, not two
+///
+/// This delegates to [`parser::starts_sip_message`] rather than carrying its
+/// own copy. It used to walk a FIXED method table, so a request whose method
+/// was not in that list — every extension method, and the ones RFCs keep
+/// adding — was not SIP as far as this function was concerned, while the
+/// parser accepted it. Callers on the TCP framing path, the WASM entry point
+/// and the HEP and TLS paths therefore classified traffic by a narrower rule
+/// than the one that would later parse it, and dropping extension methods
+/// wholesale is the defect #84 already found elsewhere.
+///
+/// The measured effect on the local corpus is ZERO additional messages: that
+/// traffic uses no method outside the old table. This is consistency, not a
+/// recovered loss, and must not be described as one — the value is that a
+/// method added to the parser cannot leave a second sniffer behind (#95).
 pub fn is_sip_message(data: &[u8]) -> bool {
-    if data.len() < 8 {
-        return false;
-    }
-
-    // Response: starts with "SIP/2.0 "
-    if data.starts_with(b"SIP/2.0 ") {
-        return true;
-    }
-
-    // Request: starts with a known method followed by SP
-    for method in SIP_METHODS {
-        if data.len() > method.len() && data.starts_with(method) && data[method.len()] == b' ' {
-            // Verify the SP-anchored " SIP/2.0" version token ends the first
-            // line — anchoring on the leading SP rejects a glued `...ASIP/2.0`.
-            if let Some(line_end) = parser::find_crlf(data) {
-                let first_line = &data[..line_end];
-                if first_line.ends_with(b" SIP/2.0") {
-                    return true;
-                }
-            }
-            return false;
-        }
-    }
-
-    false
+    parser::starts_sip_message(data)
 }
 
 /// Tests for the `is_sip_message` first-line sniffer.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An extension method is SIP here too, because this is now the same
+    /// sniffer the parser uses (#95).
+    ///
+    /// The old fixed method table said no to anything it had not been told
+    /// about, so the TCP framing path, the WASM entry point and the HEP and
+    /// TLS paths classified traffic by a narrower rule than the one that would
+    /// later parse it. Zero additional messages on the local corpus — this
+    /// pins the CONSISTENCY, not a recovered loss.
+    #[test]
+    fn an_extension_method_is_sip_to_both_sniffers() {
+        // SERVICE: a real SIP method, and one the old fourteen-entry table
+        // did not list. (PUBLISH would NOT demonstrate anything — it was in
+        // that table.)
+        let raw = b"SERVICE sip:presentity@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h\r\n\r\n";
+        assert!(
+            is_sip_message(raw),
+            "an extension method must be SIP to the sniffer the framing paths use"
+        );
+        assert_eq!(
+            is_sip_message(raw),
+            parser::starts_sip_message(raw),
+            "the two must never disagree: one classifies, the other parses"
+        );
+
+        // And the rejections still hold — delegation must not have widened it
+        // into accepting binary media. RTP opens 0x80.
+        let rtp = [0x80u8, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(!is_sip_message(&rtp), "RTP must not sniff as SIP");
+        assert_eq!(is_sip_message(&rtp), parser::starts_sip_message(&rtp));
+    }
 
     /// An INVITE request line is detected as SIP.
     #[test]
