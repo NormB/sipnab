@@ -19,56 +19,82 @@ capture thread(s)              │                          │
         │ Packet               │                          │
         ▼                      │                          │
   capture::channel  ────► processing thread ──────► TUI event loop (main thread)
-  (capped channel)        (TUI mode: pipeline::         │ crossterm events, render
-                           process_packet;              │
-                           batch mode: main.rs loop     ├── server runtime thread
-                           on the main thread)          │     one shared current-thread
-                                                        │     tokio runtime hosting every
-                                                        │     enabled async server as a
-                                                        │     task: api (axum), mcp (rmcp),
-                                                        │     mcp-http (src/app/servers.rs)
-                                                        ├── metrics-server thread
-                                                        │     raw std::net::TcpListener
-                                                        │     accept loop + one short-lived
-                                                        │     metrics-conn thread per scrape
-                                                        ├── DNS resolver thread (names)
-                                                        │     std::mpsc queue
-                                                        └── scanner-kill worker
-                                                              (process_isolation, bounded
-                                                               crossbeam channel)
+  (capped channel)        (TUI mode: pipeline::            crossterm events, render
+                           process_packet;                 TUI MODE ONLY
+                           batch mode: main.rs loop
+                           on the main thread)
+
+  auxiliary threads, by the RUN MODE that starts each — none of them is a
+  child of the TUI event loop:
+
+  both modes
+    ├── server runtime thread          app::servers::start_servers
+    │     one shared current-thread tokio runtime hosting every enabled
+    │     async server as a task: api (axum), mcp (rmcp), mcp-http
+    ├── metrics-server thread          app::servers::start_servers
+    │     raw std::net::TcpListener accept loop + one short-lived
+    │     metrics-conn thread per scrape
+    └── DNS resolver thread            app::build_resolver
+          std::mpsc queue; spawned only when reverse DNS is enabled
+
+  batch mode only
+    └── scanner-kill worker            process_isolation::spawn_scanner_kill_worker
+          bounded crossbeam channel; --kill-scanner has no TUI path
 ```
+
+The mode column above is the part to keep true, and it is worth saying why.
+An earlier revision of this diagram drew all four auxiliary threads as
+children of the TUI event loop. Not one of them is: both run modes start three
+of them, and batch alone starts the scanner-kill worker. That is not a cosmetic
+error — `--metrics` really did ship wired to the TUI path alone, so every
+headless `-N` deployment (which is every container and systemd unit) got no
+metrics at all, and this page said nothing that would have contradicted it.
+A diagram that groups threads by *who spawns them* rather than by *which mode
+runs them* reads as reassurance and hides exactly that class of defect.
+
+The three spawn sites, none of which is the TUI event loop:
+[`start_servers()`](../../src/app/servers.rs) for the server runtime and the
+metrics listener, [`build_resolver()`](../../src/app/mod.rs) for the reverse-DNS
+worker, and
+[`spawn_scanner_kill_worker()`](../../src/process_isolation.rs) for the
+kill worker.
 
 The Prometheus listener is **not** a task on the shared tokio runtime, and the
 distinction matters when reasoning about blocking: it is a raw
 [`TcpListener`](../../src/output/prometheus_server.rs) accept loop on its own
 thread, deliberately independent of tokio and axum so metrics stay scrapable
 when the async servers are not compiled in at all. Each accepted scrape runs
- by a short-lived `metrics-conn` thread, and a `ConnGate` bounds those
+on a short-lived `metrics-conn` thread, and a `ConnGate` bounds those
 to 16 in flight — beyond that new connections get an immediate `503` rather
-than a thread (SN-02, CWE-770). It starts from
-[`start_metrics_server()`](../../src/output/prometheus_server.rs).
+than a thread (SN-02, CWE-770).
+[`start_metrics_server()`](../../src/output/prometheus_server.rs) spawns the
+thread itself, and `start_servers` calls it for both run modes.
 
 ## Named threads
 
 Every long-lived thread and its spawn site. A name in a backtrace maps
 straight back to a row here.
 
-| Thread name | Spawned by | Role |
-|---|---|---|
-| `capture-<device>` | [`capture/native.rs`](../../src/capture/native.rs) | One per live device: pcap loop producing `Packet`s. |
-| `capture-file` | [`capture/native.rs`](../../src/capture/native.rs) | Offline pcap reader feeding the same channel as live capture. |
-| `capture-hep` | [`capture/native.rs`](../../src/capture/native.rs) | HEP/EEP UDP receiver; packets carry asserted addresses and carry a flag HEP-origin. |
-| `capture-multi` | [`capture/native.rs`](../../src/capture/native.rs) | Supervisor for a multi-device capture set. |
-| `tui-processor` | [`app/tui_mode.rs`](../../src/app/tui_mode.rs) | The single store writer in TUI mode: drains the channel and runs the pipeline. |
-| (unnamed workers) | [`parallel.rs`](../../src/parallel.rs) | `--cores N` reconstruction workers, spawned with bare `thread::spawn` — they own thread-local stores, so they show as unnamed in a backtrace. |
-| `servers` | [`app/servers.rs`](../../src/app/servers.rs) | One current-thread tokio runtime hosting api, mcp and mcp-http as `JoinSet` tasks. |
-| `metrics-server` | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | Raw TCP accept loop for Prometheus scrapes. |
-| `metrics-conn` | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | One short-lived thread per accepted scrape, capped at 16 concurrent. |
-| `sipnab-dns` | [`names.rs`](../../src/names.rs) | Reverse-DNS resolver draining an `std::sync::mpsc` queue so the render path never blocks on a lookup. |
-| `scanner-kill` | [`process_isolation.rs`](../../src/process_isolation.rs) | Isolated worker that transmits kill responses; the only thread allowed to send. |
-| `pcap-load` | [`tui/controllers/file_open.rs`](../../src/tui/controllers/file_open.rs) | Loads a pcap chosen from inside the TUI, writing the live stores. |
-| `clipboard` | [`tui/clipboard.rs`](../../src/tui/clipboard.rs) | Holds the X11/Wayland selection alive after a copy without stalling the UI. |
-| `crash-probe` | [`crash.rs`](../../src/crash.rs) | Startup probe that classifies the crash-report directory before writing any report. |
+**Modes** is the column to trust when asking "does this run headless?" — the
+question `--metrics` got wrong. `both` means the thread exists under `-N` as
+well as in the TUI. `TUI` and `batch` mean it does not.
+
+| Thread name | Modes | Spawned by | Role |
+|---|---|---|---|
+| `capture-<device>` | both | [`capture/native.rs`](../../src/capture/native.rs) | One per live device: pcap loop producing `Packet`s. |
+| `capture-file` | both | [`capture/native.rs`](../../src/capture/native.rs) | Offline pcap reader feeding the same channel as live capture. |
+| `capture-hep` | both | [`capture/native.rs`](../../src/capture/native.rs) | HEP/EEP UDP receiver; packets carry asserted addresses and carry a flag HEP-origin. |
+| `capture-multi` | both | [`capture/native.rs`](../../src/capture/native.rs) | Supervisor for a multi-device capture set. |
+| `tui-processor` | TUI | [`app/tui_mode.rs`](../../src/app/tui_mode.rs) | The single store writer in TUI mode: drains the channel and runs the pipeline. |
+| (unnamed workers) | batch | [`parallel.rs`](../../src/parallel.rs) | `--cores N` reconstruction workers, spawned with bare `thread::spawn` — they own thread-local stores, so they show as unnamed in a backtrace. |
+| `servers` | both | [`app/servers.rs`](../../src/app/servers.rs) | One current-thread tokio runtime hosting api, mcp and mcp-http as `JoinSet` tasks. |
+| `metrics-server` | both | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | Raw TCP accept loop for Prometheus scrapes. |
+| `metrics-conn` | both | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | One short-lived thread per accepted scrape, capped at 16 concurrent. |
+| `sipnab-dns` | both | [`names.rs`](../../src/names.rs) | Reverse-DNS resolver draining an `std::sync::mpsc` queue so the render path never blocks on a lookup. Starts only when the run turns reverse DNS on. |
+| `scanner-kill` | batch | [`process_isolation.rs`](../../src/process_isolation.rs) | Isolated worker that transmits kill responses; the only thread allowed to send. `--kill-scanner` has no TUI path. |
+| `pcap-load` | TUI | [`tui/controllers/file_open.rs`](../../src/tui/controllers/file_open.rs) | Loads a pcap chosen from inside the TUI, writing the live stores. |
+| `clipboard` | TUI | [`tui/clipboard.rs`](../../src/tui/clipboard.rs) | Holds the X11/Wayland selection alive after a copy without stalling the UI. |
+| `crash-probe` | tests | [`crash.rs`](../../src/crash.rs) | **Not a production thread.** Only `mod tests` spawns this name, to prove the panic hook records a thread name. It appears in no shipped backtrace. This row exists so the next reader who greps the name does not re-add it as one. |
 
 ## How the capture thread ends
 

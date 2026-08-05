@@ -326,9 +326,14 @@ fn linked_code_targets_exist() {
     // that one page.
     // Raised 294 -> 295 by the domain primer's link to `session_id.rs`, added
     // with the four-strategy correlation table. One link, one page.
+    // Raised 295 -> 298 by naming the three spawn sites in internals/threading.md
+    // (`start_servers`, `build_resolver`, `spawn_scanner_kill_worker`). The page
+    // had drawn all four auxiliary threads as children of the TUI event loop,
+    // which is where `--metrics` being TUI-only hid in plain sight; citing who
+    // actually spawns each is the correction. Three links, one page.
     assert_eq!(
-        seen, 295,
-        "code-link extraction found {seen} links, expected 295. More links is \
+        seen, 298,
+        "code-link extraction found {seen} links, expected 298. More links is \
          fine — bump this. FEWER means the extractor stopped matching, and \
          every assertion below it silently narrowed."
     );
@@ -423,9 +428,13 @@ fn linked_symbols_resolve_to_a_definition() {
     // four of its code links carry a `()` symbol claim
     // (`DeferredEffects::drain`, `EventExecEngine::dispatch_pending`,
     // `TumblingWindow::allows_with_reserved`, `process_parsed_packet`).
+    // Raised 62 -> 65 by internals/threading.md naming the three spawn sites of
+    // its auxiliary threads (`start_servers`, `build_resolver`,
+    // `spawn_scanner_kill_worker`), so the page states who starts each thread
+    // instead of implying the TUI event loop starts all of them.
     assert_eq!(
-        seen, 62,
-        "symbol extraction found {seen} claims, expected 62. Bump when the \
+        seen, 65,
+        "symbol extraction found {seen} claims, expected 65. Bump when the \
          developer docs cite more symbols; a drop means the `()`-suffix pattern \
          stopped matching and unresolvable symbols pass unseen."
     );
