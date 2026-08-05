@@ -1263,6 +1263,52 @@ fn format_from_to(
 /// list-state navigation, and column-visibility round-trips.
 #[cfg(test)]
 mod tests {
+    /// No width ever produces a ZERO-WIDTH column (#151).
+    ///
+    /// At 60-61 columns the fixed columns plus overhead consumed everything, so
+    /// From, To, Source and Destination all resolved to `Length(0)`. They still
+    /// cost their `column_spacing`, so about four cells went on invisible
+    /// columns and the caller/callee identity vanished with nothing to say it
+    /// had. A column that is present and zero wide is the display equivalent of
+    /// a count that is present and zero: it reads as an answer.
+    ///
+    /// `None` drops the column outright — the row loses the header AND reclaims
+    /// the spacing — which is why the constraint list is `Option<Constraint>`.
+    /// This sweeps every width a terminal can plausibly be, because the defect
+    /// lived in a narrow band nobody had modelled rather than at an obvious
+    /// boundary.
+    #[test]
+    fn no_terminal_width_produces_a_zero_width_column() {
+        for w in 0u16..=400 {
+            for (i, c) in super::compute_column_widths(w).iter().enumerate() {
+                if let Some(ratatui::layout::Constraint::Length(n)) = c {
+                    assert_ne!(
+                        *n, 0,
+                        "column {i} is present and zero cells wide at {w} cols -- \
+                         drop it (None) instead, so the row reclaims its spacing \
+                         and the header does not imply a value that is not there"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The identity columns come back once the width can pay for them, so the
+    /// rule above is not satisfied by simply never showing them.
+    #[test]
+    fn a_wide_terminal_still_shows_from_and_to() {
+        let wide = super::compute_column_widths(120);
+        assert!(
+            wide[2].is_some() && wide[3].is_some(),
+            "From and To must be present at 120 columns: {wide:?}"
+        );
+        let narrow = super::compute_column_widths(60);
+        assert!(
+            narrow[2].is_none() && narrow[3].is_none(),
+            "From and To must be DROPPED at 60 columns, not rendered empty: {narrow:?}"
+        );
+    }
+
     use super::*;
 
     /// Regression: below 120 cols the Method column was `Length(8)`, which
