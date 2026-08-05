@@ -825,6 +825,43 @@ pub struct ExplainRuleParams {
     pub rule_id: String,
 }
 
+/// Attach each finding's frame pointer, so a lint result can be checked
+/// against the bytes that provoked it (#128).
+///
+/// A finding names a rule, a citation and a message INDEX. An index is only
+/// meaningful next to the message list it indexes, which the caller may not
+/// have and which changes as compaction runs — so on its own it is not
+/// something a reviewer can follow. `frame_ref` is, and `show_evidence` turns
+/// it back into the offending frame.
+///
+/// The key is OMITTED when the message carries no pointer, never emitted
+/// empty. `"frame_ref": ""` and `"frame_ref": "x#0"` both read as a real
+/// pointer, and a finding citing frame 0 of nothing is the manufactured
+/// confidence this mechanism exists to prevent. A reader can distinguish
+/// "this finding is unciteable" from "this finding cites frame 0" only if the
+/// unciteable case says nothing at all.
+fn findings_with_refs(
+    findings: &[crate::sip::lint::Finding],
+    messages: &[crate::sip::SipMessage],
+) -> Vec<serde_json::Value> {
+    findings
+        .iter()
+        .map(|f| {
+            let mut v = serde_json::to_value(f).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(obj) = v.as_object_mut()
+                && let Some(reference) =
+                    messages.get(f.message_index).and_then(|m| m.frame.as_ref())
+            {
+                obj.insert(
+                    "frame_ref".to_string(),
+                    serde_json::Value::String(reference.to_string()),
+                );
+            }
+            v
+        })
+        .collect()
+}
+
 /// Parameters for `show_evidence`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -3545,7 +3582,7 @@ impl SipnabMcp {
                 "rtp_streams_observed": stream_count,
                 "finding_count": findings.len(),
                 "severity_counts": severity_counts(&findings),
-                "findings": findings,
+                "findings": findings_with_refs(&findings, &dialog.messages),
                 "suppressions": suppression_json(suppressions.as_ref(), withheld),
                 "findings_withheld": withheld_json(withheld),
                 "rules_not_evaluated": skipped_rules(LintRun::WholeDialog {
@@ -4871,6 +4908,84 @@ mod tests {
             "the file outside the root must be untouched"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A lint finding cites the frame it was drawn from, and stays silent when
+    /// it cannot.
+    ///
+    /// A finding names a rule and a message INDEX. The index means nothing
+    /// without the message list it indexes — which a reviewer may not have, and
+    /// which compaction reshuffles — so on its own a finding is an assertion
+    /// again. `frame_ref` makes it checkable through `show_evidence`.
+    ///
+    /// The second half matters more than the first: a message with no pointer
+    /// must produce NO key. `""` and `"x#0"` both read as a real pointer, and a
+    /// finding citing frame 0 of nothing manufactures the confidence the whole
+    /// mechanism exists to prevent.
+    #[test]
+    fn a_finding_cites_its_frame_or_says_nothing() {
+        use crate::capture::packet::{FrameOrigin, FrameRef};
+
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKcite",
+                "From: Alice <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: cite@test",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let ts = chrono::Utc::now();
+        let mut msg = parse_at(&raw, ts);
+        msg.frame = Some(FrameRef {
+            source: "calls.pcap".into(),
+            origin: FrameOrigin {
+                ordinal: 41,
+                digest: Some(0x6d1f_4c0a_9b2e_7a53),
+            },
+        });
+        let mut unciteable = parse_at(&raw, ts);
+        unciteable.frame = None;
+        let messages = vec![msg, unciteable];
+
+        let finding = |idx: usize| crate::sip::lint::Finding {
+            rule_id: "SIP-3261-8.1.1-MANDATORY-HEADER-MISSING",
+            severity: crate::sip::lint::Severity::Error,
+            basis: crate::sip::lint::Basis::Must,
+            rfc: 3261,
+            section: "8.1.1",
+            message_index: idx,
+            observed: "o".to_string(),
+            expected: "e".to_string(),
+            explanation: "x".to_string(),
+        };
+
+        let out = findings_with_refs(&[finding(0), finding(1)], &messages);
+
+        assert_eq!(
+            out[0]["frame_ref"], "calls.pcap#41@6d1f4c0a9b2e7a53",
+            "a finding on a message with a pointer must carry it, digest and \
+             all -- without the digest a later reader cannot tell the capture \
+             was rotated: {:?}",
+            out[0]
+        );
+        assert!(
+            out[1].get("frame_ref").is_none(),
+            "a finding on a message with NO pointer must omit the key, not \
+             emit an empty or zero one: {:?}",
+            out[1]
+        );
+        // An out-of-range index must not borrow a neighbouring frame.
+        let stray = findings_with_refs(&[finding(99)], &messages);
+        assert!(
+            stray[0].get("frame_ref").is_none(),
+            "an index past the end must cite nothing rather than the last \
+             message: {:?}",
+            stray[0]
+        );
     }
 
     /// A pointer whose source escapes the file root is refused, not followed.
