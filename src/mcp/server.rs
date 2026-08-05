@@ -1606,6 +1606,16 @@ pub struct CaptureHealth {
     pub dialogs_tracked: usize,
     /// RTP streams held right now.
     pub streams_tracked: usize,
+    /// Whether THIS host's clock is disciplined, and by how much it may be off.
+    ///
+    /// Irrelevant to a single capture, where one clock stamped every packet and
+    /// a constant offset cancels out of every interval sipnab reports. It
+    /// matters the moment an agent correlates across NODES: `find_correlated`'s
+    /// `timing_heuristic` matches dialogs created within two seconds of each
+    /// other, and two seconds is smaller than the skew an undisciplined host
+    /// accumulates in a day. A caller comparing times between two servers
+    /// should read this from both before trusting a time-based match.
+    pub clock: crate::clock::ClockDiscipline,
 }
 
 /// One reading of the process-global capture counters.
@@ -1739,6 +1749,10 @@ fn build_health(
         undecodable_reasons_dropped: after.reasons_dropped,
         dialogs_tracked,
         streams_tracked,
+        // Read at report time rather than cached at startup: a host can lose
+        // or gain its time source while sipnab runs, and a cached "synced"
+        // would keep saying so for the life of the process.
+        clock: crate::clock::discipline(),
     }
 }
 
@@ -6629,6 +6643,16 @@ mod tests {
             undecodable_reasons_dropped: 7,
             dialogs_tracked: 42,
             streams_tracked: 18,
+            // Populated with a REAL-looking reading, not the unavailable
+            // default: the no-strings gate below must see the fully-inhabited
+            // shape, and a default that happened to be all zeros could hide a
+            // string field added to this type later.
+            clock: crate::clock::ClockDiscipline {
+                synchronised: true,
+                max_error_us: 16_000,
+                est_error_us: 240,
+                available: true,
+            },
         }
     }
 
@@ -6653,9 +6677,13 @@ mod tests {
              number instead and put the label in docs/mcp.md."
         );
         // Pinned so the gate above cannot pass by walking nothing.
+        //
+        // Raised 40 -> 44 by `clock`: four leaves (synchronised, max_error_us,
+        // est_error_us, available), all bools and integers, which is why the
+        // string check above still passes with the field present.
         assert_eq!(
-            leaves, 40,
-            "the response shape changed: 40 leaf values were expected. Recount \
+            leaves, 44,
+            "the response shape changed: 44 leaf values were expected. Recount \
              deliberately — a drop here means the walker stopped reaching part \
              of the tree, which is how the string check goes quietly vacuous."
         );
@@ -6972,6 +7000,7 @@ mod tests {
             keys(&v),
             vec![
                 "attachment",
+                "clock",
                 "dialogs_tracked",
                 "in_window",
                 "schema_version",
@@ -7239,5 +7268,38 @@ mod tests {
             "no legs is not the same as legs we guessed at"
         );
         assert!(v["capture_identity"]["dialog_generation"].is_u64());
+    }
+
+    /// `capture_health` carries the clock state, and it stays counters-only.
+    ///
+    /// The whole point of that tool is that it can be sent off a production box
+    /// without leaking packet data, so a new field has to be integers and
+    /// booleans — never a daemon name, a server address or a hostname.
+    #[tokio::test]
+    async fn capture_health_reports_the_clock_without_leaking_anything() {
+        let server = server_with_dialog("clk@x");
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .capture_health(Parameters(CaptureHealthParams { sample_seconds: 1 }))
+                .await
+                .expect("health"),
+        ))
+        .unwrap();
+
+        let clock = &v["clock"];
+        assert!(clock["synchronised"].is_boolean(), "clock state must be present");
+        assert!(clock["available"].is_boolean());
+        assert!(clock["max_error_us"].is_i64());
+        assert!(clock["est_error_us"].is_i64());
+
+        // Counters-only: every value under `clock` is a number or a bool. A
+        // string here would be an NTP server address or a daemon name, which is
+        // exactly what this tool promises never to send.
+        for (k, val) in clock.as_object().expect("clock is an object") {
+            assert!(
+                val.is_number() || val.is_boolean(),
+                "clock.{k} is {val}, which is not a counter"
+            );
+        }
     }
 }

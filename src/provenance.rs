@@ -357,9 +357,6 @@ mod tests {
         assert!(before.is_different_capture(&after));
     }
 
-    /// The string form must survive a round trip, because write-back hands it
-    /// back as a compare-and-set token.
-    #[test]
     /// The node must NOT change when the capture instance does. An agent
     /// correlating across servers reads a changed node as a changed topology;
     /// a capture restart is not that.
@@ -392,6 +389,9 @@ mod tests {
         assert_eq!(clipped.chars().count(), MAX_NODE_NAME);
     }
 
+    /// The string form must survive a round trip, because write-back hands it
+    /// back as a compare-and-set token.
+    #[test]
     fn etag_round_trips_through_its_string_form() {
         let tag = CaptureIdentity::new().etag(12, 34);
         let text = tag.to_string();

@@ -75,6 +75,7 @@ pub mod privilege;
 #[doc(hidden)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod process_isolation;
+pub mod clock;
 pub mod provenance;
 pub mod rtp;
 pub mod security;

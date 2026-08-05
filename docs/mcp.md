@@ -1798,6 +1798,25 @@ Divide by `window.observed_ms`, never by `sample_seconds`. A loaded runtime
 wakes the handler late, and the response reports the wall clock precisely so
 that a rate does not inherit that error.
 
+**Clock discipline.** The response carries a `clock` object — `synchronised`,
+`max_error_us`, `est_error_us`, `available` — read from `adjtimex(2)` at report
+time rather than cached at startup, since a host can lose its time source while
+sipnab runs.
+
+It is irrelevant to a single capture, where one clock stamped every packet and a
+constant offset cancels out of every interval. It matters the moment you
+correlate across NODES: `find_correlated`'s `timing_heuristic` matches dialogs
+created within two seconds of each other, and two seconds is smaller than the
+skew an undisciplined host accumulates in a day. A clock three seconds fast
+fails to correlate legs that belong together, and a slow one pulls unrelated
+legs inside the window. Read `clock` from both servers before trusting a time-based
+match, and prefer `session_id`, `x_call_id` or `sdp_origin`, none of which care
+what time anyone thinks it is.
+
+`available: false` means the platform gave no answer — NOT that the clock is
+bad. The two are different facts and only one of them is a problem.
+
+
 ### Tool argument enums
 
 **`find_problems.kinds`** — diagnostic alias names, OR-ed together.
