@@ -2191,7 +2191,14 @@ impl SipnabMcp {
         } else {
             ContentBlock::text(report)
         };
-        Ok(CallToolResult::success(vec![content]))
+        // A report is a mixed document: sipnab's own diagnosis interleaved with
+        // header values the sender wrote. Fencing the whole thing would tell the
+        // agent to distrust the analysis too, so the note carries the provenance
+        // instead of a marker pair that cannot be placed accurately here.
+        Ok(CallToolResult::success(vec![
+            ContentBlock::text(super::shape::untrusted_note()),
+            content,
+        ]))
     }
 
     /// Convenience wrapper over `list_dialogs` — runs each named alias from
@@ -2358,9 +2365,16 @@ impl SipnabMcp {
                     None,
                 )
             })?;
-            crate::output::json::message_to_json_value(msg)
+            let mut v = crate::output::json::message_to_json_value(msg);
+            // Free-text headers fenced here, at the boundary — not in the
+            // shared serializer, which also feeds `--json` on the CLI.
+            super::shape::fence_message_json(&mut v);
+            v
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(parsed)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::text(super::shape::untrusted_note()),
+            ContentBlock::json(parsed)?,
+        ]))
     }
 
     /// Renders a SIP call-flow ladder as markdown (default) or text for one
@@ -2414,7 +2428,10 @@ impl SipnabMcp {
             drop(ds);
             r
         };
-        Ok(CallToolResult::success(vec![ContentBlock::text(report)]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::text(super::shape::untrusted_note()),
+            ContentBlock::text(report),
+        ]))
     }
 
     /// Returns RTP quality stats: for one dialog, or across the whole capture.
@@ -2549,10 +2566,13 @@ impl SipnabMcp {
                             || ascii_contains_ci(msg.user_agent().unwrap_or(""), needle_bytes)
                             || ascii_contains_ci(&body, needle_bytes);
                     if matched {
-                        let snippet = super::shape::truncate_string(
+                        // Fenced, not raw: this is the whole message as the
+                        // sender wrote it, the largest run of attacker-authored
+                        // text the MCP surface returns.
+                        let snippet = super::shape::fence(&super::shape::truncate_string(
                             &String::from_utf8_lossy(&msg.raw),
                             super::shape::MAX_BODY_BYTES,
-                        );
+                        ));
                         out.push(SearchHit {
                             call_id: d.call_id.clone(),
                             message_index: idx,
@@ -2567,7 +2587,10 @@ impl SipnabMcp {
             drop(ds);
             out
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(hits)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::text(super::shape::untrusted_note()),
+            ContentBlock::json(hits)?,
+        ]))
     }
 
     /// Incremental dialog fetch — returns dialogs updated strictly after the
@@ -4677,12 +4700,23 @@ mod tests {
     }
 
     /// Extract the text body of the first content item.
+    /// The payload block of a tool result.
+    ///
+    /// Tools that return capture-derived data lead with the provenance note
+    /// (`shape::untrusted_note`), so `content[0]` is the note for those and the
+    /// payload for the rest. This finds the first block that is not the note,
+    /// which works for both shapes — and, unlike indexing past a fixed offset,
+    /// does not start silently asserting against the note if a tool stops
+    /// emitting one.
     fn text_of(result: &CallToolResult) -> String {
-        result.content[0]
-            .as_text()
-            .expect("content should be text-able")
-            .text
-            .clone()
+        let note = crate::mcp::shape::untrusted_note();
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .find(|t| *t != note)
+            .expect("result should carry a payload block that is not the note")
     }
 
     /// The shared exhausted flag flows through to `source_exhausted`:

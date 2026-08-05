@@ -85,6 +85,28 @@ fn read_response_with_id(
     None
 }
 
+/// The payload text block of a `tools/call` response.
+///
+/// Tools that return capture-derived data lead with a provenance note
+/// (`shape::untrusted_note`), so `content[0]` is the note for those and the
+/// payload for the rest. This finds the first text block that is not the note.
+///
+/// Worth stating plainly, because this file is the closest thing in the tree to
+/// a real client: `resp["result"]["content"][0]["text"]` is exactly what an
+/// external consumer would write, and it is exactly what the note broke. Any
+/// client outside this repo that indexes block 0 needs the same change.
+fn payload_text(resp: &serde_json::Value) -> String {
+    let note = sipnab::mcp::shape::untrusted_note();
+    resp["result"]["content"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tool result must carry content: {resp}"))
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .find(|t| *t != note)
+        .unwrap_or_else(|| panic!("no payload block besides the provenance note: {resp}"))
+        .to_string()
+}
+
 /// Call `list_dialogs` repeatedly (reusing `id`) until it returns a
 /// non-empty summaries array, or fail once `timeout` elapses. Replay
 /// ingestion runs asynchronously to the MCP server loop, so the first
@@ -123,10 +145,8 @@ fn list_dialogs_until_nonempty(
             resp["result"].is_object(),
             "list_dialogs must succeed: {resp}"
         );
-        let body = resp["result"]["content"][0]["text"]
-            .as_str()
-            .expect("text content");
-        let parsed: serde_json::Value = serde_json::from_str(body).expect("inner JSON parses");
+        let body = payload_text(&resp);
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("inner JSON parses");
         let dialogs = parsed["dialogs"]
             .as_array()
             .unwrap_or_else(|| panic!("list_dialogs page must carry `dialogs`: {parsed}"));
@@ -383,8 +403,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         }),
     );
     let resp = read_response_with_id(&mut reader, 4, test_timeout(5)).expect("get_dialog response");
-    let payload_text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    let payload: serde_json::Value = serde_json::from_str(payload_text).unwrap();
+    let dialog_text = payload_text(&resp);
+    let payload: serde_json::Value = serde_json::from_str(&dialog_text).unwrap();
     assert!(
         payload["messages"].is_array(),
         "get_dialog must return messages: {payload}"
@@ -402,8 +422,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     );
     let resp =
         read_response_with_id(&mut reader, 5, test_timeout(5)).expect("get_message response");
-    let msg_text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    let msg: serde_json::Value = serde_json::from_str(msg_text).unwrap();
+    let msg_text = payload_text(&resp);
+    let msg: serde_json::Value = serde_json::from_str(&msg_text).unwrap();
     assert_eq!(msg["call_id"].as_str(), Some(call_id.as_str()));
 
     // get_message out-of-range index → error
@@ -430,7 +450,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     );
     let resp =
         read_response_with_id(&mut reader, 7, test_timeout(5)).expect("render_ladder response");
-    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    let text = payload_text(&resp);
     assert!(!text.is_empty(), "ladder must not be empty");
 
     // rtp_stats
@@ -443,8 +463,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         }),
     );
     let resp = read_response_with_id(&mut reader, 8, test_timeout(5)).expect("rtp_stats response");
-    let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
+    let body_text = payload_text(&resp);
+    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
     assert!(body["streams"].is_array());
 
     // search_messages with a known token from the fixture
@@ -458,8 +478,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     );
     let resp =
         read_response_with_id(&mut reader, 9, test_timeout(5)).expect("search_messages response");
-    let hits_text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    let hits: serde_json::Value = serde_json::from_str(hits_text).unwrap();
+    let hits_text = payload_text(&resp);
+    let hits: serde_json::Value = serde_json::from_str(&hits_text).unwrap();
     assert!(hits.as_array().map(|a| !a.is_empty()).unwrap_or(false));
 
     // tail_dialogs without cursor
@@ -472,8 +492,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     );
     let resp =
         read_response_with_id(&mut reader, 10, test_timeout(5)).expect("tail_dialogs response");
-    let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
+    let body_text = payload_text(&resp);
+    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
     assert!(
         body["dialogs"]
             .as_array()
@@ -492,8 +512,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     );
     let resp = read_response_with_id(&mut reader, 11, test_timeout(5))
         .expect("tail_dialogs cursor response");
-    let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
+    let body_text = payload_text(&resp);
+    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
     assert_eq!(
         body["dialogs"].as_array().map(|a| a.len()),
         Some(0),
@@ -509,8 +529,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         }),
     );
     let resp = read_response_with_id(&mut reader, 12, test_timeout(5)).expect("stats response");
-    let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
+    let body_text = payload_text(&resp);
+    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
     assert!(body["dialog_count"].as_u64().unwrap_or(0) >= 1);
 
     // Clean shutdown
@@ -588,10 +608,8 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
         );
         let resp =
             read_response_with_id(&mut reader, id, test_timeout(5)).expect("tail_dialogs response");
-        let body_text = resp["result"]["content"][0]["text"]
-            .as_str()
-            .expect("tail_dialogs text");
-        let body: serde_json::Value = serde_json::from_str(body_text).expect("inner JSON");
+        let body_text = payload_text(&resp);
+        let body: serde_json::Value = serde_json::from_str(&body_text).expect("inner JSON");
         if body["source_exhausted"].as_bool() == Some(true) {
             break true;
         }
@@ -716,10 +734,8 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     );
     let resp = read_response_with_id(&mut reader, 3, test_timeout(5)).expect("find_problems");
     assert!(resp.get("error").is_none(), "find_problems errored: {resp}");
-    let text = resp["result"]["content"][0]["text"]
-        .as_str()
-        .expect("find_problems text");
-    let page: serde_json::Value = serde_json::from_str(text).expect("find_problems JSON");
+    let text = payload_text(&resp);
+    let page: serde_json::Value = serde_json::from_str(&text).expect("find_problems JSON");
     assert!(
         page["dialogs"].is_array(),
         "find_problems must return a page object carrying `dialogs`: {page}"
@@ -743,10 +759,8 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         resp.get("error").is_none(),
         "security_findings errored: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"]
-        .as_str()
-        .expect("security_findings text");
-    let arr = serde_json::from_str::<serde_json::Value>(text).expect("security_findings JSON");
+    let text = payload_text(&resp);
+    let arr = serde_json::from_str::<serde_json::Value>(&text).expect("security_findings JSON");
     assert_eq!(
         arr.as_array().map(Vec::len),
         Some(0),
