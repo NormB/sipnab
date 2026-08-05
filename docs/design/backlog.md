@@ -33,9 +33,14 @@ Tiers:
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
-- [ ] **CT1 — Kernel packet drops are never read, so a lossy capture reports a
-  confident wrong answer.** `pcap::Capture::stats()` is never called anywhere in
-  the tree (`grep -rn '\.stats()' src/` matches only MCP tool tests). libpcap has
+- [x] **CT1 — Kernel packet drops are never read, so a lossy capture reports a
+  confident wrong answer.** **Corrected 2026-08-05:** this used to open
+  *"`pcap::Capture::stats()` is never called anywhere in the tree
+  (`grep -rn '\.stats()' src/` matches only MCP tool tests)"*, which was true the
+  day it was written and is false now — `src/capture/live.rs:334` polls it on the
+  stats timer and `:424` reads once more at loop exit. The rest of the entry is
+  the defect as it was found, kept because that reasoning is what set the
+  priority. libpcap has
   had the counters all along — `pcap 2.4.0` exposes
   `Stat { received, dropped, if_dropped }` at
   `capture/activated/mod.rs:33,304` — and sipnab reads none of them. On a busy
@@ -68,12 +73,19 @@ Tiers:
   no-op path, serialized on `kernel_drop_counts` since they share process
   globals. Verified: `cargo test --lib capture::live` 20/20, `cargo clippy
   --lib --all-targets` clean, `cargo fmt --check` clean, `cargo test --test
-  capture_test` 16/16. **Still to do:** carry the counts into the batch
-  summary, `/v1/stats`, the MCP `stats` tool and a Prometheus counter — right
-  now they are logged but not queryable, which is the same gap
-  `INVALID_PCAP_TIMESTAMPS` has had all along and should be closed for both
-  together.
-- [ ] **CT2 — The kernel ring buffer defaults to 2 MiB, which silently drops on
+  capture_test` 16/16. **Done (the surfacing half, tracked as CT1b in
+  `capture-tuning-tasks.md`):** the counts now reach the batch summary
+  (`src/app/batch.rs:788`, through `kernel_drop_counts()`), `/v1/stats`
+  (`src/output/api.rs:976`, `kernel_dropped_packets`), the MCP `stats` tool
+  (`src/mcp/server.rs`) and Prometheus (`src/output/prometheus.rs:467`,
+  `sipnab_capture_kernel_dropped_packets_total`, asserted in
+  `tests/metrics_test.rs`). `INVALID_PCAP_TIMESTAMPS` was closed in the same pass
+  — see G1 — so all three counters travel together as one `capture_quality`
+  block with a single `degraded` flag. What remains is not CT1: proving the ring
+  default against a measured `dropped` of zero at line rate is CT2b, and nothing
+  here is measured on a live NIC at all (V1). Both are in
+  `capture-tuning-tasks.md`.
+- [x] **CT2 — The kernel ring buffer defaults to 2 MiB, which silently drops on
   any busy server.** `src/app/bootstrap.rs:1359` —
   `let buffer_mb = cli.buffer.or(config.capture.buffer).unwrap_or(2);` — fed to
   `.buffer_size((config.buffer_mb * 1_000_000) as i32)` at
@@ -101,11 +113,18 @@ Tiers:
   honoured exactly and never promoted. Four ladder tests cover
   requested-first, halving, no-promotion, and termination/non-zero. Docs
   updated in `docs/cli-reference.md`, `docs/config-reference.md` and both
-  website mirrors. **Caveat — read CT7:** on a stock server with NIC
-  offloads on, TPACKET_V2 slot sizing means 64 MiB holds only ~1,000
-  packets, so most of this win is unrealised until CT7 lands.
-- [ ] **G7 — `$SIPNAB_AUDIO_PLUGIN` is `dlopen`ed ahead of every trusted path.**
-  `src/rtp/playback.rs` `plugin_candidates()` pushes the env-var path **first**,
+  website mirrors. **Caveat — read CT7. Corrected 2026-08-05:** this used to end
+  *"so most of this win is unrealised until CT7 lands"*, and CT7 has since
+  landed. The arithmetic still holds for the TUI, which keeps immediate mode by
+  design and therefore keeps TPACKET_V2: on a stock server with NIC offloads on,
+  V2 slot sizing means 64 MiB holds only ~1,000 packets. Every headless run now
+  gets the block-based V3 ring (`immediate_mode_for()`), where the larger default
+  is real. **Still open, as CT2b in `capture-tuning-tasks.md`:** the other half of
+  the "Do" above — proving the new default against a measured `dropped` of zero
+  on the reference corpus replayed at line rate. The default raise is what
+  shipped; the measurement did not.
+- [x] **G7 — `$SIPNAB_AUDIO_PLUGIN` is `dlopen`ed ahead of every trusted path.**
+  `src/rtp/playback.rs` `plugin_candidates()` pushed the env-var path **first**,
   before the exe-adjacent build, `/usr/lib/sipnab/` and the loader search path,
   and `load_plugin()` returns the first that loads. So an attacker who controls
   the environment gets arbitrary **native, unsandboxed** code executed in
@@ -118,14 +137,24 @@ Tiers:
   **Do:** try trusted paths first and treat the env var as a
   development-only override (gate it behind a debug build, an explicit
   `--allow-plugin-override`, or an ownership/permission check on the file), and
-  correct the SAFETY comment either way.
-- [ ] **CT7 — `immediate_mode(true)` silently forces sipnab onto TPACKET_V2,
+  correct the SAFETY comment either way. **Done:** `plugin_candidates()`
+  (`src/rtp/playback.rs:456`) is now `trusted_plugin_candidates()` followed by
+  `.extend(env_override_candidate())`, so the override is tried **last** rather
+  than first, and only after it survives an ownership and permission check —
+  the process must have gained no privileges at `execve`, and the file must be a
+  regular file owned by root or the invoking user, not group- or world-writable,
+  in a directory that is not either. Every rejection names its reason through the
+  `OverrideRefusal` enum (`playback.rs:274`), which also carries the
+  non-Unix arm where the check cannot be made and the override is therefore never
+  honoured. The `// SAFETY:` comment was rewritten to state the real ordering
+  argument rather than the assumption the env-var branch broke.
+- [x] **CT7 — `immediate_mode(true)` silently forces sipnab onto TPACKET_V2,
   capping the ring at ~1,000 packets on a stock server.** Verified against
   libpcap 1.10 `pcap-linux.c` upstream, not inferred. `prepare_tpacket_socket()`
   reads: *"The buffering cannot be disabled in that mode, so if the user has
   requested immediate mode, we don't use TPACKET_V3"* — guarded by
-  `if (!handle->opt.immediate)`. `src/capture/live.rs` sets immediate mode
-  **unconditionally**, so sipnab never gets the block-based V3 ring. The
+  `if (!handle->opt.immediate)`. `src/capture/live.rs` set immediate mode
+  **unconditionally**, so sipnab never got the block-based V3 ring. The
   consequence compounds with CT3: TPACKET_V2 slots are fixed-size and sized from
   the snaplen (`frame_size = handle->snapshot; req.tp_frame_size =
   TPACKET_ALIGN(macoff + frame_size); req.tp_frame_nr = buffer_size /
@@ -155,6 +184,24 @@ Tiers:
   `--duration`/Ctrl-C responsiveness is what it protects. Ranked P0 because it
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
+  **Done:** immediate mode is now a decision, not a constant.
+  `immediate_mode_for(mode)` (`src/app/bootstrap.rs:1504`) is
+  `matches!(mode, RunMode::Tui)` and is the only place that answers the
+  question; `bootstrap.rs:513` assigns its result to
+  `CaptureConfig::immediate_mode`, and `src/capture/live.rs:219-220` passes that
+  one value to both `.immediate_mode()` and `.timeout()`. The V3 timeout trap
+  above was handled rather than inherited: `read_timeout_ms`
+  (`live.rs:60`) returns the interactive 100 ms only when immediate mode is on
+  and `BATCHED_READ_TIMEOUT_MS = 5` otherwise, so the batched path's
+  `tp_retire_blk_tov` is 5 ms rather than 100 — the flag and the timeout move
+  together by construction. Three tests pin it:
+  `immediate_mode_is_the_tui_and_nothing_else` and
+  `plan_turns_immediate_mode_off_for_headless_capture` (`bootstrap.rs`) and
+  `batched_mode_uses_a_short_block_retire_timeout` (`live.rs`).
+  **The live-NIC verification this entry asks for is still open** — that V3 is
+  actually selected, and what it is worth, are still reasoned from libpcap's
+  source rather than measured. Tracked as V1 in `capture-tuning-tasks.md`, with
+  the operator escape hatch back to immediate mode on a headless run as CT7b.
 - [x] **CT9 — `-B/--buffer` used decimal MB while every surface said MiB, and
   overflowed to a NEGATIVE size past 2047.** Two bugs in one expression,
   `.buffer_size((config.buffer_mb * 1_000_000) as i32)`. **(a) Units:** the
@@ -224,7 +271,7 @@ Tiers:
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
-- [ ] **G6 — `--cores N` is silently ignored on live capture.** `RunMode` is
+- [x] **G6 — `--cores N` is silently ignored on live capture.** `RunMode` is
   chosen by `cli.cores > 1 && cli.has_input() && !cli.multi_device`
   (`src/app/bootstrap.rs`), so `--cores 8 -d eth0` falls through to
   single-threaded `RunMode::Batch` with **no warning at all** — the operator
@@ -235,8 +282,16 @@ Tiers:
   combined with a live source or `--multi-device`, naming that the parallel
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
-  reach for it.
-- [ ] **LK1 — `fork`/`exec`, stdout writes and a third lock all happen while
+  reach for it. **Done:** `cores_ignored_warning`
+  (`src/app/bootstrap.rs:1842`) returns the message and the reason —
+  `--multi-device` opens one capture per interface, or the run captures live
+  rather than reading a saved file — and `bootstrap.rs:483` warns with it.
+  Warned rather than refused, because the run is correct, just single-threaded,
+  and refusing would break a wrapper script that passes `--cores` uniformly.
+  Its sibling `metrics_ignored_on_cores_warning` (`:1881`) closes the same
+  silence for `--metrics` on the `--cores` path. Tests from `bootstrap.rs:2314`
+  pin both the message and the paths that must stay quiet.
+- [x] **LK1 — `fork`/`exec`, stdout writes and a third lock all happen while
   holding BOTH store write locks.** `src/app/batch.rs:1553-1554` takes
   `dialog_store.write()` and `stream_store.write()` and holds both across the
   whole per-packet body. Inside that critical section:
@@ -251,8 +306,16 @@ Tiers:
   most expensive syscall in the process runs in the most contended section of
   it — and it is there by accident, not by design. This breaks two written
   rules: [invariant 2](../internals/invariants.md) (*"Never hold both write
-  locks simultaneously"*) and `docs/internals/threading.md:144-147` (*"each
-  store takes one write lock per packet, briefly"*). It is also the mechanism
+  locks simultaneously"*) and the threading page's claim that each store takes
+  one write lock per packet, *briefly*. **Corrected 2026-08-05:** this used to
+  cite `docs/internals/threading.md:144-147` for that second quote, and the
+  quoted sentence is no longer there. The page was rewritten in the same pass
+  that fixed this defect and now says the opposite in the batch case — see
+  [`threading.md`](../internals/threading.md), which states that *"briefly"* is
+  accurate for the TUI and file-open workers and that the batch applier holds
+  both guards across the entire per-packet body. The line reference is dropped
+  rather than repointed, because it was the wording that moved, not the fact the
+  entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
   nowhere; `security_findings` (`src/mcp/server.rs:2078`) currently takes
@@ -260,7 +323,23 @@ Tiers:
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
   drop, then add the missing lock-ordering rule to `invariants.md`. Ship with a
-  before/after throughput number and a `dropped` delta from CT1.
+  before/after throughput number and a `dropped` delta from CT1. **Done:**
+  `DeferredEffects` (`src/app/batch.rs:333`, impl at `:456`) carries a packet's
+  output, alert findings and hook commands out of the guarded section. It is
+  built at `:1860`, passed by `&mut` into the per-packet body (`:2482`) and
+  destructured and replayed at `:2510`, after both guards have dropped — so the
+  block that now begins at `batch.rs:2071-2072` contains no `fork`/`exec`, no
+  stdout write and no `AlertEngine` lock. The event-exec engine follows the same
+  split: `queue_*` decides a hook under the guards, where it needs the store, and
+  `dispatch_pending` spawns it once they are gone, with
+  `TumblingWindow::allows_with_reserved` accounting for the decisions parked in
+  between so `--exec-rate-limit N` still means N. The lock-ordering rule the
+  entry asks for is written down: `docs/internals/invariants.md` §2 is retitled
+  *"Dialog before stream, then alerts — one consistent order"* and carries a
+  correction note recording what the old rule got wrong. **Not measured:** the
+  before/after throughput number and the `dropped` delta were not taken — the
+  change is reasoned from the syscall placement, and V1 in
+  `capture-tuning-tasks.md` is where that measurement lives.
 
 - [x] **`--version` never reports the `metrics` feature** — `compiled_features()`
   in `src/cli.rs` walked `native, tui, audio, tls, hep, api, mcp, mcp-http, wasm`
@@ -331,7 +410,7 @@ Tiers:
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
-- [ ] **G1 — `INVALID_PCAP_TIMESTAMPS` is counted and warned but never
+- [x] **G1 — `INVALID_PCAP_TIMESTAMPS` is counted and warned but never
   reportable.** `src/capture/live.rs` counts every packet whose pcap timestamp
   was corrupt and had to be stamped with the wall clock — which makes *all*
   timing analysis for that run (PDD, delta times, call duration) unreliable —
@@ -340,7 +419,18 @@ Tiers:
   timing numbers has no way to learn they are untrustworthy. This is the
   identical gap to CT1's remaining half and should be closed in the same pass:
   one "capture quality" block carrying invalid timestamps, kernel drops and
-  interface drops together, surfaced everywhere the counts are.
+  interface drops together, surfaced everywhere the counts are. **Done, in that
+  same pass, and as one block:** `/v1/stats` carries `"invalid_timestamps"`
+  (`src/output/api.rs:978`) beside the two drop counts; Prometheus exports
+  `sipnab_capture_invalid_timestamps_total` (declared at
+  `src/output/prometheus.rs:107`, read from the atomic at `:137`, rendered at
+  `:491`, and named in `tests/metrics_test.rs` so a rename cannot silently drop
+  it); the MCP `stats` tool carries the field (`src/mcp/server.rs:1213`,
+  populated at `:1239`) and reports it as a delta between two calls (`:1540`);
+  and the batch summary explains it in prose (`src/app/batch.rs:770-809`). The
+  three counters stay separate rather than summed, because the remedies
+  disagree — a bigger `-B` fixes kernel drops, nothing about the buffer fixes a
+  corrupt timestamp — with one `degraded` flag rolling them up for a dashboard.
 - [ ] **CT3 — `--snaplen` defaults to 65535, so every packet is copied whole
   even for SIP-only work.** `src/app/bootstrap.rs:1357` —
   `cli.snaplen.or(config.capture.snaplen).unwrap_or(65535)`. The flag exists
@@ -397,8 +487,8 @@ Tiers:
   *(Unverified: that `bpf_prog_create_from_user()` contains no internal
   capability check beyond `SOCK_FILTER_LOCKED` — confirm in
   `net/core/filter.c` before relying on the "no CAP_BPF" claim.)*
-- [ ] **CT5 — `immediate_mode(true)` is hardcoded, defeating kernel batching.**
-  `src/capture/live.rs:152` sets it unconditionally, with the comment that the
+- [x] **CT5 — `immediate_mode(true)` is hardcoded, defeating kernel batching.**
+  `src/capture/live.rs:152` set it unconditionally, with the comment that the
   `poll()`-driven non-blocking loop requires it. That is the right call for an
   interactive TUI (packets appear as they arrive) and the wrong one for a
   headless `-N` capture on a busy link, where it costs roughly a wakeup per
@@ -406,7 +496,12 @@ Tiers:
   constant — immediate for TUI, batched for `-N` — and verify the `poll()` loop
   still terminates promptly on `--duration`/Ctrl-C with it off (that is the
   constraint the comment is protecting, and it must not regress). Cheapest item
-  in this group; measure with CT1's counter.
+  in this group; measure with CT1's counter. **Closed as subsumed:** CT7 landed
+  exactly this, as `immediate_mode_for()` in `src/app/bootstrap.rs` — see that
+  entry for what shipped and what is still unverified. What did *not* ship is an
+  escape hatch to force immediate mode back on for a headless run; that is
+  re-scoped and tracked as CT7b in `capture-tuning-tasks.md` rather than left
+  implied here.
 - [ ] **PR1 — `--cores` plateaus at 2 because one thread reads the whole `-I`
   set serially.** Measured, `docs/benchmarks.md:46-56`: 1 core 1.06M pkts/s,
   2 cores 2.32M, 4 cores 2.03M, 8 cores 1.89M — throughput *declines* past two.
@@ -533,7 +628,7 @@ Tiers:
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
-- [ ] **G2 — The store-lock rationale in `implementation-plan-v6.md` is stale
+- [x] **G2 — The store-lock rationale in `implementation-plan-v6.md` is stale
   and says the opposite of what the code does.** It reads: *"The optional async
   runtime (if `--metrics` or `--api` is used) reads from the `DialogStore`
   through a `parking_lot::RwLock` — read-heavy, write-rare, so RwLock contention
@@ -542,8 +637,14 @@ Tiers:
   frequent operation in the process. "Write-rare" is the premise every later
   contention judgement rests on, and it is false. Correct it in place (the
   repo's own "refute your own claims in place" norm), and say what the real
-  shape is: write-per-packet, read-rare-but-latency-sensitive.
-- [ ] **G3 — Invariant 2 and the batch applier contradict each other.**
+  shape is: write-per-packet, read-rare-but-latency-sensitive. **Done:**
+  [`implementation-plan-v6.md:401-421`](implementation-plan-v6.md) carries a
+  *"Refuted 2026-08-03"* block that quotes the sentence it replaces, states the
+  real shape, and keeps the original *conclusion* while replacing its reason —
+  contention is usually low because in the common case there is no second party,
+  not because writes are rare. It also points at the measured detail and at
+  `invariants.md` §2 for the ordering rules the batch path does follow.
+- [x] **G3 — Invariant 2 and the batch applier contradict each other.**
   `docs/internals/invariants.md` §2 states *"Never hold both write locks
   simultaneously"* and then explains that *"The batch and `--cores` appliers
   hold their stores by `&mut` and so have no ordering to get wrong."* The batch
@@ -554,7 +655,15 @@ Tiers:
   does not follow, so a reader checking their new code against it gets the wrong
   answer. Either restate the rule as "consistent order, dialog before stream" or
   make the batch path match — and see LK1, which wants that section narrowed
-  anyway.
+  anyway. **Done, by restating:** §2 of
+  [`invariants.md`](../internals/invariants.md) is now headed *"Dialog before
+  stream, then alerts — one consistent order"*, and the rule at `:46` says take
+  the dialog store first, the stream store second, the alert engine last, never
+  a store while holding `alerts`, and prefer not to overlap the store guards at
+  all. The old text is not deleted: a *"Corrected 2026-08-03"* note at `:56`
+  quotes it, says which half was false, and says why describing a discipline the
+  main path does not follow is worse than describing none. LK1 shipped the
+  code-side half.
 
 
 - [x] **Proofread the active-voice rewrite** — `99e6ab8` rewrote 331 prose
@@ -752,8 +861,11 @@ output path.
   `show_evidence { refs[] }` returning frames, hexdump and decode. **Ranked
   first, and the ranking is the argument:** this cannot be bolted on. It
   threads the parser, the analysis structs, the serializer, the export path and
-  the docs. There are 28 tools today and 12 more proposed below — every one
-  added before this lands is another response to retrofit, so the cheapest
+  the docs. There were 28 tools when this was written and 12 more proposed
+  below — the live count is asserted by
+  `mcp_tool_table_lists_every_registered_tool` rather than restated here, and it
+  has grown since. Every tool added before this lands is another response to
+  retrofit, so the cheapest
   moment to build it is the one before the surface grows again. It also makes
   hallucination *mechanically* detectable rather than suspected: put "every
   assertion must carry a ref" in the MCP `instructions`, and a claim without a
@@ -778,12 +890,15 @@ output path.
     finding point at the specific malformed `Contact` rather than the message.
   - Refs inflate every response, so make them opt-out per call and keep the
     encoding compact.
-  - **Scheduling constraint, not a design one:** this touches `src/pipeline.rs`,
-    `src/output/json.rs` and `src/capture/*`, all of which carry large
-    uncommitted diffs from concurrent work as of 2026-08-03. Start with the
-    design doc and the identity/hash binding, land the threading once the tree
-    is quiet, and gate every new tool below on emitting refs so the retrofit
-    never grows.
+  - **Sequencing, not a scheduling constraint any more.** This touches
+    `src/pipeline.rs`, `src/output/json.rs` and `src/capture/*`. **Corrected
+    2026-08-05:** the note here used to add that all three *"carry large
+    uncommitted diffs from concurrent work as of 2026-08-03"* and to say "land
+    the threading once the tree is quiet". That work landed in 0.5.77 and the
+    tree is quiet, so nothing is waiting on it. What survives is the ordering
+    that was always the point: start with the design doc and the identity/hash
+    binding, then thread the refs, and gate every new tool below on emitting
+    refs so the retrofit never grows.
 
 - [ ] **PA2 — Aggregation: `group_dialogs` and `timeline`.** Ranked second
   because it removes the single largest source of confidently-wrong answers
@@ -822,23 +937,41 @@ output path.
     `find_problems` → `triage_call`.
 
 - [ ] **PA4 — Complete the linter rule corpus.** The engine and the
-  declaration-versus-observation class shipped in 0.5.75 with 22 rules. The
-  engine is a day's work and anyone can copy it; two hundred *correct* interop
-  rules is twenty-five years of carrier experience and does not transfer. That
-  is the moat, and it is unbuilt. Verified absent today: RFC 4028 entirely
-  (`Session-Expires` below `Min-SE`, refresher ambiguity, no refresh before
-  expiry), `Record-Route` in a response absent from the request, missing
-  `Contact` on a 2xx to INVITE, `Require: 100rel` with no PRACK arriving, route
-  sets mixing loose and strict (`;lr` absent), duplicate `branch` across Via
-  (loop detection), singular headers appearing twice, ACK to non-2xx not
-  hop-by-hop on the same branch, dynamic PT collision across re-INVITEs,
-  telephone-event negotiated one-way, a rejected `m=` line at port 0 still
-  carrying attributes, and Opus negotiated against 160-byte 8 kHz packets.
-  - `rulesets` gains `rfc4028` for free once a rule cites it — the selector list
-    is derived from `RULES`, not restated.
-  - **`.sipnablint` is not wired.** `LintConfig::suppress_list` parses the file
-    shape and nothing loads a file or exposes a CLI flag, so the suppression
-    story a CI user needs on day one does not exist yet. Without it CI drowns.
+  declaration-versus-observation class shipped in 0.5.75 with 22 rules; the
+  corpus has grown since, and the live set is `RULES` in
+  `src/sip/lint/finding.rs` rather than a number restated here. The engine is a
+  day's work and anyone can copy it; two hundred *correct* interop rules is
+  twenty-five years of carrier experience and does not transfer. That is the
+  moat, and it is still mostly unbuilt.
+  - **Corrected 2026-08-05.** This entry listed as *"verified absent today"*
+    three things that have since shipped, and reading it as current would have
+    caused someone to write a rule twice. **RFC 4028 is no longer absent:**
+    `SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE`,
+    `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL`, `SIP-4028-5-MIN-SE-TOO-SMALL` and
+    `SIP-4028-9-REFRESHER-MISSING` all exist. **Missing `Contact` on a 2xx to
+    INVITE** shipped as `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX`, and
+    **`Require: 100rel` with no PRACK arriving** as `SIP-3262-4-PRACK-MISSING`.
+  - **Still absent, and this is the open half of the entry:** `Record-Route` in
+    a response absent from the request, route sets mixing loose and strict
+    (`;lr` absent), duplicate `branch` across Via (loop detection), singular
+    headers appearing twice, ACK to non-2xx not hop-by-hop on the same branch,
+    dynamic PT collision across re-INVITEs, telephone-event negotiated one-way,
+    a rejected `m=` line at port 0 still carrying attributes, and Opus
+    negotiated against 160-byte 8 kHz packets.
+  - `rulesets` gains a selector for free once a rule cites the RFC — the
+    selector list is derived from `RULES`, not restated. `rfc4028` arrived that
+    way.
+  - **`.sipnablint` is half wired. Corrected 2026-08-05:** this used to read
+    *"`LintConfig::suppress_list` parses the file shape and nothing loads a file
+    or exposes a CLI flag"*, and the first half is no longer true.
+    `SUPPRESSION_FILENAME` (`src/sip/lint/mod.rs:70`),
+    `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
+    exist, and the MCP lint tools consume them through `resolve_suppressions`
+    (`src/mcp/server.rs:333`), which takes an explicit filename or walks up from
+    the capture's directory to a project root. **What is still missing is the
+    CLI half** — `grep -n lint src/cli.rs` matches nothing, so a CI user running
+    the binary rather than the MCP surface still has no way to point at a
+    suppression file. Without it CI drowns.
   - Every rule is a docs page, which makes this a content flywheel as much as a
     feature.
 
@@ -1011,9 +1144,12 @@ entry the cross-reference says so.
 a SIP conformance linter as a parity gap: `lint_dialog`, `validate_message` and
 `explain_rule` shipped in 0.5.75 with 22 rules, so that item is closed. And it
 reports the MCP tool table as listing 24 tools and omitting `open_capture`: the
-table carries 28 and `open_capture` is among them. Both readings are of the
-published 0.5.73-era site, which is the hazard of reviewing docs rather than
-`main` — and an argument for the "since version" column the review asks for.
+table carried 28 on that date and `open_capture` was among them. Both readings
+are of the published 0.5.73-era site, which is the hazard of reviewing docs
+rather than `main` — and an argument for the "since version" column the review
+asks for. Both counts above are as-of-2026-08-03 and are not maintained here;
+the registry has grown, and the live count is asserted by
+`mcp_tool_table_lists_every_registered_tool`, the rule set by `RULES`.
 
 Sequencing the review proposes, which I agree with: protocol hygiene first
 (days, not weeks), then the parity items that change what an agent can do, then
@@ -1030,11 +1166,18 @@ production traffic.
   table. Cheapest protocol win on the list and the natural carrier for PA1's
   `_ref` fields.
 - [ ] **PB2 — Tool annotations.** `readOnlyHint`, `destructiveHint`,
-  `idempotentHint`, `openWorldHint`. Verified absent: the read-only guarantee
-  lives in prose in `docs/mcp.md` and in the invariants doc, where no host can
-  enforce it. `shutdown_server` and `open_capture` are the destructive pair;
-  everything else is read-only. Some clients auto-approve on these hints, which
-  is exactly why the honest ones must be set.
+  `idempotentHint`, `openWorldHint`. **Corrected 2026-08-05:** this used to read
+  *"Verified absent"*, and that is no longer true — `capture_health` carries
+  `annotations(read_only_hint = true)` (`src/mcp/server.rs:4273`, asserted in
+  the same file's tests). It is the only annotated tool on the surface, so the
+  substance of the item is untouched: the guarantee still lives in prose in
+  `docs/mcp.md` and in the invariants doc for every other tool, where no host
+  can enforce it. **Do:** annotate the whole surface, not one tool.
+  `shutdown_server` and `open_capture` are the destructive pair, `save_findings`
+  is the one write, and everything else is read-only. Some clients auto-approve
+  on these hints, which is exactly why the honest ones must be set — and why a
+  surface where one tool is annotated and the rest are not is worse than one
+  where none is, because absence stops meaning anything.
 - [ ] **PB3 — Completions (`completion/complete`).** For `call_id`, filter
   aliases, `security_findings.kinds` and the format enums. Cheaper than a
   failed call plus a retry, and it removes the same guess-and-retry loop PA3's
@@ -1108,19 +1251,22 @@ implementation.
   so a looping agent can pin a capture host.
 - [ ] **PB12 — Prometheus parity for MCP.** Verified absent:
   `sipnab_mcp_tool_calls_total{tool,outcome}`, a latency histogram, and
-  response bytes per tool. Without it nobody knows which of the 28 tools agents
-  actually use, which is also how the tool surface gets pruned later.
+  response bytes per tool. Without it nobody knows which of the registered tools
+  agents actually use, which is also how the tool surface gets pruned later.
 
 ### PB-D — cost and correctness
 
-- [ ] **PB13 — Golden-answer eval harness.** 3810 tests prove the parser is
-  right and nothing proves the *agent* gets the right answer. A corpus of
+- [ ] **PB13 — Golden-answer eval harness.** Several thousand tests prove the
+  parser is right and nothing proves the *agent* gets the right answer. (The
+  figure that stood here — 3810 — is not maintained; the count is pinned where
+  it is asserted, not restated in prose that rots.) A corpus of
   (pcap, question, expected answer) run in CI against the MCP surface catches
   the failure this project already wrote about — the agent that counts 50 rows
   and answers "50". That is a regression class unit tests structurally cannot
   see, and it is the natural home for PA2's aggregation claims once they exist.
-- [ ] **PB14 — Tool-set profiles (`--mcp-tools core|full`).** 28 tools is a lot
-  of schema in every request, and PA and PB together propose roughly 25 more.
+- [ ] **PB14 — Tool-set profiles (`--mcp-tools core|full`).** The registered set
+  is already a lot of schema in every request — 28 tools when this was written,
+  more now — and PA and PB together propose roughly 25 more.
   A `core` profile of about eight keeps small-context clients usable. Worth
   deciding *before* the surface doubles, not after.
 - [ ] **PB15 — `top_talkers(by, limit)`.** By IP, UA or prefix. Same reasoning
@@ -1212,14 +1358,36 @@ authoritative; the PB text above adds only what they do not already say.
   and packaging*, not engineering: check what `libpcap` the release artifacts
   and the Docker image actually link (`Dockerfile`, `packaging/`), test one
   alternate backend end to end, and either document the supported device-name
-  syntax in `docs/install.md` or state plainly that it is unsupported. Only
-  after that is it worth discussing a native AF_XDP path. This is the genuine
+  syntax in `docs/install.md` or state plainly that it is unsupported.
+  **Corrected 2026-08-05:** this used to end *"Only after that is it worth
+  discussing a native AF_XDP path"*, which contradicts CT13 above (AF_XDP:
+  **declined** — an XSK steals traffic from the host with no tee, and libpcap
+  has no AF_XDP backend at all) and
+  [`deferred-and-declined.md`](deferred-and-declined.md) §5b/§5d, which decline
+  DPDK and AF_XDP with named reopen triggers. The sentence predates those
+  investigations and is withdrawn rather than deleted, because someone reading
+  the title of this entry will otherwise re-propose exactly what §5 was written
+  to stop. **netmap is the only one of the three that survives**, and the title
+  should be read that way. This is the genuine
   order-of-magnitude lever for live capture, and it is a kernel-interface
   change, not a language change — see
   `docs/design/process-isolation-and-hot-path-cost.md` §5 for why rewriting hot
   Rust into C or assembler is not (the per-packet cost is a `memcpy` plus a hash
   lookup, the copy was already measured at ~15 ns, and the sequential stage that
-  caps `--cores` is libpcap itself).
+  caps `--cores` is libpcap itself). **Packaging half done:** netmap is built
+  into both static musl cross images
+  (`docker/cross/Dockerfile.{x86_64,aarch64}-unknown-linux-musl`) — libpcap
+  1.10.6, the first release that reports netmap in `pcap_lib_version()` so
+  presence can be asserted, pinned netmap headers, and an
+  `ar t | grep -qx pcap-netmap.o` gate so the image build fails rather than
+  quietly shipping a binary without the backend. **Open residue, and it is
+  operator documentation:** nothing in `docs/install.md` or
+  `docs/tuning-capture.md` mentions netmap, DPDK or XDP at all, so an operator
+  has no way to learn that the device-name syntax exists, which artifacts carry
+  which backends (musl tarballs ship sipnab's own libpcap; gnu, .deb and Docker
+  take stock Debian's; macOS has none), or that DPDK and AF_XDP are declined
+  rather than merely unbuilt. Tracked as CT6b and CT6c in
+  `capture-tuning-tasks.md`, with the untested-image gap recorded there too.
 - [ ] **PI2 — Scanner-kill as a real child process (D16 as originally
   specified).** The cleanest fork candidate in the tree and the only one worth
   doing: it is the sole component that *transmits*, it holds a `CAP_NET_RAW` raw
