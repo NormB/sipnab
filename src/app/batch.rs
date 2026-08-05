@@ -601,6 +601,57 @@ fn parallel_config(
     }
 }
 
+/// Run the conformance linter over every dialog and print the findings.
+///
+/// # Returns
+///
+/// `true` when a finding reached `--lint-fail-on`, i.e. the caller must exit 3.
+///
+/// # Why this is a function and not two copies
+///
+/// Both the batch path and `--cores` need it, and this tree has been bitten
+/// repeatedly by one input getting two answers depending on which path read it
+/// — the BPF refusal, the sweep, the range-overlap warning. A linter that
+/// reported different findings under `--cores` would be the same defect with a
+/// worse blast radius, because the whole point of the gate is that its verdict
+/// is trustworthy.
+fn run_lint_stage(cli: &Cli, ds: &crate::sip::dialog_store::DialogStore) -> bool {
+    if !cli.lint {
+        return false;
+    }
+    let threshold = cli
+        .lint_fail_on
+        .as_deref()
+        .and_then(crate::sip::lint::Severity::from_name);
+    let linter = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new());
+    let mut total = 0usize;
+    let mut tripped = false;
+    for dialog in ds.iter() {
+        for f in linter.lint_dialog(dialog) {
+            total += 1;
+            if threshold.is_some_and(|t| f.severity >= t) {
+                tripped = true;
+            }
+            println!(
+                "{}: {} [{}] {} (RFC {} §{}) observed={} expected={}",
+                f.severity.as_str(),
+                f.rule_id,
+                dialog.call_id,
+                f.explanation,
+                f.rfc,
+                f.section,
+                f.observed,
+                f.expected,
+            );
+        }
+    }
+    let dialogs = ds.len();
+    // Name the denominator: "0 findings" over 0 dialogs and over 900 are
+    // different answers and only one is good news.
+    eprintln!("Lint: {total} finding(s) across {dialogs} dialog(s)");
+    tripped
+}
+
 /// Multi-core offline file reconstruction (`--cores N` with `-I`, single
 /// device): read the capture files directly and shard packets across N worker
 /// threads, fusing read+peek+shard into one stage — no capture reader
@@ -673,8 +724,17 @@ pub fn run_cores_file(
                 report_retention_losses(&r.dialog_store);
                 report_capture_quality();
             }
+            // Same linter, same catalogue, same exit code as the batch path.
+            // Wired here because a gate that silently passes under `--cores` is
+            // worse than no gate: a pipeline adding `--cores 8` for speed would
+            // stop failing on non-conformant captures and nothing would say so
+            // (#147).
+            let lint_tripped = run_lint_stage(cli, &r.dialog_store);
             if !reports_ok {
                 std::process::exit(1);
+            }
+            if lint_tripped {
+                std::process::exit(3);
             }
         }
         Err(e) => {
@@ -2312,45 +2372,8 @@ impl BatchRunner {
         //
         // The linter shipped reachable only over MCP, which put the project's
         // most distinctive capability out of reach of the place it matters
-        // most: a pipeline gating a proxy config change. Same engine, same
-        // catalogue — a third surface, not a second implementation.
-        let mut lint_gate_tripped = false;
-        if cli.lint {
-            let threshold = cli
-                .lint_fail_on
-                .as_deref()
-                .and_then(crate::sip::lint::Severity::from_name);
-            let linter = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new());
-            let ds_guard = dialog_store.read();
-            let mut total = 0usize;
-            for dialog in ds_guard.iter() {
-                for f in linter.lint_dialog(dialog) {
-                    total += 1;
-                    if threshold.is_some_and(|t| f.severity >= t) {
-                        lint_gate_tripped = true;
-                    }
-                    // One line per finding, rule and citation first, so `grep`
-                    // and a human read the same thing.
-                    println!(
-                        "{}: {} [{}] {} (RFC {} §{}) observed={} expected={}",
-                        f.severity.as_str(),
-                        f.rule_id,
-                        dialog.call_id,
-                        f.explanation,
-                        f.rfc,
-                        f.section,
-                        f.observed,
-                        f.expected,
-                    );
-                }
-            }
-            let dialogs = ds_guard.len();
-            drop(ds_guard);
-            // Say the denominator. "0 findings" over 0 dialogs and over 900 are
-            // different answers, and only one of them is good news — the same
-            // silent-zero this tree keeps closing.
-            eprintln!("Lint: {total} finding(s) across {dialogs} dialog(s)");
-        }
+        // most: a pipeline gating a proxy config change.
+        let lint_gate_tripped = run_lint_stage(&cli, &dialog_store.read());
 
         // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
         if cli.wireshark {

@@ -1494,6 +1494,56 @@ fn lint_reports_from_the_cli_and_fail_on_exits_three() {
     );
 }
 
+/// `--cores` runs the same linter and the same gate as the batch path (#147).
+///
+/// A gate that silently passes under `--cores` is worse than no gate: a
+/// pipeline adding `--cores 8` for speed would stop failing on non-conformant
+/// captures and nothing would say so. This tree has been bitten by one input
+/// getting two answers depending on the path repeatedly — the BPF refusal, the
+/// post-merge sweep, the range-overlap warning — so the two paths call one
+/// function rather than carrying two copies.
+///
+/// Asserted as EQUALITY between the paths, not as a fixed expectation. What
+/// this fixture happens to contain is beside the point; that the two agree is
+/// the whole property.
+#[test]
+fn cores_runs_the_same_lint_gate_as_the_batch_path() {
+    let cap = sip_call_fixture();
+    let path = cap.to_string_lossy().into_owned();
+    let args = |cores: &str| {
+        vec![
+            "-N".to_string(),
+            "-I".to_string(),
+            path.clone(),
+            "--no-cli-print".to_string(),
+            "--lint".to_string(),
+            "--lint-fail-on".to_string(),
+            "info".to_string(),
+            "--cores".to_string(),
+            cores.to_string(),
+        ]
+    };
+    let one_args = args("1");
+    let many_args = args("4");
+    let one_refs: Vec<&str> = one_args.iter().map(String::as_str).collect();
+    let many_refs: Vec<&str> = many_args.iter().map(String::as_str).collect();
+    let one = run_support::run(&one_refs, None);
+    let many = run_support::run(&many_refs, None);
+
+    assert_eq!(
+        one.2, many.2,
+        "one input must not get two exit codes depending on --cores.\n\
+         cores=1 stderr:\n{}\ncores=4 stderr:\n{}",
+        one.1, many.1
+    );
+    for (label, err) in [("cores=1", &one.1), ("cores=4", &many.1)] {
+        assert!(
+            err.contains("Lint:") && err.contains("dialog(s)"),
+            "{label} must print the lint summary with its denominator:\n{err}"
+        );
+    }
+}
+
 /// `--lint-fail-on` without `--lint` is refused by clap, not silently ignored.
 #[test]
 fn lint_fail_on_requires_lint() {
