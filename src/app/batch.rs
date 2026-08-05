@@ -2308,6 +2308,50 @@ impl BatchRunner {
             }
         }
 
+        // 21z. --lint: run the RFC conformance linter over every dialog (#147).
+        //
+        // The linter shipped reachable only over MCP, which put the project's
+        // most distinctive capability out of reach of the place it matters
+        // most: a pipeline gating a proxy config change. Same engine, same
+        // catalogue — a third surface, not a second implementation.
+        let mut lint_gate_tripped = false;
+        if cli.lint {
+            let threshold = cli
+                .lint_fail_on
+                .as_deref()
+                .and_then(crate::sip::lint::Severity::from_name);
+            let linter = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new());
+            let ds_guard = dialog_store.read();
+            let mut total = 0usize;
+            for dialog in ds_guard.iter() {
+                for f in linter.lint_dialog(dialog) {
+                    total += 1;
+                    if threshold.is_some_and(|t| f.severity >= t) {
+                        lint_gate_tripped = true;
+                    }
+                    // One line per finding, rule and citation first, so `grep`
+                    // and a human read the same thing.
+                    println!(
+                        "{}: {} [{}] {} (RFC {} §{}) observed={} expected={}",
+                        f.severity.as_str(),
+                        f.rule_id,
+                        dialog.call_id,
+                        f.explanation,
+                        f.rfc,
+                        f.section,
+                        f.observed,
+                        f.expected,
+                    );
+                }
+            }
+            let dialogs = ds_guard.len();
+            drop(ds_guard);
+            // Say the denominator. "0 findings" over 0 dialogs and over 900 are
+            // different answers, and only one of them is good news — the same
+            // silent-zero this tree keeps closing.
+            eprintln!("Lint: {total} finding(s) across {dialogs} dialog(s)");
+        }
+
         // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
         if cli.wireshark {
             let ds_guard = dialog_store.read();
@@ -2439,6 +2483,18 @@ impl BatchRunner {
         // it just must not be mistaken for a whole one by a script reading $?.
         if output_failed || capture_failed {
             std::process::exit(1);
+        }
+        // 3, not 1. A pipeline has to tell "sipnab broke" from "the capture is
+        // non-conformant": the first means investigate the tool, the second
+        // means fix the config that produced the traffic. Collapsing them
+        // would make a working gate indistinguishable from a broken one, and
+        // 1 and 2 already mean something else (#147).
+        //
+        // Checked AFTER the failure codes above, so a run that both failed to
+        // write its output and found lint errors reports the failure — the
+        // findings came from a partial read and are not trustworthy anyway.
+        if lint_gate_tripped {
+            std::process::exit(3);
         }
     }
 }

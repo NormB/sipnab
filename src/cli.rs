@@ -705,6 +705,40 @@ pub struct Cli {
     #[arg(help_heading = "Output", long)]
     pub wireshark: bool,
 
+    /// Run the RFC conformance linter over every dialog and print the findings.
+    ///
+    /// Informational on its own: it changes what is printed, never the exit
+    /// code. Pair it with `--lint-fail-on` to make a pipeline stop.
+    ///
+    /// The linter reads what the capture actually contains against what the
+    /// cited RFC section calls for, so a finding names a section rather than
+    /// an opinion. `sipnab --help-rules` is not a thing; the catalogue is in
+    /// docs/sip-lint-rules.md and over MCP as `explain_rule`.
+    #[arg(help_heading = "Output", long)]
+    pub lint: bool,
+
+    /// Exit 3 when the linter reports a finding at or above this severity.
+    ///
+    /// This is the CI gate: `sipnab -I calls.pcap --lint --lint-fail-on error`
+    /// fails the build on a non-conformant capture and says which rule and
+    /// which RFC section.
+    ///
+    /// Exit 3 is deliberately NOT 1 or 2. A pipeline has to tell three things
+    /// apart: sipnab broke (1), the invocation was wrong (2), and the CAPTURE
+    /// is non-conformant (3). Collapsing the third into the first would make a
+    /// failing gate indistinguishable from a failing tool, and the usual
+    /// response to those differs completely.
+    ///
+    /// `info` is accepted and pointless — that severity exists for findings
+    /// that are never a reason to fail a build.
+    #[arg(
+        help_heading = "Output",
+        long = "lint-fail-on",
+        value_name = "SEVERITY",
+        requires = "lint"
+    )]
+    pub lint_fail_on: Option<String>,
+
     /// Generate a tshark-compatible display filter string.
     #[arg(help_heading = "Output", long, value_name = "EXPR")]
     pub tshark_filter: Option<String>,

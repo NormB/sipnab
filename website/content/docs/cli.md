@@ -560,6 +560,9 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 **Examples**
 
+- `sipnab -N -I calls.pcap --lint --no-cli-print` — run the RFC conformance linter over every dialog in a capture and print each finding with the rule identifier and the RFC section it reads from. Informational: it leaves the exit code alone
+- `sipnab -N -I calls.pcap --lint --lint-fail-on error --no-cli-print` — the CI gate. Exits 3 when any finding is at or above `error`, so a pipeline stops on a non-conformant capture. Exit 3 is not 1 or 2, so a failing gate is distinguishable from a failing tool and from a bad invocation
+- `sipnab -N -I calls.pcap --lint --lint-fail-on warning --no-cli-print` — a stricter gate: stop on warnings as well as errors, for a pipeline that treats interop degradation as a build failure rather than a note
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --plugin ./short-calls.wasm` — run a custom detection over every dialog and emit its findings beside sipnab's own
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --plugin ./site-rules.wasm --plugin ./fraud.wasm` — stack two site-specific detections over live traffic; each plugin is sandboxed and a failure in one never stops the capture
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
@@ -881,3 +884,4 @@ Scripts can rely on these:
 | `0` | Success |
 | `1` | Runtime failure — capture error, I/O error, or sipnab could not produce a requested report (e.g. `--call-report` Call-ID not found) |
 | `2` | Invalid usage — bad flag value or combination, or a flag whose feature is not compiled into this binary |
+| `3` | Lint gate tripped — `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity. Distinct from `1` on purpose: the tool worked, the CAPTURE is non-conformant |

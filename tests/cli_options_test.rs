@@ -1411,3 +1411,107 @@ fn strip_secrets_accepts_a_directory_holding_one_capture() {
         "--strip-secrets must never modify its input"
     );
 }
+
+/// `--lint` runs the conformance linter from the CLI, and `--lint-fail-on`
+/// makes it a gate that exits 3 (#147).
+///
+/// The linter shipped reachable only over MCP, which put the project's most
+/// distinctive capability out of reach of a pipeline gating a proxy config
+/// change — the place it matters most.
+///
+/// Exit 3 is asserted specifically, not merely "non-zero". A pipeline has to
+/// tell "sipnab broke" (1) from "you invoked it wrong" (2) from "the capture
+/// is non-conformant" (3); the usual response to each differs completely, and
+/// a gate that reports 1 is indistinguishable from a crashed tool.
+#[test]
+fn lint_reports_from_the_cli_and_fail_on_exits_three() {
+    let cap = sip_call_fixture();
+    let path = cap.to_string_lossy().into_owned();
+
+    // Informational on its own: findings print, exit code untouched.
+    let (out, err, code) = run_support::run(&["-N", "-I", &path, "--no-cli-print", "--lint"], None);
+    assert_eq!(
+        code,
+        Some(0),
+        "--lint alone must not change the exit code; it is a report, not a \
+         gate:\nstdout={out}\nstderr={err}"
+    );
+    assert!(
+        err.contains("Lint:") && err.contains("dialog(s)"),
+        "the summary must name the DENOMINATOR -- '0 findings' over 0 dialogs \
+         and over 900 are different answers:\n{err}"
+    );
+
+    // The gate itself. `info` is the floor, so anything the linter found at
+    // all trips it — which makes this assert the WIRING rather than depending
+    // on this fixture happening to contain an error-severity defect.
+    let (_o2, e2, c2) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            &path,
+            "--no-cli-print",
+            "--lint",
+            "--lint-fail-on",
+            "info",
+        ],
+        None,
+    );
+    let findings: u32 = e2
+        .split("Lint: ")
+        .nth(1)
+        .and_then(|s| s.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    if findings > 0 {
+        assert_eq!(
+            c2,
+            Some(3),
+            "findings at or above the threshold must exit 3, not 1 or 2:\n{e2}"
+        );
+    } else {
+        assert_eq!(c2, Some(0), "no findings must not trip the gate:\n{e2}");
+    }
+
+    // A threshold nothing can reach must not fail the build. Guards against a
+    // gate wired to "any findings at all" regardless of severity.
+    let (_o3, _e3, c3) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            &path,
+            "--no-cli-print",
+            "--lint",
+            "--lint-fail-on",
+            "nonsense-severity",
+        ],
+        None,
+    );
+    assert_eq!(
+        c3,
+        Some(0),
+        "an unparseable severity must not silently become 'fail on everything'"
+    );
+}
+
+/// `--lint-fail-on` without `--lint` is refused by clap, not silently ignored.
+#[test]
+fn lint_fail_on_requires_lint() {
+    let cap = sip_call_fixture();
+    let (_o, err, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            &cap.to_string_lossy(),
+            "--lint-fail-on",
+            "error",
+        ],
+        None,
+    );
+    assert_eq!(
+        code,
+        Some(2),
+        "a gate threshold with no linter running is a usage error -- silently \
+         ignoring it would let a pipeline believe it had a gate:\n{err}"
+    );
+}
