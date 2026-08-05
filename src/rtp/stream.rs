@@ -258,6 +258,51 @@ impl RtpStream {
     ///
     /// # Returns
     ///
+    /// How far the measured payload rate exceeds what this codec can physically
+    /// produce, as a multiple, when it exceeds it at all.
+    ///
+    /// # Why a physical check earns its place
+    ///
+    /// Reading two byte-identical copies of a capture as one `-I` set reports a
+    /// PCMU stream at 128 kbps across an unchanged 8-second span. G.711 is 64
+    /// kbps by definition — the number is not merely surprising, it is
+    /// impossible — and sipnab emitted it with no warning. Doubled counts read
+    /// as a busier network rather than a duplicated input (#72).
+    ///
+    /// sipnab already knows both halves: `octet_count` over the observed span,
+    /// and `octets_per_ms` from the same RFC 3551 table the `FRAME_SIZE_IMPOSSIBLE`
+    /// lint rule reads. Reused rather than re-tabulated — two tables of codec
+    /// rates is how they drift.
+    ///
+    /// This generalises past duplicate input: a clock-rate error, a timestamp
+    /// bug, or a misidentified payload type all land here too. It says a number
+    /// cannot be right; it does not claim to know why.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the codec is unknown or variable-rate (Opus, AMR — no fixed
+    /// ceiling to exceed), when the span is too short to divide by, or when the
+    /// rate is within tolerance.
+    ///
+    /// The tolerance is 15%: RTP header overhead is excluded already (this is
+    /// payload only), but a stream whose first and last packets bound a span
+    /// slightly shorter than its true duration inflates the quotient, and
+    /// comfort noise or a partial final frame perturb it. A 2x duplicate clears
+    /// 15% by a mile; ordinary jitter does not.
+    #[must_use]
+    pub fn impossible_rate_multiple(&self) -> Option<f64> {
+        let shape = crate::sip::lint::media::codec_shape(self.codec.as_deref()?)?;
+        let span_ms = (self.last_seen - self.first_seen).num_milliseconds();
+        // One packet, or a span the clock cannot resolve, divides by ~zero and
+        // would report every short stream as impossible.
+        if span_ms < 500 || self.packet_count < 2 {
+            return None;
+        }
+        let measured = self.octet_count as f64 / span_ms as f64;
+        let ratio = measured / shape.octets_per_ms;
+        (ratio > 1.15).then_some(ratio)
+    }
+
     /// A stream with `packet_count == 1`, zeroed jitter/loss counters, and
     /// the jitter/interval trackers primed with this packet so the next
     /// `update` produces the first jitter sample.
@@ -560,6 +605,74 @@ pub fn clock_rate_from_pt(pt: u8) -> Option<u32> {
 /// accounting, payload-type tables, sequence wraparound, and history caps.
 #[cfg(test)]
 mod tests {
+
+    /// A rate no codec can produce is reported as impossible (#72).
+    ///
+    /// Two byte-identical copies of a capture read as one `-I` set doubled a
+    /// PCMU stream to 128 kbps over an unchanged span. G.711 is 64 kbps BY
+    /// DEFINITION, so that is not a surprising measurement — it is an
+    /// arithmetically impossible one, and sipnab emitted it silently. Doubled
+    /// counts read as a busier network rather than a duplicated input.
+    #[test]
+    fn a_doubled_pcmu_stream_reports_an_impossible_rate() {
+        let t0 = chrono::Utc::now();
+        let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), t0);
+        s.codec = Some("PCMU".to_string());
+        s.last_seen = t0 + chrono::Duration::seconds(8);
+        s.packet_count = 800;
+
+        // 8 octets/ms is exactly G.711: 64 kbps. Legitimate.
+        s.octet_count = 8 * 8_000;
+        assert!(
+            s.impossible_rate_multiple().is_none(),
+            "a stream at exactly its codec rate must NOT be flagged, or the \
+             check fires on every clean capture and means nothing"
+        );
+
+        // Doubled — the measured duplicate-input case.
+        s.octet_count = 2 * 8 * 8_000;
+        let m = s
+            .impossible_rate_multiple()
+            .expect("128 kbps of PCMU is physically impossible and must be said");
+        assert!(
+            (m - 2.0).abs() < 0.05,
+            "the multiple must name HOW impossible, so 2x reads as duplicate \
+             input rather than as an unspecified anomaly: got {m}"
+        );
+    }
+
+    /// Short and single-packet streams are not flagged, and neither is a codec
+    /// with no fixed ceiling.
+    ///
+    /// Each of these would otherwise divide by something near zero or compare
+    /// against a rate that does not exist, turning the check into noise — and a
+    /// warning that fires constantly is one nobody reads.
+    #[test]
+    fn the_impossible_rate_check_stays_silent_where_it_cannot_know() {
+        let t0 = chrono::Utc::now();
+        let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), t0);
+        s.codec = Some("PCMU".to_string());
+        s.last_seen = t0 + chrono::Duration::milliseconds(100);
+        s.packet_count = 5;
+        s.octet_count = 100_000;
+        assert!(
+            s.impossible_rate_multiple().is_none(),
+            "a 100 ms span cannot support a rate claim"
+        );
+
+        s.last_seen = t0 + chrono::Duration::seconds(8);
+        s.codec = Some("opus".to_string());
+        assert!(
+            s.impossible_rate_multiple().is_none(),
+            "a variable-rate codec has no ceiling to exceed"
+        );
+
+        s.codec = None;
+        assert!(
+            s.impossible_rate_multiple().is_none(),
+            "an unknown codec must not be judged against a rate we guessed"
+        );
+    }
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;

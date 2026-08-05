@@ -721,6 +721,7 @@ pub fn run_cores_file(
                 );
                 report_undecodable(r.total_count);
                 report_icmp_summary(&r.stream_store);
+                report_impossible_rates(&r.stream_store);
                 report_retention_losses(&r.dialog_store);
                 report_capture_quality();
             }
@@ -782,6 +783,54 @@ fn apply_audio_retention(ss: &mut StreamStore, cli: &Cli) -> bool {
     let wanted = audio_retention_wanted(cli);
     ss.set_audio_capture(wanted);
     wanted
+}
+
+/// Report any stream whose measured rate exceeds what its codec can produce.
+///
+/// # Why this is worth a line of output
+///
+/// Reading two byte-identical copies of a capture as one `-I` set reports a
+/// PCMU stream at 128 kbps over an unchanged span. G.711 is 64 kbps by
+/// definition — the figure is impossible, not merely high — and the run said
+/// nothing. Doubled message counts and doubled packet counts read as a busier
+/// network rather than a duplicated input, which is the sharpest failure mode
+/// the multi-file feature has (#72).
+///
+/// It says WHAT happened and does not guess WHY. Duplicate input is the common
+/// cause; a clock-rate error, a timestamp bug or a misidentified payload type
+/// land here too. Deliberately not de-duplication: two legitimate captures of
+/// one call from different vantage points are a real and useful input, and
+/// silently collapsing them would destroy the asymmetry analysis that exists to
+/// compare the two directions.
+fn report_impossible_rates(streams: &crate::rtp::stream_store::StreamStore) {
+    let mut worst: Option<(f64, String)> = None;
+    let mut count = 0usize;
+    for st in streams.iter() {
+        if let Some(mult) = st.impossible_rate_multiple() {
+            count += 1;
+            let label = format!(
+                "{} ssrc={:08x} {} -> {}",
+                st.codec.as_deref().unwrap_or("?"),
+                st.key.ssrc,
+                st.key.src,
+                st.key.dst
+            );
+            if worst.as_ref().is_none_or(|(m, _)| mult > *m) {
+                worst = Some((mult, label));
+            }
+        }
+    }
+    if let Some((mult, label)) = worst {
+        tracing::warn!(
+            "IMPOSSIBLE RATE: {count} stream(s) carry more payload than their \
+             codec can produce — worst is {label} at {mult:.1}x its ceiling. \
+             The most common cause is the same traffic read twice: a directory \
+             holding a capture and its backup, or one call captured at two \
+             hops. Counts and rates in this run are inflated by that factor. \
+             sipnab does not de-duplicate, because two vantage points on one \
+             call are a legitimate input."
+        );
+    }
 }
 
 /// Report what the dialog store shed, beside the totals that hide it.
@@ -1239,6 +1288,7 @@ pub fn run(
             );
             report_undecodable(result.total_count);
             report_icmp_summary(&result.stream_store);
+            report_impossible_rates(&result.stream_store);
             report_retention_losses(&result.dialog_store);
             report_capture_quality();
         }
@@ -2455,6 +2505,7 @@ impl BatchRunner {
             }
 
             report_icmp_summary(&stream_store.read());
+            report_impossible_rates(&stream_store.read());
             report_retention_losses(&dialog_store.read());
             report_capture_quality();
 
