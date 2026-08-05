@@ -430,9 +430,12 @@ fn wiki_intra_docs_links_resolve() {
     // been renamed away) became two real links to the SSH-tunnel and
     // outside-your-network sections (+2). The wiki mirror is ONE copy, not two,
     // so unlike the docs_drift table gate this is +5 and not +10.
+    // Raised 279 -> 280 by the federated-tracing section's link back to
+    // "Collect captures from several SIP servers in one place", the
+    // centralised alternative it compares against. One link, one page.
     assert_eq!(
-        seen, 279,
-        "extractor found {seen} wiki links, expected 279. More is fine — bump \
+        seen, 280,
+        "extractor found {seen} wiki links, expected 280. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

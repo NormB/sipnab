@@ -73,6 +73,7 @@ exceptions:
   - PCAP
   - RTCP
   - RTP
+  - SBC
   - SDP
   - SIP
   - SRTP

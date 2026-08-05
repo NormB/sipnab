@@ -2216,9 +2216,12 @@ fn no_documentation_table_repeats_a_row() {
     // generated site mirror, the same page twice, as the entries above record.
     // Raised 464 -> 466 by `find_correlated`'s strategy table in docs/mcp.md:
     // one there and one in the site mirror, the same page twice.
+    // Raised 466 -> 470 by the federated-tracing section in
+    // docs/mcp-walkthrough.md: a strategy table and a federated-vs-centralised
+    // table, each doubled by the site mirror.
     assert_eq!(
-        tables, 466,
-        "walked {tables} tables, expected 466. More is fine — bump this. FEWER \
+        tables, 470,
+        "walked {tables} tables, expected 470. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
@@ -2260,6 +2263,7 @@ fn how_to_headings_stay_task_first() {
         "alert",
         "analyse",
         "analyze",
+        "ask",
         "block",
         "browse",
         "check",
@@ -2278,6 +2282,7 @@ fn how_to_headings_stay_task_first() {
         "filter",
         "find",
         "fix",
+        "follow",
         "generate",
         "graph",
         "inspect",

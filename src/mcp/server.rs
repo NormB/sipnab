@@ -663,6 +663,18 @@ pub struct FindCorrelatedResponse {
     pub heuristic_only: bool,
     /// Which capture and store revision this answer describes.
     pub capture_identity: crate::provenance::CaptureEtag,
+    /// The clock a `timing_heuristic` match depended on — present ONLY when
+    /// such a match is in `legs`.
+    ///
+    /// Attached where it is the evidence and omitted where it is not. Within
+    /// one capture, skew is irrelevant: both timestamps came from this clock
+    /// and a constant offset cancels. It becomes decisive the moment an agent
+    /// joins this answer to another server's, because the two-second window is
+    /// smaller than the skew an undisciplined host accumulates in a day.
+    ///
+    /// `null` here therefore means "no time-based match was returned", never
+    /// "the clock is fine".
+    pub timing_clock: Option<crate::clock::ClockDiscipline>,
 }
 
 /// Parameters for `export_capture`.
@@ -3996,6 +4008,13 @@ impl SipnabMcp {
             drop(state);
 
             let heuristic_only = !legs.is_empty() && legs.iter().all(|l| !l.identifier_match);
+            // Only when a time-based match is actually being reported. Sending
+            // the clock unconditionally would invite a reader to weigh it
+            // against identifier matches, which do not depend on it at all.
+            let timing_clock = legs
+                .iter()
+                .any(|l| !l.identifier_match)
+                .then(crate::clock::discipline);
             FindCorrelatedResponse {
                 schema_version: 1,
                 source_call_id: params.call_id.clone(),
@@ -4003,6 +4022,7 @@ impl SipnabMcp {
                 total_matched,
                 heuristic_only,
                 capture_identity,
+                timing_clock,
             }
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -7301,5 +7321,47 @@ mod tests {
                 "clock.{k} is {val}, which is not a counter"
             );
         }
+    }
+
+    /// An identifier match carries NO clock, because the clock is not why the
+    /// legs matched. Attaching it would invite a reader to weigh a number with
+    /// no bearing on the answer.
+    #[tokio::test]
+    async fn an_identifier_match_carries_no_timing_clock() {
+        const A: &str = "ab30317f1a784dc48ff824d0d3715d86";
+        const B: &str = "47755a9de7794ba387653f2099600ef2";
+        let ds = {
+            let mut ds = DialogStore::new(100, false);
+            ds.process_message(invite_with_header(
+                "leg-a@access",
+                "Session-ID",
+                &format!("{A};remote={B}"),
+                base_ts(),
+            ));
+            ds.process_message(invite_with_header(
+                "leg-b@core",
+                "Session-ID",
+                &format!("{B};remote={A}"),
+                base_ts(),
+            ));
+            Arc::new(RwLock::new(ds))
+        };
+        let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .find_correlated(Parameters(FindCorrelatedParams {
+                    call_id: "leg-a@access".into(),
+                    limit: None,
+                }))
+                .await
+                .expect("correlates"),
+        ))
+        .unwrap();
+
+        assert_eq!(v["legs"][0]["strategy"], "session_id");
+        assert!(
+            v["timing_clock"].is_null(),
+            "null means no time-based match was returned, not that the clock is fine"
+        );
     }
 }

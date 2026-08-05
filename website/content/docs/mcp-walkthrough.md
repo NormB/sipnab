@@ -789,6 +789,91 @@ entry in one client config:
 
 ---
 
+## Follow one call across an SBC and its PBXes
+
+*Federated tracing. Each node keeps its own capture; the agent does the joining.*
+
+<pre class="mermaid">
+flowchart LR
+    AG["agent (laptop)"]
+    SBC["sipnab on the SBC&lt;br/&gt;node: sbc-edge-1"]
+    P1["sipnab on pbx-1"]
+    P2["sipnab on pbx-2"]
+
+    AG --&gt;|"1. find_correlated(access leg)"| SBC
+    SBC -.-&gt;|"names the core-side Call-ID"| AG
+    AG --&gt;|"2. get_dialog(that Call-ID)"| P1
+    AG -.-&gt;|"only if the SBC named nothing"| P2
+</pre>
+
+The previous section registers several servers. This one is about the ORDER to
+ask them in, and about what the answer is worth.
+
+### Ask the SBC first
+
+The SBC is the only box that saw **both** sides of the call, so its
+`find_correlated` result names the core-side Call-ID to look up next. Querying
+the PBXes first means guessing which one took the call, and usually means asking
+all of them.
+
+That ordering also matters for a reason the section on performance makes
+concrete: server-side query time is under a millisecond, while each agent
+round trip costs seconds. Following one pointer beats fanning out.
+
+### Read `strategy`, then decide whether to believe the tree
+
+`find_correlated` returns each leg with the strategy that matched it. Across a
+B2BUA only some of them mean anything:
+
+| `strategy` | Crosses the SBC? | What a match is worth |
+|---|---|---|
+| `session_id` | **Yes, by design** (RFC 7989) | An identifier both ends agreed on |
+| `x_call_id` | Only if the SBC inserts it | An identifier, by vendor convention |
+| `sdp_origin` | Only if the SBC forwards SDP untouched | An identifier of the MEDIA session |
+| `timing_heuristic` | No | A guess from endpoint overlap and elapsed time |
+
+`identifier_match` carries that distinction as a boolean, and `heuristic_only`
+says whether *every* returned leg was a guess.
+
+**Check the clocks before believing a `timing_heuristic` match across nodes.**
+The window is two seconds, which is smaller than the skew an undisciplined host
+accumulates in a day, and the failure is silent in both directions — a fast
+clock misses legs that belong together, a slow one pulls unrelated legs in. When
+the response returns a time-based match, it carries `timing_clock`, and
+`capture_health` reports the same for each node. If either box is not
+`synchronised`, treat the tree as a hypothesis.
+
+### Check what federation cannot prove
+
+If the SBC emits no `Session-ID` and no `X-Call-ID`, and re-originates SDP, then
+**nothing in the signalling proves the two legs are one call**. The honest answer
+is that they may be, and sipnab says so rather than drawing a tree on a timing
+guess. Configuring the SBC to insert a correlation header is the fix; sipnab
+watches a wire and cannot add one, because the SBC forwards its own message to
+the far side regardless of what sipnab saw.
+
+Every answer carries `capture_identity.node`, so you can always attribute a fact
+to the box that saw it — "answered 407" is incomplete until you know where.
+
+### Choose between federated and centralised
+
+Both work, and the choice is about where packet data lives rather than which is
+newer.
+
+| | Federated (this section) | Centralised (HEP) |
+|---|---|---|
+| Setup | Register N servers with the client | `--hep-send` on each node into one `--hep-listen` collector |
+| Packet data | Never leaves the node | Concentrates on the collector |
+| Correlation | Agent joins the answers | One store, `find_correlated` runs unchanged |
+| Cost | More round trips, one per node | Bandwidth, and a PII decision |
+
+Centralising needs no new code. See
+[Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place).
+It is also what Homer does, at the scale of a whole enterprise system; sipnab is
+one binary, and it can feed Homer rather than replace it.
+
+---
+
 ## Run diagnostics on a schedule, with no agent attached
 
 Nothing about MCP requires an interactive session.
