@@ -1,12 +1,13 @@
-# OpenSIPS built from the user's fork at their local HEAD.
+# OpenSIPS built from upstream, pinned to a release tag.
+# Override OPENSIPS_GIT_URL / OPENSIPS_GIT_REF to build a fork or a branch.
 # The default `make all` excludes all heavy-dep modules (DB, presence, pua,
 # xml, tls_mgm, httpd, rest_client), so the build needs only a minimal dep set
 # while still producing the modules this harness uses: proto_udp, tm, sl, rr,
 # maxfwd, usrloc, registrar, rtpengine, sipmsgops, textops, nathelper, mi_fifo.
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
-ARG OPENSIPS_GIT_URL=https://github.com/NormB/opensips.git
-ARG OPENSIPS_GIT_REF=d8586fa6
+ARG OPENSIPS_GIT_URL=https://github.com/OpenSIPS/opensips.git
+ARG OPENSIPS_GIT_REF=3.6.7
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates \

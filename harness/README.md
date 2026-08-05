@@ -36,7 +36,7 @@ sees the entire conversation, and serves it over MCP.
 
 | Service     | Image source                              | Role |
 |-------------|-------------------------------------------|------|
-| `opensips-1`| built from `NormB/opensips` @ `d8586fa6`  | registrar + stateful proxy; owns the shared netns + published ports |
+| `opensips-1`| built from upstream `OpenSIPS/opensips` @ `3.6.7` | registrar + stateful proxy; owns the shared netns + published ports |
 | `rtpengine` | trixie `rtpengine-daemon` (userspace)     | media relay; shares `opensips-1` netns |
 | `sipnab`    | built from this repo (`mcp-http` feature) | live capture on the shared netns + MCP HTTP server |
 | `sipp-uas`  | trixie `sip-tester`                       | answers relayed calls |
@@ -45,9 +45,21 @@ sees the entire conversation, and serves it over MCP.
 ## Prerequisites
 
 - Docker + Compose v2 (`docker compose`), with network egress to build.
-- The sibling `~/opensips` fork is **not** required at build time — OpenSIPS
-  is cloned from GitHub at the pinned commit. To build from your working
-  tree instead, see *Build OpenSIPS from a local checkout* below.
+- No local OpenSIPS checkout is required at build time — OpenSIPS is cloned
+  from GitHub at the pinned ref. To build from your working tree instead, see
+  *Build OpenSIPS from a local checkout* below.
+
+  **Why upstream, pinned.** The default is `OpenSIPS/opensips` at `3.6.7`, so a
+  contributor who runs this harness gets what everyone else gets and a bug they
+  reproduce is a bug in OpenSIPS rather than in a fork's patches. It previously
+  defaulted to a personal fork pinned at `d8586fa6`, a commit that does not
+  exist upstream.
+
+  Verified before the switch rather than assumed: the image builds from
+  upstream, the stack comes up healthy, and `make mcp-test` returns a real
+  answer — 70 dialogs, 26 RTP streams and 5 active calls through the proxy with
+  rtpengine relaying media. Set `OPENSIPS_GIT_URL` / `OPENSIPS_GIT_REF` to build
+  a fork or a branch; both are ordinary environment variables.
 - `sudo` for `make host-prep` (a one-line sysctl; see below). `make up` runs it
   automatically.
 

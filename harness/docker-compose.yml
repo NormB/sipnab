@@ -23,8 +23,8 @@ services:
       context: ./opensips
       network: host          # RUN steps need the host resolver (daemon DNS is blocked)
       args:
-        OPENSIPS_GIT_URL: ${OPENSIPS_GIT_URL:-https://github.com/NormB/opensips.git}
-        OPENSIPS_GIT_REF: ${OPENSIPS_GIT_REF:-d8586fa6}
+        OPENSIPS_GIT_URL: ${OPENSIPS_GIT_URL:-https://github.com/OpenSIPS/opensips.git}
+        OPENSIPS_GIT_REF: ${OPENSIPS_GIT_REF:-3.6.7}
     image: sipnab-harness/opensips:local
     container_name: opensips-1
     hostname: opensips-1
