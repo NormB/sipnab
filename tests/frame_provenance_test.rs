@@ -535,3 +535,54 @@ fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
         "a writer given no note must embed none"
     );
 }
+
+/// A truncated frame written to `-O` is reported, not silently shortened
+/// (#149).
+///
+/// The output keeps the right frame COUNT and short payloads, so nothing
+/// downstream — a codec analysis, a replay, a carrier's vendor opening the
+/// file — can tell it is incomplete. That is the same confident-wrong shape as
+/// a capture reporting zero SIP messages it never decoded.
+///
+/// Asserted on the writer's own accounting rather than on log text, so a
+/// reworded warning cannot quietly turn this green while the loss goes
+/// unreported.
+#[test]
+fn a_truncated_frame_written_to_output_is_counted() {
+    use sipnab::capture::packet::Packet;
+    use sipnab::capture::{PcapExportMode, PcapWriter};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("short.pcap");
+    let mut w =
+        PcapWriter::with_format(&path, 1, None, None, false, PcapExportMode::Raw).expect("writer");
+
+    // caplen < origlen is the kernel saying "there was more".
+    let whole = Packet::new(
+        chrono::Utc::now(),
+        vec![0u8; 64],
+        64,
+        64,
+        Some("t".to_string()),
+        1,
+    );
+    let cut = Packet::new(
+        chrono::Utc::now(),
+        vec![0u8; 64],
+        64,
+        1500,
+        Some("t".to_string()),
+        1,
+    );
+    w.write(&whole).expect("write whole");
+    w.write(&cut).expect("write truncated");
+    w.finish().expect("finish");
+
+    assert_eq!(
+        w.truncated_frames_written(),
+        1,
+        "exactly the frame whose caplen was under its origlen must count -- a \
+         whole frame must not, or the warning fires on every capture and means \
+         nothing"
+    );
+}

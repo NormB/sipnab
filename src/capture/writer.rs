@@ -176,6 +176,19 @@ pub struct PcapWriter {
     export_mode: PcapExportMode,
     /// Whether a DSB has already been written to the current file.
     dsb_written: bool,
+    /// Frames written whose captured bytes were shorter than the wire length.
+    ///
+    /// An `-O` fed by a truncated capture produces an output that LOOKS whole:
+    /// every frame is present, the count is right, and the bytes each frame
+    /// carries stop early. Anything downstream — a codec analysis, a replay, a
+    /// carrier handing it to their vendor — reads a complete file (#149).
+    truncated_written: u64,
+    /// Next `truncated_written` value at which to warn (1, then x10).
+    ///
+    /// Escalating rather than once-only or per-frame: a single line can scroll
+    /// past on a long run, and one per frame would bury the capture's own
+    /// output under millions of copies of the same fact.
+    next_truncation_warn: u64,
     /// Provenance note embedded as the pcapng section comment, if any.
     ///
     /// Stored rather than passed once, because rotation writes a fresh SHB and
@@ -380,6 +393,8 @@ impl PcapWriter {
             export_mode,
             dsb_written: false,
             provenance,
+            truncated_written: 0,
+            next_truncation_warn: 1,
             interfaces,
             default_source,
         })
@@ -414,6 +429,26 @@ impl PcapWriter {
     /// (interface, link type) pair also appends that interface's IDB (and
     /// counts its bytes) before the packet's EPB.
     pub fn write(&mut self, packet: &Packet) -> Result<()> {
+        // A frame the kernel truncated at snaplen goes into the output at its
+        // captured length, and nothing in the file says the rest existed. The
+        // count is right, every frame is there, and each one stops early —
+        // which is the shape of every other defect this tree has closed (#149).
+        if packet.caplen < packet.origlen {
+            self.truncated_written += 1;
+            if self.truncated_written >= self.next_truncation_warn {
+                tracing::warn!(
+                    "Output is TRUNCATED: {} frame(s) written with fewer bytes \
+                     than they carried on the wire (this one {} of {}). The file \
+                     will look complete — same frame count, short payloads. \
+                     Raise --snaplen to capture whole frames.",
+                    self.truncated_written,
+                    packet.caplen,
+                    packet.origlen,
+                );
+                self.next_truncation_warn = self.next_truncation_warn.saturating_mul(10);
+            }
+        }
+
         // Check if rotation is needed before writing
         if self.should_rotate() {
             self.rotate()?;
@@ -531,6 +566,16 @@ impl PcapWriter {
         }
 
         Ok(())
+    }
+
+    /// How many frames went into the output with fewer bytes than they carried
+    /// on the wire.
+    ///
+    /// Exposed so a caller can report the loss without parsing log lines, and
+    /// so a test can assert the ACCOUNTING rather than the wording (#149).
+    #[must_use]
+    pub fn truncated_frames_written(&self) -> u64 {
+        self.truncated_written
     }
 
     /// Return the current export mode.
@@ -695,6 +740,18 @@ impl PcapWriter {
         // constructor's source is the only thing known, and a section with no
         // IDB would leave the export saying nothing about where it came from.
         self.ensure_pcapng_interface()?;
+        // Said again at the end because the escalating warnings above are
+        // spread across the run and the last one may be thousands of frames
+        // old. The closing line is the one an operator reads (#149).
+        if self.truncated_written > 0 {
+            tracing::warn!(
+                "Output is INCOMPLETE: {} frame(s) were written truncated. \
+                 The file has the right frame count and short payloads, so \
+                 nothing downstream can tell. Re-capture with a larger \
+                 --snaplen if the full bytes matter.",
+                self.truncated_written,
+            );
+        }
         match &mut self.backend {
             WriterBackend::Pcap(w) => w.flush().context("flushing pcap output at end of capture"),
             WriterBackend::PcapNg(writer) => {
