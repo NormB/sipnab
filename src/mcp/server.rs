@@ -1123,6 +1123,28 @@ pub struct CaptureStatusResponse {
     /// two answers carrying different instances describe different captures
     /// however similar the rest of the fields look.
     pub capture_identity: crate::provenance::CaptureEtag,
+    /// SIP messages seen and NOT analysed because both ports fell outside
+    /// `--portrange`.
+    ///
+    /// `dialog_count` above answers "how much is held". Without this it also
+    /// reads as "how much was there", and on real carrier traffic those differ
+    /// badly: the corpus sweep measured 2,311 dialogs reported against 3,712
+    /// real — 1,401 lost, 37.7% — because a third of the SIP never touches
+    /// 5060/5061. That loss reached the operator as stderr warnings and a CLI
+    /// summary line, and reached an MCP client not at all: the response was
+    /// byte-identical with and without it (#95).
+    ///
+    /// The asymmetry is the point. A human sees a warning scroll past and can
+    /// ask a follow-up. An agent answering "what calls are in this capture"
+    /// from two-thirds of them cannot, and will answer with full confidence.
+    /// Zero on live capture, where BPF filtered before the pipeline saw
+    /// anything and there is nothing to under-report.
+    pub unanalysed_sip_messages: u64,
+    /// The busiest ports carrying that unanalysed SIP, up to five.
+    ///
+    /// Actionable rather than merely alarming: these are the values to pass to
+    /// `--portrange`, so the answer names its own remedy.
+    pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
     /// The background load filling this capture, while one runs. Null
     /// otherwise, including before any `open_capture` call.
     pub load: Option<LoadStatus>,
@@ -2921,6 +2943,7 @@ impl SipnabMcp {
                 .source_exhausted
                 .as_ref()
                 .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire));
+            let skipped = crate::pipeline::portrange_skip_report();
             let resp = CaptureStatusResponse {
                 schema_version: 1,
                 source,
@@ -2934,6 +2957,16 @@ impl SipnabMcp {
                 // A file replay is by definition already on disk.
                 unsaved: live && writing_to.is_none(),
                 capture_identity: state.identity.etag(ds.generation(), ss.generation()),
+                unanalysed_sip_messages: skipped.messages,
+                unanalysed_busiest_ports: skipped
+                    .ports
+                    .iter()
+                    .take(5)
+                    .map(|p| UnanalysedPort {
+                        port: p.port,
+                        messages: p.messages,
+                    })
+                    .collect(),
                 load,
             };
             drop(ss);
@@ -4908,6 +4941,49 @@ mod tests {
             "the file outside the root must be untouched"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `capture_status` reports SIP the portrange skipped (#95).
+    ///
+    /// `dialog_count` alone reads as "how much was there". On the corpus it was
+    /// 2,311 against 3,712 real — 37.7% lost — because a third of the SIP never
+    /// touches 5060/5061. That reached the operator as stderr warnings and
+    /// reached an MCP client not at all: the response was byte-identical with
+    /// and without the loss, so an agent answered "what calls are in this
+    /// capture" from two-thirds of them with full confidence.
+    ///
+    /// Asserted as KEY PRESENCE, not a value. The count is process-global and
+    /// whatever this test's process happens to have skipped is not the point —
+    /// the defect was a field that did not exist, and a client that cannot see
+    /// the key cannot see the loss whatever number would have been in it.
+    #[tokio::test]
+    async fn capture_status_carries_the_unanalysed_sip_count() {
+        let result = empty_server()
+            .capture_status()
+            .await
+            .expect("capture_status");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert!(
+            v.get("unanalysed_sip_messages").is_some(),
+            "a client must be able to see that SIP went unanalysed: {v}"
+        );
+        assert!(
+            v["unanalysed_busiest_ports"].is_array(),
+            "the ports carrying it are what the operator passes to --portrange, \
+             so the answer names its own remedy: {v}"
+        );
+        // Present on `stats` too, and the two must not drift into naming the
+        // same fact differently.
+        let stats = empty_server().stats().await.expect("stats");
+        let sv: serde_json::Value = serde_json::from_str(&text_of(&stats)).unwrap();
+        for key in ["unanalysed_sip_messages", "unanalysed_busiest_ports"] {
+            assert!(
+                sv.get(key).is_some(),
+                "stats must carry {key} under the same name as capture_status, \
+                 or a client learns the loss from one tool and not the other"
+            );
+        }
     }
 
     /// A lint finding cites the frame it was drawn from, and stays silent when
