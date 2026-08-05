@@ -50,7 +50,12 @@ fn nothing_enabled_spawns_nothing() {
         Selection {
             api: true,
             mcp: true,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     )
     .expect("no servers requested must succeed");
     assert!(handle.is_none(), "no --api/--mcp flags ⇒ no servers thread");
@@ -72,7 +77,12 @@ fn selection_gates_configured_servers() {
         Selection {
             api: true,
             mcp: false, // …but not selected
+            // These cases exercise the API/MCP selection; the metrics server
+            // has its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     )
     .expect("must succeed");
     assert!(handle.is_none(), "unselected MCP must not start a thread");
@@ -95,7 +105,12 @@ fn invalid_api_addr_is_an_error() {
         Selection {
             api: true,
             mcp: false,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     );
     assert!(err.is_err(), "junk --api address must be a startup error");
 }
@@ -115,7 +130,12 @@ fn api_on_ephemeral_port_starts_servers_thread() {
         Selection {
             api: true,
             mcp: false,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     )
     .expect("valid --api must start");
     assert!(handle.is_some(), "an enabled server must spawn the thread");
@@ -142,7 +162,12 @@ fn api_port_in_use_is_a_startup_error() {
         Selection {
             api: true,
             mcp: false,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     )
     .err()
     .expect("busy --api port must be a startup error, not a detached-thread log");
@@ -170,7 +195,12 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
         Selection {
             api: true,
             mcp: false,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     )
     .err()
     .expect("unauthenticated non-loopback --api must be a startup error");
@@ -199,7 +229,12 @@ fn api_tls_flags_are_a_startup_error() {
         Selection {
             api: true,
             mcp: false,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     )
     .err()
     .expect("API TLS flags must be a startup error");
@@ -228,7 +263,12 @@ fn mcp_http_transport_without_feature_is_a_startup_error() {
         Selection {
             api: false,
             mcp: true,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     )
     .err()
     .expect("http transport without mcp-http must be a startup error");
@@ -255,7 +295,12 @@ fn unknown_mcp_transport_is_a_startup_error() {
         Selection {
             api: false,
             mcp: true,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     )
     .err()
     .expect("unknown --mcp-transport must be a startup error");
@@ -283,7 +328,12 @@ fn invalid_mcp_bind_is_a_startup_error() {
         Selection {
             api: false,
             mcp: true,
+            // These cases exercise the API/MCP selection; the metrics server has
+            // its own end-to-end gate in tests/metrics_headless_test.rs.
+            metrics: false,
         },
+        #[cfg(feature = "metrics")]
+        None,
     );
     assert!(
         err.is_err(),

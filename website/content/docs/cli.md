@@ -642,9 +642,9 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--metrics` | `<ADDR>` | -- | Prometheus metrics endpoint (e.g., `127.0.0.1:9090`). sipnab **refuses** a non-loopback bind (e.g. `0.0.0.0:9090`) unless you also pass `--metrics-auth`/`--metrics-auth-file`. Feature: `api` |
-| `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>`. Prefer `--metrics-auth-file`. Feature: `api` |
-| `--metrics-auth-file` | `<FILE>` | -- | Read the metrics Basic-auth `user:pass` from a file (contents trimmed), keeping the secret out of the process list. Takes precedence over `--metrics-auth`. Feature: `api` |
+| `--metrics` | `<ADDR>` | -- | Prometheus metrics endpoint (e.g., `127.0.0.1:9090`). Serves in BOTH TUI and headless (`-N`) runs — headless is where a container or systemd unit uses it. sipnab **refuses** a non-loopback bind (e.g. `0.0.0.0:9090`) unless you also pass `--metrics-auth`/`--metrics-auth-file`. Note a file run (`-I`) exits as soon as it finishes the capture, so there is little to scrape; the endpoint is for long-lived runs — a live device, `--hep-listen`, or a served API/MCP. Not served on the `--cores N` parallel offline path, which finishes and exits before a scrape could land; sipnab warns when you combine them. Feature: `metrics` |
+| `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>`. Prefer `--metrics-auth-file`. Feature: `metrics` |
+| `--metrics-auth-file` | `<FILE>` | -- | Read the metrics Basic-auth `user:pass` from a file (contents trimmed), keeping the secret out of the process list. Takes precedence over `--metrics-auth`. Feature: `metrics` |
 | `--api` | `<ADDR>` | -- | REST API endpoint (e.g., `0.0.0.0:8080`). Feature: `api` |
 | `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY` Feature: `api` |
 | `--api-tls-cert` | `<FILE>` | -- | **Not yet implemented** — nothing wires up built-in API TLS, and sipnab exits when you pass this. Terminate TLS at a reverse proxy instead. Feature: `api` |

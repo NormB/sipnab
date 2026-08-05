@@ -128,7 +128,7 @@ pub fn run_tui_mode(
     handle: capture::CaptureHandle,
     rx: capture::channel::PacketRx,
     policy: CapturePolicy,
-    #[cfg(feature = "metrics")] metrics_bind_addr: Option<std::net::SocketAddr>,
+    #[cfg(feature = "metrics")] _metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
@@ -150,33 +150,6 @@ pub fn run_tui_mode(
         Arc::new(RwLock::new(ss))
     };
 
-    // Start standalone metrics server with the REAL stores (not empty copies)
-    #[cfg(feature = "metrics")]
-    let _metrics_handle = if let Some(bind_addr) = metrics_bind_addr {
-        match crate::output::prometheus_server::start_metrics_server(
-            bind_addr,
-            Arc::clone(&dialog_store),
-            Arc::clone(&stream_store),
-            cli.resolve_metrics_auth().unwrap_or_else(|e| {
-                tracing::error!("metrics auth: {e}");
-                None
-            }),
-            Some(rx.meter()),
-        ) {
-            // The bound address is returned as well as logged, because
-            // `--metrics 127.0.0.1:0` lets the OS pick the port. Nothing here
-            // needs it yet — the server already logs it — so it is dropped
-            // explicitly rather than carried as an unnamed tuple element.
-            Ok((_bound_addr, h)) => Some(h),
-            Err(e) => {
-                tracing::error!("Failed to start metrics server: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // Shared pause flag between TUI and processing thread
     let paused_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -188,6 +161,12 @@ pub fn run_tui_mode(
     // Resolved before the move: the thread owns a Cli clone but not the
     // Config, and the cap needs both.
     let reassembly_cap = cli.max_reassembly_limit(&config);
+
+    // Taken BEFORE `rx` moves into the thread below. The meter is a cheap
+    // shared handle; `PacketRx` is not `Clone`, so reading it afterwards would
+    // be a borrow of a moved value.
+    #[cfg(feature = "metrics")]
+    let capture_meter = Some(rx.meter());
 
     // Spawn packet processing thread
     let processing_thread = std::thread::Builder::new()
@@ -375,7 +354,10 @@ pub fn run_tui_mode(
         crate::app::servers::Selection {
             api: true,
             mcp: false,
+            metrics: true,
         },
+        #[cfg(feature = "metrics")]
+        capture_meter,
     )
     .unwrap_or_else(|e| {
         tracing::error!("{e}");

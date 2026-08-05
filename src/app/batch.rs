@@ -1163,8 +1163,19 @@ pub fn run(
     let transmit_permit =
         crate::security::transmit_guard::TransmitPermit::for_source(&handle.source);
 
-    let runner = match BatchRunner::new(cli, config, batch, policy, raw_kill_sock, transmit_permit)
-    {
+    let runner = match BatchRunner::new(
+        cli,
+        config,
+        batch,
+        policy,
+        raw_kill_sock,
+        transmit_permit,
+        // Taken before `rx` is moved into `run_loop`: the meter is a cheap
+        // clonable view of the same queue, so the metrics thread can read the
+        // depth while the receive loop owns the receiver.
+        #[cfg(feature = "metrics")]
+        rx.meter(),
+    ) {
         Ok(runner) => runner,
         Err(fatal) => {
             // `handle`'s thread has been running since bootstrap::launch, and
@@ -1246,6 +1257,12 @@ impl BatchRunner {
     /// * `policy` — split/autostop policy resolved from the CLI.
     /// * `raw_kill_sock` — raw socket for spoofed kill responses, handed to
     ///   the kill worker when spawned.
+    /// * `capture_meter` — cheaply-clonable view of the packet queue's depth,
+    ///   taken from the receiver in `run` because this is where the metrics
+    ///   server is started. Threaded through rather than left `None`:
+    ///   `sipnab_capture_queue_depth_packets` is written unconditionally, so
+    ///   an absent meter does not omit the gauge, it publishes a hard `0` —
+    ///   and headless is now the path that actually serves metrics.
     ///
     /// # Side effects
     ///
@@ -1274,6 +1291,7 @@ impl BatchRunner {
         policy: CapturePolicy,
         raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
         transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
+        #[cfg(feature = "metrics")] capture_meter: crate::capture::channel::CaptureMeter,
     ) -> Result<Self, crate::app::bootstrap::PlanError> {
         let matcher = batch.matcher;
         let filter_expr = batch.filter_expr;
@@ -1684,7 +1702,17 @@ impl BatchRunner {
             crate::app::servers::Selection {
                 api: true,
                 mcp: true,
+                // The whole point of #159: headless is where --metrics is
+                // actually used, and it was the one path that never started it.
+                metrics: true,
             },
+            // The meter travels from `run`, where the receiver lives. Passing
+            // `None` here would not omit `sipnab_capture_queue_depth_packets`
+            // — that gauge is written unconditionally — it would publish a
+            // confident `0` for the queue depth on every headless deployment,
+            // which is the same defect this ticket is fixing, one layer down.
+            #[cfg(feature = "metrics")]
+            Some(capture_meter),
         )
         .map_err(|e| crate::app::bootstrap::PlanError {
             exit_code: 2,

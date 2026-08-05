@@ -408,9 +408,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         cli.quality_threshold,
     );
 
-    // Parsed --metrics bind address (consumed by the TUI path only; batch
-    // starts its own metrics server).
-    #[cfg(all(feature = "metrics", feature = "tui"))]
+    // Parsed --metrics bind address, validated here so a bad address fails at
+    // plan time rather than after a capture is running.
+    //
+    // The comment this replaces claimed "batch starts its own metrics server".
+    // It did not — `start_metrics_server` had one call site, in tui_mode.rs —
+    // and the claim is why the gap survived: a reader checking whether headless
+    // was covered found a note saying it was. `servers::start_servers` now
+    // starts it for both modes, so the `feature = "tui"` coupling below is
+    // gone too.
+    #[cfg(feature = "metrics")]
     let metrics_bind = match cli.metrics.as_deref() {
         Some(addr_str) => Some(
             crate::output::prometheus_server::parse_metrics_addr(addr_str)
@@ -418,7 +425,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         ),
         None => None,
     };
-    #[cfg(not(all(feature = "metrics", feature = "tui")))]
+    #[cfg(not(feature = "metrics"))]
     let metrics_bind = None;
 
     // Run mode. The multi-core offline file path outranks the TUI/batch
@@ -474,6 +481,13 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // reader cannot take. Not fatal — the run is correct, just single-threaded
     // — but never silent again. See `cores_ignored_warning`.
     if let Some(msg) = cores_ignored_warning(cli) {
+        tracing::warn!("{msg}");
+    }
+
+    // The one path `--metrics` still does not reach, said out loud rather than
+    // left to be discovered by an empty Grafana panel.
+    #[cfg(feature = "metrics")]
+    if let Some(msg) = metrics_ignored_on_cores_warning(cli) {
         tracing::warn!("{msg}");
     }
 
@@ -1847,6 +1861,36 @@ fn cores_ignored_warning(cli: &Cli) -> Option<String> {
     ))
 }
 
+/// `--metrics` alongside the parallel offline path, which never serves it.
+///
+/// The last place `--metrics` is still inert. `batch::run` returns from the
+/// `--cores N` branch before `BatchRunner::new` is reached, and the runner is
+/// what starts the metrics server — so `sipnab -N --cores 4 -I capture.pcap
+/// --metrics 127.0.0.1:9090` parses the address, validates it, refuses a bad
+/// bind, and listens on nothing. Exactly the shape this ticket removed from the
+/// ordinary headless path.
+///
+/// Warned rather than refused, on the same reasoning as
+/// [`cores_ignored_warning`]: the analysis is complete and correct, and only
+/// the endpoint is missing. It is also the combination least worth
+/// implementing — a parallel offline run finishes in seconds and exits, so
+/// there is no steady state for a scraper to sample even if it did bind.
+///
+/// Returns the message rather than logging it, so it can be asserted on.
+#[cfg(feature = "metrics")]
+fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
+    if cli.metrics.is_none() || !(cli.cores > 1 && cli.has_input() && !cli.multi_device) {
+        return None;
+    }
+    Some(format!(
+        "--metrics is ignored with --cores {n}: the parallel offline reader \
+         shards, merges and exits without starting the metrics server, so \
+         nothing would answer a scrape. Drop --cores to serve metrics from \
+         this run; a parallel offline run is too short to scrape in any case.",
+        n = cli.cores,
+    ))
+}
+
 // ── Auth / token helpers ───────────────────────────────────────────
 
 /// Mint a signed token from the CLI configuration and return it. Picks the
@@ -2354,6 +2398,65 @@ mod tests {
                  cover every case the parallel path does not"
             );
         }
+    }
+
+    /// `--metrics` with `--cores N -I file` must say it will not be served.
+    ///
+    /// The combination is the last one where the flag is inert, and an inert
+    /// metrics flag is invisible: the address parses, a bad bind is still
+    /// refused, and the only symptom is a dashboard that never fills in.
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_warns_when_the_parallel_path_will_not_serve_it() {
+        let mut cli = base_cli();
+        cli.cores = 4;
+        cli.input = vec!["capture.pcap".to_string()];
+        cli.metrics = Some("127.0.0.1:9090".to_string());
+        let msg = metrics_ignored_on_cores_warning(&cli)
+            .expect("--metrics on the parallel path must be reported");
+        assert!(
+            msg.contains("--metrics") && msg.contains("--cores"),
+            "the warning must name both flags so the operator knows what to \
+             drop: {msg}"
+        );
+    }
+
+    /// Silent whenever the endpoint WILL be served, or was never asked for.
+    ///
+    /// The complement matters as much as the warning: a metrics flag that
+    /// warns on a run which then serves metrics teaches operators to ignore
+    /// it, and an ignored warning is the same as no warning.
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_warning_is_silent_wherever_metrics_are_actually_served() {
+        // Asked for, and the single-threaded headless path serves it.
+        let mut served = base_cli();
+        served.input = vec!["capture.pcap".to_string()];
+        served.metrics = Some("127.0.0.1:9090".to_string());
+        assert!(
+            metrics_ignored_on_cores_warning(&served).is_none(),
+            "--cores 1 serves metrics; warning here would be false"
+        );
+
+        // Parallel path, but no metrics were requested.
+        let mut unasked = base_cli();
+        unasked.cores = 4;
+        unasked.input = vec!["capture.pcap".to_string()];
+        assert!(
+            metrics_ignored_on_cores_warning(&unasked).is_none(),
+            "nothing was asked for, so nothing is being ignored"
+        );
+
+        // `--cores` present but NOT taken (live device): that run is
+        // single-threaded and does serve metrics.
+        let mut live = base_cli();
+        live.cores = 4;
+        live.device = Some("eth0".to_string());
+        live.metrics = Some("127.0.0.1:9090".to_string());
+        assert!(
+            metrics_ignored_on_cores_warning(&live).is_none(),
+            "a live run falls back to one core and starts the metrics server"
+        );
     }
 
     /// An unreadable `--bpf-file` yields an `Err` (exit code 2), not an exit.

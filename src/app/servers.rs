@@ -27,6 +27,14 @@ pub struct Selection {
     pub api: bool,
     /// Start the MCP server when `--mcp` is configured.
     pub mcp: bool,
+    /// Start the Prometheus metrics server when `--metrics` is configured.
+    ///
+    /// BOTH run modes want this, and that is the point. It used to be started
+    /// from `tui_mode.rs` alone, so `sipnab -N --metrics ...` bound nothing —
+    /// which is how every server, container and systemd deployment runs. The
+    /// flag still parsed and still refused a non-loopback bind without auth, so
+    /// it read as wired while scraping returned nothing.
+    pub metrics: bool,
 }
 
 /// Handles to the running servers thread.
@@ -165,7 +173,36 @@ pub fn start_servers(
     stream_store: &Arc<RwLock<StreamStore>>,
     alerts: Option<&Arc<RwLock<AlertEngine>>>,
     selection: Selection,
+    #[cfg(feature = "metrics")] capture_meter: Option<crate::capture::channel::CaptureMeter>,
 ) -> anyhow::Result<Option<ServerHandles>> {
+    // Metrics first, and on its OWN thread rather than the shared async
+    // runtime below: `start_metrics_server` spawns a blocking accept loop, and
+    // it must come up whether or not any async server was selected.
+    #[cfg(feature = "metrics")]
+    if selection.metrics
+        && let Some(addr_str) = cli.metrics.as_deref()
+    {
+        let bind_addr = crate::output::prometheus_server::parse_metrics_addr(addr_str)?;
+        let auth = cli.resolve_metrics_auth().unwrap_or_else(|e| {
+            tracing::error!("metrics auth: {e}");
+            None
+        });
+        match crate::output::prometheus_server::start_metrics_server(
+            bind_addr,
+            Arc::clone(dialog_store),
+            Arc::clone(stream_store),
+            auth,
+            capture_meter,
+        ) {
+            // The handle is dropped deliberately: the server lives for the
+            // rest of the process and nothing joins it. The bound address
+            // is already logged by the server, which matters for
+            // `--metrics 127.0.0.1:0`.
+            Ok((_bound, _handle)) => {}
+            Err(e) => tracing::error!("Failed to start metrics server: {e}"),
+        }
+    }
+
     // `Prepared` is empty (uninstantiable) when neither server feature is
     // compiled; the bindings go unused then.
     #[allow(unused_mut)]
