@@ -144,7 +144,16 @@ pub struct App {
     search_active: bool,
     /// Capture mode label: "Online (device)" or "Offline (filename)".
     capture_mode: String,
-    /// BPF filter string if set via CLI.
+    /// BPF filter string shown in status line 2.
+    ///
+    /// NOT wired: nothing in the binary calls [`App::set_bpf_filter`], and
+    /// [`TuiOptions`](crate::tui::state::TuiOptions) carries no BPF field, so
+    /// in a real session this is always empty and the slot renders blank. The
+    /// comment here used to read "if set via CLI", which is the behaviour a
+    /// reader would assume and is not the behaviour that exists. Wiring it
+    /// means passing `capture_config.bpf_filter` through `TuiOptions`; the
+    /// setter and the render slot are left in place for that, not because
+    /// they work today.
     bpf_filter: String,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
@@ -1123,28 +1132,6 @@ impl Drop for TerminalGuard {
 }
 
 // ── Public entry point ──────────────────────────────────────────────
-
-/// Run the interactive TUI event loop with default options and no shared
-/// pause flag — a thin wrapper over `run_tui_with_pause`.
-///
-/// This function takes ownership of the main thread. It sets up the
-/// terminal, enters the event loop, and restores the terminal on exit
-/// (including on panic via a Drop guard).
-///
-/// # Arguments
-///
-/// * `dialog_store` — Shared dialog store, updated by the processing thread.
-/// * `stream_store` — Shared stream store, updated by the processing thread.
-///
-/// # Errors
-///
-/// Returns an error if terminal initialization or rendering fails.
-pub fn run_tui(
-    dialog_store: Arc<RwLock<DialogStore>>,
-    stream_store: Arc<RwLock<StreamStore>>,
-) -> Result<()> {
-    run_tui_with_pause(dialog_store, stream_store, None, TuiOptions::default())
-}
 
 /// Run the TUI with an optional shared pause flag.
 ///

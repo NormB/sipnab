@@ -355,9 +355,9 @@ fn reset_for_load(app: &mut App) {
 }
 
 /// Parse `path` into the shared stores and build the load outcome. Runs on
-/// a worker thread for interactive loads (the stores are the same
-/// `Arc<RwLock>`s live capture writes through, so the UI renders the data
-/// progressively) and inline for the synchronous `load_pcap_file`.
+/// a worker thread (the stores are the same `Arc<RwLock>`s live capture
+/// writes through, so the UI renders the data progressively); the unit
+/// tests call it inline.
 ///
 /// Routes every packet through the shared `crate::pipeline::classify_packet`
 /// core — the same router as live capture — so RTP-only pcaps populate the
@@ -543,38 +543,6 @@ fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
     }
 }
 
-/// Load a pcap file synchronously, replacing all existing data. Kept for
-/// unit tests (which need the final message immediately); interactive
-/// loads go through `begin_pcap_load` so the UI stays live.
-///
-/// # Arguments
-/// * `app` - the application state; stores are reset then repopulated.
-/// * `path_str` - the capture file path.
-///
-/// # Returns
-/// The final status message ("Loaded …" or an error such as "File not
-/// found").
-///
-/// # Side effects
-/// Everything `reset_for_load`, `run_pcap_load`, and
-/// `apply_load_outcome` do, on the calling thread.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
-    let path = std::path::Path::new(path_str);
-    if !path.exists() {
-        return format!("File not found: {path_str}");
-    }
-    // A capture opened here is an input for the rest of the session, exactly
-    // as `-I` was, so the save dialog must refuse to write over it too.
-    app.protect_input_file(path);
-    reset_for_load(app);
-    let progress = PcapLoadProgress::new(path_str);
-    let outcome = run_pcap_load(path, &app.dialog_store, &app.stream_store, &progress);
-    let message = outcome.message.clone();
-    apply_load_outcome(app, outcome);
-    message
-}
-
 /// Start loading a pcap on a background worker so the event loop keeps
 /// running — parsing a large capture on the UI thread froze the TUI for the
 /// whole load. Progress and the final result are applied by
@@ -672,6 +640,35 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Drive a load to completion on the calling thread and return the final
+    /// status message.
+    ///
+    /// A TEST HELPER, not a second loading path: the only production loader is
+    /// `begin_pcap_load` + `poll_pcap_load`. It exists because a test wants the
+    /// finished message in one call rather than pumping a worker, and it is
+    /// built from the same three units the worker runs — so what it exercises
+    /// is production code, in production order.
+    ///
+    /// It lived in the production section behind
+    /// `#[cfg_attr(not(test), allow(dead_code))]`, which read as a second
+    /// supported way to open a capture. It was never one.
+    fn load_pcap_file(app: &mut App, path_str: &str) -> String {
+        let path = std::path::Path::new(path_str);
+        if !path.exists() {
+            return format!("File not found: {path_str}");
+        }
+        // A capture opened here is an input for the rest of the session,
+        // exactly as `-I` was, so the save dialog must refuse to write over it
+        // too.
+        app.protect_input_file(path);
+        reset_for_load(app);
+        let progress = PcapLoadProgress::new(path_str);
+        let outcome = run_pcap_load(path, &app.dialog_store, &app.stream_store, &progress);
+        let message = outcome.message.clone();
+        apply_load_outcome(app, outcome);
+        message
+    }
 
     /// A capture whose packet record carries an out-of-range microsecond
     /// field (as a crafted or nanosecond-precision file can) must not

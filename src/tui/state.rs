@@ -236,7 +236,7 @@ pub struct TuiOptions {
 pub(in crate::tui) struct FileEntry {
     /// File name (no path) — what the user sees in the list.
     pub(in crate::tui) name: String,
-    /// Absolute path — what we pass to `load_pcap_file` or `cd` into.
+    /// Absolute path — what we pass to `begin_pcap_load` or `cd` into.
     pub(in crate::tui) path: PathBuf,
     /// Whether this entry is a directory.
     pub(in crate::tui) is_dir: bool,
@@ -1010,17 +1010,21 @@ impl FilterDialogState {
         self.focused_field
     }
 
-    /// Whether all fields are empty and no methods are checked.
+    /// Whether all fields are empty and every method is checked — that is,
+    /// no active filter.
     ///
-    /// Retained as the completing predicate of the filter-dialog API (the
-    /// inverse of "has the user entered any filter criteria?"), symmetric
-    /// with [`Self::clear`] and [`Self::build_filter_expression`]. No caller
-    /// gates on it today — the apply path calls `build_filter_expression`,
-    /// which already returns `None` for an all-empty dialog, so no separate
-    /// emptiness check is needed — hence `dead_code` is allowed rather than
-    /// deleting a correct, self-contained predicate that a future empty-
-    /// state guard would only have to re-add.
-    #[allow(dead_code)]
+    /// No production caller gates on it: the apply path calls
+    /// [`Self::build_filter_expression`], which already returns `None` for an
+    /// all-empty dialog. It is kept because three unit tests in `tui/mod.rs`
+    /// assert on it — `filter_dialog_default_all_methods_checked` and the two
+    /// `clear()` tests use it as the single predicate for "back to no active
+    /// filter", which is a stronger assertion than re-listing every field.
+    /// Deleting it deletes that.
+    ///
+    /// The `cfg_attr` states what is actually true — dead in a non-test build,
+    /// live under `cargo test` — rather than a blanket `allow`, which would
+    /// also hide it if those tests ever went away.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::tui) fn is_empty(&self) -> bool {
         self.sip_from.is_empty()
             && self.sip_to.is_empty()
