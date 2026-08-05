@@ -433,9 +433,12 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 279 -> 280 by the federated-tracing section's link back to
     // "Collect captures from several SIP servers in one place", the
     // centralised alternative it compares against. One link, one page.
+    // Raised 280 -> 281 by the security model's pointer to the new
+    // "Untrusted capture text" section in docs/mcp.md (#139). One link, one
+    // page; the wiki mirror is one copy, so +1 and not +2.
     assert_eq!(
-        seen, 280,
-        "extractor found {seen} wiki links, expected 280. More is fine — bump \
+        seen, 281,
+        "extractor found {seen} wiki links, expected 281. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

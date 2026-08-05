@@ -2219,9 +2219,11 @@ fn no_documentation_table_repeats_a_row() {
     // Raised 466 -> 470 by the federated-tracing section in
     // docs/mcp-walkthrough.md: a strategy table and a federated-vs-centralised
     // table, each doubled by the site mirror.
+    // Raised 470 -> 472 by the untrusted-capture-text section in docs/mcp.md
+    // (#139): one fenced/verbatim table per surface, doubled by the site mirror.
     assert_eq!(
-        tables, 470,
-        "walked {tables} tables, expected 470. More is fine — bump this. FEWER \
+        tables, 472,
+        "walked {tables} tables, expected 472. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

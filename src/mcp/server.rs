@@ -1950,7 +1950,10 @@ impl SipnabMcp {
             .then(|| page.last())
             .flatten()
             .map(|d| super::shape::format_cursor(d.created_at, &d.call_id));
-        let dialogs: Vec<DialogSummary> = page.iter().map(|d| DialogSummary::from(*d)).collect();
+        let dialogs: Vec<DialogSummary> = page
+            .iter()
+            .map(|d| super::shape::fenced_dialog_summary(d))
+            .collect();
         let capture_identity = state.identity.etag(ds.generation(), ss.generation());
         drop(ss);
         drop(ds);
@@ -2315,7 +2318,7 @@ impl SipnabMcp {
                     .map(crate::output::json::message_to_json_value)
                     .collect()
             };
-            let summary = DialogSummary::from(dialog);
+            let summary = super::shape::fenced_dialog_summary(dialog);
             let next_cursor = if end < total { Some(end) } else { None };
             drop(ds);
             serde_json::json!({
@@ -2663,8 +2666,10 @@ impl SipnabMcp {
             let next_cursor = changed
                 .last()
                 .map(|d| super::shape::format_cursor(d.updated_at, &d.call_id));
-            let summaries: Vec<DialogSummary> =
-                changed.into_iter().map(DialogSummary::from).collect();
+            let summaries: Vec<DialogSummary> = changed
+                .into_iter()
+                .map(super::shape::fenced_dialog_summary)
+                .collect();
             let ss = self.stream_store.read();
             let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(ss);

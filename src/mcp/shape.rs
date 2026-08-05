@@ -144,6 +144,46 @@ pub fn fence_message_json(v: &mut serde_json::Value) {
     }
 }
 
+/// Fields of a dialog summary that carry capture-derived FREE TEXT.
+///
+/// The user part of a From/To URI is whatever the sender put there. RFC 3261's
+/// `user` production is permissive enough to carry instruction-shaped text, and
+/// a summary row is the first thing an agent reads about a call.
+pub const DIALOG_FENCED_FIELDS: &[&str] = &["from_user", "to_user"];
+
+/// Fields of a dialog summary returned VERBATIM.
+///
+/// `call_id` and `frame` are the handles an agent passes to `get_dialog`,
+/// `get_message` and `--show-frame`; fencing either breaks the next call.
+/// `state` and `method` look like wire data and are not: both are rendered from
+/// sipnab's own enums, so a sender cannot choose their text.
+pub const DIALOG_VERBATIM_FIELDS: &[&str] = &[
+    "call_id",
+    "state",
+    "method",
+    "msg_count",
+    "duration_sec",
+    "created_at",
+    "updated_at",
+    "timing",
+    "frame",
+];
+
+/// Project a dialog into the summary the MCP surface returns, with its
+/// capture-derived free text fenced.
+///
+/// The MCP tools call this instead of `DialogSummary::from`, which stays
+/// unfenced for the CLI and REST paths — their reader is an operator or a
+/// script, and a marker pair there is noise rather than defence.
+pub fn fenced_dialog_summary(
+    d: &crate::sip::dialog::SipDialog,
+) -> crate::output::model::DialogSummary {
+    let mut s = crate::output::model::DialogSummary::from(d);
+    s.from_user = s.from_user.map(|u| fence(&u));
+    s.to_user = s.to_user.map(|u| fence(&u));
+    s
+}
+
 /// Default `limit` parameter for list-style tools.
 pub const DEFAULT_LIMIT: usize = 50;
 
