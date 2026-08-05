@@ -1,9 +1,31 @@
-# Large-capture memory and silent dialog loss
+# Large-capture memory and dialog loss
 
-**Status:** DESIGN. Nothing here is implemented.
+*Titled "…and silent dialog loss" until 0.5.81. The loss is real and unchanged;
+the silence is not, and a title asserting a fixed defect is the first thing a
+reader believes. It is still silent on four of the five structured outputs —
+section 4.1 — so the word was narrowed rather than simply dropped.*
+
+**Status:** PART SHIPPED, PART OPEN. The visibility work this document ranked
+first landed between 0.5.72 and 0.5.81; the retention policy, the pre-flight
+estimate and the larger-than-memory processing did not. Every section says
+which it is, and each superseded finding is kept with the outcome rather than
+deleted — the reasoning is why the fix has the shape it has.
+
 **Measured against:** `sipnab 0.5.71 (f9ae16ff-dirty)`, release build, on
 `/home/gator/pcaps` — 15 files, 1,383 MB, 4,532,272 packets. Every number below
 was produced by a command reproduced in the appendix.
+
+**Re-verified against:** 0.5.81, 2026-08-05, behaviour only. The memory
+coefficients were NOT re-measured, so every RSS figure still describes 0.5.71.
+Treat the model as the shape of the cost and not as a current budget.
+
+**Citations name items, not lines.** The original draft pinned line numbers, and
+by 0.5.81 almost every one of them pointed at unrelated code — `dialog_store.rs`
+alone moved its capacity block by more than two hundred lines. Where a line
+number has been re-verified it is kept; everywhere else the function, field or
+constant is named, because that is what survives a refactor and what `grep`
+finds.
+
 **Scope:** offline analysis of capture sets larger than one file. Live capture
 shares the stores and inherits the conclusions, but the pre-flight and two-pass
 sections apply only to files.
@@ -13,8 +35,13 @@ sections apply only to files.
 A 1.3 GB capture set analyses in 4 seconds and 297 MiB. That reads like
 headroom. It is not: it is one point on a line whose slope has nothing to do
 with the 1.3 GB, and the line runs out at a call volume this tool is expressly
-built to handle. When it runs out, the tool discards the oldest calls, prints a
-complete-looking report, and exits 0.
+built to handle.
+
+At 0.5.71, when it ran out, the tool discarded the oldest calls, printed a
+complete-looking report, and exited 0. Since 0.5.72 it still discards the oldest
+calls and still exits 0 — that part was never the defect — but it now says so,
+on stderr, naming which end of the capture went. Section 3 records the original
+finding and section 4.1 records what shipped.
 
 The rest of this document establishes the slope, says where the line ends, and
 ranks what to do about it.
@@ -37,6 +64,13 @@ figure is a clean sum. The `tg` ring buffer has wrapped — `tg.pcap7` holds the
 oldest packets and `tg.pcap6` the newest — which is the case
 `src/capture/input_set.rs` was written for and which its module doc describes at
 lines 12–17.
+
+Re-measured at 0.5.78, the dialog and SIP-message totals are unchanged to the
+digit: 18,948 and 84,882. The RTP stream total is not — it reads 1,432 rather
+than 1,460, a 1.9% difference whose cause was not chased down here. Every figure
+below that multiplies a per-stream cost was taken against 1,460, and 1.9% of a
+~1 KB per-stream term is not worth re-deriving; it is recorded so the two
+numbers are not read as a contradiction.
 
 That table is the first finding, and it is the one that dismantles "1.3 GB of
 capture":
@@ -80,10 +114,10 @@ ratios of a single point.
 | 100,000 | 18,948 | 303,616 |
 
 The retained count sits a little under the cap because `evict_oldest` drains in
-batches of `max_dialogs / 100` — its doc comment at
-`src/sip/dialog_store.rs:770-772` says so: "The store may briefly sit up to
-cap/100 below the cap; the cap remains a hard upper bound". Above 18,948
-the curve is flat, which confirms the cap is the only thing being varied.
+batches of `max_dialogs / 100` — its doc comment in `src/sip/dialog_store.rs`
+says so: "The store may briefly sit up to cap/100 below the cap; the cap remains
+a hard upper bound". Above 18,948 the curve is flat, which confirms the cap is
+the only thing being varied.
 
 Marginal cost across the linear region is **10.2 to 11.3 KB per retained
 dialog**, consistent across every adjacent pair.
@@ -162,11 +196,29 @@ wrong knob.
 
 **RTP streams were negligible.** 1,460 streams cost 1,528 KB between the
 `--no-dialog --no-rtp` and `--no-dialog` runs, roughly 1 KB each, against 1,460
-streams at a 50,000 cap. In batch mode `src/app/batch.rs:512` sets
-`ss.set_audio_capture(false)`, so no audio frames are retained. The
-`max_audio_frames` limit (default 1,500/stream) applies only to the TUI path
-(`src/app/tui_mode.rs:147`) and **its memory cost is unknown** — it was not
-measured here and should not be assumed small.
+streams at a 50,000 cap. That measurement holds because the run retained no
+audio frames, and **the rule deciding that has since changed.**
+
+At 0.5.71 the batch path called `ss.set_audio_capture(false)` unconditionally,
+so no batch run retained a frame. On that basis this section said the
+`max_audio_frames` cap (default 1,500/stream) "applies only to the TUI path".
+That was true of the *effect* and not of the code — 0.5.71 applied the cap in
+both `src/app/batch.rs` and `src/app/tui_mode.rs`, as section 2.1 correctly
+says; retention being off in batch was what made it moot there. The sentence
+should have said so, because the moment retention stopped being unconditionally
+off the conclusion inverted with nothing in the wording to warn a reader.
+
+Which is what happened. `apply_audio_retention` in `src/app/batch.rs` now sets
+retention to `audio_retention_wanted(cli)`, which is `cli.mcp`, so **a `--mcp`
+batch run retains audio.** Its doc comment records why the assignment replaced
+an `if`: the previous one-armed `if` gated the operator *notice* and never the
+behaviour, because `StreamStore::new` arms retention by default for the TUI's
+sake, so every batch run was buffering audio nothing in it could read.
+
+A batch run without `--mcp` still retains nothing, which is the configuration
+every number in this document was taken under. **The cost when it is on is still
+unknown** — it was not measured here, it should not be assumed small, and it is
+now reachable from a headless server and not only from the TUI.
 
 **`--dialog-track branch` more than doubles retention.** The same input tracked
 by transaction yields 40,941 units against 18,948 (RSS 340,048 KB against
@@ -177,16 +229,20 @@ closer to the cap without changing a limit.
 
 The obvious answer — the shipped caps live in `src/config.rs` under `[limits]`,
 where `dialog_limit` is the one to tune — is what the config file, the config
-reference and the example `sipnabrc` all say. It is wrong, in a way that matters
-more than any particular number.
+reference and the example `sipnabrc` all say. **At 0.5.71 that was wrong, in a
+way that mattered more than any particular number. It was fixed in 0.5.72 and
+the answer is now the obvious one.** The finding is kept because the shape of
+the fix follows from the shape of the defect.
 
-**`[limits] dialog_limit` does nothing.** The field exists
-(`src/config.rs:374`), is validated (`src/config.rs:401-405`, rejecting zero
-with a message naming the key), is documented as the way to tune RAM
-(`docs/config-reference.md:360`: `dialog_limit = 50000  # Max tracked dialogs
-(tune for RAM)`), ships in `contrib/sipnabrc.example:50` as `dialog_limit =
-10000` — and is never read. `src/app/bootstrap.rs:874-892` applies exactly three
-`[limits]` keys, none of them this one:
+### 2.1 The config finding, as it stood at 0.5.71
+
+**`[limits] dialog_limit` did nothing.** The field existed in `src/config.rs`,
+was validated there (rejecting zero with a message naming the key), was
+documented as the way to tune RAM (`docs/config-reference.md`: `dialog_limit =
+50000  # Max tracked dialogs (tune for RAM)`), shipped in
+`contrib/sipnabrc.example:50` as `dialog_limit = 10000` — and was never read.
+`src/app/bootstrap.rs` applied exactly three `[limits]` keys, none of them this
+one:
 
 ```rust
     if let Some(v) = loaded.config.limits.max_header_line {
@@ -197,45 +253,73 @@ with a message naming the key), is documented as the way to tune RAM
     }
 ```
 
-`max_audio_frames` is applied at `src/app/batch.rs:507` and
-`src/app/tui_mode.rs:147`. That is the complete set. `dialog_limit`,
-`max_streams`, `max_reassembly` and `hep_rate_limit` are parsed, validated,
-documented and inert.
+`max_audio_frames` was applied in `src/app/batch.rs` and `src/app/tui_mode.rs`
+(applied, though on the batch path it could not bite — section 1.4). That was
+the complete set: `dialog_limit`, `max_streams`, `max_reassembly` and
+`hep_rate_limit` were parsed, validated, documented and inert.
 
 Demonstrated rather than inferred: a config containing `dialog_limit = 100` and
-`max_streams = 10` loads (the run logs `Loaded config from cfg_dead.toml`) and
-then reports `dialogs=18948 streams=1460`. Both keys were ignored.
+`max_streams = 10` loaded (the run logged `Loaded config from cfg_dead.toml`)
+and then reported `dialogs=18948 streams=1460`. Both keys were ignored. Re-run
+that command against 0.5.72 or later and it reports the capped counts instead;
+the appendix marks it.
 
-**The real cap is `--limit`, default 100,000** (`src/cli.rs:636-643`):
+### 2.2 What the fix was, and why the cause is worth keeping
 
-```rust
-    #[arg(
-        help_heading = "Dialog",
-        short = 'l',
-        long = "limit",
-        value_name = "N",
-        default_value = "100000"
-    )]
-    pub limit: u64,
-```
+The keys were not forgotten at the call site. They could not take effect,
+because clap filled each flag in whether or not the operator passed anything.
+`Cli::DEFAULT_DIALOG_LIMIT`'s doc comment in `src/cli.rs` records it:
 
-It reaches the store through `src/app/batch.rs:181` (`max_dialogs: cli.limit as
-usize`). The RTP cap is `--max-streams`, default 50,000
-(`src/cli.rs:685-687`). Rotation is on by default —
-`src/cli.rs:1378-1379` is `pub fn rotate_enabled(&self) -> bool { !self.no_rotate }`
-— so the default disposal policy is drop-oldest.
+> These were `default_value` attributes on the flags themselves, which is why
+> `[limits]` could never take effect: clap filled the field in whether or not
+> the operator passed anything, so "not given" and "given the default" were
+> indistinguishable and the config key had nothing to override.
 
-**`--limit` bounds cumulative dialogs, not concurrent ones.** Nothing removes a
-completed dialog. `compact_idle` (`src/sip/dialog_store.rs:260`) trims an idle
-dialog's *messages* to the last 20 but leaves the dialog itself; `retain` and
-`clear` have no caller in `src/app/`. So in an offline run the store grows
-monotonically with capture duration, and the cap is reached after N total calls
-have been observed, not N simultaneous ones. This is the single most
-counter-intuitive fact in this document: `--limit 100000` on a proxy carrying
-200 concurrent calls does not mean "500× headroom", it means "the first drop
-happens after the hundred-thousandth call".
+So the fix is not an extra `if` in `bootstrap`. Each flag became `Option<u64>`,
+the built-in value moved to a `Cli::DEFAULT_*` constant, and one resolver per
+cap states the precedence: `Cli::dialog_limit`, `Cli::max_streams_limit`,
+`Cli::max_reassembly_limit` and `Cli::hep_rate_limit_resolved` each read the
+flag, then `[limits]`, then the constant. The explicit flag wins because it is
+the more specific instruction — the same precedence the boolean settings use.
 
-### 2.1 When each cap engages
+**That generalises past this document.** Any config key layered over a clap
+flag carrying `default_value` is inert by construction, and it looks correct at
+every site a reader checks. Reach for `Option` plus a named default whenever a
+flag has a second source.
+
+### 2.3 The caps as they stand
+
+**The dialog cap is `--limit`, default 100,000** —
+`Cli::DEFAULT_DIALOG_LIMIT` in `src/cli.rs`, resolved through
+`Cli::dialog_limit(config)` and reaching the store as `max_dialogs` in
+`src/app/batch.rs`. The RTP cap is `--max-streams`, default 50,000
+(`Cli::DEFAULT_MAX_STREAMS`). Both now accept the matching `[limits]` key when
+the flag is absent, and both still default to the same numbers, so every
+measurement below is unaffected. Rotation is on by default —
+`Cli::rotate_enabled` is `!self.no_rotate` — so the default disposal policy is
+drop-oldest.
+
+**`--limit` bounds cumulative dialogs, not concurrent ones.** Still true.
+Nothing removes a completed dialog. `DialogStore::compact_idle` trims an idle
+dialog's *messages* but leaves the dialog itself; `retain` and `clear` have no
+caller in `src/app/` (the TUI calls `clear` when opening a different file, which
+is a reset, not a bound). So in an offline run the store grows monotonically
+with capture duration, and the cap is reached after N total calls have been
+observed, not N simultaneous ones. This is the single most counter-intuitive
+fact in this document: `--limit 100000` on a proxy carrying 200 concurrent calls
+does not mean "500× headroom", it means "the first drop happens after the
+hundred-thousandth call".
+
+One detail of `compact_idle` changed under this claim without changing it.
+The 0.5.71 draft said it trims to "the last 20" messages. It now trims to at
+most `KEEP_MESSAGES_PER_IDLE_DIALOG` messages CHOSEN by what they say rather
+than by position: keeping the last N took the outcome first, because on an
+`INVITE` dialog the `200 OK` arrives early, and a completed call was reported
+as having no final response. See `carries_dialog_outcome` in
+`src/sip/dialog_store.rs`. The memory bound is the same; which 20 survive is
+not.
+
+### 2.4 When each cap engages
 
 Combining the measured densities with the measured coefficients:
 
@@ -255,9 +339,17 @@ is a ~1 GB commitment, and a 2 GB container will be killed by the OOM killer
 before the eviction path is ever reached.** On that host the cap is not the
 safety mechanism; the OOM killer is.
 
-## 3. The central defect: the loss is invisible, and worse than reported
+## 3. The central defect: the loss was invisible, and worse than reported
 
-`evict_oldest` is `src/sip/dialog_store.rs:779-782`:
+**FIXED in 0.5.72.** Dialog eviction is counted on the default path and reported
+once at the end of every run. The finding is kept in full because the fix's
+shape — two counters rather than one, and the counting moved inside
+`evict_oldest` — is a direct consequence of the analysis, and because sections 4
+and 6 rank everything else against it.
+
+### 3.1 The eviction finding, as it stood at 0.5.71
+
+`evict_oldest` was four lines:
 
 ```rust
     fn evict_oldest(&mut self) {
@@ -266,22 +358,20 @@ safety mechanism; the OOM killer is.
     }
 ```
 
-`dialogs` is an `IndexMap` in insertion order (`src/sip/dialog_store.rs:136`),
-so index 0 is the oldest dialog seen. Draining from the front discards the
-earliest calls.
+`dialogs` is an `IndexMap` in insertion order, so index 0 is the oldest dialog
+seen. Draining from the front discards the earliest calls.
 
 A reader grepping for instrumentation finds `capacity_dialogs_dropped` and
-concludes eviction is counted but unreported. Counted-but-unreported is true as
-far as it goes — the field is declared at `src/sip/dialog_store.rs:151`, the accessor
-is `total_capacity_dialogs_dropped` at `:295`, and every one of its five callers
-(`:1061`, `:1068`, `:1075`, `:1081`, `:1084`) sits after the single
-`#[cfg(test)]` at `:886`. `docs/design/backlog.md:127` records it landing as
+concludes eviction is counted but unreported. Counted-but-unreported was true as
+far as it went — the field was declared, the accessor
+`total_capacity_dialogs_dropped` existed, and every one of its five callers sat
+inside the `#[cfg(test)]` module. `docs/design/backlog.md` records it landing as
 "[observability] no-rotate capacity drops are uncounted … **Done:** … a lifetime
 `capacity_dialogs_dropped` counter with a public getter and merge accumulation",
-and nothing ever consumed it.
+and nothing consumed it.
 
-But the situation is worse than "counted and unread", and the difference decides
-the design. Look at where the increment sits (`src/sip/dialog_store.rs:421-430`):
+But the situation was worse than "counted and unread", and that difference
+decided the design. The increment sat here:
 
 ```rust
             if self.dialogs.len() >= self.max_dialogs {
@@ -296,51 +386,124 @@ the design. Look at where the increment sits (`src/sip/dialog_store.rs:421-430`)
             }
 ```
 
-The counter is in the `else`. It only ever moves under `--no-rotate`. **On the
-default path — rotate on, drop the oldest — nothing is counted at all.** The
-counter that exists measures the disposal policy nobody uses; the policy
-everybody uses has no counter. A future contributor grepping for
+The counter was in the `else`. It only ever moved under `--no-rotate`. **On the
+default path — rotate on, drop the oldest — nothing was counted at all.** The
+counter that existed measured the disposal policy nobody uses; the policy
+everybody uses had no counter. A contributor grepping for
 `capacity_dialogs_dropped` and finding it incremented could reasonably conclude
-eviction is instrumented. It is not.
+eviction was instrumented. It was not.
 
-The same holds for `total_idle_messages_evicted` (`:284`), read only at `:1246`
-and `:1248` inside the test module. Its per-sweep sibling `CompactStats` does
-reach production, but only as `tracing::debug!` at `src/app/batch.rs:963-967` —
-invisible at the default log level.
+The same held for `total_idle_messages_evicted`, read only inside the test
+module.
 
-`StreamStore` has no loss counter either. `src/rtp/stream_store.rs:98` tracks
-`evict_shift_work`, which counts *entries shifted while evicting* — a cost probe
-for a past O(n²) regression, not a count of what was lost. The batched
-SDP-endpoint eviction at `src/rtp/stream_store.rs:423-426` increments nothing.
+### 3.2 What shipped
 
-### 3.1 Demonstrated end-to-end
+Three changes, and the first two answer the two halves of the finding above.
 
-Running the same 15 files at `--limit 5000`: the store keeps 4,959 dialogs, the
-report prints 4,959 rows, the three Call-IDs that head the unrestricted report
-(`2f530b7f-…`, `7423e5f7-…`, `7d51bac0…`) are absent, stderr says nothing about
-eviction, and the process exits 0. The summary line
-(`src/app/batch.rs:1305-1309`) reports `4532272 packets captured, 84882 SIP
-messages` — identical to the full run, because the packet counters are upstream
-of the store. Every number an operator would sanity-check against agrees with a
+**A second counter, `capacity_dialogs_evicted`, and the counting moved inside
+`evict_oldest`.** Not one undifferentiated total, for the reason section 4.1
+gave: the field's own doc comment says the two losses "are not interchangeable:
+rejecting the newest keeps a complete record of the earliest calls, while
+evicting the oldest keeps a complete record of the latest. An operator reading
+'5000 dialogs lost to capacity' needs to know which end of the capture is
+missing." The increment lives in `evict_oldest` rather than at its call sites
+"so every path that rotates is instrumented by construction" — and there are two
+such paths, `process_message` and `merge`, which is exactly the sort of pair a
+call-site increment misses.
+
+**One warning at the end of the run**, `report_retention_losses` in
+`src/app/batch.rs`, built by `retention_summary` — split from the logging so
+the wording is testable, "the value of this line is entirely in what it says,
+and a test that only checked 'something was logged' would pass on a sentence
+naming the wrong number". It names all three loss channels separately and stays
+silent when the store shed nothing. It is called from three places, which is
+every path a batch run can finish on: the single-threaded summary block and each
+of the two `--cores` arms.
+
+**`merge` enforces the cap.** Recorded in section 3.6 below, since it was found
+by the same sweep.
+
+### 3.3 What is still true
+
+**`CompactStats` per-sweep detail is still `debug!` only.** The lifetime totals
+now reach the operator, but the per-sweep line in the batch receive loop remains
+at debug level, so "which sweep lost what" is still invisible at the default.
+That is a much smaller gap than the original one and it is not currently
+ticketed.
+
+**The warning names a flag that does not exist.** `retention_summary` ends
+"raise `--limit`, or `--max-dialogs`, to keep more". There is no `--max-dialogs`
+flag in `src/cli.rs` and none in the docs. An operator who follows the advice
+gets a clap error. Needs its own fix in `src/app/batch.rs`, out of scope here.
+
+**`StreamStore` still has no loss counter.** It tracks `evict_shift_work`, which
+counts *entries shifted while evicting* — a cost probe for a past O(n²)
+regression, not a count of what was lost. Neither `ensure_capacity` nor the
+batched SDP-endpoint eviction in `remember_sdp_endpoint` increments anything an
+operator can read. Streams are cheap (~1 KB each, section 1.4) so this is not a
+memory problem; it is the same reporting gap one store over, and section 4.1's
+structured-output work should close both together.
+
+### 3.4 Demonstrated end-to-end, then and now
+
+**At 0.5.71.** Running the same 15 files at `--limit 5000`: the store kept 4,959
+dialogs, the report printed 4,959 rows, the Call-IDs heading the unrestricted
+report were absent, stderr said nothing about eviction, and the process exited
+0. The summary line reported `4532272 packets captured, 84882 SIP messages` —
+identical to the full run, because the packet counters sit upstream of the
+store. Every number an operator would sanity-check against agreed with a
 complete analysis.
 
-This is precisely the post-mortem failure: "what happened at 14:00?" is answered
-from a dataset whose 14:00 was evicted first, and nothing in the output
-distinguishes "no signalling matched" from "the signalling was thrown away".
+That was precisely the post-mortem failure: "what happened at 14:00?" answered
+from a dataset whose 14:00 was evicted first, with nothing in the output
+distinguishing "no signalling matched" from "the signalling was thrown away".
 
-### 3.2 A second, undocumented loss channel: speed-dependent results
+**Re-run at 0.5.78**, same 15 files, same `--limit 5000`, `--cores 1`. The store
+still keeps 4,959 dialogs and the summary still reports 84,882 SIP messages,
+both identical to 0.5.71 — the disposal policy did not change and neither did
+the parse. The process still exits 0, which was never the defect. What is new is
+one `WARN` line:
 
-`src/app/batch.rs:927` sets `let sweep_interval = std::time::Duration::from_secs(5);`
-and `src/app/batch.rs:961` calls
-`dialog_store.write().compact_idle(chrono::Utc::now())` on each sweep.
-`compact_idle` compares that wall-clock `now` against `dialog.updated_at`, which
-is a *packet* timestamp. When yesterday's capture is replayed today, every
-dialog is more than `IDLE_COMPACT_AFTER` (10 minutes,
-`src/sip/dialog_store.rs:170`) idle by that comparison, and each is trimmed to
-`KEEP_MESSAGES_PER_IDLE_DIALOG` = 20 messages (`:173`).
+```text
+retention: 2 message(s) evicted from retained dialogs by idle compaction;
+15000 oldest dialog(s) discarded at capacity by rotation. The message and
+packet counts above are what sipnab READ, not what it kept — raise --limit,
+or --max-dialogs, to keep more.
+```
 
-Whether that fires at all depends on how fast the host reads the file, because
-the 5-second interval is wall clock. Measured on the same input and the same
+Three things are worth reading off that line. It names the *direction* of the
+loss ("oldest … by rotation"), the fact section 3.2 argued one counter could not
+carry. It says outright that the counts above are a read count and not a keep
+count, which is the exact misreading described above. And it names
+`--max-dialogs`, which does not exist — the defect recorded in section 3.3.
+
+**A fourth thing, which the counter made visible and which nothing in the
+0.5.71 analysis could have found.** 4,959 retained plus 15,000 evicted is 19,959
+dialog creations, against 18,948 distinct Call-IDs in the same corpus (measured
+unrestricted on the same binary). Eviction therefore created 1,011 more dialogs
+than the capture contains: a Call-ID whose dialog is evicted and whose next
+message arrives later is created again, from that message, as a fresh dialog
+with no history. The store is not merely missing the oldest calls, it holds
+*fragments* of calls that outlived their own eviction, and each fragment counts
+once more against the cap that produced it. This is the concrete form of the
+stitching failure section 4.3 argues about in the abstract, and it is only
+countable because the eviction counter exists.
+
+### 3.5 A second loss channel: speed-dependent results
+
+**FIXED in 0.5.72.** The finding and its measurement are kept, because this was
+the document's clearest evidence that an offline analyser must not read the wall
+clock, and because the shipped fix is a type rather than a patch.
+
+**The finding, at 0.5.71.** The batch receive loop set a 5-second
+`sweep_interval` and called `dialog_store.write().compact_idle(chrono::Utc::now())`
+on each sweep. `compact_idle` compares that `now` against `dialog.updated_at`,
+which is a *packet* timestamp. When yesterday's capture is replayed today, every
+dialog is more than `IDLE_COMPACT_AFTER` (10 minutes) idle by that comparison,
+and each is trimmed to `KEEP_MESSAGES_PER_IDLE_DIALOG` = 20 messages.
+
+Whether that fired at all depended on how fast the host read the file, because
+the 5-second interval was wall clock. Measured on the same input and the same
 commit:
 
 | build | wall | peak RSS | dialogs | retained messages | max messages in any dialog |
@@ -348,19 +511,36 @@ commit:
 | release | 3.97 s | 303,108 KB | 18,948 | 84,836 | 44 |
 | debug | 29.36 s | 318,768 KB | 18,948 | 84,522 | 24 |
 
-The release run finishes before the first sweep. The debug run does not, loses
-314 messages, and its longest ladder is truncated from 44 rungs to 24. **Same
+The release run finished before the first sweep. The debug run did not, lost 314
+messages, and its longest ladder was truncated from 44 rungs to 24. **Same
 bytes, same code, different answer, decided by CPU speed and page-cache state.**
 For an offline analyser that is a reproducibility defect independent of
-capacity: a colleague re-running the command on a slower laptop gets a different
-call flow and has no way to know.
+capacity: a colleague re-running the command on a slower laptop got a different
+call flow and had no way to know.
 
-Rescuing this does not require a policy debate. Offline replay should compare
-against the capture clock rather than the wall clock, or skip idle compaction
-entirely when the source is a file — the whole point of `compact_idle` is
-bounding a *long-running live process*, and a file read has a known end.
+**What shipped.** `SweepClock` in `src/app/batch.rs`, a two-variant enum that
+makes the wrong clock unrepresentable rather than merely discouraged. `Live`
+paces on `Instant::elapsed` and answers `Utc::now()`; `Capture` paces on packet
+timestamps and answers the packet clock, seeded from the first packet so the
+first sweep is one interval into the capture rather than on it. Its doc comment
+keeps the reason in the code: "A capture recorded in 2023 and read in 2026 is
+three years 'idle' the moment it is loaded". The companion `CaptureNow` newtype
+exists so no caller can "quietly substitute `Utc::now()` where the capture clock
+is required". `take_due` both decides and records, so the two instants cannot
+drift apart. There is a matching end-of-run sweep, because a file read has a
+known end and an offline run should not have its last sweep decided by whether
+the reader happened to cross a boundary.
 
-### 3.3 Two adjacent defects found while measuring — both since fixed
+**The confirmation is the number.** Re-measured at 0.5.78, the RELEASE build on
+this corpus at the default limit now reports `retention: 314 message(s) evicted
+from retained dialogs by idle compaction` — the same 314 the debug build lost at
+0.5.71, and the release build lost none of. The answer no longer depends on the
+build profile, and the answer it settled on is the one the slow build was
+already giving. Compaction fires here at all because the corpus is two runs
+1h 55m apart (section 1.1): replayed in capture time, everything from the first
+run is genuinely idle by the time the second starts.
+
+### 3.6 Two adjacent defects found while measuring — both since fixed
 
 Neither was a memory problem and both were out of scope for this document, but
 both lived on the large-capture path and both produced complete-looking wrong
@@ -410,7 +590,9 @@ The first is that visibility is not merely cheapest, it is a *precondition*.
 Every retention policy in section 4.2 is a choice about which data to lose, and
 an operator cannot choose sensibly while the tool does not report that anything
 was lost. Shipping a better policy silently would replace one invisible loss
-with a different invisible loss.
+with a different invisible loss. **That precondition is now met** for the dialog
+store, which is why the retention work below is unblocked rather than merely
+ranked.
 
 The second is that a fourth item outranks the third: the pre-flight estimate
 (section 5) costs less than the retention work and prevents the failure rather
@@ -419,19 +601,26 @@ retention policy, then larger-than-memory processing.
 
 ### 4.1 Make the loss visible
 
-Three pieces, in increasing cost.
+Three pieces, in increasing cost. **The first two shipped in 0.5.72. The third
+has not.**
 
-**Count the default path.** Today the increment sits only in the no-rotate
-branch. `evict_oldest` needs to add `batch` to a counter, and the counter's
-meaning has to distinguish the two disposal modes, because "dropped the newest
-40 calls" and "dropped the oldest 40 calls" are different facts for a
-post-mortem. Two fields, or one field plus the mode, either is fine; one
-undifferentiated `dialogs_dropped` is not, because it would make a `--no-rotate`
-run and a default run indistinguishable in the output. Cost: a field, an
-increment, an accessor, a test.
+**Count the default path — SHIPPED.** The proposal was that `evict_oldest` add
+`batch` to a counter, and that the counter's meaning distinguish the two
+disposal modes, because "dropped the newest 40 calls" and "dropped the oldest 40
+calls" are different facts for a post-mortem: "Two fields, or one field plus the
+mode, either is fine; one undifferentiated `dialogs_dropped` is not, because it
+would make a `--no-rotate` run and a default run indistinguishable in the
+output." What landed is two fields — `capacity_dialogs_dropped` for reject-newest
+and `capacity_dialogs_evicted` for drop-oldest — with the increment inside
+`evict_oldest` rather than at its call sites. Section 3.2 has the detail.
 
-**Warn once at the end of the run.** The repository already has this idiom and
-it should be copied rather than reinvented. `src/output/group.rs:172-184`:
+**Warn once at the end of the run — SHIPPED**, as `report_retention_losses` in
+`src/app/batch.rs`. The recommendation was to copy the repository's existing
+idiom rather than reinvent it. The shipped code does not reuse the two method
+names, but it does reuse the shape and the discipline behind it — silent on a
+clean run, one sentence naming the numbers, split from the logging so the
+wording itself is under test. The idiom it was modelled on is
+`src/output/group.rs:172-184`:
 
 ```rust
     /// `true` when a cap refused at least one message, so the caller can warn.
@@ -449,48 +638,59 @@ it should be copied rather than reinvented. `src/output/group.rs:172-184`:
     }
 ```
 
-consumed at `src/app/batch.rs:1187-1188` as
-`if buf.truncated() { tracing::warn!("{}", buf.truncation_note()); }`. A
-`DialogStore::truncated()` / `drop_note()` pair warned just before the summary
-block at `src/app/batch.rs:1302` is the same shape, and the note must name the
-flag that fixes it (`--limit`) and say which end was lost. The precedent for
-warning loudly rather than counting quietly is also in the backlog:
-`docs/design/backlog.md` records `src/sip/parser.rs:279 — [silent-loss] headers
-beyond MAX_HEADERS_PER_MESSAGE silently dropped without parse_error. **Done:**
-… so the truncation is visible.` This is the same class of defect one layer up.
+consumed in `src/app/batch.rs` as
+`if buf.truncated() { tracing::warn!("{}", buf.truncation_note()); }`. The
+requirement that the note "name the flag that fixes it (`--limit`) and say which
+end was lost" is met — with the caveat in section 3.3 that it also names a flag
+that does not exist. The precedent for warning loudly rather than counting
+quietly is also in the backlog: `docs/design/backlog.md` records
+`src/sip/parser.rs:279 — [silent-loss] headers beyond MAX_HEADERS_PER_MESSAGE
+silently dropped without parse_error. **Done:** … so the truncation is visible.`
+This is the same class of defect one layer up.
 
-**Put it in the structured outputs.** These are the surfaces and the exact
-insertion points, each of which is a typed struct or a literal that a new field
-slots into:
+**Put it in the structured outputs — STILL OPEN.** Verified against 0.5.81: no
+output surface carries a retention figure. The warning reaches an operator
+reading stderr and nobody else — not an MCP client, not a scrape, not a report
+pasted into a ticket. These are the surfaces and the insertion points, each a
+typed struct or a literal that a new field slots into:
 
-- MCP: `StatsResponse` at `src/mcp/server.rs:458-471` already has
-  `dialog_count` / `stream_count` / `orphaned_stream_count`; built at `:1241`.
-- REST: the `json!` literal at `src/output/api.rs:938-945` — a `"dropped"` key
-  inside the existing `"dialogs"` object.
-- Prometheus: `PrometheusMetrics` at `src/output/prometheus.rs:22`, alongside
-  the existing `pub capture_backpressure_blocks_total: u64` at `:38`, which is
-  the same species of "we could not keep up" counter. Note this needs the field
-  populated in **both** `src/output/prometheus_server.rs` (`collect_metrics`)
-  and `src/output/api.rs` (`get_metrics`), which build the struct independently.
+- MCP: `StatsResponse` in `src/mcp/server.rs` already has `dialog_count` /
+  `stream_count` / `orphaned_stream_count`, and already carries
+  `unanalysed_sip_messages` for the same reason this field is wanted — its doc
+  comment argues that a field appearing only when something went wrong "is a
+  field the reader never learns exists, and this reader is a model that cannot
+  ask a follow-up question". Retention loss is the same species and should be
+  present-and-zero on the same grounds.
+- REST: the `json!` literal behind `/v1/stats` in `src/output/api.rs` — a
+  `"dropped"` key inside the existing `"dialogs"` object, beside `total` /
+  `active` / `completed` / `failed` / `cancelled`.
+- Prometheus: `PrometheusMetrics` in `src/output/prometheus.rs`, alongside the
+  existing `pub capture_backpressure_blocks_total: u64`, which is the same
+  species of "we could not keep up" counter. Note this needs the field populated
+  in **both** `src/output/prometheus_server.rs` (`collect_metrics`) and
+  `src/output/api.rs` (`get_metrics`), which build the struct independently.
 - TUI: the counts string at `src/tui/render/status.rs:80`, with the width
   accounting in `line1_used_cols` at `:34` updated to match — that helper sizes
   the status background from the rendered text, so added text that skips it
-  under-fills the bar. The honest-truncation idiom already
-  exists here too — `src/tui/loss_map.rs:138-146` renders
-  `"Showing most recent {} of {} losses"` in `theme.warning` when
-  `LossMap::truncated` (`src/rtp/loss_map.rs:47`) is set.
-- The `--report` table (`src/output/dialog_report.rs:29`) has no footer at all
-  today; one is needed, because a report is exactly the artifact that gets
-  pasted into a ticket without its stderr.
+  under-fills the bar. The honest-truncation idiom already exists here too —
+  `src/tui/loss_map.rs:138-146` renders `"Showing most recent {} of {} losses"`
+  in `theme.warning` when `LossMap::truncated` is set.
+- The `--report` table (`print_dialog_report` in `src/output/dialog_report.rs`)
+  has no footer at all; one is needed, because a report is exactly the artifact
+  that gets pasted into a ticket without its stderr.
 
-**Exit code: no.** `src/app/batch.rs:1357-1365` reserves a non-zero exit for
-output-write failure, with the reasoning that "a partial capture is worth
-looking at, it just must not be mistaken for a whole one by a script reading
-`$?`". That reasoning argues *for* flagging eviction, but changing the exit code
-of a run that completed is a breaking change to every wrapper script, and it
-conflates "sipnab failed" with "your limit was too low". Better handled by a
-separate opt-in (`--fail-on-truncation`) if it is wanted at all. That decision
-is deferred; the warning and the structured fields are not.
+Section 3.3's `StreamStore` gap belongs in the same change: two of these five
+surfaces report a stream count beside the dialog count, and a stream count with
+no loss figure has the defect this section exists to remove.
+
+**Exit code: no.** `src/app/batch.rs` reserves a non-zero exit for output-write
+failure, with the reasoning that "a partial capture is worth looking at, it just
+must not be mistaken for a whole one by a script reading `$?`". That reasoning
+argues *for* flagging eviction, but changing the exit code of a run that
+completed is a breaking change to every wrapper script, and it conflates "sipnab
+failed" with "your limit was too low". Better handled by a separate opt-in
+(`--fail-on-truncation`) if it is wanted at all. That decision is still deferred;
+the warning has shipped and the structured fields have not.
 
 ### 4.2 Retention policy
 
@@ -504,28 +704,31 @@ rather than randomly, which is worse — a random 30% loss leaves the 14:00 wind
 30% thinner, whereas drop-oldest leaves it empty while everything after 14:20
 looks pristine.
 
-**Reject-newest (`--no-rotate` today).** Already implemented, already counted
-(`src/sip/dialog_store.rs:427`), still unreported. Its virtue is that the
+**Reject-newest (`--no-rotate` today).** Already implemented, already counted in
+`process_message` and `merge`, and — since 0.5.72 — reported, as its own clause
+of the retention warning ("new dialog(s) refused at capacity (`--no-rotate` keeps
+the earliest)"). Its virtue is that the
 retained prefix is *contiguous and complete* — an unbroken window from the start
 of the capture to wherever the cap hit — so every derived statistic over that
 window is correct rather than biased. Its vice is that it is a cliff: analysis
-silently stops at an arbitrary point determined by a memory limit, and a
-capture-set feature whose whole purpose is stitching later files becomes a
-feature that reads them and discards them. It is the right *default* for
-forensics and the wrong thing to ship without the section 4.1 warning, because
-"complete up to 11:44:31, nothing after" is only useful information if the tool
-says so.
+stops at an arbitrary point determined by a memory limit, and a capture-set
+feature whose whole purpose is stitching later files becomes a feature that
+reads them and discards them. It is the right *default* for forensics, and the
+section 4.1 warning it depended on now exists — "complete up to 11:44:31,
+nothing after" is only useful information if the tool says so, and the tool now
+says at least the count.
 
 **Time-windowed.** Retain dialogs whose activity falls in an operator-named
 window and never admit others. This is the policy that actually matches the
 question ("what happened at 14:00?"): it bounds memory by a quantity the
 operator understands, it is deterministic, and both the retained set and the
-excluded set are describable in one sentence. It has no flag today — `--filter`
-exists but is applied *after* the dialog is stored (`src/app/batch.rs:1579`,
-comment: `// Apply DSL filter (evaluated after dialog update)`), so it cannot
-bound memory. Measured: `--filter "method == 'INVITE'"` yields the same 18,948
-dialogs and 302,552 KB as no filter at all. A time window has to be enforced at
-admission, in `process_message`, or it is decoration.
+excluded set are describable in one sentence. It still has no flag — `--filter`
+exists but is applied *after* the dialog is stored (`src/app/batch.rs`, comment:
+`// Apply DSL filter (evaluated after dialog update)`), so it cannot bound
+memory. That placement is unchanged at 0.5.81. Measured at 0.5.71: `--filter
+"method == 'INVITE'"` yields the same 18,948 dialogs and 302,552 KB as no filter
+at all. A time window has to be enforced at admission, in `process_message`, or
+it is decoration.
 
 The wrinkle that must be designed for rather than discovered: a dialog that
 *starts* before the window and is still active inside it is exactly the dialog a
@@ -555,8 +758,15 @@ visibility first, then make the policy selectable
 (`--on-capacity=drop-oldest|reject-new|window:<range>`) with drop-oldest
 remaining the default for live capture and the documentation stating plainly
 that forensic work on a capped set wants one of the others. The reason not to
-flip the default now is that eviction is currently silent, so any flip changes
+flip the default was that eviction was silent, so any flip would have changed
 answers without telling anyone — the same defect, differently shaped.
+
+**That blocker is gone.** Visibility shipped in 0.5.72, so the policy work is
+now unblocked, and a flip would at least announce itself. It is still not the
+thing to do next: the flag is the deliverable, not a different default, because
+the two policies are right for different jobs and one binary does both. The
+remaining precondition is section 4.1's third item — a policy an operator can
+set from five surfaces needs its loss figure readable from more than stderr.
 
 ### 4.3 Processing sets larger than memory
 
@@ -568,8 +778,15 @@ traffic before the thirty-four seconds preceding it … so a mis-ordered set doe
 not merely look odd, it produces confident wrong findings." A call whose INVITE
 is in `tg.pcap7` and whose BYE is in `tg.pcap0` is reconstructed only because
 the store spans both. **Eviction is the thing that breaks exactly that
-guarantee**, and it breaks it silently, on the same axis (time) that the
-ordering work was done to protect.
+guarantee**, and it breaks it on the same axis (time) that the ordering work was
+done to protect.
+
+Until 0.5.72 it broke it silently as well. It no longer does: the run says how
+many dialogs went and from which end. That is a count, not a repair — the
+reconstruction is still wrong, the operator is just told. Section 3.4 measures
+how wrong: at `--limit 5000` this corpus produced 1,011 more dialog creations
+than it has Call-IDs, every one of them a call re-created from its own middle
+after the original was evicted.
 
 So each option below is judged first on whether cross-file stitching survives.
 
@@ -598,7 +815,7 @@ spinning media it is a second full-file read. Both passes benefit from a BPF
 filter, and pass two can narrow to the target dialog's host pairs.
 
 This option also fits what already exists. `--call-report <CALL-ID>`
-(`src/app/batch.rs`, report built by `src/output/call_report.rs:52`) is already
+(`src/app/batch.rs`, report built by `src/output/call_report.rs`) is already
 a "detail for one dialog" mode; today it needs the whole store in memory to find
 that dialog, and two-pass is precisely the change that removes that requirement.
 `--wireshark` and `--tshark-filter` already emit per-dialog filters, which is
@@ -661,14 +878,17 @@ aggregation alone is not a forensic tool.
 
 ## 5. Pre-flight estimate
 
+**STILL OPEN at 0.5.81.** Nothing in this section shipped, and every claim in it
+was re-verified rather than assumed.
+
 It is tempting to say that `src/capture/input_set.rs` already visits every file
 during resolution, so the total size is known before reading starts and a
 size-based warning is nearly free. **Neither half of that holds: the size is not
 collected, and the size is the wrong quantity anyway.**
 
 What resolution does is open every file and read its first packet
-(`src/capture/input_set.rs:234-247`), which doubles as the "is this a capture"
-test:
+(`first_packet_time` in `src/capture/input_set.rs`), which doubles as the "is
+this a capture" test:
 
 ```rust
 fn first_packet_time(path: &Path) -> Result<Option<f64>> {
@@ -676,18 +896,18 @@ fn first_packet_time(path: &Path) -> Result<Option<f64>> {
     match cap.next_packet() {
 ```
 
-`ResolvedInput` (`:73-82`) carries only `path` and `first_packet`. There is no
-`fs::metadata` call in the module and no size anywhere on the struct. Adding
-size is trivial — one `metadata()` per resolved file, and the file is open
-already — but section 1.1 measured what it would be worth: 921 MB gave 18,241
-dialogs and 462 MB gave 707. A size-based warning would have shouted about the
-quiet capture and stayed silent about the loud one. It is also not the size of
-what gets read: `open_offline` transparently handles gzip members and
-`compressed_and_uncompressed_mix_in_one_set`
-(`src/capture/input_set.rs:460`) pins that a `.pcap.gz` sits in the same set as
-a plain file, so `metadata().len()` understates a compressed member by its
-compression ratio. Collect it anyway — it costs nothing and it bounds the second
-pass's I/O — but it must not be the trigger.
+`ResolvedInput` still carries only `path` and `first_packet`. There is still no
+`fs::metadata` call anywhere in the module and no size anywhere on the struct
+(re-checked at 0.5.81). Adding size is trivial — one `metadata()` per resolved
+file, and the file is open already — but section 1.1 measured what it would be
+worth: 921 MB gave 18,241 dialogs and 462 MB gave 707. A size-based warning
+would have shouted about the quiet capture and stayed silent about the loud one.
+It is also not the size of what gets read: `open_offline` transparently handles
+gzip members and `compressed_and_uncompressed_mix_in_one_set` pins that a
+`.pcap.gz` sits in the same set as a plain file, so `metadata().len()`
+understates a compressed member by its compression ratio. Collect it anyway — it
+costs nothing and it bounds the second pass's I/O — but it must not be the
+trigger.
 
 Two better quantities are available at the same moment, for almost the same
 cost.
@@ -697,10 +917,12 @@ timestamp. The span from the first file's first packet to the last file's first
 packet is a lower bound on the set's duration, available with no extra I/O, and
 it is what turns a dialog rate into a dialog count. It also detects the case
 this corpus is: two runs two hours apart in one directory. `warn_on_overlap`
-(`:257`) already warns when consecutive files start at the same instant; the
-inverse — a gap far larger than any file's span — is the same class of
-"this is not one sequence" warning and would have flagged
-`/home/gator/pcaps` correctly.
+already warns when consecutive files start at the same instant; the inverse — a
+gap far larger than any file's span — is the same class of "this is not one
+sequence" warning and would have flagged `/home/gator/pcaps` correctly. Section
+3.5 gives it a second reason to exist: that gap is also what makes idle
+compaction fire on this corpus, so an operator who is not told about the gap is
+not told why 314 messages went either.
 
 **Sampled signalling density, ~20 ms.** Read the first ~2,000 packets of each
 file instead of one, count SIP-looking packets and distinct Call-IDs, and
@@ -737,24 +959,32 @@ answer. Neither can be exact and neither should pretend to be.
 
 ## 6. Recommended sequence
 
-1. **Count eviction on the default path and warn once at the end of the run.**
-   Reuse `truncated()` / `truncation_note()` from `src/output/group.rs`
-   verbatim in shape. Distinguish drop-oldest from reject-newest in the count.
-   This is small, and until it exists everything else changes answers silently.
-2. **Fix the wall-clock idle compaction for offline runs** (section 3.2). Same
-   defect class, unrelated cause, and it makes every subsequent measurement
-   reproducible.
-3. **Add the pre-flight estimate**: span and sampled density at resolution,
-   warning before the read starts.
-4. **Surface the count in the structured outputs** — MCP `StatsResponse`, REST
-   `/v1/stats`, Prometheus, the TUI status line, and a footer on `--report`.
-5. **Make the retention policy selectable**, admission-time, with the time
+1. **DONE (0.5.72). Count eviction on the default path and warn once at the end
+   of the run.** Landed as `capacity_dialogs_evicted` plus
+   `report_retention_losses`, distinguishing drop-oldest from reject-newest in
+   the count as this item required. Section 3.2 has the shape; section 3.4 has
+   the output.
+2. **DONE (0.5.72). Fix the wall-clock idle compaction for offline runs**
+   (section 3.5). Landed as `SweepClock`, and it did what it was ranked for: the
+   release build and the debug build now lose the same 314 messages on this
+   corpus instead of 0 and 314.
+3. **OPEN. Add the pre-flight estimate**: span and sampled density at
+   resolution, warning before the read starts. Nothing here has been built —
+   `ResolvedInput` still carries no size and resolution still reads one packet
+   per file.
+4. **OPEN. Surface the count in the structured outputs** — MCP `StatsResponse`,
+   REST `/v1/stats`, Prometheus, the TUI status line, and a footer on
+   `--report`. None of the five carries a retention figure at 0.5.81. This is
+   now the highest-value remaining item, because it is the one thing standing
+   between the shipped counters and every consumer that is not a human reading
+   stderr, and because item 5 needs it.
+5. **OPEN. Make the retention policy selectable**, admission-time, with the time
    window as one predicate. Keep drop-oldest as the live default.
-6. **Two-pass**, index then re-read, with streaming aggregation as its
+6. **OPEN. Two-pass**, index then re-read, with streaming aggregation as its
    degenerate one-pass mode.
 
-Items 1–3 are the ones that stop wrong conclusions. Items 5–6 are the ones that
-make large captures work.
+Items 1–4 are the ones that stop wrong conclusions; two of the four are done.
+Items 5–6 are the ones that make large captures work, and neither has started.
 
 ## 7. What is not known
 
@@ -766,7 +996,9 @@ guessed at:
   reclaim is unknown until one is built and measured.
 - **The 1.15 GiB figure for 100,000 dialogs is an extrapolation** roughly 5×
   beyond the measured range.
-- **`max_audio_frames` (1,500/stream, TUI only) has no measured cost.**
+- **`max_audio_frames` (1,500/stream) has no measured cost**, and it is no
+  longer TUI-only: section 1.4 records that a `--mcp` batch run retains audio
+  too, so the unmeasured cost is now reachable from a headless server.
 - **Cold-cache and network-storage read costs were not measured.** Every timing
   here is warm page cache on local storage, and the two-pass recommendation
   assumes re-reading is cheap — an assumption that has not been tested where it
@@ -781,9 +1013,16 @@ guessed at:
 
 ## Appendix: reproducing the measurements
 
-All runs are `--cores 1`; `--cores > 1` is excluded for the reason in 3.3.
-`SIPNAB_PERF_STATS=1` enables the `dialogs=`/`streams=` line at
-`src/app/batch.rs:2093-2098`.
+All runs are `--cores 1`; `--cores > 1` was excluded for the reason in 3.6, a
+defect since fixed — a modern re-measurement could include it, and would want
+to, given that `merge` now enforces the cap.
+
+`SIPNAB_PERF_STATS=1` still enables the `dialogs=`/`streams=` line in
+`src/app/batch.rs`.
+
+**Three of these commands answer differently against 0.5.72 or later**, each
+marked below. Two of them were the evidence for a defect that is now fixed, so
+the new answer is the point rather than a discrepancy.
 
 ```sh
 export SIPNAB_PERF_STATS=1
@@ -818,20 +1057,28 @@ $BIN -N -I /home/gator/pcaps --report --no-cli-print 2>/dev/null > full_report.t
 awk 'NR>=3 && NR<=18950 {v=substr($0,95,6)+0; s+=v; n++; if(v>m)m=v}
      END{printf "dialogs=%d msgs=%d mean=%.2f max=%d\n", n, s, s/n, m}' full_report.txt
 
-# The dead config keys: loads, then ignores both.
+# CHANGED at 0.5.72. The formerly dead config keys.
+# 0.5.71: loads, then ignores both -> dialogs=18948 streams=1460.
+# 0.5.72+: both keys apply -> dialogs capped at 100, streams at 10.
 printf '[limits]\ndialog_limit = 100\nmax_streams = 10\n' > cfg_dead.toml
 $BIN -N -I /home/gator/pcaps --config cfg_dead.toml --cores 1 --no-cli-print
 
-# The DSL filter does not bound memory; BPF does.
+# UNCHANGED. The DSL filter does not bound memory; BPF does.
 $BIN -N -I /home/gator/pcaps --cores 1 --filter "method == 'INVITE'" --no-cli-print
 $BIN -N -I /home/gator/pcaps --cores 1 --no-cli-print 'port 5060'
 
-# Silent truncation, exit 0, no warning.
+# CHANGED at 0.5.72. Truncation, exit 0 -- and now a warning.
+# 0.5.71: the grep counted 0.
+# 0.5.78, re-measured: one "retention: ..." line naming 15000 evicted
+# dialogs and 2 compacted messages. Still exit 0, by design.
 $BIN -N -I /home/gator/pcaps --limit 5000 --cores 1 --report --no-cli-print \
   > lim5000.txt 2> lim5000.err; echo "exit=$?"
-grep -c 'evict\|drop\|truncat' lim5000.err   # 0
+grep -c 'retention:' lim5000.err
 
-# Speed-dependent idle compaction (max messages 44 release, 24 debug).
+# CHANGED at 0.5.72. Idle compaction was decided by build speed.
+# 0.5.71: 44 max messages in release, 24 in debug, 314 messages apart.
+# 0.5.72+: the capture clock drives the sweep, so both builds agree, and
+# the release build reports the same 314 messages the debug build lost.
 ./target/debug/sipnab -N -I /home/gator/pcaps --limit 100000 --cores 1 \
   --report --no-cli-print > dbg_report.txt
 

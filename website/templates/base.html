@@ -9,8 +9,31 @@
        header set (incl. frame-ancestors/HSTS, which meta cannot carry)
        lives in static/_headers for hosts/proxies that honor it.
        'wasm-unsafe-eval' + connect-src 'self' keep the /analyze/ WASM
-       tool working; 'unsafe-inline' matches the current inline handlers. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+       tool working.
+
+       script-src still grants 'unsafe-inline' here, and that is a constraint
+       rather than a preference. Production's real script-src is hash-pinned
+       at the Cloudflare edge; a browser enforces every delivered policy
+       INDEPENDENTLY and blocks anything either one rejects, so this tag
+       cannot name the same hashes without carrying them — and it cannot,
+       because the hashes are taken over rendered HTML and two of the inline
+       scripts contain Tera expressions. Deleting 'unsafe-inline' from a
+       policy that has no hashes does not harden the page, it blanks it: the
+       nav toggle, the docs dropdown and search all stop working on every
+       page, in production, because this policy would then reject the very
+       scripts the edge policy allows.
+
+       script-src-attr 'none' closes the half of that grant this repository
+       can close unconditionally. It governs inline event-handler attributes
+       only, so it does not touch the four legitimate inline script elements,
+       and it makes an injected onerror=/onclick= payload inert even on a
+       host with no edge policy in front of it — which is exactly the shape
+       of XSS a lone 'unsafe-inline' would permit. The templates provably
+       carry no handler attributes (no_inline_event_handlers_in_templates),
+       so nothing legitimate is lost. Removing 'unsafe-inline' outright needs
+       the inline scripts externalized to .js files first; see
+       ops/cloudflare/README.md. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; script-src-attr 'none'; style-src 'self' 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
@@ -52,7 +75,23 @@
   <script src="{{ get_url(path='elasticlunr.min.js', cachebust=true) }}" defer></script>
   {% endif %}
 
-  <!-- Structured data -->
+  <!-- Structured data.
+
+       The four `| safe` expressions below are escaping bypasses and cannot be
+       written any other way: `json_encode` emits its own surrounding quotes,
+       and without `| safe` Tera HTML-escapes them to &quot;, which is not
+       valid JSON and breaks the structured data outright. What makes them
+       safe is the provenance of the values, not the filter — three are
+       literals in config.toml and `published_version` is written by release
+       automation, so none is reachable from anything a visitor sends.
+
+       `json_encode` does NOT escape the forward slash, so a value carrying a
+       closing script tag would terminate this element early and the rest of
+       the page would be parsed as markup. That is the entire exploit, and it
+       needs only an unlucky edit to config.toml. The property is asserted in
+       no_config_value_in_the_json_ld_block_can_close_the_script_element, and
+       every bypass on the page is held to a reviewed allowlist by
+       every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",

@@ -3,9 +3,32 @@
 # rules. GitHub Pages ignores it (it cannot set response headers — the
 # reason securityheaders.com grades Pages-hosted sites F); the meta CSP in
 # templates/base.html provides the browser-enforced subset there.
+#
+# script-src carries no 'unsafe-inline'. Production allows the site's inline
+# <script> blocks by sha256 hash (a Cloudflare transform rule written by
+# ops/cloudflare/refresh_csp_hashes.py), and a reference set that is weaker
+# than what production enforces is worse than no reference at all: anyone who
+# adopts it believes they copied the real policy while actually running one
+# under which an injected <script> executes.
+#
+# The hash tokens are deliberately absent here rather than pinned. They are
+# taken over RENDERED HTML, and two of the inline scripts contain Tera
+# expressions, so the template text this repository stores is not enough to
+# compute them — a pinned list would be a guess that goes stale on the next
+# site edit. Shipping without them fails CLOSED: the site's own inline
+# scripts are blocked until the list is filled in, which shows up as a dead
+# nav on the first page load instead of as a silent hole. Fill it in from the
+# built site before serving from a host that honors this file:
+#
+#   cd website && zola build
+#   python3 ops/cloudflare/refresh_csp_hashes.py \
+#       --site-dir website/public --write-headers website/public/_headers --dry-run
+#
+# style-src keeps 'unsafe-inline' because the templates carry ~141 inline
+# style= attributes, which CSP cannot hash.
 /*
   Strict-Transport-Security: max-age=31536000; includeSubDomains
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin

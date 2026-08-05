@@ -626,6 +626,103 @@ fn shard_opened(
     }
 }
 
+/// Read every file of the set into the worker batches, tallying what became of
+/// each one.
+///
+/// Split out of [`run_offline_parallel_file`] for the reason
+/// `read_set` is split out of [`crate::capture::file::capture_files`] on the
+/// single-threaded path: the closing summary is then reported on EVERY path out
+/// of the read, including the ones that return an error. A BPF filter that will
+/// not compile against the first file still leaves an account to give, and an
+/// account only printed on the happy path is one the operator learns not to
+/// rely on.
+///
+/// The tally is [`crate::capture::file::ReadTally`] — the single-threaded
+/// reader's type, not a parallel copy of it — so both readers state what they
+/// read in one sentence with one wording and one severity rule.
+///
+/// Returns `Ok(())` once the set is exhausted, the `--count` budget is spent, or
+/// a file's read stopped and the rest of the set was read on regardless.
+///
+/// # Errors
+///
+/// Only for the FIRST file: it cannot be opened, or the BPF filter will not
+/// compile against it. Either proves the whole set unusable before any packet
+/// has been sharded.
+///
+/// # Side effects
+///
+/// Opens and reads each file (writing a decompressed temp copy for gzip input),
+/// pushes packets into `batches` and flushes full ones to `txs`, advances
+/// `progress` and `tally`, and logs per-file progress and per-file failures.
+fn shard_set(
+    paths: &[std::path::PathBuf],
+    capture_config: &crate::capture::CaptureConfig,
+    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    batches: &mut [Vec<crate::capture::packet::Packet>],
+    progress: &mut ReadProgress,
+    tally: &mut crate::capture::file::ReadTally,
+) -> anyhow::Result<()> {
+    use crate::capture::file::open_offline;
+
+    for (i, path) in paths.iter().enumerate() {
+        let is_first = i == 0;
+        let (mut cap, _gz_guard) = match open_offline(path) {
+            Ok(opened) => opened,
+            // The first file owns the "is this set usable at all" verdict. A
+            // later one that vanished mid-run — a rotating capture directory
+            // being cleaned up while it is analysed — is logged and skipped:
+            // losing one file of a set is bad, losing the other nine is worse.
+            Err(e) if is_first => return Err(e),
+            Err(e) => {
+                tally.skipped += 1;
+                tally.lost = true;
+                tracing::error!("Skipping '{}': {e:#}", path.display());
+                continue;
+            }
+        };
+        if let Some(ref bpf) = capture_config.bpf_filter
+            && let Err(e) = cap.filter(bpf, true)
+        {
+            let err = anyhow::anyhow!("Failed to compile BPF filter '{bpf}': {e}");
+            // Counted as a skip either way: a file whose traffic never reached
+            // the workers is data missing from the analysis, and that is true
+            // whether the run then stops or reads on.
+            tally.skipped += 1;
+            tally.lost = true;
+            if is_first {
+                return Err(err);
+            }
+            tracing::error!("Skipping '{}': {err:#}", path.display());
+            continue;
+        }
+        // A read error stops THIS file, not the set. Truncation is the normal
+        // state of a ring buffer — the newest member is still being written when
+        // the capture stops, and libpcap reports `truncated dump file` on the
+        // trailing partial record. Whatever was read before the break is already
+        // in the workers' stores and stays there.
+        match shard_opened(&mut cap, path, capture_config, txs, batches, progress) {
+            Ok(true) => tally.complete += 1,
+            // The `--count` budget ran out inside this file. Requested, so not
+            // a loss — but the file was still not read to its end, and the
+            // files behind it are "not reached" rather than absent.
+            Ok(false) => {
+                tally.stopped_early += 1;
+                return Ok(());
+            }
+            Err(e) => {
+                tally.stopped_early += 1;
+                tally.lost = true;
+                tracing::error!(
+                    "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Like `run_offline_parallel`, but reads the capture FILES directly in this
 /// thread instead of consuming a `PacketRx` fed by a separate capture reader
 /// thread. This fuses pcap-read + host-pair peek + shard into a SINGLE serial
@@ -665,7 +762,6 @@ pub fn run_offline_parallel_file(
     capture_config: &crate::capture::CaptureConfig,
     cfg: ParallelConfig,
 ) -> anyhow::Result<ReconResult> {
-    use crate::capture::file::open_offline;
     use crate::capture::packet::Packet;
     use crossbeam_channel::bounded;
     let n = cfg.cores.max(2);
@@ -726,51 +822,27 @@ pub fn run_offline_parallel_file(
         clock: SweepClock::new(true),
     };
     let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
-    for (i, path) in paths.iter().enumerate() {
-        let is_first = i == 0;
-        let (mut cap, _gz_guard) = match open_offline(path) {
-            Ok(opened) => opened,
-            // The first file owns the "is this set usable at all" verdict. A
-            // later one that vanished mid-run — a rotating capture directory
-            // being cleaned up while it is analysed — is logged and skipped:
-            // losing one file of a set is bad, losing the other nine is worse.
-            Err(e) if is_first => return Err(e),
-            Err(e) => {
-                tracing::error!("Skipping '{}': {e:#}", path.display());
-                continue;
-            }
-        };
-        if let Some(ref bpf) = capture_config.bpf_filter
-            && let Err(e) = cap.filter(bpf, true)
-        {
-            let err = anyhow::anyhow!("Failed to compile BPF filter '{bpf}': {e}");
-            if is_first {
-                return Err(err);
-            }
-            tracing::error!("Skipping '{}': {err:#}", path.display());
-            continue;
-        }
-        // A read error stops THIS file, not the set. Truncation is the normal
-        // state of a ring buffer — the newest member is still being written when
-        // the capture stops, and libpcap reports `truncated dump file` on the
-        // trailing partial record. Whatever was read before the break is already
-        // in the workers' stores and stays there.
-        match shard_opened(
-            &mut cap,
-            path,
-            capture_config,
-            &txs,
-            &mut batches,
-            &mut progress,
-        ) {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(e) => tracing::error!(
-                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                path.display()
-            ),
-        }
-    }
+    let mut tally = crate::capture::file::ReadTally {
+        given: paths.len(),
+        ..crate::capture::file::ReadTally::default()
+    };
+    let read = shard_set(
+        paths,
+        capture_config,
+        &txs,
+        &mut batches,
+        &mut progress,
+        &mut tally,
+    );
+    // Reported before the error is propagated, and on every path out, exactly
+    // as `capture_files` does it: a filter that fails against file twelve still
+    // read eleven, and what reached the workers is what the operator has to be
+    // told. This line was absent entirely from the `--cores` path, so the only
+    // reader that can be pointed at a 27-file ring buffer and finish in a
+    // reasonable time was also the only one that never said how much of it it
+    // had actually read.
+    tally.report(progress.count);
+    read?;
     // Flush every partial batch so no tail packets are lost.
     for (s, b) in batches.into_iter().enumerate() {
         if !b.is_empty() {

@@ -53,6 +53,16 @@
     {% endif %}
 
     <div class="doc-body">
+      <!-- `| safe` is required and not removable: `page.content` is the HTML
+           Zola already rendered from the page's Markdown. Escaping it would
+           print the tags as literal text and every docs page would render as
+           its own source. The value is not attacker-controlled — it is
+           produced at build time from .md files committed to this repository
+           and built only from `main`, so the trust boundary is the repository,
+           not the request. If a page's body ever comes from somewhere a
+           visitor can write, this filter has to go first; the allowlist in
+           every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist
+           is what forces that to be a deliberate, reviewed edit. -->
       {{ page.content | safe }}
     </div>
 

@@ -2104,7 +2104,8 @@ impl SipnabMcp {
         description = "Returns a page of dialog summaries from the live capture \
                        store. Filter accepts a diagnostic alias name or a raw DSL \
                        expression. The response carries total_matched, a truncated \
-                       flag, and next_cursor for the remaining dialogs."
+                       flag, and next_cursor for the remaining dialogs.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn list_dialogs(
         &self,
@@ -2134,7 +2135,8 @@ impl SipnabMcp {
         description = "Returns a structured per-call report (timing, parties, \
                        RTP quality, diagnosis hints) for one Call-ID. Format \
                        'json', 'markdown', or 'text'. Returns an error when the \
-                       Call-ID is not found in the active store."
+                       Call-ID is not found in the active store.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_dialog_report(
         &self,
@@ -2226,7 +2228,8 @@ impl SipnabMcp {
                        one-way, nat-issues, codec-asym, ptime-asym, \
                        payload-asym, duration-asym, late-media), optionally \
                        narrowed by a DSL filter. Defaults to ['problems']. The \
-                       response carries total_matched, truncated and next_cursor."
+                       response carries total_matched, truncated and next_cursor.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn find_problems(
         &self,
@@ -2284,7 +2287,8 @@ impl SipnabMcp {
         name = "get_dialog",
         description = "Returns a paginated dialog including SIP messages. \
                        Supports cursor-based pagination via max_messages \
-                       (default 100, max 1000) and cursor (default 0)."
+                       (default 100, max 1000) and cursor (default 0).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_dialog(
         &self,
@@ -2344,7 +2348,8 @@ impl SipnabMcp {
         name = "get_message",
         description = "Returns a single SIP message at the given zero-based \
                        index of a dialog. Returns invalid_params when the \
-                       Call-ID is unknown or the index is out of range."
+                       Call-ID is unknown or the index is out of range.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_message(
         &self,
@@ -2391,7 +2396,8 @@ impl SipnabMcp {
         name = "render_ladder",
         description = "Renders a SIP call-flow ladder for one Call-ID. \
                        Format 'markdown' (default) or 'text'. Output is \
-                       byte-identical to `--call-report --markdown`."
+                       byte-identical to `--call-report --markdown`.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn render_ladder(
         &self,
@@ -2460,7 +2466,8 @@ impl SipnabMcp {
                        stream of that dialog plus its media diagnosis. Without \
                        call_id: a paged sweep of every stream in the capture, \
                        optionally bounded by min_mos / max_mos, which apply only \
-                       to codecs with a published ITU-T G.113 impairment value."
+                       to codecs with a published ITU-T G.113 impairment value.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn rtp_stats(
         &self,
@@ -2527,7 +2534,8 @@ impl SipnabMcp {
                        status, From, To, User-Agent, and body across all \
                        dialogs in the active store. Returns up to `limit` \
                        (default 50, max 1000) (call_id, message_index, \
-                       snippet) hits."
+                       snippet) hits.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn search_messages(
         &self,
@@ -2617,7 +2625,8 @@ impl SipnabMcp {
                        verbatim; a bare RFC 3339 timestamp is also \
                        accepted). Used for polling-based change tracking. \
                        The response carries source_exhausted=true after a \
-                       pcap source has been fully consumed."
+                       pcap source has been fully consumed.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn tail_dialogs(
         &self,
@@ -2708,7 +2717,8 @@ impl SipnabMcp {
                        active detection rules (scanner, fraud, digest leaks, \
                        reg flood). Optional `kinds` filter and `since` RFC \
                        3339 cursor; empty list when no AlertEngine is \
-                       attached."
+                       attached.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn security_findings(
         &self,
@@ -2762,7 +2772,8 @@ impl SipnabMcp {
                        giving packets dropped by the kernel capture ring, \
                        packets dropped by the interface or driver, packets \
                        whose pcap timestamp was unusable, and whether any \
-                       of those three is non-zero."
+                       of those three is non-zero.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn stats(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         // Read before the locks below: process-global atomics unrelated to
@@ -2810,7 +2821,8 @@ impl SipnabMcp {
                        replayed file, its name, uptime, how many dialogs and \
                        streams are held, whether a file source is exhausted, and \
                        whether stopping now would lose unsaved packets. Call this \
-                       before reasoning about stopping or restarting a capture."
+                       before reasoning about stopping or restarting a capture.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn capture_status(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
@@ -2890,7 +2902,8 @@ impl SipnabMcp {
                        --mcp-allow-shutdown, --mcp-allow-open-capture). Call \
                        this before asking for decryption, HEP, a file export or \
                        a capture swap: a build or a server without them fails \
-                       confusingly otherwise."
+                       confusingly otherwise.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn server_capabilities(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         // Read from cfg! rather than a hand-kept list, so this cannot claim a
@@ -2943,7 +2956,8 @@ impl SipnabMcp {
                        registry: its reason phrase, class (provisional, \
                        success, redirect, challenge, cancelled, declined, \
                        failure) and what it means operationally. Use this \
-                       instead of recalling codes from memory."
+                       instead of recalling codes from memory.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn explain_response_code(
         &self,
@@ -2985,7 +2999,8 @@ impl SipnabMcp {
         description = "Compares two calls side by side — state, outcome code, \
                        duration, message count, methods seen, and their \
                        diagnoses — and lists what differs. Use it for \
-                       'why did this call work and that one not?'."
+                       'why did this call work and that one not?'.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn compare_dialogs(
         &self,
@@ -3053,7 +3068,8 @@ impl SipnabMcp {
         description = "Returns the SDP offer/answer exchanges for a call in \
                        order — codecs, ptime and direction per negotiation, \
                        including re-INVITEs. Use it when audio changed mid-call \
-                       or the two ends disagree about the codec."
+                       or the two ends disagree about the codec.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_sdp_timeline(
         &self,
@@ -3104,7 +3120,8 @@ impl SipnabMcp {
                        time window, optionally narrowed by a diagnostic alias or \
                        DSL filter. Use it to scope an investigation to when a \
                        user says the problem happened. The response carries \
-                       total_matched and a truncated flag."
+                       total_matched and a truncated flag.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn search_by_time(
         &self,
@@ -3191,7 +3208,8 @@ impl SipnabMcp {
                        signalling, media, both or none, with the evidence for \
                        each. Start here — the signalling/media split decides \
                        which half of the stack to investigate, and they have \
-                       different causes and different fixes."
+                       different causes and different fixes.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn triage_call(
         &self,
@@ -3262,7 +3280,8 @@ impl SipnabMcp {
         description = "Lists the codecs offered and answered for a call and \
                        whether they intersect. Use it for 488 Not Acceptable \
                        Here, which usually means the far end was offered no \
-                       codec it accepts."
+                       codec it accepts.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn check_codec_negotiation(
         &self,
@@ -3349,7 +3368,8 @@ impl SipnabMcp {
                        endpoint registered, was rejected, is looping on auth, \
                        or was granted a shorter expiry than it asked for. \
                        Answers 'is this phone online?', which is a different \
-                       question from 'why did this call fail?'."
+                       question from 'why did this call fail?'.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn diagnose_registration(
         &self,
@@ -3440,7 +3460,8 @@ impl SipnabMcp {
                        alongside counts for the severity floor and the \
                        per-rule cap. The response also names every rule that \
                        had no input to read, so a short list is not mistaken \
-                       for a clean call."
+                       for a clean call.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn lint_dialog(
         &self,
@@ -3537,7 +3558,8 @@ impl SipnabMcp {
                        section calls for. Reads that message alone, so the rules \
                        needing a dialog or the observed media do not run; the \
                        response names each of them, and reports any \
-                       .sipnablint applied with the counts it silenced."
+                       .sipnablint applied with the counts it silenced.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn validate_message(
         &self,
@@ -3603,7 +3625,8 @@ impl SipnabMcp {
                        reads from, a link to that section on rfc-editor.org, \
                        what the rule has to read before it can run, and every \
                        ruleset selector that reaches it. An unknown identifier \
-                       returns invalid_params listing the whole catalogue."
+                       returns invalid_params listing the whole catalogue.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn explain_rule(
         &self,
@@ -3654,7 +3677,8 @@ impl SipnabMcp {
         name = "list_captures",
         description = "Lists capture files (.pcap/.pcapng) in the server's \
                        configured file root, with sizes. Requires \
-                       --mcp-file-root."
+                       --mcp-file-root.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn list_captures(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let root = self.file_root.as_ref().ok_or_else(|| {
@@ -3700,7 +3724,13 @@ impl SipnabMcp {
                        RTCP and no non-SIP traffic, and a SIP-over-TCP message \
                        is written as UDP. Use it to preserve signalling before \
                        stopping a live capture — otherwise the messages end with \
-                       the process."
+                       the process.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub async fn export_capture(
         &self,
@@ -3741,7 +3771,13 @@ impl SipnabMcp {
         name = "export_audio",
         description = "Exports a call's RTP audio to a WAV file in the \
                        configured file root. Fails when the call has no \
-                       decodable audio."
+                       decodable audio.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub async fn export_audio(
         &self,
@@ -3809,7 +3845,13 @@ impl SipnabMcp {
                        new capture_identity; poll capture_status until \
                        load.done is true. Answers from the previous capture \
                        carry a different capture_identity and cannot be mixed \
-                       with answers from this one."
+                       with answers from this one.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub async fn open_capture(
         &self,
@@ -3973,7 +4015,8 @@ impl SipnabMcp {
                        are identifier matches, timing_heuristic is a guess from \
                        endpoint overlap and elapsed time, and on a busy server \
                        unrelated calls routinely share an endpoint inside its \
-                       window."
+                       window.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn find_correlated(
         &self,
@@ -4074,7 +4117,13 @@ impl SipnabMcp {
                        annotation is appended to sipnab's log for a human to \
                        read; it is not readable through any tool, does not \
                        appear in any query result, and no analysis consumes it, \
-                       so it cannot affect a later answer."
+                       so it cannot affect a later answer.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     pub async fn save_findings(
         &self,
@@ -4170,7 +4219,13 @@ impl SipnabMcp {
                        RUN that only reports what would happen; pass \
                        dry_run=false to actually stop. Refuses to discard an \
                        unsaved live capture unless save_to is given or \
-                       discard_unsaved=true."
+                       discard_unsaved=true.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub async fn shutdown_server(
         &self,
@@ -4298,7 +4353,7 @@ impl SipnabMcp {
                        attached. Starts no capture. Every value is a number: \
                        the response type carries no text from any packet. \
                        sample_seconds is clamped to 30 and zero is refused.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn capture_health(
         &self,
@@ -7123,6 +7178,121 @@ mod tests {
             .as_ref()
             .expect("capture_health must carry tool annotations");
         assert_eq!(annotations.read_only_hint, Some(true));
+    }
+
+    /// Every registered tool is annotated, and the writes are exactly the
+    /// five we expect.
+    ///
+    /// Annotations are a promise to the client: an agent host uses
+    /// `readOnlyHint` to decide what it may call without asking, and
+    /// `destructiveHint` to decide what needs confirmation. An UNANNOTATED tool
+    /// carries no promise at all, so a cautious host must treat it as the worst
+    /// case and a careless one treats it as harmless — and thirty of the
+    /// thirty-one tools here were unannotated.
+    ///
+    /// Two properties, and the second is the one that makes this durable:
+    ///
+    /// 1. Every tool carries annotations with `read_only_hint` and
+    ///    `open_world_hint` set explicitly. Absent is not the same as false;
+    ///    absent means nobody decided.
+    /// 2. The set of tools that are NOT read-only equals `WRITES` exactly. A new
+    ///    write verb, or an existing tool quietly flipped to non-read-only,
+    ///    fails here by name. Checking only "every tool has annotations" would
+    ///    pass while a tool that deletes something claimed to be read-only.
+    #[test]
+    fn every_tool_is_annotated_and_the_writes_are_exactly_the_expected_five() {
+        /// name, destructive_hint, idempotent_hint.
+        ///
+        /// Both hints are meaningful ONLY when `read_only_hint` is false (MCP
+        /// spec), which is why they are pinned here and not on the query tools.
+        /// `open_capture` and `shutdown_server` are destructive because each
+        /// changes what every later answer describes; `save_findings` is
+        /// additive but NOT idempotent, because each call records another
+        /// annotation.
+        const WRITES: &[(&str, bool, bool)] = &[
+            ("export_audio", false, true),
+            ("export_capture", false, true),
+            ("open_capture", true, true),
+            ("save_findings", false, false),
+            ("shutdown_server", true, true),
+        ];
+
+        let router = SipnabMcp::tool_router();
+        let tools = router.list_all();
+
+        // A walk that finds nothing reports every tool annotated, which is
+        // indistinguishable from a clean result.
+        assert!(
+            tools.len() >= 25,
+            "router listed only {} tool(s) — the walk is broken and this gate \
+             is not checking what it claims",
+            tools.len()
+        );
+
+        let mut unannotated = Vec::new();
+        let mut missing_open_world = Vec::new();
+        let mut writes_found: Vec<String> = Vec::new();
+
+        for tool in &tools {
+            let name = tool.name.to_string();
+            let Some(ann) = tool.annotations.as_ref() else {
+                unannotated.push(name);
+                continue;
+            };
+            match ann.read_only_hint {
+                None => unannotated.push(name.clone()),
+                Some(true) => {}
+                Some(false) => writes_found.push(name.clone()),
+            }
+            if ann.open_world_hint.is_none() {
+                missing_open_world.push(name);
+            }
+        }
+
+        assert!(
+            unannotated.is_empty(),
+            "tool(s) {unannotated:?} carry no read_only_hint. An agent host \
+             cannot tell whether calling them is safe, so it must either refuse \
+             them or risk them. Annotate each one."
+        );
+        assert!(
+            missing_open_world.is_empty(),
+            "tool(s) {missing_open_world:?} carry no open_world_hint. sipnab \
+             answers from a loaded capture and reaches no external service, so \
+             this is false for every tool here — but it has to be SAID, because \
+             absent means nobody decided."
+        );
+
+        writes_found.sort();
+        let expected: Vec<String> = WRITES.iter().map(|(n, _, _)| n.to_string()).collect();
+        assert_eq!(
+            writes_found, expected,
+            "the set of non-read-only tools changed. Either a new write verb \
+             was added (annotate it and add it to WRITES, and check it belongs \
+             on the MCP surface at all), or a tool that used to be read-only is \
+             no longer — which is a change an agent host is entitled to be told \
+             about."
+        );
+
+        for (name, destructive, idempotent) in WRITES {
+            let tool = router
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            let ann = tool
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} must carry annotations"));
+            assert_eq!(
+                ann.destructive_hint,
+                Some(*destructive),
+                "{name}: destructive_hint"
+            );
+            assert_eq!(
+                ann.idempotent_hint,
+                Some(*idempotent),
+                "{name}: idempotent_hint"
+            );
+        }
     }
 
     // ---- save_findings: the one write verb, and its dead end ----------------

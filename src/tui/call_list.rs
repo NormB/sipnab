@@ -518,9 +518,20 @@ pub fn render_call_list(
         .bg(theme.header)
         .add_modifier(Modifier::BOLD);
 
-    // Determine which column indices are visible
+    // Dynamic column widths for this terminal width. A column too narrow to
+    // say anything comes back as `None` — not laid out at all — so it costs
+    // neither a header cell nor the spacing cell that would have followed it.
+    // That is the whole difference between hiding a column and drawing it
+    // zero cells wide, which is a header over nothing that still eats a
+    // border.
+    let all_widths = compute_column_widths(table_area.width);
+
+    // Determine which column indices are drawn: the user's choice AND the
+    // width's. Note this deliberately does not touch `state.visible_columns`
+    // — the user's choice is persisted to their sipnabrc, and a column
+    // dropped because the terminal is narrow must come back when it grows.
     let vis_indices: Vec<usize> = (0..COLUMN_LABELS.len())
-        .filter(|&i| state.visible_columns[i])
+        .filter(|&i| state.visible_columns[i] && all_widths[i].is_some())
         .collect();
 
     // Build header cells with sort indicator on the active sort column
@@ -549,10 +560,9 @@ pub fn render_call_list(
 
     let header = Row::new(header_cells).style(header_style).bottom_margin(0);
 
-    // Dynamic column widths based on available terminal width,
-    // filtered to only include visible columns.
-    let all_widths = compute_column_widths(table_area.width);
-    let widths: Vec<Constraint> = vis_indices.iter().map(|&i| all_widths[i]).collect();
+    // `vis_indices` was already filtered to the laid-out columns, so every
+    // lookup here is `Some`.
+    let widths: Vec<Constraint> = vis_indices.iter().filter_map(|&i| all_widths[i]).collect();
 
     // The displayed list (filter + search + sort) was derived once this
     // tick by App::sync_caches and arrives as display-ordered call-ids;
@@ -805,21 +815,6 @@ pub fn render_call_list(
 
 // ── Column width calculation ───────────────────────────────────────
 
-/// Compute dynamic column widths based on available terminal width.
-///
-/// Fixed-width columns (index, method, state, msgs, date, pdd) keep their
-/// minimum sizes. From/To and Source/Destination share the remaining space
-/// proportionally.
-///
-/// # Arguments
-///
-/// * `total_width` — full width of the table area in terminal cells.
-///
-/// # Returns
-///
-/// One `Constraint::Length` per column in `ALL_COLUMNS` order (always 11
-/// entries, regardless of visibility); wider layouts kick in at >= 120
-/// columns.
 /// Whether a dialog has any signalling finding worth marking on its row.
 ///
 /// Separate from the diagnosis itself so the render path asks one boolean
@@ -831,85 +826,157 @@ fn signaling_marker(dialog: &crate::sip::dialog::SipDialog) -> bool {
     !crate::sip::diagnosis::diagnose_signaling(&dialog.messages).is_empty()
 }
 
-fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
-    // Compute explicit column widths to guarantee no truncation of key fields.
-    //
-    // Fixed columns: # + Method + State + Msgs + Date + PDD
-    // Flex columns: From, To, Source, Destination share remaining space.
-    //
-    // At >= 120 cols: all columns generous, From/To visible.
-    // At 80-119 cols: From/To get smaller but still visible.
-    // At < 80 cols:   From/To get minimum, everything compressed.
+/// The narrowest From/To column that still names who the call is between.
+///
+/// Four cells is the width of the shortest identity these columns ever hold —
+/// a 3-4 digit extension — and it is also the width of the `From` header
+/// itself. It is not a new number: the narrow layout already reserved exactly
+/// `2 * 4` cells for the From/To pair before handing anything to the address
+/// columns. What changes is what happens when the reservation cannot be met.
+/// It used to be met with zeroes; now the pair is dropped.
+const MIN_IDENTITY_WIDTH: u16 = 4;
 
-    // Column spacing consumed by ratatui: 1px between each of 11 cols = 10,
-    // plus 2 for the highlight symbol ">" prefix.
-    let overhead: u16 = 12;
+/// The narrowest Source/Destination column that can render a whole address.
+///
+/// Seven cells is the shortest IPv4 literal that exists (`1.2.3.4`);
+/// [`NameResolver::label_ip`](crate::names::NameResolver::label_ip) renders
+/// the address alone, with no port. Below seven the column cannot show ANY
+/// address whole, so every cell it draws is a prefix that reads like a
+/// complete address and is not one — `10.0.` for `10.0.0.1`, which is what
+/// the 80-column layout drew for years.
+///
+/// Seven does not promise that a longer address fits; a 13-character
+/// `192.168.1.100` in a 9-cell column is still truncated. That is ordinary
+/// truncation and a truncated tail is visibly a tail. A zero-width column is
+/// not visibly anything, which is the distinction this minimum draws.
+const MIN_ADDRESS_WIDTH: u16 = 7;
 
-    if total_width >= 120 {
-        // Fixed: #(6) + Method(10) + State(12) + Msgs(5) + Date(8) + PDD(8)
-        // + Duration(8) = 57. #(6) holds "[ ]" plus up to a 3-digit index.
-        let fixed: u16 = 57 + overhead;
-        let flex = total_width.saturating_sub(fixed);
-        // Src/Dst each get 21+, From/To split remainder
-        let addr_each = 21.min(flex / 4);
-        let from_to_pool = flex.saturating_sub(addr_each * 2);
-        let from_w = from_to_pool / 2;
-        let to_w = from_to_pool - from_w;
-        vec![
-            Constraint::Length(6),
-            Constraint::Length(10),
-            Constraint::Length(from_w),
-            Constraint::Length(to_w),
-            Constraint::Length(addr_each),
-            Constraint::Length(addr_each),
-            Constraint::Length(12),
-            Constraint::Length(5),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(8),
-        ]
+/// Cells in a rendered table row that no column owns.
+///
+/// ratatui charges one cell of `.column_spacing(1)` between each adjacent
+/// pair of laid-out columns, and `render_call_list` reserves two more for the
+/// `"> "` highlight symbol. The count is a function of how many columns are
+/// actually laid out, which is why dropping a column returns its own width
+/// AND the gap that followed it — and why the fallback layouts in
+/// [`compute_column_widths`] recompute the whole budget rather than just
+/// redistributing the width they freed.
+fn layout_overhead(columns: u16) -> u16 {
+    2 + columns.saturating_sub(1)
+}
+
+/// Place the seven fixed widths and the surviving flex widths into one
+/// answer in `ALL_COLUMNS` order.
+///
+/// `fixed` is `[#, Method, State, Msgs, Date, PDD, Duration]` — the fixed
+/// columns in their own order, which is not their display order because the
+/// four flex columns sit between Method and State.
+fn assemble_widths(
+    fixed: [u16; 7],
+    from: Option<u16>,
+    to: Option<u16>,
+    addr: Option<u16>,
+) -> [Option<Constraint>; 11] {
+    [
+        Some(Constraint::Length(fixed[0])),
+        Some(Constraint::Length(fixed[1])),
+        from.map(Constraint::Length),
+        to.map(Constraint::Length),
+        addr.map(Constraint::Length),
+        addr.map(Constraint::Length),
+        Some(Constraint::Length(fixed[2])),
+        Some(Constraint::Length(fixed[3])),
+        Some(Constraint::Length(fixed[4])),
+        Some(Constraint::Length(fixed[5])),
+        Some(Constraint::Length(fixed[6])),
+    ]
+}
+
+/// Compute dynamic column widths for the available terminal width, dropping
+/// any identity column the width cannot show legibly.
+///
+/// Fixed-width columns (#, Method, State, Msgs, Date, PDD, Duration) keep
+/// their sizes at a given breakpoint. The four identity columns — From, To,
+/// Source, Destination — share what is left, and each is subject to a
+/// minimum ([`MIN_IDENTITY_WIDTH`], [`MIN_ADDRESS_WIDTH`]). A column that
+/// cannot reach its minimum is NOT laid out at a token width; it is dropped,
+/// and the cells it would have consumed — its own width plus the spacing cell
+/// that followed it — go to the columns that remain.
+///
+/// The two pairs are dropped as pairs, richest layout first: addresses go
+/// before identities. Source without Destination is half a fact, and in
+/// triage the parties are the primary scan key while their transport
+/// addresses are the follow-up question — one that the call flow answers with
+/// room to spare, one keystroke away.
+///
+/// # Arguments
+///
+/// * `total_width` — full width of the table area in terminal cells.
+///
+/// # Returns
+///
+/// One entry per column in `ALL_COLUMNS` order (always 11 entries, regardless
+/// of the user's visibility choices). `Some(Constraint::Length(n))` with
+/// `n > 0` for a column to lay out; `None` for a column the width cannot
+/// carry. The measured thresholds, at the default full visibility:
+/// Source/Destination appear from 83 cols, From/To from 67, and below 67 the
+/// row is the fixed columns alone. At 120 and above the wider breakpoint
+/// applies, where the pool is large enough that nothing is ever dropped.
+fn compute_column_widths(total_width: u16) -> [Option<Constraint>; 11] {
+    // Fixed columns in `assemble_widths` order, and how much of the flex pool
+    // an address column prefers, at each breakpoint.
+    //
+    // Wide (>= 120): #(6) holds "[ ]" plus up to a 3-digit index; addresses
+    // want a quarter of the pool each, capped at 21 — comfortably past the
+    // 15 cells a full IPv4 literal needs, with room for a short resolved name.
+    // Narrow: #(5) holds "[ ]" plus a 2-digit index, and Method is 9 so the
+    // longest common method (SUBSCRIBE) never truncates. Addresses want 2/5.
+    let wide = total_width >= 120;
+    let fixed: [u16; 7] = if wide {
+        [6, 10, 12, 5, 8, 8, 8]
     } else {
-        // Tighter layout: #(5) + Method(9) + State(10) + Msgs(4) + Date(8)
-        // + PDD(6) + Duration(7) = 49. #(5) holds "[ ]" plus a 2-digit index.
-        // Method is 9 so the longest common method (SUBSCRIBE) never truncates.
-        let fixed: u16 = 49 + overhead;
-        let flex = total_width.saturating_sub(fixed);
-        // The four flex columns (From, To, Source, Destination) must fit
-        // `flex` EXACTLY. Claiming more does not shrink them: ratatui's layout
-        // solver balances the row by taking cells back out of the *fixed*
-        // columns, and Method absorbs the largest share of it — the whole
-        // deficit at 88 cols (Method 9 -> 6), and 4 of 7 at 80 cols (Method
-        // 9 -> 5, State -1, Date -2). That is how "SUBSCRIBE" still rendered
-        // as "SUBSCR" in the 88-column demo terminal long after the Method
-        // constraint itself was widened to 9: the constraint was honest and
-        // the pool was not, so widening Method alone could never reach the
-        // screen. Every cell handed out below has to be one this pool owns.
-        //
-        // Src/Dst each still prefer 2/5 of the pool (min 11), but From/To's
-        // floor of 4 each is now reserved FIRST, so a minimum is only ever
-        // taken while the pool can still pay for it. `saturating_sub(8)`
-        // is that reservation; it also drives `addr_each` to 0 rather than
-        // overflowing once the pool is smaller than From/To's own floor.
-        let addr_each = (flex * 2 / 5).max(11).min(flex.saturating_sub(8) / 2);
-        // Exact, not saturating: `addr_each * 2 <= flex` holds by the clamp
-        // above, so the remainder below is what is genuinely left over.
-        let from_to_pool = flex - addr_each * 2;
-        let from_w = from_to_pool / 2;
-        let to_w = from_to_pool - from_w;
-        vec![
-            Constraint::Length(5),
-            Constraint::Length(9),
-            Constraint::Length(from_w),
-            Constraint::Length(to_w),
-            Constraint::Length(addr_each),
-            Constraint::Length(addr_each),
-            Constraint::Length(10),
-            Constraint::Length(4),
-            Constraint::Length(8),
-            Constraint::Length(6),
-            Constraint::Length(7),
-        ]
+        [5, 9, 10, 4, 8, 6, 7]
+    };
+    let fixed_sum: u16 = fixed.iter().sum();
+    let preferred_addr = |flex: u16| if wide { 21.min(flex / 4) } else { flex * 2 / 5 };
+
+    // Whatever is handed out has to fit `flex` EXACTLY. Claiming more does not
+    // shrink the flex columns: ratatui's layout solver balances the row by
+    // taking cells back out of the *fixed* columns, and Method absorbs the
+    // largest share of it — the whole deficit at 88 cols (Method 9 -> 6), and
+    // 4 of 7 at 80 cols (Method 9 -> 5, State -1, Date -2). That is how
+    // "SUBSCRIBE" still rendered as "SUBSCR" in the 88-column demo terminal
+    // long after the Method constraint itself was widened to 9: the constraint
+    // was honest and the pool was not.
+    let flex = total_width.saturating_sub(fixed_sum + layout_overhead(11));
+    // From/To's minimum is reserved FIRST, so an address column is only ever
+    // paid for out of cells the pool genuinely has. The reservation also drives
+    // `preferred` down to 0 rather than overflowing once the pool is smaller
+    // than the From/To floor itself. The old code carried a `.max(11)` floor
+    // here, which was unreachable — this cap always bound lower — so the
+    // address columns collapsed to 5 cells at 80 and to 0 at every width up to
+    // 70 with nothing to stop them.
+    let addr = preferred_addr(flex).min(flex.saturating_sub(2 * MIN_IDENTITY_WIDTH) / 2);
+    // Exact, not saturating: `addr * 2 <= flex` holds by the clamp above, so
+    // the remainder is what is genuinely left over.
+    let identity_pool = flex - addr * 2;
+    let (from, to) = (identity_pool / 2, identity_pool - identity_pool / 2);
+    if addr >= MIN_ADDRESS_WIDTH && from >= MIN_IDENTITY_WIDTH {
+        return assemble_widths(fixed, Some(from), Some(to), Some(addr));
     }
+
+    // The address pair cannot be shown. Drop both and re-budget against nine
+    // columns: the two widths AND the two spacing cells they cost come back.
+    let flex = total_width.saturating_sub(fixed_sum + layout_overhead(9));
+    let (from, to) = (flex / 2, flex - flex / 2);
+    // `to` is the larger half by construction, so testing `from` tests both.
+    if from >= MIN_IDENTITY_WIDTH {
+        return assemble_widths(fixed, Some(from), Some(to), None);
+    }
+
+    // Nothing identity-shaped fits: the row is the fixed columns alone. The
+    // caller can still read state, message count and timing, and Enter still
+    // opens the call flow, where the parties are named in full.
+    assemble_widths(fixed, None, None, None)
 }
 
 /// Format a dialog duration for the call list: sub-second in ms, under a
@@ -1216,7 +1283,7 @@ mod tests {
             let widths = compute_column_widths(width);
             // Index 1 is the Method column (see COLUMN_LABELS order).
             assert!(
-                matches!(widths[1], Constraint::Length(w) if w >= 9),
+                matches!(widths[1], Some(Constraint::Length(w)) if w >= 9),
                 "Method column at {width} cols must be >= 9 to fit SUBSCRIBE, \
                  got {:?}",
                 widths[1]
@@ -1224,7 +1291,26 @@ mod tests {
         }
     }
 
-    /// The 11 columns must never claim more cells than the terminal has.
+    /// Sum the widths of the columns that are actually laid out, and count
+    /// them, so a test can charge the right `layout_overhead` for a row that
+    /// dropped some columns.
+    ///
+    /// # Returns
+    /// `(sum of laid-out widths, number of laid-out columns)`.
+    fn laid_out(widths: &[Option<Constraint>; 11], width: u16) -> (u16, u16) {
+        let mut sum = 0;
+        let mut count = 0;
+        for c in widths.iter().flatten() {
+            match c {
+                Constraint::Length(n) => sum += n,
+                other => panic!("non-Length constraint {other:?} at {width} cols"),
+            }
+            count += 1;
+        }
+        (sum, count)
+    }
+
+    /// The laid-out columns must never claim more cells than the terminal has.
     ///
     /// This is the gate the 2026-07-20 Method widening needed and did not
     /// get. When the columns over-claim, ratatui rebalances by taking cells
@@ -1235,45 +1321,38 @@ mod tests {
     /// screen read `SUBSCR`, and the committed 80-col snapshots recorded
     /// `INVIT`. 34 of the 59 widths in 61..=119 were over-subscribed.
     ///
-    /// Below 61 cols the fixed columns alone (49) plus overhead (12) cannot
-    /// fit, so 61 is the narrowest width at which any allocation can hold.
+    /// The overhead is charged per laid-out column, not as a flat 12: a
+    /// dropped column returns the spacing cell that followed it as well as
+    /// its own width. With the four identity columns dropped, the fixed
+    /// seven (49) plus their overhead (8) fit from 57 cols up — which is why
+    /// this sweep now starts at 57 rather than the old 61.
     #[test]
     fn column_widths_never_oversubscribe_the_terminal() {
-        // 10 inter-column gaps (`.column_spacing(1)`) + 2 for the `"> "`
-        // highlight symbol; see `compute_column_widths`.
-        const OVERHEAD: u16 = 12;
-        for width in 61u16..=200 {
+        for width in 57u16..=200 {
             let widths = compute_column_widths(width);
-            let sum: u16 = widths
-                .iter()
-                .map(|c| match c {
-                    Constraint::Length(n) => *n,
-                    other => panic!("non-Length constraint {other:?} at {width} cols"),
-                })
-                .sum();
+            let (sum, count) = laid_out(&widths, width);
+            let overhead = layout_overhead(count);
             assert!(
-                sum + OVERHEAD <= width,
-                "at {width} cols the columns claim {sum} + {OVERHEAD} overhead = {} \
-                 cells in a {width}-cell row; ratatui charges the {}-cell deficit back \
-                 to the fixed columns, Method absorbing the largest share, so a \
-                 standard method renders truncated no matter what Length(..) the \
+                sum + overhead <= width,
+                "at {width} cols the {count} laid-out columns claim {sum} + {overhead} \
+                 overhead = {} cells in a {width}-cell row; ratatui charges the {}-cell \
+                 deficit back to the fixed columns, Method absorbing the largest share, \
+                 so a standard method renders truncated no matter what Length(..) the \
                  Method column asks for. widths: {widths:?}",
-                sum + OVERHEAD,
-                sum + OVERHEAD - width,
+                sum + overhead,
+                sum + overhead - width,
             );
         }
     }
 
-    /// Edge case: on narrow terminals (below ~83 cols) the flex pool is too
-    /// small for two 11-wide address columns, so the `.max(11)` floor used to
-    /// push the two Source/Destination columns past the shared flex budget.
-    /// They must never together exceed the available flex width.
+    /// Edge case: on narrow terminals the flex pool is too small for two
+    /// 11-wide address columns, so the old `.max(11)` floor used to push the
+    /// two Source/Destination columns past the shared flex budget. When they
+    /// are laid out at all they must never together exceed it.
     #[test]
     fn narrow_layout_address_columns_fit_flex_budget() {
-        // Column-spacing + highlight-symbol overhead the layout reserves.
-        const OVERHEAD: u16 = 12;
-        let len = |c: &Constraint| match c {
-            Constraint::Length(n) => *n,
+        let len = |c: &Option<Constraint>| match c {
+            Some(Constraint::Length(n)) => *n,
             _ => 0,
         };
         // Fixed (non-flex) columns in the narrow layout: #, Method, State,
@@ -1281,10 +1360,11 @@ mod tests {
         const FIXED_COLS: [usize; 7] = [0, 1, 6, 7, 8, 9, 10];
         // Widths spanning the narrow branch, including ones where the old
         // `.max(11)` floor overflowed the pool (61..=82).
-        for width in [61u16, 66, 70, 72, 78, 80, 82] {
+        for width in [61u16, 66, 70, 72, 78, 80, 82, 83, 90, 119] {
             let widths = compute_column_widths(width);
+            let (_, count) = laid_out(&widths, width);
             let fixed_sum: u16 = FIXED_COLS.iter().map(|&i| len(&widths[i])).sum();
-            let flex = width.saturating_sub(fixed_sum + OVERHEAD);
+            let flex = width.saturating_sub(fixed_sum + layout_overhead(count));
             // Indices 4 and 5 are Source/Destination.
             let addr_sum = len(&widths[4]) + len(&widths[5]);
             assert!(
@@ -1293,6 +1373,78 @@ mod tests {
                  flex budget ({flex}), got widths {:?}",
                 widths
             );
+        }
+    }
+
+    /// No column is ever laid out at a width it cannot say anything in.
+    ///
+    /// This is the invariant behind ticket #151. The layout used to satisfy
+    /// its own arithmetic by handing the identity columns whatever was left,
+    /// including nothing: measured over the reachable range, Source and
+    /// Destination were `Length(0)` at EVERY width from the 40-column floor
+    /// through 70, From was 0 through 62 and To through 61, and all four sat
+    /// between 1 and 6 cells up to 82. ratatui draws a `Length(0)` column as
+    /// a header cell of no width — an invisible column that still costs the
+    /// spacing cell after it.
+    ///
+    /// A column that cannot reach its minimum must therefore be absent
+    /// (`None`), never present-but-empty. The sweep starts at the layout's
+    /// own floor (`render_app`'s `MIN_WIDTH`, 40) because that is the
+    /// narrowest terminal the TUI will draw a call list into at all.
+    #[test]
+    fn no_laid_out_column_is_narrower_than_it_can_legibly_show() {
+        for width in 40u16..=200 {
+            let widths = compute_column_widths(width);
+            for (i, c) in widths.iter().enumerate() {
+                let Some(Constraint::Length(w)) = c else {
+                    continue;
+                };
+                let min = match i {
+                    2 | 3 => MIN_IDENTITY_WIDTH,
+                    4 | 5 => MIN_ADDRESS_WIDTH,
+                    // Fixed columns are constants at each breakpoint; they are
+                    // never zero, and this arm keeps that true if one changes.
+                    _ => 1,
+                };
+                assert!(
+                    *w >= min,
+                    "at {width} cols the {} column is laid out {w} cells wide, below \
+                     the {min} it needs to show anything; ratatui will draw its header \
+                     over an empty sliver and still charge a spacing cell for it. The \
+                     column must be dropped instead. widths: {widths:?}",
+                    COLUMN_LABELS[i],
+                );
+            }
+        }
+    }
+
+    /// The measured widths at which each identity pair appears, so a future
+    /// change to the fixed columns or the minimums cannot move the
+    /// breakpoints silently.
+    ///
+    /// These are not the ticket's estimate. #151 said "below ~62 columns",
+    /// which is where the To column stopped being exactly zero; the address
+    /// columns were zero up to 70 and illegible up to 82.
+    #[test]
+    fn identity_columns_appear_only_at_the_widths_that_can_carry_them() {
+        let present = |width: u16, i: usize| compute_column_widths(width)[i].is_some();
+        // Source/Destination (4, 5): the pair arrives together at 83.
+        assert!(!present(82, 4) && !present(82, 5), "addresses absent at 82");
+        assert!(present(83, 4) && present(83, 5), "addresses present at 83");
+        // From/To (2, 3): the pair arrives together at 67.
+        assert!(!present(66, 2) && !present(66, 3), "From/To absent at 66");
+        assert!(present(67, 2) && present(67, 3), "From/To present at 67");
+        // The fixed columns are unconditional: they are what is left at the
+        // 40-column floor, and they are still there at the widest layout.
+        for width in [40u16, 66, 82, 120, 200] {
+            let widths = compute_column_widths(width);
+            for i in [0usize, 1, 6, 7, 8, 9, 10] {
+                assert!(
+                    widths[i].is_some(),
+                    "the {} column is fixed and must be laid out at {width} cols",
+                    COLUMN_LABELS[i]
+                );
+            }
         }
     }
 
@@ -1848,7 +2000,7 @@ mod tests {
         const MARKER: u16 = 2;
         for width in [80u16, 98, 119, 120, 160] {
             let widths = compute_column_widths(width);
-            let Constraint::Length(state_w) = widths[6] else {
+            let Some(Constraint::Length(state_w)) = widths[6] else {
                 panic!("State column should be a fixed Length, got {:?}", widths[6]);
             };
             // FAILED(6) is the state a final-failure diagnosis actually pairs

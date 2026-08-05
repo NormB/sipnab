@@ -6,7 +6,7 @@ expression: output
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-# ▲   Method    From To    Sourc Desti State      Msgs Date     PDD    Duratio
+# ▲   Method    From       To          State      Msgs Date     PDD    Duratio
 
   No SIP dialogs found.
 

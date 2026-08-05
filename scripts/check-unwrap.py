@@ -14,7 +14,7 @@ edit to it produced `line 105: mod: command not found`), and a scanner with a
 subtle scoping rule needs to be testable on its own — `scripts/test-pre-commit.sh`
 now exercises it directly.
 """
-import os, sys, tomllib
+import os, re, sys, tomllib
 
 # Every workspace member's src/, derived from Cargo.toml -- not the literal
 # path 'src'. That literal made a path prefix the proxy for "production code",
@@ -35,6 +35,154 @@ if len(ROOTS) < 2:
     )
     raise SystemExit(2)
 
+# ── Lexing, because brace COUNTING is not brace matching ───────────────────
+# The exemption below is scoped by tracking `{`/`}` depth. Counting the raw
+# characters per line is wrong in both directions, and the second one is a
+# silent hole rather than a loud nuisance:
+#
+#   * An unmatched `}` inside a string collapses the depth and ends an
+#     exemption EARLY, so test code is scanned as production. Observed with
+#     `body.find("\n}")` inside a `#[cfg(test)] mod`.
+#   * An unmatched `{` inside a string INFLATES the depth, so the exemption
+#     never ends and leaks over every line of production code that FOLLOWS the
+#     test item. Every unwrap()/expect() there is then silently exempt and the
+#     gate reports OK while checking nothing.
+#
+# So strip the things that are not code before counting: line comments, block
+# comments (which nest in Rust), char and byte-char literals (`'\u{7FFF}'`
+# carries braces), and every string form -- plain, byte, C, and raw with any
+# number of hashes. String and block-comment state carries across lines, since
+# both may span them.
+#
+# The stripped text is also what the `.unwrap()` search reads, so a mention in
+# a doc comment or inside a panic message is no longer a violation.
+_CODE, _STR, _RAW, _BLOCK = 0, 1, 2, 3
+_START = (_CODE, 0)
+
+# The only characters that can begin a non-code region. Jumping to the next one
+# with a regex keeps this a per-region loop rather than a per-character one:
+# 160k lines of src/ scan in well under the time a hook can notice.
+_INTERESTING = re.compile(r'[/"\']')
+
+
+def _raw_hashes(line, q):
+    """Hash count if the `"` at index `q` opens a raw string, else None.
+
+    Reads backwards over `#*` to an `r`, past an optional `b`/`c` byte- or
+    C-string prefix, and refuses when that lands mid-identifier -- otherwise a
+    variable whose name ends in `r` followed by a quote would be read as a raw
+    string opener and swallow the rest of the file. `r#type` is a raw
+    IDENTIFIER, not a string, and is rejected here because no `"` follows.
+    """
+    j, n = q, 0
+    while j > 0 and line[j - 1] == '#':
+        j -= 1
+        n += 1
+    if j == 0 or line[j - 1] != 'r':
+        return None
+    j -= 1
+    if j > 0 and line[j - 1] in 'bc':
+        j -= 1
+    if j > 0 and (line[j - 1].isalnum() or line[j - 1] == '_'):
+        return None
+    return n
+
+
+def strip_noncode(line, state):
+    """Return (code, next_state): `line` with comments and literals removed.
+
+    `state` threads unterminated strings and block comments across lines. The
+    caller checks it at EOF: a file that ends mid-literal means this function
+    misread something and swallowed real code, which is exactly the shape that
+    turns the gate into a no-op.
+    """
+    kind, n = state
+    out = []
+    i, end = 0, len(line)
+    while i < end:
+        if kind == _CODE:
+            m = _INTERESTING.search(line, i)
+            if m is None:
+                out.append(line[i:])
+                break
+            out.append(line[i:m.start()])
+            i = m.start()
+            ch = line[i]
+            if ch == '/':
+                nxt = line[i + 1:i + 2]
+                if nxt == '/':
+                    break                       # line comment: rest is not code
+                if nxt == '*':
+                    kind, n = _BLOCK, 1
+                    i += 2
+                    continue
+                out.append(ch)                  # division
+                i += 1
+                continue
+            if ch == '"':
+                h = _raw_hashes(line, i)
+                if h is None:
+                    kind = _STR
+                else:
+                    kind, n = _RAW, h
+                i += 1
+                continue
+            # A `'` is a char literal, a byte-char literal, or a lifetime.
+            # `'a'` is a char and `'a` is a lifetime, told apart by whether the
+            # quote closes two characters on; an escape form (`'\n'`, `'\''`,
+            # `'\u{1F600}'`) is scanned to its closing quote so its braces and
+            # quotes never reach the counter.
+            if line[i + 1:i + 2] == '\\':
+                j = i + 1
+                while j < end:
+                    if line[j] == '\\':
+                        j += 2
+                    elif line[j] == "'":
+                        break
+                    else:
+                        j += 1
+                i = j + 1 if j < end else end
+                continue
+            if line[i + 2:i + 3] == "'":
+                i += 3
+                continue
+            out.append(ch)                      # lifetime tick: harmless code
+            i += 1
+        elif kind == _STR:
+            while i < end:
+                c = line[i]
+                if c == '\\':
+                    i += 2                      # escape, incl. line continuation
+                elif c == '"':
+                    i += 1
+                    kind = _CODE
+                    break
+                else:
+                    i += 1
+        elif kind == _RAW:
+            closer = '"' + '#' * n              # raw strings have no escapes
+            j = line.find(closer, i)
+            if j < 0:
+                i = end
+            else:
+                i = j + len(closer)
+                kind, n = _CODE, 0
+        else:                                   # _BLOCK; Rust nests these
+            while i < end:
+                if line.startswith('*/', i):
+                    n -= 1
+                    i += 2
+                    if n == 0:
+                        kind = _CODE
+                        break
+                elif line.startswith('/*', i):
+                    n += 1
+                    i += 2
+                else:
+                    i += 1
+    return ''.join(out), (kind, n)
+
+
 # Scope a #[cfg(test)] exemption to the item it annotates, not to the rest of
 # the file. The previous scanner set a latch on the first #[cfg(test)] and never
 # cleared it, so every line below one was exempt — 11 files under src/ put a
@@ -42,10 +190,7 @@ if len(ROOTS) < 2:
 # latched at line 23 of 1659.
 #
 # `mod tests` exempts its whole block; anything else (a #[cfg(test)] use, fn or
-# const) exempts only that item. Depth is tracked by brace counting, which is
-# approximate for braces inside string literals — approximate in the SAFE
-# direction, since a stray brace ends an exemption early rather than extending
-# it.
+# const) exempts only that item.
 count = 0
 scanned = 0
 for src_root in ROOTS:
@@ -63,10 +208,12 @@ for src_root in ROOTS:
           depth = 0
           exempt_until = None   # exempt while depth > this
           pending = False       # saw #[cfg(test)], deciding what it annotates
+          state = _START
           for i, line in enumerate(open(rel), 1):
-              stripped = line.strip()
-              opens = line.count('{')
-              closes = line.count('}')
+              code, state = strip_noncode(line, state)
+              stripped = code.strip()
+              opens = code.count('{')
+              closes = code.count('}')
 
               if pending and stripped and not stripped.startswith('#['):
                   if stripped.startswith('mod ') or stripped.startswith('pub mod '):
@@ -89,11 +236,27 @@ for src_root in ROOTS:
 
               if exempt:
                   continue
-              if stripped.startswith('///') or stripped.startswith('//!') or stripped.startswith('//'):
-                  continue
-              if '.unwrap()' in line or '.expect(' in line:
+              if '.unwrap()' in code or '.expect(' in code:
                   count += 1
-                  print(f'  {rel}:{i}: {stripped}', file=sys.stderr)
+                  # The RAW line, not the stripped one: the report is read
+                  # against an editor, and `map.get("port").unwrap()` printed
+                  # as `map.get().unwrap()` is not the line anybody can find.
+                  print(f'  {rel}:{i}: {line.strip()}', file=sys.stderr)
+
+          # A .rs file the compiler accepts ends outside every literal and with
+          # its braces balanced. Anything else means the lexer above lost the
+          # thread, and a lexer that lost the thread reports the rest of the
+          # file as exempt or as comment — a count of zero that means nothing.
+          # Refuse rather than pass, same as the empty-walk guard below.
+          if state != _START or depth != 0:
+              print(
+                  f'check-unwrap: {rel} ended in lexer state {state} at brace '
+                  f'depth {depth}, expected {_START} at depth 0 -- the literal '
+                  f'and comment stripping misread this file, so its result is '
+                  f'not trustworthy',
+                  file=sys.stderr,
+              )
+              raise SystemExit(2)
 # A walk that reads nothing reports zero violations, which is
 # indistinguishable from a clean tree.
 if scanned == 0:

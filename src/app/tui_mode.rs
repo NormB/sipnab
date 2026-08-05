@@ -82,12 +82,81 @@ fn build_name_setup(cli: &Cli, config: &Config) -> crate::tui::NameSetup {
 /// `$XDG_CONFIG_HOME/sipnab/hosts`, falling back to `~/.config/sipnab/hosts`.
 /// Returns `None` when neither `XDG_CONFIG_HOME` nor `HOME` is set.
 fn default_names_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    names_path_from(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// The XDG resolution [`default_names_path`] performs, with the environment
+/// passed in rather than read.
+///
+/// Split from the reader because the decision it makes is asymmetric and easy
+/// to get wrong in a way nothing would notice: `XDG_CONFIG_HOME` already *is*
+/// the config directory and is used verbatim, while `HOME` is not and must
+/// have `.config` appended. Get that backwards and every in-TUI `N`-dialog
+/// edit is written to, and reloaded from, a path no other sipnab process
+/// looks at — a silent loss with no error anywhere. Reading the environment
+/// inside the function would make that untestable without mutating
+/// process-global state that every other test in this binary shares.
+///
+/// # Arguments
+///
+/// * `xdg` — the value of `XDG_CONFIG_HOME`, if set.
+/// * `home` — the value of `HOME`, if set.
+///
+/// # Returns
+///
+/// `<config dir>/sipnab/hosts`, or `None` when neither variable is set.
+fn names_path_from(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    let base = xdg
         .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-        })?;
+        .or_else(|| home.map(|h| std::path::PathBuf::from(h).join(".config")))?;
     Some(base.join("sipnab").join("hosts"))
+}
+
+/// Build the two shared stores the TUI and its processing thread both write
+/// through, with every CLI flag and config key that shapes them applied.
+///
+/// Split out of [`run_tui_mode`] because this is the one piece of the mode's
+/// wiring that can be exercised without a terminal, and because the wiring is
+/// where this mode has actually been wrong: `--dialog-track` was declared,
+/// parsed and never handed to the store, so for as long as the flag existed
+/// it did nothing at all. The same class of defect took out every `[limits]`
+/// key once — parsed, validated, documented, never read. A store built here
+/// with a knob dropped looks exactly like one built with it applied, which is
+/// why the tests below assert the store's *behaviour* rather than its
+/// construction.
+///
+/// # Returns
+///
+/// `(dialog_store, stream_store)`, each already wrapped in the `Arc<RwLock<_>>`
+/// the TUI thread and the processing thread share.
+fn build_stores(
+    cli: &Cli,
+    config: &Config,
+) -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamStore>>) {
+    let dialog_store = Arc::new(RwLock::new(
+        {
+            let mut ds = DialogStore::new(cli.dialog_limit(config), cli.rotate_enabled());
+            // The wiring whose absence made the old --dialog-track a dead
+            // flag: declared, parsed, and never handed to anything.
+            ds.set_tracking(cli.dialog_track.unwrap_or_default());
+            ds
+        }
+        .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
+    ));
+    let stream_store = {
+        let mut ss = StreamStore::new(cli.max_streams_limit(config));
+        if let Some(max_frames) = config.limits.max_audio_frames {
+            ss.set_max_audio_frames(max_frames as usize);
+        }
+        Arc::new(RwLock::new(ss))
+    };
+    (dialog_store, stream_store)
 }
 
 /// Run interactive TUI mode: wraps stores in `Arc<RwLock>`, spawns the
@@ -132,23 +201,7 @@ pub fn run_tui_mode(
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
-    let dialog_store = Arc::new(RwLock::new(
-        {
-            let mut ds = DialogStore::new(cli.dialog_limit(&config), cli.rotate_enabled());
-            // The wiring whose absence made the old --dialog-track a dead
-            // flag: declared, parsed, and never handed to anything.
-            ds.set_tracking(cli.dialog_track.unwrap_or_default());
-            ds
-        }
-        .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
-    ));
-    let stream_store = {
-        let mut ss = StreamStore::new(cli.max_streams_limit(&config));
-        if let Some(max_frames) = config.limits.max_audio_frames {
-            ss.set_max_audio_frames(max_frames as usize);
-        }
-        Arc::new(RwLock::new(ss))
-    };
+    let (dialog_store, stream_store) = build_stores(&cli, &config);
 
     // Shared pause flag between TUI and processing thread
     let paused_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -419,10 +472,17 @@ pub fn run_tui_mode(
     drop(handle);
 }
 
-/// Unit tests for the pause/`--count` accounting seam.
+/// Unit tests for the parts of TUI mode that are reachable without a
+/// terminal: the pause/`--count` accounting seam, the store wiring, and the
+/// name-persistence path resolution.
 #[cfg(test)]
 mod tests {
-    use super::count_and_check_limit;
+    use super::{build_stores, count_and_check_limit, names_path_from};
+    use crate::cli::Cli;
+    use crate::config::Config;
+    use crate::sip::dialog_store::DialogTracking;
+    use clap::Parser as _;
+    use std::path::{Path, PathBuf};
 
     /// An unpaused packet advances the count and trips the limit on the Nth.
     #[test]
@@ -461,5 +521,295 @@ mod tests {
         assert!(!count_and_check_limit(false, &mut total, None));
         assert!(!count_and_check_limit(true, &mut total, None));
         assert_eq!(total, 1, "only the unpaused packet advanced the count");
+    }
+
+    // ── Name-persistence path resolution ──────────────────────────────────
+
+    /// `XDG_CONFIG_HOME` already names the config directory, so it is used as
+    /// given — no `.config` appended.
+    #[test]
+    fn xdg_config_home_is_used_verbatim_as_the_config_directory() {
+        let got = names_path_from(Some("/xdg".into()), Some("/home/u".into()));
+        assert_eq!(
+            got,
+            Some(PathBuf::from("/xdg/sipnab/hosts")),
+            "XDG_CONFIG_HOME IS the config dir; appending .config to it would \
+             write the N-dialog's edits somewhere nothing else reads"
+        );
+    }
+
+    /// `HOME` is not the config directory, so the fallback has to append
+    /// `.config` — the asymmetry with `XDG_CONFIG_HOME` above is the whole
+    /// point of this pair.
+    #[test]
+    fn the_home_fallback_appends_dot_config_before_the_sipnab_directory() {
+        let got = names_path_from(None, Some("/home/u".into()));
+        assert_eq!(got, Some(PathBuf::from("/home/u/.config/sipnab/hosts")));
+    }
+
+    /// `XDG_CONFIG_HOME` wins when both are set: the fallback must not be
+    /// consulted at all.
+    #[test]
+    fn xdg_config_home_takes_precedence_over_home() {
+        let got = names_path_from(Some("/xdg".into()), Some("/home/u".into()));
+        let home_only = names_path_from(None, Some("/home/u".into()));
+        assert_ne!(
+            got, home_only,
+            "with XDG_CONFIG_HOME set the HOME-derived path must not be chosen"
+        );
+    }
+
+    /// With neither variable set there is nowhere to persist to, and the
+    /// answer is `None` rather than a relative path under the process's
+    /// working directory.
+    #[test]
+    fn a_bare_environment_yields_no_names_path_rather_than_a_relative_one() {
+        let got = names_path_from(None, None);
+        assert_eq!(got, None, "got {got:?}");
+        assert!(
+            !got.is_some_and(|p| p.is_relative()),
+            "a relative fallback would scatter hosts files across working dirs"
+        );
+    }
+
+    // ── Store wiring ──────────────────────────────────────────────────────
+
+    /// Parse a CLI from arguments, `sipnab` included as argv[0].
+    fn cli_from(args: &[&str]) -> Cli {
+        let mut argv = vec!["sipnab"];
+        argv.extend_from_slice(args);
+        Cli::parse_from(argv)
+    }
+
+    /// One INVITE for `call_id`, carrying `branch` in its top Via.
+    ///
+    /// Two of these with the same Call-ID and different branches are the
+    /// minimal input that tells the two dialog-tracking modes apart: Call-ID
+    /// mode files them as one unit, branch mode as two.
+    fn invite(call_id: &str, branch: &str) -> crate::sip::SipMessage {
+        use std::net::{IpAddr, Ipv4Addr};
+        let raw = crate::test_utils::build_sip_message(
+            "INVITE sip:b@example.net SIP/2.0",
+            &[
+                &format!("Via: SIP/2.0/UDP 192.0.2.1:5060;branch={branch}"),
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.net>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+            ],
+            b"",
+        );
+        crate::sip::parser::parse_sip(
+            &raw,
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid epoch"),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .expect("the fixture INVITE parses")
+    }
+
+    /// A UDP packet carrying a 12-byte RTP header plus 160 bytes of payload,
+    /// which at payload type 0 (PCMU) is exactly what the store buffers for
+    /// audio export.
+    fn pcmu_packet() -> crate::capture::ParsedPacket {
+        use std::net::{IpAddr, Ipv4Addr};
+        crate::capture::ParsedPacket {
+            frame: None,
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid epoch"),
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 20000,
+            dst_port: 30000,
+            transport: crate::net::TransportProto::Udp,
+            payload: vec![0u8; 12 + 160].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            from_hep: false,
+        }
+    }
+
+    /// A PCMU RTP header for sequence `seq` of one stream.
+    fn pcmu_header(seq: u16) -> crate::rtp::parser::RtpHeader {
+        crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: seq,
+            timestamp: u32::from(seq) * 160,
+            ssrc: 0x5150_0001,
+            payload_offset: 12,
+        }
+    }
+
+    /// `--dialog-track branch` must reach the store the TUI writes through.
+    ///
+    /// This is the regression gate for the defect the flag shipped with: it
+    /// was declared, parsed into `Cli::dialog_track`, and never handed to any
+    /// store, so setting it changed nothing an operator could see. Asserting
+    /// that `build_stores` *called* a setter would not have caught that —
+    /// what is asserted here is the observable consequence, that one Call-ID
+    /// seen on two Via branches becomes two tracked units.
+    #[test]
+    fn dialog_track_branch_reaches_the_store_and_splits_a_reused_call_id() {
+        let cli = cli_from(&["--dialog-track", "branch"]);
+        assert_eq!(
+            cli.dialog_track,
+            Some(DialogTracking::Branch),
+            "precondition: the flag parsed"
+        );
+        let (dialogs, _streams) = build_stores(&cli, &Config::default());
+        {
+            let mut ds = dialogs.write();
+            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-one"));
+            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-two"));
+        }
+        assert_eq!(
+            dialogs.read().len(),
+            2,
+            "--dialog-track branch must group by Call-ID + top-Via branch; one \
+             unit here means the flag never reached the store"
+        );
+    }
+
+    /// The companion to the test above: without the flag, the same two
+    /// messages stay one unit.
+    ///
+    /// Without this, a store that unconditionally tracked by branch would
+    /// pass the branch test while silently changing the default view of every
+    /// capture.
+    #[test]
+    fn the_default_tracking_mode_keeps_one_call_id_in_a_single_unit() {
+        let cli = cli_from(&[]);
+        assert_eq!(cli.dialog_track, None, "precondition: the flag is unset");
+        let (dialogs, _streams) = build_stores(&cli, &Config::default());
+        {
+            let mut ds = dialogs.write();
+            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-one"));
+            ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-two"));
+        }
+        assert_eq!(
+            dialogs.read().len(),
+            1,
+            "the default is Call-ID grouping: one call, one unit"
+        );
+    }
+
+    /// `[limits] max_audio_frames` must reach the stream store.
+    ///
+    /// Same class as the dialog-track defect and it has bitten this project
+    /// before: every `[limits]` key was parsed, validated and documented while
+    /// nothing read any of them. The effect asserted is the retention itself —
+    /// the ring buffer stops at the configured depth — because a store built
+    /// with the key dropped is indistinguishable from one built with it
+    /// applied until RTP actually arrives.
+    #[test]
+    fn the_configured_audio_frame_cap_reaches_the_stream_store() {
+        let mut config = Config::default();
+        config.limits.max_audio_frames = Some(2);
+        let (_dialogs, streams) = build_stores(&cli_from(&[]), &config);
+        {
+            let mut ss = streams.write();
+            let packet = pcmu_packet();
+            for seq in 1..=5u16 {
+                ss.process_rtp(&packet, &pcmu_header(seq), packet.timestamp);
+            }
+        }
+        let store = streams.read();
+        let stream = store.iter().next().expect("one stream was created");
+        assert_eq!(
+            stream.payload_buffer.len(),
+            2,
+            "five frames arrived under a cap of 2; an unwired cap leaves all 5 \
+             buffered at the 1500-frame default"
+        );
+    }
+
+    /// With no `[limits] max_audio_frames`, the store's own default applies
+    /// and nothing is dropped at this volume — so the cap test above is
+    /// measuring the config value, not the arrival count.
+    #[test]
+    fn without_a_configured_cap_every_arriving_frame_is_retained() {
+        let (_dialogs, streams) = build_stores(&cli_from(&[]), &Config::default());
+        {
+            let mut ss = streams.write();
+            let packet = pcmu_packet();
+            for seq in 1..=5u16 {
+                ss.process_rtp(&packet, &pcmu_header(seq), packet.timestamp);
+            }
+        }
+        let store = streams.read();
+        let stream = store.iter().next().expect("one stream was created");
+        assert_eq!(stream.payload_buffer.len(), 5);
+    }
+
+    /// `--limit` must bound the dialog store the TUI writes through.
+    #[test]
+    fn the_dialog_limit_bounds_the_store_the_tui_writes_through() {
+        let cli = cli_from(&["--limit", "2"]);
+        let (dialogs, _streams) = build_stores(&cli, &Config::default());
+        {
+            let mut ds = dialogs.write();
+            for n in 0..5 {
+                ds.process_message(invite(&format!("call-{n}@example.com"), "z9hG4bK-x"));
+            }
+        }
+        assert_eq!(
+            dialogs.read().len(),
+            2,
+            "five distinct Call-IDs under --limit 2 must leave 2 tracked units"
+        );
+    }
+
+    // ── Name setup ────────────────────────────────────────────────────────
+
+    /// `[names] persist_to_config` decides whether in-TUI `N`-dialog edits are
+    /// also written back to the user's sipnabrc.
+    ///
+    /// Both directions are asserted against the same source of truth
+    /// `build_name_setup` uses, so the test cannot pass by accident in an
+    /// environment where no user config path can be derived at all.
+    #[test]
+    fn persist_to_config_decides_whether_name_edits_reach_the_users_sipnabrc() {
+        let cli = cli_from(&[]);
+
+        let off = super::build_name_setup(&cli, &Config::default());
+        assert_eq!(
+            off.config_path, None,
+            "the default must not write the user's config file"
+        );
+
+        let mut config = Config::default();
+        config.names.persist_to_config = Some(true);
+        let on = super::build_name_setup(&cli, &config);
+        assert_eq!(
+            on.config_path,
+            crate::config::default_user_config_path(),
+            "opting in must target the user's sipnabrc"
+        );
+    }
+
+    /// The name setup always names the default persistence file, and it is the
+    /// XDG one — the `N` dialog has nowhere to save otherwise.
+    #[test]
+    fn the_name_setup_carries_the_default_persistence_path() {
+        let setup = super::build_name_setup(&cli_from(&[]), &Config::default());
+        assert_eq!(setup.save_path, super::default_names_path());
+        if let Some(p) = setup.save_path {
+            assert!(
+                p.ends_with(Path::new("sipnab/hosts")),
+                "unexpected persistence path {}",
+                p.display()
+            );
+        }
     }
 }

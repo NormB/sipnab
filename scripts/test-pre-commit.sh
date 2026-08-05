@@ -16,6 +16,8 @@
 #   4. Gate 8 advises and never blocks.
 #   5. The unwrap scanner scopes #[cfg(test)] to the item, and covers every
 #      workspace member rather than the literal path src/.
+#   6. That scoping survives braces written inside strings, char literals and
+#      comments -- which is where it used to fail open.
 #
 # The hook is EXECUTED, in a throwaway git repo with `cargo` stubbed onto PATH.
 # It used to be grepped instead, and the greps are what let two of the exact
@@ -313,7 +315,16 @@ src/pipeline.rs')" = "OK" ] \
 # was reported as 0 violations.
 #
 # The scanner runs against ./src, so each case is a temp tree with cwd set to it.
-scan() { # scan <src-file-body> -> exit status of the scanner
+#
+# Sets SCAN_OUT and SCAN_RC rather than echoing, for the reason run_hook does:
+# `OUT=$(scan_v ...)` would run it in a subshell and the parent would read a
+# STALE SCAN_RC from an earlier case. Both are needed, because "non-zero" alone
+# conflates two different answers — 1 means "found a violation" and 2 means
+# "the scanner refuses to answer", and a scenario that accepts either can pass
+# on a scanner that never looked at the code.
+SCAN_OUT=""
+SCAN_RC=0
+scan_v() { # scan_v <src-file-body> [<audio-file-body>]
 	_d=$(mktemp -d)
 	mkdir -p "$_d/src" "$_d/crates/sipnab-audio/src"
 	cat > "$_d/Cargo.toml" <<-EOF
@@ -322,10 +333,44 @@ scan() { # scan <src-file-body> -> exit status of the scanner
 	EOF
 	printf '%s\n' "$1" > "$_d/src/lib.rs"
 	printf '%s\n' "${2:-pub fn audio() -> u8 { 1 }}" > "$_d/crates/sipnab-audio/src/lib.rs"
-	( cd "$_d" && python3 "$REPO_ROOT/scripts/check-unwrap.py" >/dev/null 2>&1 )
-	_rc=$?
+	set +e
+	SCAN_OUT=$(cd "$_d" && python3 "$REPO_ROOT/scripts/check-unwrap.py" 2>&1)
+	SCAN_RC=$?
+	set -e
 	rm -rf "$_d"
-	return $_rc
+}
+
+scan() { # scan <src-file-body> [<audio-file-body>] -> exit status of the scanner
+	if [ "$#" -ge 2 ]; then scan_v "$1" "$2"; else scan_v "$1"; fi
+	return $SCAN_RC
+}
+
+# `reports <line-number> <label>` — the scanner must have found exactly ONE
+# violation, on that line of src/lib.rs.
+#
+# Both halves are load-bearing. Asserting the line separates "the gate is still
+# scanning the production code after a test item" from "the gate blew up for
+# some unrelated reason". Asserting the COUNT is what makes the `}`-in-a-string
+# case discriminate at all: the old scanner reported that fixture's production
+# line too, alongside a false positive inside the test module, so a check for
+# "line 13 appears" passed on the very scanner the case exists to reject.
+reports() {
+	_hits=$(printf '%s\n' "$SCAN_OUT" | grep -c '^  ' || true)
+	if [ "$SCAN_RC" -eq 1 ] && [ "$_hits" -eq 1 ] \
+		&& printf '%s' "$SCAN_OUT" | grep -q "src/lib.rs:$1:"; then
+		ok "$2"
+	else
+		bad "$2 -- expected exactly one violation, at src/lib.rs:$1; got rc=$SCAN_RC, $_hits violation(s): $SCAN_OUT"
+	fi
+}
+
+# `quiet <label>` — a clean tree, reported as clean.
+quiet() {
+	if [ "$SCAN_RC" -eq 0 ] && [ "$SCAN_OUT" = "0" ]; then
+		ok "$1"
+	else
+		bad "$1 -- expected rc=0 and a count of 0, got rc=$SCAN_RC and: $SCAN_OUT"
+	fi
 }
 
 # A real test module: its unwrap is exempt, and the exemption ENDS with it.
@@ -369,6 +414,149 @@ scan 'fn prod() -> Result<u8, std::num::ParseIntError> { "7".parse::<u8>() }' \
 scan 'pub fn prod() -> u8 { 1 }' 'pub fn a() -> u8 { Some(1u8).unwrap() }' \
 	&& bad "an unwrap in crates/sipnab-audio/src must be reported (the walk is not covering workspace members)" \
 	|| ok "an unwrap in a second workspace member is reported"
+
+# ── Scenario 6: braces written inside strings, chars and comments ──────────
+# The exemption above is scoped by counting `{` and `}`. Counting the raw
+# characters made every brace in a string literal move the depth, and the two
+# directions are not equally visible:
+#
+#   * an unmatched `}` ends the exemption EARLY, so test code is scanned as
+#     production and someone sees a false failure and investigates;
+#   * an unmatched `{` never ends it, so the exemption runs over the production
+#     code that FOLLOWS the test item, every unwrap()/expect() there is exempt,
+#     and the gate prints OK. Nobody investigates a gate that passes.
+#
+# Each case below therefore asserts the LINE reported, not merely a non-zero
+# exit — see `reports`.
+
+# THE ONE THAT FAILED OPEN. Before the fix this scan reported 0 violations and
+# exited 0 with a live `.unwrap()` on line 10.
+scan_v '#[cfg(test)]
+mod tests {
+    #[test]
+    fn an_opening_brace_in_a_string() {
+        let s = "a bare { inside a string literal";
+        assert!(!s.is_empty());
+    }
+}
+
+pub fn prod() -> u8 { "7".parse::<u8>().unwrap() }'
+reports 10 "an unmatched { in a string does not extend a test exemption over the production code after it"
+
+# The other direction, and the reason tests/mcp_untrusted_fencing_test.rs was
+# written to build its `"\n}"` needle out of a format! call: an unmatched `}`
+# used to collapse the depth and expose the rest of the test module.
+BODY=$(cat <<-'RS'
+	#[cfg(test)]
+	mod tests {
+	    fn end_of_struct() -> &'static str {
+	        "\n}"
+	    }
+
+	    #[test]
+	    fn t() {
+	        assert_eq!(end_of_struct().len(), "2".parse::<usize>().unwrap());
+	    }
+	}
+
+	pub fn prod() -> u8 { "7".parse::<u8>().unwrap() }
+	RS
+)
+scan_v "$BODY"
+reports 13 "an unmatched } in a string does not end a test exemption early (line 9 stays exempt, line 13 does not)"
+
+# Raw strings, with hashes, are strings too — and a JSON or SIP fixture is
+# exactly where a lone `{` gets written. The body deliberately carries an ODD
+# number of `"`, because that is what makes the case discriminate: a scanner
+# that ignores the `r#` prefix and reads the first `"` as a plain string ends
+# the string at the wrong quote, leaves the `{` in the code, and then opens a
+# second string that never closes.
+scan_v '#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let fragment = r#"a "quoted { brace" inside"#;
+        assert!(!fragment.is_empty());
+    }
+}
+
+pub fn prod() -> u8 { "7".parse::<u8>().unwrap() }'
+reports 10 "braces inside a raw string do not move the brace depth"
+
+# Char and byte-char literals. `'{'` is two opening braces to a raw count and
+# none to Rust. The lifetimes elsewhere in these fixtures are load-bearing
+# too: reading `'a` as the start of a char literal would swallow whatever
+# follows, which the end-of-file balance check turns into a hard failure
+# rather than a wrong answer.
+BODY=$(cat <<-'RS'
+	#[cfg(test)]
+	mod tests {
+	    #[test]
+	    fn t() {
+	        assert_eq!('{', char::from(b'{'));
+	    }
+	}
+
+	pub fn prod() -> u8 { "7".parse::<u8>().unwrap() }
+	RS
+)
+scan_v "$BODY"
+reports 9 "braces inside char and byte-char literals do not move the brace depth"
+
+# Line comments, block comments (which nest in Rust), and doc comments.
+scan_v '#[cfg(test)]
+mod tests {
+    // A line comment with an opening brace: {
+    /* a block comment with another {
+       and /* a nested one */ closing here } */
+    #[test]
+    fn t() {
+        assert_eq!(1, 1);
+    }
+}
+
+pub fn prod() -> u8 { "7".parse::<u8>().unwrap() }'
+reports 12 "braces inside line, block and nested block comments do not move the brace depth"
+
+# A comment BETWEEN the attribute and the item it annotates. The raw-line
+# scanner treated that comment as the annotated item, decided it was a one-line
+# item, and dropped the exemption before the module even opened.
+scan_v '#[cfg(test)]
+// The item this annotates is on the next line.
+mod tests {
+    #[test]
+    fn t() {
+        let _ = "7".parse::<u8>().unwrap();
+    }
+}'
+quiet "a comment between #[cfg(test)] and its item does not break the exemption"
+
+# `.unwrap()` written inside a string or a doc comment is prose about the ban,
+# not a violation of it. The scanner reads the stripped code for this too.
+BODY=$(cat <<-'RS'
+	/// Never call `.unwrap()` on a request path.
+	pub fn explain() -> &'static str {
+	    "sipnab does not call .unwrap() while parsing a packet"
+	}
+	RS
+)
+scan_v "$BODY"
+quiet "a mention of .unwrap() inside a string or doc comment is not a violation"
+
+# FAIL CLOSED. A .rs file the compiler accepts ends outside every literal with
+# its braces balanced; anything else means the stripping lost the thread, and a
+# scanner that lost the thread reports the rest of the file as exempt. Refusing
+# to answer is the same intent as the empty-walk guard: a count nobody can
+# trust must not be printed as a clean result.
+scan_v 'pub fn prod() -> u8 {
+    let s = "unterminated;
+    1
+}'
+if [ "$SCAN_RC" -eq 2 ] && printf '%s' "$SCAN_OUT" | grep -q 'ended in lexer state'; then
+	ok "a file the lexer cannot balance is refused (exit 2), not reported as clean"
+else
+	bad "an unterminated string must make the scanner refuse to answer; got rc=$SCAN_RC and: $SCAN_OUT"
+fi
 
 # The hook must read the scanner's EXIT STATUS, not parse merged output: stderr
 # is unbuffered and stdout is not, so a violation line can arrive after the

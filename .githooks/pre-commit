@@ -167,6 +167,25 @@ if ! UNWRAP_OUT=$(python3 scripts/check-unwrap.py 2>&1); then
 fi
 echo -e "${GREEN}OK${NC}"
 
+# ── 3b. The privilege-drop path still drops privileges ────────────
+# Runs BEFORE the expensive gates, and reads source rather than running it.
+# On 2026-08-05 a mutation-testing pass left four controls disabled at once in
+# src/privilege.rs -- PR_SET_DUMPABLE swapped for PR_GET_DUMPABLE behind an
+# `if false &&`, the chdir("/") after chroot() deleted, and both
+# drop_supplementary_groups() and set_no_new_privs() removed. Every one of those
+# still COMPILES and still passes every test that does not specifically cover
+# it, so clippy and the suite both stayed green while the process kept its
+# capabilities. A text scan is the only check that also answers when the tree
+# does not build, which is exactly when a half-restored mutation hides behind an
+# unrelated compile error.
+echo -n "  Privilege drop intact... "
+if ! PRIV_OUT=$(python3 scripts/check-privilege-drop.py 2>&1); then
+    echo -e "${RED}FAIL${NC}"
+    echo "$PRIV_OUT"
+    exit 1
+fi
+echo -e "${GREEN}OK${NC}"
+
 # ── 4. WASM module in sync with source ────────────────────────────
 echo -n "  WASM exports in sync... "
 if [ -f "website/static/wasm/sipnab.js" ]; then

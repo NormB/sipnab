@@ -44,6 +44,11 @@
     {% endif %}
 
     <div class="doc-body">
+      <!-- Same bypass, same justification as page.html: `section.content` is
+           HTML Zola rendered from a committed _index.md, so escaping it would
+           show the markup instead of the section, and nothing a visitor sends
+           can reach it. Held to the reviewed allowlist in
+           every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist. -->
       {{ section.content | safe }}
     </div>
 

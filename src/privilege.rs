@@ -565,12 +565,189 @@ mod tests {
         assert!(CAPTURE_CAPS.ends_with("+ep"));
     }
 
-    /// `chroot` without `CAP_SYS_CHROOT` errors rather than silently succeeds.
+    /// `chroot` without `CAP_SYS_CHROOT` errors rather than silently succeeds,
+    /// and the message names the directory it failed on.
     #[test]
-    fn do_chroot_without_root_fails() {
+    fn do_chroot_without_root_fails_and_names_the_directory() {
         // chroot(2) requires CAP_SYS_CHROOT; as a normal user this must error
         // rather than silently succeed (covers the error path of do_chroot).
+        if is_root() {
+            skip_loudly(
+                "do_chroot_without_root_fails_and_names_the_directory",
+                "the process IS root, so chroot(2) succeeds; this gate asserts the unprivileged failure path",
+            );
+            return;
+        }
         let result = do_chroot(std::path::Path::new("/tmp"));
-        assert!(result.is_err(), "non-root chroot should fail");
+        let msg = result.expect_err("non-root chroot must fail").to_string();
+        assert!(
+            msg.contains("chroot") && msg.contains("/tmp"),
+            "the operator has to be told which directory could not be entered, \
+             got: {msg}"
+        );
+    }
+
+    // ── The failure path: every step reports, none of them warns ──────────
+    //
+    // `drop_privileges` is called once, after the capture handle is open and
+    // before a single packet is parsed. If any step of it fails and the
+    // function returns `Ok` anyway, the whole program keeps running as root
+    // through every parser in it — the exact opposite of what the call is for.
+    // The four tests below pin each step's failure to an `Err`, and they run
+    // unprivileged because "cannot do this" is precisely the unprivileged
+    // case. Turning any `bail!` in this module into a `tracing::warn!` fails
+    // one of them.
+
+    /// Announce a skipped root-gated test on the real stderr.
+    ///
+    /// Not `eprintln!`: libtest replaces the print machinery's sink per test
+    /// and discards the buffer when the test passes, so a skip announced that
+    /// way is emitted and never seen — which is how a suite ends up green
+    /// while proving nothing. See `tests/support/corpus.rs` for the same
+    /// defect and the same fix.
+    fn skip_loudly(test: &str, reason: &str) {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "NOTICE: privilege test `{test}` did NOT run — {reason}."
+        );
+    }
+
+    /// A non-root process cannot clear its supplementary groups, and
+    /// `drop_supplementary_groups` must say so rather than return `Ok`.
+    ///
+    /// This is the first step of the drop. A caller that treated its failure
+    /// as advisory would go on to `setgid`/`setuid` while still carrying every
+    /// group the invoking user had — the classic incomplete drop, where the
+    /// process looks unprivileged by uid and still holds group-granted access
+    /// to the capture device, key files and everything else.
+    #[test]
+    fn drop_supplementary_groups_reports_failure_instead_of_returning_ok() {
+        if is_root() {
+            skip_loudly(
+                "drop_supplementary_groups_reports_failure_instead_of_returning_ok",
+                "the process IS root, so setgroups(2) succeeds; this gate asserts the failure path",
+            );
+            return;
+        }
+        let msg = drop_supplementary_groups()
+            .expect_err("setgroups(0, NULL) needs CAP_SETGID and must fail here")
+            .to_string();
+        assert!(
+            msg.contains("setgroups"),
+            "the failure must name the syscall that refused, got: {msg}"
+        );
+    }
+
+    /// `set_gid` reports a refused `setgid` rather than returning `Ok`.
+    ///
+    /// GID 0 is neither this process's real nor its saved GID, so the kernel
+    /// refuses. A silent `Ok` here would leave the process in the group it
+    /// started in while the caller believed it had shed them.
+    #[test]
+    fn set_gid_reports_a_refused_setgid_rather_than_returning_ok() {
+        if is_root() {
+            skip_loudly(
+                "set_gid_reports_a_refused_setgid_rather_than_returning_ok",
+                "the process IS root, so setgid(0) succeeds; this gate asserts the failure path",
+            );
+            return;
+        }
+        let msg = set_gid(0)
+            .expect_err("an unprivileged process cannot setgid(0)")
+            .to_string();
+        assert!(
+            msg.contains("setgid"),
+            "the failure must name the syscall that refused, got: {msg}"
+        );
+    }
+
+    /// `set_uid` reports a refused `setuid` rather than returning `Ok`.
+    #[test]
+    fn set_uid_reports_a_refused_setuid_rather_than_returning_ok() {
+        if is_root() {
+            skip_loudly(
+                "set_uid_reports_a_refused_setuid_rather_than_returning_ok",
+                "the process IS root, so setuid(0) succeeds; this gate asserts the failure path",
+            );
+            return;
+        }
+        let msg = set_uid(0)
+            .expect_err("an unprivileged process cannot setuid(0)")
+            .to_string();
+        assert!(
+            msg.contains("setuid"),
+            "the failure must name the syscall that refused, got: {msg}"
+        );
+    }
+
+    /// The post-drop verification rejects ids that are not the ones asked for.
+    ///
+    /// `verify_dropped` is the last line of defence: it is what would catch a
+    /// future edit that reordered the drop, switched to `setresuid`, or
+    /// dropped only the real ids. Asking it to confirm a drop to uid 0 from a
+    /// process that is not uid 0 is the cheapest way to prove it actually
+    /// compares rather than always returning `Ok`.
+    #[test]
+    fn verify_dropped_rejects_ids_that_are_not_the_ones_requested() {
+        // SAFETY: getuid/getgid are read-only syscalls that cannot fail.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        // Pick a target this process demonstrably does not have.
+        let (wrong_uid, wrong_gid) = (uid.wrapping_add(1), gid.wrapping_add(1));
+        let msg = verify_dropped(wrong_uid, wrong_gid)
+            .expect_err("the process does not hold those ids")
+            .to_string();
+        assert!(
+            msg.contains("verification failed"),
+            "the message must say the verification failed, got: {msg}"
+        );
+        assert!(
+            msg.contains(&wrong_uid.to_string()) && msg.contains(&uid.to_string()),
+            "the message must carry both the expected and the actual uid so the \
+             operator can see which half of the drop did not happen, got: {msg}"
+        );
+    }
+
+    /// The verification accepts the ids the process actually holds, so the
+    /// rejection above is a real comparison and not a blanket failure.
+    #[test]
+    fn verify_dropped_accepts_the_ids_the_process_actually_holds() {
+        // SAFETY: getuid/getgid are read-only syscalls that cannot fail.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        assert!(
+            verify_dropped(uid, gid).is_ok(),
+            "a process already holding the target ids has completed the drop"
+        );
+    }
+
+    /// A username containing a null byte is rejected before it reaches
+    /// `getpwnam_r`, which would otherwise see a silently truncated name.
+    #[test]
+    fn resolve_user_rejects_a_username_with_an_interior_null_byte() {
+        let msg = resolve_user("root\0nobody")
+            .expect_err("a null byte cannot cross the C boundary")
+            .to_string();
+        assert!(
+            msg.contains("null byte"),
+            "the failure must name the null byte rather than report 'not found', \
+             got: {msg}"
+        );
+    }
+
+    /// A chroot path containing a null byte is rejected before `chroot(2)`,
+    /// for the same reason: C would stop at the null and confine the process
+    /// somewhere other than the operator named.
+    #[test]
+    fn do_chroot_rejects_a_path_with_an_interior_null_byte() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/tmp\0/evil"));
+        let msg = do_chroot(path)
+            .expect_err("a null byte cannot cross the C boundary")
+            .to_string();
+        assert!(
+            msg.contains("null byte"),
+            "the failure must name the null byte rather than report an errno from \
+             a truncated path, got: {msg}"
+        );
     }
 }

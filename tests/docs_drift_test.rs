@@ -2221,9 +2221,11 @@ fn no_documentation_table_repeats_a_row() {
     // table, each doubled by the site mirror.
     // Raised 470 -> 472 by the untrusted-capture-text section in docs/mcp.md
     // (#139): one fenced/verbatim table per surface, doubled by the site mirror.
+    // Raised 472 -> 474 by the write-verb table in docs/mcp.md's "What the
+    // write verbs do" section (#146): one table plus the site mirror.
     assert_eq!(
-        tables, 472,
-        "walked {tables} tables, expected 472. More is fine — bump this. FEWER \
+        tables, 474,
+        "walked {tables} tables, expected 474. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

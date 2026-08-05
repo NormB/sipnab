@@ -401,21 +401,44 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 |------|-------|---------|-------------|
 | `-N`, `--no-tui` | -- | off | Non-interactive mode (no TUI). Required for batch/output flags |
 | `-c`, `--calls-only` | -- | off | Show only SIP dialogs (calls), not standalone messages |
-| `-t`, `--telephone-event` | -- | off | Decode telephone-event (DTMF) RTP payloads and log each digit at `info` |
+| `-t`, `--telephone-event` | -- | off | Decode telephone-event (DTMF) RTP payloads and log each event at `info`, digit value masked as `x` |
+| `--dtmf-cleartext` | -- | off | Log the DTMF digit VALUES instead of the mask, at `debug`. Publishes PINs and card numbers |
 | `-q`, `--quiet` | -- | off | Suppress informational output; only show results |
 
 **Examples**
 
 - `sipnab --no-tui -I capture.pcap --calls-only` — analyze a pcap headlessly, showing only complete SIP dialogs (calls), not standalone messages
-- `sudo sipnab --no-tui -d eth0 --telephone-event` — headless live capture that decodes DTMF and logs each digit with its duration and SSRC
-- `sipnab --no-tui -I capture.pcap --calls-only --telephone-event` — read a capture headlessly, report only complete dialogs, and log the DTMF digits each one carried
+- `sudo sipnab --no-tui -d eth0 --telephone-event` — headless live capture that decodes DTMF and logs each event with its duration and SSRC, digit value masked
+- `sipnab --no-tui -I capture.pcap --calls-only --telephone-event` — read a capture headlessly, report only complete dialogs, and log how many DTMF events each one carried
+- `sipnab --no-tui -I lab.pcap --telephone-event --dtmf-cleartext` — read a capture you own and disclose the digit values; also set `SIPNAB_LOG=debug`, or the run prints nothing but the mask
+- `sudo sipnab --no-tui -d eth0 --telephone-event --dtmf-cleartext 2>dtmf.log` — capture live and steer the cleartext digits into a file whose permissions you control instead of a shared terminal or journald; again needs `SIPNAB_LOG=debug`
 
-**Where the digits go.** sipnab writes each decoded digit to the log at `info`
-level and keeps a count. Nothing else carries them: no report, no JSON field, no
-MCP tool. Two consequences follow, and both bite the obvious command lines.
-Adding `-t` to a TUI session shows you nothing, because TUI mode floors the log
-level at `error` to keep the alternate screen intact. Adding `--quiet` also
-hides them, because it floors the level at `warn`. Use `-N` without `--quiet`.
+**Read this before using `--dtmf-cleartext`.** DTMF digits keyed after answer are
+PINs, calling-card numbers, account numbers and credit-card numbers with their
+CVVs, and RFC 4733 carries them in the clear no matter how well the signalling
+was protected. So `-t` alone logs everything you diagnose with — that an event
+arrived, its duration, its SSRC, its timestamp — with the digit value replaced by
+`x`:
+
+`DTMF digit='x' duration=200ms ssrc=0xdeadbeef`
+
+`--dtmf-cleartext` adds a second line carrying the value. It is not a display
+setting; it puts a caller's PIN wherever this run's log goes — your terminal, a
+redirected file, journald, and every aggregator downstream of journald. Turning
+it on takes two deliberate acts, because the cleartext line is emitted at `debug`
+while the masked line stays at `info`: pass the flag **and** raise the level.
+Either one alone shows you nothing but the mask. Both, in one copyable line:
+
+```bash
+SIPNAB_LOG=debug sipnab --no-tui -I lab.pcap --telephone-event --dtmf-cleartext 2>dtmf.log
+```
+
+**Where the events go.** sipnab writes one masked line per decoded event and
+keeps a count. Nothing else carries the digits: no report, no JSON field, no MCP
+tool. Two consequences follow, and both bite the obvious command lines. Adding
+`-t` to a TUI session shows you nothing, because TUI mode floors the log level at
+`error` to keep the alternate screen intact. Adding `--quiet` also hides them,
+because it floors the level at `warn`. Use `-N` without `--quiet`.
 `SIPNAB_LOG=info` does override the TUI floor, but sipnab sets that floor to
 stop log lines corrupting the alternate screen, so redirect stderr if you do.
 

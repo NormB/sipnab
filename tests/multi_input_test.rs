@@ -792,6 +792,104 @@ fn the_run_summary_reports_files_a_limit_never_reached() {
     );
 }
 
+/// The closing summary a run printed, as `(was it a warning, the sentence)`.
+///
+/// Both halves are asserted because both are the operator's answer to "did this
+/// run see the whole capture". The sentence says what was read; the severity
+/// decides whether it survives the `warn`-level filter a batch run's stderr is
+/// usually piped through, so a missing file that is reported at `info` is a
+/// missing file nobody sees.
+///
+/// Returns `None` when the run printed no summary at all — which is what the
+/// `--cores` path did for its entire existence, and is a different failure from
+/// printing the wrong one.
+fn read_summary(args: &[&str]) -> Option<(bool, String)> {
+    let (_out, err, code) = run_support::run(args, Some("info"));
+    assert_eq!(code, Some(0), "the run must succeed for {args:?}:\n{err}");
+    err.lines()
+        .find(|l| l.contains("file(s) read in full"))
+        .map(|l| {
+            let at = l.find("Read ").expect("the summary opens with the count");
+            (l.contains("WARN"), l[at..].to_string())
+        })
+}
+
+/// `--cores N` and `--cores 1` must give the same account of the same set.
+///
+/// The parallel reader logged which files it OPENED and then went quiet: no
+/// closing line, so the one sentence that says how much of a 27-file ring
+/// buffer actually reached the analysis was printed by the slow reader and not
+/// by the fast one — the one an operator reaches for precisely when the set is
+/// large enough that they cannot check by eye.
+///
+/// Equality, not a shape check on each: two readers each printing a plausible
+/// sentence is how the counts drift apart, and only comparing them catches a
+/// parallel path that reports its own idea of "read in full". The sentence is
+/// produced by one `ReadTally` for exactly this reason.
+#[test]
+fn both_readers_report_the_same_summary_of_the_set_they_read() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["sip-rtp-g711.pcap", "sip-register.pcap", "sip-proxy.pcap"] {
+        std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
+    }
+    let spec = dir.path().to_string_lossy().into_owned();
+
+    let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])
+        .expect("the single-threaded reader must summarise what it read");
+    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])
+        .expect("--cores read three files and must say so; a reader that reports nothing leaves the operator no way to tell a whole set from a partial one");
+
+    assert_eq!(
+        cores, single,
+        "both readers must print the SAME summary of the same set — one \
+         implementation, one sentence, one severity.\n  single: {single:?}\n  \
+         cores:  {cores:?}"
+    );
+    assert!(
+        single.1.contains("3 of 3 file(s) read in full"),
+        "all three files are readable and must be counted as read: {single:?}"
+    );
+    assert!(!single.0, "a set read in full is not a warning: {single:?}");
+}
+
+/// A member that stopped short is reported identically by both readers, at the
+/// same severity.
+///
+/// The truncated member is the case the summary exists for — a `tcpdump -C -W`
+/// ring buffer's newest file is truncated by definition — and it is the one
+/// where the two halves of the line have to agree: the count says one file of
+/// three did not finish, and the `warn` level is what carries that past the log
+/// filter. A parallel reader that tallied a stopped read as a completed one
+/// would still print a sentence, and it would be a reassuring one.
+#[test]
+fn both_readers_report_a_truncated_member_at_the_same_severity() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _after = set_with_a_truncated_middle(dir.path());
+    let spec = dir.path().to_string_lossy().into_owned();
+
+    let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])
+        .expect("the single-threaded reader must summarise what it read");
+    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])
+        .expect("--cores must summarise what it read, truncated member included");
+
+    assert_eq!(
+        cores, single,
+        "a truncated member must read the same on both paths.\n  single: \
+         {single:?}\n  cores:  {cores:?}"
+    );
+    assert!(
+        single.1.contains("2 of 3 file(s) read in full") && single.1.contains("1 stopped early"),
+        "the member that stopped short must be counted as such, not folded \
+         into the set size: {single:?}"
+    );
+    assert!(
+        single.0 && cores.0,
+        "a read that lost packets to a truncated file is a warning on both \
+         paths, or the run that needs looking at is filtered out of the log.\n \
+         single: {single:?}\n  cores:  {cores:?}"
+    );
+}
+
 /// Two captures of the same traffic in one directory are reported.
 ///
 /// This is the case the overlap warning exists for, and it had never fired:

@@ -1,15 +1,15 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 1006
+assertion_line: 1127
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)
  Match Expression:     BPF Filter:
  Display Filter:
-  # ▲   Method    From To    Sourc Desti State      Msgs Date     PDD    Duratio
-> [ ]1  INVITE    1001 1002  10.0. 10.0. Completed  4    +0.000s  1000ms 1m2s
-  [ ]2  INVITE    1003 1004  10.0. 10.0. FAILED ⚠   2    +5.000s         1.0s
-  [ ]3  INVITE    1005 1006  10.0. 10.0. InCall     2    +5.000s         2.0s
+  # ▲   Method    From       To          State      Msgs Date     PDD    Duratio
+> [ ]1  INVITE    1001       1002        Completed  4    +0.000s  1000ms 1m2s
+  [ ]2  INVITE    1003       1004        FAILED ⚠   2    +5.000s         1.0s
+  [ ]3  INVITE    1005       1006        InCall     2    +5.000s         2.0s
 
 
 

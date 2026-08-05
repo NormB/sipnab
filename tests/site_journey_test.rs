@@ -4009,3 +4009,358 @@ fn no_config_value_in_the_json_ld_block_can_close_the_script_element() {
         keys.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Escaping-bypass journey: a SAST sweep flagged seven expressions in
+// website/templates/ that leave Tera's HTML escaping through `| safe`. None is
+// exploitable today and none can simply have the filter deleted — four are
+// `json_encode` output whose own quotes escaping would mangle into `&quot;`,
+// breaking the JSON-LD outright, and three are HTML that Zola already
+// rendered, which escaping would print to the reader as source.
+//
+// So the finding is not "these seven are wrong". It is that nothing made the
+// EIGHTH one a decision. `| safe` is nine characters typed while adding a
+// feature, it produces a page that looks correct, and the value's provenance
+// — the only thing that makes any of these safe — is invisible at the call
+// site. The allowlist below is the missing half: adding a bypass fails here
+// with the file and the expression named, and a bypass that stops being
+// necessary has to be struck off rather than left to rot into a claim nobody
+// checks.
+// ---------------------------------------------------------------------------
+
+/// Every escaping bypass in the site templates is on a reviewed allowlist, so
+/// an eighth one cannot be added silently.
+#[test]
+fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist() {
+    // (template, the exact source line, why the value cannot be attacker-controlled).
+    const ALLOWED: &[(&str, &str, &str)] = &[
+        (
+            "base.html",
+            r#""name": {{ config.title | json_encode | safe }},"#,
+            "a literal in website/config.toml; json_encode emits the JSON \
+             string quotes and HTML-escaping them yields invalid JSON-LD",
+        ),
+        (
+            "base.html",
+            r#""softwareVersion": {{ config.extra.published_version | json_encode | safe }},"#,
+            "written by release automation from Cargo.toml, never from a request",
+        ),
+        (
+            "base.html",
+            r#""url": {{ config.base_url | json_encode | safe }},"#,
+            "a literal in website/config.toml",
+        ),
+        (
+            "base.html",
+            r#""description": {{ config.description | json_encode | safe }},"#,
+            "a literal in website/config.toml",
+        ),
+        (
+            "index.html",
+            r#"var animated = {{ get_url(path='demos/01-intro.webp') | json_encode | safe }} + '?v=9';"#,
+            "a build-time get_url() over a repo-relative literal path, resolved \
+             into the script rather than read back out of the DOM (which is the \
+             js/xss-through-dom form CodeQL rejected); json_encode supplies the \
+             JS string quotes",
+        ),
+        (
+            "page.html",
+            "{{ page.content | safe }}",
+            "HTML Zola rendered from a committed .md file; escaping it would \
+             show every docs page as its own source",
+        ),
+        (
+            "section.html",
+            "{{ section.content | safe }}",
+            "HTML Zola rendered from a committed _index.md, as page.html",
+        ),
+    ];
+
+    // `| safe`, `|safe`, and Tera's block form. Not a search for the word
+    // "safe": the justifications written beside these bypasses quote the
+    // filter, so comments are blanked first — and a bypass inside a comment is
+    // not a bypass.
+    let bypass = regex::Regex::new(r"\|\s*safe\b|\{%-?\s*autoescape\s+false\b").expect("regex");
+    let comment = regex::Regex::new(r"(?s)<!--.*?-->|\{#.*?#\}").expect("regex");
+
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut scanned = 0usize;
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("html") {
+            continue;
+        }
+        scanned += 1;
+        let name = p.file_name().expect("name").to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&p).expect("read template");
+        // Keep newlines so a comment never merges two lines into one entry.
+        let body = comment.replace_all(&text, |c: &regex::Captures| {
+            c[0].chars()
+                .map(|ch| if ch == '\n' { '\n' } else { ' ' })
+                .collect::<String>()
+        });
+        for line in body.lines() {
+            if bypass.is_match(line) {
+                found.push((name.clone(), line.trim().to_string()));
+            }
+        }
+    }
+    assert!(
+        scanned >= 6,
+        "only {scanned} templates were read — the directory walk found almost \
+         nothing and this gate would pass by checking nothing"
+    );
+
+    found.sort();
+    let mut allowed: Vec<(String, String)> = ALLOWED
+        .iter()
+        .map(|(f, e, _)| (f.to_string(), e.to_string()))
+        .collect();
+    allowed.sort();
+
+    assert_eq!(
+        found,
+        allowed,
+        "the set of escaping bypasses in website/templates/ changed. `| safe` \
+         writes the value into the page verbatim, so a NEW one is only \
+         acceptable when the value provably cannot come from anything a \
+         visitor sends — add it to ALLOWED with that reason, or restore \
+         escaping. A REMOVED one means a bypass stopped being necessary: \
+         delete its ALLOWED entry so the list keeps describing the site \
+         instead of a version of it that no longer exists.\n\
+         Reasons currently on record:\n{}",
+        ALLOWED
+            .iter()
+            .map(|(f, e, why)| format!("  {f}: {e}\n    -> {why}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CSP asymmetry journey: production's script-src is hash-pinned at the
+// Cloudflare edge, but the two policies this repository stores in its own
+// tree — the meta tag in base.html and the reference set in static/_headers —
+// both still granted `script-src 'unsafe-inline'`. That is not a second
+// opinion, it is a weaker one being published under the same name: anyone
+// adopting _headers believes they copied the real policy while running one
+// under which an injected <script> executes.
+//
+// _headers can be made strict outright, because nothing enforces it today and
+// a missing hash fails CLOSED (a visibly dead nav, not a silent hole). The
+// meta tag cannot: a browser enforces every delivered policy independently,
+// so a meta policy with no hashes would reject the very scripts the edge
+// policy allows and blank the nav, the dropdown and search on every page. It
+// keeps 'unsafe-inline' and adds `script-src-attr 'none'`, which closes the
+// injected-handler half unconditionally and costs nothing, since
+// no_inline_event_handlers_in_templates already proves there are none.
+// ---------------------------------------------------------------------------
+
+/// The source tokens of one CSP directive, e.g. `script-src` -> `["'self'"]`.
+///
+/// `None` means the policy does not carry the directive at all — a different
+/// state from carrying it with no sources, and one that must not be silently
+/// read as "nothing dangerous in it". Prefix matches are rejected so
+/// `script-src-attr` can never answer a question asked about `script-src`.
+fn csp_directive<'a>(policy: &'a str, name: &str) -> Option<Vec<&'a str>> {
+    policy.split(';').map(str::trim).find_map(|d| {
+        let rest = d.strip_prefix(name)?;
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            return None;
+        }
+        Some(rest.split_whitespace().collect())
+    })
+}
+
+/// The policy string of the `<meta http-equiv="Content-Security-Policy">` tag.
+fn meta_csp(template: &str) -> String {
+    let tpl = read(template);
+    let tag = tpl
+        .lines()
+        .find(|l| l.contains(r#"http-equiv="Content-Security-Policy""#))
+        .unwrap_or_else(|| {
+            panic!(
+                "{template} carries no meta CSP — on GitHub Pages that tag is \
+                 the only policy a browser sees, so losing it is losing the \
+                 whole browser-enforced layer"
+            )
+        });
+    tag.split_once(r#"content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(policy, _)| policy.to_string())
+        .expect("the meta CSP must carry a quoted content= attribute")
+}
+
+/// The `Content-Security-Policy` value of a Cloudflare Pages / Netlify
+/// `_headers` file, ignoring the `#` comments that name the header in prose.
+fn headers_file_csp(rel: &str) -> String {
+    let text = read(rel);
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("Content-Security-Policy:"))
+        .unwrap_or_else(|| panic!("{rel} carries no Content-Security-Policy line"));
+    line.split_once(':')
+        .expect("a header line has a colon")
+        .1
+        .trim()
+        .to_string()
+}
+
+/// Assert a `script-src` neither widens beyond the sources this site needs nor
+/// leaves an injected inline handler executable.
+fn assert_script_src_cannot_run_injected_script(where_: &str, policy: &str) {
+    let script_src = csp_directive(policy, "script-src").unwrap_or_else(|| {
+        panic!(
+            "{where_} names no script-src. Inheriting it from default-src \
+             works, but it hides the one directive this gate exists to watch — \
+             state it explicitly"
+        )
+    });
+
+    for token in &script_src {
+        assert!(
+            matches!(*token, "'self'" | "'unsafe-inline'" | "'wasm-unsafe-eval'")
+                || token.starts_with("'sha256-"),
+            "{where_} script-src carries `{token}`. The site loads scripts from \
+             its own origin and nowhere else, so a host, a scheme, `*`, \
+             `'unsafe-eval'` or `'unsafe-hashes'` here is a widening nobody \
+             asked for: script-src = {script_src:?}"
+        );
+    }
+
+    // The conditional is the real invariant, not a formality — it survives
+    // 'unsafe-inline' being dropped later without turning into a false alarm.
+    if script_src.contains(&"'unsafe-inline'") {
+        assert_eq!(
+            csp_directive(policy, "script-src-attr").as_deref(),
+            Some(&["'none'"][..]),
+            "{where_} grants script-src 'unsafe-inline' without \
+             `script-src-attr 'none'`. That combination lets an injected \
+             `onerror=`/`onclick=` attribute execute wherever this policy is \
+             the only one delivered. The site has no handler attributes of its \
+             own, so the directive costs nothing and closes the whole class"
+        );
+    }
+}
+
+/// Neither policy this repository stores lets an injected inline script run:
+/// the reference header set is hash-only, and the meta tag's residual
+/// `'unsafe-inline'` cannot execute a handler attribute.
+#[test]
+fn no_content_security_policy_this_repo_ships_lets_an_injected_script_run() {
+    let meta = meta_csp("website/templates/base.html");
+    assert_script_src_cannot_run_injected_script("base.html's meta CSP", &meta);
+
+    // Checked before the shared helper: that helper's fallback for an
+    // 'unsafe-inline' grant is `script-src-attr 'none'`, which is the right
+    // answer for the meta tag and the WRONG one here — this file can simply be
+    // strict, so a failure must say so rather than offer the concession.
+    let file = headers_file_csp("website/static/_headers");
+    let script_src = csp_directive(&file, "script-src")
+        .expect("static/_headers must name script-src explicitly");
+    assert!(
+        !script_src.contains(&"'unsafe-inline'"),
+        "static/_headers grants script-src 'unsafe-inline'. Nothing enforces \
+         this file today, so nothing forced it to be weaker than production, \
+         where script-src is hash-pinned at the Cloudflare edge. A reference \
+         set that is weaker than the policy it claims to mirror is worse than \
+         no reference at all — whoever adopts it believes they copied the real \
+         one. Leave the hashes out (that fails closed) rather than reopening \
+         inline execution: script-src = {script_src:?}"
+    );
+    assert_script_src_cannot_run_injected_script("static/_headers", &file);
+
+    // style-src is the deliberate asymmetry and must not be "fixed" to match
+    // script-src: the templates carry ~141 inline style= attributes, which CSP
+    // cannot hash, so removing this silently unstyles the site.
+    let style_src = csp_directive(&file, "style-src").expect("static/_headers must name style-src");
+    assert!(
+        style_src.contains(&"'unsafe-inline'"),
+        "static/_headers dropped style-src 'unsafe-inline'. That one IS load \
+         bearing — inline style= attributes are not hashable — and removing it \
+         to match script-src breaks the rendering of every page"
+    );
+}
+
+/// `--write-headers` regenerates the reference `_headers` policy from a built
+/// site: the real hashes in, `'unsafe-inline'` out, every other line untouched.
+#[test]
+fn the_csp_refresher_rewrites_the_reference_headers_file_with_hashes_not_unsafe_inline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let body = "document.getElementById('x').addEventListener('click', function () {});";
+    std::fs::write(
+        dir.path().join("index.html"),
+        format!("<html><body><script>{body}</script></body></html>"),
+    )
+    .expect("write index.html");
+
+    // Seed from the file that actually ships, not a fixture: a fixture would
+    // drift away from the real comments, indentation and eight other headers,
+    // and then this gate would be proving something about the fixture.
+    let source = read("website/static/_headers");
+    let headers_path = dir.path().join("_headers");
+    std::fs::write(&headers_path, &source).expect("seed _headers");
+
+    let out = run_csp_refresh(&[
+        "--site-dir",
+        dir.path().to_str().expect("site dir path"),
+        "--write-headers",
+        headers_path.to_str().expect("_headers path"),
+        "--dry-run",
+    ]);
+    assert!(
+        out.status.success(),
+        "--write-headers failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let written = std::fs::read_to_string(&headers_path).expect("read rewritten _headers");
+    let policy = written
+        .lines()
+        .find(|l| l.trim_start().starts_with("Content-Security-Policy:"))
+        .expect("the rewritten file must still carry a CSP line")
+        .split_once(':')
+        .expect("a header line has a colon")
+        .1
+        .to_string();
+
+    let script_src =
+        csp_directive(&policy, "script-src").expect("the written CSP names script-src");
+    assert!(
+        script_src.contains(&csp_token(body).as_str()),
+        "the written policy must pin the built site's inline script by hash, \
+         or the host that honours this file blocks it: script-src = {script_src:?}"
+    );
+    assert!(
+        !script_src.contains(&"'unsafe-inline'"),
+        "the generated policy reopened inline script execution — the hashes \
+         exist precisely so it does not have to: script-src = {script_src:?}"
+    );
+
+    // Only the policy changes. The path patterns, the comments and the other
+    // headers are reviewed content, and a generator that rewrites them is one
+    // that can quietly drop HSTS or frame-ancestors on its next run.
+    let src_lines: Vec<&str> = source.lines().collect();
+    let out_lines: Vec<&str> = written.lines().collect();
+    assert_eq!(
+        src_lines.len(),
+        out_lines.len(),
+        "--write-headers added or dropped lines; it may only replace one"
+    );
+    let changed: Vec<usize> = (0..src_lines.len())
+        .filter(|&i| src_lines[i] != out_lines[i])
+        .collect();
+    assert_eq!(
+        changed.len(),
+        1,
+        "exactly one line — the CSP — may change; lines {changed:?} differ"
+    );
+    assert!(
+        out_lines[changed[0]]
+            .trim_start()
+            .starts_with("Content-Security-Policy:"),
+        "the one changed line must be the CSP, not `{}`",
+        out_lines[changed[0]]
+    );
+}

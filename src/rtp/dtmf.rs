@@ -9,8 +9,31 @@
 //!
 //! Only events with the End bit set are returned, which deduplicates the
 //! intermediate packets that RTP senders transmit for reliability.
+//!
+//! # Disclosure
+//!
+//! A decoded digit is not a diagnostic detail, it is the secret itself. On live
+//! traffic the digit stream after answer is the PIN, the calling-card number,
+//! the account number or the credit-card number the caller keyed in, and it
+//! arrives in the clear regardless of how the signalling was protected. So this
+//! module hands out [`MASKED_DIGIT`] as the value any always-on surface may
+//! print, and reserves [`DtmfEvent::digit`] itself for a caller that has an
+//! explicit operator opt-in (`--dtmf-cleartext`) to disclose it.
 
 use chrono::{DateTime, Utc};
+
+// ── Public constants ─────────────────────────────────────────────────
+
+/// The placeholder that stands in for a decoded digit on any surface that
+/// has not been explicitly opted in to cleartext disclosure.
+///
+/// Lowercase `x` is deliberate. The RFC 4733 alphabet is `0`-`9`, `*`, `#` and
+/// `A`-`D`, so `x` cannot be read back as a keypress that actually happened —
+/// which rules out the otherwise-obvious `*`, the star key, whose mask would be
+/// indistinguishable from a caller who really pressed it. A masked line still
+/// carries every fact an operator needs (that a digit arrived, when, for how
+/// long, on which SSRC); only the value is withheld.
+pub const MASKED_DIGIT: char = 'x';
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -18,6 +41,10 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DtmfEvent {
     /// The DTMF digit: `'0'`-`'9'`, `'*'`, `'#'`, or `'A'`-`'D'`.
+    ///
+    /// Treat this as a credential, not as a field. Anything that prints it
+    /// without an explicit operator opt-in publishes the caller's PIN or card
+    /// number to every reader of that surface; print [`MASKED_DIGIT`] instead.
     pub digit: char,
     /// Event duration in milliseconds (derived from the RTP timestamp units).
     pub duration_ms: u32,
@@ -324,6 +351,24 @@ mod tests {
             .expect("should extract digit 1");
         assert_eq!(event.digit, '1');
         assert_eq!(event.duration_ms, 200);
+    }
+
+    /// No RFC 4733 event code decodes to the mask character, so a masked log
+    /// line can never be misread as a keypress that actually happened.
+    ///
+    /// This is the property that rules out the obvious mask, `*`: it is event
+    /// code 10, so masking with it would make "the caller pressed star" and
+    /// "the value is withheld" the same line.
+    #[test]
+    fn the_mask_character_is_not_a_digit_any_event_code_can_produce() {
+        for code in 0u8..=255 {
+            assert_ne!(
+                event_to_digit(code),
+                Some(MASKED_DIGIT),
+                "event code {code} decodes to the mask character, so a masked \
+                 line is indistinguishable from a real keypress"
+            );
+        }
     }
 
     /// The 8 kHz-default `extract_dtmf` remains equivalent to calling

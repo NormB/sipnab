@@ -147,10 +147,9 @@ CSeq: 1 INVITE\r\n\
     store.process_message(msg);
     let dialog = store
         .get("fencing-effect-test@example.com")
-        .expect("the fixture produced a dialog")
-        .clone();
+        .expect("the fixture produced a dialog");
 
-    let summary = fenced_dialog_summary(&dialog);
+    let summary = fenced_dialog_summary(dialog);
     let v = serde_json::to_value(&summary).expect("summary serializes");
     let obj = v.as_object().expect("summary is a JSON object");
 

@@ -428,14 +428,37 @@ pub struct Cli {
     #[arg(help_heading = "Mode", short = 'r', hide = true)]
     pub _sngrep_r: bool,
 
-    /// Decode telephone-event (DTMF) RTP payloads and log each digit.
+    /// Decode telephone-event (DTMF) RTP payloads and log each event, with the
+    /// digit VALUE masked as `x`.
     ///
-    /// Digits go to the log at `info` level, so `-N` shows them and the TUI does
-    /// not (TUI mode floors the level at `error` to protect the alternate
+    /// One `info` line per completed event carries everything an operator
+    /// diagnoses with — that a digit arrived, its duration, its SSRC, its time —
+    /// and withholds the value, because on live traffic those values are PINs,
+    /// calling-card numbers, account numbers and card numbers. Pass
+    /// `--dtmf-cleartext` to log the values themselves.
+    ///
+    /// The masked lines go to the log at `info`, so `-N` shows them and the TUI
+    /// does not (TUI mode floors the level at `error` to protect the alternate
     /// screen). `--quiet` floors it at `warn` and hides them too. No report,
     /// JSON field or MCP tool carries the digits — only the count is retained.
     #[arg(help_heading = "Mode", short = 't', long = "telephone-event")]
     pub telephone_event: bool,
+
+    /// Log decoded DTMF digit VALUES in cleartext, not masked. Off by default.
+    ///
+    /// This publishes the caller's keypresses. After answer, DTMF digits are
+    /// routinely voicemail PINs, calling-card numbers, account numbers and
+    /// credit-card numbers with their CVVs, and they arrive in the clear no
+    /// matter how the signalling was protected. Everyone who can read this
+    /// run's log can read them: the terminal, the redirected file, journald,
+    /// and whatever log aggregator ships them onward.
+    ///
+    /// Needs `-t` (it only affects what `-t` decodes) and `SIPNAB_LOG=debug`:
+    /// the cleartext line is emitted at `debug`, one level below the masked
+    /// `info` line, so it never appears in a default-level log. The masked line
+    /// is still emitted, so nothing is lost by leaving this off.
+    #[arg(help_heading = "Mode", long = "dtmf-cleartext")]
+    pub dtmf_cleartext: bool,
 
     /// Suppress informational output; only show results.
     #[arg(help_heading = "Mode", short = 'q', long = "quiet")]

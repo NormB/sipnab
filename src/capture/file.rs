@@ -219,12 +219,7 @@ pub fn capture_files(
     if paths.is_empty() {
         return result;
     }
-    let line = tally.summary(count);
-    if tally.lossy() {
-        tracing::warn!("{line}");
-    } else {
-        tracing::info!("{line}");
-    }
+    tally.report(count);
     result
 }
 
@@ -235,25 +230,34 @@ pub fn capture_files(
 /// arms and the read-error arm fell through to it, so a run that opened 3 of 27
 /// files still claimed 27, and an earlier truncation bug that abandoned twelve
 /// files was nearly invisible because the line it printed did not change.
+///
+/// `pub(crate)` because the parallel reader in [`crate::parallel`] tallies into
+/// the same type rather than growing a second one. `--cores N` reads the same
+/// `-I` set as `--cores 1` and owes the operator the same account of it; two
+/// implementations of that account would be two sentences to keep in step, and
+/// the one that is printed less often is the one that would drift. The parallel
+/// path went further than drifting and printed nothing at all, so a `--cores`
+/// run over a 27-file directory said which files it OPENED and never said how
+/// many it finished.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct ReadTally {
+pub(crate) struct ReadTally {
     /// Files in the resolved set — what used to be reported on its own.
-    given: usize,
+    pub(crate) given: usize,
     /// Files read through to their last packet.
-    complete: usize,
+    pub(crate) complete: usize,
     /// Files whose read stopped before their end: a mid-file read error, or a
     /// `--count`/`--duration` limit or shutdown landing inside them.
-    stopped_early: usize,
+    pub(crate) stopped_early: usize,
     /// Files that never yielded a packet: they could not be opened, or the BPF
     /// filter would not compile against their link type.
-    skipped: usize,
+    pub(crate) skipped: usize,
     /// Whether anything was lost rather than merely left unread on request.
     ///
     /// Separate from the counts because `--count 100` over a 27-file set stops
     /// early and leaves 26 files unread by design; a read error or a file that
     /// would not open is data missing from the analysis, and only that turns
     /// the summary into a warning.
-    lost: bool,
+    pub(crate) lost: bool,
 }
 
 impl ReadTally {
@@ -266,6 +270,35 @@ impl ReadTally {
     /// Whether the summary describes missing data rather than a requested stop.
     fn lossy(&self) -> bool {
         self.lost
+    }
+
+    /// Emit the closing line, at the severity the outcome earns.
+    ///
+    /// Both readers end here instead of formatting their own line, so the ONE
+    /// sentence an operator uses to decide whether a run saw the whole capture
+    /// cannot say something different depending on whether `--cores` was
+    /// passed. The severity is half of that sentence and is bound to it for the
+    /// same reason: a set with a file missing from it must reach a `warn`-level
+    /// log — which is the level a batch run's stderr is usually filtered to —
+    /// while a `--count` limit leaving files unread is what was asked for and
+    /// stays `info`, or the warning that matters is buried under the ones that
+    /// do not.
+    ///
+    /// # Arguments
+    ///
+    /// * `packets` — packets the run read across the whole set.
+    ///
+    /// # Side effects
+    ///
+    /// Emits exactly one `warn!` (data missing) or `info!` (clean, or a
+    /// requested stop) line via tracing.
+    pub(crate) fn report(&self, packets: u64) {
+        let line = self.summary(packets);
+        if self.lossy() {
+            tracing::warn!("{line}");
+        } else {
+            tracing::info!("{line}");
+        }
     }
 
     /// The closing line: packets read, and what happened to every file.

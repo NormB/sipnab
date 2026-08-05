@@ -2871,12 +2871,34 @@ fn process_parsed_packet(
                     pp.timestamp,
                 ) {
                     *dtmf_count += 1;
+                    // The always-on line is masked. A decoded digit is the
+                    // caller's secret — after answer these are voicemail PINs,
+                    // calling-card and card numbers — and the log is the widest
+                    // surface sipnab has: terminal, redirected file, journald,
+                    // and any aggregate that ships it onward. Everything an
+                    // operator diagnoses with (a digit arrived, when, how long,
+                    // on which SSRC) survives masking; only the value does not.
                     tracing::info!(
                         "DTMF digit='{}' duration={}ms ssrc=0x{:08x}",
-                        dtmf.digit,
+                        rtp::dtmf::MASKED_DIGIT,
                         dtmf.duration_ms,
                         rtp_hdr.ssrc
                     );
+                    // Cleartext is an additional line, not a substitution, and
+                    // it sits at `debug` — one level below the masked line's
+                    // `info`. Two independent acts are therefore required to
+                    // put a PIN on disk: passing --dtmf-cleartext AND raising
+                    // SIPNAB_LOG to debug. Emitting it as a separate line also
+                    // means turning the flag on never *removes* the diagnostic
+                    // the default level already gave you.
+                    if cli.dtmf_cleartext {
+                        tracing::debug!(
+                            "DTMF cleartext digit='{}' duration={}ms ssrc=0x{:08x}",
+                            dtmf.digit,
+                            dtmf.duration_ms,
+                            rtp_hdr.ssrc
+                        );
+                    }
                 }
             }
 

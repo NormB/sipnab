@@ -434,6 +434,127 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Hide the given call-list columns through the real F10 selector, the
+    /// way a user would.
+    ///
+    /// # Arguments
+    /// * `app` - Application whose column layout is changed.
+    /// * `columns` - Column indices in `COLUMN_LABELS` order, ASCENDING; the
+    ///   cursor only walks forward, so an out-of-order list would silently
+    ///   toggle the wrong columns.
+    ///
+    /// # Side effects
+    /// Opens the selector, toggles each named column off, and closes it, so
+    /// the caller's next draw reflects the new layout.
+    fn hide_columns(app: &mut sipnab::tui::App, columns: &[usize]) {
+        app.handle_key(KeyCode::F(10));
+        let mut cursor = 0usize;
+        for &c in columns {
+            assert!(c >= cursor, "hide_columns needs ascending indices, got {c}");
+            for _ in cursor..c {
+                app.handle_key(KeyCode::Down);
+            }
+            cursor = c;
+            app.handle_key(KeyCode::Char(' '));
+        }
+        app.handle_key(KeyCode::Enter);
+    }
+
+    /// Render the fixture call list at one width, optionally hiding columns.
+    ///
+    /// # Arguments
+    /// * `width` - Terminal width in cells; height is fixed at 12, enough for
+    ///   the three status lines, the header, the three fixture rows and the
+    ///   f-key bar.
+    /// * `hide` - Column indices to switch off via the F10 selector.
+    ///
+    /// # Returns
+    /// The flattened buffer text.
+    fn render_call_list_at(width: u16, hide: &[usize]) -> String {
+        let backend = TestBackend::new(width, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        hide_columns(&mut app, hide);
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        buffer_to_string(&terminal)
+    }
+
+    /// A column the width cannot show must cost exactly what a hidden column
+    /// costs: nothing.
+    ///
+    /// Ticket #151. The layout used to balance its arithmetic by giving the
+    /// identity columns whatever was left over, including nothing. Measured
+    /// across the reachable range, Source and Destination were `Length(0)` at
+    /// every width from the 40-column floor through 70; From was 0 through 62
+    /// and To through 61; and all four sat between 1 and 6 cells up to 82 —
+    /// the committed 80-column snapshots recorded `Sourc Desti` headers over
+    /// cells reading `10.0.`. ratatui draws a zero-width column as a header
+    /// cell of no width, then still charges the `column_spacing(1)` cell that
+    /// follows it: a border consumed for a column that shows nothing.
+    ///
+    /// The property proved here is stronger than "no empty header". Rendering
+    /// at a narrow width with all eleven columns switched on must produce the
+    /// SAME buffer as rendering with the unshowable ones switched off in the
+    /// F10 selector. A zero-width column would still spend its spacing cell
+    /// and shift every column after it, so the two buffers could not match —
+    /// which is exactly how this test fails if the behaviour comes back.
+    #[test]
+    fn narrow_call_list_drops_unshowable_columns_instead_of_laying_them_out_empty() {
+        // 62 is the width the ticket named: below it From/To/Source/Dest are
+        // all zero. 80 is the default terminal, where the address pair was
+        // five cells wide — enough to draw `10.0.` and no more.
+        // Indices are COLUMN_LABELS order: 2 From, 3 To, 4 Source, 5 Dest.
+        for (width, unshowable) in [(62u16, &[2usize, 3, 4, 5][..]), (80, &[4usize, 5][..])] {
+            let laid_out_by_width = render_call_list_at(width, &[]);
+            let hidden_by_user = render_call_list_at(width, unshowable);
+            assert_eq!(
+                laid_out_by_width, hidden_by_user,
+                "at {width} cols the columns {unshowable:?} cannot be shown legibly, so \
+                 the layout must drop them and the render must be identical to hiding \
+                 them. It is not, which means they are still being laid out — at zero \
+                 or near-zero width, spending their spacing cells and shifting every \
+                 column after them.\n--- all columns enabled ---\n{laid_out_by_width}\
+                 \n--- unshowable columns hidden ---\n{hidden_by_user}"
+            );
+        }
+    }
+
+    /// The dropped columns leave no header behind, and the ones that survive
+    /// gain the space.
+    ///
+    /// The buffer-equality gate above proves the columns cost nothing; this
+    /// one names what the reader sees. At 62 cols no identity column is
+    /// drawn at all. At 80 the address pair is gone and From/To inherit its
+    /// cells, so the fixture user parts render whole instead of as the
+    /// four-cell stubs the old layout allowed.
+    #[test]
+    fn dropped_columns_leave_no_header_and_the_survivors_take_the_space() {
+        let narrow = render_call_list_at(62, &[]);
+        for label in ["From", "Source", "Destination"] {
+            assert!(
+                !narrow.contains(label),
+                "at 62 cols the {label} column cannot be shown and must not print a \
+                 header:\n{narrow}"
+            );
+        }
+        assert!(
+            narrow.contains("State") && narrow.contains("Duratio"),
+            "the fixed columns must still be drawn at 62 cols:\n{narrow}"
+        );
+
+        let default_width = render_call_list_at(80, &[]);
+        assert!(
+            !default_width.contains("Sourc"),
+            "at 80 cols a Source column is at most five cells wide — it cannot hold any \
+             IPv4 address — so it must be dropped:\n{default_width}"
+        );
+        assert!(
+            default_width.contains("From") && default_width.contains("1001"),
+            "at 80 cols From/To inherit the address columns' cells and must render the \
+             caller whole:\n{default_width}"
+        );
+    }
+
     /// Snapshot: empty stream list.
     #[test]
     fn stream_list_empty() {

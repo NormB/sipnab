@@ -17,7 +17,15 @@ Auth: CLOUDFLARE_DNS_TOKEN (or CLOUDFLARE_API_TOKEN) in the environment or
 ~/.env. The token needs Zone->DNS->Edit, Zone->Zone Settings->Edit and
 Zone->Transform Rules->Edit on the zone.
 
-Usage: python3 refresh_csp_hashes.py [--site-dir DIR] [--dry-run]
+--write-headers PATH additionally rewrites the Content-Security-Policy line
+of a Cloudflare Pages / Netlify `_headers` file with the same hash-pinned
+policy. website/static/_headers ships WITHOUT the hash tokens on purpose (it
+is a reference set, and pinned hashes taken over rendered HTML would go stale
+on the next site edit), so a host that actually honors that file needs this
+step against its own build or every inline script is blocked.
+
+Usage: python3 refresh_csp_hashes.py [--site-dir DIR] [--write-headers PATH]
+                                     [--dry-run]
 """
 import base64
 import hashlib
@@ -133,6 +141,37 @@ def csp(script_hashes):
     ) % " ".join(sorted(script_hashes))
 
 
+# The `_headers` line this rewrites, e.g. "  Content-Security-Policy: ...".
+# Anchored so a `#` comment mentioning the header by name is never rewritten.
+_HEADERS_CSP_RE = re.compile(r"^(\s*)Content-Security-Policy:\s*\S.*$")
+
+
+def write_headers(path, script_hashes):
+    """Rewrite the Content-Security-Policy line of a `_headers` file in place.
+
+    Only that one line changes: the other headers, the path patterns and the
+    comments are the reviewed content of the file and are not this script's to
+    regenerate. Exactly one CSP line must be present — zero means the file was
+    restructured and a silent no-op would leave the caller believing a policy
+    was published, and more than one means the rewrite would have to guess
+    which path pattern it belongs to.
+    """
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    hits = [i for i, line in enumerate(lines) if _HEADERS_CSP_RE.match(line)]
+    if len(hits) != 1:
+        sys.exit(
+            "%s has %d Content-Security-Policy lines, expected exactly 1 — "
+            "refusing to guess where the policy belongs" % (path, len(hits))
+        )
+    i = hits[0]
+    indent = _HEADERS_CSP_RE.match(lines[i]).group(1)
+    lines[i] = "%sContent-Security-Policy: %s" % (indent, csp(script_hashes))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print("wrote hash-pinned CSP to %s" % path)
+
+
 def headers(script_hashes):
     return {
         "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
@@ -150,11 +189,17 @@ def main():
     argv = sys.argv[1:]
     dry = "--dry-run" in argv
     site_dir = None
-    if "--site-dir" in argv:
-        i = argv.index("--site-dir")
+    headers_path = None
+    for flag, setter in (("--site-dir", "site_dir"), ("--write-headers", "headers_path")):
+        if flag not in argv:
+            continue
+        i = argv.index(flag)
         if i + 1 >= len(argv):
-            sys.exit("--site-dir requires a directory argument")
-        site_dir = argv[i + 1]
+            sys.exit("%s requires a path argument" % flag)
+        if setter == "site_dir":
+            site_dir = argv[i + 1]
+        else:
+            headers_path = argv[i + 1]
         del argv[i : i + 2]
     unknown = [a for a in argv if a != "--dry-run"]
     if unknown:
@@ -164,6 +209,12 @@ def main():
     for t, pages in sorted(tokens.items()):
         print("  %s  (%d pages)" % (t, len(pages)))
     hdrs = headers(tokens)
+    # --write-headers is a local file rewrite, not a publish, so --dry-run
+    # (which is about not touching Cloudflare) does not suppress it: the whole
+    # point of the pairing is to produce a _headers file for a host that is
+    # NOT behind this zone's transform rule.
+    if headers_path:
+        write_headers(headers_path, tokens)
     if dry:
         print("\n--dry-run: not updating Cloudflare. CSP would be:\n" + hdrs["Content-Security-Policy"])
         return
