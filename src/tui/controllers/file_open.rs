@@ -526,6 +526,11 @@ fn run_pcap_load(
 /// streams, switches `app.current_view` to the stream list.
 fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
     app.set_capture_mode(outcome.capture_mode);
+    // The label now reads `Offline (...)` while the BPF slot still shows the
+    // filter the LIVE capture was compiled with — which keeps running behind
+    // this and keeps writing to the same stores. Unmarked, the two rows read
+    // as one statement about one source (#190).
+    app.mark_bpf_live_only();
     app.mark_data_updated();
 
     if !outcome.file_names.is_empty() {

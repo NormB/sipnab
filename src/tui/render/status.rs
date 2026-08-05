@@ -184,8 +184,20 @@ pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect
     // none was asked for. It can be far wider than the row (see
     // `fit_bpf_to_cols`), so what gets drawn is the fitted text and the fill
     // is measured from that.
+    //
+    // After an in-session `O` open, the label above reads `Offline (...)` while
+    // this filter still belongs to the live capture that is running behind it.
+    // Unmarked, the two read as one statement about one source (#190). The
+    // filter is not cleared: it is still in force for the live half, and
+    // blanking it would claim no filter was compiled, which is a different and
+    // false thing to say.
+    let shown_bpf = if app.bpf_is_live_only() && !app.bpf_filter.is_empty() {
+        std::borrow::Cow::Owned(format!("{} [live capture]", app.bpf_filter))
+    } else {
+        std::borrow::Cow::Borrowed(app.bpf_filter.as_str())
+    };
     let bpf_text = fit_bpf_to_cols(
-        &app.bpf_filter,
+        &shown_bpf,
         (area.width as usize).saturating_sub(line2_used_cols(filter_text, "")),
     );
     let used = line2_used_cols(filter_text, &bpf_text);
@@ -805,5 +817,48 @@ mod tests {
             row.push_str(buf.cell((x, 0)).unwrap().symbol());
         }
         assert!(row.contains("Format"));
+    }
+}
+
+#[cfg(test)]
+mod live_only_bpf_tests {
+    use super::*;
+
+    /// After an in-session file open the BPF slot says which source its filter
+    /// belongs to (#190).
+    ///
+    /// The label above it flips to `Offline (...)` while this filter still
+    /// describes the live capture running behind it. Two rows about two
+    /// different sources, reading as one statement about one source, is the
+    /// same confident-wrong shape as the blank slot #185 fixed.
+    ///
+    /// The filter is MARKED, not cleared: the live capture is still running
+    /// and the filter still applies to it, so blanking would claim no filter
+    /// was compiled — a different and false thing to say.
+    #[test]
+    fn an_offline_load_marks_the_bpf_slot_as_the_live_captures() {
+        let plain = "udp port 5060";
+        let marked = format!("{plain} [live capture]");
+        assert!(
+            marked.starts_with(plain),
+            "the mark must ADD to the filter, never replace it: an operator \
+             still needs to read what was compiled"
+        );
+        assert!(
+            marked.contains("live"),
+            "the mark must name the source the filter belongs to"
+        );
+        // The fitter must not be defeated by the longer text: a marked filter
+        // that overflows still ends in the ellipsis rather than being clipped
+        // at the row edge, which would hide the mark itself.
+        let narrow = fit_bpf_to_cols(&marked, 10);
+        assert!(
+            narrow.ends_with('…'),
+            "a marked filter too wide for the row must show it was cut: {narrow}"
+        );
+        assert!(
+            display_cols(&narrow) <= 10,
+            "the fit must respect the budget: {narrow}"
+        );
     }
 }

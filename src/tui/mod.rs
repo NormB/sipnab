@@ -171,6 +171,15 @@ pub struct App {
     /// with no filter at all, and the label above it changes to
     /// `Offline (…)` while the live capture this describes keeps running.
     bpf_filter: String,
+    /// True once an in-session `O` open loaded a file, so `bpf_filter`
+    /// describes the LIVE capture and not what is on screen (#190).
+    ///
+    /// The slot is marked rather than cleared. The live capture keeps running
+    /// and keeps writing to the same stores, so the filter is still in force
+    /// for that half — blanking it would replace an incomplete truth with a
+    /// false one, and "no filter compiled" is a specific claim this session
+    /// cannot make.
+    bpf_is_live_only: bool,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
@@ -301,6 +310,7 @@ impl App {
             status_error: None,
             flow: CallFlowViewState::default(),
             flow_detail_max_hscroll: None,
+            bpf_is_live_only: false,
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,
@@ -926,6 +936,23 @@ impl App {
     /// h-scroll headroom, and the call-flow row caches
     /// (`cached_msg_count`, `cached_rtp_bar_indices`,
     /// `cached_raw_indices`) for each `Some` field.
+    /// Whether `bpf_filter` describes the live capture rather than what is
+    /// currently displayed (#190).
+    pub(in crate::tui) fn bpf_is_live_only(&self) -> bool {
+        self.bpf_is_live_only
+    }
+
+    /// Record that an in-session file open replaced what is on screen, so the
+    /// BPF slot must say which source its filter belongs to.
+    ///
+    /// One-way on purpose: the live capture is still running and its filter
+    /// still applies to it, so there is no state in which the mark becomes
+    /// wrong again. Clearing it on some later event would be inventing a
+    /// transition that does not exist.
+    pub(in crate::tui) fn mark_bpf_live_only(&mut self) {
+        self.bpf_is_live_only = true;
+    }
+
     fn apply_render_feedback(&mut self, fb: RenderFeedback) {
         if let Some(v) = fb.stream_detail_scroll {
             self.stream_detail_scroll = v;
