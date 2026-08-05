@@ -334,6 +334,7 @@ ordinary update.
 | `lint_dialog` | `call_id`, `rulesets?`, `severity_min?` | Conformance findings for one call, declaration against observation included, each with its RFC and section |
 | `validate_message` | `call_id`, `index` | Conformance findings for one message, read alone |
 | `explain_rule` | `rule_id` | The catalogue entry behind one rule identifier: citation, basis, scope, selectors |
+| `show_evidence` | `refs`, `max_bytes` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
 | `check_codec_negotiation` | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
 | `diagnose_registration` | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | `explain_response_code` | `code` | IANA registry meaning and class for a SIP status code |
@@ -1145,6 +1146,58 @@ has to read before it can run: `message`, `dialog` or `media`.
 
 An unknown identifier returns invalid_params (-32602) listing all thirty-one,
 because an empty answer would read as "that rule found nothing".
+
+### `show_evidence`
+
+Follows a frame pointer back to the bytes it names. Every query tool returns
+`frame_ref` on the facts it produces. This turns one from a string into
+something a reader can check without reopening the capture.
+
+```jsonc
+// show_evidence { "refs": ["calls.pcap#41@6d1f4c0a9b2e7a53"] }
+{
+  "schema_version": 1,
+  "requested": 1,
+  "resolved": 1,
+  "verified": 1,
+  "summary": "1 of 1 pointer(s) resolved; 1 verified against a recorded digest",
+  "frames": [
+    {
+      "pointer": "calls.pcap#41@6d1f4c0a9b2e7a53",
+      "status": "verified",
+      "source": "calls.pcap",
+      "ordinal": 41,
+      "frame_bytes": 512,
+      "hex_bytes_shown": 256,
+      "truncated": true,
+      "hex": "45 00 02 00 ..."
+    }
+  ]
+}
+```
+
+`status` has three values and they are deliberately not interchangeable:
+
+| Status | Means |
+|---|---|
+| `verified` | The frame is there and its bytes hash to what the pointer recorded. The capture has not changed under the claim. |
+| `unverified` | The frame is there, the pointer carried no `@digest`, so this checked **nothing**. The bytes could come from a rotated capture. |
+| `unresolvable` | No bytes. `reason` says why — a malformed pointer, a source outside the file root, a frame past the end, or a digest mismatch. |
+
+A digest mismatch is `unresolvable`, not a resolved frame with a warning.
+Returning bytes from a capture that changed after someone made the pointer
+would manufacture exactly the confidence this feature exists to provide.
+
+The file root confines every source. A pointer carries whatever path the
+producing run read, which usually sits outside the server's reach. The tool
+therefore takes only the final component and pushes it through the same guard
+the file tools use.
+A pointer naming a live device or a HEP listener is `unresolvable`: sipnab
+retains parsed messages, not frames, so there is nothing on disk to seek to.
+
+One bad pointer never discards the rest of a batch — each gets its own entry, so
+a caller can tell which one failed. `max_bytes` caps the hex per frame (default
+256, maximum 4096) and `truncated` says when a frame was longer.
 
 ### `explain_response_code`
 

@@ -35,6 +35,9 @@ jobs:
   # as "the benchmarks still run", not "performance has not regressed".
   # ---------------------------------------------------------------------------
   bench:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
+    timeout-minutes: 40
     name: Benchmarks (execute)
     runs-on: ubuntu-latest
     permissions:
@@ -69,6 +72,9 @@ jobs:
   # is skipped cleanly when the secret is absent, so the job stays green.
   # ---------------------------------------------------------------------------
   coverage:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
+    timeout-minutes: 40
     name: Coverage
     runs-on: ubuntu-latest
     permissions:
@@ -201,6 +207,9 @@ jobs:
   # so this job does not fail the build.
   # ---------------------------------------------------------------------------
   clippy-sarif:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
+    timeout-minutes: 40
     name: Clippy → Code Scanning
     runs-on: ubuntu-latest
     permissions:
@@ -274,6 +283,9 @@ jobs:
   # it produced on first run.
   # ---------------------------------------------------------------------------
   docs:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
+    timeout-minutes: 40
     name: Docs (prose, spelling, links)
     runs-on: ubuntu-latest
     permissions:

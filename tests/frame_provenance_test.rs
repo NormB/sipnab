@@ -478,3 +478,60 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
          anything; it yielded {checked}"
     );
 }
+
+/// An exported pcapng says, in the file, that its frames were rebuilt (#106).
+///
+/// The audience for this is not the agent that asked for the export. It is
+/// whoever opens the file afterwards — in a carrier's ticket queue, in a
+/// regulator's evidence pile — who never saw the tool description that #103
+/// corrected and has no reason to suspect the packets are synthetic.
+///
+/// Asserted against the BYTES ON DISK rather than the writer API, because the
+/// only version of this claim that matters is the one that survives into the
+/// artifact. A note the code passes and the format drops would satisfy any
+/// test written against the call.
+#[test]
+fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
+    use sipnab::capture::{PcapExportMode, PcapWriter};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("evidence.pcapng");
+    let note = "THE FRAMES IN THIS FILE WERE REBUILT, NOT COPIED. \
+                Produced by sipnab for test purposes.";
+
+    let mut w = PcapWriter::with_provenance(
+        &path,
+        1,
+        None,
+        None,
+        true,
+        PcapExportMode::Raw,
+        None,
+        Some(note.to_string()),
+    )
+    .expect("writer");
+    w.finish().expect("finish");
+
+    let bytes = std::fs::read(&path).expect("read the export");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("WERE REBUILT, NOT COPIED"),
+        "the caveat must be IN the file -- a reader with only the file and \
+         capinfos has nothing else to go on"
+    );
+
+    // And the negative: without a note, no stray comment appears. Otherwise
+    // this test would pass against a writer that embeds a fixed string
+    // regardless of what the caller asked for.
+    let plain = dir.path().join("plain.pcapng");
+    let mut w2 =
+        PcapWriter::with_provenance(&plain, 1, None, None, true, PcapExportMode::Raw, None, None)
+            .expect("writer");
+    w2.finish().expect("finish");
+    let plain_bytes = std::fs::read(&plain).expect("read");
+    let plain_text = String::from_utf8_lossy(&plain_bytes);
+    assert!(
+        !plain_text.contains("REBUILT"),
+        "a writer given no note must embed none"
+    );
+}

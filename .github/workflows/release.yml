@@ -38,6 +38,9 @@ jobs:
   # created while the release commit was still being rejected by a hook, and
   # pushing it would have produced exactly that mismatch.
   preflight:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 16.7 min slowest (aarch64-apple-darwin build).
+    timeout-minutes: 45
     name: Tag matches crate version
     runs-on: ubuntu-latest
     steps:
@@ -557,6 +560,9 @@ jobs:
           path: dist/
 
   release:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 16.7 min slowest (aarch64-apple-darwin build).
+    timeout-minutes: 45
     name: Create Release
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -718,6 +724,9 @@ jobs:
             artifacts/SHA256SUMS.txt
 
   tap:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 16.7 min slowest (aarch64-apple-darwin build).
+    timeout-minutes: 45
     name: Bump Homebrew tap
     needs: release
     if: startsWith(github.ref, 'refs/tags/v')

@@ -21,6 +21,9 @@ concurrency:
 
 jobs:
   check:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 11.7 min ubuntu / 8.0 macos.
+    timeout-minutes: 40
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -172,6 +175,9 @@ jobs:
   # selection in website/static/install.sh (served at sipnab.com/install.sh).
   # Pure POSIX sh — no Rust toolchain needed.
   install-sh:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 0.1 min.
+    timeout-minutes: 15
     name: Installer (install.sh)
     runs-on: ubuntu-latest
     steps:
@@ -185,6 +191,9 @@ jobs:
   # payload for the full and noaudio variants (release.yml builds both).
   # Pure dpkg-deb over dummy binaries — no Rust toolchain needed.
   deb-package:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 0.1 min.
+    timeout-minutes: 15
     name: Deb packaging (build-deb.sh)
     runs-on: ubuntu-latest
     steps:
@@ -199,6 +208,9 @@ jobs:
   # had a CI job all along; this is the same contract with nothing watching.
   # Pure bash over a fixture sums file — no Rust toolchain needed.
   homebrew-formula:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 0.1 min.
+    timeout-minutes: 15
     name: Homebrew formula (update-formula.sh)
     runs-on: ubuntu-latest
     steps:
@@ -215,6 +227,9 @@ jobs:
   # push, instead of only on the weekly run it gates.
   # Pure bash over fixture logs — no Rust toolchain needed.
   tsan-verdict:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 0.1 min.
+    timeout-minutes: 15
     name: Ops scripts (verdict.sh, platform-table.sh)
     runs-on: ubuntu-latest
     steps:
@@ -248,6 +263,9 @@ jobs:
   # point. Silencing that correctly is its own change, not a rider on this one.
   # Pure bash — no Rust toolchain needed.
   bench-scripts:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 0.1 min.
+    timeout-minutes: 15
     name: Bench scripts (live-capture.sh)
     runs-on: ubuntu-latest
     steps:
@@ -262,6 +280,9 @@ jobs:
   # reduced combos failed to build. `cargo check --tests` is enough to
   # catch that class; the full test suite still runs under `check`.
   features:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 7.2 min slowest combo.
+    timeout-minutes: 30
     name: Features (${{ matrix.features }})
     runs-on: ubuntu-latest
     strategy:
@@ -353,6 +374,9 @@ jobs:
         run: cargo test --no-default-features --features "${{ matrix.features }}"
 
   audit:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 0.6 min.
+    timeout-minutes: 15
     name: Security audit
     runs-on: ubuntu-latest
     steps:
@@ -396,6 +420,9 @@ jobs:
         run: cargo deny check
 
   fuzz-check:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 3.8 min.
+    timeout-minutes: 20
     name: Fuzz targets compile
     runs-on: ubuntu-latest
     steps:
@@ -412,6 +439,9 @@ jobs:
   # job succeeded. Require just this check so the protection rule survives
   # matrix changes without re-listing per-job contexts.
   ci-success:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes. Observed: 0.0 min, but it waits on 9 needs.
+    timeout-minutes: 10
     name: CI success
     if: always()
     # Every other job in this file, enforced by ci_success_gates_every_job

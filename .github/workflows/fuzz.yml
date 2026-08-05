@@ -22,6 +22,9 @@ permissions:
 
 jobs:
   fuzz:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 11.4 min per fuzz target.
+    timeout-minutes: 30
     name: fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:

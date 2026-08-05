@@ -1707,11 +1707,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
         .map(|c| c[1].to_string())
         .collect();
     // Raised 29 -> 30 by `save_findings`, the first write verb on this surface.
+    // Raised 31 -> 32 by `show_evidence`, which follows a frame pointer back
+    // to the bytes it names — the half of #128 that makes a `frame_ref` on a
+    // fact something a caller can actually check.
     // Raised 30 -> 31 by `find_correlated`, which exposes the multi-leg
     // correlation engine that had existed in DialogStore with no way to reach it.
     assert_eq!(
         registered.len(),
-        31,
+        32,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2223,6 +2226,9 @@ fn no_documentation_table_repeats_a_row() {
     // (#139): one fenced/verbatim table per surface, doubled by the site mirror.
     // Raised 472 -> 474 by the write-verb table in docs/mcp.md's "What the
     // write verbs do" section (#146): one table plus the site mirror.
+    // Raised 475 -> 477 by the `show_evidence` status table (one per doc
+    // mirror), which spells out that verified / unverified / unresolvable are
+    // three different claims rather than degrees of the same one.
     // Raised 474 -> 475 by the "What shipped" table added to §2 of
     // docs/design/deferred-and-declined.md, which had been describing
     // save_findings and CaptureEtag as pending after both had shipped. That
@@ -2233,8 +2239,8 @@ fn no_documentation_table_repeats_a_row() {
     // side's total was right for the merged tree, so this number was taken
     // from a clean run rather than added up.
     assert_eq!(
-        tables, 475,
-        "walked {tables} tables, expected 475. More is fine — bump this. FEWER \
+        tables, 477,
+        "walked {tables} tables, expected 477. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

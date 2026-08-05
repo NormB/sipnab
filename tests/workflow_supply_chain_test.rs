@@ -233,3 +233,102 @@ fn a_tool_installed_by_more_than_one_workflow_is_pinned_identically() {
         "no *_SHA256 pins found at all -- the checks above would hold vacuously"
     );
 }
+
+/// Every job in every workflow bounds how long it may run.
+///
+/// # Why this is a supply-chain concern and not housekeeping
+///
+/// `ci.yml` deliberately does NOT supersede on `main`:
+///
+/// ```yaml
+/// concurrency:
+///   group: ci-${{ github.workflow }}-${{ github.ref }}
+///   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+/// ```
+///
+/// That is correct — every commit on main deserves a real verdict rather than
+/// being cancelled by the next push, and it should stay. But it means a run
+/// holds its concurrency group until it ENDS, and with no `timeout-minutes`
+/// nothing bounds that.
+///
+/// On 2026-08-05 the two combined: run 31024491079 reached 20 completed jobs and
+/// then its `CI success` aggregation job — the only check branch protection
+/// requires — sat in `queued` with its dependencies already cancelled. It could
+/// never finish. It held `ci-CI-refs/heads/main`, and the 0.5.83 release commit's
+/// CI stayed `pending` with ZERO jobs created for 80 minutes. `gh run cancel`
+/// stalled; only the force-cancel API cleared it.
+///
+/// The reason it went unnoticed that long is the reason it needs a gate rather
+/// than a habit: a `pending` run with no jobs is indistinguishable from ordinary
+/// runner contention. Blocked-forever and busy-be-patient render identically.
+///
+/// `pages.yml` shares the shape with `group: pages, cancel-in-progress: false`,
+/// so it is covered here too rather than only `ci.yml`.
+///
+/// The values are not policed — only their presence. Sizing is a judgement call
+/// against observed durations; having no bound at all is not.
+#[test]
+fn every_workflow_job_bounds_its_runtime() {
+    let mut missing: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+
+    for (name, body) in workflows() {
+        // Only the `jobs:` mapping. `on:`, `env:`, `permissions:` and
+        // `concurrency:` also carry two-space keys, and none of them is a job.
+        let mut in_jobs = false;
+        let mut current: Option<String> = None;
+        let mut has_timeout = false;
+
+        let close = |job: &Option<String>, found: bool, out: &mut Vec<String>| {
+            if let Some(j) = job
+                && !found
+            {
+                out.push(format!("{name}: job `{j}`"));
+            }
+        };
+
+        for line in body.lines() {
+            let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+
+            if indent == 0 && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                close(&current, has_timeout, &mut missing);
+                current = None;
+                in_jobs = trimmed.starts_with("jobs:");
+                continue;
+            }
+            if !in_jobs {
+                continue;
+            }
+            if indent == 2 && trimmed.ends_with(':') && !trimmed.starts_with('#') {
+                close(&current, has_timeout, &mut missing);
+                current = Some(trimmed.trim_end_matches(':').to_string());
+                has_timeout = false;
+                checked += 1;
+            } else if current.is_some() && trimmed.starts_with("timeout-minutes:") && indent == 4 {
+                has_timeout = true;
+            }
+        }
+        close(&current, has_timeout, &mut missing);
+    }
+
+    // A parser that finds nothing reports a clean bill of health, which is
+    // indistinguishable from a safe one.
+    assert!(
+        checked >= 20,
+        "only {checked} workflow jobs parsed -- the scan is broken and a pass \
+         here means nothing"
+    );
+
+    assert!(
+        missing.is_empty(),
+        "these workflow jobs set no `timeout-minutes`, so nothing bounds how \
+         long they may hold their concurrency group:\n  {}\n\n\
+         On main, ci.yml and pages.yml never supersede, so one job that wedges \
+         blocks every later commit indefinitely -- and a `pending` run with no \
+         jobs looks exactly like ordinary queueing. Size the value against the \
+         job's observed duration with headroom; the number is a judgement call, \
+         having one is not.",
+        missing.join("\n  ")
+    );
+}

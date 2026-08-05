@@ -30,6 +30,9 @@ permissions: {}
 
 jobs:
   analysis:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 0.7 min.
+    timeout-minutes: 20
     name: Scorecard analysis
     runs-on: ubuntu-latest
     permissions:

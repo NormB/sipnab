@@ -17,6 +17,9 @@ env:
 
 jobs:
   docker:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 7.7 min.
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     # A job-level block REPLACES the workflow-level one, so `contents: read`
     # must be restated here — without it the checkout has no read grant.

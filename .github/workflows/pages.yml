@@ -35,6 +35,9 @@ concurrency:
 
 jobs:
   build:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 0.2 min, but it holds the non-superseding `pages` group.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     env:
       ZOLA_VERSION: '0.19.2'
@@ -77,6 +80,9 @@ jobs:
           path: website/public
 
   deploy:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 0.2 min, but it holds the non-superseding `pages` group.
+    timeout-minutes: 20
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -94,6 +100,9 @@ jobs:
   # live CDN, which can serve stale (even version-mixed) pages for ~10
   # minutes after a deploy.
   csp:
+    # Bounds a wedged job: an unbounded one holds its
+    # concurrency group indefinitely. Observed: 0.2 min, but it holds the non-superseding `pages` group.
+    timeout-minutes: 20
     needs: deploy
     runs-on: ubuntu-latest
     steps:

@@ -176,6 +176,12 @@ pub struct PcapWriter {
     export_mode: PcapExportMode,
     /// Whether a DSB has already been written to the current file.
     dsb_written: bool,
+    /// Provenance note embedded as the pcapng section comment, if any.
+    ///
+    /// Stored rather than passed once, because rotation writes a fresh SHB and
+    /// a split file that lost the note would be the artifact most likely to
+    /// travel alone. See [`PcapWriter::with_provenance`].
+    provenance: Option<String>,
     /// pcapng interface table: index = the `interface_id` stamped on EPBs.
     /// An entry is appended (with an IDB written just before the packet's
     /// own block) the first time a packet arrives from a not-yet-seen
@@ -275,6 +281,51 @@ impl PcapWriter {
         export_mode: PcapExportMode,
         interface: Option<&str>,
     ) -> Result<Self> {
+        Self::with_provenance(
+            path,
+            link_type,
+            max_file_bytes,
+            max_file_duration,
+            pcapng,
+            export_mode,
+            interface,
+            None,
+        )
+    }
+
+    /// As [`with_interface`](Self::with_interface), plus a provenance note
+    /// written into the pcapng section comment.
+    ///
+    /// # Why an export needs one
+    ///
+    /// A pcap that leaves sipnab is the thing that gets forwarded — to a
+    /// carrier, into a ticket, at a regulator. The person who opens it never
+    /// saw the MCP tool description and never read the docs, so anything the
+    /// file does not say about itself is something they will assume. The most
+    /// important thing to say is when the frames were REBUILT rather than
+    /// copied: `export_capture` synthesises an Ethernet/IP/UDP frame around
+    /// each held SIP message, which is faithful at the SIP layer and invented
+    /// below it. #103 fixed the tool description, which reaches the agent; this
+    /// reaches the engineer holding the file.
+    ///
+    /// `capinfos` prints the comment and Wireshark shows it under
+    /// Statistics > Capture File Properties, so it is visible without knowing
+    /// to look for it.
+    ///
+    /// Classic pcap has nowhere to put this — the format has no comment field —
+    /// so a note passed with `pcapng: false` is silently unrepresentable. Pass
+    /// `pcapng: true` for anything that will travel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_provenance(
+        path: &Path,
+        link_type: i32,
+        max_file_bytes: Option<u64>,
+        max_file_duration: Option<std::time::Duration>,
+        pcapng: bool,
+        export_mode: PcapExportMode,
+        interface: Option<&str>,
+        provenance: Option<String>,
+    ) -> Result<Self> {
         // M5: Warn on path traversal components
         if path
             .components()
@@ -297,7 +348,7 @@ impl PcapWriter {
         // counts the SHB + IDB header bytes so rotation fires at the real
         // file size.
         let (backend, header_bytes) = if pcapng {
-            create_pcapng_backend(path, &interfaces)?
+            create_pcapng_backend(path, &interfaces, provenance.as_deref())?
         } else {
             (
                 WriterBackend::Pcap(RawPcapWriter::create(path, link_type)?),
@@ -328,6 +379,7 @@ impl PcapWriter {
             max_file_duration,
             export_mode,
             dsb_written: false,
+            provenance,
             interfaces,
             default_source,
         })
@@ -722,7 +774,7 @@ impl PcapWriter {
 
         // Drop the old backend (flushes and closes) by replacing it
         let (backend, header_bytes) = if self.use_pcapng {
-            create_pcapng_backend(&new_path, &self.interfaces)?
+            create_pcapng_backend(&new_path, &self.interfaces, self.provenance.as_deref())?
         } else {
             (
                 WriterBackend::Pcap(RawPcapWriter::create(&new_path, self.link_type_raw)?),
@@ -795,18 +847,29 @@ fn app_version() -> String {
 fn create_pcapng_backend(
     path: &Path,
     interfaces: &[InterfaceEntry],
+    provenance: Option<&str>,
 ) -> Result<(WriterBackend, u64)> {
     let file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create output file '{}'", path.display()))?;
     let buf_writer = BufWriter::new(file);
 
     // Section Header Block with producer + OS, so the file is self-describing.
+    //
+    // The optional comment is #106: an export lands on someone's disk and the
+    // engineer opening it never saw the tool description, never read the docs,
+    // and has no reason to suspect the frames were rebuilt. `capinfos` and
+    // Wireshark both surface `opt_comment`, so it reaches THAT reader rather
+    // than only the agent that asked for the file.
+    let mut options = vec![
+        SectionHeaderOption::UserApplication(Cow::Owned(app_version())),
+        SectionHeaderOption::OS(Cow::Borrowed(std::env::consts::OS)),
+    ];
+    if let Some(note) = provenance {
+        options.push(SectionHeaderOption::Comment(Cow::Owned(note.to_string())));
+    }
     let section = SectionHeaderBlock {
         endianness: Endianness::native(),
-        options: vec![
-            SectionHeaderOption::UserApplication(Cow::Owned(app_version())),
-            SectionHeaderOption::OS(Cow::Borrowed(std::env::consts::OS)),
-        ],
+        options,
         ..Default::default()
     };
 

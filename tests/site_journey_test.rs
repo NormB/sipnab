@@ -771,8 +771,39 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() {
 ///
 /// A local tag is the check because it is the same thing `release.yml` triggers
 /// on — no network, and it cannot pass by being unable to look.
+///
+/// # It also checks the version is CURRENT, not merely real
+///
+/// Existence alone is the weaker half, and on 2026-08-05 the site sat two
+/// releases behind on it: `published_version` read 0.5.80 while v0.5.81 and
+/// v0.5.82 both had full 23-asset releases. Nothing failed, because v0.5.80
+/// does exist — this gate asserted only that, while its name promised more.
+/// Visitors were handed the older binary and there was no way to notice from
+/// inside the repository.
+///
+/// Being one behind is LEGITIMATE and must stay allowed: between tagging vX and
+/// vX's assets finishing publishing, advertising the previous release is the
+/// correct state, and it is the whole reason the release procedure moves this
+/// value in a separate later commit. Two or more behind is staleness — the
+/// follow-up commit was forgotten.
+///
+/// Comparison is numeric, not lexical. `v0.5.8`, `v0.5.79` and `v0.5.80` are all
+/// real tags here, and string order puts `v0.5.8` after `v0.5.79`; once a
+/// `v0.5.9` follows `v0.5.10` it would be wrong in the other direction too.
 #[test]
 fn site_advertises_only_a_released_version() {
+    /// `v1.2.3` → `(1, 2, 3)`. Anything else — `v0.5`, `v1.2.3.4`, `nightly` —
+    /// is not a release tag and is skipped rather than guessed at.
+    fn release_tag(tag: &str) -> Option<(u32, u32, u32)> {
+        let mut parts = tag.strip_prefix('v')?.split('.');
+        let v = (
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+        );
+        parts.next().is_none().then_some(v)
+    }
+
     let cfg = read("website/config.toml");
     let published = regex::Regex::new(r#"(?m)^published_version = "([^"]+)""#)
         .unwrap()
@@ -805,6 +836,45 @@ fn site_advertises_only_a_released_version() {
         "website/config.toml advertises published_version {published}, but no \
          `{wanted}` tag exists — every download link on /download would 404. \
          Bump published_version only AFTER the release publishes."
+    );
+
+    // Existence is settled; now currency.
+    let mut releases: Vec<(u32, u32, u32)> = tags.iter().filter_map(|t| release_tag(t)).collect();
+    releases.sort_unstable();
+    releases.dedup();
+
+    // Same refusal as above, one layer down: if nothing parsed as a release the
+    // ranking below is vacuous and would pass whatever it was handed.
+    assert!(
+        releases.len() >= 5,
+        "only {} tags parsed as releases — the ordering this gate ranks \
+         published_version against does not exist, so a pass here means nothing",
+        releases.len()
+    );
+
+    let published_v = release_tag(&wanted)
+        .unwrap_or_else(|| panic!("published_version {published} is not an x.y.z version"));
+    let position = releases
+        .iter()
+        .position(|v| *v == published_v)
+        .expect("published_version has a tag, so it is in the release list");
+    let behind = releases.len() - 1 - position;
+
+    assert!(
+        behind <= 1,
+        "website/config.toml advertises published_version {published}, which is \
+         {behind} releases behind the newest tag v{}.{}.{} — every download \
+         link, the checksum column and SHA256SUMS.txt point at the older \
+         build, and visitors get it silently.\n\n\
+         One behind is allowed: that is the window between tagging a release \
+         and its assets finishing publishing. Two or more means the follow-up \
+         commit that moves published_version was forgotten.\n\n\
+         Fix by setting published_version to the newest release whose assets \
+         have actually published — check `gh release view` before trusting the \
+         tag alone.",
+        releases[releases.len() - 1].0,
+        releases[releases.len() - 1].1,
+        releases[releases.len() - 1].2,
     );
 }
 

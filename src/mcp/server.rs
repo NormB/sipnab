@@ -825,6 +825,21 @@ pub struct ExplainRuleParams {
     pub rule_id: String,
 }
 
+/// Parameters for `show_evidence`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ShowEvidenceParams {
+    /// Frame pointers to follow, in the `<source>#<ordinal>@<digest>` form the
+    /// query tools emit as `frame_ref`. The `@<digest>` half is what makes an
+    /// answer verifiable; a pointer without it still resolves, and says it was
+    /// not checked.
+    pub refs: Vec<String>,
+    /// Bytes of each frame to return as hex, capped at 4096. Defaults to 256,
+    /// which covers a SIP message's start line and headers without pulling a
+    /// whole jumbo frame into the context window.
+    pub max_bytes: Option<usize>,
+}
+
 /// One entry in the `rulesets` list: a named subset, or an RFC number.
 ///
 /// The catalogue's own vocabulary comes from
@@ -3672,6 +3687,206 @@ impl SipnabMcp {
         )?]))
     }
 
+    /// Follow frame pointers back to the bytes they name.
+    ///
+    /// This is the half of #128 that makes the other half worth having. Every
+    /// query tool emits `frame_ref` on the facts it returns; until something
+    /// could FOLLOW one, a pointer was a string nobody could check, and a claim
+    /// carrying it was exactly as verifiable as a claim without it.
+    ///
+    /// # What a caller can conclude, and what it cannot
+    ///
+    /// Each entry reports one of three states, and they are deliberately not
+    /// collapsible:
+    ///
+    /// * `verified` — the frame is there and its bytes hash to what the pointer
+    ///   recorded. The capture has not moved under the claim.
+    /// * `unverified` — the frame is there, the pointer carried no digest, and
+    ///   NOTHING WAS CHECKED. The bytes may be from a rotated or rewritten
+    ///   capture. Reported separately because folding it into `verified` would
+    ///   be the manufactured confidence this whole feature exists to prevent.
+    /// * `unresolvable` — no bytes, and `reason` says why. A pointer that
+    ///   cannot be followed is a finding, not an omission.
+    ///
+    /// A run that returns zero resolved frames says so in `resolved`, so "the
+    /// evidence did not check out" cannot be mistaken for "there was none".
+    ///
+    /// # Confinement
+    ///
+    /// A pointer's `source` is whatever the producing run read — often an
+    /// absolute path outside this server's reach. This tool NEVER opens that
+    /// path. It takes the final component and resolves it through
+    /// `resolve_in_root`, the same guard the file tools use, so the
+    /// worst a crafted pointer can do is name a file the operator already
+    /// exposed. Without that, a tool taking a caller-supplied path and
+    /// returning its bytes is an arbitrary-file-read primitive with a
+    /// `readOnlyHint` on it.
+    ///
+    /// A pointer whose source is a live device or a HEP listener is
+    /// `unresolvable` by construction: this architecture holds parsed messages,
+    /// not frames, so there is nothing on disk to seek to. It says that rather
+    /// than reconstructing something and calling it evidence.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `refs` is empty, when it exceeds 64
+    /// entries, or when the file root is not configured. Individual pointers
+    /// never fail the call — one bad pointer in a batch must not discard the
+    /// good ones.
+    #[tool(
+        name = "show_evidence",
+        description = "Follows frame pointers (the `frame_ref` field other \
+                       tools return, of the form <source>#<ordinal>@<digest>) \
+                       back to the captured bytes, so a claim about a capture \
+                       can be checked against the packet it came from. Each \
+                       pointer resolves as `verified` (bytes match the digest \
+                       recorded when the pointer was made), `unverified` (frame \
+                       found, no digest to check it against), or `unresolvable` \
+                       with a reason. Sources are confined to --mcp-file-root; \
+                       live-capture pointers are unresolvable because no frames \
+                       are retained.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn show_evidence(
+        &self,
+        Parameters(params): Parameters<ShowEvidenceParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        const MAX_REFS: usize = 64;
+        const MAX_HEX_BYTES: usize = 4096;
+        const DEFAULT_HEX_BYTES: usize = 256;
+
+        if params.refs.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                "refs must name at least one frame pointer; an empty batch \
+                 would return an empty result that reads like 'nothing \
+                 resolved'"
+                    .to_string(),
+                None,
+            ));
+        }
+        if params.refs.len() > MAX_REFS {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "{} pointers exceeds the {MAX_REFS} per call; split the \
+                     batch rather than receiving a silently truncated answer",
+                    params.refs.len()
+                ),
+                None,
+            ));
+        }
+        let hex_bytes = params
+            .max_bytes
+            .unwrap_or(DEFAULT_HEX_BYTES)
+            .min(MAX_HEX_BYTES);
+
+        let mut entries = Vec::with_capacity(params.refs.len());
+        let mut resolved = 0usize;
+        let mut verified = 0usize;
+
+        for text in &params.refs {
+            let entry = match crate::capture::resolve::parse_pointer(text) {
+                Err(e) => serde_json::json!({
+                    "pointer": text,
+                    "status": "unresolvable",
+                    "reason": e.to_string(),
+                }),
+                Ok(pointer) => {
+                    // The source names a file only for replay. Anything else —
+                    // a device, a HEP listener — has no bytes on disk, and
+                    // saying so beats returning a reconstruction.
+                    let leaf = std::path::Path::new(pointer.source.as_ref())
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned());
+                    match leaf {
+                        None => serde_json::json!({
+                            "pointer": text,
+                            "status": "unresolvable",
+                            "reason": format!(
+                                "'{}' does not name a capture file. Pointers \
+                                 from live capture or a HEP listener cannot be \
+                                 followed: sipnab retains parsed messages, not \
+                                 frames, so there is nothing to seek to.",
+                                pointer.source
+                            ),
+                        }),
+                        Some(name) => match self.resolve_in_root(&name) {
+                            Err(e) => serde_json::json!({
+                                "pointer": text,
+                                "status": "unresolvable",
+                                "reason": format!(
+                                    "source '{}' is not reachable from the \
+                                     configured file root: {}",
+                                    pointer.source, e.message
+                                ),
+                            }),
+                            Ok(path) => {
+                                // Resolve against the CONFINED path, never the
+                                // one the pointer carried.
+                                let confined = crate::capture::packet::FrameRef {
+                                    source: path.display().to_string().into(),
+                                    origin: pointer.origin,
+                                };
+                                match crate::capture::resolve::resolve(&confined) {
+                                    Err(e) => serde_json::json!({
+                                        "pointer": text,
+                                        "status": "unresolvable",
+                                        "reason": e.to_string(),
+                                    }),
+                                    Ok(res) => {
+                                        resolved += 1;
+                                        if res.is_verified() {
+                                            verified += 1;
+                                        }
+                                        let bytes = res.bytes();
+                                        let shown = bytes.len().min(hex_bytes);
+                                        serde_json::json!({
+                                            "pointer": text,
+                                            "status": if res.is_verified() {
+                                                "verified"
+                                            } else {
+                                                "unverified"
+                                            },
+                                            "source": name,
+                                            "ordinal": pointer.origin.ordinal,
+                                            "frame_bytes": bytes.len(),
+                                            "hex_bytes_shown": shown,
+                                            "truncated": shown < bytes.len(),
+                                            "hex": bytes[..shown]
+                                                .iter()
+                                                .map(|b| format!("{b:02x}"))
+                                                .collect::<Vec<_>>()
+                                                .join(" "),
+                                        })
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+            };
+            entries.push(entry);
+        }
+
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            serde_json::json!({
+                "schema_version": 1,
+                "requested": params.refs.len(),
+                "resolved": resolved,
+                "verified": verified,
+                // Spelled out because `resolved: 0` and a short `frames` list
+                // otherwise read as "the capture held nothing", which is a
+                // different claim from "none of these pointers could be
+                // followed".
+                "summary": format!(
+                    "{resolved} of {} pointer(s) resolved; {verified} verified \
+                     against a recorded digest",
+                    params.refs.len()
+                ),
+                "frames": entries,
+            }),
+        )?]))
+    }
+
     /// List capture files in the configured root.
     #[tool(
         name = "list_captures",
@@ -4455,7 +4670,31 @@ fn write_messages_to_pcap(
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("pcapng"));
-    let mut writer = PcapWriter::with_format(
+    // #106: the file has to say what it is. Whoever opens this never saw the
+    // tool description and has no reason to suspect the frames were rebuilt,
+    // and this is the artifact that gets forwarded to a carrier or into a
+    // ticket. pcapng carries it as the section comment; classic pcap has
+    // nowhere to put it, which is itself a reason to prefer .pcapng here.
+    let note = format!(
+        "Produced by sipnab {} via the MCP export_capture tool.\n\
+         \n\
+         THE FRAMES IN THIS FILE WERE REBUILT, NOT COPIED. sipnab retains \
+         parsed SIP messages rather than captured frames, so each packet here \
+         is a synthetic Ethernet/IPv4/UDP frame constructed around one \
+         message's bytes. The SIP layer is byte-faithful; the link, IP and \
+         transport headers are reconstructed from the addresses and ports \
+         sipnab recorded, and MAC addresses, IP identification, checksums, \
+         fragmentation and TCP state are not what was on the wire.\n\
+         \n\
+         Non-SIP traffic present in the original capture — RTP, RTCP, DNS, \
+         ICMP — is NOT in this file. Do not read packet counts here as \
+         capture-level counts.\n\
+         \n\
+         {} message(s) written.",
+        env!("CARGO_PKG_VERSION"),
+        messages.len(),
+    );
+    let mut writer = PcapWriter::with_provenance(
         path,
         // DLT_EN10MB: the synthetic frames carry an Ethernet header.
         1,
@@ -4465,6 +4704,8 @@ fn write_messages_to_pcap(
         // Raw: no key material embedded. An agent-triggered export must not
         // write decryption secrets into a file it just named.
         PcapExportMode::Raw,
+        None,
+        Some(note),
     )?;
     let mut written = 0;
     for msg in messages {
@@ -4630,6 +4871,182 @@ mod tests {
             "the file outside the root must be untouched"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A pointer whose source escapes the file root is refused, not followed.
+    ///
+    /// THE reason this tool needs a test more than the others: it takes a
+    /// caller-supplied string, extracts a path from it, and returns the bytes
+    /// at that path. Resolving the pointer's own `source` would make
+    /// `show_evidence` an arbitrary-file-read primitive wearing a
+    /// `readOnlyHint`. The tool takes the final component and pushes it through
+    /// `resolve_in_root`, so a crafted pointer can at worst name a file the
+    /// operator already exposed.
+    ///
+    /// Asserted on the EFFECT — no bytes come back — rather than on the wording
+    /// of the refusal, so a reworded message cannot quietly turn this green
+    /// while the read succeeds.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn show_evidence_refuses_a_pointer_that_escapes_the_file_root() {
+        let base = std::env::temp_dir().join("sipnab-show-evidence-escape");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        // A REAL capture, so that a bypass of the confinement would actually
+        // succeed and return frame bytes. Seeding junk here would make the test
+        // pass for the wrong reason: the resolver would reject it as an
+        // unreadable capture, and the assertion below would hold even with the
+        // guard removed.
+        let secret = outside.join("secret.pcap");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/pcap-samples/sip-register.pcap"
+            ),
+            &secret,
+        )
+        .expect("seed a real capture outside the root");
+
+        let srv = server_with_dialog("esc@test").with_file_root(&root);
+        let result = srv
+            .show_evidence(Parameters(ShowEvidenceParams {
+                refs: vec![
+                    format!("{}#0", secret.display()),
+                    "../../../etc/passwd#0".to_string(),
+                    "/etc/shadow#0".to_string(),
+                ],
+                max_bytes: None,
+            }))
+            .await
+            .expect("the call itself succeeds; individual pointers are refused");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert_eq!(
+            v["resolved"], 0,
+            "nothing outside the root may resolve: {v}"
+        );
+        // The frame the bypass would return, computed independently so this
+        // asserts on the real bytes rather than on a marker string.
+        let leaked_hex = {
+            let raw = std::fs::read(&secret).expect("read the outside capture");
+            raw.iter()
+                .skip(40)
+                .take(8)
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let body = v.to_string();
+        assert!(
+            !body.contains(&leaked_hex),
+            "bytes from the capture outside the root reached the response -- \
+             the confinement was bypassed: {body}"
+        );
+        for frame in v["frames"].as_array().expect("frames") {
+            assert_eq!(frame["status"], "unresolvable", "{frame}");
+            assert!(
+                frame["hex"].is_null(),
+                "no bytes for a refused pointer: {frame}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A pointer naming a live device says it cannot be followed, and says why.
+    ///
+    /// sipnab retains parsed messages, not frames, so there is nothing on disk
+    /// to seek to. Reconstructing something and presenting it as evidence is
+    /// the defect `export_capture` had; this reports the limit instead.
+    #[tokio::test]
+    async fn show_evidence_says_a_live_pointer_has_no_frames_to_follow() {
+        let root = std::env::temp_dir().join("sipnab-show-evidence-live");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+
+        let result = server_with_dialog("live@test")
+            .with_file_root(&root)
+            .show_evidence(Parameters(ShowEvidenceParams {
+                refs: vec!["eth0#17".to_string()],
+                max_bytes: None,
+            }))
+            .await
+            .expect("show_evidence");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert_eq!(v["resolved"], 0);
+        assert_eq!(v["frames"][0]["status"], "unresolvable");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An empty batch is refused rather than answered with an empty list.
+    ///
+    /// `resolved: 0` over no pointers and `resolved: 0` over three that all
+    /// failed are different facts, and only one of them is a caller error.
+    #[tokio::test]
+    async fn show_evidence_refuses_an_empty_batch() {
+        let err = empty_server()
+            .show_evidence(Parameters(ShowEvidenceParams {
+                refs: vec![],
+                max_bytes: None,
+            }))
+            .await
+            .expect_err("an empty ref list must be refused");
+        assert!(
+            err.message.contains("at least one"),
+            "the refusal must say what was wrong: {}",
+            err.message
+        );
+    }
+
+    /// One unfollowable pointer does not discard the rest of the batch, and the
+    /// summary counts what actually resolved.
+    #[tokio::test]
+    async fn show_evidence_reports_each_pointer_independently() {
+        let root = std::env::temp_dir().join("sipnab-show-evidence-mixed");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+
+        let result = server_with_dialog("mixed@test")
+            .with_file_root(&root)
+            .show_evidence(Parameters(ShowEvidenceParams {
+                refs: vec![
+                    "not a pointer at all".to_string(),
+                    "absent.pcap#3".to_string(),
+                ],
+                max_bytes: None,
+            }))
+            .await
+            .expect("show_evidence");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert_eq!(v["requested"], 2, "every pointer is accounted for: {v}");
+        assert_eq!(
+            v["frames"].as_array().map(Vec::len),
+            Some(2),
+            "a failing pointer still gets an entry, so a caller can tell WHICH \
+             one failed: {v}"
+        );
+        // The malformed one and the missing one fail for different reasons, and
+        // both reasons must be present rather than a single generic refusal.
+        let reasons: Vec<String> = v["frames"]
+            .as_array()
+            .expect("frames")
+            .iter()
+            .map(|f| f["reason"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(
+            reasons.iter().all(|r| !r.is_empty()),
+            "every unresolvable pointer must say why: {reasons:?}"
+        );
+        assert!(
+            reasons[0] != reasons[1],
+            "a malformed pointer and a missing frame are different failures and \
+             must not share one message: {reasons:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An ordinary name inside the root still resolves, so the check above is
