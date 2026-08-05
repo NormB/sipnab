@@ -8,6 +8,71 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.83] - 2026-08-05
+
+Things the code already knew that nothing could reach, and one run that
+reported success after reading only part of its input.
+
+### Changed
+
+- **BREAKING for scripts: a capture that does not finish now exits non-zero.**
+  Reading a set of files, `sipnab` joined its capture thread and downgraded a
+  returned error to a warning, so the run printed a whole-looking report and
+  exited 0 — while the same input under `--cores` exited 1. One input, two
+  answers, and the reassuring one was the default path. Both failure arms, the
+  error and the panic, now exit 1. Reports still print above it, because a
+  partial capture is worth looking at; it just must not be mistaken for a whole
+  one by anything reading `$?`. A clean shutdown is unaffected: the live loop
+  returns success when the stop signal ends it and reserves failure for a
+  failed open, a rejected filter or a fatal read.
+- **BREAKING for scripts: `--cores` refuses a BPF filter that will not compile
+  against a later file instead of skipping that file.** A filter that cannot
+  compile against a member of a set is a static misconfiguration — the text
+  does not change between files, so it was always going to fail on that one —
+  and answering a forty-file question with the members the filter happened to
+  fit is the worse of the two outcomes. The refusal names the FILE, not just
+  the filter, and still reports how much of the set it read before stopping.
+
+### Added
+
+- **Two RFC 7989 Session-ID lint rules.** The deviation detector was computed,
+  tested, and surfaced nowhere. `SIP-7989-5-SESSION-ID-MALFORMED` fires when a
+  half is not 32 characters of `[0-9a-f]`; `SIP-7989-5-SESSION-ID-UPPERCASE`
+  fires on uppercase hexadecimal, which §5 rules out twice over — its ABNF
+  admits `%x61-66` with no uppercase alternative, and the section closes by
+  saying the values appear as lowercase. sipnab still correlates on an
+  uppercase half, but a peer, SBC or log pipeline comparing bytes sees two
+  identifiers for one session. Catalogue: 29 rules to 31.
+
+### Fixed
+
+- **The TUI's BPF filter slot showed nothing, ever.** No option carried the
+  filter into the interface, so the slot was blank in every real session while
+  its comment described what it would show "if set via CLI". It now shows the
+  EFFECTIVE filter — the expression handed to libpcap, which on a live capture
+  is not what the operator typed, because with no filter given sipnab generates
+  one and the kernel drops what it does not match. Long generated filters end
+  in an ellipsis rather than being clipped at the terminal edge, where they
+  read as a complete expression that happens to stop there.
+- **Left and right arrows did nothing, and said nothing, in the message detail
+  pane.** With the pane focused and wrapping off, the arrows scroll
+  horizontally — but whenever no line overflowed there was nothing to scroll,
+  and the press was silent. The pane now reports its own headroom back after
+  each frame, so a press that cannot move anything says why.
+- **An explicit pane resize is no longer undone by the automatic label fit.**
+  Once the operator sets the split, it stays where they put it.
+
+### Documentation
+
+- The privilege-drop group ordering is now recorded as a MEASUREMENT rather
+  than as a reading of the xnu source. On macOS, `setgroups(0, NULL)` leaves
+  `[0]` — wheel — in the group vector, and the following `setgid` is what
+  clears it; the same call also demonstrates that `setgid` rewrites the list,
+  which is the `cr_gid` aliasing that makes reversing the two land on effective
+  GID 0 with an unprivileged UID.
+- The fault model called a fatal capture error "logged, clean exit", which was
+  written when that meant exit 0.
+
 ## [0.5.82] - 2026-08-05
 
 A pass over things that were declared but not done: a metrics endpoint that
