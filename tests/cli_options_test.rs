@@ -1565,3 +1565,47 @@ fn lint_fail_on_requires_lint() {
          ignoring it would let a pipeline believe it had a gate:\n{err}"
     );
 }
+
+/// `--markdown` changes what `--report` emits (#89).
+///
+/// It was accepted, documented as "Format report output as Markdown", and did
+/// NOTHING here: `cmp` on the two outputs was clean. A flag that is parsed,
+/// documented and ignored is the same defect class as a config key that
+/// validates and never applies.
+///
+/// Asserted as INEQUALITY plus a markdown-shape check, rather than against a
+/// fixed rendering: pinning exact bytes would make every future column change
+/// a test edit, and the property that matters is that the flag does something
+/// and that the something is markdown.
+#[test]
+fn markdown_actually_changes_the_report() {
+    let cap = sip_call_fixture();
+    let path = cap.to_string_lossy().into_owned();
+    let plain = run_support::run(&["-N", "-I", &path, "--report", "--no-cli-print"], None);
+    let md = run_support::run(
+        &[
+            "-N",
+            "-I",
+            &path,
+            "--report",
+            "--markdown",
+            "--no-cli-print",
+        ],
+        None,
+    );
+
+    assert_ne!(
+        plain.0, md.0,
+        "--markdown must change the report; byte-identical output is the \
+         defect this test exists for"
+    );
+    assert!(
+        md.0.contains("| Call-ID |") && md.0.contains("|---|"),
+        "the markdown form must be a markdown table -- header row and rule:\n{}",
+        md.0
+    );
+    assert!(
+        !plain.0.contains("|---|"),
+        "the text form must stay fixed-width, not quietly become markdown too"
+    );
+}

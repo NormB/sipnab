@@ -34,15 +34,71 @@ use crate::sip::dialog::{DialogState, SipDialog};
 /// either slice, and a capture that recorded none behaves exactly as it did
 /// before the section existed.
 pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> String {
+    print_dialog_report_as(dialogs, streams, crate::output::ReportFormat::Text)
+}
+
+/// One row of a table, rendered for the requested format.
+///
+/// Markdown tables do not depend on column width, which is why `--markdown`
+/// also answers the OTHER half of #89: long From/To values overflowed the
+/// fixed-width columns and corrupted the alignment, breaking anything parsing
+/// the table. A pipe-delimited row cannot be corrupted that way, so the
+/// markdown form carries values in FULL where the text form truncates.
+fn row(md: bool, widths: &[usize], cells: &[String]) -> String {
+    if md {
+        format!("| {} |\n", cells.join(" | "))
+    } else {
+        // Space BETWEEN cells, never after the last: the original format
+        // string was "{:<32} {:<14} ... {:<16}", and a trailing space is a
+        // real diff to anything comparing this output byte for byte.
+        let mut s = String::new();
+        for (i, (c, w)) in cells.iter().zip(widths).enumerate() {
+            if i > 0 {
+                s.push(' ');
+            }
+            let _ = write!(s, "{c:<w$}");
+        }
+        s.push('\n');
+        s
+    }
+}
+
+/// The `---|---` separator markdown needs under a header row.
+fn md_rule(n: usize) -> String {
+    format!("|{}\n", "---|".repeat(n))
+}
+
+/// As [`print_dialog_report`], in the requested format.
+///
+/// `--markdown` was accepted alongside `--report` and did NOTHING: the output
+/// was byte-identical with and without it, contradicting help text that says
+/// "Format report output as Markdown". A flag that is read, documented and
+/// ignored is the same defect class as a config key that parses and never
+/// applies (#89).
+#[must_use]
+pub fn print_dialog_report_as(
+    dialogs: &[&SipDialog],
+    streams: &[&RtpStream],
+    format: crate::output::ReportFormat,
+) -> String {
+    let md = matches!(format, crate::output::ReportFormat::Markdown);
     let mut out = String::with_capacity(4096);
 
     // ── Dialog summary table ────────────────────────────────────────
-    let _ = writeln!(
-        out,
-        "{:<32} {:<14} {:<14} {:<12} {:<6} {:<10} {:<6} {:<8} {:<16}",
-        "Call-ID", "From", "To", "State", "Code", "Duration", "Msgs", "PDD", "Tags"
-    );
-    let _ = writeln!(out, "{}", "-".repeat(121));
+    const SUMMARY_W: [usize; 9] = [32, 14, 14, 12, 6, 10, 6, 8, 16];
+    let headers = [
+        "Call-ID", "From", "To", "State", "Code", "Duration", "Msgs", "PDD", "Tags",
+    ];
+    out.push_str(&row(
+        md,
+        &SUMMARY_W,
+        &headers.iter().map(|h| (*h).to_string()).collect::<Vec<_>>(),
+    ));
+    if md {
+        out.push_str(&md_rule(headers.len()));
+    } else {
+        let _ = writeln!(out, "{}", "-".repeat(121));
+    }
 
     for dialog in dialogs {
         let call_id = truncate_str(&dialog.call_id, 30);
@@ -68,11 +124,24 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
             dialog.tags.join(", ")
         };
 
-        let _ = writeln!(
-            out,
-            "{:<32} {:<14} {:<14} {:<12} {:<6} {:<10} {:<6} {:<8} {:<16}",
-            call_id, from, to, state, code, duration, msg_count, pdd, tags
-        );
+        // Markdown carries the value in full: there is no column to overflow,
+        // and truncating would discard data the format can hold.
+        let call_id_cell = if md { dialog.call_id.clone() } else { call_id };
+        out.push_str(&row(
+            md,
+            &SUMMARY_W,
+            &[
+                call_id_cell,
+                from.to_string(),
+                to.to_string(),
+                state.to_string(),
+                code,
+                duration,
+                msg_count.to_string(),
+                pdd,
+                tags,
+            ],
+        ));
     }
 
     // ── Associated RTP streams ──────────────────────────────────────

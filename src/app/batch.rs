@@ -3370,7 +3370,18 @@ pub fn generate_reports(
         let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
         let dialogs: Vec<&crate::sip::dialog::SipDialog> =
             selection.dialogs.iter().map(|(d, _)| *d).collect();
-        let report = output::print_dialog_report(&dialogs, &selection.streams);
+        // `--markdown` was read, documented and IGNORED here: the output was
+        // byte-identical with and without it while the help text said "Format
+        // report output as Markdown" (#89).
+        let report = output::print_dialog_report_as(
+            &dialogs,
+            &selection.streams,
+            if cli.markdown {
+                output::ReportFormat::Markdown
+            } else {
+                output::ReportFormat::Text
+            },
+        );
         // `print!` PANICS if stdout cannot be written, so `--report > /full/disk`
         // died with exit 101 and a Rust backtrace instead of an error. A closed
         // pipe stays fine — `sipnab --report | head` must not fail — but a real

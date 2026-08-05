@@ -44,7 +44,7 @@ pub mod wireshark;
 
 pub use call_report::{ReportFormat, generate_call_report};
 pub use cli_print::{ColorMode, OutputOptions, print_sip_message};
-pub use dialog_report::print_dialog_report;
+pub use dialog_report::{print_dialog_report, print_dialog_report_as};
 pub use event_exec::EventExecEngine;
 pub use fail2ban::{format_reg_flood_event, format_scanner_event, render_absent};
 pub use hexdump::hexdump;
