@@ -825,7 +825,22 @@ pub struct Cli {
     #[arg(help_heading = "Security", long, value_name = "CMD")]
     pub alert_exec: Option<String>,
 
-    /// Validate STIR/SHAKEN identity headers.
+    /// Report STIR/SHAKEN Identity claims (no signature verification).
+    ///
+    /// Decodes the RFC 8224 Identity header's PASSporT and reports the
+    /// attestation level, the originating and destination numbers, and the
+    /// origination ID.
+    ///
+    /// It does NOT verify the signature. Doing so means fetching the
+    /// certificate the token references and checking the signature over it,
+    /// and sipnab makes no outbound request to analyse a capture. The one
+    /// check applied locally is `iat` freshness (RFC 8224 Section 4.4), which
+    /// reports `Expired`.
+    ///
+    /// So an attestation of `A` here means the originator CLAIMED full
+    /// attestation, not that anything confirmed the claim. A forged Identity
+    /// header reports exactly like a genuine one. Do not treat this flag's
+    /// output as grounds for trusting a calling number.
     #[arg(help_heading = "Security", long)]
     pub stir_shaken: bool,
 

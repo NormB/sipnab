@@ -21,7 +21,7 @@ sipnab's REST API requires the `api` feature flag:
 cargo build --release --features api
 ```
 
-That is additive to the default features, so it gives you the REST API on top of the TUI, audio, and the standalone metrics server. Build `full` instead when you also want the MCP server, HEP forwarding, and the TLS-gated features (STIR/SHAKEN validation, SRTP decryption) in the same binary — the REST API itself is identical either way, so choose on what else you need:
+That is additive to the default features, so it gives you the REST API on top of the TUI, audio, and the standalone metrics server. Build `full` instead when you also want the MCP server, HEP forwarding, and the TLS-gated features (STIR/SHAKEN claim reporting, SRTP decryption) in the same binary — the REST API itself is identical either way, so choose on what else you need:
 
 ```bash
 cargo build --release --features full
@@ -616,7 +616,7 @@ and the detection threshold behind each.
 
 - **`final_status_code` / `final_status_reason`** -- read INVITE transactions only. A `REGISTER`, `OPTIONS` or `SUBSCRIBE` dialog omits both however it ended; `signaling_diagnosis.final_failure.code` carries the status for any dialog.
 - **`diagnosis.hints`** -- Free-text diagnostic strings from the media analyzer: one-way audio, NAT mismatch (SDP `c=` address vs. actual RTP source), comfort-noise asymmetry (shown in the example above), codec / payload-type / ptime / duration asymmetry, and late media. Empty array when the analyzer found nothing.
-- **STIR/SHAKEN** -- With `--stir-shaken` validation active (requires the `tls` build feature), sipnab writes the attestation level, orig/dest TNs, and verification status to the capture log. They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`. sipnab marks a token `Expired` per RFC 8224 Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the current time.
+- **STIR/SHAKEN** -- With `--stir-shaken` active (requires the `tls` build feature), sipnab writes the attestation level, orig/dest TNs, and verification status to the capture log. That status is `NotChecked` or `Expired` and never anything stronger: sipnab decodes the PASSporT but does not fetch the referenced certificate, so it checks no signature and the attestation remains the originator's claim rather than a confirmed fact. They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`. sipnab marks a token `Expired` per RFC 8224 Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the current time.
 
 Returns `404` if the Call-ID is not found.
 

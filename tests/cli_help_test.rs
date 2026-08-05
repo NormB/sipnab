@@ -70,3 +70,107 @@ fn completions_reject_unknown_shell() {
         "error should echo the bad value:\n{stderr}"
     );
 }
+
+/// `--stir-shaken` must not claim to validate anything it does not.
+///
+/// It used to read "Validate STIR/SHAKEN identity headers." sipnab decodes the
+/// RFC 8224 PASSporT and reports the attestation the originator asserted; it
+/// never fetches the referenced certificate and never checks a signature, so a
+/// forged Identity header reports exactly like a genuine one. An operator
+/// running this on fraud traffic and reading "Validate" would conclude the
+/// opposite of the truth — the worst shape a security flag's help can take.
+///
+/// Both help surfaces are checked, because clap renders two: `-h` prints only
+/// the summary line, `--help` prints the full doc comment.
+///
+/// The block has to be extracted rather than grepped for. clap puts the flag on
+/// its own line and the description on the following lines, so the obvious
+/// `lines().find(|l| l.contains("--stir-shaken"))` returns "      --stir-shaken"
+/// — a line that can never contain "validate", making the assertion dead. It
+/// was written that way first, and passed against the unfixed help text.
+#[test]
+fn stir_shaken_help_does_not_promise_verification_it_never_performs() {
+    /// The flag's entry: its line plus every indented continuation line, up to
+    /// the next flag.
+    fn block(help: &str, flag: &str) -> String {
+        let mut out = Vec::new();
+        let mut in_block = false;
+        for line in help.lines() {
+            let is_flag_line = line.trim_start().starts_with("--")
+                || line.trim_start().starts_with('-') && line.trim_start().len() > 1;
+            if line.trim_start().starts_with(flag) {
+                in_block = true;
+                out.push(line);
+                continue;
+            }
+            if in_block {
+                if is_flag_line && !line.trim_start().starts_with(flag) {
+                    break;
+                }
+                out.push(line);
+            }
+        }
+        assert!(!out.is_empty(), "{flag} missing from help:\n{help}");
+        out.join("\n")
+    }
+
+    for args in [vec!["-h"], vec!["--help"]] {
+        let (stdout, _, code) = run(&args);
+        assert_eq!(code, Some(0), "{args:?} must succeed");
+        let entry = block(&stdout, "--stir-shaken");
+        assert!(
+            !entry.to_lowercase().contains("validate"),
+            "`sipnab {}` claims --stir-shaken validates, which it never does:\n{entry}",
+            args.join(" ")
+        );
+        // Not merely avoiding the word: silence would still leave a reader
+        // assuming a security flag verifies what it reports.
+        assert!(
+            entry.contains("no signature verification")
+                || entry.contains("does NOT verify the signature"),
+            "`sipnab {}` must state plainly that no signature is verified, or \
+             an operator reads an unverified claim as a checked one:\n{entry}",
+            args.join(" ")
+        );
+    }
+}
+
+/// The other half of the same contract, and the one that makes it durable.
+///
+/// `VerificationStatus` declares `Valid`, `Invalid` and `NoCert`, and no code
+/// path constructs any of them — only `NotChecked` and `Expired` are ever
+/// produced. That is fine while the help says no signature is checked. It stops
+/// being fine the moment someone implements verification, because the natural
+/// change (construct `Valid`) leaves the CLI help and docs describing the old
+/// behaviour, which is how the original defect was born.
+///
+/// So this fails on the FIRST construction of `Valid`, and says what else to
+/// update. It is a coupling gate, not a ban on implementing verification.
+#[test]
+fn implementing_signature_verification_must_also_update_the_claims() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/sip/stir_shaken.rs"
+    ))
+    .expect("read stir_shaken.rs");
+
+    // Production code only — the test module below legitimately names every
+    // variant when asserting the enum's shape.
+    let prod = src
+        .split("#[cfg(test)]")
+        .next()
+        .expect("stir_shaken.rs has a production section");
+
+    assert!(
+        !prod.contains("VerificationStatus::Valid"),
+        "src/sip/stir_shaken.rs now constructs VerificationStatus::Valid, so \
+         sipnab verifies signatures. That is welcome — but the claims that \
+         were written for the non-verifying behaviour must move with it:\n\
+         \x20 - src/cli.rs, the --stir-shaken help (says it does NOT verify)\n\
+         \x20 - docs/cli-reference.md, the flag table row and the audit example\n\
+         \x20 - docs/rest-api.md, which states the status is only NotChecked \
+         or Expired\n\
+         \x20 - src/sip/stir_shaken.rs's own module doc\n\
+         Update those, then relax this gate."
+    );
+}

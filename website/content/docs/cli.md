@@ -611,7 +611,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--alert` | `<CHANNEL>` | -- | Alert channels (repeatable): `syslog`, `json`, `exec` |
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires |
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line) |
-| `--stir-shaken` | -- | off | Validate STIR/SHAKEN identity headers |
+| `--stir-shaken` | -- | off | Report STIR/SHAKEN Identity claims — decodes the PASSporT, does NOT verify the signature |
 
 > **`--alert` takes a channel name, not a rule.** `syslog`, `json` or `exec`.
 > `--syslog` and `--alert-json` are the equivalent boolean forms; naming the
@@ -627,7 +627,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -d eth0 --kill-target 192.0.2.66:5060-5090 --kill-ua 'sipvicious' --kill-response 480 --kill-spoof raw` — targeted kill of a scanning host across a port range, plus a second scanner UA, replying 480 via raw-socket spoof
 - `sudo sipnab -d eth0 --kill-target 198.51.100.77:5060 --kill-spoof ephemeral` — kill requests from one more source port using a non-spoofed ephemeral reply
 - `sudo sipnab -N -d eth0 --reg-flood --digest-leak --fraud-detect --stir-shaken --alert json --alert-json --alert-exec '/usr/local/bin/notify.sh'` — live security monitoring: registration floods, digest leaks, fraud, STIR/SHAKEN, with JSON alerts and an exec hook
-- `sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json` — offline audit of a pcap for digest leaks and STIR/SHAKEN validity, emitting structured JSON alerts
+- `sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json` — offline audit of a pcap for digest leaks and STIR/SHAKEN attestation claims (as the originator presented them — sipnab checks no signature), emitting structured JSON alerts
 
 
 ## Event execution
