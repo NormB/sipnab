@@ -21,13 +21,23 @@ moment is a half-restored mutation in a tree that does not build: there
 failure as "the build is broken" rather than "the sandbox is off". A text scan
 answers regardless of whether anything compiles.
 
-WHAT IT CANNOT DO
------------------
-This is a pattern check, not a proof. It cannot tell that the controls run in
-the right ORDER (supplementary groups -> GID -> UID), nor that they are on the
-path actually taken at runtime. Those belong in `src/privilege.rs`'s own tests.
-What it does is make the four controls impossible to DELETE or NEUTRALISE
-without the commit stopping, which is the failure that nearly shipped.
+WHAT IT CHECKS, AND WHAT IT CANNOT
+----------------------------------
+Three things: that each of the four controls is PRESENT, that none has been
+NEUTRALISED in place (a call left written down but unable to run), and that
+supplementary groups are surrendered BEFORE the GID.
+
+That last one is not stylistic. On Darwin the effective GID is element zero of
+the group vector (`#define cr_gid cr_groups[0]`), and `setgroups_internal()`
+refuses to leave the vector empty -- `if (ngrp < 1) { ngrp = 1; newgroups[0] = 0; }`
+-- so `setgroups(0, NULL)` writes GID 0, wheel, and the following `setgid` is
+what clears it. Reversed, a macOS process finishes the drop holding egid 0 with a
+uid of `nobody`. A presence-only check passes against that happily, which is why
+position is read as well.
+
+It still cannot tell that these run on the path actually TAKEN at runtime, nor
+verify the syscalls succeed. Those belong in `src/privilege.rs`'s own tests,
+which assert the resulting credentials rather than the source text.
 """
 
 import re
@@ -126,6 +136,22 @@ def main() -> int:
 
     failures = []
 
+    # ORDER, not just presence. On Darwin `setgroups(0, NULL)` does not empty the
+    # group vector -- it writes one entry holding GID 0 (wheel) -- and only the
+    # `setgid` that follows overwrites it. Reversed, a macOS process ends the drop
+    # with egid 0 while its uid reads `nobody`. Presence checks alone would pass
+    # against that, which is why this one reads positions.
+    g = code.find("drop_supplementary_groups()")
+    sg = code.find("set_gid(")
+    if g >= 0 and sg >= 0 and g > sg:
+        failures.append(
+            "  OUT OF ORDER: set_gid is called before drop_supplementary_groups\n"
+            "    On macOS setgroups(0, NULL) leaves GID 0 (wheel) in the group\n"
+            "    vector and the following setgid is what clears it. In this order\n"
+            "    the process finishes the drop holding egid 0 with a uid of\n"
+            "    `nobody` -- root by group, wearing an unprivileged uid."
+        )
+
     for needle, name, why in REQUIRED:
         if needle not in code:
             failures.append(
@@ -160,7 +186,7 @@ def main() -> int:
         )
         return 1
 
-    print(f"{len(REQUIRED)} controls present, none neutralised")
+    print(f"{len(REQUIRED)} controls present, none neutralised, groups before GID")
     return 0
 
 

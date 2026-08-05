@@ -61,14 +61,12 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
     // Resolve user to UID/GID
     let (uid, gid) = resolve_user(user)?;
 
-    // Drop supplementary groups
-    drop_supplementary_groups()?;
+    // Groups first, and as ONE step — see `drop_group_credentials` for why the
+    // two halves cannot be separated or reordered on macOS.
+    drop_group_credentials(gid)?;
 
-    // Drop GID first (must happen before UID drop — once we lose root UID,
-    // we can no longer change groups)
-    set_gid(gid)?;
-
-    // Drop UID last
+    // Drop UID last: once the root UID is gone the group calls above would be
+    // refused, so their order relative to this one is not a preference.
     set_uid(uid)?;
 
     // Prevent regaining privileges (Linux only)
@@ -300,10 +298,58 @@ fn resolve_user(username: &str) -> Result<(u32, u32)> {
     }
 }
 
-/// Clear all supplementary groups.
+/// Surrender the group credentials: supplementary list first, then the GID.
+///
+/// # Why these are one function and not two calls
+///
+/// The order is load-bearing, and on macOS it is load-bearing in a way that is
+/// invisible from the call site. Splitting them, or swapping them, produces a
+/// process that reads as unprivileged and is not — so the sequence is expressed
+/// as one operation that cannot be performed out of order rather than as two
+/// steps with a comment asking the next reader to keep them in line.
+///
+/// On **Linux**, `setgroups(0, NULL)` empties the supplementary list, and
+/// `setgid` afterwards sets the real and effective GID. Either order would end
+/// in the same state, so nothing here is obvious.
+///
+/// On **macOS it is not**. Darwin stores the effective GID as element zero of
+/// the group vector — `bsd/sys/ucred.h` carries `#define cr_gid cr_groups[0]`
+/// — and `setgroups_internal()` refuses to leave that vector empty:
+///
+/// ```text
+/// if (ngrp < 1) { ngrp = 1; newgroups[0] = 0; }
+/// ```
+///
+/// So `setgroups(0, NULL)` on macOS does **not** clear the list. It writes a
+/// list of exactly one entry whose value is GID 0 — wheel. The immediately
+/// following `setgid` is what overwrites that entry, via
+/// `kauth_cred_change_egid()`. Reverse the two and a macOS process finishes the
+/// drop holding **egid 0 while its uid reads `nobody`**: root by group, wearing
+/// an unprivileged uid.
+///
+/// This is also why `getgroups()` reports 1 rather than 0 on macOS after a
+/// correct drop — that one entry is the new egid, which POSIX explicitly allows
+/// an implementation to include in the list.
+///
+/// # Errors
+///
+/// Either syscall failing, named individually. Neither is advisory: a process
+/// that could not shed its groups must not continue as though it had.
+fn drop_group_credentials(gid: u32) -> Result<()> {
+    drop_supplementary_groups()?;
+    set_gid(gid)?;
+    Ok(())
+}
+
+/// Clear the supplementary group list.
+///
+/// Call this through [`drop_group_credentials`], never directly: on macOS this
+/// call leaves GID 0 in the group vector and only the `setgid` that follows
+/// removes it. See that function for the citation.
 fn drop_supplementary_groups() -> Result<()> {
-    // SAFETY: setgroups(0, NULL) clears the supplementary group list.
-    // A null pointer is valid when ngroups is 0.
+    // SAFETY: a null pointer is valid when ngroups is 0. What the call MEANS is
+    // platform-specific — an empty list on Linux, a one-entry list holding GID 0
+    // on Darwin — but neither reads nor writes memory through the pointer.
     unsafe {
         if libc::setgroups(0, std::ptr::null()) != 0 {
             bail!("setgroups failed: {}", std::io::Error::last_os_error());
