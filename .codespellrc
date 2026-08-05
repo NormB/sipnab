@@ -36,7 +36,16 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #   requestor    RFC 3261's own spelling, quoted verbatim in
 #                docs/sip-response-codes.md. "Correcting" a normative quotation
 #                would misreport what the RFC says.
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor
+#   Sourc        the TRUNCATED "Source" column header, in
+#                tests/tui_snapshot_test.rs. Same reason the snapshot
+#                directories are skipped above -- it is rendered output, not
+#                prose -- but this one lives in the test SOURCE rather than a
+#                snapshot file, so the `*/snapshots/*` skip does not reach it.
+#                The test asserts the truncated header must NOT appear, because
+#                a Source column narrow enough to render "Sourc" cannot hold an
+#                IPv4 address and must be dropped instead (#151). "Correcting"
+#                it to "Source" would invert what the test checks.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is
