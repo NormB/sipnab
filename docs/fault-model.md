@@ -92,8 +92,13 @@ Audited, found sound (true-positive findings: none):
 - **Live loop** (`capture/live.rs`): device-open and BPF-compile
   failures return clean errors via the ready channel; receiver-dropped
   breaks cleanly. A transient `recv()` error is currently fatal to the
-  capture thread (logged, clean exit) — acceptable, but untested
-  (see §6 gaps).
+  capture thread — acceptable, but untested (see §6 gaps). The thread
+  ends by returning the error rather than panicking; the run that joins
+  it then logs at error level and exits non-zero, because a capture that
+  stopped early leaves every report above it resting on a partial read.
+  Until 0.5.83 that join downgraded the error to a warning and the
+  process exited 0, which made an incomplete run indistinguishable from
+  a whole one to anything reading `$?`.
 - **event_exec**: packet-derived fields travel as `$SIPNAB_*` env
   vars, never shell-interpolated (no command injection); spawn queue
   capped at 100; children reaped. Tested.
