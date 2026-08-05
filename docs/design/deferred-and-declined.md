@@ -4,6 +4,12 @@
 2026-08-02. §1 and §3 remain unscheduled. Verified against `main` at 1998303.
 **§5 (declined capture technologies) added 2026-08-03**, verified against the
 tree at that date.
+**Updated 2026-08-05: §2 and §4 have both shipped.** Each section keeps the
+analysis that decided it, in the tense it was written in, and ends with a
+"What shipped" table rather than being rewritten — the reasoning is the point of
+this page, and a decision doc that silently back-edits itself teaches nothing.
+Where a section's prose and the tree disagree, the correction notes say so in
+place.
 
 Four requests sat open a long time each, and they had one thing in common: the
 honest answer turned out to be some version of *not as asked*. An undecided
@@ -28,7 +34,7 @@ shows the work rather than the verdict.
 | # | Request | Decision |
 |---|---|---|
 | 1 | TUI multi-session / multi-capture comparison | **Re-scoped.** The want is real; the specification is not buildable and the `-I` set does not substitute for it |
-| 2 | Write-back MCP tools | **Approved to move forward** (2026-08-02). The invariant analysis in §2 stands and becomes the build requirements |
+| 2 | Write-back MCP tools | **Shipped.** Approved to move forward 2026-08-02; `save_findings` and `CaptureEtag` landed against the requirements §2 set, and Invariant 7 was amended in the same change |
 | 3 | Automated threat-mitigation hooks | **Fixes extracted and shipped; the action ledger deferred** on a named prerequisite |
 | 4 | `open_capture` MCP tool | **Approved to move forward** (2026-08-02). §4 records what has to change first |
 
@@ -231,18 +237,40 @@ does, and it unions them, and the union is a measured 2× on every count.
 
 ## 2. Write-back MCP tools
 
-**Decision: approved to move forward, 2026-08-02.** Write-back tools are
-accepted for managing the MCP server. The analysis below is unchanged and still
-load-bearing — including its finding that the reconciliation once offered for
-this, "`shutdown_server` is a documented exception to the read-only invariant",
-is wrong on the facts. What moved is the verdict, not the evidence.
+**Decision: approved to move forward, 2026-08-02. Shipped since.** Write-back
+tools are accepted for managing the MCP server. The analysis below is unchanged
+and still load-bearing — including its finding that the reconciliation once
+offered for this, "`shutdown_server` is a documented exception to the read-only
+invariant", is wrong on the facts. What moved is the verdict, not the evidence.
+
+**What the tree looks like now**, because the analysis below is written in the
+present tense of 2026-08-02 and no longer describes it: `save_findings` exists
+([`src/mcp/findings.rs`](../../src/mcp/findings.rs)), gated by
+`--mcp-allow-save-findings`, and `CaptureEtag`
+([`src/provenance.rs`](../../src/provenance.rs)) puts capture identity on the
+wire. The "What shipped" table at the end of this section records what was built
+against which requirement. Read the sections between here and there as the
+argument that produced those two things, not as a description of the surface.
 
 ### Invariant 7, read literally, is not violated by anything in the tree
 
-[Invariant 7](../internals/invariants.md) states:
+[Invariant 7](../internals/invariants.md) stated, when this analysis was
+written:
 
 > **Rule.** No MCP tool mutates a store, and every response hits a size ceiling
 > before serialization.
+
+**Updated 2026-08-05.** That is no longer the wording. The invariant is now
+headed *"MCP tools never edit the analysis, and every response has a ceiling"*,
+and its rule reads: *"No MCP tool edits a store in place, and every response
+hits a size ceiling before serialization. One tool replaces a store wholesale —
+`open_capture`, behind `--mcp-allow-open-capture` — and it rotates the capture
+identity in the same critical section that clears the stores, so no answer can
+change meaning without saying so."* It goes on to name the one write:
+*"One tool accepts a WRITE: `save_findings`, behind
+`--mcp-allow-save-findings`."* The old quotation is kept above because the
+analysis that follows was reasoned against it and reads wrong without it. Where
+the two differ, [`invariants.md`](../internals/invariants.md) §7 governs.
 
 There were 24 MCP tools when this analysis was written
 ([`server.rs`](../../src/mcp/server.rs), `#[tool(name = …)]` attributes); the
@@ -277,12 +305,21 @@ Ending the process is loud, terminal, and visible from outside. Editing the
 store underneath a live reader is none of those things. That distinction is the
 real line, and it is the line write-back crosses.
 
-That repair has not been made yet, and two other places drifted the same way and
-want the same pass: [`mcp/mod.rs:5`](../../src/mcp/mod.rs) still describes the
-surface as *"read-only"*, and [`docs/mcp.md`](../mcp.md)'s security model still
-says *"systemd owns the capture lifecycle, or the CLI flags, not by the LLM"*,
-which `--mcp-allow-shutdown` contradicts. All three are wording, not behaviour —
-the code is doing the right thing and the prose has fallen behind it.
+**Corrected 2026-08-05: all three repairs have been made.** This paragraph used
+to read *"That repair has not been made yet"* and named two other places that
+had drifted the same way. Every one of them is now fixed.
+[`invariants.md:324-330`](../internals/invariants.md) states the *Why* as the
+distinction this section argued for — an agent must not be able to change what
+an operator is looking at *and leave it looking like what they were looking at*
+— and adds that the old wording *"was true until a capture swap existed and is
+the wrong test anyway: what protects the operator is the identity on the wire,
+not the absence of the verb."* [`mcp/mod.rs:10-12`](../../src/mcp/mod.rs) no
+longer says "read-only"; it says *"No tool changes the analysis without changing
+its identity"*, and names that as *"narrower than 'read-only', which this doc
+used to claim"*. And the *"systemd owns the capture lifecycle"* sentence is gone
+from [`docs/mcp.md`](../mcp.md). All three were wording, not behaviour — the
+code was doing the right thing and the prose had fallen behind it; it has since
+caught up.
 
 ### What actually carries the safety, and why write-back cannot borrow it
 
@@ -419,6 +456,28 @@ requirement to satisfy rather than a reason to stop.
 the analysis above establishes that this is still true of the tree. The first
 write-back tool makes it false. Amend it in the same change, rather than leaving
 a stated invariant the code has quietly stopped honouring.
+
+**What shipped**, against those two requirements and that instruction:
+
+| Requirement | Built as |
+|---|---|
+| 1. Wire-visible store identity | [`src/provenance.rs`](../../src/provenance.rs): a `CaptureEtag` carrying a capture-instance id plus both store generations, stamped on `capture_status`, `stats` and every paged whole-store response. §4 consumes the same primitive, as planned — it was built once |
+| 2. Write-back state separate from the analysis | [`src/mcp/findings.rs`](../../src/mcp/findings.rs), reached by `save_findings` behind `--mcp-allow-save-findings` (off by default: `allow_save_findings` at [`server.rs:74`](../../src/mcp/server.rs), `false` in `new()` at `:161`, set only by `with_save_findings()` at `:233`) |
+| Invariant 7 amended in the same change | [`invariants.md`](../internals/invariants.md) §7 is retitled and now names `save_findings` explicitly, so nobody has to discover the write by reading the tool list |
+
+The annotation store went further than requirement 2 asked, and the reason is
+worth recording because it is not the obvious build. There **is** no annotation
+store: a retained log of findings was written first and then deleted, because
+every field of it was dead — nothing could read the text, the Call-ID or the
+timestamp back, by construction. So an annotation goes to `tracing` and is gone
+from the process. There is no `list_findings`, and that omission is the feature:
+an agent cannot launder a conclusion into evidence and then cite it. The dead
+end is enforced by the compiler rather than by prose — the annotation types are
+`pub(in crate::mcp)`, so no analysis path can name them, and widening that
+visibility is the change a reviewer should treat as breaking the invariant.
+
+The REST half of requirement 1 is still open, the same gap §4 records: `/v1/dialogs`
+carries no etag.
 
 ---
 

@@ -434,13 +434,20 @@ fn wiki_intra_docs_links_resolve() {
     // "Collect captures from several SIP servers in one place", the
     // centralised alternative it compares against. One link, one page.
     // Raised 280 -> 281 by the security model's pointer to the new
-    // "Untrusted capture text" section in docs/mcp.md (#139). One link, one
-    // page; the wiki mirror is one copy, so +1 and not +2.
+    // "Untrusted capture text" section in docs/mcp.md (#139).
     // Raised 281 -> 282 by the security model's pointer to the new
-    // "What the write verbs do" section in docs/mcp.md (#146). One link.
+    // "What the write verbs do" section in docs/mcp.md (#146).
+    // Raised 282 -> 284 by the stale-documentation sweep: docs/examples.md's
+    // MCP tool list now points at docs/mcp.md as the authoritative table
+    // instead of restating a count that had drifted from 25 to 31, and
+    // internals/build-ci-release.md's new `plugins` row links the design note
+    // that priced the feature. One link each, two pages.
+    //
+    // Taken from a clean run after merging two branches that each bumped this
+    // independently — neither side's total described the merged tree.
     assert_eq!(
-        seen, 282,
-        "extractor found {seen} wiki links, expected 282. More is fine — bump \
+        seen, 284,
+        "extractor found {seen} wiki links, expected 284. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

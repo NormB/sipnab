@@ -242,16 +242,6 @@ impl App {
         self.stream_store.read().len()
     }
 
-    /// Return a reference to the filter dialog state (for tests).
-    pub fn filter_dialog_state(&self) -> &FilterDialogState {
-        &self.filter_dialog
-    }
-
-    /// Return a mutable reference to the filter dialog state (for tests).
-    pub fn filter_dialog_state_mut(&mut self) -> &mut FilterDialogState {
-        &mut self.filter_dialog
-    }
-
     /// Return the current SDP display mode.
     pub fn sdp_display_mode(&self) -> SdpDisplayMode {
         self.sdp_display_mode

@@ -8,8 +8,12 @@
 //!
 //! This implementation decodes and extracts the JWT claims but does **not**
 //! perform cryptographic signature verification (that requires fetching the
-//! certificate from the `info` URL). The `verified` field is always set to
-//! [`VerificationStatus::NotChecked`].
+//! certificate from the `info` URL, and sipnab makes no outbound request to
+//! analyse a capture). The `verified` field is therefore
+//! [`VerificationStatus::NotChecked`], except that a stale `iat` claim
+//! (RFC 8224 Section 4.4) reports [`VerificationStatus::Expired`]. Those are
+//! the only two states the type has; an attestation level here is the
+//! originator's claim, not a confirmed fact.
 
 use anyhow::{Result, bail};
 use base64::Engine;
@@ -44,20 +48,19 @@ pub enum Attestation {
 
 /// Signature verification status.
 ///
-/// sipnab does not fetch external certificates, so this is always
-/// [`NotChecked`](VerificationStatus::NotChecked) for locally parsed headers
-/// unless the `iat` freshness check fails (→ [`Expired`](VerificationStatus::Expired)).
+/// Both variants are reachable and nothing stronger exists: sipnab never
+/// fetches the certificate the token references, so it can neither confirm
+/// nor refute a signature. A locally parsed header is
+/// [`NotChecked`](VerificationStatus::NotChecked) unless the `iat` freshness
+/// check fails (→ [`Expired`](VerificationStatus::Expired)).
+///
+/// The enum is `#[non_exhaustive]` so that implementing verification later can
+/// add variants without a semver-major bump.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum VerificationStatus {
-    /// Signature was not checked (no cert available).
+    /// The signature was not checked: sipnab fetches no certificate.
     NotChecked,
-    /// Signature verified successfully.
-    Valid,
-    /// Signature verification failed.
-    Invalid,
-    /// No certificate available for verification.
-    NoCert,
     /// The `iat` claim is stale — more than 60 seconds from the current time
     /// (RFC 8224 Section 4.4).
     Expired,

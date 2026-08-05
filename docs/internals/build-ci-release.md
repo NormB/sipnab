@@ -5,7 +5,7 @@ can safely ignore.
 
 ## Features
 
-`Cargo.toml`'s `[features]` table has twelve entries: the eleven named
+`Cargo.toml`'s `[features]` table has thirteen entries: the twelve named
 features below, plus `default` — which is `native, tui, audio, metrics`.
 `full` is everything except `wasm`.
 
@@ -20,6 +20,7 @@ features below, plus `default` — which is `native, tui, audio, metrics`.
 | `api` | `native` | The axum REST API. |
 | `mcp` | `native` | The MCP server over stdio. |
 | `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so both share one axum stack rather than duplicating it. |
+| `plugins` | `native` | The `wasmi` WASM plugin host. **Non-default on purpose** — someone who does not want an interpreter inside their capture tool does not get one. See [`../design/wasm-plugin-api.md`](../design/wasm-plugin-api.md), which measures the cost at +1.56 MB and 15 crates. |
 | `wasm` | — | The browser analyzer bindings. Lib-only: its test and bin targets are meaningless on the host. |
 | `full` | everything but `wasm` | What the pre-commit hook and most local testing use. |
 

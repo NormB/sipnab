@@ -2223,9 +2223,18 @@ fn no_documentation_table_repeats_a_row() {
     // (#139): one fenced/verbatim table per surface, doubled by the site mirror.
     // Raised 472 -> 474 by the write-verb table in docs/mcp.md's "What the
     // write verbs do" section (#146): one table plus the site mirror.
+    // Raised 474 -> 475 by the "What shipped" table added to §2 of
+    // docs/design/deferred-and-declined.md, which had been describing
+    // save_findings and CaptureEtag as pending after both had shipped. That
+    // page has no site mirror, so it counts once.
+    //
+    // The three entries above landed on two branches that were merged: the
+    // first two on main, the third on the stale-documentation sweep. Neither
+    // side's total was right for the merged tree, so this number was taken
+    // from a clean run rather than added up.
     assert_eq!(
-        tables, 474,
-        "walked {tables} tables, expected 474. More is fine — bump this. FEWER \
+        tables, 475,
+        "walked {tables} tables, expected 475. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

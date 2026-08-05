@@ -111,9 +111,14 @@ touching the help failed two assertions in `keybinding_drift_test`.
    instruct the model to "trust", "verify", "act on" or "ensure" anything about
    the content — that is the prompt-injection rule (D22 in
    [`../design/implementation-plan-phases-8-10.md`](../design/implementation-plan-phases-8-10.md)).
-   **(unenforced — the module comment in `server.rs` cites
-   `scripts/check-tool-descriptions.sh`, which does not exist; the lint is
-   still an open backlog item.)**
+   **(Enforced by [`tests/mcp_tool_descriptions_test.rs`](../../tests/mcp_tool_descriptions_test.rs),
+   which fails on any of those four words in a tool description. Corrected
+   2026-08-05: this used to say the rule was unenforced and that `server.rs`
+   cited a `scripts/check-tool-descriptions.sh` that does not exist. Both halves
+   are now wrong — the citation is gone from `server.rs`, and the rule shipped
+   as a Rust test rather than the shell script the plan named. That test also
+   carries `the_cited_description_gate_actually_exists`, which fails if the
+   dangling citation ever comes back.)**
 3. Take the store guard, project what you need into owned data, **drop the
    guard**, and only then `.await`.
 4. Bound the response with [`resolve_limit()`](../../src/mcp/shape.rs) and the

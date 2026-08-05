@@ -137,15 +137,20 @@ fn stir_shaken_help_does_not_promise_verification_it_never_performs() {
 
 /// The other half of the same contract, and the one that makes it durable.
 ///
-/// `VerificationStatus` declares `Valid`, `Invalid` and `NoCert`, and no code
-/// path constructs any of them — only `NotChecked` and `Expired` are ever
-/// produced. That is fine while the help says no signature is checked. It stops
-/// being fine the moment someone implements verification, because the natural
-/// change (construct `Valid`) leaves the CLI help and docs describing the old
-/// behaviour, which is how the original defect was born.
+/// `VerificationStatus` has exactly two variants, `NotChecked` and `Expired`,
+/// and both are reachable. There is deliberately no `Valid`: sipnab fetches no
+/// certificate, so no code path could produce one. That is fine while the help
+/// says no signature is checked. It stops being fine the moment someone
+/// implements verification, because the natural change (add and construct
+/// `Valid`) leaves the CLI help and docs describing the old behaviour, which is
+/// how the original defect was born.
 ///
 /// So this fails on the FIRST construction of `Valid`, and says what else to
 /// update. It is a coupling gate, not a ban on implementing verification.
+///
+/// Note the gate is a source scan, not a type check — it stays meaningful
+/// whether `Valid` is re-added as a variant or spelled some other way, because
+/// what it watches for is production code *naming* it.
 #[test]
 fn implementing_signature_verification_must_also_update_the_claims() {
     let src = std::fs::read_to_string(concat!(
@@ -154,8 +159,9 @@ fn implementing_signature_verification_must_also_update_the_claims() {
     ))
     .expect("read stir_shaken.rs");
 
-    // Production code only — the test module below legitimately names every
-    // variant when asserting the enum's shape.
+    // Production code only. What makes the help wrong is shipped behaviour,
+    // not scaffolding: a test may name `Valid` to assert it is absent, or to
+    // exercise a decoder, without sipnab verifying anything.
     let prod = src
         .split("#[cfg(test)]")
         .next()

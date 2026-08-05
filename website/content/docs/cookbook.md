@@ -250,7 +250,7 @@ The first command should print a diagnosis object like:
 
 ## 5. Filter for the five things you look for most
 
-The filter DSL has 31 fields and 7 operators. These five cover most operational triage:
+The filter DSL has 30 fields and 7 operators. These five cover most operational triage:
 
 Slow setup — every dialog that took more than 3 seconds from INVITE to 200 OK:
 
@@ -550,7 +550,7 @@ curl -sS http://capture.example.com:8731/mcp \
                     "clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-List all 25 tools:
+List every registered tool:
 
 ```bash
 curl -sS http://capture.example.com:8731/mcp \
@@ -582,14 +582,22 @@ The `tools/list` response is a standard JSON-RPC envelope with a `result.tools` 
 ]}}
 ```
 
-All 25 tools appear, grouped here by what they do:
+Every registered tool appears, grouped here by what they do. The table in
+[`docs/mcp.md`](@/docs/mcp.md) is the authoritative list, and
+`mcp_tool_table_lists_every_registered_tool` in `tests/docs_drift_test.rs`
+asserts it against the registry — the grouping below is a reading aid, not a
+second source of truth. (This list said "all 25 tools" and enumerated 25 until
+2026-08-05, by which point the registry held 31; the six it had never gained
+were `capture_health`, `explain_rule`, `find_correlated`, `lint_dialog`,
+`save_findings` and `validate_message`.)
 
-- **Browse and quote the capture** — `list_dialogs`, `get_dialog`, `get_dialog_report`, `get_message`, `search_messages`, `search_by_time`, `tail_dialogs`, `render_ladder`, `compare_dialogs`
-- **Diagnose** — `find_problems`, `triage_call`, `diagnose_registration`, `check_codec_negotiation`, `explain_response_code`, `get_sdp_timeline`, `rtp_stats`, `security_findings`
+- **Browse and quote the capture** — `list_dialogs`, `get_dialog`, `get_dialog_report`, `get_message`, `search_messages`, `search_by_time`, `tail_dialogs`, `render_ladder`, `compare_dialogs`, `find_correlated`
+- **Diagnose** — `find_problems`, `triage_call`, `diagnose_registration`, `check_codec_negotiation`, `explain_response_code`, `get_sdp_timeline`, `rtp_stats`, `security_findings`, `capture_health`
+- **Check a message or dialog against the RFCs** — `lint_dialog`, `validate_message`, `explain_rule`
 - **Ask about the session itself** — `stats`, `capture_status`, `server_capabilities`, `list_captures`
-- **Write a file, swap the capture, or end the run** — `export_capture`, `export_audio`, `open_capture`, `shutdown_server`
+- **Write a file or a note, swap the capture, or end the run** — `export_capture`, `export_audio`, `save_findings`, `open_capture`, `shutdown_server`
 
-Only that last group reaches past the query surface, and each member needs a flag you passed at startup: the two exports write only under `--mcp-file-root`, `open_capture` acts only under `--mcp-allow-open-capture`, and `shutdown_server` only under `--mcp-allow-shutdown`. All four still appear in `tools/list` when you omit those flags, because sipnab registers the tools unconditionally and refuses the call instead. Seeing `shutdown_server` listed does not mean an agent can stop your capture.
+Only that last group reaches past the query surface, and each member needs a flag you passed at startup: the two exports write only under `--mcp-file-root`, `save_findings` records only under `--mcp-allow-save-findings`, `open_capture` acts only under `--mcp-allow-open-capture`, and `shutdown_server` only under `--mcp-allow-shutdown`. All five still appear in `tools/list` when you omit those flags, because sipnab registers the tools unconditionally and refuses the call instead. Seeing `shutdown_server` listed does not mean an agent can stop your capture.
 
 **Pitfalls:**
 
