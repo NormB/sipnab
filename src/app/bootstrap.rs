@@ -97,6 +97,15 @@ pub struct RunPlan {
     pub output_opts: OutputOptions,
     /// `--on-*` event execution engine.
     pub event_exec: EventExecEngine,
+    /// Every capture file the run will read, resolved and in read order.
+    ///
+    /// `source` is MOVED into `launch`, so anything downstream that needs the
+    /// whole set has to receive it separately — and several things do. Features
+    /// that reached for `cli.primary_input()` got the first `-I` ARGUMENT,
+    /// which after chronological reordering is often not even the first file
+    /// read, and for `-I /pcaps` is a directory. Empty for live and HEP
+    /// sources, which read no files (#48).
+    pub input_files: Vec<std::path::PathBuf>,
     /// Top-level run mode (TUI vs batch vs multi-core file).
     pub mode: RunMode,
     /// Parsed `--metrics` bind address (TUI path only; batch handles its
@@ -512,8 +521,17 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // `build_capture_config`, which runs before the mode is decided.
     capture_config.immediate_mode = immediate_mode_for(&mode);
 
+    // Derived from `source` before it moves, so the two cannot disagree about
+    // which files the run reads. Re-resolving here would open every file a
+    // second time and give the two answers a chance to differ.
+    let input_files: Vec<std::path::PathBuf> = match source {
+        Some(CaptureSource::File { ref paths }) => paths.clone(),
+        _ => Vec::new(),
+    };
+
     Ok(RunPlan {
         source,
+        input_files,
         capture_config,
         portrange,
         policy: CapturePolicy {

@@ -258,6 +258,14 @@ pub struct BatchProcessing {
     pub output_opts: OutputOptions,
     /// `--on-*` event execution engine.
     pub event_exec: EventExecEngine,
+    /// Every capture file the run reads, resolved and in read order; empty for
+    /// live and HEP sources.
+    ///
+    /// Carried rather than re-derived from `cli`, because `cli.primary_input()`
+    /// returns the first `-I` ARGUMENT — which chronological reordering often
+    /// makes not the first file read, and which for `-I /pcaps` is a directory
+    /// (#48).
+    pub input_files: Vec<PathBuf>,
 }
 
 /// Immutable batch-mode configuration for packet processing.
@@ -517,15 +525,39 @@ impl DeferredEffects {
 /// Returns a message when neither is set: a live capture that saves no pcap
 /// leaves nothing for `tshark -r` to read, so emitting a placeholder path
 /// (the old `capture.pcap`) would only produce a command that fails.
-fn tshark_input_file<'a>(
-    input: Option<&'a str>,
-    output: Option<&'a str>,
-) -> Result<&'a str, String> {
-    input.or(output).ok_or_else(|| {
-        "no pcap to read: pass -I <file> to analyze a capture file, or -O <file> \
-         to save the live capture so tshark has a file to read"
-            .to_string()
-    })
+/// # A multi-file set is REFUSED, not partly served
+///
+/// `tshark -r` takes one file. Given a set, the old code emitted the first `-I`
+/// ARGUMENT and a `-Y` filter naming every Call-ID sipnab had found — including
+/// Call-IDs that exist only in the files that command never opens. Measured:
+/// `-I sip-rtp-g711.pcap -I sip-register.pcap --wireshark` printed a command
+/// reading only the first, whose filter named three Call-IDs, the first of
+/// which lives only in the second file. Pasted into a terminal it returns a
+/// strict subset of what sipnab just reported, with nothing saying so, exit 0.
+///
+/// A command covering half the evidence is worse than no command, because the
+/// operator has no way to tell which half. So this refuses and names every
+/// file, the same call `--strip-secrets` already makes for the same reason.
+fn tshark_input_file(files: &[PathBuf], output: Option<&str>) -> Result<String, String> {
+    match files {
+        [] => output.map(str::to_string).ok_or_else(|| {
+            "no pcap to read: pass -I <file> to analyze a capture file, or -O <file> \
+             to save the live capture so tshark has a file to read"
+                .to_string()
+        }),
+        [one] => Ok(one.display().to_string()),
+        many => Err(format!(
+            "the input is {} files and `tshark -r` reads one, so no single \
+             command covers this run. The display filter below names Call-IDs \
+             from all of them; a command reading only one would silently return \
+             a subset. Files: {}",
+            many.len(),
+            many.iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 /// Capture split/stop policy resolved from the CLI.
@@ -1210,6 +1242,11 @@ pub struct BatchRunner {
     /// `-O` output writer; `None` until the first packet supplies the
     /// link type (opened lazily in `run_loop`).
     writer: Option<PcapWriter>,
+    /// Every capture file this run reads, resolved and in read order.
+    ///
+    /// Kept because several late-stage features need the SET and `cli` can only
+    /// give the first `-I` argument (#48).
+    input_files: Vec<PathBuf>,
     /// Write pcapng (with DSB/NRB blocks) instead of classic pcap.
     use_pcapng: bool,
     /// What payload variant `-O` records (decrypted / encrypted+DSB / raw).
@@ -1294,6 +1331,7 @@ impl BatchRunner {
         #[cfg(feature = "metrics")] capture_meter: crate::capture::channel::CaptureMeter,
     ) -> Result<Self, crate::app::bootstrap::PlanError> {
         let matcher = batch.matcher;
+        let input_files = batch.input_files;
         let filter_expr = batch.filter_expr;
         let output_opts = batch.output_opts;
         let event_exec = batch.event_exec;
@@ -1607,13 +1645,20 @@ impl BatchRunner {
         // 17d. Feed TLS secrets embedded in a pcapng (Decryption Secrets Block) into
         // the decryptor, so a self-contained capture decrypts without an external
         // --keylog. Creates a decryptor on demand when the file carries secrets.
+        //
+        // EVERY file in the set, not `cli.primary_input()`. That returned the
+        // first `-I` ARGUMENT, so with `-I plain.pcapng -I withdsb.pcapng` the
+        // secrets in the SECOND file were never loaded: zero "TLS decryption"
+        // lines, and the run read exactly like a capture that carried no keys.
+        // A directory holding both did the same. Chronological reordering makes
+        // the first argument often not even the first file read (#48).
         #[cfg(feature = "tls")]
-        if let Some(input) = cli.primary_input() {
-            let path = std::path::Path::new(input);
+        for path in &input_files {
+            let shown = path.display();
             if let Some(ref mut dec) = tls_decryptor {
                 let added = crate::capture::decrypt::feed_embedded_secrets(path, dec);
                 if added > 0 {
-                    tracing::info!("TLS decryption: +{added} embedded DSB secret(s) from {input}");
+                    tracing::info!("TLS decryption: +{added} embedded DSB secret(s) from {shown}");
                 }
             } else if let Ok(meta) = crate::capture::pcapng_meta::read_pcapng_metadata(path)
                 && !meta.tls_secrets.is_empty()
@@ -1622,7 +1667,7 @@ impl BatchRunner {
                 let added: usize = meta.tls_secrets.iter().map(|s| d.add_keylog_text(s)).sum();
                 if added > 0 {
                     tracing::info!(
-                        "TLS decryption active: {added} secret(s) from embedded DSB in {input}"
+                        "TLS decryption active: {added} secret(s) from embedded DSB in {shown}"
                     );
                     tls_decryptor = Some(d);
                 }
@@ -1727,6 +1772,7 @@ impl BatchRunner {
             output_opts,
             event_exec,
             writer,
+            input_files,
             use_pcapng,
             export_mode,
             #[cfg(feature = "hep")]
@@ -1788,6 +1834,7 @@ impl BatchRunner {
             output_opts,
             mut event_exec,
             mut writer,
+            input_files,
             use_pcapng,
             export_mode,
             #[cfg(feature = "hep")]
@@ -2282,7 +2329,7 @@ impl BatchRunner {
         // saved to (`-O`). A live capture with neither has no pcap for tshark
         // to read, so emit a clear error instead of a bogus `capture.pcap`.
         if cli.tshark_filter.is_some() || (cli.wireshark && cli.has_input()) {
-            let input_file = tshark_input_file(cli.primary_input(), cli.output.as_deref());
+            let input_file = tshark_input_file(&input_files, cli.output.as_deref());
             if let Some(ref tshark_expr) = cli.tshark_filter {
                 // User provided a custom tshark filter expression.
                 match &input_file {
@@ -4059,18 +4106,19 @@ mod tests {
     /// The input file (`-I`) is preferred, and wins over any output file.
     #[test]
     fn tshark_input_file_prefers_input() {
+        let one = [PathBuf::from("in.pcap")];
         assert_eq!(
-            tshark_input_file(Some("in.pcap"), Some("out.pcap")).unwrap(),
+            tshark_input_file(&one, Some("out.pcap")).unwrap(),
             "in.pcap"
         );
-        assert_eq!(tshark_input_file(Some("in.pcap"), None).unwrap(), "in.pcap");
+        assert_eq!(tshark_input_file(&one, None).unwrap(), "in.pcap");
     }
 
     /// A custom `--tshark-filter` on a live capture WITHOUT `-I` references
     /// the real saved pcap (`-O`) instead of the old `capture.pcap` placeholder.
     #[test]
     fn tshark_input_file_custom_filter_without_input_uses_output() {
-        let f = tshark_input_file(None, Some("saved.pcap"))
+        let f = tshark_input_file(&[], Some("saved.pcap"))
             .expect("a saved output file is a valid tshark source");
         assert_eq!(f, "saved.pcap");
     }
@@ -4079,10 +4127,47 @@ mod tests {
     /// read: error clearly rather than emitting a bogus `capture.pcap`.
     #[test]
     fn tshark_input_file_no_input_no_output_errors() {
-        let err = tshark_input_file(None, None)
+        let err = tshark_input_file(&[], None)
             .expect_err("no pcap source must be an error, not a placeholder");
         assert!(!err.contains("capture.pcap"), "must not name a placeholder");
         assert!(err.contains("-I") && err.contains("-O"), "got: {err}");
+    }
+
+    /// A multi-file set REFUSES rather than naming one file (#48).
+    ///
+    /// `tshark -r` reads one file. Emitting the first alongside a `-Y` filter
+    /// built from every dialog sipnab found produces a command that returns a
+    /// strict SUBSET of what sipnab just reported, with nothing saying so and
+    /// exit 0. Measured with `-I sip-rtp-g711.pcap -I sip-register.pcap`: the
+    /// filter named three Call-IDs, the first of which lives only in the file
+    /// that command never opens.
+    ///
+    /// A command covering half the evidence is worse than no command, because
+    /// the operator cannot tell which half. The refusal names every file so
+    /// they can run one per file deliberately.
+    #[test]
+    fn tshark_input_file_refuses_a_multi_file_set_and_names_them_all() {
+        let set = [
+            PathBuf::from("first.pcap"),
+            PathBuf::from("second.pcap"),
+            PathBuf::from("third.pcap"),
+        ];
+        let err = tshark_input_file(&set, None)
+            .expect_err("a set tshark cannot read in one command must be refused");
+        for f in ["first.pcap", "second.pcap", "third.pcap"] {
+            assert!(
+                err.contains(f),
+                "the refusal must name every file so the operator can run one \
+                 command per file: {f} missing from {err}"
+            );
+        }
+        // Refuses even when -O could supply a single readable path: the
+        // output holds what was CAPTURED, not the files being analysed, so
+        // pointing tshark at it would answer a different question quietly.
+        assert!(
+            tshark_input_file(&set, Some("saved.pcap")).is_err(),
+            "-O must not paper over a multi-file input set"
+        );
     }
 
     // ── dispatch_sip_output ────────────────────────────────────────────

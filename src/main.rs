@@ -161,6 +161,7 @@ fn main() {
                     filter_expr: plan.filter_expr,
                     output_opts: plan.output_opts,
                     event_exec: plan.event_exec,
+                    input_files: plan.input_files,
                 },
                 plan.policy,
                 launched.raw_kill_sock,
