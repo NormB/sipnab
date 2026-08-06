@@ -1163,6 +1163,28 @@ pub struct Cli {
     )]
     pub mcp_allow_shutdown: bool,
 
+    /// Retain RTP audio payload in memory so the `export_audio` MCP tool can
+    /// decode it.
+    ///
+    /// Off by default: call audio is content, not signalling, and holding it
+    /// should be a decision an operator makes rather than a side effect of
+    /// enabling an MCP server. Without this flag `export_audio` refuses and
+    /// its refusal says retention was off for the run — a capture setting,
+    /// not a finding that the call was silent.
+    ///
+    /// Costs a per-packet payload clone and buffers up to `[limits]
+    /// max_audio_frames` frames (default 1500) per stream across at most
+    /// `--max-streams` streams. Requires --mcp, because the MCP server is the
+    /// only batch-mode consumer that can read the buffers back — retaining
+    /// without it would spend the memory on audio nothing in the run can
+    /// reach.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "retain-audio",
+        requires = "mcp"
+    )]
+    pub retain_audio: bool,
+
     /// Allow the `open_capture` MCP tool to load a different capture.
     ///
     /// Off by default, so a stock server holds the capture it was started on.

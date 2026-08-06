@@ -13,8 +13,9 @@
 //! could not succeed for any call in any capture — it failed saying "No audio
 //! streams with captured data found", which reads as a statement about the call
 //! rather than about the run. A batch run now retains exactly when it is an MCP
-//! run, which is the only batch configuration that can read the buffers back
-//! (`app::batch::apply_audio_retention`).
+//! run AND the operator passed `--retain-audio` — the only batch configuration
+//! that can read the buffers back, gated on explicit consent because call
+//! audio is content, not signalling (`app::batch::apply_audio_retention`).
 //!
 //! Both halves stay worth pinning against a real capture, because both are
 //! still reachable — the second is what every non-MCP batch run does:

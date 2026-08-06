@@ -172,7 +172,8 @@ fn nothing_to_decode(streams: &[&RtpStream]) -> String {
         "No audio payload retained: sipnab measured {packets} RTP packet(s) of {} on {} \
          decodable {}, but kept none of their payload, so there is nothing to decode. \
          Audio payload retention was off for this run — that is a capture setting, not a \
-         finding that the call was silent.",
+         finding that the call was silent. Start the server with --retain-audio to hold \
+         payload for export.",
         codecs.join("/"),
         decodable.len(),
         if decodable.len() == 1 {

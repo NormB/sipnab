@@ -1420,3 +1420,26 @@ fn cores_still_produces_the_whole_capture_views() {
         "--json-dialogs under --cores must still emit dialogs"
     );
 }
+
+/// `--retain-audio` without `--mcp` is refused at the real CLI boundary.
+///
+/// The flag arms an in-memory buffer only the MCP `export_audio` tool can
+/// read back, so without `--mcp` it would retain call audio nothing in the
+/// run can reach. A flag that parses and silently does nothing is the
+/// `--alert` defect class; clap's `requires = "mcp"` makes the combination
+/// unrepresentable, and this pins the refusal as the process's actual
+/// behaviour — exit non-zero, and an error that names the missing flag so
+/// the operator learns the remedy rather than just the rejection.
+#[test]
+fn retain_audio_without_mcp_is_refused_with_the_remedy_named() {
+    let (_stdout, stderr, code) = run_support::run(&["-N", "--retain-audio"], Some("off"));
+    assert_ne!(
+        code,
+        Some(0),
+        "--retain-audio without --mcp must be a hard CLI error, not a silent no-op"
+    );
+    assert!(
+        stderr.contains("--mcp"),
+        "the refusal must name --mcp so the operator learns the remedy: {stderr}"
+    );
+}

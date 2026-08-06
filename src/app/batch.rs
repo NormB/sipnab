@@ -748,16 +748,25 @@ pub fn run_cores_file(
 /// Whether this run should retain RTP payload bytes.
 ///
 /// Retention costs a per-packet payload clone, so it stays off unless
-/// something in *this* run can read the buffers back. Batch reporting cannot.
-/// The MCP server can: `export_audio` decodes exactly these buffers, so with
-/// retention off it could not succeed for any call in any capture, in any
-/// build — which is what it did. MCP is the only batch-mode consumer, so it is
-/// the condition.
+/// something in *this* run can read the buffers back AND the operator asked
+/// for it. Batch reporting cannot read them. The MCP server can — its
+/// `export_audio` tool decodes exactly these buffers — but "can read" stopped
+/// being the whole condition: call audio is content, not signalling, and
+/// holding it in memory for every MCP session whether or not anything will
+/// ever export it made a privacy decision on the operator's behalf. The
+/// consent half is `--retain-audio`, which clap ties to `--mcp` so the
+/// wasteful combination (retain with no reader) is unrepresentable rather
+/// than silently ignored.
+///
+/// Both conjuncts stay in the predicate even though clap enforces the
+/// implication: the `&&` is what makes this function true on its own terms,
+/// not true-by-way-of-a-parser-constraint someone can relax later without
+/// looking here.
 ///
 /// The TUI keeps its own retention decision in `tui_mode.rs`, which is why its
 /// F2 WAV export always worked against the same decoder.
 fn audio_retention_wanted(cli: &Cli) -> bool {
-    cli.mcp
+    cli.mcp && cli.retain_audio
 }
 
 /// Arm the store's retention from that decision, and report what was decided.
@@ -3917,27 +3926,66 @@ mod tests {
         );
     }
 
-    /// Retention must follow whether *this* run can read the buffers back.
+    /// Retention requires a reader AND the operator's consent — both, not
+    /// either.
     ///
-    /// The whole defect was that it did not: retention was hardcoded off, so
-    /// `export_audio` decoded an always-empty buffer and failed for every call
-    /// in every capture. Asserting the false case matters as much as the true
-    /// one — a blanket `true` would restore the per-packet clone for batch runs
-    /// that never read it, which is why it was switched off in the first place.
+    /// The history is two defects in opposite directions. First retention was
+    /// hardcoded off, so `export_audio` decoded an always-empty buffer and
+    /// failed for every call in every capture. Then the fix armed it for
+    /// EVERY `--mcp` run, holding call audio in memory whether or not
+    /// anything would ever export it — a privacy decision made on the
+    /// operator's behalf. Each single-conjunct predicate looks reasonable
+    /// alone, which is why all four combinations are pinned.
     #[test]
-    fn audio_payload_is_retained_exactly_when_mcp_can_read_it() {
+    fn audio_payload_is_retained_exactly_when_asked_and_readable() {
         let mut cli = base_cli();
 
         cli.mcp = false;
+        cli.retain_audio = false;
         assert!(
             !audio_retention_wanted(&cli),
             "a plain batch run has no reader, so it must not pay the clone"
         );
 
         cli.mcp = true;
+        cli.retain_audio = false;
+        assert!(
+            !audio_retention_wanted(&cli),
+            "enabling an MCP server is not consent to hold call audio in \
+             memory — this is the arming-by-default the opt-in exists to end"
+        );
+
+        cli.mcp = false;
+        cli.retain_audio = true;
+        assert!(
+            !audio_retention_wanted(&cli),
+            "clap refuses this combination at parse time (--retain-audio \
+             requires --mcp), but the predicate must hold on its own: \
+             retaining with no reader spends memory nothing can read back"
+        );
+
+        cli.mcp = true;
+        cli.retain_audio = true;
         assert!(
             audio_retention_wanted(&cli),
             "export_audio decodes these buffers; with retention off it cannot succeed"
+        );
+    }
+
+    /// `--retain-audio` without `--mcp` is refused at parse time, not
+    /// silently accepted and ignored.
+    ///
+    /// A flag that parses and does nothing is the `--alert` defect (#35) in
+    /// new clothes; the clap `requires` makes the combination
+    /// unrepresentable, and this pins that it stays declared.
+    #[test]
+    fn retain_audio_without_mcp_is_a_parse_error() {
+        use clap::Parser as _;
+        let err = Cli::try_parse_from(["sipnab", "-N", "--retain-audio"]);
+        assert!(
+            err.is_err(),
+            "--retain-audio without --mcp must be refused at parse time; \
+             accepting it silently retains nothing and says nothing"
         );
     }
 
@@ -3972,11 +4020,23 @@ mod tests {
         );
 
         cli.mcp = true;
+        cli.retain_audio = true;
         let mut ss = StreamStore::new(16);
         assert!(apply_audio_retention(&mut ss, &cli));
         assert!(
             ss.audio_capture(),
-            "export_audio decodes payload_buffer, so an MCP run must retain"
+            "export_audio decodes payload_buffer, so a consenting MCP run must retain"
+        );
+
+        // The middle state — MCP on, consent absent — is the arming-by-default
+        // this ticket removed, and it must land OFF on the store, not just in
+        // the predicate.
+        cli.retain_audio = false;
+        let mut ss = StreamStore::new(16);
+        assert!(!apply_audio_retention(&mut ss, &cli));
+        assert!(
+            !ss.audio_capture(),
+            "an MCP run without --retain-audio must not hold call audio"
         );
     }
 
