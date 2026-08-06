@@ -1435,7 +1435,7 @@ the process.
 Writes one call's RTP audio to a WAV in the configured root. Fails when the
 call carries no audio it can decode, rather than writing an empty file.
 
-Requires the server to have been started with `--retain-audio`: call audio is
+Requires `--retain-audio` on the server command line: call audio is
 content, not signalling, so holding it in memory is an operator decision
 rather than a side effect of enabling MCP. Without the flag the tool refuses,
 and its refusal reports the media it measured and names the flag — a capture
@@ -1976,10 +1976,10 @@ past 1000 does nothing: the cap clamps it. Page instead.
 - **Privilege drop respected.** The MCP listener binds *after*
   `privilege::drop_privileges` so sipnab runs as the unprivileged
   `sipnab` user. Default port (8731) is ≥ 1024 to permit this.
-- **Every tool call is audited.** One log line per call under the
+- **sipnab audits every tool call.** One log line per call under the
   `mcp_audit` target: the tool name, the JSON-RPC request id, the caller,
   the outcome (`ok`, `tool_error`, or `refused`), the elapsed time, and the
-  arguments bounded to one line. Refused calls are audited too — an agent
+  arguments bounded to one line. The log covers refused calls too — an agent
   probing for tools that do not exist is exactly the traffic the record
   exists to show. The caller field names what the transport can prove:
   `stdio` for the local pipe, and for HTTP the peer socket plus whether the
