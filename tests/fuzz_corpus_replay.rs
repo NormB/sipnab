@@ -131,20 +131,32 @@ fn sdp_seeds() -> Vec<Vec<u8>> {
 // Shared deterministic xorshift PRNG (see `smoke_fuzz_test.rs` for the mirror
 // consumer). The `mutate` helper below is a deliberately simpler 4-op strategy
 // than smoke's richer 6-op sweep, so it stays local: sharing it would change
-// the byte stream and break this file's corpus reproducibility.
+// the byte stream and break this file's corpus reproducibility. The two take
+// their arguments in the SAME order, though — the strategies differ on
+// purpose, the signatures differed by accident.
 #[path = "support/fuzz.rs"]
 mod fuzz;
 use fuzz::Rng;
 
 /// Mutate a seed by flipping/overwriting/truncating bytes — deterministic.
 ///
+/// Argument order matches `smoke_fuzz_test.rs`'s `mutate` on purpose. The two
+/// BODIES stay different for the reason given at the top of this file, but
+/// they used to differ in signature as well — `(seed, rng)` here against
+/// `(rng, seed)` there — so the same name meant two different call shapes.
+/// The compiler catches a swapped call (the types differ), but a reader moving
+/// between the two files does not, and there is no benefit to the divergence.
+///
+/// Aligning the order cannot disturb this file's corpus reproducibility: the
+/// body is untouched, so the sequence of PRNG draws is identical.
+///
 /// # Arguments
-/// * `seed` — base input to mutate.
 /// * `rng` — deterministic PRNG driving 1-6 mutation ops.
+/// * `seed` — base input to mutate.
 ///
 /// # Returns
 /// The mutated byte vector.
-fn mutate(seed: &[u8], rng: &mut Rng) -> Vec<u8> {
+fn mutate(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
     let mut out = seed.to_vec();
     if out.is_empty() {
         out.push(rng.byte());
@@ -221,7 +233,7 @@ fn parsers_never_panic_on_mutation_sweep() {
     let mut failures = Vec::new();
     for round in 0..5000u32 {
         let base = &seeds[(round as usize) % seeds.len()];
-        let m = mutate(base, &mut rng);
+        let m = mutate(&mut rng, base);
         let s = m.clone();
         if let Err(l) = ran_without_panic(&format!("sip mut #{round}"), move || drive_sip(&s)) {
             failures.push(l);

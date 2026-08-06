@@ -56,6 +56,7 @@ use sipnab::DialogStore;
 use sipnab::net::TransportProto;
 use sipnab::sip::dialog::DialogState;
 use sipnab::sip::message::SipMessage;
+use sipnab::sip::method::SipMethod;
 use sipnab::sip::parser::parse_sip_bytes;
 
 const CALLER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
@@ -333,7 +334,9 @@ fn arrival_order_converges_when_the_invite_machine_is_selected() {
 
         for (name, order) in permutations(n) {
             // `late_terminal` is the one order that can lead with a non-INVITE
-            // REQUEST; it is pinned separately below.
+            // REQUEST, which selects the wrong state machine. That is a known,
+            // unfixed defect pinned by its own test below, not a convergence
+            // failure this test should also report.
             if name == "late_terminal" && first_is_non_invite_request(shape, &order) {
                 continue;
             }
@@ -355,67 +358,52 @@ fn arrival_order_converges_when_the_invite_machine_is_selected() {
 fn first_is_non_invite_request(shape: Shape, order: &[usize]) -> bool {
     let msgs = parsed_call(shape);
     let first = &msgs[order[0]];
-    first.is_request && first.method.as_ref().map(|m| m.as_str()) != Some("INVITE")
+    first.is_request && first.method.as_ref().map(SipMethod::as_str) != Some("INVITE")
 }
 
-/// **The answer to PR1's blocker, pinned.** Out-of-order arrival is NOT
-/// harmless: a non-INVITE request arriving first selects the wrong state
-/// machine, and the call's outcome is then silently wrong.
+/// **A capture that BEGINS MID-DIALOG still reports the wrong outcome.** This
+/// pins a KNOWN, UNFIXED defect so it cannot be mistaken for working.
 ///
-/// `SipDialog::new` takes the dialog's `method` from whichever message arrives
-/// first (`src/sip/dialog.rs`), and `update_state` dispatches on that method.
-/// Lead with the CANCEL and the dialog is created with `method = Cancel`, so
-/// every later message routes to `update_generic_state` — which inspects only
-/// responses and has no CANCEL rule. The 487 is `ResponseClass::Cancelled`,
-/// which that function ignores, and the INVITE is a request, which it also
-/// ignores. The call sticks at `Trying`: reported as still in progress, hours
-/// after the caller hung up.
+/// Start capturing while calls are already up — which is most captures on a
+/// busy server — and the first message of a call is a `BYE` or a `CANCEL`,
+/// never the INVITE. `SipDialog::new` then labels the dialog with that method,
+/// and `update_state` dispatches the state machine on the label, so every later
+/// message routes to `update_generic_state` — which inspects only responses and
+/// has no rule for BYE or CANCEL. The call sits at `Trying`: reported as still
+/// in progress, with a complete message log to make it look right.
 ///
-/// This is asserted rather than left failing because it is the CURRENT,
-/// REAL behaviour and this file must be green on `main`. If someone fixes it,
-/// this test fails — and that is the signal to mark PR1's blocker settled in
-/// the other direction and delete this test.
+/// The obvious fix — dispatch on the method the request *implies*, since BYE
+/// and CANCEL cannot open a dialog (RFC 3261 §15, §9) — was tried and reverted
+/// on 2026-08-06. It is almost certainly the right shape, but the INVITE
+/// machine guards its `2xx`, `487` and `3xx` arms on conditions a BYE/CANCEL
+/// response does not meet, and `every_method_and_class_has_a_declared_transition`
+/// found a different unmodelled cell on each of five attempts. Landing a
+/// half-modelled state machine in the thing that decides whether a call is up
+/// is worse than the bug it fixes.
 ///
-/// It also bounds a live defect that has nothing to do with PR1: a capture
-/// that begins mid-dialog, after the INVITE, leads with whatever request comes
-/// next and lands in the same place.
+/// Asserted rather than left failing, because this file must be green on
+/// `main`. When the dispatch fix lands properly, this test FAILS — and that is
+/// the signal to replace it with the convergence assertion it is standing in
+/// for.
 #[test]
-fn a_non_invite_request_arriving_first_selects_the_wrong_state_machine() {
-    // CANCEL, 487, INVITE, 100, 180 — the ending ahead of the beginning.
-    let order = [3usize, 4, 0, 1, 2];
-    assert!(
-        first_is_non_invite_request(Shape::Cancelled, &order),
-        "this test is only meaningful while the order leads with a non-INVITE \
-         request; the fixture changed out from under it"
-    );
-
-    let got = observe(Shape::Cancelled, &order);
-    let baseline = observe(Shape::Cancelled, &[0, 1, 2, 3, 4]);
-
+fn a_capture_beginning_mid_dialog_reports_trying_a_known_defect() {
+    // Only the ending: CANCEL, then its 487. The INVITE was before the capture.
+    let msgs = parsed_call(Shape::Cancelled);
+    let mut store = DialogStore::new(64, false);
+    for i in [3usize, 4] {
+        store.process_message(msgs[i].clone());
+    }
+    let dialog = store
+        .get(Shape::Cancelled.call_id())
+        .expect("a mid-dialog capture still yields a dialog");
     assert_eq!(
-        baseline.state,
-        DialogState::Cancelled,
-        "control: in timestamp order the call is Cancelled"
-    );
-    assert_eq!(
-        got.state,
+        *dialog.state(),
         DialogState::Trying,
-        "known divergence: leading with CANCEL selects update_generic_state, \
-         which has no CANCEL rule, so the call never leaves Trying. Got \
-         {got:?}. If this now matches the baseline the defect is FIXED — \
-         update PR1's blocker note in docs/design/backlog.md and remove this \
-         test."
-    );
-    // Everything except the state still agrees, which is what makes the
-    // divergence dangerous: the message log looks complete.
-    assert_eq!(
-        got.msg_count, baseline.msg_count,
-        "no message is lost — only the outcome is wrong, which is why this \
-         cannot be caught by counting"
-    );
-    assert_eq!(
-        got.status_codes, baseline.status_codes,
-        "responses all present"
+        "known defect: a capture opening on the CANCEL reports the call as \
+         still Trying. If this is now Cancelled the defect is FIXED — replace \
+         this test with a convergence assertion and update PR1 in \
+         docs/design/backlog.md. Got {:?}",
+        dialog.state()
     );
 }
 

@@ -239,7 +239,8 @@ impl SipMatcher {
 ///
 /// Applies case-insensitive mode, word-boundary wrapping, and
 /// dot-matches-newline as requested. The compiled regex is limited to
-/// [`REGEX_SIZE_LIMIT`] bytes to prevent ReDoS attacks (D17).
+/// [`REGEX_SIZE_LIMIT`] bytes, capping the memory and compile-time cost of a
+/// pathological pattern (D17).
 ///
 /// # Errors
 ///
@@ -278,7 +279,7 @@ fn compile_pattern(
 ///
 /// Identical in options to [`compile_pattern`] (case-insensitivity,
 /// word-boundary wrapping, dot-matches-newline, and the [`REGEX_SIZE_LIMIT`]
-/// ReDoS guard) but targets `&[u8]` haystacks. The payload filter therefore
+/// compile-cost cap) but targets `&[u8]` haystacks. The payload filter therefore
 /// matches the captured bytes directly instead of a lossy UTF-8 copy: it
 /// allocates nothing per message, and non-UTF-8 payloads (binary bodies)
 /// that lossy conversion would have mangled into U+FFFD replacement
@@ -832,7 +833,7 @@ mod tests {
     /// An `-e` pattern over the 1 MB size limit is rejected.
     #[test]
     fn match_expr_oversized_via_flag_errors() {
-        // A >1 MB `-e` pattern trips the ReDoS size guard.
+        // A >1 MB `-e` pattern trips the compiled-program size limit.
         let huge = "a".repeat(2_000_000);
         let cli = Cli::parse_from_args(["sipnab", "-e", &huge]);
         assert!(SipMatcher::new(&cli, cli.match_expr.as_deref()).is_err());

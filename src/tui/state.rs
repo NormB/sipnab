@@ -51,6 +51,23 @@ pub enum TimestampMode {
     /// Delta from the first message (`+N.NNNs`).
     DeltaFirst,
     /// Time-proportional: insert spacer rows for large timing gaps.
+    ///
+    /// **Only the call-flow ladder renders this.** It is the one mode whose
+    /// behaviour is not universal, and the declaration is where a reader
+    /// decides what a mode means, so the exception belongs here rather than
+    /// only at the call sites that implement it:
+    ///
+    /// * `call_flow::prepare` stretches the ladder with spacer rows — the
+    ///   behaviour this doc comment describes.
+    /// * The call list (`call_list.rs`) has no distinct rendering and falls
+    ///   through to [`TimestampMode::DeltaPrev`]. Spacer rows are a ladder
+    ///   concern; a dialog list has no gap to stretch.
+    /// * `call_flow::render`'s options-aware Paragraph path also falls back to
+    ///   delta-from-previous, with no spacer rows.
+    ///
+    /// So selecting `Scaled` changes two of the three surfaces not at all. That
+    /// is deliberate, but it is not guessable from the name, and a reader who
+    /// takes this variant at its word would report the call list as broken.
     Scaled,
 }
 

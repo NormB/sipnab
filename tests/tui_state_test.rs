@@ -3365,9 +3365,17 @@ mod tui_state {
     fn file_open_browser_navigates_to_pcap_samples() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let samples = manifest_dir.join("tests/pcap-samples");
-        if !samples.is_dir() {
-            return;
-        }
+        // Assert, do not skip. `if !is_dir { return }` made this test report
+        // green on a checkout without the fixtures while asserting nothing --
+        // the same silent-skip the three sibling tests in this file were
+        // already fixed for. A missing fixture is a broken checkout, and it
+        // should say so rather than manufacture a pass.
+        assert!(
+            samples.is_dir(),
+            "fixture directory missing: {} -- this test cannot run without it, \
+             and passing without running it is worse than failing",
+            samples.display()
+        );
 
         let mut app = App::new_test();
         app.set_open_dir_for_test(manifest_dir.clone());

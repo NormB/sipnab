@@ -75,13 +75,22 @@ Tiers:
   --lib --all-targets` clean, `cargo fmt --check` clean, `cargo test --test
   capture_test` 16/16. **Done (the surfacing half, tracked as CT1b in
   `capture-tuning-tasks.md`):** the counts now reach the batch summary
-  (`src/app/batch.rs:788`, through `kernel_drop_counts()`), `/v1/stats`
-  (`src/output/api.rs:976`, `kernel_dropped_packets`), the MCP `stats` tool
-  (`src/mcp/server.rs`) and Prometheus (`src/output/prometheus.rs:467`,
+  (`src/app/batch.rs:938`, through `kernel_drop_counts()`), `/v1/stats`
+  (`src/output/api.rs:984`, `kernel_dropped_packets`), the MCP `stats` tool
+  (`src/mcp/server.rs`) and Prometheus (`src/output/prometheus.rs:499`,
   `sipnab_capture_kernel_dropped_packets_total`, asserted in
   `tests/metrics_test.rs`). `INVALID_PCAP_TIMESTAMPS` was closed in the same pass
-  — see G1 — so all three counters travel together as one `capture_quality`
-  block with a single `degraded` flag. What remains is not CT1: proving the ring
+  — see G1 — so those counters travel together as one `capture_quality`
+  block with a `degraded` flag. **Corrected 2026-08-06:** this used to read
+  *"all three counters travel together … with a single `degraded` flag"*, and
+  there are four counters now. `CaptureQuality`
+  (`src/output/prometheus.rs:107`) gained `undecodable_frames` — frames that
+  arrived intact and produced nothing because no decoder here could read them —
+  and its doc comment says it is deliberately **not** part of `degraded`. So the
+  rollup no longer covers every counter in the block, and a dashboard reading
+  `degraded == false` as "all four are zero" gets the wrong answer on exactly
+  the loss channel that is about sipnab rather than the host.
+  What remains is not CT1: proving the ring
   default against a measured `dropped` of zero at line rate is CT2b, and nothing
   here is measured on a live NIC at all (V1). Both are in
   `capture-tuning-tasks.md`.
@@ -185,9 +194,9 @@ Tiers:
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` (`src/app/bootstrap.rs:1504`) is
+  `immediate_mode_for(mode)` (`src/app/bootstrap.rs:1537`) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
-  question; `bootstrap.rs:513` assigns its result to
+  question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and `src/capture/live.rs:219-220` passes that
   one value to both `.immediate_mode()` and `.timeout()`. The V3 timeout trap
   above was handled rather than inherited: `read_timeout_ms`
@@ -283,13 +292,13 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  (`src/app/bootstrap.rs:1842`) returns the message and the reason —
+  (`src/app/bootstrap.rs:1875`) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
-  rather than reading a saved file — and `bootstrap.rs:483` warns with it.
+  rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
   and refusing would break a wrapper script that passes `--cores` uniformly.
-  Its sibling `metrics_ignored_on_cores_warning` (`:1881`) closes the same
-  silence for `--metrics` on the `--cores` path. Tests from `bootstrap.rs:2314`
+  Its sibling `metrics_ignored_on_cores_warning` (`:1914`) closes the same
+  silence for `--metrics` on the `--cores` path. Tests from `bootstrap.rs:2431`
   pin both the message and the paths that must stay quiet.
 - [x] **LK1 — `fork`/`exec`, stdout writes and a third lock all happen while
   holding BOTH store write locks.** `src/app/batch.rs:1553-1554` takes
@@ -318,17 +327,18 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` (`src/mcp/server.rs:2078`) currently takes
+  nowhere; `security_findings` (`src/mcp/server.rs:2840`) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
   drop, then add the missing lock-ordering rule to `invariants.md`. Ship with a
   before/after throughput number and a `dropped` delta from CT1. **Done:**
-  `DeferredEffects` (`src/app/batch.rs:333`, impl at `:456`) carries a packet's
+  `DeferredEffects` (`src/app/batch.rs:341`, impl at `:464`) carries a packet's
   output, alert findings and hook commands out of the guarded section. It is
-  built at `:1860`, passed by `&mut` into the per-packet body (`:2482`) and
-  destructured and replayed at `:2510`, after both guards have dropped — so the
-  block that now begins at `batch.rs:2071-2072` contains no `fork`/`exec`, no
+  built at `:2032`, passed by `&mut` into the per-packet body (`:2695`) and
+  destructured and replayed at `:2723`, after both guards have dropped — so the
+  block that now begins at `batch.rs:2243-2244` (`ds_guard`, then `ss_guard`)
+  contains no `fork`/`exec`, no
   stdout write and no `AlertEngine` lock. The event-exec engine follows the same
   split: `queue_*` decides a hook under the guards, where it needs the store, and
   `dispatch_pending` spawns it once they are gone, with
@@ -374,14 +384,14 @@ Tiers:
 - [x] src/capture/mod.rs:295 — [correctness] leftover-map eviction victim is arbitrary (`keys().next()`), not oldest; active session's partial can be evicted. **Done:** `tcp_sip_leftover` is now an `IndexMap` where every touch removes-then-reinserts at the tail (map order = update recency) and eviction is `shift_remove_index(0)` — deterministic least-recently-updated victim, matching the crate's existing bounded-map pattern.
 - [x] src/capture/mod.rs:210 — [missed-edge-case] reassembled fragmented TCP datagram bypasses TCP reassembler/SIP framer. **Done:** when a completed IP reassembly re-parses as TCP, the segment's seq/flags are recovered from the reassembled TCP header and the datagram is routed through the normal TCP path (`process_tcp`), so it joins its stream at the correct sequence position and spanning SIP messages frame correctly; UDP reassemblies keep the direct path.
 - [x] src/capture/writer.rs:348 — [correctness] `--split filesize:N` counts only payload bytes, not record framing; systematic underestimate. **Done:** `bytes_written` now adds the on-disk record framing (16-byte classic-pcap header, or the 32-byte-plus-padded EPB) so rotation fires at the real file size.
-- [x] src/capture/writer.rs:335 — [missed-edge-case] every EPB written with interface_id 0; multi-device capture loses per-interface attribution. *Scope note:* the writer emits a single IDB by design, so proper per-interface attribution needs multi-IDB support (one IDB per source interface + mapping `Packet.interface` to an id) — a feature, not a one-liner; deferred. **Done:** `PcapWriter` now keeps an interface table (index = pcapng `interface_id`; entry 0 = the constructor-supplied capture source) and maps each packet's `Packet.interface` to its id, writing a new IDB mid-stream (with `if_name` + the tagging packet's own link type, since devices can differ, e.g. `any` = Linux SLL) the first time an unseen interface appears — pcapng explicitly allows interleaved IDBs, and `pcap-file`'s writer validates EPB ids against them. No `Packet` change was needed: live capture already tags every packet with its device name (one `capture_live` per device in multi-capture), file replay tags `None` (→ id 0, byte-identical single-interface output). `--split` rotation re-emits SHB + IDBs for ALL seen interfaces in id order so every file is self-contained, and the size accounting now counts SHB/IDB header bytes (EPB/IDB sizes come from `write_pcapng_block`'s return; SHB measured via a throwaway `Vec` serialization so the `BufWriter` is never flushed early; classic pcap accounting unchanged). Reader-side per-interface handling remains tracked separately (pcap_reader.rs entry above).
+- [x] src/capture/writer.rs:335 — [missed-edge-case] every EPB written with interface_id 0; multi-device capture loses per-interface attribution. *Scope note:* the writer emits a single IDB by design, so proper per-interface attribution needs multi-IDB support (one IDB per source interface + mapping `Packet.interface` to an id) — a feature, not a one-liner; deferred. **Done:** `PcapWriter` now keeps an interface table (index = pcapng `interface_id`) and maps each packet's `Packet.interface` to its id, writing a new IDB mid-stream (with `if_name` + the tagging packet's own link type, since devices can differ, e.g. `any` = Linux SLL) the first time an unseen interface appears — pcapng explicitly allows interleaved IDBs, and `pcap-file`'s writer validates EPB ids against them. No `Packet` change was needed: live capture already tags every packet with its device name (one `capture_live` per device in multi-capture), file replay tags `None` (→ id 0, byte-identical single-interface output). `--split` rotation re-emits SHB + IDBs for ALL seen interfaces in id order so every file is self-contained, and the size accounting now counts SHB/IDB header bytes (EPB/IDB sizes come from `write_pcapng_block`'s return; SHB measured via a throwaway `Vec` serialization so the `BufWriter` is never flushed early; classic pcap accounting unchanged). Reader-side per-interface handling remains tracked separately (pcap_reader.rs entry above). **Corrected 2026-08-06:** this used to describe the table as having *"entry 0 = the constructor-supplied capture source"*, and a later refinement replaced that. The table now starts **empty** (`src/capture/writer.rs:353-356`); the first packet decides what interface 0 is called, identity is keyed on `(name, link_type)`, and the constructor's `default_source` is consulted only when that first packet carries no source of its own. The shipped behaviour is what the entry claims; the mechanism it names is not the one in the file.
 - [x] src/capture/decrypt.rs:846 — [correctness] TLS 1.2 CLIENT_RANDOM derivation accepts first ServerHello that works; concurrent handshakes can mis-bind. **Done:** ClientHello randoms are queued FIFO and each ServerHello is paired with the oldest unanswered one; a keylog CLIENT_RANDOM entry now binds only to the handshake whose ClientHello random matches exactly (fallback to unknown-client_random handshakes for mid-handshake captures). **Done (cross-connection):** `process_record` now takes the TCP 4-tuple as src/dst `SocketAddr`s (caller in batch.rs passes `pp.src_addr`/`pp.dst_addr` + ports); the pending-ClientHello FIFO is per-connection, keyed by the direction-normalized (ordered) endpoint pair, so a ServerHello pops only its own connection's queue and CH1(A),CH2(B),SH2(B),SH1(A) pairs correctly. Map bounded at 4096 connections (IndexMap, oldest-inserted out, matching `names.rs`) with a 32-entry per-connection queue cap.
 - [x] src/sip/dialog_store.rs:313 — [correctness] retransmission floods at message cap never advance `updated_at`; dialog can be wrongly compacted as idle. **Done:** the retransmission branch stamps `updated_at` from the arriving message's timestamp (not the stored tail's), so a dropped at-cap retransmission still counts as activity and `compact_idle` sees the dialog as live.
 - [x] src/sip/dialog.rs:369 — [missed-edge-case] CANCEL/200-OK race: 2xx after CANCEL leaves state Cancelled though the call was established per RFC 3261. **Done:** a 2xx to INVITE now transitions Cancelled → InCall (the 2xx wins the race per RFC 3261 §9/§15).
 - [x] src/sip/dialog.rs (update_register_state) — [missed-edge-case] 401/407 challenge marks REGISTER dialog Failed; challenge-only capture reads as failure rather than auth-pending. **Done:** 401/407 leave the state unchanged (auth pending); only a genuine 4xx-6xx marks Failed, a later 2xx marks Registered.
 - [x] src/sip/timing.rs:135 — [edge-case] `answered_at` matches any 200-to-INVITE without CSeq check; re-INVITE 200 can be recorded as answer time. **Done:** `DialogTiming` records the initial INVITE's CSeq; the 100/180/200 INVITE-response milestones are pinned to it (fallback to first-match when the INVITE wasn't captured).
 - [x] src/sip/message.rs:117 — [edge-case] `cseq()` keeps trailing garbage in method (`"INVITE extra"`), defeating comparisons in timing.rs; untested. **Done:** `cseq()` returns only the single method token via `split_whitespace`.
-- [x] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done:** the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None.
+- [ ] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed (`src/sip/message.rs:276`): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` (`src/sip/message.rs:309`) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function.
 - [x] src/sip/siprec.rs:66 — [adversarial] `split_multipart` splits on `--boundary` anywhere, not line-anchored per RFC 2046. **Done:** the split is a manual scan that only accepts `--boundary` at the start of a line (body start or preceded by `\n`, covering CRLF and the parser's existing bare-LF tolerance); mid-line occurrences inside part content are literal text. Preamble, missing-terminator, and `--boundary--` handling unchanged.
 - [x] src/sip/sdp_timeline.rs:184 — [bug-risk] repeated T.38 re-INVITEs re-emit T38Switch every other exchange (suppression checks only previous event). **Done:** `SdpExchange` now records `is_t38` and suppression compares the previous exchange's media *state* (`is_t38 && !prev.is_t38`), matching how hold/resume compare `prev.mode` — one T38Switch per genuine audio→T.38 transition, re-emitted only after a real return to audio.
 - [x] src/sip/dsl.rs:1069 — [correctness] `compare_num` absolute-epsilon equality is effectively exact for values ≥2; `duration == 5.0` ~never matches. **Done:** `==`/`!=` use `NUM_EQ_TOLERANCE = 5e-4` — half the finest domain step, since every numeric field is integral (ports, counts) or millisecond-derived (duration/pdd/setup, jitter, MOS/loss to ≥0.1) — absorbing float noise while keeping adjacent domain values (5.001 vs 5.0) distinct.
@@ -391,7 +401,7 @@ Tiers:
 - [x] src/output/api.rs:827 — [correctness] `get_stream` matches SSRC alone; collisions return arbitrary stream. **Done:** on an SSRC collision the endpoint now returns the most-active matching stream (`max_by_key(packet_count)`) deterministically, so a colliding orphan can't shadow the real media stream.
 - [x] api.rs:949 vs prometheus_server.rs:433 — [correctness] `sipnab_messages_total` divergent semantics between the two servers. **Done:** the REST `/metrics` handler now counts messages (`+= d.messages.len()`) like the standalone server, instead of one per dialog; both agree.
 - [x] src/output/mod.rs:36 — [config] prometheus_server gated behind `api` feature though built to avoid it; `--metrics` without api can't work. **Done:** new `metrics = ["native", "dep:base64"]` feature (in `default` + `full`) gates the standalone server and its wiring instead of `api`, so `--metrics` works in the default build (which has no `api`); CI gained a `metrics`-only build to keep the decoupling enforced.
-- [x] src/output/synthetic.rs — [correctness] >64KiB payloads: length fields saturate but payload appended; header/size disagree. **Done:** the SIP payload is truncated to `u16::MAX - 28` so the IP/UDP length fields equal the bytes actually written (a single IPv4 datagram can't carry more), instead of a saturated length with a longer body.
+- [x] src/output/synthetic.rs — [correctness] >64KiB payloads: length fields saturate but payload appended; header/size disagree. **Done in the code, and the code's own doc comment still says the opposite.** `build_synthetic_packet` (`src/output/synthetic.rs:29`) truncates the SIP payload to `u16::MAX - 28` so the IP/UDP length fields equal the bytes actually written (a single IPv4 datagram can't carry more), instead of a saturated length with a longer body. But the rustdoc four lines above it (`src/output/synthetic.rs:26-28`) still reads *"payloads longer than a u16 length field saturate the UDP/IP length fields at `u16::MAX` rather than panicking or truncating the data"* — the pre-fix behaviour, asserted as current, on a public function. Fixing the code and leaving the doc that contradicts it is the same defect one layer up.
 - [x] src/output/event_exec.rs:231 — [resource-leak] `try_wait` error drops Child from tracking without kill/wait. **Done:** a `try_wait` error now kills and waits the child before dropping it (via the extracted, testable `reap_action`), so it is reaped instead of leaked as a zombie.
 - [x] src/tui/save.rs:783 — [edge-case] SIPp export string-replaces destination port digits; can corrupt unrelated URI parts. **Done:** new `sipp_placeholder_uri` parses the R-URI structurally (userinfo/hostport/params, IPv6 brackets) and substitutes `[remote_ip]`/`[remote_port]` only for the actual host and port components — a user part like `15080` with dst port 5080 survives intact.
 - [x] src/tui/call_flow/export.rs:86 — [correctness] RTP-bar rows export as Mermaid self-arrows; want `is_rtp_bar` skip like `is_spacer`. **Done:** the exporter skips `is_rtp_bar` rows exactly like spacers; bars still render in the TUI ladder.
@@ -421,16 +431,23 @@ Tiers:
   one "capture quality" block carrying invalid timestamps, kernel drops and
   interface drops together, surfaced everywhere the counts are. **Done, in that
   same pass, and as one block:** `/v1/stats` carries `"invalid_timestamps"`
-  (`src/output/api.rs:978`) beside the two drop counts; Prometheus exports
-  `sipnab_capture_invalid_timestamps_total` (declared at
-  `src/output/prometheus.rs:107`, read from the atomic at `:137`, rendered at
-  `:491`, and named in `tests/metrics_test.rs` so a rename cannot silently drop
-  it); the MCP `stats` tool carries the field (`src/mcp/server.rs:1213`,
-  populated at `:1239`) and reports it as a delta between two calls (`:1540`);
-  and the batch summary explains it in prose (`src/app/batch.rs:770-809`). The
+  (`src/output/api.rs:986`) beside the two drop counts; Prometheus exports
+  `sipnab_capture_invalid_timestamps_total` (the field is declared at
+  `src/output/prometheus.rs:119`, read from the atomic at `:149`, rendered at
+  `:523`, and named in `tests/metrics_test.rs` so a rename cannot silently drop
+  it); the MCP `stats` tool carries the field (`src/mcp/server.rs:1330`,
+  populated at `:1356`) and reports it as a delta between two calls (`:1676`);
+  and the batch summary explains it in prose
+  (`src/app/batch.rs:905-925`, the doc comment on `report_capture_quality`). The
   three counters stay separate rather than summed, because the remedies
   disagree — a bigger `-B` fixes kernel drops, nothing about the buffer fixes a
   corrupt timestamp — with one `degraded` flag rolling them up for a dashboard.
+  **Corrected 2026-08-06:** a fourth counter, `undecodable_frames`, has since
+  joined the same `capture_quality` block and is deliberately outside
+  `degraded` (`src/output/prometheus.rs:187` lists what the flag actually
+  covers). The prose above describes three because three is what this pass
+  shipped; the block is no longer three wide, and `degraded` is no longer a
+  rollup of all of it. See CT1.
 - [ ] **CT3 — `--snaplen` defaults to 65535, so every packet is copied whole
   even for SIP-only work.** `src/app/bootstrap.rs:1357` —
   `cli.snaplen.or(config.capture.snaplen).unwrap_or(65535)`. The flag exists
@@ -455,7 +472,7 @@ Tiers:
   a given capture was truncated.
 - [ ] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
   `grep -rn 'FANOUT\|fanout' src/` matches nothing. `--cores N` is offline-only
-  (`RunMode::CoresFile` requires `-I`, `src/app/bootstrap.rs:433`), so on a busy
+  (`RunMode::CoresFile` requires `-I`, `src/app/bootstrap.rs:519`), so on a busy
   server the live path is one `capture-<device>` thread feeding one processing
   loop — exactly the topology CT2 overflows. Linux `PACKET_FANOUT` is the
   standard answer: N sockets on one interface, kernel-side flow-hashed
@@ -546,11 +563,27 @@ Tiers:
   dispatches on it — so a leading `CANCEL` routes every later message to
   `update_generic_state`, which inspects only responses and has no CANCEL rule.
   The call sticks at `Trying`. Pinned by
-  `a_non_invite_request_arriving_first_selects_the_wrong_state_machine`. Until
-  that is fixed, N parallel readers **must** preserve per-dialog ordering, or
-  sort before the worker's state machine sees the messages. Sharding by host
-  pair does not achieve this on its own: both directions of one call land on
-  one worker, but nothing orders them across files.
+  `a_capture_beginning_mid_dialog_reports_trying_a_known_defect`.
+
+  **The obvious fix was tried and REVERTED on 2026-08-06.** Dispatching on the
+  method the request *implies* — a `BYE` or `CANCEL` cannot open a dialog, so
+  it belongs to an INVITE — is almost certainly the right shape, and it is not
+  a one-liner. The INVITE machine guards its `2xx`, `487` and `3xx` arms on
+  conditions a `BYE`/`CANCEL`-seeded dialog does not meet (chiefly
+  `cseq_method == "INVITE"`), so routing to it leaves cells unmodelled rather
+  than filled. Five successive narrowings — dispatch-only rather than
+  relabelling the user-visible `dialog.method`, then `BYE|CANCEL` only, then a
+  rewritten spec matrix — each had
+  `every_method_and_class_has_a_declared_transition` find a *different*
+  uncovered cell (the last: a BYE dialog in `Trying` receiving `300` stayed
+  `Trying` instead of reaching `Redirected`). Whoever picks this up should
+  budget for completing the INVITE machine's guard set, not for a dispatch
+  tweak.
+
+  Until that is fixed, N parallel readers **must** preserve per-dialog
+  ordering, or sort before the worker's state machine sees the messages.
+  Sharding by host pair does not achieve this on its own: both directions of
+  one call land on one worker, but nothing orders them across files.
 
 - [x] **TUI copy/paste (user-reported 2026-07-24)** — mouse capture blocks the terminal's native drag-select on every view, and the only clipboard feature (call-flow `E` Mermaid export) shells out to pbcopy/xclip, which fails over SSH. Plan: OSC 52 as primary clipboard mechanism (terminal puts text on the local clipboard; works over SSH) with pbcopy/xclip fallback; `y` copy binding on the message-detail pane; a mouse-capture toggle key so native selection works everywhere; help + docs updated (including the Shift+drag bypass tip). **Done:** new `tui::clipboard` module — OSC 52 written to /dev/tty (72 KiB raw bound, char-boundary truncation, xterm-safe base64 size) with silent pbcopy/xclip belt-and-suspenders and honest status wording; `y` yanks the displayed raw message (detached worker + status line, same pattern as `E`); F12 toggles mouse capture (audited free across views; rebind wins; persistent status reminder while off); help view, keybindings docs and website mirror updated with a Copying-text section.
 
@@ -612,7 +645,7 @@ Tiers:
 - [x] src/tui/controllers/call_flow.rs:413 — [efficiency] `flow_visible_msg_count` computes raw_count even when cached value wins. **Done:** `flow_visible_msg_count` returns the cached count early, computing `raw_count` only on a cache miss.
 - [x] src/tui/controllers/call_list.rs:307 — [efficiency] `clear_calls` Vec::contains inside retain O(n·m); HashSet. **Done:** `clear_calls` builds a HashSet of the ids to remove once — O(n+m) instead of O(n·m).
 - [x] src/tui/controllers/save_dialog.rs:35 — [missed-edge-case] Enter queues PendingSave with empty path; validate at dialog. **Done:** Enter on a blank/whitespace path is rejected with a status message and keeps the dialog open instead of queuing a doomed save.
-- [x] src/tui/timeline.rs — [tracking] timeline wheel/navigation are placeholders; don't ship navigation-less. **Done:** resolved as: the CallTimeline is a static single-screen view (one call, always fits, no scroll/selection), so "no navigation" is correct — the placeholder wording was the defect. Misleading language removed, the static contract documented in code + help, and tests pin that wheel/nav keys are inert.
+- [ ] src/tui/timeline.rs — [tracking] timeline wheel/navigation are placeholders; don't ship navigation-less. **Done:** resolved as: the CallTimeline is a static single-screen view (one call, always fits, no scroll/selection), so "no navigation" is correct — the placeholder wording was the defect. Misleading language removed, the static contract documented in code + help, and tests pin that nav keys are inert. **Corrected 2026-08-06:** this used to end *"tests pin that wheel/nav keys are inert"*, and only the nav half is tested. `timeline_action_leaves_navigation_keys_unbound` (`src/tui/controllers/timeline.rs:122`) covers Up/Down/j/k/Left/Right/PgUp/PgDn/Home/End/Enter. Wheel inertness is code-only — `View::CallTimeline(_) => {}` in the mouse dispatcher (`src/tui/controllers/mod.rs:599`) — and no test anywhere drives a wheel event in this view, so the arm that makes the contract true is the one nothing would notice losing.
 - [x] src/tui/render/popups.rs:648 — [edge-case] `field_width - 2` debug underflow on very narrow terminal. **Done:** `field_width.saturating_sub(2)` — no debug underflow on a sub-2-column field.
 - [x] src/tui/render/popups.rs:801 — [edge-case] `(iw - 4)` underflow below ~6 cols. **Done:** `iw.saturating_sub(4)` for the separator — no underflow below ~6 columns.
 - [x] src/tui/render/status.rs:48 — [edge-case] byte-offset slicing vs char-count padding misaligns styled span for non-ASCII filenames. **Done:** status line 1 is assembled from discrete width-placed spans with a display-width trailing fill, eliminating byte-offset-into-padded-string slicing and the fragile `find("PAUSED")`; non-ASCII capture-mode labels align.
@@ -727,7 +760,7 @@ Tiers:
 - [x] src/sip/dialog_store.rs:617 — [dead-code] `.filter(score >= 50)` can never filter (min emitted score is 50). **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/dsl.rs:685 — [missed-edge-case] quoting-hint keyword exclusion is lowercase-only while parser is case-insensitive; `method == TRUE` gets misleading hint. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/mod.rs:84 — [duplication] `find_crlf` duplicated verbatim in parser.rs. **Done (P3 code-health wave, 2026-07-24).**
-- [ ] src/sip/matcher.rs — [naming] REGEX_SIZE_LIMIT is described as a "ReDoS" guard; the regex crate is linear-time, so the limit bounds memory and compile cost, not backtracking. **Partially done, and this line claimed otherwise until 2026-08-05.** The const's own comment (matcher.rs:19) was corrected in the P3 wave and now says it caps memory and compile-time cost. Three sites still assert the refuted claim, two of them PUBLISHED rustdoc: matcher.rs:242 ("to prevent ReDoS attacks (D17)"), matcher.rs:281 ("ReDoS guard"), matcher.rs:835 (test comment). Fixing one of four occurrences and marking the item done is how the other three become permanent.
+- [x] src/sip/matcher.rs — [naming] REGEX_SIZE_LIMIT is described as a "ReDoS" guard; the regex crate is linear-time, so the limit bounds memory and compile cost, not backtracking. **Done 2026-08-06, after this line claimed it once already.** The 2026-08-05 audit found the P3 wave had corrected the const's own comment (matcher.rs:19) and left three sites asserting the refuted claim, two of them PUBLISHED rustdoc. All are now corrected, and the sweep was widened past matcher.rs on the reasoning that a refuted claim spreads by copy: seven occurrences across `src/sip/matcher.rs`, `src/security/scanner_detect.rs` and `tests/security_test.rs`. Every surviving mention of "ReDoS" in those files is now a correction that names the linear-time guarantee, so a reader who greps the word lands on the refutation rather than the claim.
 - [x] src/sip/sdp_timeline.rs:103 — [modeling] REFER transfers reuse Offer + magic `mode: "transfer"`; dedicated variant cleaner. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/stir_shaken.rs:160 — [testability] `parse_identity_header` reads Utc::now() internally; inject clock for deterministic iat tests. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/stir_shaken.rs:278 — [naming] test `malformed_jwt_too_few_parts` actually exercises too many parts. **Done (P3 code-health wave, 2026-07-24).**
@@ -754,11 +787,11 @@ Tiers:
 - [x] src/tui/controllers/mod.rs:341 — [duplication] dashboard wheel handler re-implements dashboard.rs row clamp. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/render/mod.rs:206 — [refactor] fold-label duplicates "(+N retx)" format knowledge owned by prepare. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/stream_detail.rs:109 — [naming] MOS label/color band boundaries inconsistent at 3.0–3.5. **Done (P3 code-health wave, 2026-07-24).**
-- [x] stream_list.rs:307 / stream_detail.rs:91 — [refactor] loss-% computation duplicated in three places. **Done (P3 code-health wave, 2026-07-24).**
+- [ ] stream_list.rs:307 / stream_detail.rs:91 — [refactor] loss-% computation duplicated in three places. **Three of five, and this line claimed all of it until 2026-08-06.** `loss_percent` (`src/tui/stream_list.rs:51`) is now the shared implementation for the stream list (`:69`, `:367`), stream detail (`stream_detail.rs:110`) and the loss map (`loss_map.rs:103`). Two byte-identical copies of the same `lost / (packet_count + lost) * 100` survive: `stream_loss_pct` (`src/tui/dashboard.rs:71`) and `loss_pct` (`src/output/event_exec.rs:678`). The second cannot be folded in as things stand — `loss_percent` is `pub(in crate::tui)` and `event_exec` is outside that module — so closing this needs the function moved somewhere both can reach, not another call-site edit. Note `loss_percent`'s own doc comment calls itself the *"Single source of truth for the loss figure"*; that claim and this line were wrong in the same way.
 - [x] src/tui/call_list.rs:637 — [simplification] DeltaPrev and Scaled arms byte-identical; merge. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/call_list.rs:521 — [duplication] `base_labels` restates COLUMN_LABELS with one divergence. **Done (P3 code-health wave, 2026-07-24).**
 - [x] call_list.rs:880 vs save.rs:206 — [duplication] near-identical 12-arm state-display matches ("FAILED" vs "Failed"). **Done (P3 code-health wave, 2026-07-24).**
-- [ ] src/tui/state.rs:53 — [naming] Scaled silently renders as delta-prev in the call list; document it **on the enum**. **Not done, and this line claimed otherwise until 2026-08-05.** The fallback is documented at the two use sites (call_list.rs:666-670 and call_flow/render.rs:1406), which is where a reader already knows to look. `TimestampMode::Scaled` itself still reads only "Time-proportional: insert spacer rows for large timing gaps" — so the declaration teaches a behaviour two of its three renderers do not have.
+- [x] src/tui/state.rs:53 — [naming] Scaled silently renders as delta-prev in the call list; document it **on the enum**. **Done 2026-08-06.** `TimestampMode::Scaled` now carries the exception on the variant itself and enumerates all three renderers: the call-flow ladder inserts spacer rows, the call list and the message-detail pane fall back to delta-prev. The declaration is where a reader decides what a mode means, so a behaviour only one of three renderers implements cannot be left to the call sites.
 - [x] src/rtp/stream.rs:134 — [testability] `is_active` uses Utc::now(); offline replay streams never active. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/rtp/srtp.rs:547 — [dead-code] `decrypt_srtp_payload` unused crypto param. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/rtp/rtcp.rs:1 — [doc/code gap] header claims no silent drops; known-type body parse failures are dropped. **Done (P3 code-health wave, 2026-07-24).**
@@ -784,6 +817,23 @@ Tiers:
   `pre`, so an unlabeled fence gets a button no gate reads. **Done:** every
   fence in the scanned corpus now declares its language — 492 fences, 0
   unlabeled.
+
+  **Regressed, and this line claimed otherwise until 2026-08-06.** The pass was
+  real and the count was right on the day; neither survived. An open/close fence
+  walk over `scanned_markdown()` today finds **two** unlabeled fences, and both
+  are the command-looking kind the item exists for: `docs/troubleshooting.md:549`
+  and `:562`, a bare ```` ``` ```` opener around `tcpdump -r sample.pcap …`
+  invocations. They are copied into
+  `website/content/docs/troubleshooting.md:554` and `:567` by the site
+  generator, which the gate skips on its `Generated by scripts/build-site`
+  marker — so fixing the two in `docs/` fixes all four on disk.
+  Nothing caught the regression because nothing
+  can: `shell_fence_is_one_clipboard_payload` reads only fences whose info
+  string is already in `SHELL_LANGS`, so an unlabeled fence is not a failure to
+  that gate, it is invisible to it. A one-time remediation with no gate behind
+  it decays back, which is the whole argument the entry below this one makes.
+  Closing this needs the corpus walk itself asserted, not another labelling
+  sweep.
 
   **The figure that motivated this item was wrong.** It read "230 unlabeled, 132
   command-looking"; the real number was **28**. The measuring script used
@@ -836,7 +886,7 @@ Tiers:
 - [x] tests/tui_state_test.rs:1951 — [weak-assertion] page-up assert vacuous when after_down==0. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/tui_state_test.rs:2206 — [weak-assertion] F9 test passes if F9 did nothing; assert ==3. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/tui_state_test.rs:2587 — [test-hygiene] writes /tmp/sipnab_test_save.pcap outside tempdir, never cleaned. **Done (P4 test-quality wave, 2026-07-24).**
-- [ ] tests/tui_state_test.rs — [silent-skip] pcap tests pass vacuously when fixtures missing. **Three of four done, and this line claimed all four until 2026-08-05.** `file_open_browser_navigates_to_pcap_samples` (tui_state_test.rs:3368) still opens with `if !samples.is_dir() { return; }`, so a checkout without `tests/pcap-samples/` reports the test green having asserted nothing — the exact shape the other three were fixed for.
+- [x] tests/tui_state_test.rs — [silent-skip] pcap tests pass vacuously when fixtures missing. **Done 2026-08-06; three of four had been done, and this line claimed all four until 2026-08-05.** The fourth, `file_open_browser_navigates_to_pcap_samples`, now opens with a hard `assert!(samples.is_dir(), ...)` instead of `if !samples.is_dir() { return; }`. Mutation-proved rather than assumed: the fixture directory was renamed away and the test was confirmed to FAIL, which is the only evidence that distinguishes a real assertion from a vacuous one.
 - [x] tui_state/tui_snapshot — [duplication] fixture builders duplicated across crates; `localhost_*` misnomer (10.0.0.x). **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/tui_state_test.rs:4200 — [duplication] 40-line RTP feed block copy-pasted three times. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/tui_state_test.rs:4604 — [drift-risk] body_search tests re-implement production search predicate inline. **Done (P4 test-quality wave, 2026-07-24).**
@@ -860,7 +910,9 @@ Tiers:
 - [x] tests/wasm_exports_test.rs:10 — [silent-skip] silently never runs if wasm build absent. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] eight binary-spawn run() helpers — [duplicated-fixture] inconsistent env across cli/config/output/integration test crates; tests/support candidate. **Done:** consolidated into `tests/support/run.rs` with a documented env baseline (cwd=MANIFEST_DIR, NO_COLOR=1, explicit SIPNAB_LOG per caller — fixing cli_help's shell-inherited log); 5 files migrated (pipeline_test's run() was a trait-method false positive). Also gated security_test's counting-allocator block behind `feature=api` (its only consumer) to fix reduced-feature builds.
 - [x] spawn_http/post_status/shutdown — [duplicated-fixture] triplicated across mcp token/http tests. **Done (P4 test-quality wave, 2026-07-24).**
-- [ ] fuzz_corpus_replay.rs / smoke_fuzz_test.rs — [duplicated-fixture] two independent xorshift Rng+mutate impls. **Half done, and this line claimed all of it until 2026-08-05.** The `Rng` half was consolidated; the two `mutate` functions survive with the arguments in OPPOSITE order — `smoke_fuzz_test.rs:36` takes `(rng, seed)`, `fuzz_corpus_replay.rs:147` takes `(seed, rng)`. Both compile, so nothing catches a caller that reaches for the wrong one. The source files were always honest about this; only this backlog line overstated.
+- [x] fuzz_corpus_replay.rs / smoke_fuzz_test.rs — [duplicated-fixture] two independent xorshift Rng+mutate impls. **Closed 2026-08-06 by fixing the hazard and DECLINING the merge — do not reopen it as a consolidation.** The 2026-08-05 audit was right that the `Rng` half was consolidated and the two `mutate` functions survived with the arguments in OPPOSITE order, so nothing caught a caller reaching for the wrong one. Both now take `(rng, seed)`; the signatures agree and the hazard is gone.
+
+  **The bodies stay separate, deliberately.** Merging them was started and abandoned when the files' own comments turned out to have already answered it: each `mutate` defines the byte stream its corpus was generated against, so sharing one implementation changes what the seeds produce and silently breaks that file's reproducibility. That is a regression a green test run would not show — the fuzz suite would keep passing while exercising different inputs than the recorded corpus. The backlog called this unfinished consolidation; the code refuted the backlog.
 - [x] tests/mockup_alignment_test.rs — [heuristic-limit] lifeline reference = most-pipes line; misaligned reference flags everything else. **Done (P4 test-quality wave, 2026-07-24).**
 
 ## PA — agent-surface program (added 2026-08-03)
@@ -929,20 +981,35 @@ output path.
     that was always the point: start with the design doc and the identity/hash
     binding, then thread the refs, and gate every new tool below on emitting
     refs so the retrofit never grows.
-  - **In progress — the resolver end exists; the threading does not (status
+  - **In progress — the resolver end exists; the threading is partial (status
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     (`src/capture/packet.rs:94`) and `capture::resolve::resolve`
     (`src/capture/resolve.rs:171`); the `show_evidence` MCP tool
-    (`src/mcp/server.rs:3839`), confined to the file root and honest about
+    (`#[tool(` at `src/mcp/server.rs:3852`, handler at `:3866`), confined to
+    the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs`, which attaches `frame_ref` to `lint_dialog`
+    `findings_with_refs` (`src/mcp/server.rs:870`), which attaches `frame_ref`
+    to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
-    (`src/provenance.rs`) rides every stats/status response. NOT done: the
-    ref threading through dialogs, streams, and the remaining query tools —
-    lint findings are the only facts that cite their bytes today — and the
-    byte-range/field granularity. Tracked as task #128, still PRIORITY 1.
+    (`src/provenance.rs`) rides every stats/status response.
+    **Corrected 2026-08-06:** this bullet used to say the threading did **not**
+    exist and that *"lint findings are the only facts that cite their bytes
+    today"*. That was true of the MCP surface only, and it is not true of the
+    tree. `SipMessage.frame` (`src/sip/message.rs:84`) and
+    `SipDialog.first_frame` (`src/sip/dialog.rs:148`) both carry a `FrameRef`;
+    `--json` emits it per message and per dialog (`src/output/json.rs:90`,
+    `:402`, populated at `:454` and `:662`), `call_report` carries the dialog's
+    (`src/output/call_report.rs:773`), and `--show-frame` (`src/cli.rs:519`)
+    follows one from the CLI. What is genuinely still open is narrower and
+    should be read that way: **streams carry no ref at all**
+    (`grep -rn frame_ref src/rtp/` matches nothing), the MCP side still emits
+    `frame_ref` from exactly one site — `findings_with_refs` — so
+    `src/mcp/server.rs:3809`'s claim that *"every query tool emits `frame_ref`
+    on the facts it returns"* is itself ahead of the code, and granularity is
+    still whole-frame: `FrameOrigin` is `{ ordinal, digest }`, with no
+    byte range and no field span. Tracked as task #128, still PRIORITY 1.
 
 - [ ] **PA2 — Aggregation: `group_dialogs` and `timeline`.** Ranked second
   because it removes the single largest source of confidently-wrong answers
@@ -1011,11 +1078,21 @@ output path.
     `SUPPRESSION_FILENAME` (`src/sip/lint/mod.rs:70`),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    (`src/mcp/server.rs:333`), which takes an explicit filename or walks up from
+    (`src/mcp/server.rs:360`), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
-    CLI half** — `grep -n lint src/cli.rs` matches nothing, so a CI user running
-    the binary rather than the MCP surface still has no way to point at a
-    suppression file. Without it CI drowns.
+    suppression half of the CLI, and the evidence this line cited for that is
+    now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
+    matches nothing"*, and that grep now returns ten lines — `--lint`
+    (`src/cli.rs:718`) and `--lint-fail-on` (`:740`, `requires = "lint"`) both
+    ship, and `--lint --lint-fail-on error` is documented in the flag's own help
+    as the CI gate. So the CLI linter exists; what it has no way to do is
+    suppress anything. No CLI flag names a suppression file, and nothing on the
+    CLI path constructs a `SuppressionFile` at all — `grep -rn SuppressionFile
+    src/cli.rs src/app/` matches nothing, so `discover` never runs there either.
+    A `.sipnablint` sitting beside a capture is honoured over MCP and silently
+    ignored by the binary, which is worse than the gap this line originally
+    described: the two surfaces now disagree about the same file on disk, and
+    the CI user is on the side that cannot see it. Without it CI drowns.
   - Every rule is a docs page, which makes this a content flywheel as much as a
     feature.
 
@@ -1281,7 +1358,7 @@ implementation.
   had to think about this, which makes it a differentiator as much as a fix.
   Overlaps PA8's injection note from the opposite direction: PA8 is about what
   sipnab sends *to* a model, this is about what it hands *back*.
-- [ ] **PB9 — MCP token scoping.** REST has `--token-scope full|metrics`;
+- [x] **PB9 — MCP token scoping.** REST has `--token-scope full|metrics`;
   verified that `src/mcp/` has no equivalent. `--mcp-token-scope
   readonly|export|admin`, putting `export_*`, `shutdown_server` and
   `open_capture` behind a different credential than read.
@@ -1292,6 +1369,21 @@ implementation.
   request extensions (the channel a verified scope will ride). The scope
   vocabulary derives from PB2's annotations rather than a second hand-kept
   list. Full plan and gate requirements: task #141.
+  **Done, and this entry read as unstarted-but-unblocked until 2026-08-06.**
+  It shipped, and it shipped the way the entry argued for. `SCOPE_READ`
+  (`src/auth.rs:104`) joins `full`/`metrics` as a signed `scope` claim;
+  the flag is `--token-scope read` (`src/cli.rs:1463`,
+  `value_parser = ["full", "metrics", "read"]`) rather than the
+  `--mcp-token-scope` proposed above, with the help text drawing the
+  audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
+  `scope_of` (`src/mcp/server.rs:4798`), reading the scope out of the
+  `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
+  which is called from the hand-written `call_tool` (`:4951`). The
+  no-second-list requirement held literally: `scope_refusal` decides from the
+  registered tool's own `read_only_hint` annotation, refuses a known tool whose
+  hint is absent rather than guessing in the caller's favour, and returns no
+  scope error for an unknown tool so dispatch still reports "tool not found".
+  On stdio there is no scope at all — process ownership is the boundary.
 - [ ] **PB10 — Tool-call audit log.** Append-only: tool, arguments, caller
   token id, timestamp. Needed the first time somebody asks what an agent looked
   at in a capture under legal hold.
@@ -1305,9 +1397,30 @@ implementation.
   plumbing), and the record rides the normal log rather than an append-only
   sink, so `--quiet` without `SIPNAB_LOG=mcp_audit=info` suppresses it — a
   legal-hold answer needs the sink decision, which is the operator's call.
+  **Corrected 2026-08-06, on the first of those two.** *"`verify` discards the
+  claims it validated"* is no longer true, and *"lands with PB9's plumbing"*
+  has been overtaken: `verify_claims` (`src/auth.rs:386`) returns an
+  `AcceptedToken`, PB9's plumbing landed on top of it, and the audit line
+  already records what it carries — `src/mcp/server.rs:4764` formats
+  `"{addr} bearer-verified scope={scope}"`. The token still cannot be named,
+  but the reason has narrowed to one field: `AcceptedToken` (`src/auth.rs:293`)
+  holds `scope` and nothing else, so the `id` that `mint` signs into the
+  payload is validated and then dropped. That is a smaller change than this
+  line implies, and it is no longer blocked on anything.
 - [ ] **PB11 — Rate limiting and concurrency caps for MCP.** Verified absent.
   HEP has per-peer limits and REST has `--api-max-conn`; MCP HTTP has neither,
   so a looping agent can pin a capture host.
+  **Half done, and this line claimed neither half until 2026-08-06.** The
+  concurrency cap shipped: `--mcp-max-concurrent` (`src/cli.rs:1134`, default
+  100, `0` = unlimited) bounds tool calls in flight on **both** the stdio and
+  HTTP servers, and a call that cannot take a slot is refused with a
+  retry-shortly error rather than queued — the flag's own documentation makes
+  the argument that queueing behind the cap is the exhaustion the cap exists to
+  prevent. **Still absent: rate limiting.** Nothing counts calls per unit time
+  or per peer on the MCP surface, so an agent that stays under the concurrency
+  cap and loops as fast as it is answered is still unbounded. The HEP per-peer
+  limiter this entry points at is a rate limiter, not a concurrency cap; the
+  half that shipped is not the half that analogy asks for.
 - [ ] **PB12 — Prometheus parity for MCP.** Verified absent:
   `sipnab_mcp_tool_calls_total{tool,outcome}`, a latency histogram, and
   response bytes per tool. Without it nobody knows which of the registered tools
@@ -1413,8 +1526,11 @@ authoritative; the PB text above adds only what they do not already say.
   DPDK, netmap.** libpcap has shipped DPDK and netmap capture modules for years
   and selects them by device name (`dpdk:0`, `netmap:eth0`, `xdp:eth0`).
   sipnab passes device names through almost verbatim —
-  `src/capture/device.rs:119-144` rejects only empty names and embedded NULs,
-  then hands the string to `pcap::Capture::from_device()` — so **these may
+  `parse_device_list` (`src/capture/device.rs:119-147`) rejects an empty or
+  whitespace-only spec, an empty entry from a stray comma, and an embedded NUL,
+  and de-duplicates; nothing else is inspected, and
+  `pcap::Capture::from_device()` at `src/capture/live.rs:196` takes the string
+  as given — so **these may
   already work today with no code change**, depending entirely on whether the
   linked libpcap was built with those modules. That makes step one *verification
   and packaging*, not engineering: check what `libpcap` the release artifacts
@@ -1456,9 +1572,20 @@ authoritative; the PB text above adds only what they do not already say.
   socket opened before the privilege drop and kept for the whole run
   (`src/process_isolation.rs:107-136`), and it already has no shared state — it
   communicates over a crossbeam channel whose messages are **already**
-  `Serialize`/`Deserialize` (`src/process_isolation.rs:307,329`), an otherwise
-  unexplained fossil of the D16 IPC design
-  (`docs/design/implementation-plan-v6.md:564,2019-2024`). Ranked P5 rather than
+  `Serialize`/`Deserialize` (`src/process_isolation.rs:307,329` — the derives on
+  `KillRequest` and `KillResponse`), an otherwise
+  unexplained fossil of the D16 IPC design.
+  **Corrected 2026-08-06:** that design used to be cited as
+  `docs/design/implementation-plan-v6.md:564,2019-2024`, and neither range is
+  about D16 — `:564` is an RTP-quality bullet ("Quality is per-interval, not
+  per-call") and `:2019-2024` is a list of dashboard gauges. The material is at
+  [`implementation-plan-v6.md:624`](implementation-plan-v6.md) (the D16 heading)
+  and `:1535`, which is the line that actually settles it: the IPC wire format
+  was never built because no child process was ever created, and *"the
+  `Serialize`/`Deserialize` derives on `KillRequest`/`KillResponse` are all that
+  came of it"*. That sentence is the evidence this entry rests on, and it was
+  three lines from being cited and pointed somewhere else instead.
+  Ranked P5 rather than
   higher only because `--kill-scanner` is off by default and niche; if it
   becomes a headline feature this moves up. **Not** a licence to fork anything
   else — forking the REST API or the `--cores` workers is analysed and declined
@@ -1493,7 +1620,9 @@ authoritative; the PB text above adds only what they do not already say.
 - [ ] Interactive pcap annotation and sharing.
 - [ ] YANG/NETCONF machine-readable diagnosis export.
 - [x] **Metrics-only token scope for the REST API** — **Done.** `s2` tokens
-  carry an optional `scope` claim (`full` / `metrics`) alongside `aud`;
+  carry an optional `scope` claim (`full` / `metrics`) alongside `aud`
+  — a third value, `read`, has since been added for the MCP surface (see PB9),
+  so treat the pair here as what this item shipped rather than the live set;
   `--token-scope metrics` mints a credential that reaches `GET /metrics` and
   returns `401` everywhere else. `full` is the default and satisfies every
   requirement, and an absent claim means `full`, so no existing token or
@@ -1509,7 +1638,12 @@ authoritative; the PB text above adds only what they do not already say.
   `rtp/diagnosis.rs`. **Done in 0.5.68:** all seven detections ship (final
   failure with cause, auth loop, retransmission storm, ACK-never-received,
   abandoned/cancelled, high PDD, registration failure), rendered on every
-  surface from one `SignalingDiagnosis`. The spec's two load-bearing rules
+  surface from one `SignalingDiagnosis`. **There are eight now, as of
+  2026-08-06:** `SignalingDiagnosis` also carries `icmp_unreachable`
+  (`src/sip/diagnosis.rs`), added after this entry was written. The seven above
+  are what 0.5.68 shipped and the sentence is true of that release; it is no
+  longer the whole set, so do not read it as an inventory. The spec's two
+  load-bearing rules
   held: every detection names the messages it is drawn from, and a truncated
   capture reports as unknown rather than as failure.
 
@@ -1568,8 +1702,14 @@ authoritative; the PB text above adds only what they do not already say.
   common header and iterates chunks, extracting the SIP payload from the first
   complete (B+E) DATA chunk (type 0) and recovering the real src/dst ports;
   fails closed to an empty payload on any truncation/malformed length. Single
-  unfragmented DATA chunk per packet; multi-packet fragment reassembly (B/E
-  spanning) is a documented follow-up. Enables SIGTRAN/Diameter (3GPP IMS).
+  unfragmented DATA chunk per packet. Enables SIGTRAN/Diameter (3GPP IMS).
+  **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
+  (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
+  `SctpReassembler` (`src/capture/parse.rs:1730`), constructed on every
+  `PacketProcessor` (`src/capture/mod.rs:625`, `:651`, `:686`). The P2 entry
+  above records it as done. Two entries in one file disagreeing about the same
+  feature is the cheapest kind of wrong to produce and the most expensive to
+  notice, because each one reads as authoritative on its own.
 - [x] **Live call quality dashboard** — the `QualityDashboard` view already
   rendered MOS + jitter trend sparklines over retained per-stream history.
   **Done:** added the third metric — a packet-loss % trend row (`loss_to_block`,

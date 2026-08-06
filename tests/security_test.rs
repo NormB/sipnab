@@ -491,8 +491,11 @@ fn template_migration_converts_percent_to_env_vars() {
 // H1: Regex Size Limit on Scanner Patterns
 // =====================================================================
 
-/// H1: Scanner detector rejects oversized regex patterns that could
-/// cause ReDoS. A massive regex must be silently skipped, not compiled.
+/// H1: Scanner detector rejects oversized regex patterns. A massive regex
+/// must be silently skipped, not compiled.
+///
+/// The limit caps compile-time and memory cost, not ReDoS: the `regex` crate
+/// is linear-time and does not backtrack.
 #[test]
 fn scanner_detect_rejects_oversized_regex() {
     // Build a regex pattern that exceeds the 1MB size limit.

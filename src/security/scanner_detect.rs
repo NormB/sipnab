@@ -327,7 +327,13 @@ pub struct ScannerAlert {
     pub detection_method: String,
 }
 
-/// Maximum compiled regex size in bytes to prevent ReDoS.
+/// Maximum compiled-program size, in bytes, for a user-supplied pattern.
+///
+/// Not a ReDoS guard: the `regex` crate matches in linear time and does not
+/// backtrack, so there is no catastrophic backtracking here to prevent. What
+/// this caps is the memory and compile-time cost of a pathological pattern
+/// (a large bounded repetition such as `a{1000}{1000}`), so an untrusted
+/// pattern cannot blow up compilation.
 const REGEX_SIZE_LIMIT: usize = 1_000_000;
 
 /// Maximum entries in the behavioral tracking map.
@@ -396,7 +402,7 @@ impl ScannerDetector {
             }
         }
 
-        // Compile user-supplied patterns (size-limited to prevent ReDoS)
+        // Compile user-supplied patterns (size-limited to cap compile cost)
         for pat in custom_patterns {
             match RegexBuilder::new(&format!("(?i){pat}"))
                 .size_limit(REGEX_SIZE_LIMIT)
