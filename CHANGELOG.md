@@ -49,6 +49,23 @@ entry that carries them.
   other refusal, naming the tool and the scope it needed. Verified end to end
   over HTTP and mutation-tested both directions.
 
+- **The MCP server caps concurrent tool calls.** Nothing bounded how many tool
+  calls could run at once, so a flooding client — the network-exposed HTTP
+  server is the case that matters — could pile up unbounded concurrent work.
+  A new `--mcp-max-concurrent N` (default `100`, `0` = unlimited) installs a
+  shared semaphore at the one `call_tool` dispatch point; a call that cannot
+  take a slot immediately is refused with a retryable server-error code
+  (`-32000`, distinct from invalid-params and internal-error so a client can
+  tell "retry shortly" from "never"), never queued — queueing an unbounded
+  backlog behind the cap is the exhaustion the cap exists to prevent, only
+  deferred. The cap is server-wide, not per-session: the semaphore is one
+  `Arc` shared by every per-session clone, so N sessions cannot each run the
+  full budget. The default mirrors `--api-max-conn` and applies to stdio and
+  HTTP alike; refusals land on the audit line as `outcome=refused`. The gate is
+  a plain function the tests drive directly — a real refusal at the boundary,
+  and `0` proven to mean unlimited rather than a zero-permit server that
+  refuses every call.
+
 - **Every MCP tool call is audited.** One log line per call under the
   `mcp_audit` tracing target: tool name, JSON-RPC request id, caller, outcome
   (`ok`, `tool_error`, or `refused`), elapsed milliseconds, and the arguments

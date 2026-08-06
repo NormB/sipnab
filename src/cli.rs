@@ -1116,6 +1116,23 @@ pub struct Cli {
     )]
     pub mcp_token_ttl: i64,
 
+    /// Maximum tool calls the MCP server runs at once (`0` = unlimited).
+    ///
+    /// A call that cannot take a slot immediately is refused with a
+    /// retry-shortly error, not queued: queueing an unbounded backlog behind
+    /// the cap is the resource exhaustion the cap exists to prevent. The
+    /// default mirrors `--api-max-conn`; it bounds a flooding client without
+    /// impeding an agent's ordinary handful of parallel calls. Applies to both
+    /// stdio and HTTP servers, though a network-exposed HTTP server is the case
+    /// it matters for.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-max-concurrent",
+        value_name = "N",
+        default_value = "100"
+    )]
+    pub mcp_max_concurrent: u32,
+
     /// Additional `Host` header values the HTTP MCP server will accept
     /// (repeatable). rmcp's DNS-rebind protection defaults to allowing
     /// only `localhost`, `127.0.0.1`, and `::1`. Add the public hostname
@@ -2214,6 +2231,7 @@ mod tests {
         assert_eq!(cli.kill_response, 200);
         assert_eq!(cli.exec_rate_limit, 10);
         assert_eq!(cli.api_max_conn, 100);
+        assert_eq!(cli.mcp_max_concurrent, 100);
         assert_eq!(cli.hep_rate_limit, None);
         assert_eq!(cli.hep_rate_limit_resolved(&cfg), 50_000);
         assert_eq!(cli.pcap_export_mode, "decrypted");
@@ -2227,6 +2245,20 @@ mod tests {
         // store evicts the oldest dialog rather than dropping new legitimate
         // calls — a privileged sniffer must bound dialog state safely by default.
         assert!(cli.rotate_enabled(), "rotate must default ON");
+    }
+
+    /// The `--mcp-max-concurrent` cap parses as a number, and `0` is accepted
+    /// as the "unlimited" spelling — the value the MCP server turns into no cap
+    /// at all rather than a zero-permit semaphore that refuses every call.
+    #[test]
+    fn mcp_max_concurrent_parses_including_the_unlimited_zero() {
+        let capped = Cli::parse_from_args(["sipnab", "--mcp-max-concurrent", "5"]);
+        assert_eq!(capped.mcp_max_concurrent, 5);
+        let unlimited = Cli::parse_from_args(["sipnab", "--mcp-max-concurrent", "0"]);
+        assert_eq!(
+            unlimited.mcp_max_concurrent, 0,
+            "0 must parse as the unlimited spelling, not be rejected"
+        );
     }
 
     /// `--call-report` sets `no_tui` at the parse boundary, and only then.

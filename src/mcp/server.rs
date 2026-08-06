@@ -92,6 +92,22 @@ pub struct SipnabMcp {
     /// one server would read the same stores and disagree about which capture
     /// they were reading.
     capture: Arc<RwLock<CaptureState>>,
+    /// Bounds tool calls in flight at once, or `None` for no cap.
+    ///
+    /// **Shared, not per-session**, for the same reason `capture` and
+    /// `findings` are: `SipnabMcp` is cloned per HTTP session, so a plain
+    /// per-clone semaphore would give every session its own budget and the
+    /// server-wide cap the operator asked for would not exist — N sessions
+    /// could run N times the permitted work. One `Arc<Semaphore>` shared by
+    /// every clone is the only thing that bounds the whole server.
+    ///
+    /// A permit is taken with `try_acquire_owned` (never a blocking wait) at
+    /// the one `call_tool` choke point and held for the whole call, so it
+    /// bounds concurrent tool executions, not connections. Refusing rather
+    /// than queueing is deliberate: a blocking acquire would let an unbounded
+    /// backlog of callers pile up behind the cap, which is the resource
+    /// exhaustion the cap exists to prevent, deferred rather than avoided.
+    call_limiter: Option<Arc<tokio::sync::Semaphore>>,
     /// rmcp router mapping tool names to the handler methods below.
     tool_router: ToolRouter<Self>,
 }
@@ -161,8 +177,19 @@ impl SipnabMcp {
             allow_save_findings: false,
             findings: Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::new())),
             capture: Arc::new(RwLock::new(CaptureState::default())),
+            call_limiter: None,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Cap the number of tool calls this server runs at once. `max == 0`
+    /// leaves the cap off (the default), matching the REST API's
+    /// `--api-max-conn` convention where zero means unbounded. Any positive
+    /// value installs a shared semaphore; a call that cannot take a permit
+    /// immediately is refused, not queued. See the `call_limiter` field.
+    pub fn with_max_concurrent(mut self, max: usize) -> Self {
+        self.call_limiter = (max > 0).then(|| Arc::new(tokio::sync::Semaphore::new(max)));
+        self
     }
 
     /// Declare the capture inputs this server is reading so the file tools
@@ -4786,6 +4813,43 @@ fn scope_of(_extensions: &rmcp::model::Extensions) -> String {
     crate::auth::SCOPE_FULL.to_string()
 }
 
+/// JSON-RPC error code for a refused-because-busy tool call.
+///
+/// The server-error range (-32000..=-32099) is where JSON-RPC 2.0 puts
+/// application-defined conditions, and this is one: not a malformed request
+/// (that is `INVALID_PARAMS`) and not an unexpected fault (`INTERNAL_ERROR`,
+/// which reads as a bug and is not a retry signal), but a transient capacity
+/// limit the caller should back off from and retry. A distinct code lets a
+/// well-behaved client tell "try again in a moment" from "this will never
+/// work", which is the whole point of returning a cap rather than hanging.
+const AT_CAPACITY_CODE: i32 = -32000;
+
+/// Take a concurrency permit for a tool call, or return the refusal to send
+/// when the server is already at its cap.
+///
+/// Split out from `call_tool` so the cap is a plain function a test can drive
+/// directly — the same reason [`scope_refusal`] is one. `try_acquire_owned`
+/// never blocks: at the cap this returns the refusal immediately rather than
+/// queueing the caller, because queueing is the resource exhaustion the cap
+/// exists to prevent, only deferred. `Ok(None)` means no cap is configured
+/// and every call proceeds; `Ok(Some(permit))` holds the slot until the
+/// permit is dropped at the end of the call.
+fn acquire_call_permit(
+    limiter: &Option<Arc<tokio::sync::Semaphore>>,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, rmcp::ErrorData> {
+    match limiter {
+        None => Ok(None),
+        Some(sem) => match Arc::clone(sem).try_acquire_owned() {
+            Ok(permit) => Ok(Some(permit)),
+            Err(_) => Err(rmcp::ErrorData::new(
+                rmcp::model::ErrorCode(AT_CAPACITY_CODE),
+                "sipnab MCP server is at its concurrent tool-call cap; retry shortly".to_string(),
+                None,
+            )),
+        },
+    }
+}
+
 /// Decide whether `scope` is allowed to invoke the tool, returning the
 /// refusal to send when it is not.
 ///
@@ -4895,6 +4959,23 @@ impl ServerHandler for SipnabMcp {
         let scope = scope_of(&context.extensions);
         let args = audit_args(request.arguments.as_ref());
         let started = std::time::Instant::now();
+
+        // Concurrency cap, before scope and before dispatch: take a permit if
+        // one is configured, held for the whole call so it bounds tool calls
+        // in flight. A call that cannot take one immediately is refused and
+        // audited, never queued -- see `call_limiter` and `acquire_call_permit`.
+        let _permit = match acquire_call_permit(&self.call_limiter) {
+            Ok(permit) => permit,
+            Err(refusal) => {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                tracing::info!(
+                    target: "mcp_audit",
+                    "tool={tool} id={request_id} caller=\"{caller}\" outcome=refused \
+                     elapsed_ms={elapsed_ms} args={args} error=at capacity"
+                );
+                return Err(refusal);
+            }
+        };
 
         let result = match scope_refusal(&scope, &tool, self.tool_router.get(&tool)) {
             Some(refusal) => Err(refusal),
@@ -8279,6 +8360,80 @@ mod tests {
             scope_refusal(crate::auth::SCOPE_READ, "hypothetical", Some(&tool)).is_some(),
             "no annotation must mean no access for a narrow scope"
         );
+    }
+
+    /// With no cap configured, the permit gate is a no-op that never refuses
+    /// and hands out nothing to hold. Pinned so a future default cannot start
+    /// silently bounding a deployment that asked for none.
+    #[test]
+    fn no_cap_never_refuses_a_call() {
+        let none: Option<Arc<tokio::sync::Semaphore>> = None;
+        for _ in 0..1000 {
+            let permit = acquire_call_permit(&none).expect("no cap must never refuse");
+            assert!(permit.is_none(), "no cap must hand out no permit to hold");
+        }
+    }
+
+    /// `with_max_concurrent(0)` is the documented spelling of "unlimited" and
+    /// must leave the cap off — not install a zero-permit semaphore that
+    /// refuses the very first call and wedges the server shut.
+    #[test]
+    fn a_zero_cap_means_unlimited_not_a_dead_server() {
+        let server = empty_server().with_max_concurrent(0);
+        assert!(
+            server.call_limiter.is_none(),
+            "0 must mean unlimited, not a 0-permit cap that refuses everything"
+        );
+        assert!(
+            acquire_call_permit(&server.call_limiter)
+                .expect("a 0 cap must admit every call")
+                .is_none()
+        );
+    }
+
+    /// The cap actually bounds: with room for two, the third call is refused
+    /// while the first two hold their permits, and a slot frees the instant
+    /// one is dropped — the cap holds at two, it neither leaks nor widens.
+    /// This drives the same function `call_tool` calls, so it tests the effect
+    /// (a real refusal at the boundary), not a restatement of the predicate.
+    #[test]
+    fn the_cap_refuses_the_call_that_would_exceed_it() {
+        let server = empty_server().with_max_concurrent(2);
+        assert!(
+            server.call_limiter.is_some(),
+            "a positive cap must install a limiter"
+        );
+
+        let p1 = acquire_call_permit(&server.call_limiter)
+            .expect("1st call admitted")
+            .expect("a cap must hand out a permit to hold");
+        let p2 = acquire_call_permit(&server.call_limiter)
+            .expect("2nd call admitted")
+            .expect("permit");
+
+        let refusal = acquire_call_permit(&server.call_limiter)
+            .expect_err("a third call over a cap of two must be refused");
+        assert_eq!(
+            refusal.code.0, AT_CAPACITY_CODE,
+            "an at-capacity refusal must carry the retryable server-error code, \
+             not invalid-params (a client error) or internal-error (reads as a bug)"
+        );
+        assert!(
+            refusal.message.contains("cap") && refusal.message.contains("retry"),
+            "the refusal must tell the caller it is a capacity limit to retry: {}",
+            refusal.message
+        );
+
+        // Freeing one slot admits exactly one more call, then refuses again.
+        drop(p1);
+        let p3 = acquire_call_permit(&server.call_limiter)
+            .expect("a freed slot must admit the next call")
+            .expect("permit");
+        acquire_call_permit(&server.call_limiter)
+            .expect_err("with two permits held again, the cap must refuse once more");
+
+        drop(p2);
+        drop(p3);
     }
 
     /// The admission record maps to the scope dispatch enforces: a verified

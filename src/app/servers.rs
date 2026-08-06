@@ -295,7 +295,8 @@ pub fn start_servers(
             let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
                 .with_source_exhausted(Arc::clone(&exhausted))
                 .with_capture_context(capture_ctx.clone())
-                .with_protected_inputs(protected_inputs.clone());
+                .with_protected_inputs(protected_inputs.clone())
+                .with_max_concurrent(cli.mcp_max_concurrent as usize);
             let s = match cli.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
                 None => s,
