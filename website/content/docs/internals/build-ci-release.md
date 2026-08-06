@@ -220,23 +220,32 @@ logs yourself. Nothing else makes you.
 
 Activate once per clone: `git config core.hooksPath .githooks`.
 
-[`pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit) runs eight numbered gates, in order:
-<!-- The eight pre-commit gates as one list. Several items carry their own commas
+[`pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit) runs nine numbered gates, starting
+at 0, in order:
+<!-- The nine pre-commit gates as one list. Several items carry their own commas
 and parentheses ("clippy (`--features full`, `-D warnings`)"), so semicolons are
-the separator; periods would make eight sentences out of one enumeration. -->
+the separator; periods would make nine sentences out of one enumeration. -->
 <!-- vale Google.Semicolons = NO -->
 
-clippy (`--features full`, `-D warnings`); the full test suite; no
-`unwrap()`/`expect()` in production code; WASM exports in sync with the site's
-JS; the homepage test count matching the run it just did — plus the site and
-man-page version strings matching `Cargo.toml`; no TODO stubs; a refusal to
-commit a staged `src/wasm.rs` without a rebuilt bundle beside it; and an
+`cargo fmt --all -- --check`; clippy (`--features full`, `-D warnings`); the
+full test suite; no `unwrap()`/`expect()` in production code; WASM exports in
+sync with the site's JS; the homepage test count matching the run it just did —
+plus the site and man-page version strings matching `Cargo.toml`; no TODO
+stubs; a refusal to commit a staged `src/wasm.rs` without a rebuilt bundle
+beside it; and an
 <!-- vale Google.Semicolons = YES -->
 
 advisory notice when a commit touches a file `docs/internals/` cites without
 touching `docs/internals/` itself.
 
-Two of the eight cannot fail the commit. Gate 6 prints
+Gate 0 is first because it is the cheapest check in either hook (~1.4s
+against clippy's minutes), so an unformatted tree fails in seconds rather than
+after a full lint and test run. `pre-push` still checks formatting, and that
+copy is the one guaranteeing nothing unformatted reaches the remote. What it
+cannot do is catch the slip early, and a formatting-only failure discovered at
+push time costs a whole commit-and-push cycle to undo.
+
+Two of the nine cannot fail the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto. Gate 8
 prints `REVIEW` and a list and returns zero, a reminder to check the developer
 pages still read true, not a claim that they don't. The gate that *does* fail

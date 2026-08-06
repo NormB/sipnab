@@ -420,7 +420,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/walkthroughs.md",
         ],
     ),
-    ("all", &["CONTRIBUTING.md"]),
+    // `cargo fmt --all -- --check`, the hook gate. Named in CONTRIBUTING's hook
+    // tables and, since the check moved into pre-commit as gate 0, in the
+    // build-and-CI internals page that enumerates those gates.
+    (
+        "all",
+        &[
+            "CONTRIBUTING.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     ("install", &["README.md", "CONTRIBUTING.md"]),
     // docker run flags (install docs)
     (

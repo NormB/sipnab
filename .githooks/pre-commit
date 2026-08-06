@@ -48,6 +48,36 @@ emit_capped() { # emit_capped <max-lines> <log-path>   (reads stdin)
     fi
 }
 
+# ── 0. Formatting must be clean ────────────────────────────────────
+# First because it is the cheapest gate in either hook -- measured at 1.4s
+# against clippy's minutes -- so an unformatted tree fails in seconds instead
+# of after a full lint and test run.
+#
+# `pre-push` still runs this: that copy is the one that guarantees nothing
+# unformatted reaches the remote, and it stays. What it could not do is catch
+# the mistake *early*. On 2026-08-06 a one-line import-order slip committed
+# cleanly, failed at push, and cost a 40-minute rework cycle -- unwind two
+# commits, re-run pre-commit on both, push again -- for a defect this gate
+# finds in under two seconds. Formatting is now checked where it is cheap to
+# fix, and re-checked where it matters that it is true.
+echo -n "  Formatting... "
+set +e
+FMT_OUTPUT=$(cargo fmt --all -- --check 2>&1)
+FMT_RC=$?
+set -e
+if [ "$FMT_RC" -ne 0 ]; then
+    echo -e "${RED}FAIL${NC}"
+    FMT_LOG="$LOG_DIR/sipnab-pre-commit-fmt.log"
+    printf '%s\n' "$FMT_OUTPUT" > "$FMT_LOG"
+    # The diff names the file and line; show a capped slice rather than a
+    # whole reformat of a large file.
+    printf '%s\n' "$FMT_OUTPUT" | emit_capped 20 "$FMT_LOG"
+    echo "  Fix: cargo fmt --all"
+    echo "  Full output: $FMT_LOG"
+    exit 1
+fi
+echo -e "${GREEN}OK${NC}"
+
 # ── 1. Clippy must pass ────────────────────────────────────────────
 # `--color never` so the greps below key on the diagnostic and not on whatever
 # CARGO_TERM_COLOR wrapped it in.
