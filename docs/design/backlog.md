@@ -519,14 +519,38 @@ Tiers:
   cross-file dialog stitching — attacks the measured bottleneck directly.
   Threads, not processes: `--cores` workers already hold zero shared locks
   (`src/parallel.rs:275-283`), so there is nothing a fork would isolate.
-  **Blocker, must be settled first:** packets would reach a worker interleaved
-  across files and therefore out of timestamp order. `DialogStore::merge` is
-  order-tolerant (`absorb_messages`, `src/sip/dialog_store.rs:1089-1106`, sorts
-  by timestamp and replays the state machine), but a *live* worker store is fed
-  by `process_message` in arrival order and it is **not established** that
-  out-of-order arrival is harmless there. Write the `--cores 1` vs
-  parallel-reader parity test over the reference corpus before writing the
-  feature.
+  **Blocker: SETTLED 2026-08-06, and the answer is NO.** Out-of-order arrival
+  is *not* harmless to `process_message`, and finding out why turned up a
+  defect that has nothing to do with this feature.
+  `tests/arrival_order_parity_test.rs` is the gate.
+
+  The dialog-CREATION branch of `process_message` called `SipDialog::new`,
+  `update_timing` and `track_sdp` — and **never `update_state`**, so the
+  creating message's own state transition was dropped. In timestamp order that
+  is invisible: the first message is the INVITE, whose transition is exactly
+  the `Trying` that `SipDialog::new` already set. Out of order — or on **any
+  capture that begins mid-dialog**, which is the part that was never about
+  PR1 — the first message is a `486`, a `BYE` or a `CANCEL`, its outcome is
+  discarded, and the call reports `Trying` forever: still in progress, hours
+  after it ended. Message counts and response logs stay complete, so no count
+  can catch it. Measured on a cancelled call fed `[CANCEL, 487, INVITE, 100,
+  180]`: timestamp order → `Cancelled`, permuted → `Trying`.
+
+  Fixed by calling `update_state` at creation. With that in place every
+  permutation whose first message is an INVITE **or any response** converges on
+  the timestamp-ordered result — responses are safe because `SipDialog::new`
+  derives the method from CSeq, so the INVITE state machine is still selected.
+
+  **Still open, and a hard constraint on this feature:** a non-INVITE *request*
+  arriving first sets `dialog.method` from that request, and `update_state`
+  dispatches on it — so a leading `CANCEL` routes every later message to
+  `update_generic_state`, which inspects only responses and has no CANCEL rule.
+  The call sticks at `Trying`. Pinned by
+  `a_non_invite_request_arriving_first_selects_the_wrong_state_machine`. Until
+  that is fixed, N parallel readers **must** preserve per-dialog ordering, or
+  sort before the worker's state machine sees the messages. Sharding by host
+  pair does not achieve this on its own: both directions of one call land on
+  one worker, but nothing orders them across files.
 
 - [x] **TUI copy/paste (user-reported 2026-07-24)** — mouse capture blocks the terminal's native drag-select on every view, and the only clipboard feature (call-flow `E` Mermaid export) shells out to pbcopy/xclip, which fails over SSH. Plan: OSC 52 as primary clipboard mechanism (terminal puts text on the local clipboard; works over SSH) with pbcopy/xclip fallback; `y` copy binding on the message-detail pane; a mouse-capture toggle key so native selection works everywhere; help + docs updated (including the Shift+drag bypass tip). **Done:** new `tui::clipboard` module — OSC 52 written to /dev/tty (72 KiB raw bound, char-boundary truncation, xterm-safe base64 size) with silent pbcopy/xclip belt-and-suspenders and honest status wording; `y` yanks the displayed raw message (detached worker + status line, same pattern as `E`); F12 toggles mouse capture (audited free across views; rebind wins; persistent status reminder while off); help view, keybindings docs and website mirror updated with a Copying-text section.
 

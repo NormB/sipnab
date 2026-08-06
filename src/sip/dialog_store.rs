@@ -643,6 +643,16 @@ impl DialogStore {
 
             // Create the new dialog
             if let Some(mut dialog) = SipDialog::new(&msg) {
+                // Apply the creating message's own state transition. Dropping
+                // it is invisible in timestamp order -- the first message is
+                // the INVITE, whose effect is the `Trying` that
+                // `SipDialog::new` already set -- but a capture that begins
+                // mid-dialog leads with whatever came next, and its outcome
+                // was being thrown away: a call whose first seen message is a
+                // 486 or a CANCEL stayed `Trying`, reported as still in
+                // progress, forever.
+                update_state(&mut dialog, &msg);
+
                 // Update timing for the initial message
                 update_timing(&mut dialog.timing, &msg, &dialog.method);
 
