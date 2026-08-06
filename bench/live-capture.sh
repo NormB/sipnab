@@ -302,7 +302,7 @@ effective_pairs() { # <flag> <calls>
   if [ "$f" -le 0 ]; then printf '%d\n' "$calls"; else printf '%d\n' "$f"; fi
 }
 
-# src/app/bootstrap.rs:307-317 auto-generates a kernel BPF from --portrange
+# src/app/bootstrap.rs:337-347 auto-generates a kernel BPF from --portrange
 # when none is given on a live source, and the default portrange is 5060-5061.
 # Without an explicit filter, 100% of the RTP is dropped in-kernel and the run
 # reports a pristine baseline having measured nothing. carrier.py:266-267 puts
@@ -328,20 +328,19 @@ sipnab_duration_for() { # <span-usec> <startup-budget-s> -> seconds
 # One token per line so a caller can scan the argv without re-splitting a
 # string that contains spaces.
 #
-# -N is load-bearing twice over (src/cli.rs:399-401). Without it,
-# src/app/bootstrap.rs:443-452 selects RunMode::Tui: start_servers is never
-# called so --api binds nothing, and immediate_mode_for
-# (src/app/bootstrap.rs:1450-1451) forces TPACKET_V2 at
+# -N is load-bearing twice over (src/cli.rs:420-421). Without it,
+# src/app/bootstrap.rs:503-516 selects RunMode::Tui: immediate_mode_for
+# (src/app/bootstrap.rs:1522-1523) then forces TPACKET_V2 at
 # src/capture/live.rs:219-220 -- the opposite of the headless-V3 change under
-# measurement.
+# measurement -- and the TUI takes the terminal over.
 #
-# -d is the device flag (src/cli.rs:227-232). -i is --ignore-case
-# (src/cli.rs:496); `-i snb-rx` would set ignore-case and let clap swallow
-# "snb-rx" into the trailing_var_arg BPF positional (src/cli.rs:1309-1310).
+# -d is the device flag (src/cli.rs:228-232). -i is --ignore-case
+# (src/cli.rs:540); `-i snb-rx` would set ignore-case and let clap swallow
+# "snb-rx" into the trailing_var_arg BPF positional (src/cli.rs:1483).
 argv_sipnab() { # <iface> <duration-s> <api> <bpf> <config> <buffer-mb|""> <budget-mb|""> <report:0|1>
   local iface="$1" dur="$2" api="$3" bpf="$4" cfg="$5" buf="$6" budget="$7" report="$8"
   [ -n "$bpf" ] || die_code "$EXIT_PREFLIGHT" \
-    "refusing to build a sipnab argv with an empty BPF filter: src/app/bootstrap.rs:307-317 would auto-generate 'portrange 5060-5061' on a live source, dropping 100% of the RTP in-kernel and reporting a pristine baseline having measured nothing"
+    "refusing to build a sipnab argv with an empty BPF filter: src/app/bootstrap.rs:337-347 would auto-generate 'portrange 5060-5061' on a live source, dropping 100% of the RTP in-kernel and reporting a pristine baseline having measured nothing"
   [ -n "$iface" ] || die_code "$EXIT_PREFLIGHT" "refusing to build a sipnab argv with no -d device"
   printf '%s\n' -N
   printf '%s\n' -d "$iface"
@@ -354,7 +353,7 @@ argv_sipnab() { # <iface> <duration-s> <api> <bpf> <config> <buffer-mb|""> <budg
   [ -n "$budget" ] && printf '%s\n' --buffer-budget "$budget"
   [ "$report" = 1 ] && printf '%s\n' --report
   # LAST, always: trailing_var_arg swallows anything placed after it, and
-  # src/app/bootstrap.rs:1392-1393 joins the positionals with a single space.
+  # src/app/bootstrap.rs:1465 joins the positionals with a single space.
   printf '%s\n' "$bpf"
   return 0
 }
@@ -382,7 +381,7 @@ argv_carrier() { # <out-dir> <calls> <rtp-per-call> <call-ids> <stream-pairs> <c
 parse_metrics() { # <body> <series-name>
   local body="$1" series="$2" v
   if ! v=$(printf '%s\n' "$body" | awk -v s="$series" '$1 == s && NF == 2 { v = $2; f = 1 } END { if (!f) exit 3; print v }'); then
-    unavailable "series $series absent from the scrape; src/output/prometheus.rs:319 emits the capture series unconditionally, so an absent line means the body was truncated or came from another endpoint"
+    unavailable "series $series absent from the scrape; src/output/prometheus.rs:434 emits the capture series unconditionally, so an absent line means the body was truncated or came from another endpoint"
     return 0
   fi
   printf '%s\n' "$v"
@@ -390,17 +389,20 @@ parse_metrics() { # <body> <series-name>
 
 # HARD ZERO on this route, never a reading. `grep -c CaptureMeter
 # src/output/api.rs` returns 0: PrometheusMetrics::for_scrape
-# (src/output/prometheus.rs:170) leaves both fields at Default and
+# (src/output/prometheus.rs:219) leaves both fields at Default and
 # src/output/api.rs:1017 never fills them, while format_metrics emits them
-# unconditionally (src/output/prometheus.rs:333, :345). The only code that
-# populates them is src/output/prometheus_server.rs:119, and that server has
-# one production call site, src/app/tui_mode.rs:156 -- the TUI arm.
+# unconditionally (src/output/prometheus.rs:476, :488). A CaptureMeter reaches
+# only the standalone --metrics server (src/output/prometheus_server.rs:114),
+# which start_servers now launches for TUI and headless runs alike
+# (src/app/servers.rs:190; batch passes the meter at src/app/batch.rs:1879) --
+# so the counters ARE measurable headless via --metrics, just never on the
+# --api route this harness scrapes.
 queue_depth_cell() {
-  unavailable "no CaptureMeter is wired into src/output/api.rs:1017, so src/output/prometheus.rs:333 emits a hard zero on the --api route; only src/output/prometheus_server.rs:119 receives one and that server is reached solely from src/app/tui_mode.rs:156"
+  unavailable "no CaptureMeter is wired into src/output/api.rs:1017, so src/output/prometheus.rs:476 emits a hard zero on the --api route this harness scrapes; a meter reaches only the standalone --metrics server (src/app/servers.rs:190), which this harness does not start"
 }
 
 backpressure_cell() {
-  unavailable "no CaptureMeter is wired into src/output/api.rs:1017, so src/output/prometheus.rs:345 emits a hard zero on the --api route; only src/output/prometheus_server.rs:119 receives one and that server is reached solely from src/app/tui_mode.rs:156"
+  unavailable "no CaptureMeter is wired into src/output/api.rs:1017, so src/output/prometheus.rs:488 emits a hard zero on the --api route this harness scrapes; a meter reaches only the standalone --metrics server (src/app/servers.rs:190), which this harness does not start"
 }
 
 # tcpreplay's own format strings: "\tSuccessful packets:        %llu",
@@ -456,8 +458,10 @@ parse_softnet_dropped() { # <text> -> sum across CPUs
 # veth exposes NO rx_dropped counter at all. `ethtool -i <veth>` reports
 # `driver: veth` and `ethtool -S <veth> | grep -c rx_dropped` returns 0; the
 # only drop-shaped counters are rx_queue_N_drops and three XDP ones. The
-# acceptance criterion at docs/research/capture-performance.md:77 is therefore
+# acceptance criterion at docs/research/capture-performance.md:95 is therefore
 # unsatisfiable as written, which is a correction that has to land in the doc.
+# (:95 is the "Correction to the original acceptance criterion" bullet; the
+# criterion sat at :77 before that correction rewrote the surrounding text.)
 ethtool_queue_drops() { # <ethtool -S text> -> "<sum> <queue-count>"
   printf '%s\n' "$1" | awk -F: '
     $1 ~ /rx_queue_[0-9]+_drops[ \t]*$/ { gsub(/[^0-9]/, "", $2); s += $2; n++ }
@@ -471,9 +475,9 @@ ethtool_stat() { # <ethtool -S text> <exact key> -> value or unavailable
         key == k { gsub(/[^0-9]/, "", $2); v = $2; f = 1 }
         END { if (!f) exit 3; print v }') || {
     if [ "$2" = "rx_dropped" ]; then
-      unavailable "veth exposes no rx_dropped counter (ethtool -i reports driver: veth); the acceptance criterion at docs/research/capture-performance.md:77 is unsatisfiable on veth -- rx_queue_N_drops is the counter that exists"
+      unavailable "veth exposes no rx_dropped counter (ethtool -i reports driver: veth); the acceptance criterion at docs/research/capture-performance.md:95 is unsatisfiable on veth -- rx_queue_N_drops is the counter that exists"
     else
-      unavailable "ethtool -S does not expose '$2' on this device; see docs/research/capture-performance.md:77"
+      unavailable "ethtool -S does not expose '$2' on this device; see docs/research/capture-performance.md:95"
     fi
     return 0
   }
@@ -607,7 +611,7 @@ probe_sipnab_flags() { # <sipnab --help text>
   done
   if [ -n "$missing" ]; then
     die_code "$EXIT_PREFLIGHT" \
-      "this sipnab binary does not advertise:$missing. --api in particular is NOT a default feature (Cargo.toml:219 default = native,tui,audio,metrics; api at Cargo.toml:229) while the flag itself is ungated at src/cli.rs:851-853 and the server arm is cfg-gated at src/app/servers.rs:184-187 -- a plain 'cargo build --release' therefore accepts --api and binds nothing. Use a checksum-verified release artifact, or build with --features api."
+      "this sipnab binary does not advertise:$missing. --api in particular is NOT a default feature (Cargo.toml:219 default = native,tui,audio,metrics; api at Cargo.toml:229) while the flag itself is ungated at src/cli.rs:964-965 and the server arm is cfg-gated at src/app/servers.rs:222-227 -- a plain 'cargo build --release' therefore accepts --api and binds nothing. Use a checksum-verified release artifact, or build with --features api."
   fi
   printf 'ok\n'
 }
@@ -626,7 +630,7 @@ canary_check() { # <expected> <observed-or-unavailable> <scrape-ok:0|1>
   local expected="$1" observed="$2" scrape_ok="$3"
   if [ "$scrape_ok" != 1 ]; then
     die_code "$EXIT_VOID" \
-      "VOID: the measurement plane never answered. /metrics could not be scraped at all, which most often means the binary was built without the 'api' feature -- Cargo.toml:219 makes it non-default, src/cli.rs:851-853 parses --api regardless, and src/app/servers.rs:184-187 is the cfg-gated arm that would have bound it. It can also mean the scraper ran outside the namespace: --api binds 127.0.0.1 INSIDE $NS and only 'ip netns exec $NS curl' reaches it. Nothing written."
+      "VOID: the measurement plane never answered. /metrics could not be scraped at all, which most often means the binary was built without the 'api' feature -- Cargo.toml:219 makes it non-default, src/cli.rs:964-965 parses --api regardless, and src/app/servers.rs:222-227 is the cfg-gated arm that would have bound it. It can also mean the scraper ran outside the namespace: --api binds 127.0.0.1 INSIDE $NS and only 'ip netns exec $NS curl' reaches it. Nothing written."
   fi
   if ! is_num "$observed"; then
     die_code "$EXIT_VOID" \
@@ -1000,7 +1004,7 @@ st_filter_is_the_trailing_positional() {
 st_missing_filter_refused() {
   st_try argv_sipnab "$VETH_RX" 66 "$API_ADDR" "" /tmp/x.toml "" "" 0
   st_true "S15 an empty filter is refused" test "$ST_RC" -ne 0
-  st_has "S15 cites the auto-BPF" "src/app/bootstrap.rs:307-317" "$ST_OUT"
+  st_has "S15 cites the auto-BPF" "src/app/bootstrap.rs:337-347" "$ST_OUT"
   st_has "S15 names portrange 5060-5061" "portrange 5060-5061" "$ST_OUT"
   st_has "S15 says the RTP would be dropped in-kernel" "100% of the RTP in-kernel" "$ST_OUT"
 }
@@ -1234,7 +1238,7 @@ st_queue_depth_is_unavailable() {
   st_hasnt "S35 the queue-depth cell is not a bare 0" "unavailable(0)" "$q"
   st_has "S35 queue depth is unavailable()" "unavailable(" "$q"
   st_has "S35 queue depth cites api.rs:1017" "src/output/api.rs:1017" "$q"
-  st_has "S35 queue depth cites the TUI-only server" "src/app/tui_mode.rs:156" "$q"
+  st_has "S35 queue depth cites the --metrics-only meter wiring" "src/app/servers.rs:190" "$q"
   st_has "S35 backpressure is unavailable()" "unavailable(" "$b"
   st_has "S35 backpressure cites api.rs:1017" "src/output/api.rs:1017" "$b"
   st_eq "S35 the scraped hard zero is never read back" "0" \
@@ -1246,7 +1250,7 @@ st_missing_series_is_not_zero() {
   body=$(printf '%s\n' "sipnab_capture_packets_total 600700" "sipnab_capture_quality_degraded 0")
   v=$(parse_metrics "$body" sipnab_capture_kernel_dropped_packets_total)
   st_has "S36 an absent series reads unavailable()" "unavailable(series" "$v"
-  st_has "S36 the reason carries a citation" "src/output/prometheus.rs:319" "$v"
+  st_has "S36 the reason carries a citation" "src/output/prometheus.rs:434" "$v"
   st_eq "S36 the row cannot classify CLEAN" "UNEXPLAINED_LOSS" \
     "$(classify_row 600700 0 600700 600700 600700 "$v" 0 0 100.00 no)"
   st_eq "S36 a present series parses" "600700" "$(parse_metrics "$body" sipnab_capture_packets_total)"
@@ -1269,7 +1273,7 @@ st_unavailable_needs_a_citation() {
   st_try unavailable "not supported"
   st_true "S38 a reason with no citation is refused" test "$ST_RC" -ne 0
   st_has "S38 the refusal says so" "carries no file:line citation" "$ST_OUT"
-  st_try unavailable "veth has no such counter, see docs/research/capture-performance.md:77"
+  st_try unavailable "veth has no such counter, see docs/research/capture-performance.md:95"
   st_eq "S38 a cited reason is accepted" "0" "$ST_RC"
   st_try unavailable "see src/capture/live.rs:535"
   st_eq "S38 a .rs citation is accepted" "0" "$ST_RC"
@@ -1297,8 +1301,8 @@ st_canary_distinguishes_blind_from_absent() {
   st_has "S40 blind capture is named as such" "capture point observed 0 packets" "$blind"
   st_has "S40 blind capture names the -d hazard" "wrong -d" "$blind"
   st_has "S40 absent API names the non-default feature" "Cargo.toml:219" "$absent"
-  st_has "S40 absent API names the ungated flag" "src/cli.rs:851-853" "$absent"
-  st_has "S40 absent API names the cfg-gated arm" "src/app/servers.rs:184-187" "$absent"
+  st_has "S40 absent API names the ungated flag" "src/cli.rs:964-965" "$absent"
+  st_has "S40 absent API names the cfg-gated arm" "src/app/servers.rs:222-227" "$absent"
   st_has "S40 absent API names the namespace hazard" "ip netns exec" "$absent"
   st_true "S40 the two messages differ" test "$blind" != "$absent"
 }
@@ -1421,7 +1425,7 @@ st_one_process_per_rung() {
   st_eq "S51 canary + calibration + headline + 2 rungs = 5 phases" "5" "$n"
   st_eq "S51 each phase is its own launch" "5" "$(printf '%s\n' "$seq" | sort -u | wc -l)"
   st_has "S51 the rationale is recorded" "process-global statics" "$(process_per_rung_note)"
-  st_has "S51 the rationale cites CAPTURED_PACKETS" "src/capture/mod.rs:74" "$(process_per_rung_note)"
+  st_has "S51 the rationale cites CAPTURED_PACKETS" "src/capture/mod.rs:84" "$(process_per_rung_note)"
   st_has "S51 the rationale cites the drop statics" "src/capture/live.rs:535" "$(process_per_rung_note)"
 }
 
@@ -1496,7 +1500,7 @@ st_veth_drop_counters() {
   rxd=$(ethtool_stat "$s" rx_dropped)
   st_has "S58 rx_dropped is unavailable(), not 0" "unavailable(" "$rxd"
   st_has "S58 the reason names the veth driver" "driver: veth" "$rxd"
-  st_has "S58 the reason cites the doc criterion" "docs/research/capture-performance.md:77" "$rxd"
+  st_has "S58 the reason cites the doc criterion" "docs/research/capture-performance.md:95" "$rxd"
   st_hasnt "S58 no fabricated zero" "unavailable(0)" "$rxd"
   st_eq "S58 an XDP drop counter is not mistaken for the queue drop" "418 1" "$drops"
 }
@@ -1846,7 +1850,7 @@ calibration_block() { # <argv> <degraded> <kernel-dropped>
   printf '  -B 2 shrinks the kernel ring to the 2 MiB floor (buffer_ladder(2) == [2], src/capture/live.rs:509-520).\n'
   printf '  --buffer-budget is inert at this value and is passed only to record the intent:\n'
   printf '    channel_capacity() computes 2 MiB / 2048 = 1024 and clamps UP to MIN_CHANNEL_CAPACITY = 10000\n'
-  printf '    (src/capture/native.rs:157-171), so every value at or below 19 MiB yields the same 10000-packet cap.\n'
+  printf '    (src/capture/native.rs:159-171), so every value at or below 19 MiB yields the same 10000-packet cap.\n'
   printf '  This reading is what makes a later zero a reading rather than silence: KERNEL_DROPPED and\n'
   printf '  IFACE_DROPPED are AtomicU64::new(0) (src/capture/live.rs:535, :543) and a failing pcap_stats\n'
   printf '  syscall is swallowed at tracing::debug! (src/capture/live.rs:344) below the default info level.\n'
@@ -1854,7 +1858,7 @@ calibration_block() { # <argv> <degraded> <kernel-dropped>
 
 process_per_rung_note() {
   printf 'One sipnab process per phase, each self-terminating on its own --duration. Required, not incidental:\n'
-  printf 'CAPTURED_PACKETS (src/capture/mod.rs:74), KERNEL_DROPPED and IFACE_DROPPED (src/capture/live.rs:535, :543)\n'
+  printf 'CAPTURED_PACKETS (src/capture/mod.rs:84), KERNEL_DROPPED and IFACE_DROPPED (src/capture/live.rs:535, :543)\n'
   printf 'are process-global statics that are never reset -- a reused process inherits the previous rung s drops.\n'
 }
 

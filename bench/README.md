@@ -150,16 +150,22 @@ already exists, and it never deletes one it did not create.
   two either side of a gigabit are 500,000 pps (≈856 Mbps of 214-byte frames)
   and 1,000,000 pps (≈1.712 Gbps). **The ladder straddles 1 Gbps and cannot hit
   it.** No result from this harness may be written up as "passed at 1 Gbps".
-- **Queue depth and backpressure.** `sipnab_capture_queue_depth_packets` and
+- **Queue depth and backpressure — on the route it scrapes.**
+  `sipnab_capture_queue_depth_packets` and
   `sipnab_capture_backpressure_blocks_total` are emitted unconditionally by
-  `format_metrics` (`src/output/prometheus.rs:333` and `:345`), but the only
+  `format_metrics` (`src/output/prometheus.rs:476` and `:488`), but the only
   code that ever populates them is the standalone `--metrics` server
-  (`src/output/prometheus_server.rs`), whose sole call site is
-  `src/app/tui_mode.rs:156` — the TUI arm. `grep -c CaptureMeter
-  src/output/api.rs` returns `0`, so on the `--api` route both series are a hard
+  (`src/output/prometheus_server.rs:114`). That server is no longer TUI-only:
+  `servers::start_servers` launches it for headless runs too, and batch hands
+  it a real `CaptureMeter` (`src/app/servers.rs:190`, `src/app/batch.rs:1879`) —
+  so a headless run given `--metrics <addr>` does export live readings.
+  The harness, however, scrapes the `--api` route, and `grep -c CaptureMeter
+  src/output/api.rs` still returns `0`: on that route both series are a hard
   zero no matter what the queue is doing. The harness reports them as
-  unavailable with that reason. Recording either as `0` would be fabrication,
-  not measurement.
+  unavailable with that reason rather than recording the zero — that would be
+  fabrication, not measurement. Teaching the harness to also start and scrape
+  `--metrics` is the open follow-up that would turn these two cells into
+  readings.
 - **MOS, jitter and loss on a bounded-pool rung.** The rate ladder holds dialog
   state constant (`--call-ids 100 --stream-pairs 100`) so that only pps varies,
   which means many calls share one 5-tuple and SSRC and sequence numbers repeat
@@ -168,7 +174,7 @@ already exists, and it never deletes one it did not create.
   --stream-pairs 0`) produces interpretable ones.
 
 A word on the BPF: sipnab auto-generates `portrange 5060-5061` from
-`--portrange` when a live source is given no filter (`src/app/bootstrap.rs:307`).
+`--portrange` when a live source is given no filter (`src/app/bootstrap.rs:337`).
 Under that default the kernel discards 100% of the RTP and the run reports a
 pristine baseline having measured nothing, which is why the harness always
 passes an explicit trailing filter covering both the signalling port and the

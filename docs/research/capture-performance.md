@@ -67,13 +67,13 @@ and a large cut in pipeline-induced drops.
       a `bounded(capacity)` semaphore for backpressure. Capacity derives from
       `[capture] buffer_budget_mb` / `--buffer-budget` (default 64 MiB);
       `sipnab_capture_queue_depth_packets` / `_backpressure_blocks_total` exported.
-      **On the standalone `--metrics` server only.** `format_metrics` emits both
-      series unconditionally, but only `start_metrics_server` is ever handed a
-      `CaptureMeter`, and its single call site is in `run_tui_mode` — so a
-      headless run scraping the `--api` route reads both as a hard `0`
-      regardless of what the queue is doing. Neither series may be quoted as a
-      reading from a headless capture; see `bench/README.md` for the file and
-      line numbers, which this page deliberately does not carry.
+      **On the standalone `--metrics` server only** — which is no longer
+      TUI-only: `servers::start_servers` starts it for headless runs too, and
+      batch hands it a real `CaptureMeter`, so `--metrics` reads live. The
+      `--api` route's `get_metrics` fills no `CaptureMeter`, so a headless run
+      scraping `--api` reads both series as a hard `0` regardless of what the
+      queue is doing; neither may be quoted as a reading from that route. See
+      `bench/README.md` for the line numbers this page deliberately omits.
 - [ ] Buffer pool to eliminate per-packet `to_vec()` (in `capture_live()`) —
       recycle fixed buffers instead of allocating per packet.
 - [ ] Stronger default auto-BPF filter when none supplied (push more drops into
