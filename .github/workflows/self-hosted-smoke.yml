@@ -1,0 +1,33 @@
+name: Self-hosted smoke
+
+# Manual only. This proves the thor-02 self-hosted runner can build sipnab
+# before any production job is routed to it. It fires on nothing automatic, so
+# no pull request — least of all a fork's — can trigger execution on the box.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-hosted-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    # Both labels required: a runner must be self-hosted AND be thor-02.
+    runs-on: [self-hosted, thor-02]
+    # Bounds how long a wedged job holds the runner (the #192 lesson applied to
+    # a single-runner pool, where a hang starves everything behind it).
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report the build environment
+        run: |
+          echo "host:   $(uname -srm)"
+          echo "rustc:  $(rustc --version 2>&1 || echo MISSING)"
+          echo "cargo:  $(cargo --version 2>&1 || echo MISSING)"
+          echo "clang:  $(clang --version 2>&1 | head -1 || echo MISSING)"
+          echo "libpcap: $(pkg-config --modversion libpcap 2>&1 || echo MISSING)"
+      - name: Type-check the default surface
+        run: cargo check --features native
