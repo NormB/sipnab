@@ -440,13 +440,19 @@ Tiers:
   saving is paid on *every* packet in the kernel copy, the ring buffer
   occupancy (CT2) and the `to_vec()` at `src/capture/live.rs:266`. **This is not
   a free default change**, which is why it is a profile and not a number:
-  truncation breaks `--export-audio`/WAV export and Opus decode (they need RTP
+  truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
-  frames. **Do:** ship named capture profiles (`--profile signalling` → small
-  snaplen, `--profile full` → 65535) rather than moving the bare default;
-  refuse or loudly warn when a small snaplen is combined with audio export or
-  `-O`; and surface `caplen` vs `origlen` (already carried on `Packet`) in the
-  summary so truncation is visible rather than inferred.
+  frames. **Two of three "Do:" items are done, and this line claimed neither
+  until 2026-08-06.** `snaplen_truncation_warning` (`src/app/bootstrap.rs:1933`,
+  tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
+  `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
+  instead, since that path is retained *audio*, not a re-emitted pcap, and
+  needed its own message naming `export_audio` rather than `-O`. Still open:
+  named capture profiles (`--profile signalling` → small snaplen, `--profile
+  full` → 65535) rather than moving the bare default, and surfacing `caplen`
+  vs `origlen` truncation counts in the batch summary — both warnings above
+  fire per-run, not per-packet, so an operator still cannot see *how much* of
+  a given capture was truncated.
 - [ ] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
   `grep -rn 'FANOUT\|fanout' src/` matches nothing. `--cores N` is offline-only
   (`RunMode::CoresFile` requires `-I`, `src/app/bootstrap.rs:433`), so on a busy

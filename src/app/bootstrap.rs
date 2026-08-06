@@ -19,7 +19,7 @@ use crate::output::{ColorMode, EventExecEngine, OutputOptions};
 use crate::privilege;
 use crate::sip::{dsl::FilterExpr, matcher::SipMatcher};
 
-use super::batch::CapturePolicy;
+use super::batch::{CapturePolicy, audio_retention_wanted};
 
 /// A fatal configuration problem found while planning: the message main()
 /// should log and the process exit code (2 for argument errors, 1 for
@@ -504,6 +504,14 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // the one place capture truncation leaves the tool and cannot be inferred
     // downstream. Warned, not refused — the analysis is complete.
     if let Some(msg) = snaplen_truncation_warning(cli, config) {
+        tracing::warn!("{msg}");
+    }
+
+    // Unlike -O, a truncating --snaplen here reaches sipnab's own analysis:
+    // --retain-audio buffers RTP payload for export_audio to decode, and a
+    // snaplen tuned for signalling truncates that payload before retention
+    // ever sees it.
+    if let Some(msg) = snaplen_audio_retention_warning(cli, config) {
         tracing::warn!("{msg}");
     }
 
@@ -1946,6 +1954,37 @@ fn snaplen_truncation_warning(cli: &Cli, config: &Config) -> Option<String> {
     ))
 }
 
+/// A truncating `--snaplen` on a live capture with `--retain-audio` armed.
+///
+/// `--snaplen N` tells the kernel to copy only the first N bytes of each
+/// frame. Unlike [`snaplen_truncation_warning`]'s `-O` case, sipnab's *own*
+/// analysis is affected here: `--retain-audio` buffers RTP payload bytes for
+/// the `export_audio` MCP tool to decode later, and a snaplen sized for
+/// signalling (CT3's own guidance is 200-400 bytes for SIP headers) truncates
+/// that payload before it ever reaches the retention buffer. The exported WAV
+/// or Opus audio is then short or corrupted for exactly the packets that were
+/// truncated, with nothing marking which frames those were — the same silent
+/// class as the `-O` case, but landing in a decoded artifact instead of a
+/// re-emitted pcap.
+///
+/// Live only: a saved-file reader (`-I`) copies whole records, so `--snaplen`
+/// never shortens a file read. Returns the message rather than logging it,
+/// matching [`snaplen_truncation_warning`].
+fn snaplen_audio_retention_warning(cli: &Cli, config: &Config) -> Option<String> {
+    let snaplen = cli.snaplen.or(config.capture.snaplen).unwrap_or(65535);
+    if snaplen >= 65535 || !audio_retention_wanted(cli) || cli.has_input() {
+        return None;
+    }
+    Some(format!(
+        "--snaplen {snaplen} truncates each captured frame to {snaplen} bytes, \
+         and --retain-audio buffers what the kernel handed it: any RTP packet \
+         whose header and payload extend past {snaplen} bytes is retained \
+         truncated, so audio exported later through export_audio will be short \
+         or corrupted for those packets. Remove --snaplen (the default 65535 \
+         keeps whole frames) if retained audio must be complete."
+    ))
+}
+
 // ── Auth / token helpers ───────────────────────────────────────────
 
 /// Mint a signed token from the CLI configuration and return it. Picks the
@@ -2603,6 +2642,93 @@ mod tests {
         let mut config = Config::default();
         config.capture.snaplen = Some(320);
         let msg = snaplen_truncation_warning(&cli, &config)
+            .expect("a config-file snaplen truncates just as a CLI one does");
+        assert!(msg.contains("320"), "names the resolved snaplen: {msg}");
+    }
+
+    // ── truncating --snaplen feeding --retain-audio (CT3) ───────────────
+
+    /// The defect: a truncating `--snaplen` on a live capture with
+    /// `--retain-audio` armed retains truncated RTP payload with nothing
+    /// marking it short. Unlike the `-O` warning, this one must say the
+    /// analysis itself (the exported audio) is affected, not intact.
+    #[test]
+    fn snaplen_audio_retention_warning_fires_on_live_capture_with_retain_audio() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".to_string());
+        cli.snaplen = Some(262);
+        cli.mcp = true;
+        cli.retain_audio = true;
+        let msg = snaplen_audio_retention_warning(&cli, &Config::default())
+            .expect("a truncating snaplen feeding retained audio must be reported");
+        assert!(msg.contains("262"), "names the snaplen: {msg}");
+        assert!(
+            msg.contains("export_audio"),
+            "names the tool the truncation reaches: {msg}"
+        );
+        assert!(
+            msg.contains("retain-audio"),
+            "names the flag that arms retention: {msg}"
+        );
+    }
+
+    /// A small snaplen with no `--retain-audio` never buffers RTP payload, so
+    /// there is nothing retained to corrupt — silent, matching the `-O`
+    /// warning's silence when nothing is written.
+    #[test]
+    fn snaplen_audio_retention_warning_silent_without_retain_audio() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".to_string());
+        cli.snaplen = Some(262);
+        assert!(snaplen_audio_retention_warning(&cli, &Config::default()).is_none());
+    }
+
+    /// The full-frame default keeps whole packets, so retained RTP payload is
+    /// always complete: neither the unset default nor an explicit 65535
+    /// truncates.
+    #[test]
+    fn snaplen_audio_retention_warning_silent_at_the_full_frame_default() {
+        let mut unset = base_cli();
+        unset.device = Some("eth0".to_string());
+        unset.mcp = true;
+        unset.retain_audio = true;
+        assert!(
+            snaplen_audio_retention_warning(&unset, &Config::default()).is_none(),
+            "the unset default is 65535 — whole frames"
+        );
+        unset.snaplen = Some(65535);
+        assert!(
+            snaplen_audio_retention_warning(&unset, &Config::default()).is_none(),
+            "an explicit 65535 truncates nothing"
+        );
+    }
+
+    /// A saved-file read (`-I`) copies whole records; `--snaplen` never
+    /// shortens it, so retained RTP payload is complete even with a small
+    /// snaplen present.
+    #[test]
+    fn snaplen_audio_retention_warning_silent_on_file_input() {
+        let mut cli = base_cli();
+        cli.input = vec!["capture.pcap".to_string()];
+        cli.snaplen = Some(262);
+        cli.mcp = true;
+        cli.retain_audio = true;
+        assert!(snaplen_audio_retention_warning(&cli, &Config::default()).is_none());
+    }
+
+    /// The snaplen resolves from the config file too, so a small
+    /// `[capture] snaplen` with `--retain-audio` on a live source is caught
+    /// even when the CLI flag is absent — the truncation is the same
+    /// whichever set it.
+    #[test]
+    fn snaplen_audio_retention_warning_catches_a_config_file_snaplen() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".to_string());
+        cli.mcp = true;
+        cli.retain_audio = true;
+        let mut config = Config::default();
+        config.capture.snaplen = Some(320);
+        let msg = snaplen_audio_retention_warning(&cli, &config)
             .expect("a config-file snaplen truncates just as a CLI one does");
         assert!(msg.contains("320"), "names the resolved snaplen: {msg}");
     }

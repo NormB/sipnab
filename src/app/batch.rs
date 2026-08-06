@@ -765,7 +765,7 @@ pub fn run_cores_file(
 ///
 /// The TUI keeps its own retention decision in `tui_mode.rs`, which is why its
 /// F2 WAV export always worked against the same decoder.
-fn audio_retention_wanted(cli: &Cli) -> bool {
+pub(crate) fn audio_retention_wanted(cli: &Cli) -> bool {
     cli.mcp && cli.retain_audio
 }
 
