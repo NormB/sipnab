@@ -25,7 +25,12 @@ jobs:
     # group, which never supersedes. Observed: 11.7 min ubuntu / 8.0 macos.
     timeout-minutes: 40
     name: Check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    # The Linux leg runs on the thor-02 self-hosted runner (aarch64, the CI
+    # toolchain 1.97.1 and all build deps are installed on the box). macOS
+    # cannot run there, so it stays on a GitHub-hosted runner. `matrix.os`
+    # keeps its ubuntu-latest / macos-latest values so the step conditionals
+    # below (e.g. the published-test-count gate, ubuntu-only) are unchanged.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","thor-02"]') || 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -179,7 +184,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Installer (install.sh)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run install.sh test suite
@@ -195,7 +200,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Deb packaging (build-deb.sh)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test build-deb.sh (full + noaudio variants)
@@ -212,7 +217,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Homebrew formula (update-formula.sh)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test update-formula.sh
@@ -231,7 +236,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Ops scripts (verdict.sh, platform-table.sh)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test ops/tsan/verdict.sh
@@ -267,7 +272,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Bench scripts (live-capture.sh)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Shellcheck (bash)
@@ -284,7 +289,7 @@ jobs:
     # group, which never supersedes. Observed: 7.2 min slowest combo.
     timeout-minutes: 30
     name: Features (${{ matrix.features }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     strategy:
       fail-fast: false
       matrix:
@@ -378,7 +383,7 @@ jobs:
     # group, which never supersedes. Observed: 0.6 min.
     timeout-minutes: 15
     name: Security audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install libpcap
@@ -424,7 +429,7 @@ jobs:
     # group, which never supersedes. Observed: 3.8 min.
     timeout-minutes: 20
     name: Fuzz targets compile
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
@@ -451,7 +456,7 @@ jobs:
     # check on main still green.
     needs: [check, install-sh, deb-package, homebrew-formula, tsan-verdict,
             bench-scripts, features, audit, fuzz-check]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, thor-02]
     steps:
       - name: Verify all required jobs succeeded
         run: |
