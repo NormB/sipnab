@@ -1975,13 +1975,27 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
         .clone()
         .unwrap_or_else(|| format!("tok-{}", chrono::Utc::now().timestamp_micros()));
 
-    // MCP has no metrics surface, so a scrape-only MCP token would name a
-    // route that does not exist there. Reject it rather than mint a token that
-    // can never authenticate anything.
+    // Each narrow scope names something that exists on exactly one surface,
+    // so a cross-surface mint is rejected rather than minting a token that
+    // could never authorize what its scope names.
+    //
+    // MCP has no metrics surface: a scrape-only MCP token would name a route
+    // that does not exist there.
     if cli.token_scope == crate::auth::SCOPE_METRICS && audience == crate::auth::AUDIENCE_MCP {
         return Err(
             "--token-scope metrics applies to the REST API only; the MCP surface has no \
              /metrics endpoint"
+                .to_string(),
+        );
+    }
+    // And the REST API has no read-only scope: its routes are one trust
+    // domain apart from /metrics, so a `read` API token would verify and then
+    // be refused by every scope check — worse than failing at mint time,
+    // because the operator would ship it before learning it opens nothing.
+    if cli.token_scope == crate::auth::SCOPE_READ && audience == crate::auth::AUDIENCE_API {
+        return Err(
+            "--token-scope read applies to the MCP surface only; the REST API has no \
+             read-only scope — use `full`, or `metrics` for a scrape-only token"
                 .to_string(),
         );
     }

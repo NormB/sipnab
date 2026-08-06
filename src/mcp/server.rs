@@ -4733,7 +4733,9 @@ fn caller_of(extensions: &rmcp::model::Extensions) -> String {
                 .map(|ci| ci.0.to_string())
                 .unwrap_or_else(|| "unknown-peer".to_string());
             match parts.extensions.get::<McpAuth>() {
-                Some(McpAuth::BearerVerified) => format!("{addr} bearer-verified"),
+                Some(McpAuth::BearerVerified { scope }) => {
+                    format!("{addr} bearer-verified scope={scope}")
+                }
                 Some(McpAuth::Unauthenticated) => format!("{addr} unauthenticated"),
                 None => format!("{addr} no-admission-record"),
             }
@@ -4747,6 +4749,86 @@ fn caller_of(extensions: &rmcp::model::Extensions) -> String {
 #[cfg(not(feature = "mcp-http"))]
 fn caller_of(_extensions: &rmcp::model::Extensions) -> String {
     "stdio".to_string()
+}
+
+/// The scope the caller's admission record grants, for the per-tool check in
+/// `call_tool`.
+///
+/// - Stdio (no HTTP `Parts` in the extensions) is FULL: whoever spawned the
+///   process owns its stdin, and process ownership is the boundary there —
+///   a scope claim would restrict the very operator who configured the server.
+/// - HTTP with a verified bearer token carries the token's scope claim.
+/// - HTTP admitted without credentials (loopback, no verifier configured) is
+///   FULL: the boundary there is network position, and narrowing it would
+///   break every existing loopback deployment.
+/// - HTTP with NO admission record should be unreachable (the auth layer
+///   stamps every request it admits). It is treated as full rather than
+///   refused because refusing would turn a middleware-wiring bug into a
+///   total outage with no scope involved at all — and the same missing
+///   record is already called out by `caller_of` as `no-admission-record`
+///   on the audit line, which is the alarm that matters.
+#[cfg(feature = "mcp-http")]
+fn scope_of(extensions: &rmcp::model::Extensions) -> String {
+    use crate::mcp::transport::McpAuth;
+    match extensions.get::<axum::http::request::Parts>() {
+        Some(parts) => match parts.extensions.get::<McpAuth>() {
+            Some(McpAuth::BearerVerified { scope }) => scope.clone(),
+            Some(McpAuth::Unauthenticated) | None => crate::auth::SCOPE_FULL.to_string(),
+        },
+        None => crate::auth::SCOPE_FULL.to_string(),
+    }
+}
+
+/// Without the HTTP transport compiled in, every call is stdio and stdio is
+/// full-scope: process ownership is the boundary.
+#[cfg(not(feature = "mcp-http"))]
+fn scope_of(_extensions: &rmcp::model::Extensions) -> String {
+    crate::auth::SCOPE_FULL.to_string()
+}
+
+/// Decide whether `scope` is allowed to invoke the tool, returning the
+/// refusal to send when it is not.
+///
+/// The decision is DERIVED from the registered tool's `read_only_hint`
+/// annotation — the same annotation the client is shown by `tools/list` —
+/// never from a hand-kept list of destructive tools. One source of truth:
+/// if a tool's annotation says read-only, a read token may call it, and if
+/// the annotation is wrong, the listing shown to clients is wrong in exactly
+/// the same way, which is a single bug instead of two that drift apart.
+///
+/// A known tool whose annotations are missing or carry no `read_only_hint`
+/// is refused under a narrow scope: absent means nobody decided, and a
+/// permission check must not guess in the caller's favor. (The annotation
+/// test gate keeps this branch theoretical — every registered tool carries
+/// the hint.)
+///
+/// An UNKNOWN tool returns no refusal here so dispatch produces its own
+/// "tool not found" — a scope error naming a tool that does not exist would
+/// misreport both what happened and what the token lacks.
+fn scope_refusal(
+    scope: &str,
+    tool_name: &str,
+    tool: Option<&rmcp::model::Tool>,
+) -> Option<rmcp::ErrorData> {
+    if scope == crate::auth::SCOPE_FULL {
+        return None;
+    }
+    let tool = tool?;
+    let read_only = tool
+        .annotations
+        .as_ref()
+        .and_then(|a| a.read_only_hint)
+        .unwrap_or(false);
+    if read_only {
+        return None;
+    }
+    Some(rmcp::ErrorData::invalid_params(
+        format!(
+            "tool {tool_name} is not read-only and this token's scope is \
+             \"{scope}\" — calling it requires a full-scope token"
+        ),
+        None,
+    ))
 }
 
 /// Render the tool arguments for the audit line, bounded.
@@ -4796,6 +4878,12 @@ impl ServerHandler for SipnabMcp {
     /// request id, how it ended, and how long it took. Refusals are audited
     /// too — an unknown tool name or bad arguments is exactly the probing an
     /// audit log exists to show.
+    ///
+    /// Scope is enforced HERE, before dispatch: the auth middleware admits
+    /// any valid token and stamps its scope, and this is the first point
+    /// where the requested tool — and therefore its `read_only_hint`
+    /// annotation — is known. A scope refusal takes the same path as any
+    /// other `Err`, so it lands on the audit line as `outcome=refused`.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -4804,11 +4892,17 @@ impl ServerHandler for SipnabMcp {
         let tool = request.name.clone();
         let request_id = context.id.clone();
         let caller = caller_of(&context.extensions);
+        let scope = scope_of(&context.extensions);
         let args = audit_args(request.arguments.as_ref());
         let started = std::time::Instant::now();
 
-        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        let result = self.tool_router.call(tcc).await;
+        let result = match scope_refusal(&scope, &tool, self.tool_router.get(&tool)) {
+            Some(refusal) => Err(refusal),
+            None => {
+                let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+                self.tool_router.call(tcc).await
+            }
+        };
 
         let elapsed_ms = started.elapsed().as_millis() as u64;
         let outcome = match &result {
@@ -8069,6 +8163,169 @@ mod tests {
                 "{name}: idempotent_hint"
             );
         }
+    }
+
+    // ---- per-tool token scoping -------------------------------------------
+
+    /// A read scope is refused by every non-read-only tool and accepted by
+    /// every read-only one — over the REAL registered router, so the test
+    /// walks the same annotations dispatch reads.
+    ///
+    /// Both directions in one walk, and each side is asserted non-empty:
+    /// a build that refuses everything fails the accept half, a build that
+    /// accepts everything fails the refuse half. That is the gate — either
+    /// degenerate implementation is caught by name.
+    #[test]
+    fn a_read_scope_is_refused_by_exactly_the_non_read_only_tools() {
+        let router = SipnabMcp::tool_router();
+        let mut accepted = Vec::new();
+        let mut refused = Vec::new();
+
+        for tool in router.list_all() {
+            let name = tool.name.to_string();
+            let read_only = tool
+                .annotations
+                .as_ref()
+                .and_then(|a| a.read_only_hint)
+                .unwrap_or(false);
+            match scope_refusal(crate::auth::SCOPE_READ, &name, router.get(&name)) {
+                None => {
+                    assert!(
+                        read_only,
+                        "{name} is NOT annotated read-only but a read scope \
+                         reached it — this is the exact defect per-tool \
+                         scoping exists to close"
+                    );
+                    accepted.push(name);
+                }
+                Some(err) => {
+                    assert!(
+                        !read_only,
+                        "{name} IS annotated read-only but a read scope was \
+                         refused — a read token that cannot read is useless"
+                    );
+                    // The refusal must tell the caller what to fix: which
+                    // tool, which scope it presented, and what it needs.
+                    assert!(
+                        err.message.contains(&name) && err.message.contains("\"read\""),
+                        "{name}: refusal must name the tool and the scope: {}",
+                        err.message
+                    );
+                    refused.push(name);
+                }
+            }
+        }
+
+        assert!(
+            !accepted.is_empty(),
+            "no tool accepted the read scope — the check refuses everything"
+        );
+        assert!(
+            !refused.is_empty(),
+            "no tool refused the read scope — the check is not narrowing anything"
+        );
+        // The refused set is exactly the annotation-declared writes, pinned
+        // by name so this test fails loudly when the write set changes.
+        refused.sort();
+        assert_eq!(
+            refused,
+            vec![
+                "export_audio",
+                "export_capture",
+                "open_capture",
+                "save_findings",
+                "shutdown_server"
+            ],
+            "the tools a read token cannot call must be exactly the \
+             non-read-only set"
+        );
+    }
+
+    /// A full scope reaches every registered tool, writes included — adding
+    /// per-tool scoping must not narrow any existing full-token deployment.
+    #[test]
+    fn a_full_scope_reaches_every_tool() {
+        let router = SipnabMcp::tool_router();
+        for tool in router.list_all() {
+            let name = tool.name.to_string();
+            assert!(
+                scope_refusal(crate::auth::SCOPE_FULL, &name, router.get(&name)).is_none(),
+                "{name}: a full scope must never be refused"
+            );
+        }
+    }
+
+    /// An unknown tool produces no scope refusal: dispatch's own "tool not
+    /// found" is the accurate answer, and a scope error naming a nonexistent
+    /// tool would misreport both what happened and what the token lacks.
+    #[test]
+    fn an_unknown_tool_is_left_for_dispatch_to_refuse() {
+        assert!(scope_refusal(crate::auth::SCOPE_READ, "no_such_tool", None).is_none());
+    }
+
+    /// A tool with no annotations (or none that decide read-onlyness) is
+    /// refused under a narrow scope. Absent means nobody decided, and a
+    /// permission check must not guess in the caller's favor. Theoretical on
+    /// this server — the annotation gate above forbids such a tool — but the
+    /// fail-closed branch has to be pinned or a refactor could flip it.
+    #[test]
+    fn an_unannotated_tool_fails_closed_under_a_narrow_scope() {
+        let mut tool = rmcp::model::Tool::default();
+        // Assigned via an explicit Cow, NOT `name = "…"`: the docs drift gate
+        // greps this file for that exact shape to enumerate registered tools,
+        // and this hypothetical one must not show up in that census.
+        tool.name = std::borrow::Cow::Borrowed("hypothetical");
+        assert!(
+            scope_refusal(crate::auth::SCOPE_READ, "hypothetical", Some(&tool)).is_some(),
+            "no annotation must mean no access for a narrow scope"
+        );
+    }
+
+    /// The admission record maps to the scope dispatch enforces: a verified
+    /// bearer token carries its claim; unauthenticated (loopback, no
+    /// verifier), a missing stamp, and stdio are all full.
+    #[cfg(feature = "mcp-http")]
+    #[test]
+    fn scope_of_maps_each_admission_record() {
+        use crate::mcp::transport::McpAuth;
+
+        /// Extensions carrying HTTP `Parts` stamped with `auth` (or nothing).
+        fn http_extensions(auth: Option<McpAuth>) -> rmcp::model::Extensions {
+            let request = axum::http::Request::builder()
+                .body(())
+                .expect("build request");
+            let (mut parts, ()) = request.into_parts();
+            if let Some(auth) = auth {
+                parts.extensions.insert(auth);
+            }
+            let mut extensions = rmcp::model::Extensions::default();
+            extensions.insert(parts);
+            extensions
+        }
+
+        assert_eq!(
+            scope_of(&http_extensions(Some(McpAuth::BearerVerified {
+                scope: crate::auth::SCOPE_READ.to_string()
+            }))),
+            crate::auth::SCOPE_READ,
+            "a verified token's scope claim is the scope dispatch enforces"
+        );
+        assert_eq!(
+            scope_of(&http_extensions(Some(McpAuth::Unauthenticated))),
+            crate::auth::SCOPE_FULL,
+            "loopback-without-verifier is full: the boundary is network position"
+        );
+        assert_eq!(
+            scope_of(&http_extensions(None)),
+            crate::auth::SCOPE_FULL,
+            "a missing admission record stays full; the audit line already \
+             flags it as no-admission-record"
+        );
+        assert_eq!(
+            scope_of(&rmcp::model::Extensions::default()),
+            crate::auth::SCOPE_FULL,
+            "stdio is full: process ownership is the boundary"
+        );
     }
 
     // ---- save_findings: the one write verb, and its dead end ----------------

@@ -29,7 +29,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The ten workflows
+## The eleven workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -43,6 +43,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via `scripts/build-wiki.py`. |
 | `release.yml` | `v*` tags | The release. See below. |
 | `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
+| `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the thor-02 self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 
 ### ThreadSanitizer
 

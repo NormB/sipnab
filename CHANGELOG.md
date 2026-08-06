@@ -33,6 +33,22 @@ entry that carries them.
 
 ### Added
 
+- **MCP tokens can be scoped read-only.** Every HTTP MCP bearer token used to
+  be full authority: the credential that reads dialogs could also call
+  `shutdown_server` or `open_capture`. A new `--token-scope read` (alongside
+  `full`/`metrics`, refused for the `api` audience) mints a token that reaches
+  only the tools annotated `readOnlyHint`; the five write verbs
+  (`shutdown_server`, `open_capture`, `export_capture`, `export_audio`,
+  `save_findings`) are refused. The check lives at the one hand-written
+  `call_tool` dispatch point and derives the required privilege from each
+  tool's own annotation, so the scope a token needs and the hint a client is
+  shown cannot drift apart — no second hand-kept "destructive tools" list, and
+  a registered-but-unannotated tool fails closed under a narrow scope. stdio
+  and unauthenticated loopback remain full authority (the boundary there is
+  process ownership / network position). A scope refusal is audited like any
+  other refusal, naming the tool and the scope it needed. Verified end to end
+  over HTTP and mutation-tested both directions.
+
 - **Every MCP tool call is audited.** One log line per call under the
   `mcp_audit` tracing target: tool name, JSON-RPC request id, caller, outcome
   (`ok`, `tool_error`, or `refused`), elapsed milliseconds, and the arguments

@@ -1975,9 +1975,11 @@ past 1000 does nothing: the cap clamps it. Page instead.
   probing for tools that do not exist is exactly the traffic the record
   exists to show. The caller field names what the transport can prove:
   `stdio` for the local pipe, and for HTTP the peer socket plus whether the
-  request was `bearer-verified` or admitted `unauthenticated` in
-  loopback-only mode. Audit lines ride the normal log at `info`, so
-  `--quiet` suppresses them unless you re-enable them explicitly:
+  request was `bearer-verified` (with its `scope=full`/`scope=read`) or
+  admitted `unauthenticated` in loopback-only mode. The log records a scope
+  refusal like any other, naming the tool and the scope it needed. Audit
+  lines ride the normal log at `info`, so `--quiet`
+  suppresses them unless you re-enable them explicitly:
 
   ```bash
   SIPNAB_LOG=mcp_audit=info sipnab -N --mcp --quiet -I capture.pcap

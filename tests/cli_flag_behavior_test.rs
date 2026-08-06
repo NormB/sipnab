@@ -1224,6 +1224,87 @@ fn token_scope_metrics_is_refused_for_the_mcp_surface() {
     );
 }
 
+/// `--token-scope read` is refused for the REST API surface at mint time.
+///
+/// The REST API has no read-only scope — its routes are one trust domain
+/// apart from `/metrics` — so a `read` API token would verify and then be
+/// refused by every route. Failing at mint beats shipping a token that opens
+/// nothing.
+#[test]
+fn token_scope_read_is_refused_for_the_api_surface() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = dir.path().join("api.key");
+    std::fs::File::create(&key_path)
+        .unwrap()
+        .write_all(b"api-read-scope-signing-key-01234")
+        .unwrap();
+
+    let (_out, err, code) = run_support::run(
+        &[
+            "--mint-token",
+            "--token-scope",
+            "read",
+            "--api-signing-key-file",
+            key_path.to_str().unwrap(),
+        ],
+        Some("error"),
+    );
+
+    assert_ne!(code, Some(0), "minting must fail, got success:\n{err}");
+    assert!(
+        err.contains("MCP surface only"),
+        "the error must say the scope belongs to MCP:\n{err}"
+    );
+}
+
+/// `--token-scope read` mints an MCP token whose claim survives verification
+/// as `read` — the claim the MCP dispatch layer then enforces per tool.
+///
+/// Same wiring concern as the metrics case above: a flag that never reached
+/// `auth::mint` would mint `full` tokens while the operator believed they
+/// were confining a diagnostic agent, and that failure is silent and open.
+#[test]
+fn token_scope_read_mints_an_mcp_token_carrying_the_read_claim() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = dir.path().join("mcp.key");
+    let key = b"mcp-read-scope-signing-key-01234";
+    std::fs::File::create(&key_path)
+        .unwrap()
+        .write_all(key)
+        .unwrap();
+
+    let token = run(&[
+        "--mint-token",
+        "--token-scope",
+        "read",
+        "--mcp-signing-key-file",
+        key_path.to_str().unwrap(),
+        "--token-id",
+        "read-scope-flag",
+    ])
+    .trim()
+    .to_string();
+
+    let verifier = TokenVerifier::new(VerifierConfig {
+        signing_keys: vec![key.to_vec()],
+        static_keys: vec![],
+        revoked_file: None,
+        audience: sipnab::auth::AUDIENCE_MCP.to_string(),
+    });
+    let now = chrono::Utc::now().timestamp();
+
+    assert_eq!(
+        verifier.verify_claims(&token, now).map(|a| a.scope),
+        Some(sipnab::auth::SCOPE_READ.to_string()),
+        "--token-scope read must mint a token whose accepted claim is read"
+    );
+    assert!(
+        !verifier.verify(&token, now, sipnab::auth::SCOPE_FULL),
+        "a read token must NOT satisfy a full requirement — the flag would \
+         otherwise be decorative"
+    );
+}
+
 /// `-I` silently beats `-d`, so sipnab must say so.
 ///
 /// Both flags parse together and the file wins: sipnab reads it, never touches

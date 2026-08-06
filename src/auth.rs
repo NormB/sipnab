@@ -89,6 +89,20 @@ pub const SCOPE_FULL: &str = "full";
 /// surface is one trust domain.
 pub const SCOPE_METRICS: &str = "metrics";
 
+/// Read-only access to the MCP surface: tools whose registered annotations
+/// carry `read_only_hint = true`, and nothing else — no `export_capture` /
+/// `export_audio`, no `shutdown_server`, no `open_capture`, no
+/// `save_findings`.
+///
+/// A diagnostic agent needs to read dialogs and findings; before this scope
+/// existed it had to be handed a `full` credential, so the token in a
+/// read-only agent's config could also stop the server or point the capture
+/// at a different file. Which tools the scope reaches is decided per call in
+/// `mcp::server::call_tool` FROM the tool's own `read_only_hint` annotation —
+/// the same annotation the client is shown — not from a second hand-kept
+/// list that could drift from it.
+pub const SCOPE_READ: &str = "read";
+
 /// Constant-time byte comparison for API keys and token signatures.
 ///
 /// Re-exported from `crate::crypto` (the always-compiled home for this
@@ -108,8 +122,8 @@ struct Payload {
     /// without it cannot match any configured audience, so it never verifies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     aud: Option<String>,
-    /// What the token may reach within that surface ([`SCOPE_FULL`] or
-    /// [`SCOPE_METRICS`]).
+    /// What the token may reach within that surface ([`SCOPE_FULL`],
+    /// [`SCOPE_METRICS`], or [`SCOPE_READ`]).
     ///
     /// Optional, and absent means [`SCOPE_FULL`] — unlike `aud`, which fails
     /// closed when missing. The asymmetry is deliberate: `aud` was introduced
@@ -125,7 +139,7 @@ struct Payload {
 /// Mint a signed token from `signing_key`, with id `id`, absolute expiry
 /// `exp_unix` (Unix epoch seconds), audience `audience` — one of
 /// [`AUDIENCE_API`] or [`AUDIENCE_MCP`] — and scope `scope`, one of
-/// [`SCOPE_FULL`] or [`SCOPE_METRICS`].
+/// [`SCOPE_FULL`], [`SCOPE_METRICS`], or [`SCOPE_READ`].
 ///
 /// Produces `s2.<b64url(payload)>.<b64url(sig)>`. The payload is compact JSON
 /// `{"id":...,"exp":...,"aud":...}` with no spaces. The version prefix is part
@@ -269,6 +283,38 @@ impl VerifierConfig {
     }
 }
 
+/// The claims accepted from a verified credential.
+///
+/// Returned by [`TokenVerifier::verify_claims`] so the caller can enforce
+/// scope per-resource (the MCP surface decides per TOOL, which a single
+/// `required_scope` argument cannot express). Only claims that survived
+/// signature, audience, expiry, and revocation checks ever end up here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedToken {
+    /// The scope the credential carries: the token's `scope` claim, or
+    /// [`SCOPE_FULL`] when the claim is absent (pre-scope tokens) or the
+    /// credential is a static secret (which carries no claims at all).
+    pub scope: String,
+}
+
+/// Outcome of the signed-token path, before the static-secret fallback.
+///
+/// Three-way rather than `Option<bool>` because the distinction it encodes is
+/// the security property: a value that is not token-shaped may fall through
+/// to the static-secret comparison, but a value that IS token-shaped and
+/// fails must reject outright — otherwise a rejected token would get a second
+/// chance against the static secrets.
+enum SignedOutcome {
+    /// Not structurally one of our tokens; the caller may fall back to the
+    /// static-secret comparison.
+    NotAToken,
+    /// Token-shaped but failed verification (signature, audience, expiry, or
+    /// revocation). Never falls through.
+    Rejected,
+    /// Verified; carries the accepted claims.
+    Accepted(AcceptedToken),
+}
+
 /// Stateless signed-token verifier. `Send + Sync` for use in async axum
 /// handlers.
 pub struct TokenVerifier {
@@ -298,59 +344,91 @@ impl TokenVerifier {
         self.signing_keys.is_empty() && self.static_keys.is_empty()
     }
 
-    /// Verify a presented Authorization value (the part after `Bearer `).
+    /// Verify a presented Authorization value (the part after `Bearer `),
+    /// requiring `required_scope` to be satisfied.
     ///
-    /// Returns `true` iff the value is either:
-    /// - a valid, unexpired, non-revoked `s1.` token signed by one of the
-    ///   configured signing keys; or
-    /// - an exact (constant-time) match for one of the configured static
-    ///   secrets.
+    /// Returns `true` iff [`verify_claims`](Self::verify_claims) accepts the
+    /// credential AND its scope satisfies the requirement — `full` satisfies
+    /// anything, a narrower scope satisfies only itself. This is a thin
+    /// wrapper over `verify_claims` rather than a second verification path:
+    /// two parallel implementations of "is this token valid" is exactly the
+    /// kind of divergence that turns into a bypass.
     ///
     /// `now_unix` is the current time in Unix epoch seconds (production passes
     /// `chrono::Utc::now().timestamp()`); injecting it keeps expiry logic
     /// deterministically testable. Fails closed on any parse/format error.
     pub fn verify(&self, presented: &str, now_unix: i64, required_scope: &str) -> bool {
-        // Try the signed-token path first.
-        if let Some(result) = self.verify_signed(presented, now_unix, required_scope) {
-            return result;
+        match self.verify_claims(presented, now_unix) {
+            Some(accepted) => {
+                // A `full` token satisfies any requirement; a narrower one
+                // satisfies only its own. Absent-means-full is resolved inside
+                // `verify_claims` — see `Payload::scope` for why that
+                // direction is safe and `aud`'s is not.
+                accepted.scope == SCOPE_FULL || accepted.scope == required_scope
+            }
+            None => false,
         }
-        // Fall back to static-secret comparison (no expiry).
-        //
-        // A static secret carries no claims at all, so it cannot express a
-        // scope and is treated as [`SCOPE_FULL`]. Narrowing it here would
-        // silently downgrade every existing `--api-key` deployment to
-        // scrape-only; an operator who wants least privilege mints a token,
-        // which is the mechanism that can carry the claim.
-        self.verify_static(presented)
     }
 
-    /// Attempt signed-token verification. Returns `None` if `presented` is not
-    /// a structurally-recognizable `s1.` token (so the caller can fall back to
-    /// static secrets); `Some(true)`/`Some(false)` for accept/reject of a token
-    /// that *is* an `s1.` token.
-    fn verify_signed(&self, presented: &str, now_unix: i64, required_scope: &str) -> Option<bool> {
+    /// Verify a presented Authorization value and return the accepted claims,
+    /// leaving scope enforcement to the caller.
+    ///
+    /// Applies every check [`verify`](Self::verify) applies — signature over
+    /// all configured keys, audience match, expiry, revocation — EXCEPT the
+    /// scope comparison, which the caller performs against whatever resource
+    /// is being requested. The MCP surface needs this split: its middleware
+    /// must admit any valid token so a read-scoped agent can initialize and
+    /// list tools, while the per-tool check happens at dispatch where the
+    /// requested tool's annotations are in hand.
+    ///
+    /// Returns `None` when the credential is invalid for any reason; a
+    /// returned [`AcceptedToken`] always carries a resolved scope.
+    pub fn verify_claims(&self, presented: &str, now_unix: i64) -> Option<AcceptedToken> {
+        match self.verify_signed(presented, now_unix) {
+            SignedOutcome::Accepted(accepted) => Some(accepted),
+            SignedOutcome::Rejected => None,
+            // Fall back to static-secret comparison (no expiry).
+            //
+            // A static secret carries no claims at all, so it cannot express a
+            // scope and is treated as [`SCOPE_FULL`]. Narrowing it here would
+            // silently downgrade every existing `--api-key` deployment to
+            // scrape-only; an operator who wants least privilege mints a
+            // token, which is the mechanism that can carry the claim.
+            SignedOutcome::NotAToken => self.verify_static(presented).then(|| AcceptedToken {
+                scope: SCOPE_FULL.to_string(),
+            }),
+        }
+    }
+
+    /// Attempt signed-token verification. Returns [`SignedOutcome::NotAToken`]
+    /// if `presented` is not a structurally-recognizable `s2.` token (so the
+    /// caller can fall back to static secrets); `Rejected`/`Accepted` for a
+    /// value that *is* one of our tokens.
+    fn verify_signed(&self, presented: &str, now_unix: i64) -> SignedOutcome {
         // Split into exactly 3 dot-parts.
         let mut parts = presented.split('.');
-        let version = parts.next()?;
-        let payload_b64 = parts.next()?;
-        let sig_b64 = parts.next()?;
+        let (Some(version), Some(payload_b64), Some(sig_b64)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            return SignedOutcome::NotAToken;
+        };
         if parts.next().is_some() {
             // More than 3 parts — not our format.
-            return None;
+            return SignedOutcome::NotAToken;
         }
         if version != VERSION {
             // Not one of our tokens — let static fallback handle it. A legacy
             // `s1.` value lands here and is treated as an opaque string: it can
             // only succeed if it happens to equal a configured static secret,
             // which a real minted token never will.
-            return None;
+            return SignedOutcome::NotAToken;
         }
         // From here on this is unambiguously one of our tokens; any failure
         // rejects rather than falling through to the static-secret path.
 
         // Decode the presented signature.
         let Ok(presented_sig) = URL_SAFE_NO_PAD.decode(sig_b64) else {
-            return Some(false);
+            return SignedOutcome::Rejected;
         };
 
         // Recompute HMAC over "<version>." + payload_b64 and compare in
@@ -367,15 +445,15 @@ impl TokenVerifier {
             sig_ok |= constant_time_eq(&presented_sig, &expected);
         }
         if !sig_ok {
-            return Some(false);
+            return SignedOutcome::Rejected;
         }
 
         // Decode + parse the payload.
         let Ok(payload_bytes) = URL_SAFE_NO_PAD.decode(payload_b64) else {
-            return Some(false);
+            return SignedOutcome::Rejected;
         };
         let Ok(payload) = serde_json::from_slice::<Payload>(&payload_bytes) else {
-            return Some(false);
+            return SignedOutcome::Rejected;
         };
 
         // Audience. A token names the surface it was minted for and is rejected
@@ -384,28 +462,26 @@ impl TokenVerifier {
         // audience matches nothing, which fails closed. This is unconditional:
         // there is no version of the format that skips it.
         if payload.aud.as_deref() != Some(self.audience.as_str()) || self.audience.is_empty() {
-            return Some(false);
-        }
-
-        // Scope. A `full` token satisfies any requirement; a narrower one
-        // satisfies only its own. Absent means `full` — see `Payload::scope`
-        // for why that direction is safe and `aud`'s is not.
-        let scope = payload.scope.as_deref().unwrap_or(SCOPE_FULL);
-        if scope != SCOPE_FULL && scope != required_scope {
-            return Some(false);
+            return SignedOutcome::Rejected;
         }
 
         // Expiry: require exp strictly greater than now.
         if payload.exp <= now_unix {
-            return Some(false);
+            return SignedOutcome::Rejected;
         }
 
         // Revocation denylist.
         if self.revocation.is_revoked(&payload.id) {
-            return Some(false);
+            return SignedOutcome::Rejected;
         }
 
-        Some(true)
+        // The scope claim is NOT checked here — it is returned, and the
+        // caller compares it against whatever is being requested. Absent
+        // means `full`; see `Payload::scope` for why that direction is safe
+        // and `aud`'s is not.
+        SignedOutcome::Accepted(AcceptedToken {
+            scope: payload.scope.unwrap_or_else(|| SCOPE_FULL.to_string()),
+        })
     }
 
     /// Constant-time comparison against each configured static secret.
@@ -1042,6 +1118,93 @@ mod tests {
         assert!(
             !v.verify(&forged, 1_000, SCOPE_FULL),
             "stripping the scope claim must invalidate the signature"
+        );
+    }
+
+    // ── verify_claims (scope returned, not compared) ─────────────────────
+
+    /// A `read`-scoped token round-trips through `verify_claims` with its
+    /// scope intact, so the MCP dispatch layer has the claim to enforce
+    /// per-tool.
+    #[test]
+    fn a_read_token_round_trips_through_verify_claims() {
+        let token = mint(KEY_A, "agent", 2_000, AUDIENCE_API, SCOPE_READ);
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            ..Default::default()
+        });
+        assert_eq!(
+            v.verify_claims(&token, 1_000),
+            Some(AcceptedToken {
+                scope: SCOPE_READ.to_string()
+            }),
+            "the scope claim must come back exactly as minted"
+        );
+    }
+
+    /// A token that carries no scope claim comes back as `full` — the same
+    /// absent-means-full rule `verify` applies, now visible in the claims.
+    #[test]
+    fn a_scopeless_token_comes_back_as_full() {
+        // `mint` omits the claim for `full`, so this payload has no `scope`.
+        let token = mint(KEY_A, "ops", 2_000, AUDIENCE_API, SCOPE_FULL);
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            ..Default::default()
+        });
+        assert_eq!(
+            v.verify_claims(&token, 1_000).map(|a| a.scope),
+            Some(SCOPE_FULL.to_string())
+        );
+    }
+
+    /// A static secret comes back as `full`: it carries no claims at all, so
+    /// it cannot express a narrower scope — the operator who wants least
+    /// privilege mints a token.
+    #[test]
+    fn a_static_secret_comes_back_as_full() {
+        let v = verifier(VerifierConfig {
+            static_keys: vec!["legacy-secret".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(
+            v.verify_claims("legacy-secret", 1_000).map(|a| a.scope),
+            Some(SCOPE_FULL.to_string())
+        );
+        assert_eq!(
+            v.verify_claims("wrong-secret", 1_000),
+            None,
+            "a wrong static secret must yield no claims"
+        );
+    }
+
+    /// `verify_claims` applies the same non-scope checks as `verify`:
+    /// expired, revoked, and wrong-audience tokens all yield no claims.
+    /// Returning claims is not a relaxation of anything except the scope
+    /// comparison, which the caller now owns.
+    #[test]
+    fn verify_claims_rejects_expired_revoked_and_wrong_audience() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("revoked.txt");
+        std::fs::write(&path, "revoked-claims-id\n").expect("write");
+
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            revoked_file: Some(path),
+            ..Default::default()
+        });
+
+        let expired = mint(KEY_A, "id1", 1_000, AUDIENCE_API, SCOPE_READ);
+        assert_eq!(v.verify_claims(&expired, 1_000), None, "exp == now rejects");
+
+        let revoked = mint(KEY_A, "revoked-claims-id", 2_000, AUDIENCE_API, SCOPE_READ);
+        assert_eq!(v.verify_claims(&revoked, 1_000), None, "revoked id rejects");
+
+        let wrong_aud = mint(KEY_A, "id2", 2_000, AUDIENCE_MCP, SCOPE_READ);
+        assert_eq!(
+            v.verify_claims(&wrong_aud, 1_000),
+            None,
+            "an mcp token must yield no claims on the api surface"
         );
     }
 }

@@ -92,7 +92,8 @@ mod http {
     }
 
     /// How the auth layer admitted this request — stamped into the request's
-    /// extensions so the audit line in `call_tool` can attribute the call.
+    /// extensions so the audit line in `call_tool` can attribute the call and
+    /// the per-tool scope check can enforce it.
     ///
     /// The rmcp HTTP service folds the request's `http::request::Parts` into
     /// the per-request MCP `Extensions`, which is the only channel from this
@@ -102,18 +103,35 @@ mod http {
     /// claims. The distinction is recorded HERE because after this middleware
     /// returns, nothing downstream can re-derive it: the Authorization header
     /// is gone by design (never forwarded into tool code).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) enum McpAuth {
-        /// A bearer token was presented and verified.
-        BearerVerified,
+        /// A bearer token was presented and verified. `scope` is the claim
+        /// the token carried ([`crate::auth::SCOPE_FULL`] when the payload
+        /// omits it, and always `full` for static secrets, which carry no
+        /// claims). Carried here because dispatch enforces it per TOOL — the
+        /// middleware cannot, since the tool name is inside a JSON-RPC body
+        /// it does not parse.
+        BearerVerified {
+            /// The verified token's scope claim.
+            scope: String,
+        },
         /// No verifier is configured (loopback-only mode): the request was
-        /// admitted without credentials.
+        /// admitted without credentials. This is implicitly FULL access — the
+        /// boundary there is network position (only a local process can reach
+        /// the socket), and narrowing it would break every existing loopback
+        /// deployment that has no tokens configured at all.
         Unauthenticated,
     }
 
     /// Bearer-token guard. On loopback with no auth configured the request
     /// passes; otherwise the `Authorization: Bearer` header is required and
     /// verified (signed token or static secret, constant-time).
+    ///
+    /// The guard admits ANY valid token for the MCP audience regardless of
+    /// its scope, and stamps the accepted scope into the request. Scope is
+    /// enforced per tool at dispatch (`call_tool`), not here: a read-scoped
+    /// agent must still be able to initialize and list tools, and the tool
+    /// name lives inside a JSON-RPC body this middleware never parses.
     ///
     /// # Arguments
     ///
@@ -140,14 +158,13 @@ mod http {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.strip_prefix("Bearer "))
                 .ok_or(StatusCode::UNAUTHORIZED)?;
-            if !state.verifier.verify(
-                provided,
-                chrono::Utc::now().timestamp(),
-                crate::auth::SCOPE_FULL,
-            ) {
-                return Err(StatusCode::UNAUTHORIZED);
+            let accepted = state
+                .verifier
+                .verify_claims(provided, chrono::Utc::now().timestamp())
+                .ok_or(StatusCode::UNAUTHORIZED)?;
+            McpAuth::BearerVerified {
+                scope: accepted.scope,
             }
-            McpAuth::BearerVerified
         };
         // Stamped AFTER the reject paths: a request that reaches the tools
         // always carries exactly one admission record, and a rejected one
@@ -263,6 +280,159 @@ mod http {
         })
         .await?;
         Ok(())
+    }
+
+    /// Middleware-level tests for `auth_layer`: what gets admitted, what gets
+    /// 401, and — the part dispatch depends on — exactly what admission
+    /// record is stamped into the request. Driven with `oneshot` requests
+    /// against a probe route that echoes the stamp back, so the assertions
+    /// are on the record downstream code actually receives, not on the
+    /// middleware's internals.
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        /// Test signing key shared between minting and the router's verifier.
+        const KEY: &[u8] = b"transport-test-signing-key-0123";
+
+        /// Echo the stamped admission record, so tests assert on what a
+        /// downstream consumer would actually see.
+        async fn probe(axum::Extension(auth): axum::Extension<McpAuth>) -> String {
+            match auth {
+                McpAuth::BearerVerified { scope } => format!("bearer:{scope}"),
+                McpAuth::Unauthenticated => "unauthenticated".to_string(),
+            }
+        }
+
+        /// A probe router behind `auth_layer` with the given verifier config.
+        fn router(config: VerifierConfig) -> Router {
+            let state = McpHttpState {
+                verifier: Arc::new(TokenVerifier::new(config)),
+            };
+            Router::new()
+                .route("/probe", axum::routing::get(probe))
+                .route_layer(middleware::from_fn_with_state(state.clone(), auth_layer))
+                .with_state(state)
+        }
+
+        /// A GET /probe request with an optional bearer token.
+        fn probe_request(bearer: Option<&str>) -> Request<Body> {
+            let mut builder = Request::builder().uri("/probe");
+            if let Some(token) = bearer {
+                builder =
+                    builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+            }
+            builder.body(Body::empty()).expect("build request")
+        }
+
+        /// Collect a response body into a UTF-8 string.
+        async fn body_string(resp: Response) -> String {
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .expect("collect body")
+                .to_bytes();
+            String::from_utf8(bytes.to_vec()).expect("utf8")
+        }
+
+        /// A `read`-scoped token is ADMITTED and stamped with its scope.
+        ///
+        /// This is the middleware half of per-tool scoping: the old guard
+        /// demanded `full` from every request, so a read token could not even
+        /// initialize. Admission and authorization are now different layers —
+        /// the middleware proves the credential, dispatch decides per tool.
+        #[tokio::test]
+        async fn a_read_scoped_token_is_admitted_and_stamped_with_its_scope() {
+            let app = router(VerifierConfig {
+                signing_keys: vec![KEY.to_vec()],
+                audience: crate::auth::AUDIENCE_MCP.to_string(),
+                ..Default::default()
+            });
+            let token = crate::auth::mint(
+                KEY,
+                "agent",
+                chrono::Utc::now().timestamp() + 3600,
+                crate::auth::AUDIENCE_MCP,
+                crate::auth::SCOPE_READ,
+            );
+            let resp = app
+                .oneshot(probe_request(Some(&token)))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(body_string(resp).await, "bearer:read");
+        }
+
+        /// A full token (which omits the scope claim) and a static secret
+        /// (which cannot carry one) both stamp `full`.
+        #[tokio::test]
+        async fn full_tokens_and_static_secrets_stamp_full() {
+            let app = router(VerifierConfig {
+                signing_keys: vec![KEY.to_vec()],
+                static_keys: vec!["legacy-static".to_string()],
+                audience: crate::auth::AUDIENCE_MCP.to_string(),
+                ..Default::default()
+            });
+            let token = crate::auth::mint(
+                KEY,
+                "ops",
+                chrono::Utc::now().timestamp() + 3600,
+                crate::auth::AUDIENCE_MCP,
+                crate::auth::SCOPE_FULL,
+            );
+            let resp = app
+                .clone()
+                .oneshot(probe_request(Some(&token)))
+                .await
+                .expect("oneshot");
+            assert_eq!(body_string(resp).await, "bearer:full");
+
+            let resp = app
+                .oneshot(probe_request(Some("legacy-static")))
+                .await
+                .expect("oneshot");
+            assert_eq!(body_string(resp).await, "bearer:full");
+        }
+
+        /// With a verifier configured, a missing or invalid token is 401 and
+        /// the probe never runs — no admission record is ever stamped on a
+        /// rejected request.
+        #[tokio::test]
+        async fn missing_or_invalid_tokens_are_rejected_before_the_stamp() {
+            let app = router(VerifierConfig {
+                signing_keys: vec![KEY.to_vec()],
+                audience: crate::auth::AUDIENCE_MCP.to_string(),
+                ..Default::default()
+            });
+            let resp = app
+                .clone()
+                .oneshot(probe_request(None))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+            let resp = app
+                .oneshot(probe_request(Some("not-a-real-token")))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        /// With no verifier configured (loopback-only mode), the request is
+        /// admitted and stamped `Unauthenticated` — which dispatch treats as
+        /// full access, because the boundary there is network position.
+        #[tokio::test]
+        async fn unconfigured_verifier_stamps_unauthenticated() {
+            let app = router(VerifierConfig::default());
+            let resp = app.oneshot(probe_request(None)).await.expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(body_string(resp).await, "unauthenticated");
+        }
     }
 }
 

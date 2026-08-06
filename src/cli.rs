@@ -1431,17 +1431,22 @@ pub struct Cli {
     #[arg(help_heading = "Token minting", long = "token-id", value_name = "ID")]
     pub token_id: Option<String>,
 
-    /// Scope for --mint-token: `full` (default) or `metrics`.
+    /// Scope for --mint-token: `full` (default), `metrics`, or `read`.
     ///
     /// A `metrics` token reaches `GET /metrics` and nothing else — mint one for
     /// a scrape job rather than handing it a credential that also reads
-    /// /v1/dialogs and the message bodies underneath.
+    /// /v1/dialogs and the message bodies underneath. REST API tokens only.
+    ///
+    /// A `read` token reaches the MCP tools annotated read-only and nothing
+    /// else — mint one for a diagnostic agent rather than handing it a
+    /// credential that can also stop the server, export files, or repoint the
+    /// capture. MCP tokens only.
     #[arg(
         help_heading = "Token minting",
         long = "token-scope",
         value_name = "SCOPE",
         default_value = "full",
-        value_parser = ["full", "metrics"]
+        value_parser = ["full", "metrics", "read"]
     )]
     pub token_scope: String,
 
