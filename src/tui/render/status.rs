@@ -368,8 +368,19 @@ pub(in crate::tui) fn fkey_bar_items(
         }
     } else {
         match view {
+            // The thresholds are the measured column cost of each set, not
+            // round numbers: `every_fkey_bar_tier_fits_the_width_that_selects_it`
+            // recomputes them, so a label edited without a threshold edit
+            // fails rather than silently clipping the tail of the row.
+            //
+            // F9 is `Unfilter`, not `Clear`: F5 already clears the CALL LIST,
+            // and two entries both reading "Clear" would leave the operator
+            // guessing which one drops their capture. It read `Addrs` until
+            // 2026-08-06 — the label of the `N` binding one row down — so
+            // pressing it cleared an unset filter and looked like a dead key.
             View::CallList => {
-                if width < 80 {
+                if width < 96 {
+                    // 62 columns.
                     vec![
                         ("Esc", "Quit"),
                         ("F1", "Help"),
@@ -378,7 +389,8 @@ pub(in crate::tui) fn fkey_bar_items(
                         ("F2", "Save"),
                         ("F7", "Filter"),
                     ]
-                } else if width < 100 {
+                } else if width < 112 {
+                    // 94 columns.
                     vec![
                         ("Esc", "Quit"),
                         ("F1", "Help"),
@@ -388,9 +400,13 @@ pub(in crate::tui) fn fkey_bar_items(
                         ("F3", "Search"),
                         ("F6", "Raw"),
                         ("F7", "Filter"),
-                        ("F9", "Addrs"),
+                        ("F9", "Unfilter"),
                     ]
-                } else {
+                } else if width < 142 {
+                    // 112 columns. This tier exists so a ~120-column terminal
+                    // — the common wide default — still gets `O Open` and
+                    // `F5 Clear`. Without it they would sit only in the
+                    // 142-column set and be invisible on most wide screens.
                     vec![
                         ("Esc", "Quit"),
                         ("F1", "Help"),
@@ -399,12 +415,28 @@ pub(in crate::tui) fn fkey_bar_items(
                         ("O", "Open"),
                         ("F2", "Save"),
                         ("F3", "Search"),
-                        ("F4", "Extended"),
                         ("F5", "Clear"),
                         ("F6", "Raw"),
                         ("F7", "Filter"),
-                        ("F9", "Addrs"),
-                        ("F10", "Columns"),
+                        ("F9", "Unfilter"),
+                    ]
+                } else {
+                    // 142 columns.
+                    vec![
+                        ("Esc", "Quit"),
+                        ("F1", "Help"),
+                        ("Enter", "Show"),
+                        ("Tab", "Streams"),
+                        ("O", "Open"),
+                        ("F2", "Save"),
+                        ("F3", "Search"),
+                        ("F4", "Extend"),
+                        ("F5", "Clear"),
+                        ("F6", "Raw"),
+                        ("F7", "Filter"),
+                        ("F9", "Unfilter"),
+                        ("F10", "Cols"),
+                        ("N", "Addrs"),
                     ]
                 }
             }
@@ -415,7 +447,7 @@ pub(in crate::tui) fn fkey_bar_items(
                         ("\u{2191}\u{2193}", "Nav"),
                         ("Enter", "Raw"),
                     ]
-                } else if width < 120 {
+                } else if width < 126 {
                     vec![
                         ("Esc", "Back"),
                         ("\u{2191}\u{2193}", "Nav"),
@@ -427,6 +459,7 @@ pub(in crate::tui) fn fkey_bar_items(
                         ("R", "Split"),
                     ]
                 } else {
+                    // 126 columns.
                     vec![
                         ("Esc", "Back"),
                         ("\u{2191}\u{2193}", "Nav"),
@@ -817,6 +850,229 @@ mod tests {
             row.push_str(buf.cell((x, 0)).unwrap().symbol());
         }
         assert!(row.contains("Format"));
+    }
+
+    // ── The f-key bar must not misrepresent the keymap ──────────────
+
+    /// Translate one f-key bar legend into the key events it advertises.
+    ///
+    /// Compound legends (`a/A`, `j/k`, `PgUp/Dn`, `↑↓`) promise several
+    /// keys at once, and every one of them has to work — a legend is a
+    /// promise per key, not per entry.
+    ///
+    /// An unknown legend PANICS rather than returning nothing. A parser
+    /// that quietly yields an empty set would let each newly-added bar
+    /// entry pass unverified, which is precisely the failure the gate
+    /// below exists to prevent: the gate would stay green while covering
+    /// less and less. Adding a bar entry must force a decision here.
+    fn bar_legend_keys(legend: &str) -> Vec<KeyEvent> {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let plain = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+
+        // Glyph legends are single entries that name a pair of keys.
+        match legend {
+            "\u{2191}\u{2193}" | "Up/Down" => {
+                return vec![plain(KeyCode::Up), plain(KeyCode::Down)];
+            }
+            "\u{21E7}\u{21E9}" => {
+                return vec![plain(KeyCode::Up), plain(KeyCode::Down)];
+            }
+            "PgUp/Dn" => return vec![plain(KeyCode::PageUp), plain(KeyCode::PageDown)],
+            _ => {}
+        }
+
+        legend
+            .split('/')
+            .map(|tok| match tok {
+                "Esc" => plain(KeyCode::Esc),
+                "Enter" => plain(KeyCode::Enter),
+                "Tab" => plain(KeyCode::Tab),
+                "Space" => plain(KeyCode::Char(' ')),
+                "Backspace" => plain(KeyCode::Backspace),
+                "PgUp" => plain(KeyCode::PageUp),
+                "PgDn" => plain(KeyCode::PageDown),
+                // The bare "/" legend (raw-message search) splits into two
+                // empty tokens; either one stands for the slash key.
+                "" => plain(KeyCode::Char('/')),
+                _ => {
+                    if let Some(n) = tok.strip_prefix('F').and_then(|d| d.parse::<u8>().ok()) {
+                        plain(KeyCode::F(n))
+                    } else {
+                        let mut chars = tok.chars();
+                        match (chars.next(), chars.next()) {
+                            (Some(c), None) => plain(KeyCode::Char(c)),
+                            _ => panic!(
+                                "f-key bar legend {legend:?} has an unrecognised token {tok:?}. \
+                                 Teach bar_legend_keys what key it names — an unparsed legend \
+                                 is an unverified promise to the operator."
+                            ),
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// **Every key the f-key bar advertises must be bound in the view that
+    /// shows it.** The bar is the only place most operators ever learn a
+    /// binding, so an entry naming a key the view ignores is not cosmetic:
+    /// the operator presses it, nothing happens, and the feature they were
+    /// reaching for looks broken rather than misaddressed.
+    ///
+    /// This is a class gate, deliberately. The same defect has shipped
+    /// twice before as one-off omissions — `F1 Help` missing from the call
+    /// list (pinned by `fkey_bar_advertises_help_on_call_list_at_all_widths`)
+    /// and `F9` labelled `Addrs` while bound to clear-filter. Pinning each
+    /// instance one assertion at a time leaves the next one free to ship.
+    ///
+    /// Not covered: popup bars. Popup keys are handled by impure
+    /// `handle_*_key(app, key)` functions with no pure key→action mapper to
+    /// interrogate, so there is nothing to compare a legend against without
+    /// building an `App`. Named here so the gap is a known limit rather
+    /// than a silent one.
+    #[test]
+    fn every_advertised_fkey_is_bound_in_its_view() {
+        // Every per-view mapper is re-exported from `crate::tui`, which this
+        // module already glob-imports.
+        use crate::rtp::stream::StreamKey;
+        use std::net::SocketAddr;
+
+        let addr =
+            |s: &str| -> SocketAddr { s.parse().expect("test-local literal socket address") };
+        let km = Keymap::default();
+        // Widths straddle every tier boundary in `fkey_bar_items`.
+        let widths = [60u16, 79, 95, 96, 111, 112, 125, 126, 141, 142, 200];
+
+        type Bound = fn(&Keymap, KeyEvent) -> bool;
+        let views: Vec<(View, Bound)> = vec![
+            (View::CallList, |km, k| call_list_action(km, k).is_some()),
+            (View::CallFlow(String::from("call-id")), |km, k| {
+                call_flow_action(km, k).is_some()
+            }),
+            (
+                View::RawMessage {
+                    call_id: String::from("call-id"),
+                    message_index: 0,
+                },
+                |km, k| raw_message_action(km, k).is_some(),
+            ),
+            (
+                View::MessageDiff {
+                    call_id: String::from("call-id"),
+                    msg1_idx: 0,
+                    msg2_idx: 1,
+                },
+                |km, k| message_diff_action(km, k).is_some(),
+            ),
+            (
+                View::CombinedDetail {
+                    call_id: String::from("call-id"),
+                    indices: vec![0],
+                    scope: "dialog",
+                },
+                |km, k| combined_detail_action(km, k).is_some(),
+            ),
+            (View::StreamList, |km, k| {
+                stream_list_action(km, k).is_some()
+            }),
+            (
+                View::StreamDetail(StreamKey {
+                    ssrc: 1,
+                    src: addr("192.0.2.1:5004"),
+                    dst: addr("192.0.2.2:5004"),
+                }),
+                |km, k| stream_detail_action(km, k).is_some(),
+            ),
+        ];
+
+        let mut unbound: Vec<String> = Vec::new();
+        for (view, is_bound) in &views {
+            for width in widths {
+                for (legend, label) in fkey_bar_items(view, &None, width) {
+                    for key in bar_legend_keys(legend) {
+                        if !is_bound(&km, key) {
+                            unbound.push(format!(
+                                "{view:?} @ width {width}: bar advertises \
+                                 {legend:?} {label:?} but {key:?} is not bound in that view"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        unbound.sort();
+        unbound.dedup();
+        assert!(
+            unbound.is_empty(),
+            "the f-key bar promises keys the view ignores:\n  {}",
+            unbound.join("\n  ")
+        );
+    }
+
+    /// Rendered column span of one f-key bar item set, matching
+    /// `render_fkey_bar`: `"{key} {label}"` per item, two spaces between.
+    fn bar_cols(items: &[(&'static str, &'static str)]) -> usize {
+        items
+            .iter()
+            .map(|(k, l)| display_cols(k) + 1 + display_cols(l))
+            .sum::<usize>()
+            + items.len().saturating_sub(1) * 2
+    }
+
+    /// **A bar tier must fit the narrowest terminal that selects it.**
+    ///
+    /// `render_fkey_bar` draws into a one-row `Paragraph` with no wrap, so
+    /// anything past the right edge is silently clipped — and the items
+    /// nearest the edge are the last ones, which is where the least-known
+    /// bindings live. A clipped entry is worse than an absent one: the
+    /// tier was chosen precisely because the terminal was thought wide
+    /// enough, so the operator has no cue that the row continues.
+    ///
+    /// The widths below sit at each tier's lower edge, which is where a
+    /// tier is at its tightest relative to its budget.
+    #[test]
+    fn every_fkey_bar_tier_fits_the_width_that_selects_it() {
+        use crate::rtp::stream::StreamKey;
+        use std::net::SocketAddr;
+
+        let addr =
+            |s: &str| -> SocketAddr { s.parse().expect("test-local literal socket address") };
+        let views = [
+            View::CallList,
+            View::CallFlow(String::from("call-id")),
+            View::StreamList,
+            View::StreamDetail(StreamKey {
+                ssrc: 1,
+                src: addr("192.0.2.1:5004"),
+                dst: addr("192.0.2.2:5004"),
+            }),
+            View::RawMessage {
+                call_id: String::from("call-id"),
+                message_index: 0,
+            },
+        ];
+
+        let mut overflow: Vec<String> = Vec::new();
+        for view in &views {
+            for width in [79u16, 95, 96, 111, 112, 125, 126, 141, 142, 200] {
+                let items = fkey_bar_items(view, &None, width);
+                let cols = bar_cols(&items);
+                if cols > width as usize {
+                    overflow.push(format!(
+                        "{view:?} @ width {width}: bar needs {cols} cols, \
+                         so {} col(s) are clipped, starting inside {:?}",
+                        cols - width as usize,
+                        items.last().map(|(k, l)| format!("{k} {l}"))
+                    ));
+                }
+            }
+        }
+        assert!(
+            overflow.is_empty(),
+            "f-key bar tiers that do not fit their own width:\n  {}",
+            overflow.join("\n  ")
+        );
     }
 }
 

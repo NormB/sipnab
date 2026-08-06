@@ -1,6 +1,6 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 910
+assertion_line: 982
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 1 (1 displayed)  [A]
@@ -26,4 +26,4 @@ expression: output
 
 
 
-Esc Quit  F1 Help  Enter Show  Tab Streams  F2 Save  F3 Search  F6 Raw  F7 Filte
+Esc Quit  F1 Help  Enter Show  Tab Streams  F2 Save  F7 Filter
