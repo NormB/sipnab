@@ -89,6 +89,19 @@ entry that carries them.
   omitted (never null) when the message has no frame. Added to
   `message.schema.json` as an optional property, matching the dialog schema.
 
+- **`--cores` runs now carry packet provenance.** The parallel offline reader
+  built every packet with no source and no frame ordinal, so a `--cores` run
+  produced dialogs whose `first_frame` was `None` and dropped the frame pointer
+  from every surface — the `--json` `frame`, a finding's `frame_ref`,
+  `--show-frame` — silently, on the one path built for the large captures where
+  provenance matters most. The shard reader now stamps the source, per-file
+  ordinal and verifying digest exactly as the single-threaded reader does (it is
+  the one stage that sees every packet of every file in order, so the ordinal it
+  assigns is the same one a resolver counts to), and a pointer from a `--cores`
+  run resolves identically to one from a single-threaded run. Pinned by reading
+  a real fixture through the parallel path and requiring every dialog to carry a
+  digest-verified pointer into it.
+
 - **Every MCP tool call is audited.** One log line per call under the
   `mcp_audit` tracing target: tool name, JSON-RPC request id, caller, outcome
   (`ok`, `tool_error`, or `refused`), elapsed milliseconds, and the arguments

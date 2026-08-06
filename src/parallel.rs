@@ -576,6 +576,17 @@ fn shard_opened(
     let n = txs.len();
     let link_type = cap.get_datalink().0;
     tracing::info!("Reading from '{}'", path.display());
+    // Stamp provenance exactly as the single-threaded reader does (see
+    // `crate::capture::file`): the file is the source, the ordinal is this
+    // frame's 0-based position IN this file, and the digest is over the bytes
+    // as read. This function is the one stage that sees every packet of every
+    // file in order, so the ordinal it assigns is the same one a resolver
+    // counts to — a pointer from a `--cores` run resolves identically to one
+    // from a single-threaded run. Without this, every fact a parallel run
+    // produced carried no `frame_ref` at all, so `--cores` silently dropped
+    // packet provenance from every surface.
+    let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
+    let mut ordinal: u64 = 0;
     loop {
         if let Some(max) = capture_config.count
             && progress.count >= max
@@ -585,14 +596,23 @@ fn shard_opened(
         }
         match cap.next_packet() {
             Ok(pkt) => {
-                let packet = Packet::new(
+                let mut packet = Packet::with_source(
                     pcap_ts_to_chrono(pkt.header.ts),
                     pkt.data.to_vec(),
                     pkt.header.caplen as usize,
                     pkt.header.len as usize,
-                    None,
+                    Some(std::sync::Arc::clone(&source)),
                     link_type,
                 );
+                // Stamped beside the source, before the send, for the reasons
+                // in `crate::capture::file`: once the packet is on a worker's
+                // channel this thread cannot amend it, and an ordinal inferred
+                // from arrival order would be wrong the moment a shard reorders.
+                packet.origin = Some(crate::capture::packet::FrameOrigin {
+                    ordinal,
+                    digest: Some(crate::capture::packet::frame_digest(&packet.data)),
+                });
+                ordinal += 1;
                 // Observed here rather than in the workers: this is the only
                 // stage that sees every packet of every file, and the sweep's
                 // "now" has to be the SET's last timestamp.
@@ -1522,6 +1542,44 @@ mod tests {
             .find(|s| s.codec.as_deref() == Some("opus"));
         let opus = opus.expect("expected an opus stream resolved from the SDP rtpmap");
         assert_eq!(opus.payload_type, 96, "opus carried on dynamic PT 96");
+    }
+
+    /// The parallel reader stamps packet provenance exactly as the
+    /// single-threaded one does. It used to build packets with no source and no
+    /// ordinal, so `--cores` produced dialogs whose `first_frame` was `None`,
+    /// and every provenance surface (the `--json` `frame`, a finding's
+    /// `frame_ref`, `--show-frame`) silently went blank on a parallel run. Read
+    /// a real SIP fixture and require every reconstructed dialog to carry a
+    /// verifiable pointer into that file — the effect, not the assignment.
+    #[cfg(feature = "native")]
+    #[test]
+    fn parallel_read_stamps_a_verifiable_frame_pointer_on_every_dialog() {
+        use crate::capture::CaptureConfig;
+        let path = "tests/pcap-samples/invite-opus-bye.pcap";
+        let cc = CaptureConfig::default();
+        let r = run_offline_parallel_file(&[std::path::PathBuf::from(path)], &cc, pcfg(2)).unwrap();
+
+        let dialogs: Vec<_> = r.dialog_store.iter().collect();
+        assert!(
+            !dialogs.is_empty(),
+            "the fixture must reconstruct at least one dialog to prove anything"
+        );
+        for d in &dialogs {
+            let frame = d.first_frame.as_ref().expect(
+                "a --cores dialog with no frame pointer is the exact silent gap \
+                 this stamps: first_frame must be Some, not None",
+            );
+            assert_eq!(
+                frame.source.as_ref(),
+                path,
+                "the pointer must name the file the frame was read from"
+            );
+            assert!(
+                frame.origin.digest.is_some(),
+                "the parallel reader must compute the verifying digest the \
+                 single-threaded path does, or the pointer resolves UNVERIFIED"
+            );
+        }
     }
 
     /// A two-file set whose SECOND member has a link type the filter cannot
