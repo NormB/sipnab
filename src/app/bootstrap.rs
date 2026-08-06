@@ -500,6 +500,13 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         tracing::warn!("{msg}");
     }
 
+    // A truncating --snaplen feeding -O writes a short pcap that reads as whole:
+    // the one place capture truncation leaves the tool and cannot be inferred
+    // downstream. Warned, not refused — the analysis is complete.
+    if let Some(msg) = snaplen_truncation_warning(cli, config) {
+        tracing::warn!("{msg}");
+    }
+
     let mode = if cli.cores > 1 && cli.has_input() && !cli.multi_device {
         RunMode::CoresFile
     } else {
@@ -1909,6 +1916,36 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
     ))
 }
 
+/// A truncating `--snaplen` on a live capture that also writes `-O`.
+///
+/// `--snaplen N` tells the kernel to copy only the first N bytes of each frame;
+/// below the 65535-byte default, any larger packet is captured truncated
+/// (`caplen < origlen`). sipnab's own analysis is unaffected — it parses what it
+/// captured — but `-O` re-emits those truncated frames, and a truncated pcap is
+/// structurally a valid one: a later reader cannot tell payload dropped at
+/// capture from payload that was never on the wire. That is the same silent
+/// data-loss class as an `-O` file truncated by `ENOSPC`, so it is said out
+/// loud rather than left to be discovered downstream.
+///
+/// Live only: a saved-file reader (`-I`) copies whole records, so `--snaplen`
+/// never shortens a file read. Returns the message rather than logging it, so
+/// it can be asserted on, matching [`cores_ignored_warning`].
+fn snaplen_truncation_warning(cli: &Cli, config: &Config) -> Option<String> {
+    let snaplen = cli.snaplen.or(config.capture.snaplen).unwrap_or(65535);
+    // `has_input()` is a saved-file read, where snaplen does not truncate; no
+    // `-O`, nothing is re-emitted; the full default keeps whole frames.
+    if snaplen >= 65535 || cli.output.is_none() || cli.has_input() {
+        return None;
+    }
+    Some(format!(
+        "--snaplen {snaplen} truncates each captured frame to {snaplen} bytes, \
+         and -O writes those truncated frames: the pcap will drop every byte \
+         past {snaplen} in any larger packet, with nothing in the file to mark \
+         it as short. sipnab's own analysis is unaffected. Remove --snaplen (the \
+         default 65535 keeps whole frames) if the -O capture must be complete."
+    ))
+}
+
 // ── Auth / token helpers ───────────────────────────────────────────
 
 /// Mint a signed token from the CLI configuration and return it. Picks the
@@ -2489,6 +2526,85 @@ mod tests {
             metrics_ignored_on_cores_warning(&live).is_none(),
             "a live run falls back to one core and starts the metrics server"
         );
+    }
+
+    // ── truncating --snaplen feeding -O (CT3) ──────────────────────────
+
+    /// The defect: a truncating `--snaplen` on a live capture writes a short
+    /// pcap through `-O` with nothing in the file to mark it short. The warning
+    /// must name the snaplen, the `-O` output it feeds, and that the analysis
+    /// itself is intact — only the re-emitted file is truncated.
+    #[test]
+    fn snaplen_truncation_warning_fires_on_live_capture_writing_output() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".to_string());
+        cli.snaplen = Some(262);
+        cli.output = Some("out.pcap".to_string());
+        let msg = snaplen_truncation_warning(&cli, &Config::default())
+            .expect("a truncating snaplen feeding -O must be reported");
+        assert!(msg.contains("262"), "names the snaplen: {msg}");
+        assert!(msg.contains("-O"), "names the output it feeds: {msg}");
+        assert!(
+            msg.contains("analysis is unaffected"),
+            "says the analysis is intact, only the file is short: {msg}"
+        );
+    }
+
+    /// A small snaplen with no `-O` truncates only the in-memory capture, which
+    /// is the point of setting it — nothing is written, so there is nothing to
+    /// warn about. A warning here would fire on every deliberate signalling
+    /// capture and train operators to ignore it.
+    #[test]
+    fn snaplen_truncation_warning_silent_without_output() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".to_string());
+        cli.snaplen = Some(262);
+        assert!(snaplen_truncation_warning(&cli, &Config::default()).is_none());
+    }
+
+    /// The full-frame default keeps whole packets, so `-O` writes a complete
+    /// pcap: neither the unset default nor an explicit 65535 truncates.
+    #[test]
+    fn snaplen_truncation_warning_silent_at_the_full_frame_default() {
+        let mut unset = base_cli();
+        unset.device = Some("eth0".to_string());
+        unset.output = Some("out.pcap".to_string());
+        assert!(
+            snaplen_truncation_warning(&unset, &Config::default()).is_none(),
+            "the unset default is 65535 — whole frames"
+        );
+        unset.snaplen = Some(65535);
+        assert!(
+            snaplen_truncation_warning(&unset, &Config::default()).is_none(),
+            "an explicit 65535 truncates nothing"
+        );
+    }
+
+    /// A saved-file read (`-I`) copies whole records; `--snaplen` never shortens
+    /// it, so re-emitting through `-O` loses nothing and the warning stays
+    /// silent even with a small snaplen present.
+    #[test]
+    fn snaplen_truncation_warning_silent_on_file_input() {
+        let mut cli = base_cli();
+        cli.input = vec!["capture.pcap".to_string()];
+        cli.snaplen = Some(262);
+        cli.output = Some("out.pcap".to_string());
+        assert!(snaplen_truncation_warning(&cli, &Config::default()).is_none());
+    }
+
+    /// The snaplen resolves from the config file too, so a small
+    /// `[capture] snaplen` with `-O` on a live source is caught even when the
+    /// CLI flag is absent — the truncation is the same whichever set it.
+    #[test]
+    fn snaplen_truncation_warning_catches_a_config_file_snaplen() {
+        let mut cli = base_cli();
+        cli.device = Some("eth0".to_string());
+        cli.output = Some("out.pcap".to_string());
+        let mut config = Config::default();
+        config.capture.snaplen = Some(320);
+        let msg = snaplen_truncation_warning(&cli, &config)
+            .expect("a config-file snaplen truncates just as a CLI one does");
+        assert!(msg.contains("320"), "names the resolved snaplen: {msg}");
     }
 
     /// An unreadable `--bpf-file` yields an `Err` (exit code 2), not an exit.

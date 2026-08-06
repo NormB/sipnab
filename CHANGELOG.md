@@ -66,6 +66,20 @@ entry that carries them.
   and `0` proven to mean unlimited rather than a zero-permit server that
   refuses every call.
 
+- **A truncating `--snaplen` feeding `-O` is now warned about.** `--snaplen N`
+  copies only the first N bytes of each live frame; below the 65535-byte
+  default, a larger packet is captured short. sipnab's own analysis is
+  unaffected — it parses what it captured — but `-O` re-emits those truncated
+  frames, and a short pcap is structurally a valid one, so a later reader cannot
+  tell payload dropped at capture from payload that was never on the wire. That
+  is the same silent data-loss class as an `-O` file cut off by `ENOSPC`, so a
+  live capture that combines a sub-default `--snaplen` (from the flag or
+  `[capture] snaplen`) with `-O` now prints a warning naming the snaplen and the
+  output it feeds. Warned, not refused: the run is correct, only the written
+  file is short. A saved-file read (`-I`) is unaffected — it copies whole
+  records, so `--snaplen` never shortens it. The default stays 65535, so a run
+  that does not set a snaplen never sees the warning.
+
 - **Every MCP tool call is audited.** One log line per call under the
   `mcp_audit` tracing target: tool name, JSON-RPC request id, caller, outcome
   (`ok`, `tool_error`, or `refused`), elapsed milliseconds, and the arguments
