@@ -114,7 +114,7 @@ LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 # (`../../harness`), and dev_docs_drift_test counts that as a code link too,
 # so both forms must rewrite or the bare one reaches the wiki dead.
 CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|\.vale|benches|contrib|harness|scripts|website"
+    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|\.vale|benches|contrib|harness|scripts|website|LICENSES"
     r"|\.cargo|crates|docker|bench|demos|tests|fuzz|man|ops|src)(?:/[^)\s]*)?)\s*\)"
 )
 
