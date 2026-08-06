@@ -164,7 +164,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td>REST API + Prometheus</td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
           <tr><td>MCP server</td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 24 tools cover dialogs, RTP, diagnostics, and security findings, and none of them alters the analysis.</td></tr>
           <tr><td>Browser analysis</td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td>Built in Rust</td><td>Memory-safe by construction. 4586 automated tests. Under 12 MB static binary.</td></tr>
+          <tr><td>Built in Rust</td><td>Memory-safe by construction. 4591 automated tests. Under 12 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -235,18 +235,22 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label"><a href="{{ get_url(path='@/docs/benchmarks.md') }}">Offline reconstruction, four cores (measured v0.5.47)</a></span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="4586" data-suffix="">4586</span>
+        <span class="arch-stat" data-count="4591" data-suffix="">4591</span>
         <span class="arch-label"><a href="{{ config.extra.github_url }}/actions/workflows/ci.yml">Automated tests</a></span>
       </div>
     </div>
   </div>
 </section>
 
-<!-- Contributor License Agreement -->
-<section style="text-align:center; padding:0 1rem 2.5rem;">
+<!-- Contributor License Agreement / OpenSSF Best Practices -->
+<section style="text-align:center; padding:0 1rem 2.5rem; display:flex; flex-wrap:wrap; gap:.6rem; justify-content:center;">
   <a href="{{ get_url(path='@/cla.md') }}"
      style="display:inline-flex; align-items:center; gap:.45rem; padding:.4rem .95rem; border:1px solid rgba(128,128,128,.4); border-radius:999px; font-size:.85rem; font-weight:500; text-decoration:none;">
     <span aria-hidden="true">📝</span> Contributor License Agreement
+  </a>
+  <a href="https://www.bestpractices.dev/projects/13931" target="_blank" rel="noopener noreferrer"
+     style="display:inline-flex; align-items:center; gap:.45rem; padding:.4rem .95rem; border:1px solid rgba(128,128,128,.4); border-radius:999px; font-size:.85rem; font-weight:500; text-decoration:none;">
+    <span aria-hidden="true">🛡️</span> OpenSSF Best Practices — Passing
   </a>
 </section>
 

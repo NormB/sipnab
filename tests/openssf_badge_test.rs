@@ -231,27 +231,56 @@ fn fuzz_target_evidence_matches_the_fuzz_directory() {
     );
 }
 
-/// The sheet's own framing must survive editing: it is a prepared answer sheet,
-/// not a submission, and the badge is not the Scorecard.
+/// The sheet's own framing must survive editing: it distinguishes the prepared
+/// answers from the submission form, and the badge from the Scorecard.
 ///
 /// Both distinctions are load-bearing. Someone skimming a page headed "OpenSSF"
 /// while a green Scorecard badge sits in CI could easily conclude the badge is
 /// already earned; the page says otherwise on purpose.
+///
+/// The project registered as 13931 and the badge reads "passing" — checked
+/// live against bestpractices.dev on 2026-08-06. That project ID must now
+/// appear consistently everywhere the badge is wired: the sheet's own status
+/// line, the README badge markup, and the CSP-safe homepage link (an
+/// externally-hosted badge *image* would be blocked by the site's
+/// `img-src 'self'` policy, which is why the homepage carries a text link
+/// instead of the badge SVG). A placeholder or a mismatched ID in any one of
+/// the three is exactly the kind of staleness this file exists to catch — it
+/// is what let the homepage link go missing unnoticed until a maintainer
+/// asked where it was.
 #[test]
-fn the_sheet_does_not_claim_to_be_a_submission() {
+fn the_badge_is_registered_and_wired_consistently() {
+    const PROJECT_URL: &str = "bestpractices.dev/projects/13931";
+
     let text = sheet();
     assert!(
         text.contains("not the\nsubmission") || text.contains("not the submission"),
-        "the sheet must say it is the prepared answers, not a submission"
+        "the sheet must distinguish itself from the submission form"
     );
     assert!(
-        text.contains("PROJECT_ID"),
-        "the README badge markup cannot be written before registration assigns \
-         a project ID; the sheet keeps it as a placeholder deliberately"
+        !text.contains("PROJECT_ID"),
+        "the project is registered as 13931; a lingering PROJECT_ID placeholder \
+         means the sheet was never updated after registration"
     );
     assert!(
-        !read("README.md").contains("bestpractices.dev/projects/"),
-        "no badge may appear in README.md until the project is registered — a \
-         badge URL with a guessed ID renders as somebody else's project"
+        text.contains(PROJECT_URL),
+        "the sheet must cite the real registered project (13931), not a \
+         placeholder or a different one"
+    );
+
+    let readme = read("README.md");
+    assert!(
+        readme.contains(&format!("{PROJECT_URL}/badge")) && readme.contains(PROJECT_URL),
+        "the badge is registered and passing, so README.md must carry the real \
+         badge markup for project 13931 — a missing or mismatched badge here is \
+         what the maintainer could not find"
+    );
+
+    let homepage = read("website/templates/index.html");
+    assert!(
+        homepage.contains(PROJECT_URL),
+        "the sipnab.com home page must link the same registered project — this \
+         is the exact gap that went unnoticed: the badge existed in the answer \
+         sheet and README but never reached the site a visitor actually looks at"
     );
 }

@@ -1,10 +1,15 @@
 # OpenSSF Best Practices Badge — prepared answers (passing level)
 
+**Status: registered and passing.** Project
+[13931](https://www.bestpractices.dev/projects/13931) — the badge is live in
+`README.md` and linked from the sipnab.com home page.
+
 The badge is a self-certification questionnaire at
 [bestpractices.dev](https://www.bestpractices.dev/). Submission requires signing
-in as the project owner, so this page is the prepared answer sheet, not the
-submission. Every "Met" below is grounded in a file or a setting in this repo,
-cited so a reviewer can check it rather than take it on trust.
+in as the project owner, so this page was the prepared answer sheet used for
+that submission, not the submission form itself. Every "Met" below is grounded
+in a file or a setting in this repo, cited so a reviewer can check it rather
+than take it on trust.
 
 This is distinct from the OpenSSF **Scorecard** workflow, which already runs in
 CI. Scorecard is an automated scan; the badge is a questionnaire a human answers.
@@ -16,19 +21,18 @@ Passing one says nothing about the other.
 |---|---|---|---|
 | Basics | 11 | 0 | 0 |
 | Change control | 6 | 0 | 0 |
-| Reporting | 3 | 2 | 0 |
+| Reporting | 5 | 0 | 0 |
 | Quality | 6 | 0 | 0 |
 | Security | 11 | 0 | 0 |
 | Analysis | 2 | 0 | 0 |
 
-No criterion is unmet. Two need an answer only the maintainer can give, and both
-are about response history rather than about the code.
+No criterion is unmet.
 
 ## Basics
 
 | Criterion | Answer | Evidence |
 |---|---|---|
-| `homepage_url` | Met | `https://www.sipnab.com` |
+| `homepage_url` | Met | `https://sipnab.com` |
 | `description_good` | Met | Site and `README.md` both open with what the tool does |
 | `interact` | Met | `SUPPORT.md` routes questions, bugs and vulnerabilities |
 | `contribution` | Met | `CONTRIBUTING.md` |
@@ -38,7 +42,7 @@ are about response history rather than about the code.
 | `documentation_interface` | Met | CLI reference, REST API and MCP pages document every external surface |
 | `sites_https` | Met | Site and repository are HTTPS only |
 | `discussion` | Met | GitHub Discussions enabled (`has_discussions: true`) |
-| `maintained` | Met | Active release cadence — 30 releases |
+| `maintained` | Met | Active release cadence — 98 releases |
 
 `contribution_requirements`, `floss_license_osi` and `english` (all SHOULD) are
 met: MIT and Apache-2.0 are both OSI-approved, and everything is in English.
@@ -50,7 +54,7 @@ met: MIT and Apache-2.0 are both OSI-approved, and everything is in English.
 | `repo_public` | Met | `https://github.com/NormB/sipnab` |
 | `repo_track` | Met | Git |
 | `repo_interim` | Met | Work lands on `main` continuously between releases |
-| `version_unique` | Met | Crate version, currently 0.5.69 |
+| `version_unique` | Met | Crate version, currently 0.5.83 |
 | `release_notes` | Met | `CHANGELOG.md`, Keep a Changelog format |
 | `release_notes_vulns` | Met | The changelog calls out security-relevant fixes in the entry carrying them |
 
@@ -65,20 +69,21 @@ semantic, and every release is tagged.
 | `report_archive` | Met | The GitHub issue tracker is public and searchable |
 | `vulnerability_report_process` | Met | `SECURITY.md` |
 | `vulnerability_report_private` | Met | Private advisories, linked from `ISSUE_TEMPLATE/config.yml` |
-| `report_responses` | **Maintainer answers** | No issue has ever been filed — 0 issues across all states |
-| `vulnerability_report_response` | **Maintainer answers** | No vulnerability report has been received |
+| `report_responses` | Met | Issues #226-229 were each triaged and closed the same day they were opened |
+| `vulnerability_report_response` | Met | `SECURITY.md` defines the private channel; no external report received to date, and internally-found issues (e.g. #226) are fixed and disclosed in the changelog |
 
-The last two ask how quickly reports get answered. With no reports to date there
-is no history to cite, and the honest answer is to say so in the justification
-field rather than claim a response time the project has never had to meet. The
-badge accepts that; inventing a number would be the only wrong move here.
+The last two ask how quickly reports get answered. When this sheet was first
+drafted no issue had ever been filed, and the honest answer was to say so
+rather than claim a response time the project had never had to meet. By the
+time of registration four issues (#226-229) had been filed and each closed the
+same day, which is now the cited evidence.
 
 ## Quality
 
 | Criterion | Answer | Evidence |
 |---|---|---|
 | `build` | Met | `cargo build`, reproduced by CI on every push |
-| `test` | Met | `cargo test --all-features`, 3149 tests, documented in `CONTRIBUTING.md` |
+| `test` | Met | `cargo test --all-features`, ~4,600 tests, documented in `CONTRIBUTING.md` |
 | `test_policy` | Met | `CONTRIBUTING.md` pull request step 4: "Add or update tests for new functionality" |
 | `tests_are_added` | Met | Recent history shows tests landing with the change, not after |
 | `warnings` | Met | `cargo clippy --all-features --all-targets -- -D warnings` |
@@ -132,14 +137,16 @@ attacker-controlled bytes, which is the reason the coverage is this wide.
 languages. Safe Rust makes this N/A in the badge's terms, though the fuzz
 targets cover the same ground.
 
-## What is left
+## Done
 
-Submitting it. That needs the maintainer's own bestpractices.dev session, and
-once the project is registered the badge markup goes in `README.md`:
+Registered and submitted at project
+[13931](https://www.bestpractices.dev/projects/13931), reading **passing**.
+The badge markup is live in `README.md`:
 
 ```markdown
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/PROJECT_ID/badge)](https://www.bestpractices.dev/projects/PROJECT_ID)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13931/badge)](https://www.bestpractices.dev/projects/13931)
 ```
 
-`PROJECT_ID` is assigned at registration, so the line cannot be written before
-then — a badge pointing at a guessed ID renders as someone else's project.
+and linked (as a CSP-safe inline pill rather than the badge image, since the
+site's `img-src 'self'` policy blocks an externally-hosted SVG) from the
+sipnab.com home page.
