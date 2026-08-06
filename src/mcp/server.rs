@@ -1230,7 +1230,23 @@ pub struct StatsResponse {
     pub stream_count: usize,
     /// Streams not yet correlated to any dialog.
     pub orphaned_stream_count: usize,
-    /// Dialogs currently in an active (non-terminated) state.
+    /// Dialogs currently in one of six active states: `Trying`, `Ringing`,
+    /// `InCall`, `Transferring`, `Pending`, `Active`.
+    ///
+    /// Two of those are SUBSCRIBE dialogs carrying no media, so this is not a
+    /// count of calls. Under `schema_version` 1 this number was published as
+    /// `active_call_count`; the name moved because it never described what it
+    /// counted.
+    pub active_dialog_count: usize,
+    /// Calls that are up right now: dialogs in `InCall`, and nothing else.
+    ///
+    /// A dialog enters `InCall` on the 200 OK to its INVITE and leaves on the
+    /// BYE, so this is the concurrent-call figure — channels in use.
+    ///
+    /// Under `schema_version` 1 this key carried the number now published as
+    /// `active_dialog_count`, which was larger whenever anything was ringing
+    /// or subscribed. A reader that has not checked `schema_version` is
+    /// reading a different quantity than it was before.
     pub active_call_count: usize,
     /// SIP messages seen OUTSIDE `--portrange` and therefore analysed by
     /// nothing: they are in no dialog, no stream and no count above.
@@ -2862,11 +2878,14 @@ impl SipnabMcp {
             let skipped = crate::pipeline::portrange_skip_report();
             let resp = StatsResponse {
                 capture_identity: state.identity.etag(ds.generation(), ss.generation()),
-                schema_version: 1,
+                // 2: `active_call_count` narrowed to InCall and the old
+                // meaning moved to `active_dialog_count`.
+                schema_version: 2,
                 dialog_count: ds.len(),
                 stream_count: ss.len(),
                 orphaned_stream_count: ss.orphaned_count(),
-                active_call_count: ds.active_count(),
+                active_dialog_count: ds.active_dialog_count(),
+                active_call_count: ds.active_call_count(),
                 unanalysed_sip_messages: skipped.messages,
                 unanalysed_busiest_ports: skipped
                     .ports
@@ -6313,17 +6332,48 @@ mod tests {
 
     // ── stats ────────────────────────────────────────────────────────
 
-    /// Empty stores report schema_version 1 and all-zero counters.
+    /// Empty stores report schema_version 2 and all-zero counters.
     #[tokio::test]
     async fn stats_empty_store_all_zero() {
         let server = empty_server();
         let result = server.stats().await.expect("stats should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["schema_version"], 2);
         assert_eq!(v["dialog_count"], 0);
         assert_eq!(v["stream_count"], 0);
         assert_eq!(v["orphaned_stream_count"], 0);
+        assert_eq!(v["active_dialog_count"], 0);
         assert_eq!(v["active_call_count"], 0);
+    }
+
+    /// `stats` publishes the two gauges as separate keys, and the version says
+    /// the meaning of `active_call_count` moved.
+    ///
+    /// Both are zero on an empty store, so this asserts the KEYS exist and the
+    /// version changed — a client reading `active_call_count` under
+    /// `schema_version` 1 was handed the six-state number, and nothing but the
+    /// version tells it otherwise. The values are proved to differ in
+    /// `dialog_store::tests::active_call_count_excludes_setup_and_subscriptions`,
+    /// which can build the mixed-state store this fixture cannot.
+    #[tokio::test]
+    async fn stats_separates_dialog_and_call_gauges() {
+        let server = empty_server();
+        let result = server.stats().await.expect("stats should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert!(
+            v.get("active_dialog_count").is_some(),
+            "the six-state number must be published under its own name: {v}"
+        );
+        assert!(
+            v.get("active_call_count").is_some(),
+            "the InCall-only gauge must be published: {v}"
+        );
+        assert!(
+            v["schema_version"].as_u64().unwrap_or(0) >= 2,
+            "narrowing active_call_count without bumping the version leaves \
+             every existing dashboard silently reading a different quantity"
+        );
     }
 
     /// `stats` reports the SIP that `--portrange` excluded, always.

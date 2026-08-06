@@ -9,7 +9,8 @@ expression: output
 │sipnab Statistics                                         │
 │                                                          │
 │Dialogs:           3                                      │
-│Active Calls:      1                                      │
+│Active Dialogs:    1                                      │
+│Calls In Progress: 1                                      │
 │Total Messages:    8                                      │
 │RTP Streams:       0                                      │
 │Orphaned Streams:  0                                      │
@@ -19,6 +20,5 @@ expression: output
 │  Failed           1                                      │
 │  InCall           1                                      │
 │                                                          │
-│Method Distribution:                                      │
 └──────────────────────────────────────────────────────────┘
 Esc Back

@@ -93,17 +93,26 @@ fn unknown_dialog_returns_404() {
     assert_eq!(resp.status, 404, "unknown dialog must 404");
 }
 
-/// `GET /v1/stats` returns 200 with schema_version 1, correct dialog counts
+/// `GET /v1/stats` returns 200 with schema_version 2, correct dialog counts
 /// for the fixture, and a `timing` object.
+///
+/// The fixture's one dialog is completed, so `dialogs.active` and
+/// `dialogs.in_call` are both 0 here and this asserts the KEY exists rather
+/// than a value. The two are proved to be different computations in
+/// `sip::dialog_store::tests::active_call_count_excludes_setup_and_subscriptions`.
 #[test]
 fn stats_returns_structured_json() {
     let srv = ApiServer::spawn(&[]);
     let resp = srv.get("/v1/stats");
     assert_eq!(resp.status, 200, "/v1/stats status");
     let body = resp.json();
-    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["schema_version"], 2);
     assert_eq!(body["dialogs"]["total"], 1);
     assert_eq!(body["dialogs"]["completed"], 1);
+    assert!(
+        body["dialogs"]["in_call"].is_number(),
+        "the concurrent-call figure must be its own key: {body}"
+    );
     assert!(body["timing"].is_object(), "stats has a timing block");
 }
 

@@ -856,21 +856,51 @@ impl DialogStore {
         self.dialogs.retain(|_, d| predicate(d));
     }
 
-    /// Count dialogs in an active state (Trying, Ringing, InCall, Transferring, Pending, Active).
-    pub fn active_count(&self) -> usize {
+    /// Whether `state` is one of the six this store calls active.
+    ///
+    /// Three of the six are calls at some stage (`Trying`, `Ringing`,
+    /// `InCall`), one is a call being moved (`Transferring`), and two are
+    /// SUBSCRIBE dialogs that carry no media at all (`Pending`, `Active`).
+    /// A presence subscription is an active dialog and is not a call, which
+    /// is why [`DialogStore::active_call_count`] exists separately.
+    fn is_active_dialog_state(state: &DialogState) -> bool {
+        matches!(
+            state,
+            DialogState::Trying
+                | DialogState::Ringing
+                | DialogState::InCall
+                | DialogState::Transferring
+                | DialogState::Pending
+                | DialogState::Active
+        )
+    }
+
+    /// Count dialogs in an active state: `Trying`, `Ringing`, `InCall`,
+    /// `Transferring`, `Pending`, `Active`.
+    ///
+    /// Two of those six — `Pending` and `Active` — are SUBSCRIBE dialogs, so
+    /// this number is not a count of calls and a box carrying only presence
+    /// traffic reports a non-zero value here. For the number an operator
+    /// graphs and alerts on, use [`DialogStore::active_call_count`].
+    pub fn active_dialog_count(&self) -> usize {
         self.dialogs
             .values()
-            .filter(|d| {
-                matches!(
-                    d.state(),
-                    DialogState::Trying
-                        | DialogState::Ringing
-                        | DialogState::InCall
-                        | DialogState::Transferring
-                        | DialogState::Pending
-                        | DialogState::Active
-                )
-            })
+            .filter(|d| Self::is_active_dialog_state(d.state()))
+            .count()
+    }
+
+    /// Count calls that are up: dialogs in `InCall`, and nothing else.
+    ///
+    /// A dialog reaches `InCall` on the 200 OK to its INVITE and leaves it on
+    /// the BYE, so this is the concurrent-call figure — the one that maps to
+    /// channels in use, to a carrier's simultaneous-call limit, and to the
+    /// alert an operator actually wants. It is by construction never greater
+    /// than [`DialogStore::active_dialog_count`], which also counts calls
+    /// still being set up and subscriptions that are not calls at all.
+    pub fn active_call_count(&self) -> usize {
+        self.dialogs
+            .values()
+            .filter(|d| *d.state() == DialogState::InCall)
             .count()
     }
 
@@ -2379,6 +2409,64 @@ mod tests {
         .expect("should parse BYE")
     }
 
+    /// Build and parse an RFC 6665 presence SUBSCRIBE for `call_id` at `ts`.
+    fn make_subscribe_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "SUBSCRIBE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 SUBSCRIBE",
+                "Event: presence",
+                "Expires: 3600",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse SUBSCRIBE")
+    }
+
+    /// Build and parse the 200 OK accepting that SUBSCRIBE.
+    ///
+    /// Separate from `make_200_ok`, whose CSeq names INVITE: a 200 OK whose
+    /// CSeq method disagrees with the request it answers is not traffic any
+    /// stack emits, and a fixture built from it would not be evidence.
+    fn make_subscribe_200_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 SUBSCRIBE",
+                "Event: presence",
+                "Expires: 3600",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse SUBSCRIBE 200 OK")
+    }
+
     /// INVITE followed by 200 OK yields one dialog in the InCall state
     /// with both messages stored.
     #[test]
@@ -2759,10 +2847,10 @@ mod tests {
         assert_eq!(dialog.messages.len(), 3);
     }
 
-    /// active_count counts only dialogs in an active state and drops as
+    /// active_dialog_count counts only dialogs in an active state and drops as
     /// calls complete, while len keeps counting completed ones.
     #[test]
-    fn active_count_tracks_live_dialogs() {
+    fn active_dialog_count_tracks_live_dialogs() {
         let mut store = DialogStore::new(100, false);
         let t0 = base_ts();
 
@@ -2770,14 +2858,62 @@ mod tests {
         store.process_message(make_invite_msg("active-1@test", t0));
         store.process_message(make_invite_msg("active-2@test", t0));
 
-        assert_eq!(store.active_count(), 2);
+        assert_eq!(store.active_dialog_count(), 2);
 
         // Complete one
         store.process_message(make_200_ok("active-1@test", t0 + TimeDelta::seconds(1)));
         store.process_message(make_bye_msg("active-1@test", t0 + TimeDelta::seconds(10)));
 
-        assert_eq!(store.active_count(), 1);
+        assert_eq!(store.active_dialog_count(), 1);
         assert_eq!(store.len(), 2);
+    }
+
+    /// The two gauges are different numbers on a store that holds dialogs in
+    /// non-InCall active states.
+    ///
+    /// This fixture is deliberately built so the two CANNOT coincide: one
+    /// dialog is answered (InCall), one is still ringing, and one is a
+    /// SUBSCRIBE that is active and is not a call at all. A fixture where the
+    /// two happen to be equal would pass against a build that computed one of
+    /// them twice, which is the obvious way to get this wrong.
+    #[test]
+    fn active_call_count_excludes_setup_and_subscriptions() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // Answered: InCall. A call, and up.
+        store.process_message(make_invite_msg("answered@test", t0));
+        store.process_message(make_200_ok("answered@test", t0 + TimeDelta::seconds(1)));
+
+        // Offered but never answered: Trying. A call, not up.
+        store.process_message(make_invite_msg("ringing@test", t0));
+
+        // Presence: Active. Not a call at all, and it carries no media.
+        store.process_message(make_subscribe_msg("presence@test", t0));
+        store.process_message(make_subscribe_200_ok(
+            "presence@test",
+            t0 + TimeDelta::seconds(1),
+        ));
+
+        assert_eq!(
+            store.active_call_count(),
+            1,
+            "only the answered INVITE is a call that is up"
+        );
+        assert_eq!(
+            store.active_dialog_count(),
+            3,
+            "all three are active dialogs: answered, ringing, and the subscription"
+        );
+        assert_ne!(
+            store.active_call_count(),
+            store.active_dialog_count(),
+            "the two gauges must be distinct computations, not one number under two names"
+        );
+        assert!(
+            store.active_call_count() <= store.active_dialog_count(),
+            "InCall is a subset of the six active states"
+        );
     }
 
     /// A message without a Call-ID header is silently dropped and creates
@@ -2816,7 +2952,8 @@ mod tests {
         let store = DialogStore::new(100, false);
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
-        assert_eq!(store.active_count(), 0);
+        assert_eq!(store.active_dialog_count(), 0);
+        assert_eq!(store.active_call_count(), 0);
     }
 
     /// iter yields every tracked dialog exactly once.

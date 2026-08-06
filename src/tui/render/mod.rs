@@ -554,7 +554,8 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
     use std::collections::HashMap;
 
     let dialog_count = ds.len();
-    let active_count = ds.active_count();
+    let active_dialogs = ds.active_dialog_count();
+    let active_calls = ds.active_call_count();
     let stream_count = ss.len();
     let orphaned = ss.orphaned_count();
 
@@ -591,7 +592,8 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
     let mut text = format!(
         "sipnab Statistics\n\n\
          Dialogs:           {dialog_count}\n\
-         Active Calls:      {active_count}\n\
+         Active Dialogs:    {active_dialogs}\n\
+         Calls In Progress: {active_calls}\n\
          Total Messages:    {total_messages}\n\
          RTP Streams:       {stream_count}\n\
          Orphaned Streams:  {orphaned}\n"

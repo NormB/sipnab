@@ -8,6 +8,35 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING for dashboards: `active_call_count` now counts calls.** It used to
+  count dialogs in any of six active states — `Trying`, `Ringing`, `InCall`,
+  `Transferring`, `Pending`, `Active` — two of which are SUBSCRIBE dialogs that
+  carry no media at all. A box serving presence traffic reported "active calls"
+  with nothing on the phone, and every graph built on it read high. The old
+  number has not gone away: it is published unchanged under
+  `active_dialog_count`, a name that says what it counts. `active_call_count`
+  now means `InCall` only — the concurrent-call figure, channels in use.
+
+  The meaning of an existing key changed, so `stats` moves to
+  `schema_version` 2 on both MCP and the REST API. **A dashboard that reads
+  `active_call_count` and does not check the version is now graphing a
+  different quantity than it was**, lower by however many calls are ringing and
+  however many subscriptions are open. Renaming without adding the call gauge
+  was rejected: it would have left nobody able to answer "how many calls are up
+  right now" without recomputing it client-side, which is the question the
+  metric exists for.
+
+  Surfaces: MCP `stats` gains `active_dialog_count` beside the narrowed
+  `active_call_count`; the REST `/v1/stats` response gains `dialogs.in_call`
+  alongside the correctly-named `dialogs.active`; Prometheus gains
+  `sipnab_dialogs_active` and `sipnab_calls_active`, neither of which existed
+  before; the TUI statistics pane replaces its single mislabelled "Active
+  Calls" line with "Active Dialogs" and "Calls In Progress".
+
 ## [0.5.83] - 2026-08-05
 
 Things the code already knew that nothing could reach, and one run that

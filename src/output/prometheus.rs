@@ -28,6 +28,18 @@ pub struct PrometheusMetrics {
     pub responses_total: HashMap<String, u64>,
     /// Number of currently active RTP streams.
     pub rtp_streams_active: u64,
+    /// Dialogs in one of six active states: `Trying`, `Ringing`, `InCall`,
+    /// `Transferring`, `Pending`, `Active` (gauge).
+    ///
+    /// Two of those six are SUBSCRIBE dialogs carrying no media, so a box
+    /// serving only presence traffic reports a non-zero value here and a zero
+    /// in [`Self::calls_active`]. Alert on the other one.
+    pub dialogs_active: u64,
+    /// Calls that are up right now: dialogs in `InCall` only (gauge).
+    ///
+    /// The concurrent-call figure — channels in use. By construction never
+    /// greater than [`Self::dialogs_active`].
+    pub calls_active: u64,
     /// RTP stream counts by status (e.g., `"established"`, `"orphaned"`).
     pub rtp_streams_total: HashMap<String, u64>,
     /// Total captured packets.
@@ -367,6 +379,26 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         "code",
         &metrics.responses_total,
     );
+
+    // Active dialogs (gauge)
+    write_help_type(
+        &mut out,
+        "sipnab_dialogs_active",
+        "Dialogs in an active state (Trying, Ringing, InCall, Transferring, Pending, Active) - includes SUBSCRIBE dialogs, so not a call count",
+        "gauge",
+    );
+    let _ = writeln!(out, "sipnab_dialogs_active {}", metrics.dialogs_active);
+    out.push('\n');
+
+    // Calls up right now (gauge)
+    write_help_type(
+        &mut out,
+        "sipnab_calls_active",
+        "Calls currently up (dialogs in InCall) - the concurrent-call figure",
+        "gauge",
+    );
+    let _ = writeln!(out, "sipnab_calls_active {}", metrics.calls_active);
+    out.push('\n');
 
     // Active streams (gauge)
     write_help_type(

@@ -1661,10 +1661,15 @@ No parameters. Returns:
 
 ```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "dialog_count": 42,
   "stream_count": 18,
   "orphaned_stream_count": 2,
+  // Six states: Trying, Ringing, InCall, Transferring, Pending, Active.
+  // Two of those are SUBSCRIBE dialogs, so this is not a call count.
+  "active_dialog_count": 9,
+  // Calls up right now: InCall only. Under schema_version 1 this key
+  // carried the number now published as active_dialog_count.
   "active_call_count": 5,
   "unanalysed_sip_messages": 4249,
   "unanalysed_busiest_ports": [

@@ -473,6 +473,12 @@ fn collect_metrics(
                 &media,
             ));
         }
+
+        // Both gauges come from the store's own accessors rather than from
+        // the loop above, so the two numbers cannot drift apart from the
+        // definitions every other surface publishes.
+        metrics.dialogs_active = ds.active_dialog_count() as u64;
+        metrics.calls_active = ds.active_call_count() as u64;
     }
 
     // Stream metrics
@@ -655,6 +661,56 @@ mod tests {
         .unwrap();
         let mut ds = DialogStore::new(100, false);
         ds.process_message(msg);
+        Arc::new(RwLock::new(ds))
+    }
+
+    /// A dialog store holding one answered call and one still ringing.
+    ///
+    /// Deliberately asymmetric: `sipnab_dialogs_active` must read 2 and
+    /// `sipnab_calls_active` must read 1, so a build that computed one gauge
+    /// twice cannot pass.
+    fn mixed_dialog_store() -> Arc<RwLock<DialogStore>> {
+        fn parse(raw: &str, ts: chrono::DateTime<Utc>) -> crate::sip::SipMessage {
+            crate::sip::parser::parse_sip_bytes(
+                &bytes::Bytes::copy_from_slice(raw.as_bytes()),
+                ts,
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                5060,
+                5060,
+                crate::capture::parse::TransportProto::Udp,
+            )
+            .expect("fixture must parse")
+        }
+
+        let invite = |call_id: &str| {
+            format!(
+                "INVITE sip:bob@example.com SIP/2.0\r\n\
+                 Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-{call_id}\r\n\
+                 From: Alice <sip:alice@example.com>;tag=a1\r\n\
+                 To: Bob <sip:bob@example.com>\r\n\
+                 Call-ID: {call_id}@example.com\r\n\
+                 CSeq: 1 INVITE\r\n\
+                 Max-Forwards: 70\r\n\
+                 Contact: <sip:alice@10.0.0.1:5060>\r\n\
+                 Content-Length: 0\r\n\r\n"
+            )
+        };
+
+        let now = Utc::now();
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(parse(&invite("answered"), now));
+        ds.process_message(parse(
+            "SIP/2.0 200 OK\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-answered\r\n\
+             From: Alice <sip:alice@example.com>;tag=a1\r\n\
+             To: Bob <sip:bob@example.com>;tag=b1\r\n\
+             Call-ID: answered@example.com\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Length: 0\r\n\r\n",
+            now,
+        ));
+        ds.process_message(parse(&invite("ringing"), now));
         Arc::new(RwLock::new(ds))
     }
 
@@ -850,6 +906,42 @@ mod tests {
         assert!(!metrics.dialogs_total.is_empty());
         // The stream was created with a near-now timestamp, so it counts active.
         assert_eq!(metrics.rtp_streams_active, 1);
+    }
+
+    /// The two dialog gauges are scraped as different numbers, and the
+    /// exposition carries both series.
+    ///
+    /// One answered call and one ringing: 2 active dialogs, 1 call up. A
+    /// fixture where the two coincided would pass against a build that
+    /// assigned the same computation to both, which is the obvious way to get
+    /// this wrong.
+    #[test]
+    fn collect_metrics_separates_active_dialogs_from_active_calls() {
+        let metrics = collect_metrics(&mixed_dialog_store(), &populated_stream_store(), None);
+
+        assert_eq!(
+            metrics.dialogs_active, 2,
+            "the answered call and the ringing one are both active dialogs"
+        );
+        assert_eq!(
+            metrics.calls_active, 1,
+            "only the answered call is a call that is up"
+        );
+
+        let output = crate::output::prometheus::format_metrics(&metrics);
+        assert!(
+            output.contains("sipnab_dialogs_active 2"),
+            "exposition must carry the dialog gauge: {output}"
+        );
+        assert!(
+            output.contains("sipnab_calls_active 1"),
+            "exposition must carry the call gauge: {output}"
+        );
+        assert!(
+            output.contains("# TYPE sipnab_dialogs_active gauge")
+                && output.contains("# TYPE sipnab_calls_active gauge"),
+            "both series must be typed as gauges, not counters: {output}"
+        );
     }
 
     /// A supplied capture meter reports queue depth; without one the gauge

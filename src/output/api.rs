@@ -920,7 +920,8 @@ async fn get_stats(
 
     let ds = state.dialog_store.read();
     let total_dialogs = ds.len();
-    let active_calls = ds.active_count();
+    let active_dialogs = ds.active_dialog_count();
+    let active_calls = ds.active_call_count();
 
     // Collect PDD values for percentile computation
     let mut pdd_values: Vec<i64> = ds.iter().filter_map(|d| d.timing.pdd_ms()).collect();
@@ -955,10 +956,17 @@ async fn get_stats(
     let quality = output::prometheus::CaptureQuality::current();
 
     Ok(Json(json!({
-        "schema_version": 1,
+        // 2: `dialogs.in_call` added. `dialogs.active` is unchanged — it
+        // always named dialogs, not calls — but a reader that had been using
+        // it as a call count needs the version to notice the better key.
+        "schema_version": 2,
         "dialogs": {
             "total": total_dialogs,
-            "active": active_calls,
+            // Six states, two of which are SUBSCRIBE dialogs carrying no
+            // media. Not a count of calls.
+            "active": active_dialogs,
+            // Calls that are up: InCall only.
+            "in_call": active_calls,
             "completed": completed_count,
             "failed": failed_count,
             "cancelled": cancelled_count,
@@ -1353,12 +1361,17 @@ mod tests {
 
         let body = body_to_string(resp.into_body()).await;
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["schema_version"], 2);
         assert!(parsed["dialogs"].is_object());
         assert!(parsed["streams"].is_object());
         assert!(parsed["timing"].is_object());
         assert_eq!(parsed["dialogs"]["total"], 3);
         assert!(parsed["dialogs"]["active"].is_number());
+        assert!(
+            parsed["dialogs"]["in_call"].is_number(),
+            "the concurrent-call figure must be its own key, not left to be \
+             inferred from dialogs.active: {parsed}"
+        );
         assert!(parsed["streams"]["orphaned"].is_number());
     }
 

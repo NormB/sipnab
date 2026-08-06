@@ -9,13 +9,13 @@ expression: output
 │sipnab Statistics                                         │
 │                                                          │
 │Dialogs:           0                                      │
-│Active Calls:      0                                      │
+│Active Dialogs:    0                                      │
+│Calls In Progress: 0                                      │
 │Total Messages:    0                                      │
 │RTP Streams:       0                                      │
 │Orphaned Streams:  0                                      │
 │                                                          │
 │Press Esc to return.                                      │
-│                                                          │
 │                                                          │
 │                                                          │
 │                                                          │
