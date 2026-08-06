@@ -1,4 +1,4 @@
-base_url = "https://www.sipnab.com"
+base_url = "https://sipnab.com"
 title = "sipnab"
 description = "SIP & RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust."
 default_language = "en"
