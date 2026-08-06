@@ -697,7 +697,7 @@ Tiers:
 - [x] src/sip/dialog_store.rs:617 — [dead-code] `.filter(score >= 50)` can never filter (min emitted score is 50). **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/dsl.rs:685 — [missed-edge-case] quoting-hint keyword exclusion is lowercase-only while parser is case-insensitive; `method == TRUE` gets misleading hint. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/mod.rs:84 — [duplication] `find_crlf` duplicated verbatim in parser.rs. **Done (P3 code-health wave, 2026-07-24).**
-- [x] src/sip/matcher.rs:13 — [naming] REGEX_SIZE_LIMIT comment says "ReDoS"; regex crate is linear-time — limit bounds memory/compile cost. **Done (P3 code-health wave, 2026-07-24).**
+- [ ] src/sip/matcher.rs — [naming] REGEX_SIZE_LIMIT is described as a "ReDoS" guard; the regex crate is linear-time, so the limit bounds memory and compile cost, not backtracking. **Partially done, and this line claimed otherwise until 2026-08-05.** The const's own comment (matcher.rs:19) was corrected in the P3 wave and now says it caps memory and compile-time cost. Three sites still assert the refuted claim, two of them PUBLISHED rustdoc: matcher.rs:242 ("to prevent ReDoS attacks (D17)"), matcher.rs:281 ("ReDoS guard"), matcher.rs:835 (test comment). Fixing one of four occurrences and marking the item done is how the other three become permanent.
 - [x] src/sip/sdp_timeline.rs:103 — [modeling] REFER transfers reuse Offer + magic `mode: "transfer"`; dedicated variant cleaner. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/stir_shaken.rs:160 — [testability] `parse_identity_header` reads Utc::now() internally; inject clock for deterministic iat tests. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/stir_shaken.rs:278 — [naming] test `malformed_jwt_too_few_parts` actually exercises too many parts. **Done (P3 code-health wave, 2026-07-24).**
@@ -728,7 +728,7 @@ Tiers:
 - [x] src/tui/call_list.rs:637 — [simplification] DeltaPrev and Scaled arms byte-identical; merge. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/call_list.rs:521 — [duplication] `base_labels` restates COLUMN_LABELS with one divergence. **Done (P3 code-health wave, 2026-07-24).**
 - [x] call_list.rs:880 vs save.rs:206 — [duplication] near-identical 12-arm state-display matches ("FAILED" vs "Failed"). **Done (P3 code-health wave, 2026-07-24).**
-- [x] src/tui/call_list.rs:659 — [naming] Scaled silently renders as delta-prev in call list; document on the enum. **Done (P3 code-health wave, 2026-07-24).**
+- [ ] src/tui/state.rs:53 — [naming] Scaled silently renders as delta-prev in the call list; document it **on the enum**. **Not done, and this line claimed otherwise until 2026-08-05.** The fallback is documented at the two use sites (call_list.rs:666-670 and call_flow/render.rs:1406), which is where a reader already knows to look. `TimestampMode::Scaled` itself still reads only "Time-proportional: insert spacer rows for large timing gaps" — so the declaration teaches a behaviour two of its three renderers do not have.
 - [x] src/rtp/stream.rs:134 — [testability] `is_active` uses Utc::now(); offline replay streams never active. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/rtp/srtp.rs:547 — [dead-code] `decrypt_srtp_payload` unused crypto param. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/rtp/rtcp.rs:1 — [doc/code gap] header claims no silent drops; known-type body parse failures are dropped. **Done (P3 code-health wave, 2026-07-24).**
@@ -806,7 +806,7 @@ Tiers:
 - [x] tests/tui_state_test.rs:1951 — [weak-assertion] page-up assert vacuous when after_down==0. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/tui_state_test.rs:2206 — [weak-assertion] F9 test passes if F9 did nothing; assert ==3. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/tui_state_test.rs:2587 — [test-hygiene] writes /tmp/sipnab_test_save.pcap outside tempdir, never cleaned. **Done (P4 test-quality wave, 2026-07-24).**
-- [x] tests/tui_state_test.rs:3267,3293,3325 — [silent-skip] pcap tests pass vacuously when fixtures missing. **Done (P4 test-quality wave, 2026-07-24).**
+- [ ] tests/tui_state_test.rs — [silent-skip] pcap tests pass vacuously when fixtures missing. **Three of four done, and this line claimed all four until 2026-08-05.** `file_open_browser_navigates_to_pcap_samples` (tui_state_test.rs:3368) still opens with `if !samples.is_dir() { return; }`, so a checkout without `tests/pcap-samples/` reports the test green having asserted nothing — the exact shape the other three were fixed for.
 - [x] tui_state/tui_snapshot — [duplication] fixture builders duplicated across crates; `localhost_*` misnomer (10.0.0.x). **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/tui_state_test.rs:4200 — [duplication] 40-line RTP feed block copy-pasted three times. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/tui_state_test.rs:4604 — [drift-risk] body_search tests re-implement production search predicate inline. **Done (P4 test-quality wave, 2026-07-24).**
@@ -830,7 +830,7 @@ Tiers:
 - [x] tests/wasm_exports_test.rs:10 — [silent-skip] silently never runs if wasm build absent. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] eight binary-spawn run() helpers — [duplicated-fixture] inconsistent env across cli/config/output/integration test crates; tests/support candidate. **Done:** consolidated into `tests/support/run.rs` with a documented env baseline (cwd=MANIFEST_DIR, NO_COLOR=1, explicit SIPNAB_LOG per caller — fixing cli_help's shell-inherited log); 5 files migrated (pipeline_test's run() was a trait-method false positive). Also gated security_test's counting-allocator block behind `feature=api` (its only consumer) to fix reduced-feature builds.
 - [x] spawn_http/post_status/shutdown — [duplicated-fixture] triplicated across mcp token/http tests. **Done (P4 test-quality wave, 2026-07-24).**
-- [x] fuzz_corpus_replay.rs:131 / smoke_fuzz_test.rs:20 — [duplicated-fixture] two independent xorshift Rng+mutate impls. **Done (P4 test-quality wave, 2026-07-24).**
+- [ ] fuzz_corpus_replay.rs / smoke_fuzz_test.rs — [duplicated-fixture] two independent xorshift Rng+mutate impls. **Half done, and this line claimed all of it until 2026-08-05.** The `Rng` half was consolidated; the two `mutate` functions survive with the arguments in OPPOSITE order — `smoke_fuzz_test.rs:36` takes `(rng, seed)`, `fuzz_corpus_replay.rs:147` takes `(seed, rng)`. Both compile, so nothing catches a caller that reaches for the wrong one. The source files were always honest about this; only this backlog line overstated.
 - [x] tests/mockup_alignment_test.rs — [heuristic-limit] lifeline reference = most-pipes line; misaligned reference flags everything else. **Done (P4 test-quality wave, 2026-07-24).**
 
 ## PA — agent-surface program (added 2026-08-03)
@@ -1212,10 +1212,10 @@ implementation.
 | Item | Verified state | Proposed |
 |---|---|---|
 | DTMF / telephone-event | `src/rtp/dtmf.rs` decodes digits; nothing in `src/output/json.rs` carries them | `get_dtmf_digits(call_id?)` → digit, duration, SSRC, timestamp. **Gate on PA5:** IVR digits are card numbers and PINs |
-| STIR/SHAKEN | `src/sip/stir_shaken.rs` exists, `--stir-shaken` validates | `verify_stir_shaken(call_id)` → passport claims, attestation, verstat, cert-chain result |
+| STIR/SHAKEN | `src/sip/stir_shaken.rs` exists; `--stir-shaken` REPORTS the PASSporT claims and **verifies no signature** — corrected 2026-08-05, it never did | `report_stir_shaken(call_id)` → passport claims, attestation, `iat` freshness. NOT a cert-chain result: verifying means fetching the certificate the token references, and sipnab makes no outbound request to analyse a capture. A forged Identity header reports exactly like a genuine one. |
 | Wireshark / tshark filter | `src/output/wireshark.rs` exists; both flags refused under `--mcp` because they write to stdout | `generate_display_filter(call_id\|filter)`. The stdout invariant does not apply to a return value — this one is a pure oversight |
 | fail2ban | format exists in tree | `ban_candidates(kinds?, since?)` → structured src_ip, rule, count, plus the jail line |
-| SIPp XML | **not in the tree** — the only bucket-1 item that is a build, not a wrapper | `export_sipp_scenario(call_id, filename)`. Same work as PA7 |
+| SIPp XML | **IN THE TREE** — `save_to_sipp_path` at `src/tui/save.rs:804`, with three tests. This row said "not in the tree" until 2026-08-05, which scheduled a rewrite of code that already exists | `export_sipp_scenario(call_id, filename)` is an EXTRACTION of the existing TUI writer to a callable path, not a build. Same wrapper shape as the rest of bucket 1 |
 | Mermaid ladder | `src/tui/call_flow/export.rs` renders mermaid; `render_ladder` offers markdown/text only | add `format: "mermaid"` — agents render it inline, which is the point of a ladder |
 | Multi-leg / B2BUA | TUI `x` stitches correlated legs | `render_ladder(call_id, extended: true)` + `get_correlated_legs`. Duplicate of PA10; keep PA10 as the entry |
 | Capture-wide report | `--report` incl. Orphaned Streams | `get_capture_report(format?)`. `stats` gives counters, not the report |
@@ -1662,4 +1662,4 @@ reason it was introduced.
 | wolfSSL/OpenSSL TLS backends | REMOVED | ring covers ~95% of cases; re-add only if FIPS demand arises. |
 | gRPC API | REMOVED | REST API is complete; re-add only if streaming demand arises. |
 | STIR/SHAKEN cert verification | DEFERRED | Would require HTTP cert fetching — added attack surface, intentionally skipped. |
-| WASM plugins | FUTURE | D7 rules out Lua; WASM is the path if plugins are ever needed. |
+| WASM plugins | **SHIPPED in 0.5.69**, behind the `plugins` feature — this row said FUTURE until 2026-08-05 | D7 ruled out Lua and named WASM as the path. That path was taken: `plugins = ["native", "dep:wasmi"]` in Cargo.toml, wasmi as a pure-safe-Rust interpreter, a sandbox test and a worked example. The stock build still gains no interpreter and no dependency, which is what made shipping it acceptable. |
