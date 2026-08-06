@@ -124,6 +124,12 @@ pub const MESSAGE_VERBATIM_FIELDS: &[&str] = &[
     "call_id",
     "cseq",
     "response_context",
+    // The frame pointer sipnab computed (`<source>#<ordinal>@<digest>`): the
+    // capture path an operator set, sipnab's own frame counter, and a digest of
+    // the bytes — nothing the packet's sender controls. It is the identifier an
+    // agent passes back to `--show-frame`/`show_evidence`, so it must survive
+    // verbatim, not be wrapped as untrusted text.
+    "frame",
 ];
 
 /// Fence the free-text fields of one per-message JSON object in place.

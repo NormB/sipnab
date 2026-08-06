@@ -78,6 +78,16 @@ struct MessageJson<'a> {
     /// content-length mismatch, control bytes, …). A well-formed message omits it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     malformed: Vec<String>,
+    /// Pointer to the frame this message was parsed from, as
+    /// `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to
+    /// retrieve the exact bytes, which either returns the frame or refuses
+    /// because the capture changed. The per-message analogue of
+    /// `DialogJson.frame` and the same value MCP surfaces as a finding's
+    /// `frame_ref`. Omitted, never null, when the message has no frame (a live
+    /// capture stamps none), so an absent key means unknown and a present one
+    /// is always a real pointer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame: Option<String>,
 }
 
 /// JSON representation of a parsed `CSeq` header.
@@ -441,6 +451,7 @@ fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
         cseq,
         response_context,
         malformed: msg.malformations(),
+        frame: msg.frame.as_ref().map(ToString::to_string),
     }
 }
 
@@ -920,6 +931,40 @@ mod tests {
                 "writer variant must be byte-identical"
             );
         }
+    }
+
+    /// The per-message half of packet provenance: a message carrying a
+    /// `FrameRef` surfaces it in `--json` as the resolvable
+    /// `<source>#<ordinal>@<digest>` string, and a message with none omits the
+    /// key entirely (absent, never null). `DialogJson` already carried the
+    /// dialog's opening frame; until this, `--json`'s message lines dropped the
+    /// pointer `SipMessage.frame` was holding, so a per-message answer could
+    /// not be traced to its bytes.
+    #[test]
+    fn message_json_surfaces_the_frame_pointer_when_present() {
+        use crate::capture::packet::{FrameOrigin, FrameRef};
+
+        let mut msg = make_invite();
+        assert!(
+            message_to_json_value(&msg).get("frame").is_none(),
+            "a message with no frame must omit the key, not emit null"
+        );
+
+        msg.frame = Some(FrameRef {
+            source: std::sync::Arc::from("capture.pcap"),
+            origin: FrameOrigin {
+                ordinal: 4212,
+                digest: Some(0x0123_4567_89ab_cdef),
+            },
+        });
+        assert_eq!(
+            message_to_json_value(&msg)
+                .get("frame")
+                .and_then(|f| f.as_str()),
+            Some("capture.pcap#4212@0123456789abcdef"),
+            "the frame pointer must be the resolvable <source>#<ordinal>@<digest> \
+             string that --show-frame accepts"
+        );
     }
 
     // Perf path (MCP get_dialog/get_message): the Value variant must equal

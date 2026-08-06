@@ -43,6 +43,11 @@
       }
     },
     "response_context": { "type": "string" },
-    "malformed": { "type": "array", "items": { "type": "string" } }
+    "malformed": { "type": "array", "items": { "type": "string" } },
+    "frame": {
+      "type": "string",
+      "description": "Pointer to the frame this message was parsed from, as `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to retrieve the bytes, which either returns the frame or refuses because the capture changed. The per-message analogue of the dialog `frame`. Optional, and absent rather than null when the message has no frame (live capture). Not in `required` for that reason: an absent key means unknown, and a present one is always a real pointer.",
+      "pattern": "^.+#[0-9]+(@[0-9a-f]{16})?$"
+    }
   }
 }

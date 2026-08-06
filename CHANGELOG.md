@@ -80,6 +80,15 @@ entry that carries them.
   records, so `--snaplen` never shortens it. The default stays 65535, so a run
   that does not set a snaplen never sees the warning.
 
+- **`--json` message lines now carry their frame pointer.** Each parsed message
+  already knew the frame it came from (`SipMessage.frame`), and the dialog JSON,
+  REST, and MCP surfaces already emitted it — but the per-message `--json` /
+  NDJSON output dropped it, so a message-level answer could not be traced back
+  to its bytes. Each message object now includes a `frame` field, the resolvable
+  `<source>#<ordinal>@<digest>` string that `sipnab --show-frame` accepts,
+  omitted (never null) when the message has no frame. Added to
+  `message.schema.json` as an optional property, matching the dialog schema.
+
 - **Every MCP tool call is audited.** One log line per call under the
   `mcp_audit` tracing target: tool name, JSON-RPC request id, caller, outcome
   (`ok`, `tool_error`, or `refused`), elapsed milliseconds, and the arguments
