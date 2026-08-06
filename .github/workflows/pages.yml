@@ -81,8 +81,9 @@ jobs:
 
   deploy:
     # Bounds a wedged job: an unbounded one holds its
-    # concurrency group indefinitely. Observed: 0.2 min, but it holds the non-superseding `pages` group.
-    timeout-minutes: 20
+    # concurrency group indefinitely. Raised to 35 min so the job outlives the
+    # deploy step's 30-min promotion timeout below rather than killing it first.
+    timeout-minutes: 35
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -92,6 +93,11 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+        with:
+          # GitHub Pages promotion has repeatedly stalled in `deployment_queued`
+          # past the action's 10-minute default (600000 ms), timing out a healthy
+          # build. Give the Pages backend up to 30 minutes to promote.
+          timeout: 1800000
   # The production CSP is a Cloudflare transform rule pinning inline-script
   # hashes (GitHub Pages cannot set response headers). A deploy that changes
   # an inline <script> without refreshing the rule ships pages whose scripts
