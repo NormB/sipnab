@@ -42,6 +42,11 @@ const EXEMPT: &[(&str, &str)] = &[
         "synthetic_corpus_test.rs",
         "builds the committed synthetic captures; runs unconditionally, gated on nothing",
     ),
+    (
+        "corpus_push_gate_test.rs",
+        "gates the pre-push corpus block by extracting and running it with a stub cargo; \
+         it never reads a corpus itself, so it has nothing to skip",
+    ),
 ];
 
 /// Read a file under `tests/`.

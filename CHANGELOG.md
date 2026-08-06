@@ -10,6 +10,29 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The pre-push corpus gate now has a gate of its own.** `.githooks/pre-push`
+  drives every corpus binary against the real captures and refuses the push
+  when one fails — and until now nothing checked that it still did. Deleting
+  the block, dropping its `exit 1`, or quietly swapping its derived target list
+  for a hand-written one all left a green tree, which is the same shape as the
+  defect the block exists to prevent, one layer up.
+
+  `tests/corpus_push_gate_test.rs` extracts the block VERBATIM between two
+  markers and runs it with a stub `cargo`, so it proves the shipped text rather
+  than a paraphrase that can drift from it: a failing corpus run must exit
+  non-zero, a clean one must exit zero and say `VALIDATED`, an absent corpus
+  must stay a skip that announces itself, and the bypass must be its own
+  variable and say on the record that nothing was validated. Mutation-tested
+  three ways — removing the `exit 1`, removing a marker, and replacing the
+  derivation with a hand-list — each caught by a different assertion.
+
+  Worth recording from the first mutation: with `exit 1` removed the gate still
+  printed "Push blocked: the real capture corpus did not validate" and exited
+  0. The message and the effect are separate things, and only one of them stops
+  a push.
+
 ### Changed
 
 - **BREAKING for dashboards: `active_call_count` now counts calls.** It used to

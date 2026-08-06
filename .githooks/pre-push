@@ -373,6 +373,14 @@ done
 # them, and it went stale within the hour -- a twelfth corpus binary landed in
 # tests/ while this gate was still being reviewed, and the hand-kept version
 # would have run eleven of twelve and printed VALIDATED.
+# >>> BEGIN corpus-gate
+# Everything between this marker and END corpus-gate is extracted VERBATIM and
+# executed by tests/corpus_push_gate_test.rs, which drives it with a stub
+# `cargo` to prove it blocks on a failing corpus and passes on a clean one.
+# Nothing else in this hook is covered that way, so the markers are not
+# decoration: move or delete them and that test fails rather than going quiet.
+# The block may rely on GREEN/RED/YELLOW/NC, `git`, `cargo` and a cwd at the
+# repo root, and on nothing else this hook defines above it.
 CORPUS_TESTS=$(grep -lE '\bSIPNAB_CORPUS\b' tests/*.rs 2>/dev/null \
 	| sed -e 's|^tests/||' -e 's|\.rs$||' | sort || true)
 
@@ -553,6 +561,7 @@ run)
 	fi
 	;;
 esac
+# <<< END corpus-gate
 
 # -- Hard gate: prose linters -------------------------------------------------
 # Vale and codespell are CI-blocking and BOTH broke main on 2026-08-03: 12
