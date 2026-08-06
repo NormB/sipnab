@@ -95,6 +95,21 @@ entry that carries them.
   0. The message and the effect are separate things, and only one of them stops
   a push.
 
+- **The website's JSON-LD block cannot be broken out of by a config value.**
+  `base.html` renders four `website/config.toml` values inside a
+  `<script type="application/ld+json">` element through Tera's `json_encode`,
+  which does not escape the forward slash — a value containing `</script>`
+  would close the element early and hand the rest of the page to the HTML
+  parser as markup. The values are static today, so nothing is exploitable;
+  the point is that the safety was assumed, not enforced. A new gate sweeps
+  every string in the parsed config — with a real TOML parser, because the
+  property is about the parsed value and a line-regex form was shown to pass a
+  `</script>` payload written as a single-quoted or triple-quoted string that
+  the parser sees identically. The four keys the block actually interpolates
+  are held to the stricter rule that they carry no angle bracket at all, and
+  the sweep is anti-vacuity-guarded (it fails if it reads no strings) and
+  mutation-tested against the payload in all four TOML quoting forms.
+
 ### Changed
 
 - **BREAKING for dashboards: `active_call_count` now counts calls.** It used to
