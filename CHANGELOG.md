@@ -102,6 +102,14 @@ entry that carries them.
   a real fixture through the parallel path and requiring every dialog to carry a
   digest-verified pointer into it.
 
+- **The text `--report` shows the call's opening frame.** The per-call text
+  report — the default `--report` format — now carries a `Frame:` line with the
+  dialog's opening pointer, `<source>#<ordinal>@<digest>`, so a human reading a
+  problem-call report can jump straight to the bytes with `sipnab --show-frame`,
+  the same pointer the JSON, REST and MCP surfaces already provide. Omitted, not
+  blank, when the dialog has no frame. The markdown and JSON report formats do
+  not carry it yet — a deliberate, recorded follow-on, not a silent gap.
+
 - **Every MCP tool call is audited.** One log line per call under the
   `mcp_audit` tracing target: tool name, JSON-RPC request id, caller, outcome
   (`ok`, `tool_error`, or `refused`), elapsed milliseconds, and the arguments

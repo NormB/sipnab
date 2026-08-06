@@ -6,6 +6,7 @@ Time:       2023-11-14 22:13:20 -> 22:14:20 (60s)
 From:       <sip:1001@...>
 To:         <sip:1002@...>
 Result:     Completed (BYE)
+Frame:      tests/fixtures/sip_call.pcap#0@bdb6cdb98013efe4
 
 Timing:
   PDD:        0.50s

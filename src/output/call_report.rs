@@ -284,6 +284,14 @@ fn generate_text_report(
     if !dialog.tags.is_empty() {
         let _ = writeln!(out, "Tags:       {}", dialog.tags.join(", "));
     }
+    if let Some(frame) = dialog.first_frame.as_ref() {
+        // Where this call opened in the capture, as `<source>#<ordinal>@<digest>`.
+        // The same pointer the JSON, REST and MCP surfaces carry: copy it to
+        // `sipnab --show-frame` to pull the exact bytes, so the human report
+        // can be traced to the wire like every machine-read answer. Omitted,
+        // not blank, when the dialog has no frame (a live capture stamps none).
+        let _ = writeln!(out, "Frame:      {frame}");
+    }
 
     // Timing section
     let _ = writeln!(out);
@@ -741,6 +749,40 @@ mod tests {
         );
         assert!(report.contains("PDD:"), "should have PDD");
         assert!(report.contains("Setup:"), "should have setup time");
+    }
+
+    /// The text report carries the dialog's opening frame pointer, so a human
+    /// reading it can jump to the bytes with `--show-frame` — the same pointer
+    /// the JSON, REST and MCP surfaces already provide. Absent (no line, not a
+    /// blank one) when the dialog has no frame, the last surface where packet
+    /// provenance was missing.
+    #[test]
+    fn the_text_report_carries_the_frame_pointer_only_when_present() {
+        use crate::capture::packet::{FrameOrigin, FrameRef};
+        let streams: Vec<&RtpStream> = vec![];
+        let diagnosis = MediaDiagnosis::default();
+
+        let mut dialog = make_dialog_with_messages();
+        dialog.first_frame = None;
+        let without = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Text);
+        assert!(
+            !without.contains("Frame:"),
+            "a dialog with no frame must emit no Frame line:\n{without}"
+        );
+
+        dialog.first_frame = Some(FrameRef {
+            source: std::sync::Arc::from("capture.pcap"),
+            origin: FrameOrigin {
+                ordinal: 4212,
+                digest: Some(0x0123_4567_89ab_cdef),
+            },
+        });
+        let with = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Text);
+        assert!(
+            with.contains("Frame:      capture.pcap#4212@0123456789abcdef"),
+            "the report must carry the resolvable <source>#<ordinal>@<digest> \
+             pointer that --show-frame accepts:\n{with}"
+        );
     }
 
     /// The JSON report parses as JSON with `schema_version` 1 and a
