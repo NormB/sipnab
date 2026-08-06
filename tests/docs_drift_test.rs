@@ -2137,10 +2137,12 @@ fn no_documentation_table_repeats_a_row() {
     // tracked design docs already link to and so cannot stay untracked, and
     // 124 -> 125 by `website/content/docs/tuning-capture.md`, the site mirror
     // of the new tuning page.
+    // 125 -> 127 by `CLA.md` (the Contributor License Agreement, also the gist
+    // source) and `website/content/cla.md` (the sipnab.com/cla/ page).
     assert_eq!(
         files.len(),
-        125,
-        "found {} tracked markdown files, expected 125. More is fine — bump \
+        127,
+        "found {} tracked markdown files, expected 127. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()

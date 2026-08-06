@@ -18,6 +18,18 @@ and lock discipline live in
 By participating in this project you agree to abide by the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Contributor License Agreement
+
+Before your first pull request can be merged, you must sign the sipnab
+[Contributor License Agreement](CLA.md) (also readable at
+<https://sipnab.com/cla/>). It is a one-time step covering all of your
+contributions; you keep full ownership of your work.
+
+Signing is automated by [CLA Assistant](https://cla-assistant.io/): open your
+pull request as normal, and if you have not signed, a bot comments with a link
+to sign in the browser with your GitHub account. The `license/cla` check must be
+green before a maintainer can merge.
+
 ## Prerequisites
 
 - Rust 1.97+ (edition 2024)
