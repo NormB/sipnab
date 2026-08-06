@@ -91,6 +91,26 @@ mod http {
         verifier: Arc<TokenVerifier>,
     }
 
+    /// How the auth layer admitted this request — stamped into the request's
+    /// extensions so the audit line in `call_tool` can attribute the call.
+    ///
+    /// The rmcp HTTP service folds the request's `http::request::Parts` into
+    /// the per-request MCP `Extensions`, which is the only channel from this
+    /// middleware to the tool dispatch layer. Without this stamp the audit
+    /// log could name the socket but not whether a credential was presented —
+    /// and "came from 10.0.0.9" and "proved it holds the token" are different
+    /// claims. The distinction is recorded HERE because after this middleware
+    /// returns, nothing downstream can re-derive it: the Authorization header
+    /// is gone by design (never forwarded into tool code).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum McpAuth {
+        /// A bearer token was presented and verified.
+        BearerVerified,
+        /// No verifier is configured (loopback-only mode): the request was
+        /// admitted without credentials.
+        Unauthenticated,
+    }
+
     /// Bearer-token guard. On loopback with no auth configured the request
     /// passes; otherwise the `Authorization: Bearer` header is required and
     /// verified (signed token or static secret, constant-time).
@@ -109,10 +129,12 @@ mod http {
     async fn auth_layer(
         axum::extract::State(state): axum::extract::State<McpHttpState>,
         headers: HeaderMap,
-        request: axum::extract::Request,
+        mut request: axum::extract::Request,
         next: Next,
     ) -> Result<Response, StatusCode> {
-        if !state.verifier.is_unconfigured() {
+        let auth = if state.verifier.is_unconfigured() {
+            McpAuth::Unauthenticated
+        } else {
             let provided = headers
                 .get(axum::http::header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
@@ -125,7 +147,12 @@ mod http {
             ) {
                 return Err(StatusCode::UNAUTHORIZED);
             }
-        }
+            McpAuth::BearerVerified
+        };
+        // Stamped AFTER the reject paths: a request that reaches the tools
+        // always carries exactly one admission record, and a rejected one
+        // never does.
+        request.extensions_mut().insert(auth);
         Ok(next.run(request).await)
     }
 
@@ -241,3 +268,5 @@ mod http {
 
 #[cfg(feature = "mcp-http")]
 pub use http::serve_http;
+#[cfg(feature = "mcp-http")]
+pub(crate) use http::McpAuth;

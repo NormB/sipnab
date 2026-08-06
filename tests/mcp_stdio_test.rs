@@ -779,3 +779,159 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     }
     let _ = child.wait();
 }
+
+/// Every tool call leaves an audit line on stderr — success and refusal alike.
+///
+/// The `#[tool_handler]` macro used to generate the dispatch, so there was no
+/// hand-written point a call passed through and nothing recorded who called
+/// what. The manual `call_tool` wrapper is that point now, and this test pins
+/// its EFFECT end to end: the line a real operator would grep out of a real
+/// server's stderr, not the presence of a `tracing::info!` in the source.
+///
+/// Three properties:
+/// 1. A successful call is audited with its tool name, outcome `ok`, and the
+///    stdio caller identity.
+/// 2. A REFUSED call (unknown tool) is audited too — probing for tools that
+///    do not exist is exactly the traffic an audit log exists to show, and an
+///    implementation that only logged successes would hide it.
+/// 3. One line per call, not two — double-logging would make every count an
+///    operator derives from this log wrong.
+#[test]
+fn every_tool_call_leaves_an_audit_line_on_stderr() {
+    let binary = env!("CARGO_BIN_EXE_sipnab");
+    let pcap = fixture("sip_call.pcap");
+    let pcap_str = pcap.to_string_lossy().to_string();
+
+    let mut child = Command::new(binary)
+        .args([
+            "-N",
+            "-I",
+            &pcap_str,
+            "--mcp",
+            "--mcp-transport",
+            "stdio",
+            "--quiet",
+        ])
+        // The audit line is emitted at info under the `mcp_audit` target;
+        // SIPNAB_LOG=info is how an operator would switch it on past --quiet.
+        .env("SIPNAB_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sipnab --mcp");
+
+    let mut stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(&mut stdout);
+
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "sipnab-test", "version": "0"}
+            }
+        }),
+    );
+    read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize response");
+    send(
+        &mut child,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    );
+
+    // One call that succeeds…
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "stats", "arguments": {}}
+        }),
+    );
+    let ok_resp = read_response_with_id(&mut reader, 2, test_timeout(5)).expect("stats response");
+    assert!(
+        ok_resp["result"].is_object(),
+        "stats must succeed: {ok_resp}"
+    );
+
+    // …and one the router refuses.
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "no_such_tool", "arguments": {}}
+        }),
+    );
+    let err_resp =
+        read_response_with_id(&mut reader, 3, test_timeout(5)).expect("refusal response");
+    assert!(
+        err_resp["error"].is_object(),
+        "an unknown tool must be refused on the wire too: {err_resp}"
+    );
+
+    // Tear down, then read the WHOLE stderr: the audit trail as an operator
+    // would find it after the fact.
+    drop(reader);
+    drop(stdout);
+    if let Some(stdin) = child.stdin.take() {
+        drop(stdin);
+    }
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    let mut stderr_text = String::new();
+    {
+        use std::io::Read;
+        let mut stderr = child.stderr.take().expect("stderr");
+        stderr
+            .read_to_string(&mut stderr_text)
+            .expect("read child stderr");
+    }
+    let _ = child.wait();
+
+    let audit_lines: Vec<&str> = stderr_text
+        .lines()
+        .filter(|l| l.contains("mcp_audit"))
+        .collect();
+
+    let stats_lines: Vec<&&str> = audit_lines
+        .iter()
+        .filter(|l| l.contains("tool=stats "))
+        .collect();
+    assert_eq!(
+        stats_lines.len(),
+        1,
+        "exactly one audit line for the one stats call; stderr was:\n{stderr_text}"
+    );
+    let stats_line = stats_lines[0];
+    assert!(
+        stats_line.contains("outcome=ok"),
+        "the successful call must be audited as ok: {stats_line}"
+    );
+    assert!(
+        stats_line.contains("caller=\"stdio\""),
+        "a stdio call must be attributed to the stdio boundary: {stats_line}"
+    );
+    assert!(
+        stats_line.contains("id=2"),
+        "the audit line must carry the JSON-RPC request id: {stats_line}"
+    );
+
+    let refused_lines: Vec<&&str> = audit_lines
+        .iter()
+        .filter(|l| l.contains("tool=no_such_tool "))
+        .collect();
+    assert_eq!(
+        refused_lines.len(),
+        1,
+        "the refused call must be audited exactly once — probing for tools that \
+         do not exist is what an audit log is FOR; stderr was:\n{stderr_text}"
+    );
+    assert!(
+        refused_lines[0].contains("outcome=refused"),
+        "a refusal must be distinguishable from a success in the record: {}",
+        refused_lines[0]
+    );
+}

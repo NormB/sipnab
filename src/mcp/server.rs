@@ -4709,8 +4709,126 @@ impl SipnabMcp {
     }
 }
 
+/// Attribute a tool call to its transport identity, for the audit line.
+///
+/// Over HTTP the rmcp service folds the request's `http::request::Parts` into
+/// the per-call extensions; the socket address rides in there via axum's
+/// `ConnectInfo`, and the auth middleware stamps how the request was admitted
+/// ([`super::transport::McpAuth`]). Over stdio there are no parts — the caller
+/// is whoever owns the other end of the pipe, and "stdio" names that boundary
+/// honestly rather than inventing an identity the transport cannot prove.
+///
+/// The `no-admission-record` arm should be unreachable — the auth layer stamps
+/// every request it admits — but if a future transport skips the middleware,
+/// an audit line that SAYS the record is missing beats one that quietly
+/// reports the call as local.
+#[cfg(feature = "mcp-http")]
+fn caller_of(extensions: &rmcp::model::Extensions) -> String {
+    use crate::mcp::transport::McpAuth;
+    match extensions.get::<axum::http::request::Parts>() {
+        Some(parts) => {
+            let addr = parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|ci| ci.0.to_string())
+                .unwrap_or_else(|| "unknown-peer".to_string());
+            match parts.extensions.get::<McpAuth>() {
+                Some(McpAuth::BearerVerified) => format!("{addr} bearer-verified"),
+                Some(McpAuth::Unauthenticated) => format!("{addr} unauthenticated"),
+                None => format!("{addr} no-admission-record"),
+            }
+        }
+        None => "stdio".to_string(),
+    }
+}
+
+/// Without the HTTP transport compiled in, stdio is the only way a call can
+/// arrive.
+#[cfg(not(feature = "mcp-http"))]
+fn caller_of(_extensions: &rmcp::model::Extensions) -> String {
+    "stdio".to_string()
+}
+
+/// Render the tool arguments for the audit line, bounded.
+///
+/// The arguments are the caller's own input, and recording them is the point
+/// of an audit log — "read dialog X" and "read something" answer different
+/// questions later. Bounded because a filter expression can be arbitrarily
+/// long and the audit line must stay one line; the cap names how much was
+/// withheld so a truncated record reads as truncated, not complete.
+fn audit_args(arguments: Option<&rmcp::model::JsonObject>) -> String {
+    const CAP: usize = 300;
+    let Some(args) = arguments else {
+        return "{}".to_string();
+    };
+    let rendered = serde_json::to_string(args).unwrap_or_else(|_| "<unserializable>".to_string());
+    if rendered.len() <= CAP {
+        return rendered;
+    }
+    let cut = rendered
+        .char_indices()
+        .take_while(|(i, _)| *i <= CAP)
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    format!(
+        "{}… ({} byte(s) withheld)",
+        &rendered[..cut],
+        rendered.len() - cut
+    )
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SipnabMcp {
+    /// Dispatch a tool call through the generated router, leaving an audit
+    /// line either way.
+    ///
+    /// This is the ONE hand-written point every tool call passes through: the
+    /// `#[tool_handler]` macro generates dispatch only when the impl block
+    /// does not already carry a `call_tool`, so writing one here wraps all 28
+    /// tools without touching any of them, and a 29th tool is covered the day
+    /// it is registered. Before this method existed there was no such point,
+    /// which is why tool calls went unaudited (and why per-tool authorization
+    /// had nowhere to live — this is also that future check's home).
+    ///
+    /// One line per call, emitted AFTER dispatch so it can carry the outcome:
+    /// who (transport identity), what (tool + bounded arguments), the JSON-RPC
+    /// request id, how it ended, and how long it took. Refusals are audited
+    /// too — an unknown tool name or bad arguments is exactly the probing an
+    /// audit log exists to show.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let tool = request.name.clone();
+        let request_id = context.id.clone();
+        let caller = caller_of(&context.extensions);
+        let args = audit_args(request.arguments.as_ref());
+        let started = std::time::Instant::now();
+
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let result = self.tool_router.call(tcc).await;
+
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let outcome = match &result {
+            Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error == Some(true) => {
+                "tool_error"
+            }
+            Ok(_) => "ok",
+            Err(_) => "refused",
+        };
+        let error = match &result {
+            Err(e) => format!(" error={}", e.message),
+            Ok(_) => String::new(),
+        };
+        tracing::info!(
+            target: "mcp_audit",
+            "tool={tool} id={request_id} caller=\"{caller}\" outcome={outcome} \
+             elapsed_ms={elapsed_ms} args={args}{error}"
+        );
+        result
+    }
     /// Advertise server capabilities (tools only) and the human-readable
     /// instructions string shown to MCP clients.
     fn get_info(&self) -> ServerInfo {
