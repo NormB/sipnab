@@ -352,7 +352,7 @@ ordinary update.
 | `search_by_time` | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
 | `list_captures` | -- | Capture files in `--mcp-file-root`, with sizes |
 | `export_capture` | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
-| `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root` |
+| `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | `shutdown_server` | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | `open_capture` | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | `save_findings` | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
@@ -1435,6 +1435,12 @@ the process.
 Writes one call's RTP audio to a WAV in the configured root. Fails when the
 call carries no audio it can decode, rather than writing an empty file.
 
+Requires the server to have been started with `--retain-audio`: call audio is
+content, not signalling, so holding it in memory is an operator decision
+rather than a side effect of enabling MCP. Without the flag the tool refuses,
+and its refusal reports the media it measured and names the flag — a capture
+setting, not a finding that the call was silent.
+
 ```jsonc
 // export_audio { "call_id": "1-1966@10.0.2.20", "filename": "call.wav" }
 { "path": "/var/spool/sipnab-exports/call.wav", "summary": "..." }
@@ -1970,6 +1976,20 @@ past 1000 does nothing: the cap clamps it. Page instead.
 - **Privilege drop respected.** The MCP listener binds *after*
   `privilege::drop_privileges` so sipnab runs as the unprivileged
   `sipnab` user. Default port (8731) is ≥ 1024 to permit this.
+- **Every tool call is audited.** One log line per call under the
+  `mcp_audit` target: the tool name, the JSON-RPC request id, the caller,
+  the outcome (`ok`, `tool_error`, or `refused`), the elapsed time, and the
+  arguments bounded to one line. Refused calls are audited too — an agent
+  probing for tools that do not exist is exactly the traffic the record
+  exists to show. The caller field names what the transport can prove:
+  `stdio` for the local pipe, and for HTTP the peer socket plus whether the
+  request was `bearer-verified` or admitted `unauthenticated` in
+  loopback-only mode. Audit lines ride the normal log at `info`, so
+  `--quiet` suppresses them unless you re-enable them explicitly:
+
+  ```bash
+  SIPNAB_LOG=mcp_audit=info sipnab -N --mcp --quiet -I capture.pcap
+  ```
 
 ## What the write verbs do
 

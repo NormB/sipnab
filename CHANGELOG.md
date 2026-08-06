@@ -10,7 +10,53 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING for MCP deployments that export audio: retention is now an
+  explicit opt-in.** Every `--mcp` run used to hold decoded call audio in
+  memory so `export_audio` could succeed — whether or not anything would ever
+  call it. Call audio is content, not signalling; holding it should be a
+  decision the operator makes, not a side effect of enabling an MCP server.
+  A new `--retain-audio` flag is that decision. It requires `--mcp` at parse
+  time, because the MCP server is the only batch-mode consumer that can read
+  the buffers back — the wasteful combination is unrepresentable rather than
+  silently ignored.
+
+  A deployment that calls `export_audio` must add `--retain-audio` to its
+  server invocation. Without it the tool refuses, and the refusal reports the
+  media sipnab measured and names the flag — a capture setting, not a finding
+  that the call was silent. All four predicate combinations are pinned in
+  tests, because this predicate has now been wrong in both directions:
+  hardcoded off (export_audio could never succeed) and then armed for every
+  MCP run (this entry). The TUI's F2 WAV export is unaffected — it keeps its
+  own retention decision.
+
 ### Added
+
+- **Every MCP tool call is audited.** One log line per call under the
+  `mcp_audit` tracing target: tool name, JSON-RPC request id, caller, outcome
+  (`ok`, `tool_error`, or `refused`), elapsed milliseconds, and the arguments
+  bounded to one line with the withheld byte count named. Refused calls are
+  audited too — an agent probing for tools that do not exist is exactly the
+  traffic an audit record exists to show, and an implementation that logged
+  only successes would hide it.
+
+  The caller field states what the transport can prove and no more: `stdio`
+  for the local pipe, and for HTTP the peer socket address plus whether the
+  request was `bearer-verified` or admitted `unauthenticated` in loopback-only
+  mode. The admission verdict is stamped by the auth middleware at the moment
+  it decides, because nothing downstream can re-derive it — the Authorization
+  header is never forwarded into tool code.
+
+  Structurally, this adds the one hand-written dispatch point the MCP surface
+  did not have: `#[tool_handler]` generates `call_tool` only when the impl
+  block lacks one, so a manual wrapper covers all 31 tools without touching
+  any of them, and a 32nd is covered the day it is registered. Per-tool
+  authorization (the SCOPE_FULL ticket) now has a place to live. Gated end to
+  end over real stdio — the audit line greped out of the child's stderr, not
+  the `tracing::info!` in the source — and mutation-tested both ways: deleting
+  the wrapper regenerates silent dispatch and fails the gate, and auditing
+  only successes fails the refused-call half.
 
 - **The pre-push corpus gate now has a gate of its own.** `.githooks/pre-push`
   drives every corpus binary against the real captures and refuses the push
