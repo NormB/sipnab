@@ -445,9 +445,14 @@ fn wiki_intra_docs_links_resolve() {
     //
     // Taken from a clean run after merging two branches that each bumped this
     // independently — neither side's total described the merged tree.
+    // Raised 284 -> 297 by the Installation-page UX rewrite: docs/install.md
+    // gained a ten-row "I want to" goal index, which the project's own
+    // task-first rule requires of every how-to page, plus an Uninstall section
+    // and two pointers from the installer straight to "Check it worked". Every
+    // one of those is an intra-page link the extractor counts.
     assert_eq!(
-        seen, 284,
-        "extractor found {seen} wiki links, expected 284. More is fine — bump \
+        seen, 297,
+        "extractor found {seen} wiki links, expected 297. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

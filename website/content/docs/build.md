@@ -169,7 +169,7 @@ A CI job checks both paths on `rust:1.97-alpine`: the full test suite passes on 
 
 ### Cross-glibc compatibility
 
-The release `-gnu` builds require **glibc >= 2.36** (the floor the release workflow enforces on every gnu binary). On older hosts they refuse to start with `version 'GLIBC_2.36' not found`. The [installer script](@/docs/install.md#installer-recommended) handles this automatically — below the 2.36 floor it falls back to the static musl build.
+The release `-gnu` builds require **glibc >= 2.36** (the floor the release workflow enforces on every gnu binary). On older hosts they refuse to start with `version 'GLIBC_2.36' not found`. The [installer script](@/docs/install.md#install-in-one-command) handles this automatically — below the 2.36 floor it falls back to the static musl build.
 
 The same applies to your own builds: if you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and deploy to an older one (Debian 12 / glibc 2.36), build inside a container matching the target's glibc -- for example, `rust:1-bookworm` for Debian 12 deploys, or use musl (the static `--target x86_64-unknown-linux-musl` builds the release CI publishes).
 

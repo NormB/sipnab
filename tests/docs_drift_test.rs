@@ -2250,9 +2250,13 @@ fn no_documentation_table_repeats_a_row() {
     // first two on main, the third on the stale-documentation sweep. Neither
     // side's total was right for the merged tree, so this number was taken
     // from a clean run rather than added up.
+    // Raised 477 -> 479 by the "I want to" goal index added to the top of
+    // docs/install.md, which the project's own task-first rule requires of
+    // every how-to page. That page HAS a site mirror, so one authored table
+    // counts twice.
     assert_eq!(
-        tables, 477,
-        "walked {tables} tables, expected 477. More is fine — bump this. FEWER \
+        tables, 479,
+        "walked {tables} tables, expected 479. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
