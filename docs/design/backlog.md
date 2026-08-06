@@ -899,6 +899,20 @@ output path.
     that was always the point: start with the design doc and the identity/hash
     binding, then thread the refs, and gate every new tool below on emitting
     refs so the retrofit never grows.
+  - **In progress — the resolver end exists; the threading does not (status
+    2026-08-06, verified against the tree).** Shipped: `FrameRef`
+    (`src/capture/packet.rs:94`) and `capture::resolve::resolve`
+    (`src/capture/resolve.rs:171`); the `show_evidence` MCP tool
+    (`src/mcp/server.rs:3839`), confined to the file root and honest about
+    itself with three states — `verified` / `unverified` / `unresolvable` —
+    rather than resolving a foreign ref against the wrong file; and
+    `findings_with_refs`, which attaches `frame_ref` to `lint_dialog`
+    findings and OMITS the key when no pointer exists, because `""` and
+    frame 0 both read as real pointers. Capture identity binding
+    (`src/provenance.rs`) rides every stats/status response. NOT done: the
+    ref threading through dialogs, streams, and the remaining query tools —
+    lint findings are the only facts that cite their bytes today — and the
+    byte-range/field granularity. Tracked as task #128, still PRIORITY 1.
 
 - [ ] **PA2 — Aggregation: `group_dialogs` and `timeline`.** Ranked second
   because it removes the single largest source of confidently-wrong answers
@@ -1165,19 +1179,17 @@ production traffic.
   parse, gives clients validation, and lets a host render `rtp_stats` as a
   table. Cheapest protocol win on the list and the natural carrier for PA1's
   `_ref` fields.
-- [ ] **PB2 — Tool annotations.** `readOnlyHint`, `destructiveHint`,
-  `idempotentHint`, `openWorldHint`. **Corrected 2026-08-05:** this used to read
-  *"Verified absent"*, and that is no longer true — `capture_health` carries
-  `annotations(read_only_hint = true)` (`src/mcp/server.rs:4273`, asserted in
-  the same file's tests). It is the only annotated tool on the surface, so the
-  substance of the item is untouched: the guarantee still lives in prose in
-  `docs/mcp.md` and in the invariants doc for every other tool, where no host
-  can enforce it. **Do:** annotate the whole surface, not one tool.
-  `shutdown_server` and `open_capture` are the destructive pair, `save_findings`
-  is the one write, and everything else is read-only. Some clients auto-approve
-  on these hints, which is exactly why the honest ones must be set — and why a
-  surface where one tool is annotated and the rest are not is worse than one
-  where none is, because absence stops meaning anything.
+- [x] **PB2 — Tool annotations.** `readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`. **Done — verified against the tree
+  2026-08-06:** every registered tool carries an `annotations(...)` block (32
+  of 32 `#[tool(` sites in `src/mcp/server.rs`; 27 `read_only_hint = true`,
+  `shutdown_server` and `open_capture` the destructive pair), and
+  `docs/mcp.md` § "What the write verbs do" names the non-read-only set. The
+  2026-08-05 correction on this entry ("only `capture_health` is annotated")
+  described the tree between the first annotation and the full P8 sweep.
+  Follow-on value now lives elsewhere: #141 derives per-tool authorization
+  from these same annotations, so the hint a client sees and the scope a
+  token needs cannot drift apart.
 - [ ] **PB3 — Completions (`completion/complete`).** For `call_id`, filter
   aliases, `security_findings.kinds` and the format enums. Cheaper than a
   failed call plus a retry, and it removes the same guess-and-retry loop PA3's
@@ -1243,9 +1255,26 @@ implementation.
   verified that `src/mcp/` has no equivalent. `--mcp-token-scope
   readonly|export|admin`, putting `export_*`, `shutdown_server` and
   `open_capture` behind a different credential than read.
+  **Unblocked 2026-08-06:** the two structural prerequisites now exist — a
+  hand-written `call_tool` every call passes through (the enforcement point;
+  per-tool checks had nowhere to live while dispatch was macro-generated),
+  and the HTTP auth middleware stamping its admission verdict into the
+  request extensions (the channel a verified scope will ride). The scope
+  vocabulary derives from PB2's annotations rather than a second hand-kept
+  list. Full plan and gate requirements: task #141.
 - [ ] **PB10 — Tool-call audit log.** Append-only: tool, arguments, caller
   token id, timestamp. Needed the first time somebody asks what an agent looked
   at in a capture under legal hold.
+  **Mostly shipped 2026-08-06** — one line per call under the `mcp_audit`
+  tracing target: tool, JSON-RPC request id, caller (stdio, or peer socket +
+  admission verdict on HTTP), outcome including refusals, elapsed_ms, and the
+  arguments bounded with the withheld byte count named. Gated end to end over
+  real stdio and mutation-tested. TWO things keep this open, both tracked in
+  task #150: the caller field cannot name WHICH token yet (tokens carry no
+  subject and `verify` discards the claims it validated — lands with PB9's
+  plumbing), and the record rides the normal log rather than an append-only
+  sink, so `--quiet` without `SIPNAB_LOG=mcp_audit=info` suppresses it — a
+  legal-hold answer needs the sink decision, which is the operator's call.
 - [ ] **PB11 — Rate limiting and concurrency caps for MCP.** Verified absent.
   HEP has per-peer limits and REST has `--api-max-conn`; MCP HTTP has neither,
   so a looping agent can pin a capture host.
@@ -1253,6 +1282,9 @@ implementation.
   `sipnab_mcp_tool_calls_total{tool,outcome}`, a latency histogram, and
   response bytes per tool. Without it nobody knows which of the registered tools
   agents actually use, which is also how the tool surface gets pruned later.
+  **Cheap now (2026-08-06):** the hand-written `call_tool` wrapper already
+  computes tool, outcome, and elapsed_ms per call for the audit line — the
+  counter and histogram are increments beside it, one site for all tools.
 
 ### PB-D — cost and correctness
 

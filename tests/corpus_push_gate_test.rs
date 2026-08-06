@@ -45,12 +45,12 @@ fn extract_gate() -> String {
     let hook = std::fs::read_to_string(repo_root().join(HOOK))
         .unwrap_or_else(|e| panic!("read {HOOK}: {e}"));
 
-    let start = hook
-        .find(BEGIN)
-        .unwrap_or_else(|| panic!("{HOOK} no longer carries {BEGIN:?} — the corpus gate has been moved or deleted"));
-    let end = hook
-        .find(END)
-        .unwrap_or_else(|| panic!("{HOOK} no longer carries {END:?} — the corpus gate has been moved or deleted"));
+    let start = hook.find(BEGIN).unwrap_or_else(|| {
+        panic!("{HOOK} no longer carries {BEGIN:?} — the corpus gate has been moved or deleted")
+    });
+    let end = hook.find(END).unwrap_or_else(|| {
+        panic!("{HOOK} no longer carries {END:?} — the corpus gate has been moved or deleted")
+    });
     assert!(
         end > start,
         "{HOOK} has the corpus-gate markers in the wrong order"
@@ -84,7 +84,10 @@ fn stub_cargo(dir: &Path, code: i32, stdout: &str) {
     let bin = dir.join("cargo");
     std::fs::write(
         &bin,
-        format!("#!/bin/sh\nprintf '%s\\n' {}\nexit {code}\n", shell_quote(stdout)),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' {}\nexit {code}\n",
+            shell_quote(stdout)
+        ),
     )
     .expect("write cargo stub");
     #[cfg(unix)]
@@ -277,7 +280,11 @@ fn the_bypass_is_loud_and_separate_from_the_blanket_skip() {
         .expect("run corpus gate");
 
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert_eq!(out.status.code(), Some(0), "a bypass must not block: {text}");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bypass must not block: {text}"
+    );
     assert!(
         text.contains("BYPASSED") && text.contains("NOT validated"),
         "a bypassed corpus must say so on the record, or the push it let through \

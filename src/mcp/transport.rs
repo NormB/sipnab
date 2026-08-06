@@ -267,6 +267,6 @@ mod http {
 }
 
 #[cfg(feature = "mcp-http")]
-pub use http::serve_http;
-#[cfg(feature = "mcp-http")]
 pub(crate) use http::McpAuth;
+#[cfg(feature = "mcp-http")]
+pub use http::serve_http;
