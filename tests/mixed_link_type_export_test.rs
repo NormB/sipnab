@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 /// A fresh temp directory for one test.
 fn tmp_dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sipnab-mixed-link-{name}"));
+    let d = std::env::temp_dir().join(format!("sipnab-mixed-link-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("create temp dir");
     d

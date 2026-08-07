@@ -269,7 +269,8 @@ mod tests {
 
     /// A temp directory holding two capture-shaped files.
     fn fixture(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("sipnab-output-guard-{name}"));
+        let d =
+            std::env::temp_dir().join(format!("sipnab-output-guard-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("create temp dir");
         std::fs::write(d.join("a.pcap"), b"not really a pcap").expect("write a");

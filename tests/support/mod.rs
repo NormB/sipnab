@@ -58,7 +58,7 @@ pub fn deterministic_env(cmd: &mut Command) -> &mut Command {
 /// that always are — `parse_path_test` only SIGKILLs on a timeout, so its
 /// corrupt profile appears just on the slow runs that are hardest to reproduce.
 pub fn discard_coverage_profile(cmd: &mut Command) -> &mut Command {
-    let dir = std::env::temp_dir().join("sipnab-discarded-cov");
+    let dir = std::env::temp_dir().join(format!("sipnab-discarded-cov-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     // %p so concurrent children cannot collide with each other either.
     cmd.env("LLVM_PROFILE_FILE", dir.join("discarded-%p.profraw"))

@@ -82,7 +82,10 @@ fn scanner_capture(dir: &std::path::Path, port: u16) -> std::path::PathBuf {
 
 /// A fresh temp directory for one test's capture.
 fn tmp_dir(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("sipnab-offline-transmit-{name}"));
+    let d = std::env::temp_dir().join(format!(
+        "sipnab-offline-transmit-{name}-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("create temp dir");
     d

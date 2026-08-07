@@ -906,7 +906,8 @@ mod tests {
 
     impl Tree {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("sipnab-lintdisc-{name}"));
+            let dir =
+                std::env::temp_dir().join(format!("sipnab-lintdisc-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch dir");
             Self(dir)

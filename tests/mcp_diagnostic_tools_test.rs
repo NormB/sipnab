@@ -360,7 +360,7 @@ mod support;
 use support::{McpSession, call_tool_with_args, ok_payload};
 
 fn tmp_root(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("sipnab-mcp-{name}"));
+    let d = std::env::temp_dir().join(format!("sipnab-mcp-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("create temp root");
     d

@@ -5225,7 +5225,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlink_out_of_the_file_root_is_refused() {
-        let base = std::env::temp_dir().join("sipnab-mcp-root-symlink");
+        let base =
+            std::env::temp_dir().join(format!("sipnab-mcp-root-symlink-{}", std::process::id()));
         let root = base.join("root");
         let outside = base.join("outside");
         let _ = std::fs::remove_dir_all(&base);
@@ -5392,7 +5393,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn show_evidence_refuses_a_pointer_that_escapes_the_file_root() {
-        let base = std::env::temp_dir().join("sipnab-show-evidence-escape");
+        let base = std::env::temp_dir().join(format!(
+            "sipnab-show-evidence-escape-{}",
+            std::process::id()
+        ));
         let root = base.join("root");
         let outside = base.join("outside");
         let _ = std::fs::remove_dir_all(&base);
@@ -5465,7 +5469,8 @@ mod tests {
     /// the defect `export_capture` had; this reports the limit instead.
     #[tokio::test]
     async fn show_evidence_says_a_live_pointer_has_no_frames_to_follow() {
-        let root = std::env::temp_dir().join("sipnab-show-evidence-live");
+        let root =
+            std::env::temp_dir().join(format!("sipnab-show-evidence-live-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
 
@@ -5508,7 +5513,8 @@ mod tests {
     /// summary counts what actually resolved.
     #[tokio::test]
     async fn show_evidence_reports_each_pointer_independently() {
-        let root = std::env::temp_dir().join("sipnab-show-evidence-mixed");
+        let root =
+            std::env::temp_dir().join(format!("sipnab-show-evidence-mixed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
 
@@ -5557,7 +5563,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_plain_name_inside_the_file_root_still_resolves() {
-        let root = std::env::temp_dir().join("sipnab-mcp-root-plain");
+        let root =
+            std::env::temp_dir().join(format!("sipnab-mcp-root-plain-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
 
@@ -6802,7 +6809,8 @@ mod tests {
     /// A temp directory that is a valid `--mcp-file-root`, holding a copy of
     /// the G.711 fixture under `name`.
     fn root_with_capture(dir: &str, name: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("sipnab-open-capture-{dir}"));
+        let root =
+            std::env::temp_dir().join(format!("sipnab-open-capture-{dir}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create the file root");
         std::fs::copy(
@@ -7423,7 +7431,8 @@ mod tests {
     /// An explicit suppression file applies, is named, and its effect is counted.
     #[tokio::test]
     async fn an_explicit_suppression_file_is_applied_named_and_counted() {
-        let root = std::env::temp_dir().join("sipnab-mcp-supp-explicit");
+        let root =
+            std::env::temp_dir().join(format!("sipnab-mcp-supp-explicit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("root");
         std::fs::write(
@@ -7492,7 +7501,8 @@ mod tests {
     /// "my patterns matched nothing".
     #[tokio::test]
     async fn a_named_suppression_file_that_is_missing_is_refused() {
-        let root = std::env::temp_dir().join("sipnab-mcp-supp-missing");
+        let root =
+            std::env::temp_dir().join(format!("sipnab-mcp-supp-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("root");
         let server = server_with_dialog("supp-2@example.com").with_file_root(&root);

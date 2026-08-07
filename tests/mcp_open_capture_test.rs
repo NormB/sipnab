@@ -32,7 +32,8 @@ const SECOND: &str = "sipp-branch-scenario.pcapng";
 
 /// A temp directory holding `SECOND`, usable as `--mcp-file-root`.
 fn root_with_second(name: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("sipnab-open-capture-{name}"));
+    let root =
+        std::env::temp_dir().join(format!("sipnab-open-capture-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create the file root");
     std::fs::copy(

@@ -445,7 +445,7 @@ mod tests {
     }
 
     fn write_plugin(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("sipnab-plugin-tests");
+        let dir = std::env::temp_dir().join(format!("sipnab-plugin-tests-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let p = dir.join(format!("{name}.wasm"));
         std::fs::write(&p, bytes).expect("write fixture");

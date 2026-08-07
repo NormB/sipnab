@@ -2314,8 +2314,17 @@ mod tests {
     /// `--bpf-file` contents (trimmed) win over a positional BPF filter.
     #[test]
     fn build_capture_config_bpf_file_takes_precedence() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("sipnab_test_bpf_filter.txt");
+        // A UNIQUE directory, not a fixed name under the shared temp dir. This
+        // test used to write `$TMPDIR/sipnab_test_bpf_filter.txt` and remove it
+        // on the way out, so two concurrent runs of this binary raced: one
+        // deleted the file while the other was still between `write` and
+        // `build_capture_config`, and the loser failed with ENOENT while
+        // claiming `--bpf-file` could not be read. Reproduced by running the
+        // harness twice at once -- 3170 passed, this one failed. It matters
+        // beyond a developer's own machine, because CI runs on a self-hosted
+        // runner that shares /tmp with whatever else is building there.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bpf_filter.txt");
         std::fs::write(&path, "  udp and port 5060\n").unwrap();
         let mut cli = base_cli();
         cli.bpf_file = Some(path.to_string_lossy().into_owned());
@@ -2323,7 +2332,7 @@ mod tests {
         cli.bpf_filter = vec!["tcp".to_string()];
         let cc = build_capture_config(&cli, &Config::default()).unwrap();
         assert_eq!(cc.bpf_filter.as_deref(), Some("udp and port 5060"));
-        let _ = std::fs::remove_file(&path);
+        // `dir` cleans itself up on drop; no manual remove to race on.
     }
 
     /// Config-file snaplen/buffer values apply when the CLI leaves them unset.
