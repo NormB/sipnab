@@ -10,8 +10,54 @@ entry that carries them.
 
 ## [0.5.87] - 2026-08-07
 
-Streams learn where they came from, the MCP surface learns to say no, and an
-audit line learns whose call it was.
+Streams learn where they came from, the MCP surface learns to say no, an
+audit line learns whose call it was, and a caller can no longer choose the
+host they are reported under.
+
+**Includes everything prepared as 0.5.86, which was never released.** Its
+release commit landed and its CI wedged on the self-hosted runner without
+ever dispatching, so no tag and no assets exist for that number. Rather than
+publish it late and out of order, its entries are folded here — a version a
+reader cannot download is worse than a merged section.
+### Security
+
+- **A quoted display name could spoof the host and user a call is attributed
+  to.** `extract_uri_host_port` scanned the raw header for a scheme anywhere —
+  `find("<sip:")`, then `<sips:`, then a bare `find("sip:")`, then `sips:`. RFC
+  3261 § 25.1 lets a `quoted-string` display name hold any octet except an
+  unescaped `"`, including `<`, `>` and a complete URI, so that scan reads
+  caller-controlled text and `find` returns the **first textual match, not the
+  addressable URI**:
+
+  ```
+  From: "<sip:evil@attacker.test>" <sip:alice@real.test>
+        `-------- decoy --------'  `----- real URI ----'
+  ```
+
+  `from_host()` and `to_host()` are built on this, so the wrong host flows into
+  reports, scanner detection and the conformance linter — a caller choosing what
+  it is reported as, in a tool whose value is not asserting things confidently
+  and wrongly.
+
+  `extract_uri_user` was defeated by the same input despite a comment asserting
+  a display name "must NEVER be scanned for the user": it did `find('<')`, which
+  lands on the `<` inside the quotes, and returned `evil`. An earlier fix had
+  closed the unquoted case only; neither function was quote-aware.
+
+  Both now share one `addr_spec()`. That is the fix, rather than another
+  fallback arm: two independent URI locators is **why** hardening one left the
+  other exposed thirty lines below it. The display-name skipper honours `\`
+  quoted-pairs and walks `char_indices` rather than bytes, because a `\` may
+  escape a multi-byte character and stepping two *bytes* past it slices
+  mid-character and panics — a crash reachable from the same header. An
+  unterminated quote yields nothing rather than the remainder, since resuming
+  the scan past it reads the exact region the quote encloses.
+
+  Tests were written first and confirmed failing. Three of four failed; the
+  fourth passed and is kept as a regression guard, and it corrects the record —
+  a bare `sip:` in a display name was already safe, because `find('<')` still
+  found the real name-addr. The exploitable form needs `<...>` **inside** the
+  quotes.
 
 ### Changed
 
@@ -80,67 +126,6 @@ audit line learns whose call it was.
 
 ### Fixed
 
-- **`docs/mcp.md` claimed every query tool returns `frame_ref`.** It does not,
-  and the two tools that do return a pointer use *different key names* —
-  `frame_ref` for `lint_dialog` findings, `frame` for the dialog and message
-  projections. A caller planning around the old sentence would have looked for a
-  key most responses never carried. The page now enumerates which tools return
-  which key and which return none.
-
-- **The test suite could hang indefinitely, and it was not a sipnab defect.**
-  The first `getpwnam_r` in a process makes glibc `dlopen` the NSS backends; on
-  an already-multithreaded process that dlopen waits for every thread to reach a
-  safe point while those threads are blocked in the dynamic loader on the lock
-  it holds. A `.init_array` constructor in test builds now loads the backends
-  before `main`, on the initial thread, when no other thread exists to wait for.
-
-## [0.5.86] - 2026-08-07
-
-A caller could choose the host sipnab reported them under, and a test run that
-hung could no longer explain itself.
-
-### Security
-
-- **A quoted display name could spoof the host and user a call is attributed
-  to.** `extract_uri_host_port` scanned the raw header for a scheme anywhere —
-  `find("<sip:")`, then `<sips:`, then a bare `find("sip:")`, then `sips:`. RFC
-  3261 § 25.1 lets a `quoted-string` display name hold any octet except an
-  unescaped `"`, including `<`, `>` and a complete URI, so that scan reads
-  caller-controlled text and `find` returns the **first textual match, not the
-  addressable URI**:
-
-  ```
-  From: "<sip:evil@attacker.test>" <sip:alice@real.test>
-        `-------- decoy --------'  `----- real URI ----'
-  ```
-
-  `from_host()` and `to_host()` are built on this, so the wrong host flows into
-  reports, scanner detection and the conformance linter — a caller choosing what
-  it is reported as, in a tool whose value is not asserting things confidently
-  and wrongly.
-
-  `extract_uri_user` was defeated by the same input despite a comment asserting
-  a display name "must NEVER be scanned for the user": it did `find('<')`, which
-  lands on the `<` inside the quotes, and returned `evil`. An earlier fix had
-  closed the unquoted case only; neither function was quote-aware.
-
-  Both now share one `addr_spec()`. That is the fix, rather than another
-  fallback arm: two independent URI locators is **why** hardening one left the
-  other exposed thirty lines below it. The display-name skipper honours `\`
-  quoted-pairs and walks `char_indices` rather than bytes, because a `\` may
-  escape a multi-byte character and stepping two *bytes* past it slices
-  mid-character and panics — a crash reachable from the same header. An
-  unterminated quote yields nothing rather than the remainder, since resuming
-  the scan past it reads the exact region the quote encloses.
-
-  Tests were written first and confirmed failing. Three of four failed; the
-  fourth passed and is kept as a regression guard, and it corrects the record —
-  a bare `sip:` in a display name was already safe, because `find('<')` still
-  found the real name-addr. The exploitable form needs `<...>` **inside** the
-  quotes.
-
-### Fixed
-
 - **A wedged test run now has a deadline and leaves evidence.** The suite could
   hang indefinitely at ~0% CPU; the hook had no timeout and captured output into
   a shell variable, so a hung run wrote nothing and killing it to recover the
@@ -160,6 +145,21 @@ hung could no longer explain itself.
   those threads are blocked in the dynamic loader on the lock it holds. It
   reproduces only under a multithreaded harness, which is why isolated runs
   always passed.
+
+
+- **`docs/mcp.md` claimed every query tool returns `frame_ref`.** It does not,
+  and the two tools that do return a pointer use *different key names* —
+  `frame_ref` for `lint_dialog` findings, `frame` for the dialog and message
+  projections. A caller planning around the old sentence would have looked for a
+  key most responses never carried. The page now enumerates which tools return
+  which key and which return none.
+
+- **The test suite could hang indefinitely, and it was not a sipnab defect.**
+  The first `getpwnam_r` in a process makes glibc `dlopen` the NSS backends; on
+  an already-multithreaded process that dlopen waits for every thread to reach a
+  safe point while those threads are blocked in the dynamic loader on the lock
+  it holds. A `.init_array` constructor in test builds now loads the backends
+  before `main`, on the initial thread, when no other thread exists to wait for.
 
 ## [0.5.85] - 2026-08-07
 
