@@ -1133,6 +1133,28 @@ pub struct Cli {
     )]
     pub mcp_max_concurrent: u32,
 
+    /// Maximum MCP tool calls one peer may make per second (`0` = unlimited).
+    ///
+    /// The other half of `--mcp-max-concurrent`, and a different question:
+    /// that one bounds calls IN FLIGHT, this one bounds their ARRIVAL RATE. An
+    /// agent that never exceeds the concurrency cap and simply loops as fast
+    /// as it is answered is unbounded under the cap alone — it holds one slot
+    /// at a time and asks again the moment it is free. A call over this cap is
+    /// refused with the same retry-shortly error the concurrency cap returns,
+    /// never queued.
+    ///
+    /// A peer is the source IP over HTTP (the address, not the socket, so
+    /// reconnecting does not mint a fresh allowance) and the pipe itself over
+    /// stdio. The per-peer accounting is shared with
+    /// `--hep-rate-limit-per-peer`, which meters HEP packets the same way.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-rate-limit-per-peer",
+        value_name = "N",
+        default_value = "100"
+    )]
+    pub mcp_rate_limit_per_peer: u32,
+
     /// Additional `Host` header values the HTTP MCP server will accept
     /// (repeatable). rmcp's DNS-rebind protection defaults to allowing
     /// only `localhost`, `127.0.0.1`, and `::1`. Add the public hostname
@@ -2232,6 +2254,7 @@ mod tests {
         assert_eq!(cli.exec_rate_limit, 10);
         assert_eq!(cli.api_max_conn, 100);
         assert_eq!(cli.mcp_max_concurrent, 100);
+        assert_eq!(cli.mcp_rate_limit_per_peer, 100);
         assert_eq!(cli.hep_rate_limit, None);
         assert_eq!(cli.hep_rate_limit_resolved(&cfg), 50_000);
         assert_eq!(cli.pcap_export_mode, "decrypted");
@@ -2257,6 +2280,21 @@ mod tests {
         let unlimited = Cli::parse_from_args(["sipnab", "--mcp-max-concurrent", "0"]);
         assert_eq!(
             unlimited.mcp_max_concurrent, 0,
+            "0 must parse as the unlimited spelling, not be rejected"
+        );
+    }
+
+    /// The `--mcp-rate-limit-per-peer` cap parses as a number, and `0` is
+    /// accepted as the "unlimited" spelling — the same convention
+    /// `--mcp-max-concurrent` uses, so the two MCP caps read alike rather than
+    /// one meaning "off" by 0 and the other refusing every call.
+    #[test]
+    fn mcp_rate_limit_per_peer_parses_including_the_unlimited_zero() {
+        let capped = Cli::parse_from_args(["sipnab", "--mcp-rate-limit-per-peer", "5"]);
+        assert_eq!(capped.mcp_rate_limit_per_peer, 5);
+        let unlimited = Cli::parse_from_args(["sipnab", "--mcp-rate-limit-per-peer", "0"]);
+        assert_eq!(
+            unlimited.mcp_rate_limit_per_peer, 0,
             "0 must parse as the unlimited spelling, not be rejected"
         );
     }

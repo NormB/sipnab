@@ -1917,6 +1917,7 @@ sipnab uses:
 |---|---|
 | -32602 (`invalid_params`) | Unknown Call-ID, out-of-range index, malformed filter, unknown format, unknown alias, etc. |
 | -32603 (`internal_error`) | Reserved; sipnab treats internal errors as bugs and never silently swallows them. |
+| -32000 (server error) | Capacity, not correctness: `--mcp-max-concurrent` or `--mcp-rate-limit-per-peer` turned this call away, and the same call succeeds once the server has room. The only code here worth a retry — treat -32602 as a bug in the request. |
 
 Tools never panic. An unknown Call-ID always produces a structured error
 rather than an empty result.
@@ -1962,6 +1963,27 @@ past 1000 does nothing: the cap clamps it. Page instead.
 - **Host header allowlist.** rmcp's DNS-rebind protection runs by
   default (`localhost`/`127.0.0.1`/`::1`); extend with
   `--mcp-allowed-host` for non-loopback clients.
+- **Bounded work per caller, in two dimensions.** `--mcp-max-concurrent`
+  (default 100) caps the tool calls running *at once*;
+  `--mcp-rate-limit-per-peer` (default 100) caps how many one peer may start
+  *per second*. They are not the same bound, and one without the other leaves
+  a hole: an agent that never exceeds the concurrency cap and simply loops as
+  fast as sipnab answers holds a single slot forever and nothing else stops
+  it. A call over either cap is **refused, not queued** — JSON-RPC
+  error `-32000` with a message saying to retry shortly — because a queue
+  behind the cap is the same resource exhaustion, deferred. `0` disables
+  either cap. A peer is the source IP over HTTP (the address, not the socket,
+  so reconnecting mints no fresh allowance) and the pipe itself over stdio;
+  the per-peer accounting is the same code that meters HEP senders for
+  `--hep-rate-limit-per-peer`. On a shared egress — a proxy or a NAT — every
+  client behind one address shares one allowance, which is the honest
+  consequence of rate-limiting what the transport can prove rather than what
+  the caller claims.
+
+  ```bash
+  sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-max-concurrent 8 --mcp-rate-limit-per-peer 20
+  ```
+
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
@@ -1981,7 +2003,11 @@ past 1000 does nothing: the cap clamps it. Page instead.
   the outcome (`ok`, `tool_error`, or `refused`), the elapsed time, and the
   arguments bounded to one line. The log covers refused calls too — an agent
   probing for tools that do not exist is exactly the traffic the record
-  exists to show. The caller field names what the transport can prove:
+  exists to show. A call turned away by a cap lands there like any other
+  outcome: `outcome=refused` with `error=at capacity` for the concurrency cap,
+  and `error=rate limited (N refused since start)` for the per-peer rate
+  limit, whose running total is what separates one confused client from a
+  flood. The caller field names what the transport can prove:
   `stdio` for the local pipe, and for HTTP the peer socket plus whether the
   request was `bearer-verified` (with its `scope=full`/`scope=read`) or
   admitted `unauthenticated` in loopback-only mode. The log records a scope

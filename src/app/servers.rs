@@ -296,7 +296,8 @@ pub fn start_servers(
                 .with_source_exhausted(Arc::clone(&exhausted))
                 .with_capture_context(capture_ctx.clone())
                 .with_protected_inputs(protected_inputs.clone())
-                .with_max_concurrent(cli.mcp_max_concurrent as usize);
+                .with_max_concurrent(cli.mcp_max_concurrent as usize)
+                .with_rate_limit_per_peer(cli.mcp_rate_limit_per_peer);
             let s = match cli.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
                 None => s,

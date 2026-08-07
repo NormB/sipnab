@@ -1438,20 +1438,30 @@ implementation.
   holds `scope` and nothing else, so the `id` that `mint` signs into the
   payload is validated and then dropped. That is a smaller change than this
   line implies, and it is no longer blocked on anything.
-- [ ] **PB11 — Rate limiting and concurrency caps for MCP.** Verified absent.
-  HEP has per-peer limits and REST has `--api-max-conn`; MCP HTTP has neither,
-  so a looping agent can pin a capture host.
-  **Half done, and this line claimed neither half until 2026-08-06.** The
-  concurrency cap shipped: `--mcp-max-concurrent` (`src/cli.rs:1134`, default
-  100, `0` = unlimited) bounds tool calls in flight on **both** the stdio and
-  HTTP servers, and a call that cannot take a slot is refused with a
-  retry-shortly error rather than queued — the flag's own documentation makes
-  the argument that queueing behind the cap is the exhaustion the cap exists to
-  prevent. **Still absent: rate limiting.** Nothing counts calls per unit time
-  or per peer on the MCP surface, so an agent that stays under the concurrency
-  cap and loops as fast as it is answered is still unbounded. The HEP per-peer
-  limiter this entry points at is a rate limiter, not a concurrency cap; the
-  half that shipped is not the half that analogy asks for.
+- [x] **PB11 — Rate limiting and concurrency caps for MCP.** HEP had per-peer
+  limits and REST had `--api-max-conn`; MCP HTTP had neither, so a looping
+  agent could pin a capture host.
+  **Done in two halves, and this line claimed neither until 2026-08-06.** The
+  concurrency cap shipped first: `--mcp-max-concurrent` (default 100, `0` =
+  unlimited) bounds tool calls in flight on **both** the stdio and HTTP
+  servers, refusing rather than queueing — queueing behind the cap is the
+  exhaustion the cap exists to prevent, deferred. The rate limit is the other
+  half and shipped 2026-08-07: `--mcp-rate-limit-per-peer` (default 100 calls
+  a second, `0` = unlimited) meters arrivals per peer, because an agent that
+  stays under the concurrency cap and loops as fast as it is answered holds
+  one slot forever and is otherwise unbounded. It refuses with the same
+  retryable `-32000` "retry shortly" error the concurrency cap uses — one code
+  for "the call did not run, retry", not two for a client to learn — and lands
+  on the `mcp_audit` line as `outcome=refused error=rate limited (N refused
+  since start)`. The counting is `src/rate_limit.rs`, **shared with the HEP
+  per-peer limiter this entry originally pointed at** rather than written a
+  second time: one mutation to the per-peer comparison fails both surfaces'
+  tests, which is the property a second implementation would not have. What is
+  NOT here: no global calls/second ceiling (the server-wide bound on MCP work
+  is the concurrency cap, and a second server-wide knob metering the same
+  calls would be two answers to one question), and no per-token accounting —
+  a peer is what the transport can prove, so a proxy's clients share one
+  allowance.
 - [ ] **PB12 — Prometheus parity for MCP.** Verified absent:
   `sipnab_mcp_tool_calls_total{tool,outcome}`, a latency histogram, and
   response bytes per tool. Without it nobody knows which of the registered tools

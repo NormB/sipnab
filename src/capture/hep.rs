@@ -1140,33 +1140,19 @@ impl CidrRange {
     }
 }
 
-/// Upper bound on the number of distinct peers tracked within a one-second
-/// window. Bounds memory against a source-address flood; when exceeded, new
-/// peers in that window are held only to the global ceiling (the per-peer
-/// map stops growing until the window resets).
-const HEP_MAX_TRACKED_PEERS: usize = 4096;
-
-/// Fixed-window rate limiter for HEP input with both a global ceiling and a
+/// Fixed-window rate limiter for HEP input, with both a global ceiling and a
 /// per-peer cap.
 ///
-/// The global ceiling bounds total load; the per-peer cap adds fairness so a
-/// single reachable sender cannot consume the whole allowance and starve
-/// other producers (a gap in the previous global-only limiter). Both counters
-/// reset once per elapsed second.
+/// The counting is [`crate::rate_limit::FixedWindowLimiter`], shared with the
+/// MCP server's per-peer call limit rather than written twice: the memory
+/// bound on tracked peers, the window reset and the "0 disables this half"
+/// convention are one implementation, and a fix to any of them reaches both
+/// surfaces. What stays here is the part that is genuinely HEP's — the wording
+/// of the drop lines an operator greps for, and the `bool` the receive loop
+/// wants instead of a reason it has nothing to do with.
 struct HepRateLimiter {
-    /// Global ceiling: maximum packets/second across all peers (0 = disabled).
-    global_max: u64,
-    /// Per-peer cap: maximum packets/second per source IP (0 = disabled).
-    per_peer_max: u64,
-    /// Packets counted against the global ceiling in the current window.
-    count_this_second: u64,
-    /// Per-source packet counts for the current window (bounded by
-    /// `HEP_MAX_TRACKED_PEERS`; cleared when the window resets).
-    per_peer: std::collections::HashMap<IpAddr, u64>,
-    /// Start of the current one-second window.
-    window_start: Instant,
-    /// Lifetime count of packets dropped by either limiter (for log lines).
-    dropped_total: u64,
+    /// Global-ceiling and per-peer counting, keyed by source address.
+    inner: crate::rate_limit::FixedWindowLimiter<IpAddr>,
 }
 
 impl HepRateLimiter {
@@ -1177,12 +1163,7 @@ impl HepRateLimiter {
     /// limiting at all when both are 0).
     fn new(global_max: u64, per_peer_max: u64) -> Self {
         Self {
-            global_max,
-            per_peer_max,
-            count_this_second: 0,
-            per_peer: std::collections::HashMap::new(),
-            window_start: Instant::now(),
-            dropped_total: 0,
+            inner: crate::rate_limit::FixedWindowLimiter::new(global_max, per_peer_max),
         }
     }
 
@@ -1191,61 +1172,30 @@ impl HepRateLimiter {
     ///
     /// # Side effects
     ///
-    /// Reads the monotonic clock; resets the window (clearing the per-peer
-    /// map) once a second has elapsed; increments the per-peer and global
-    /// counters; and on a drop, increments `dropped_total` and logs a
-    /// `tracing::debug` line.
+    /// Reads the monotonic clock; counts the packet; and on a drop, logs a
+    /// `tracing::debug` line naming which bound refused it and the running
+    /// total.
     fn allow(&mut self, peer: IpAddr) -> bool {
-        let now = Instant::now();
-        if now.duration_since(self.window_start).as_secs() >= 1 {
-            self.window_start = now;
-            self.count_this_second = 0;
-            self.per_peer.clear();
+        use crate::rate_limit::Refusal;
+        let Err(refusal) = self.inner.check(peer, Instant::now()) else {
+            return true;
+        };
+        let dropped = self.inner.refused_total();
+        match refusal {
+            Refusal::TrackingFull => tracing::debug!(
+                "HEP per-peer tracking full ({} peers); dropping new peer {peer} (total dropped: {dropped})",
+                crate::rate_limit::MAX_TRACKED_PEERS
+            ),
+            Refusal::PerPeer => tracing::debug!(
+                "HEP per-peer rate limit exceeded ({}/s) for {peer}, dropping (total dropped: {dropped})",
+                self.inner.per_peer_max()
+            ),
+            Refusal::Global => tracing::debug!(
+                "HEP global rate limit exceeded ({}/s), dropping packet (total dropped: {dropped})",
+                self.inner.global_max()
+            ),
         }
-
-        // Per-peer cap first, so one noisy peer's drops do not consume the
-        // global budget.
-        if self.per_peer_max > 0 {
-            // Memory bound: the tracking map may not grow past
-            // HEP_MAX_TRACKED_PEERS. When it is full, a *new* peer cannot be
-            // accounted for — and letting it through is exactly the
-            // many-source-IP flood the per-peer cap exists to resist. Fail
-            // closed: drop the untracked newcomer rather than grant it free
-            // budget. Already-tracked peers keep being counted normally.
-            if self.per_peer.len() >= HEP_MAX_TRACKED_PEERS && !self.per_peer.contains_key(&peer) {
-                self.dropped_total += 1;
-                tracing::debug!(
-                    "HEP per-peer tracking full ({HEP_MAX_TRACKED_PEERS} peers); dropping new peer {peer} (total dropped: {})",
-                    self.dropped_total
-                );
-                return false;
-            }
-            let peer_count = self.per_peer.entry(peer).or_insert(0);
-            *peer_count += 1;
-            if *peer_count > self.per_peer_max {
-                self.dropped_total += 1;
-                tracing::debug!(
-                    "HEP per-peer rate limit exceeded ({}/s) for {peer}, dropping (total dropped: {})",
-                    self.per_peer_max,
-                    self.dropped_total
-                );
-                return false;
-            }
-        }
-
-        self.count_this_second += 1;
-        // A global ceiling of 0 means DISABLED (consistent with the per-peer
-        // knob), not "drop everything".
-        if self.global_max > 0 && self.count_this_second > self.global_max {
-            self.dropped_total += 1;
-            tracing::debug!(
-                "HEP global rate limit exceeded ({}/s), dropping packet (total dropped: {})",
-                self.global_max,
-                self.dropped_total
-            );
-            return false;
-        }
-        true
+        false
     }
 }
 
@@ -2595,7 +2545,7 @@ mod tests {
         let mut lim = HepRateLimiter::new(u64::MAX, 1);
         // Fill the tracking map with the maximum number of distinct peers;
         // each fresh peer's first packet is allowed.
-        for i in 0..HEP_MAX_TRACKED_PEERS as u32 {
+        for i in 0..crate::rate_limit::MAX_TRACKED_PEERS as u32 {
             let ip = IpAddr::V4(Ipv4Addr::from(i));
             assert!(lim.allow(ip), "first packet from fresh peer {i} allowed");
         }
