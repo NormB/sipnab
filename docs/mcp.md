@@ -1149,9 +1149,26 @@ because an empty answer would read as "that rule found nothing".
 
 ### `show_evidence`
 
-Follows a frame pointer back to the bytes it names. Every query tool returns
-`frame_ref` on the facts it produces. This turns one from a string into
-something a reader can check without reopening the capture.
+Follows a frame pointer back to the bytes it names, turning one from a string
+into something a reader can check without reopening the capture.
+
+**Not every tool returns a pointer, and the two that do use different key
+names.** A caller planning around "every tool returns `frame_ref`" would look
+for a key most responses do not carry:
+
+- **`frame_ref`** — the findings `lint_dialog` returns. Named apart because a
+  finding cites a message *index*, and the pointer is what makes it checkable
+  without the list that index counts within.
+- **`frame`** — `list_dialogs`, `find_problems`, `tail_dialogs`, `get_dialog`
+  (its dialog and its messages), `get_message`, the JSON `get_dialog_report`,
+  and the streams in `rtp_stats`.
+- **No pointer at all** — `validate_message`, `search_messages`,
+  `search_by_time`, `find_correlated`, `triage_call`,
+  `check_codec_negotiation`, `diagnose_registration`, `compare_dialogs`,
+  `get_sdp_timeline`, the RTCP remote reports, and the capture-level counters.
+
+A fact with no pointer omits the key entirely — never `""`, never frame 0, both
+of which read as a real pointer.
 
 ```jsonc
 // show_evidence { "refs": ["calls.pcap#41@6d1f4c0a9b2e7a53"] }
