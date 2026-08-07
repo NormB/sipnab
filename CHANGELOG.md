@@ -8,7 +8,11 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.84] - 2026-08-07
+
+The conformance linter reaches the command line, a provenance pointer becomes
+something you can follow back to the bytes it names, and a run of claims that
+had drifted from the code are now what the code does.
 
 ### Changed
 

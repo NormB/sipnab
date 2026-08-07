@@ -26,7 +26,7 @@ theme = "ayu-dark"
 # overwrites this from Cargo.toml at build time (single source of truth), and a
 # pre-commit hook fails if the two drift — so the homepage version badge and the
 # download links always match the released crate. Update Cargo.toml, not this.
-version = "0.5.83"
+version = "0.5.84"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
 #
@@ -41,8 +41,14 @@ version = "0.5.83"
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
 published_version = "0.5.83"
-# Release date of the current `version` above. Shown on /download next to the
-# version. Update alongside Cargo.toml/version when cutting a release.
+# Release date of `published_version` below -- NOT of `version` above. Shown on
+# /download, where `download.html` renders it beside `published_version` in one
+# sentence, so the date belongs to the release a reader can actually download.
+# It therefore moves in the POST-release commit, together with
+# `published_version`, and must not be touched while cutting one: dating an
+# untagged version is the conflation the published_version split exists to
+# prevent. `site_release_date_matches_changelog` reads `published_version` and
+# enforces this.
 release_date = "2026-08-05"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
