@@ -31,6 +31,70 @@ entry that carries them.
   MCP run (this entry). The TUI's F2 WAV export is unaffected — it keeps its
   own retention decision.
 
+- **BREAKING for dashboards: `active_call_count` now counts calls.** It used to
+  count dialogs in any of six active states — `Trying`, `Ringing`, `InCall`,
+  `Transferring`, `Pending`, `Active` — two of which are SUBSCRIBE dialogs that
+  carry no media at all. A box serving presence traffic reported "active calls"
+  with nothing on the phone, and every graph built on it read high. The old
+  number has not gone away: it is published unchanged under
+  `active_dialog_count`, a name that says what it counts. `active_call_count`
+  now means `InCall` only — the concurrent-call figure, channels in use.
+
+  The meaning of an existing key changed, so `stats` moves to
+  `schema_version` 2 on both MCP and the REST API. **A dashboard that reads
+  `active_call_count` and does not check the version is now graphing a
+  different quantity than it was**, lower by however many calls are ringing and
+  however many subscriptions are open. Renaming without adding the call gauge
+  was rejected: it would have left nobody able to answer "how many calls are up
+  right now" without recomputing it client-side, which is the question the
+  metric exists for.
+
+  Surfaces: MCP `stats` gains `active_dialog_count` beside the narrowed
+  `active_call_count`; the REST `/v1/stats` response gains `dialogs.in_call`
+  alongside the correctly-named `dialogs.active`; Prometheus gains
+  `sipnab_dialogs_active` and `sipnab_calls_active`, neither of which existed
+  before; the TUI statistics pane replaces its single mislabelled "Active
+  Calls" line with "Active Dialogs" and "Calls In Progress".
+
+- **`--limit` says what it actually bounds, and it is not concurrency.** The
+  help read "Maximum number of dialogs to track simultaneously". Nothing
+  removes a completed dialog, so the bound scales with **uptime** rather than
+  load: a box carrying five concurrent calls still evicts once 100,000 calls
+  have *completed*. An operator sizing the flag against their busy-hour call
+  count gets a number that has nothing to do with when it will bite. Two
+  things make it worse — eviction drops the *oldest* dialogs, which are the
+  ones a post-mortem wants, and a multi-file set feeds one store, so a 27-file
+  directory reaches the cap 27× sooner than a single file.
+
+  Behaviour is deliberately unchanged. Completed dialogs are retained on
+  purpose, because `--report` and `--call-report` answer about calls that have
+  already ended, and evicting on completion would break the after-the-fact
+  analysis sipnab exists for. Whether the answer is a separate window for
+  completed dialogs, a time-based bound, or something else belongs to the
+  retention umbrella (#160–#170), not to one flag's help text. What is fixed
+  here is the claim: the flag now says it bounds the total over the run, says
+  it is not a concurrency limit, says eviction takes the oldest first, and
+  points at #160 for the open question. Both doc mirrors carried the same
+  sentence and are corrected with it. `--max-streams` says "track
+  simultaneously" too and may have the same problem — not verified, not
+  touched.
+
+- **One SIP sniffer, not two.** `sip::is_sip_message` walked its own
+  fourteen-entry method table while `parser::starts_sip_message` accepts any
+  RFC 3261 token method. The TCP framing path, the WASM entry point and the
+  HEP and TLS paths therefore classified traffic by a **narrower** rule than
+  the one that would go on to parse it: a request whose method was not in the
+  table was not SIP to them. `is_sip_message` now delegates to the parser, and
+  the table is deleted rather than kept in step.
+
+  The measured effect on the local corpus is **zero additional messages** —
+  that traffic uses no method outside the old fourteen. This is consistency,
+  not a recovered loss, and the doc comment says so rather than implying a fix.
+  The value is structural: a method added to the parser can no longer leave a
+  second sniffer behind, because there is no second sniffer. RTP is still
+  rejected, because delegation that widened the sniffer into accepting binary
+  media would be a worse defect than the one it replaced.
+
 ### Added
 
 - **MCP tokens can be scoped read-only.** Every HTTP MCP bearer token used to
@@ -171,32 +235,229 @@ entry that carries them.
   the sweep is anti-vacuity-guarded (it fails if it reads no strings) and
   mutation-tested against the payload in all four TOML quoting forms.
 
-### Changed
+- **The SIP conformance linter has a CLI entry point.** `grep -c lint
+  src/cli.rs` returned 0: the 31-rule linter was reachable only through an MCP
+  client, which put the project's most distinctive capability out of reach of
+  the place it matters most — a pipeline gating a proxy config change. Two
+  flags, driving the same engine rather than a second implementation:
+  `--lint`, which prints every finding with its rule id and the RFC section it
+  reads from, and `--lint-fail-on <severity>`, which exits 3 when a finding
+  reaches that severity.
 
-- **BREAKING for dashboards: `active_call_count` now counts calls.** It used to
-  count dialogs in any of six active states — `Trying`, `Ringing`, `InCall`,
-  `Transferring`, `Pending`, `Active` — two of which are SUBSCRIBE dialogs that
-  carry no media at all. A box serving presence traffic reported "active calls"
-  with nothing on the phone, and every graph built on it read high. The old
-  number has not gone away: it is published unchanged under
-  `active_dialog_count`, a name that says what it counts. `active_call_count`
-  now means `InCall` only — the concurrent-call figure, channels in use.
+  **Exit 3, deliberately not 1 or 2.** A pipeline has to tell three states
+  apart: sipnab broke (1), the invocation was wrong (2), and the *capture* is
+  non-conformant (3). The response to each differs completely, and a gate
+  reporting 1 is indistinguishable from a crashed tool. The check sits after
+  the existing failure exits, so a run that both failed to write its output and
+  found findings reports the failure — those findings came from a partial read
+  and are not trustworthy anyway. `--lint` alone leaves the exit code alone,
+  because making a report silently become a gate is how a pipeline ends up
+  failing on something nobody asked it to check. `--lint-fail-on` requires
+  `--lint`, so a threshold with no linter running is a usage error rather than
+  a silently ignored flag.
 
-  The meaning of an existing key changed, so `stats` moves to
-  `schema_version` 2 on both MCP and the REST API. **A dashboard that reads
-  `active_call_count` and does not check the version is now graphing a
-  different quantity than it was**, lower by however many calls are ringing and
-  however many subscriptions are open. Renaming without adding the call gauge
-  was rejected: it would have left nobody able to answer "how many calls are up
-  right now" without recomputing it client-side, which is the question the
-  metric exists for.
+  `--cores` runs the same gate. The linter shipped wired only into the batch
+  path, so `--cores N --lint` printed nothing and exited 0 — a pipeline adding
+  `--cores 8` for speed would have stopped failing on non-conformant captures,
+  and nothing would have said so. Both paths now call one `run_lint_stage`. The
+  test asserts the two paths produce the *same* exit code rather than a fixed
+  expectation, because agreement is the property and what this fixture happens
+  to contain is beside the point; both must also print the summary with its
+  denominator, so a `--cores` run cannot report "0 findings" while having
+  examined nothing.
 
-  Surfaces: MCP `stats` gains `active_dialog_count` beside the narrowed
-  `active_call_count`; the REST `/v1/stats` response gains `dialogs.in_call`
-  alongside the correctly-named `dialogs.active`; Prometheus gains
-  `sipnab_dialogs_active` and `sipnab_calls_active`, neither of which existed
-  before; the TUI statistics pane replaces its single mislabelled "Active
-  Calls" line with "Active Dialogs" and "Calls In Progress".
+- **`capture_status` reports the SIP the portrange skipped.** `stats` already
+  carried `unanalysed_sip_messages` and the busiest skipped ports.
+  `capture_status` — the tool whose own description tells an agent to call it
+  "before reasoning about" a capture — answered `dialog_count` and
+  `stream_count` with nothing beside them, so its response was byte-identical
+  whether or not a third of the SIP had been analysed. The corpus sweep
+  measured what that costs: **2,311 dialogs reported against 3,712 real, 1,401
+  lost, 37.7%**, because a third of the messages never touch 5060/5061,
+  cross-checked against tshark at 4,247 of 13,455.
+
+  The asymmetry is the whole finding. On the CLI that loss is four stderr
+  warnings and a summary line that reconciles exactly, and an operator who sees
+  it can ask a follow-up. An agent reading `capture_status` saw a clean answer
+  and would report on "the calls in this capture" from two-thirds of them with
+  full confidence — and the agent is the surface that cannot notice a warning
+  scrolling past. The busiest ports come with it, because they are what the
+  operator passes to `--portrange`, and an answer that names the loss without
+  naming the remedy is only half of one. Both tools use the same field names,
+  so a client cannot learn the loss from one and miss it in the other.
+
+- **A stream carrying more payload than its codec can produce now says so.**
+  Reading two byte-identical copies of a capture as one `-I` set reported a
+  PCMU stream at 128 kbps over an unchanged 8-second span. G.711 is 64 kbps
+  *by definition* — that figure is not surprising, it is arithmetically
+  impossible — and sipnab emitted it with no warning. Message counts doubled
+  6→12 and RTP packets 425→850, so the whole thing read as a busier network
+  rather than a duplicated input. sipnab already knew both halves and never
+  compared them: `octet_count` over the observed span, and `octets_per_ms` from
+  the RFC 3551 table the `FRAME_SIZE_IMPOSSIBLE` rule already reads.
+  `codec_shape()` is reused rather than a second rate table written, because
+  two tables of codec rates is how they drift.
+
+  The check generalises past duplicates — a clock-rate error, a timestamp bug
+  or a misidentified payload type all land here — so it says a number cannot be
+  right without claiming to know why, and it names duplicate input as the
+  common cause rather than the certain one. It stays silent where it cannot
+  know: unknown codecs, variable-rate codecs such as Opus and AMR that have no
+  ceiling to exceed, spans under 500 ms, and single-packet streams. The 15%
+  tolerance clears ordinary span-measurement error while a 2× duplicate exceeds
+  it by a mile, and the test pins both directions, because exactly-at-rate must
+  not fire. This is deliberately **not** de-duplication: two legitimate
+  captures of one call from different vantage points are a real and useful
+  input, and collapsing them silently would destroy the asymmetry analysis that
+  exists to compare the two directions.
+
+- **A truncating `--snaplen` feeding `--retain-audio` is warned about too.**
+  The existing warning covers `-O`, where it can honestly say the analysis is
+  unaffected: sipnab parses what it captured, and only the written file is
+  short. `--retain-audio` is the path where that reassurance is false. It
+  buffers RTP payload for `export_audio` to decode later, so a snaplen sized
+  for signalling — 200–400 bytes is the usual guidance for SIP headers —
+  truncates the payload before retention ever sees it, and the exported WAV or
+  Opus is short or corrupted for exactly the truncated packets, with nothing
+  marking which. It carries its own message, which names `export_audio` rather
+  than `-O` and does not claim the analysis is intact.
+
+- **Session-ID: the RFC 7329 legacy form is reported as an interop notice.**
+  `SessionId::legacy_rfc7329_form` was computed at parse time and read by
+  nothing outside `session_id.rs`. RFC 7989 §5 states the `remote` parameter as
+  a MUST with a named exception for backwards compatibility with RFC 7329, and
+  §11 details that case. The rule is cited to §11 and raised as **interop at
+  notice severity, not as a MUST violation**: one message cannot tell a peer
+  genuinely interworking with an RFC 7329 stack — which the RFC permits — from
+  a modern peer that simply omits the parameter, and reporting a violation
+  would assert the second when only the first is observable. It is still worth
+  reporting, because the consequence is real and asymmetric: a half-populated
+  Session-ID correlates in one direction only, so a call crossing a B2BUA can
+  be reported as two unrelated calls. The test asserts severity and basis, not
+  merely that the rule fires.
+
+- **Lint findings cite the frame that provoked them, and `show_evidence` turns
+  a pointer back into bytes.** A finding named a rule, a citation and a message
+  *index*, which means nothing away from the message list it indexes — a
+  reviewer may not have that list, and compaction reshuffles it — so a finding
+  on its own was an assertion again, which is the state this mechanism exists
+  to leave behind. `lint_dialog` now attaches the message's `frame_ref`, done
+  at the MCP projection rather than on `Finding` itself, so the lint engine's
+  result stays a pure conformance verdict and a transport concern stays out of
+  the rule catalogue.
+
+  The omission is the load-bearing half. A message with no pointer produces
+  **no key at all** — not `""`, not frame 0, both of which read as a real
+  pointer. A finding citing frame 0 of nothing is worse than one citing
+  nothing, because a reader cannot tell the difference.
+
+  `show_evidence` reports three states that are deliberately not collapsible:
+  `verified`, where the frame is there and hashes to what the pointer recorded;
+  `unverified`, where it was found but carried no digest, so *nothing* was
+  checked; and `unresolvable` with a reason. Folding unverified into verified
+  would be the manufactured confidence the feature exists to prevent, and a
+  digest mismatch is unresolvable rather than a resolved frame with a warning.
+  It takes a caller-supplied string and returns the bytes at a path, so it
+  resolves only the final component and pushes it through `resolve_in_root`:
+  resolving the pointer's own `source` would make it an arbitrary-file-read
+  primitive wearing a `readOnlyHint`.
+
+### Fixed
+
+- **A capture beginning mid-dialog reported the call as still in progress,
+  indefinitely.** The dialog-*creation* branch called `SipDialog::new`,
+  `update_timing` and `track_sdp`, and never `update_state`, so the creating
+  message's own state transition was dropped. In timestamp order that is
+  invisible: the first message is the INVITE, whose transition is exactly the
+  `Trying` that `SipDialog::new` already set. It stops being invisible the
+  moment the first message is not the INVITE, and the common way that happens
+  is a capture that **begins mid-dialog**, leading with a 486, a BYE or a
+  CANCEL. That outcome was discarded and the call reported `Trying` hours after
+  it ended. The message log and response list stay complete, so no count
+  catches it. Measured on a cancelled call fed `[CANCEL, 487, INVITE, 100,
+  180]`: timestamp order reaches `Cancelled`, the permuted order reached
+  `Trying`.
+
+  One divergence is deliberately left, pinned by its own test rather than
+  hidden: a non-INVITE *request* arriving first sets `dialog.method` from that
+  request, so a leading CANCEL routes every later message to
+  `update_generic_state`, which inspects only responses and has no CANCEL rule.
+  The obvious fix — dispatching on the method a request implies — was tried and
+  reverted, because the INVITE machine guards its 2xx, 487 and 3xx arms on
+  conditions a BYE/CANCEL-seeded dialog does not meet, so routing there leaves
+  cells unmodelled rather than filled. Landing a half-modelled state machine in
+  the code that decides whether a call is up is worse than the bug it closes.
+
+- **`--markdown` was a no-op alongside `--report`.** It was parsed, documented
+  as "Format report output as Markdown", and did nothing: the outputs were
+  byte-identical, `cmp` clean. It worked only for `--call-report`. A flag that
+  is read, documented and ignored is the same defect class as a config key that
+  validates and never applies. The markdown form also carries Call-ID in
+  **full** where the text form truncates it to 30 characters — `--report`
+  columns overflow on long From/To values and corrupt the fixed-width
+  alignment, which breaks anything parsing the table, and a markdown table
+  cannot be corrupted that way because it does not depend on width. The test
+  asserts inequality plus a markdown-shape check rather than a fixed rendering,
+  and pins that the text form does not quietly become markdown too.
+
+- **Two single-input features read only the first `-I` argument.**
+  `cli.primary_input()` returns the first `-I` *argument*, which after
+  chronological resolution is often not even the first file read — and for
+  `-I /pcaps` is a directory.
+
+  *Embedded TLS secrets.* With `-I plain.pcapng -I withdsb.pcapng`, where the
+  keys sit in the second file, there were zero "TLS decryption" lines and the
+  second file's TLS stayed encrypted; naming `withdsb.pcapng` alone produced
+  "TLS decryption active: 1 secret(s) from embedded DSB". A directory holding
+  both behaved like the first case. The run read exactly like a capture that
+  carried no keys — no warning, no hint that file order decided it. Every file
+  in the set is now offered to the decryptor.
+
+  *`--wireshark` and `--tshark-filter`.* `tshark -r` takes one file, and the
+  emitted command named the first `-I` argument beside a `-Y` filter built from
+  every Call-ID sipnab had found. Measured with two sample captures, the filter
+  named three Call-IDs, the first of which exists only in the file that command
+  never opens; pasted into a terminal it returns a strict subset of what sipnab
+  just reported, silently, exit 0. That one is **refused** rather than fixed,
+  and the refusal names every file, because a command covering half the
+  evidence is worse than no command.
+
+- **The TUI f-key bar advertised the wrong action for F9, and clipped.**
+  Reported from the call list as "pressing F9 does nothing", and both halves of
+  that were true, for independent reasons. The bar advertised `F9 Addrs`, but
+  `call_list.rs` binds `F(9)` to `ClearFilter`; the Name-Address popup is on
+  `N`. With no filter active — the normal state — clearing nothing renders
+  nothing, so the key read as dead. The help overlay and both doc pages had it
+  right, and the bar was the only surface lying — the bar being where most
+  operators learn a binding. F9 now reads `Unfilter` rather than `Clear
+  filter`, because F5 already clears the *call list* and two entries both
+  reading "Clear" would leave the operator guessing which one drops their
+  capture. `N Addrs` joins the widest tier, so the feature that was being
+  mis-advertised is reachable from the bar.
+
+  The bar also overflowed the row it was drawn into. `render_fkey_bar` draws a
+  one-row Paragraph with no wrap, so anything past the right edge is clipped
+  silently, and the last items are the least-known bindings. Measured against
+  the width that *selects* each tier: the call list at 80 needed 91 columns and
+  at 100 needed 135, and the call flow at 120 needed 125. The committed
+  snapshots had been recording this verbatim, ending `F7 Filte` and `F6 Ra`
+  mid-word, and nobody read them as a defect. Call-list tiers are rebuilt from
+  measured column cost — 62 / 94 / 112 / 142 — with the 112 tier added so a
+  ~120-column terminal, the common wide default, keeps `O Open` and `F5 Clear`.
+  The call flow's threshold moves 120 → 126, its measured need.
+
+- **The TUI's BPF slot now says which source its filter belongs to.** After an
+  in-session `O` open, the mode label flips to `Offline (<file>)` while the BPF
+  slot kept showing the filter the *live* capture was compiled with. The two
+  rows sit one above the other and read as one statement about one source: not
+  a lie in any single field, and wrong as a whole. The slot is **marked, not
+  cleared** — the live capture is still running and still writing to the same
+  stores, so its filter remains in force, and blanking it would claim no filter
+  was compiled, which is a different and false thing to say. `[live capture]`
+  is appended, so the expression itself stays readable. The flag is one-way on
+  purpose: there is no later event after which the mark becomes wrong, and
+  clearing it on some subsequent action would invent a transition that does not
+  exist.
 
 ## [0.5.83] - 2026-08-05
 
