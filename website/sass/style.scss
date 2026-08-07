@@ -1060,7 +1060,13 @@ input:focus-visible,
   gap: 1.5rem;
 }
 
+// The tile IS the anchor. It has always hovered like a card -- lift, shadow,
+// brighter border -- while the only click target was an inline link inside
+// `.arch-label`, one short text line at the bottom. The affordance covered the
+// whole tile and the hit area did not, so clicking the big number did nothing.
 .arch-item {
+  display: block;
+  text-decoration: none;
   text-align: center;
   padding: 2.25rem 1rem;
   background: linear-gradient(180deg, $surface 0%, darken($surface, 1.5%) 100%);
@@ -1072,6 +1078,14 @@ input:focus-visible,
     border-color: rgba($accent, 0.35);
     transform: translateY(-4px);
     box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
+  }
+
+  // Keyboard users get the same target the mouse does. The tile is now a single
+  // focus stop rather than a bare inline link, so the ring has to be visible
+  // against the card itself.
+  &:focus-visible {
+    outline: 2px solid $accent;
+    outline-offset: 3px;
   }
 }
 

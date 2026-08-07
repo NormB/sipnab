@@ -222,22 +222,30 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
       <h2>Engineered for Production</h2>
     </header>
     <div class="arch-grid">
-      <div class="arch-item fade-in-up">
+      {# The whole tile is the link, not just the label. `.arch-item:hover`
+         lifts the card, shadows it and brightens its border -- an unmistakable
+         "this is clickable" affordance over the entire tile -- while the anchor
+         used to be an inline element inside `.arch-label`, so the click target
+         was one short line of text. Clicking the big number did nothing, and
+         which tiles appeared to work depended on where you happened to click.
+         `Automated tests` is the shortest label of the four and so the easiest
+         to miss entirely. #}
+      <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/releases/latest">
         <span class="arch-stat" data-count="12" data-suffix=" MB">12 MB</span>
-        <span class="arch-label"><a href="{{ config.extra.github_url }}/releases/latest">Stripped binary (musl, static)</a></span>
-      </div>
-      <div class="arch-item fade-in-up">
+        <span class="arch-label">Stripped binary (musl, static)</span>
+      </a>
+      <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/benchmarks.md') }}">
         <span class="arch-stat" data-count="11.1" data-suffix="&times; sngrep">11.1&times; sngrep</span>
-        <span class="arch-label"><a href="{{ get_url(path='@/docs/benchmarks.md') }}">Same reconstruction, tool comparison (measured v0.5.47)</a></span>
-      </div>
-      <div class="arch-item fade-in-up">
+        <span class="arch-label">Same reconstruction, tool comparison (measured v0.5.47)</span>
+      </a>
+      <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/benchmarks.md') }}">
         <span class="arch-stat" data-count="2.06" data-suffix="M pkts/s">2.06M pkts/s</span>
-        <span class="arch-label"><a href="{{ get_url(path='@/docs/benchmarks.md') }}">Offline reconstruction, four cores (measured v0.5.47)</a></span>
-      </div>
-      <div class="arch-item fade-in-up">
+        <span class="arch-label">Offline reconstruction, four cores (measured v0.5.47)</span>
+      </a>
+      <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
         <span class="arch-stat" data-count="4598" data-suffix="">4598</span>
-        <span class="arch-label"><a href="{{ config.extra.github_url }}/actions/workflows/ci.yml">Automated tests</a></span>
-      </div>
+        <span class="arch-label">Automated tests</span>
+      </a>
     </div>
   </div>
 </section>
