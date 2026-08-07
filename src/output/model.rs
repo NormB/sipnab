@@ -147,6 +147,18 @@ pub struct StreamSummary {
     pub associated_dialog: Option<String>,
     /// E-model MOS estimate (1.0–4.5).
     pub mos: f64,
+    /// Pointer to the frame this stream's first packet arrived in, as
+    /// `<source>#<ordinal>@<digest>`.
+    ///
+    /// The media counterpart of [`DialogSummary::frame`], and the same
+    /// contract: feed it to `sipnab --show-frame` to get the bytes back, which
+    /// either returns the frame or refuses because the capture changed.
+    /// Omitted entirely when the stream has no frame -- live capture, HEP, or
+    /// any path that did not carry one. An absent key means "not known here",
+    /// and is deliberately not an empty string or a zero ordinal, both of
+    /// which would read as a real pointer to frame 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
 }
 
 impl From<&RtpStream> for StreamSummary {
@@ -172,6 +184,10 @@ impl From<&RtpStream> for StreamSummary {
             orphaned: s.orphaned,
             associated_dialog: s.associated_dialog.clone(),
             mos: crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref()),
+            // From the stream's own record of where it began. There is no
+            // second source to derive it from: unlike a dialog, a stream
+            // retains no packets at all.
+            frame: s.first_frame.as_ref().map(ToString::to_string),
         }
     }
 }

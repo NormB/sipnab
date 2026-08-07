@@ -894,9 +894,11 @@ fn findings_with_refs(
 #[schemars(crate = "rmcp::schemars")]
 pub struct ShowEvidenceParams {
     /// Frame pointers to follow, in the `<source>#<ordinal>@<digest>` form the
-    /// query tools emit as `frame_ref`. The `@<digest>` half is what makes an
-    /// answer verifiable; a pointer without it still resolves, and says it was
-    /// not checked.
+    /// query tools emit — as `frame` on a dialog, a message or a stream, and
+    /// as `frame_ref` on a `lint_dialog` finding. Both names carry the same
+    /// text and both are accepted here; `show_evidence` lists which tools emit
+    /// which. The `@<digest>` half is what makes an answer verifiable; a
+    /// pointer without it still resolves, and says it was not checked.
     pub refs: Vec<String>,
     /// Bytes of each frame to return as hex, capped at 4096. Defaults to 256,
     /// which covers a SIP message's start line and headers without pulling a
@@ -3805,10 +3807,60 @@ impl SipnabMcp {
 
     /// Follow frame pointers back to the bytes they name.
     ///
-    /// This is the half of #128 that makes the other half worth having. Every
-    /// query tool emits `frame_ref` on the facts it returns; until something
-    /// could FOLLOW one, a pointer was a string nobody could check, and a claim
-    /// carrying it was exactly as verifiable as a claim without it.
+    /// This is the half of #128 that makes the other half worth having: until
+    /// something could FOLLOW a pointer, it was a string nobody could check,
+    /// and a claim carrying it was exactly as verifiable as a claim without
+    /// it.
+    ///
+    /// # Which facts carry a pointer, and which do not
+    ///
+    /// **Corrected 2026-08-07.** This used to open *"Every query tool emits
+    /// `frame_ref` on the facts it returns"*, which was never true of this
+    /// surface. It is replaced by the enumeration rather than by a hedge,
+    /// because a caller told "every tool" will read a missing pointer as a bug
+    /// and a caller told "some tools" cannot plan at all. Two key names, and
+    /// they are not interchangeable:
+    ///
+    /// * **`frame_ref`** — the findings `lint_dialog` returns, via
+    ///   `findings_with_refs`. Named apart from `frame` because a finding is
+    ///   not the message: it cites a message INDEX, and the pointer is what
+    ///   makes it checkable without the list that index counts within.
+    /// * **`frame`** — every object projected through `DialogSummary`
+    ///   (`list_dialogs`, `find_problems`, `tail_dialogs`, and the `dialog`
+    ///   half of `get_dialog`); every SIP message projected through
+    ///   `MessageJson` (`get_message`, and the `messages` array of
+    ///   `get_dialog`); the dialog body of `get_dialog_report` in `json`
+    ///   format; and — new with this change — every stream object, which
+    ///   reaches `rtp_stats` in both its per-call and capture-wide modes and
+    ///   the `streams` array of `get_dialog_report`.
+    ///
+    /// Both names carry the same `<source>#<ordinal>@<digest>` text and both
+    /// are accepted in `refs`, so the split costs a caller nothing here — it
+    /// matters only when reading a response.
+    ///
+    /// What carries NO pointer, stated so a caller stops looking for one
+    /// rather than concluding the capture lost it:
+    ///
+    /// * `validate_message`, whose findings serialize raw. Its sibling
+    ///   `lint_dialog` runs the same findings through `findings_with_refs`, so
+    ///   this one is an inconsistency rather than a design choice — a
+    ///   one-expression fix, left for a change that can test it against a
+    ///   message that actually trips a rule.
+    /// * The tools that return an index or a Call-ID instead of the thing
+    ///   itself: `search_messages`, `search_by_time`, `find_correlated`.
+    /// * The derived verdicts, which summarise many packets rather than cite
+    ///   one: `triage_call`, `check_codec_negotiation`, `diagnose_registration`,
+    ///   `compare_dialogs`, `get_sdp_timeline`.
+    /// * The RTCP reception and XR reports filed beside a stream. Those
+    ///   describe what a remote endpoint asserted, and `process_rtcp` is
+    ///   handed parsed reports without the packet they arrived in.
+    /// * Every capture-level counter — `stats`, `capture_status`,
+    ///   `capture_health` — which is about the run, not about a frame. Those
+    ///   carry `capture_identity` instead.
+    ///
+    /// Granularity is whole-frame throughout: `FrameOrigin` is
+    /// `{ ordinal, digest }`, so a pointer names a packet and never a byte
+    /// range or a header field within it.
     ///
     /// # What a caller can conclude, and what it cannot
     ///
@@ -3851,8 +3903,10 @@ impl SipnabMcp {
     /// good ones.
     #[tool(
         name = "show_evidence",
-        description = "Follows frame pointers (the `frame_ref` field other \
-                       tools return, of the form <source>#<ordinal>@<digest>) \
+        description = "Follows frame pointers (the `frame` field on a dialog, \
+                       message or stream, or the `frame_ref` field on a \
+                       lint_dialog finding — both of the form \
+                       <source>#<ordinal>@<digest>) \
                        back to the captured bytes, so a claim about a capture \
                        can be checked against the packet it came from. Each \
                        pointer resolves as `verified` (bytes match the digest \
@@ -5374,6 +5428,67 @@ mod tests {
             "an index past the end must cite nothing rather than the last \
              message: {:?}",
             stray[0]
+        );
+    }
+
+    /// A stream cites the frame it began in, and stays silent when it cannot.
+    ///
+    /// `rtp_stats` is the one query tool whose facts are entirely about media,
+    /// and media is where a pointer is worth the most: an orphaned stream has
+    /// no `Call-ID`, no dialog and no message list, so an SSRC and a jitter
+    /// figure were the whole of what a caller could check. There was nothing
+    /// to hand `show_evidence`.
+    ///
+    /// The second half is the same rule every other surface here follows: a
+    /// stream with no pointer emits NO key. `""` and `"x#0"` both read as a
+    /// real pointer, and a stream citing frame 0 of nothing is worse than one
+    /// citing nothing at all.
+    #[test]
+    fn a_stream_cites_its_frame_or_says_nothing() {
+        use crate::capture::packet::{FrameOrigin, FrameRef};
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::{RtpStream, StreamKey};
+
+        let key = StreamKey {
+            ssrc: 0x1a2b_3c4d,
+            src: "192.0.2.1:10000".parse().expect("src"),
+            dst: "192.0.2.2:20000".parse().expect("dst"),
+        };
+        let header = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: key.ssrc,
+            payload_offset: 12,
+        };
+        let mut stream = RtpStream::new(key, &header, chrono::Utc::now());
+        stream.first_frame = Some(FrameRef {
+            source: "calls.pcap".into(),
+            origin: FrameOrigin {
+                ordinal: 41,
+                digest: Some(0x6d1f_4c0a_9b2e_7a53),
+            },
+        });
+
+        let with = stream_json(&stream);
+        assert_eq!(
+            with["frame"], "calls.pcap#41@6d1f4c0a9b2e7a53",
+            "a stream with a pointer must carry it, digest and all -- without \
+             the digest a later reader cannot tell the capture was rotated: \
+             {with}"
+        );
+
+        stream.first_frame = None;
+        let without = stream_json(&stream);
+        assert!(
+            without.get("frame").is_none(),
+            "a stream with NO pointer must omit the key, not emit an empty or \
+             zero one: {without}"
         );
     }
 

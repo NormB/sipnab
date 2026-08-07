@@ -444,6 +444,20 @@ impl StreamStore {
             self.ensure_capacity();
             let mut stream = RtpStream::new(key.clone(), rtp, timestamp);
             stream.octet_count = payload_len as u64;
+            // Where this stream began, recorded once and never again (#128).
+            // This branch runs only for a key the store has not seen, so it is
+            // by construction the first packet of the stream — writing it in
+            // the `get_mut` branch above instead would leave every stream
+            // citing its most recent frame rather than its first.
+            //
+            // Cloning an `Option<FrameRef>` is a refcount bump on an `Arc<str>`
+            // already interned once per source, plus two words. Paid per
+            // STREAM, not per packet: a 425-packet call pays it once.
+            //
+            // `None` when the packet had no origin (live capture, HEP, a
+            // synthetic packet). Left `None` rather than filled in from a
+            // neighbour — a stream with no provenance must say so.
+            stream.first_frame = parsed.frame.clone();
             // RFC 3551 knows the clock rate for twenty-four static payload
             // types; `RtpStream::new` knows eight of them and answers 8000 Hz
             // for the rest. Correct it here, before the first packet feeds the
@@ -1804,6 +1818,76 @@ a=rtpmap:96 H264/90000\r\n";
         let stream = store.get(&key).expect("stream should exist");
         assert_eq!(stream.packet_count, 1);
         assert_eq!(stream.payload_type, 0);
+    }
+
+    /// A stream cites the frame it began in, and never moves that pointer.
+    ///
+    /// The failure this rules out is the cheap implementation: assigning the
+    /// pointer on every `process_rtp` rather than only at creation. A stream
+    /// updated by ten thousand packets would then cite whichever frame arrived
+    /// last, which is a real frame that is not the one the stream began in —
+    /// the confident wrong answer this mechanism exists to prevent, and one
+    /// that `is_some()` cannot tell apart from the right answer.
+    ///
+    /// Asserted against a SECOND packet carrying a DIFFERENT pointer, so the
+    /// two implementations genuinely disagree here. With both packets carrying
+    /// the same frame the test would pass either way and prove nothing.
+    #[test]
+    fn a_stream_cites_the_frame_it_began_in_not_its_latest() {
+        use crate::capture::packet::{FrameOrigin, FrameRef};
+
+        let pointer = |ordinal: u64| {
+            Some(FrameRef {
+                source: "calls.pcap".into(),
+                origin: FrameOrigin {
+                    ordinal,
+                    digest: Some(0x0102_0304_0506_0708),
+                },
+            })
+        };
+
+        let mut store = StreamStore::new(100);
+        let mut first = make_parsed(20000, 30000, 160);
+        first.frame = pointer(7);
+        let mut later = make_parsed(20000, 30000, 160);
+        later.frame = pointer(4211);
+
+        store.process_rtp(&first, &make_rtp_header(0xDDDD, 1), ts(0));
+        store.process_rtp(&later, &make_rtp_header(0xDDDD, 2), ts(1));
+
+        let key = StreamKey {
+            ssrc: 0xDDDD,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let stream = store.get(&key).expect("stream should exist");
+        assert_eq!(stream.packet_count, 2, "both packets must reach the stream");
+        assert_eq!(
+            stream.first_frame,
+            pointer(7),
+            "the stream must cite the frame its FIRST packet arrived in; \
+             citing frame 4211 means the pointer is reassigned per packet and \
+             every long stream names the wrong frame"
+        );
+
+        // A source that cannot number its frames must leave the stream with no
+        // pointer rather than a default. This is the live-capture path.
+        let mut anonymous = make_parsed(20000, 30001, 160);
+        anonymous.frame = None;
+        store.process_rtp(&anonymous, &make_rtp_header(0xDDDD, 1), ts(2));
+        let orphan_key = StreamKey {
+            ssrc: 0xDDDD,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30001),
+        };
+        assert!(
+            store
+                .get(&orphan_key)
+                .expect("second stream should exist")
+                .first_frame
+                .is_none(),
+            "a packet with no pointer must not yield a stream that claims one"
+        );
     }
 
     /// A second packet on the same key updates the stream instead of

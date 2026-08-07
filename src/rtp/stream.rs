@@ -172,6 +172,31 @@ pub struct RtpStream {
     pub clock_rate: u32,
     /// RTP payload type number.
     pub payload_type: u8,
+    /// Pointer to the frame this stream's FIRST packet arrived in, when it
+    /// has one.
+    ///
+    /// The media counterpart of [`SipDialog::first_frame`], and the same
+    /// argument: `packet_count`, `jitter` and `lost_packets` are assertions
+    /// until a reader can get back to a byte that produced them. A stream is
+    /// the object that needs it most, because it is the one that cannot fall
+    /// back on anything else — streams peer with dialogs rather than nesting
+    /// under them (design decision D13), and an **orphaned** stream has no
+    /// `Call-ID`, no dialog and no message list, so its SSRC and its 5-tuple
+    /// were the whole of what a reader could check.
+    ///
+    /// First, never latest. Reassigning it per packet would leave every
+    /// long-running stream citing whichever frame happened to arrive last — a
+    /// real frame that is not the one described, which is the confident wrong
+    /// answer this whole mechanism exists to prevent, and which no
+    /// `is_some()` check can tell apart from the right answer. Written once,
+    /// at creation, by [`StreamStore::process_rtp`](crate::rtp::stream_store::StreamStore::process_rtp).
+    ///
+    /// `None` for live capture, HEP and any synthetic stream: absent means
+    /// unknown, and is deliberately not an empty string or a zero ordinal,
+    /// both of which read as a real pointer to frame 0.
+    ///
+    /// [`SipDialog::first_frame`]: crate::sip::dialog::SipDialog::first_frame
+    pub first_frame: Option<crate::capture::packet::FrameRef>,
     /// Timestamp of the first packet seen for this stream.
     pub first_seen: DateTime<Utc>,
     /// Timestamp of the most recent packet.
@@ -314,6 +339,12 @@ impl RtpStream {
             codec,
             clock_rate,
             payload_type: header.payload_type,
+            // Not a parameter: this constructor takes a parsed RTP header, and
+            // a header has no idea which frame carried it. The one production
+            // path that holds both — `StreamStore::process_rtp`, which has the
+            // `ParsedPacket` — stamps it immediately after, next to the other
+            // corrections that must land before the first packet is folded in.
+            first_frame: None,
             first_seen: timestamp,
             last_seen: timestamp,
             packet_count: 1,

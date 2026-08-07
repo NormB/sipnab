@@ -30,14 +30,28 @@
 //! 2. Emitting a placeholder when there is no frame. An empty string or a zero
 //!    ordinal both read as a genuine pointer to frame 0, so the key is omitted
 //!    entirely.
+//!
+//! Media streams arrived later and are held to exactly the same two rules. A
+//! stream is not a child of a dialog in this tree (design decision D13), so it
+//! could not borrow the dialog's pointer even where one exists — and the
+//! orphaned streams, the ones no `Call-ID` explains, are precisely the streams
+//! an operator most needs to trace back to the wire.
 
 use sipnab::capture::packet::Packet;
 use sipnab::capture::resolve::{parse_pointer, resolve};
-use sipnab::output::model::DialogSummary;
+use sipnab::output::json::stream_to_json;
+use sipnab::output::model::{DialogSummary, StreamSummary};
+use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::{DialogStore, IDLE_COMPACT_AFTER, KEEP_MESSAGES_PER_IDLE_DIALOG};
 
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The three checked-in fixtures carry signalling only, so the media half of
+/// this suite reads from the synthetic sample corpus instead.
+fn sample(name: &str) -> String {
+    format!("{}/tests/pcap-samples/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Read every packet through the real file reader, in order, so ordinals here
@@ -89,6 +103,36 @@ fn store_with(path: &str, strip_origin: bool) -> DialogStore {
 
 fn store_from(path: &str) -> DialogStore {
     store_with(path, false)
+}
+
+/// The media analogue of [`store_with`]: the same real classification path,
+/// applied to a stream store instead of a dialog store.
+///
+/// Deliberately not `pipeline::process_packet`, which would need the two
+/// `Arc<RwLock<_>>` stores and a dialog store this suite has no use for. The
+/// classification is the part under test — everything a stream knows about its
+/// provenance has to survive `classify_packet` and `process_rtp`.
+fn stream_store_with(path: &str, strip_origin: bool) -> StreamStore {
+    use sipnab::capture::parse::parse_packet;
+    use sipnab::pipeline::{self, PacketAction, PipelineOptions};
+    use sipnab::rtp::heuristic::RtpHeuristic;
+
+    let mut store = StreamStore::new(100_000);
+    let mut heuristic = RtpHeuristic::new();
+    let opts = PipelineOptions::default();
+    for mut pkt in read_all(path) {
+        if strip_origin {
+            pkt.origin = None;
+        }
+        let Ok(pp) = parse_packet(&pkt) else { continue };
+        let mut decrypt = pipeline::MediaDecrypt::default();
+        if let PacketAction::Rtp { hdr, .. } =
+            pipeline::classify_packet(&pp, &mut heuristic, &opts, &mut decrypt)
+        {
+            store.process_rtp(&pp, &hdr, pp.timestamp);
+        }
+    }
+    store
 }
 
 /// The dialog knows where it began.
@@ -386,5 +430,141 @@ fn a_dialog_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
     assert!(
         with.as_object().expect("object").contains_key("frame"),
         "a dialog that knows its frame must emit the key; got {with}"
+    );
+}
+
+// ── media streams ─────────────────────────────────────────────────────
+//
+// Everything above is about signalling. A stream reached every surface with
+// no pointer at all: `grep -rn frame_ref src/rtp/` matched nothing, so
+// `rtp_stats`, `/v1/streams`, `--json` and the TUI's stream export each named
+// an SSRC, a jitter figure and a loss percentage that no reader could tie to a
+// single byte of the capture. A stream is also the one object here that cannot
+// fall back on a dialog's pointer: streams peer with dialogs rather than
+// nesting under them, and an orphaned stream has no dialog at all.
+
+/// The stream knows which frame it began in.
+#[test]
+fn a_stream_records_the_frame_its_first_packet_arrived_in() {
+    let store = stream_store_with(&sample("sip-rtp-g711.pcap"), false);
+    let streams: Vec<_> = store.iter().collect();
+    assert!(
+        !streams.is_empty(),
+        "fixture produced no RTP streams -- these assertions would be vacuous"
+    );
+    for s in &streams {
+        assert!(
+            s.first_frame.is_some(),
+            "a stream built from a capture file must know the frame its first \
+             packet arrived in; ssrc=0x{:08x} {}->{}",
+            s.key.ssrc,
+            s.key.src,
+            s.key.dst
+        );
+    }
+}
+
+/// The whole point: the emitted pointer leads back to the right bytes.
+///
+/// Asserts the round trip through the emitted *string*, not the presence of a
+/// field. A populated pointer aimed one frame off would satisfy `is_some()`
+/// and be exactly the confident wrong answer this feature exists to prevent —
+/// and `resolve` checks the digest, so a neighbouring frame is refused rather
+/// than quietly returned.
+#[test]
+fn the_stream_pointer_resolves_to_the_frame_the_stream_opened_in() {
+    let path = sample("sip-rtp-g711.pcap");
+    let packets = read_all(&path);
+    let store = stream_store_with(&path, false);
+
+    let mut checked = 0;
+    for s in store.iter() {
+        let emitted: serde_json::Value =
+            serde_json::from_str(&stream_to_json(s)).expect("stream JSON parses");
+        let pointer = emitted["frame"]
+            .as_str()
+            .unwrap_or_else(|| panic!("stream JSON carried no frame: {emitted}"))
+            .to_string();
+
+        let got = resolve(&parse_pointer(&pointer).expect("the emitted pointer must parse"))
+            .expect("the emitted pointer must resolve");
+        assert!(
+            got.is_verified(),
+            "the reader recorded a digest, so a followed pointer must verify \
+             rather than report UNVERIFIED"
+        );
+
+        // Compare bytes, not ordinals, so an off-by-one in the ordinal cannot
+        // pass by matching itself.
+        let ordinal = s
+            .first_frame
+            .as_ref()
+            .expect("first_frame present")
+            .origin
+            .ordinal as usize;
+        assert_eq!(
+            got.bytes(),
+            &packets[ordinal].data[..],
+            "the stream's pointer resolved to bytes other than the frame its \
+             first packet arrived in"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "no stream was checked; the assertions are vacuous"
+    );
+}
+
+/// Absent means unknown. It must not become a pointer to frame 0.
+///
+/// Checked on both stream projections, because they are separate types with
+/// separate `#[serde]` attributes: `StreamJson` carries `--json`, the
+/// call-report `streams` array and MCP `rtp_stats`; `StreamSummary` carries
+/// REST `/v1/streams` and the TUI's stream export. One of the two defaulting
+/// to `null` would put a placeholder on half the surfaces.
+#[test]
+fn a_stream_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
+    let path = sample("sip-rtp-g711.pcap");
+
+    // Same capture, read with the frame origin stripped -- what live capture
+    // produces. The streams are otherwise identical, so the only difference in
+    // the emitted JSON should be the pointer.
+    let live_like = stream_store_with(&path, true);
+    let s = live_like.iter().next().expect("one stream");
+    assert!(
+        s.first_frame.is_none(),
+        "a packet with no origin must not yield a stream that claims a frame"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&stream_to_json(s)).expect("stream JSON parses");
+    assert!(
+        !json.as_object().expect("object").contains_key("frame"),
+        "a stream with no frame must omit the key entirely, not emit null or a \
+         placeholder that reads as a pointer to frame 0; got {json}"
+    );
+    let summary = serde_json::to_value(StreamSummary::from(s)).expect("serialize");
+    assert!(
+        !summary.as_object().expect("object").contains_key("frame"),
+        "the compact stream projection must omit the key too; got {summary}"
+    );
+
+    // And the populated case really does emit it, so the checks above are not
+    // passing because the field never serializes under any circumstances.
+    let from_file = stream_store_with(&path, false);
+    let s = from_file.iter().next().expect("one stream");
+    let with: serde_json::Value =
+        serde_json::from_str(&stream_to_json(s)).expect("stream JSON parses");
+    assert!(
+        with.as_object().expect("object").contains_key("frame"),
+        "a stream that knows its frame must emit the key; got {with}"
+    );
+    let with_summary = serde_json::to_value(StreamSummary::from(s)).expect("serialize");
+    assert!(
+        with_summary
+            .as_object()
+            .expect("object")
+            .contains_key("frame"),
+        "the compact stream projection must emit it too; got {with_summary}"
     );
 }

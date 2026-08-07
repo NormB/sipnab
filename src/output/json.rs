@@ -194,6 +194,21 @@ struct StreamJson {
     /// Burst/gap loss-pattern analysis, when computable.
     #[serde(skip_serializing_if = "Option::is_none")]
     burst_gap: Option<crate::rtp::quality::BurstGapAnalysis>,
+    /// Pointer to the frame this stream's first packet arrived in, as
+    /// `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to
+    /// retrieve the exact bytes, which either returns the frame or refuses
+    /// because the capture changed.
+    ///
+    /// The media analogue of `MessageJson.frame` and `DialogJson.frame`, and
+    /// the field that lets an ORPHANED stream be checked at all: it has no
+    /// `Call-ID` to look a dialog up by, so before this the SSRC and the
+    /// 5-tuple were the whole of what a reader could verify.
+    ///
+    /// Omitted, never null, when the stream has no frame (a live capture
+    /// stamps none), so an absent key means unknown and a present one is
+    /// always a real pointer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame: Option<String>,
 }
 
 /// JSON representation of a quality interval.
@@ -787,6 +802,9 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
         last_seen: stream.last_seen.to_rfc3339(),
         quality_intervals: intervals,
         burst_gap: stream.burst_gap_analysis(),
+        // The stream's own record of where it began, stamped at creation --
+        // nothing downstream retains the packets it could be re-derived from.
+        frame: stream.first_frame.as_ref().map(ToString::to_string),
     }
 }
 

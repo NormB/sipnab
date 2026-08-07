@@ -1002,14 +1002,45 @@ output path.
     `--json` emits it per message and per dialog (`src/output/json.rs:90`,
     `:402`, populated at `:454` and `:662`), `call_report` carries the dialog's
     (`src/output/call_report.rs:773`), and `--show-frame` (`src/cli.rs:519`)
-    follows one from the CLI. What is genuinely still open is narrower and
-    should be read that way: **streams carry no ref at all**
-    (`grep -rn frame_ref src/rtp/` matches nothing), the MCP side still emits
-    `frame_ref` from exactly one site — `findings_with_refs` — so
-    `src/mcp/server.rs:3809`'s claim that *"every query tool emits `frame_ref`
-    on the facts it returns"* is itself ahead of the code, and granularity is
-    still whole-frame: `FrameOrigin` is `{ ordinal, digest }`, with no
-    byte range and no field span. Tracked as task #128, still PRIORITY 1.
+    follows one from the CLI.
+    **Corrected 2026-08-07 — two of the three remaining gaps are closed.** This
+    bullet used to end by naming three things still open: that **streams carry
+    no ref at all** (`grep -rn frame_ref src/rtp/` matched nothing), that the
+    MCP side emitted `frame_ref` from exactly one site, and that granularity
+    was whole-frame. The first two have landed and the wording is replaced
+    rather than annotated, because reading it as current would cause someone to
+    build `RtpStream.first_frame` a second time.
+    - **Streams cite their opening frame.** `RtpStream.first_frame`
+      (`src/rtp/stream.rs`) is stamped once, at stream creation, by
+      `StreamStore::process_rtp` from the `ParsedPacket` that opened it — first
+      and never latest, which
+      `a_stream_cites_the_frame_it_began_in_not_its_latest` holds by mutation
+      (assigning it in the update branch instead makes that test cite frame
+      4211 rather than frame 7). It reaches `StreamJson.frame`
+      (`--json`, the `streams` array of `--call-report --json`, and MCP
+      `rtp_stats` in both modes, which projects through `stream_to_json`) and
+      `StreamSummary.frame` (REST `/v1/streams`, the TUI's stream export).
+      Both omit the key when there is no pointer. This matters most for
+      **orphaned** streams: no `Call-ID`, no dialog, no message list, so before
+      this an SSRC and a 5-tuple were the whole of what a reader could check.
+    - **The `show_evidence` overclaim is corrected, not papered over.** The
+      rustdoc that said *"every query tool emits `frame_ref` on the facts it
+      returns"* now enumerates both key names (`frame` on dialogs, messages and
+      streams; `frame_ref` on `lint_dialog` findings) and, more usefully, names
+      what carries no pointer at all — `validate_message`, `search_messages`,
+      `search_by_time`, `find_correlated`, the derived verdicts, the RTCP
+      remote reports, and the capture-level counters.
+    - **Still open.** Granularity is whole-frame: `FrameOrigin` is
+      `{ ordinal, digest }`, with no byte range and no field span, so a lint
+      finding still points at the message rather than the malformed `Contact`.
+      `validate_message` serializes its findings raw where its sibling
+      `lint_dialog` runs them through `findings_with_refs` — a one-expression
+      fix left for a change that can test it against a message that really
+      trips a rule. RTCP reception and XR reports carry no pointer, because
+      `process_rtcp` is handed parsed reports without the packet they arrived
+      in; giving them one is a signature change across five call sites and
+      belongs with the byte-range work. And `docs/mcp.md` still repeats the
+      corrected overclaim in prose. Tracked as task #128, still PRIORITY 1.
 
 - [ ] **PA2 — Aggregation: `group_dialogs` and `timeline`.** Ranked second
   because it removes the single largest source of confidently-wrong answers

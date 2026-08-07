@@ -39,7 +39,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/quality_interval" }
     },
-    "burst_gap": { "$ref": "#/$defs/burst_gap" }
+    "burst_gap": { "$ref": "#/$defs/burst_gap" },
+    "frame": {
+      "type": "string",
+      "description": "Pointer to the frame this stream's first packet arrived in, as `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to retrieve the bytes, which either returns the frame or refuses because the capture changed. The media analogue of the dialog and message `frame`, and the only way to check an ORPHANED stream, which has no Call-ID to look a dialog up by. Optional, and absent rather than null when the stream has no frame (live capture). Not in `required` for that reason: an absent key means unknown, and a present one is always a real pointer."
+    }
   },
   "$defs": {
     "quality_interval": {
