@@ -112,8 +112,79 @@ echo -e "${GREEN}OK${NC}"
 # and feeding step 5 a truncated sum.
 echo -n "  Tests... "
 set +e
-TEST_OUTPUT=$(cargo test --features full --color never 2>&1)
+# The suite has wedged twice: once for 20 minutes and once left running for
+# 1d17h, both at ~0% CPU with every thread sleeping. There was no timeout, and
+# the output was captured into a SHELL VARIABLE, so a wedged run wrote nothing
+# at all -- and killing it destroyed the only evidence. Both times the cause is
+# still unknown, which is precisely why this exists: the next occurrence has to
+# leave something behind.
+#
+# Two changes. Output streams to a file, so a hung run can be tailed while it
+# hangs. And a watchdog caps the wall clock, dumping every thread's stack with
+# gdb BEFORE killing anything.
+#
+# The cap is wall-clock, not CPU-flatness, because a hook must stay simple; it
+# is set high enough that a cold full-feature build cannot trip it. Override
+# with SIPNAB_TEST_TIMEOUT when a machine is genuinely slower.
+TEST_LIVE="$LOG_DIR/sipnab-pre-commit-tests.live"
+: >"$TEST_LIVE"
+cargo test --features full --color never >"$TEST_LIVE" 2>&1 &
+TEST_PID=$!
+TEST_DEADLINE=$(( $(date +%s) + ${SIPNAB_TEST_TIMEOUT:-1800} ))
+TEST_WEDGED=0
+while kill -0 "$TEST_PID" 2>/dev/null; do
+	if [ "$(date +%s)" -ge "$TEST_DEADLINE" ]; then
+		TEST_WEDGED=1
+		STACKS="$LOG_DIR/sipnab-test-wedge-stacks.txt"
+		: >"$STACKS"
+		# /proc FIRST, because it always works. gdb needs ptrace, and under
+		# the default yama ptrace_scope=1 a process may only attach to its
+		# own DESCENDANTS -- this gdb is a SIBLING of the test binary, so it
+		# cannot attach and says "Could not attach to process". Proved by
+		# running this watchdog with SIPNAB_TEST_TIMEOUT=10: the gdb-only
+		# version produced a stacks file containing nothing but that error,
+		# which is worse than no file because it looks like evidence.
+		#
+		# The /proc fields below are the ones that actually identified the
+		# wedge by hand: per-thread `comm` names the test that is stuck, and
+		# `wchan` plus State distinguish "blocked in the kernel" from
+		# "spinning in userspace". Both sightings were State=S at ~0% CPU.
+		for p in $(pgrep -P "$TEST_PID" 2>/dev/null); do
+			{
+				echo "===== pid $p ====="
+				sed -n 's/^\(Name\|State\|Threads\|PPid\):/\1:/p' "/proc/$p/status" 2>/dev/null
+				echo "--- threads: tid comm wchan ---"
+				for t in /proc/$p/task/*; do
+					printf '%s\t%s\t%s\n' "${t##*/}" \
+						"$(cat "$t/comm" 2>/dev/null)" \
+						"$(cat "$t/wchan" 2>/dev/null)"
+				done
+				echo "--- children (zombies are normal: event_exec reaps lazily) ---"
+				ps --ppid "$p" -o pid,stat,etime,comm 2>&1
+				if command -v gdb >/dev/null 2>&1; then
+					echo "--- gdb backtraces (needs ptrace_scope=0 or root; expected to fail otherwise) ---"
+					gdb -p "$p" -batch -ex 'set pagination off' \
+						-ex 'thread apply all bt' 2>&1
+				fi
+			} >>"$STACKS"
+		done
+		pkill -9 -P "$TEST_PID" 2>/dev/null
+		kill -9 "$TEST_PID" 2>/dev/null
+		break
+	fi
+	sleep 5
+done
+wait "$TEST_PID"
 TEST_RC=$?
+TEST_OUTPUT=$(cat "$TEST_LIVE")
+if [ "$TEST_WEDGED" -eq 1 ]; then
+	echo -e "${RED}WEDGED${NC}"
+	echo "  The suite made no progress for ${SIPNAB_TEST_TIMEOUT:-1800}s and was killed."
+	echo "  Thread stacks: $STACKS"
+	echo "  Partial output: $TEST_LIVE"
+	echo "  This is a known, unreproduced defect -- please keep both files."
+	exit 1
+fi
 set -e
 if [ "$TEST_RC" -ne 0 ] || echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
     echo -e "${RED}FAIL${NC}"
