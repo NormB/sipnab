@@ -525,12 +525,20 @@ fn every_nav_docs_link_resolves_to_a_content_page() {
     );
 }
 
-/// The Zola config version (homepage badge, download links) equals the Cargo.toml crate version.
+/// The Zola config `version` equals the Cargo.toml crate version. It is a
+/// committed mirror, not a value any page renders.
 #[test]
 fn site_version_matches_crate_version() {
-    // Guards the "homepage still shows the old version" defect: the Zola
-    // config's version (homepage badge + download links) must equal the crate
-    // version in Cargo.toml. Mirrors the pre-commit gate as a permanent test.
+    // Keeps the committed mirror honest: the Zola config's `version` must equal
+    // the crate version in Cargo.toml, which the Pages "Sync site version" step
+    // overwrites it from at build time anyway. Mirrors the pre-commit gate as a
+    // permanent test.
+    //
+    // This is NOT the "homepage still shows the old version" guard it used to
+    // claim to be. The badge (index.html), the footer and JSON-LD
+    // `softwareVersion` (base.html) and every /download link (download.html)
+    // read `published_version`, and nothing reads `config.extra.version`.
+    // `site_advertises_only_a_released_version` below is what guards those.
     let cargo = read("Cargo.toml");
     let crate_v = regex::Regex::new(r#"(?m)^version = "([^"]+)""#)
         .unwrap()
@@ -546,8 +554,9 @@ fn site_version_matches_crate_version() {
     assert_eq!(
         crate_v, site_v,
         "website/config.toml version ({site_v}) != Cargo.toml version \
-         ({crate_v}) — the homepage badge and download links would show the \
-         wrong version"
+         ({crate_v}) — the committed mirror has drifted from the crate. This \
+         does NOT affect the homepage badge or /download: those read \
+         published_version, guarded by site_advertises_only_a_released_version"
     );
 }
 
@@ -3508,8 +3517,8 @@ fn packaging_scripts_reference_existing_paths() {
     // packaging references stop being checked without the gate noticing, and a
     // reference to a nonexistent path is precisely what this exists to catch.
     assert_eq!(
-        checked, 57,
-        "packaging path scan saw {checked} references, expected 57. More is \
+        checked, 59,
+        "packaging path scan saw {checked} references, expected 59. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );

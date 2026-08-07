@@ -22,10 +22,18 @@ enabled = true
 theme = "ayu-dark"
 
 [extra]
-# Kept in sync with the crate version in Cargo.toml. The Pages workflow
-# overwrites this from Cargo.toml at build time (single source of truth), and a
-# pre-commit hook fails if the two drift — so the homepage version badge and the
-# download links always match the released crate. Update Cargo.toml, not this.
+# Mirrors the crate version in Cargo.toml. The Pages workflow's "Sync site
+# version" step overwrites this from Cargo.toml at build time (single source of
+# truth), and a pre-commit hook plus `site_version_matches_crate_version` fail
+# if the two drift. Update Cargo.toml, not this.
+#
+# It drives NOTHING a visitor sees. The homepage badge (index.html), the footer
+# and JSON-LD `softwareVersion` (base.html) and every /download link
+# (download.html) all read `published_version` below; no template reads
+# `config.extra.version` at all. This comment used to claim the badge and the
+# download links came from here. They did once — `download.html` was moved to
+# `published_version` and the claim was never revisited, which is also how the
+# same sentence ended up in site_journey_test.rs and pages.yml.
 version = "0.5.84"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
@@ -41,7 +49,7 @@ version = "0.5.84"
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
 published_version = "0.5.83"
-# Release date of `published_version` below -- NOT of `version` above. Shown on
+# Release date of `published_version` above -- NOT of `version`, further up. On
 # /download, where `download.html` renders it beside `published_version` in one
 # sentence, so the date belongs to the release a reader can actually download.
 # It therefore moves in the POST-release commit, together with

@@ -10,10 +10,14 @@ on:
       # site rebuilds, so anything this workflow READS belongs here or a change
       # to it never reaches the published site.
       #
-      # Cargo.toml: the "Sync site version" step below derives the homepage
-      # badge and the download links from the crate version, so Cargo.toml is
-      # the site's version source — not the committed website/config.toml,
-      # which that step overwrites.
+      # Cargo.toml: the "Sync site version" step below rewrites
+      # website/config.toml's `version` from the crate version, so a Cargo.toml
+      # change alters the built site and has to trigger a build — the committed
+      # website/config.toml is not the source, that step overwrites it.
+      #
+      # It does NOT derive the homepage badge or the download links. Those read
+      # `published_version`, which moves in its own commit after a release
+      # publishes. This comment claimed otherwise; see website/config.toml.
       - 'Cargo.toml'
       # ops/cloudflare/refresh_csp_hashes.py: the csp job runs it against the
       # deployed artifact, so a change to the checker must re-run the check.
