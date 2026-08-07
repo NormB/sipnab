@@ -8,6 +8,60 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.85] - 2026-08-07
+
+Two defects where the thing on screen and the thing underneath disagreed: a
+tile that hovered like a link across its whole face while only a line of text
+answered a click, and a test that named a path every concurrent run would agree
+on.
+
+Nothing here changes the shipped binary. Every `src/` edit sits inside a
+`#[cfg(test)]` module, and the website is deployed by Pages on push rather than
+by a release, so this tag carries a changelog record and identical artifacts —
+upgrading from 0.5.84 gains a user nothing at runtime.
+
+### Fixed
+
+- **The homepage's "Engineered for Production" tiles are clickable across their
+  whole surface.** Reported as "only one of the four tiles is clickable". All
+  four had always carried a link; the defect was that the affordance and the hit
+  area were different shapes. `.arch-item:hover` lifts the card 4px, adds a 40px
+  shadow and brightens its border — over the entire tile — while the anchor was
+  an inline element inside `.arch-label`, so the only place a click did anything
+  was one short line of text at the bottom. Clicking the big number, which is the
+  visual centre and the thing the hover advertises, did nothing.
+
+  Whether a given tile "worked" therefore depended on where in it you clicked,
+  and the labels differ sharply in length at four columns — "Automated tests" is
+  one short line, while two others wrap. Each tile is now the `<a>` itself, with
+  the inner anchors removed rather than nested, and `:focus-visible` carries an
+  explicit ring because the tile is now a single focus stop rather than a bare
+  inline link. Verified in Chromium at 1440 and 900 px: 8 of 8 clicks on the
+  stat number navigate, where previously that area was inert.
+
+- **Test temp paths are unique per process.** `build_capture_config_bpf_file_-
+  takes_precedence` wrote a fixed name into the shared temp directory and removed
+  it on the way out, so two concurrent runs of the harness raced: 3170 passed and
+  that one failed with "Failed to read BPF filter file … No such file or
+  directory". The symptom names the wrong component — it reads as `--bpf-file`
+  being broken, with nothing pointing at a second process. It reaches past one
+  machine, because CI runs on a self-hosted runner that shares `/tmp` with
+  whatever else is building there.
+
+  It was 19 sites, not one: of roughly 30 `temp_dir()` uses only 6 were
+  process-unique. All now use `std::process::id()` or `tempfile::tempdir()`.
+
+### Added
+
+- **A gate that fails when a temp path is not process-unique.** It reads to the
+  end of the statement rather than the line, because a line-based scan reports
+  multi-line `format!` calls that already carry `process::id()` as offenders —
+  that error inflated the first count of this defect. It skips its own source via
+  `file!()`, since a scanner containing the pattern it hunts finds itself. Two
+  sites stay shared deliberately and carry their reasons: the production report
+  directory, where a predictable path is the point, and a filename that asserts a
+  file does *not* exist. Mutation-proved by restoring the old pattern.
+
 ## [0.5.84] - 2026-08-07
 
 The conformance linter reaches the command line, a provenance pointer becomes
