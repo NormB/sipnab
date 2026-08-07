@@ -8,6 +8,73 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.86] - 2026-08-07
+
+A caller could choose the host sipnab reported them under, and a test run that
+hung could no longer explain itself.
+
+### Security
+
+- **A quoted display name could spoof the host and user a call is attributed
+  to.** `extract_uri_host_port` scanned the raw header for a scheme anywhere —
+  `find("<sip:")`, then `<sips:`, then a bare `find("sip:")`, then `sips:`. RFC
+  3261 § 25.1 lets a `quoted-string` display name hold any octet except an
+  unescaped `"`, including `<`, `>` and a complete URI, so that scan reads
+  caller-controlled text and `find` returns the **first textual match, not the
+  addressable URI**:
+
+  ```
+  From: "<sip:evil@attacker.test>" <sip:alice@real.test>
+        `-------- decoy --------'  `----- real URI ----'
+  ```
+
+  `from_host()` and `to_host()` are built on this, so the wrong host flows into
+  reports, scanner detection and the conformance linter — a caller choosing what
+  it is reported as, in a tool whose value is not asserting things confidently
+  and wrongly.
+
+  `extract_uri_user` was defeated by the same input despite a comment asserting
+  a display name "must NEVER be scanned for the user": it did `find('<')`, which
+  lands on the `<` inside the quotes, and returned `evil`. An earlier fix had
+  closed the unquoted case only; neither function was quote-aware.
+
+  Both now share one `addr_spec()`. That is the fix, rather than another
+  fallback arm: two independent URI locators is **why** hardening one left the
+  other exposed thirty lines below it. The display-name skipper honours `\`
+  quoted-pairs and walks `char_indices` rather than bytes, because a `\` may
+  escape a multi-byte character and stepping two *bytes* past it slices
+  mid-character and panics — a crash reachable from the same header. An
+  unterminated quote yields nothing rather than the remainder, since resuming
+  the scan past it reads the exact region the quote encloses.
+
+  Tests were written first and confirmed failing. Three of four failed; the
+  fourth passed and is kept as a regression guard, and it corrects the record —
+  a bare `sip:` in a display name was already safe, because `find('<')` still
+  found the real name-addr. The exploitable form needs `<...>` **inside** the
+  quotes.
+
+### Fixed
+
+- **A wedged test run now has a deadline and leaves evidence.** The suite could
+  hang indefinitely at ~0% CPU; the hook had no timeout and captured output into
+  a shell variable, so a hung run wrote nothing and killing it to recover the
+  machine destroyed the only evidence. Output now streams to a file, and a
+  watchdog dumps per-thread `comm`, `wchan` and state before killing anything.
+
+  `/proc` first, not gdb: under the default `ptrace_scope=1` a process may
+  attach only to its own descendants, and the hook's gdb is a sibling of the
+  test binary, so it can never attach. Proved by running the watchdog with the
+  cap forced low — the gdb-only version wrote a file containing nothing but
+  "Could not attach to process", which is worse than no file because it looks
+  like evidence.
+
+  The hang itself was subsequently root-caused and is **not** a sipnab defect:
+  the first `getpwnam_r` in a process triggers a lazy `dlopen` of an NSS module,
+  whose `update_tls_slotinfo` waits for every thread to reach a safe point while
+  those threads are blocked in the dynamic loader on the lock it holds. It
+  reproduces only under a multithreaded harness, which is why isolated runs
+  always passed.
+
 ## [0.5.85] - 2026-08-07
 
 Two defects where the thing on screen and the thing underneath disagreed: a
