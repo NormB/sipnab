@@ -260,8 +260,16 @@ fn resolve_user(username: &str) -> Result<(u32, u32)> {
 
         // SAFETY: `getpwnam_r` writes the entry into our owned `pwd` and the
         // string fields into our owned `buf`; on success `result` is set to
-        // `&pwd`. No shared static state is involved, so the call is
-        // thread-safe. We copy out only the scalar uid/gid before `pwd` drops.
+        // `&pwd`. We copy out only the scalar uid/gid before `pwd` drops.
+        //
+        // `_r` makes this reentrant with respect to its own buffers, but that
+        // is NOT the same as being safe to call first from a multithreaded
+        // process: the FIRST such call in a process makes glibc `dlopen` the
+        // NSS backends from `/etc/nsswitch.conf`, and that loader work can
+        // deadlock against concurrent thread creation. See `nss_preload` in
+        // this file's test module. In production this call happens during
+        // privilege drop, before any thread is spawned, which is why the
+        // deadlock has only ever been seen in the test harness.
         let ret = unsafe {
             libc::getpwnam_r(
                 c_user.as_ptr(),
@@ -513,6 +521,70 @@ fn verify_dropped(expected_uid: u32, expected_gid: u32) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Load every configured NSS backend before the test harness spawns a thread.
+///
+/// The first `getpwnam_r` in a process makes glibc `dlopen` the modules named
+/// in `/etc/nsswitch.conf`. When that happens on a process that is ALREADY
+/// multithreaded, `dl_open_worker` reaches `update_tls_slotinfo`, which waits
+/// for every thread to arrive at a safe point — while those threads may
+/// themselves be blocked inside the dynamic loader on the very lock this
+/// `dlopen` holds. The process then deadlocks with every thread sleeping at
+/// roughly 0% CPU, which looks like a hang with no cause.
+///
+/// This is not hypothetical. The suite wedged twice — once for twenty minutes,
+/// once left running for over a day — and a live capture showed ten of fourteen
+/// threads in `futex_wait` on `_rtld_global`, with the holder inside
+/// `_dl_open("libnss_sss.so.2")`, called from
+/// `tests::resolve_user_nonexistent_returns_error` below.
+///
+/// Running before `main` removes the race rather than narrowing it: the loader
+/// work happens on the initial thread, when no other thread exists to wait for.
+///
+/// **The probe name must not resolve.** A lookup that succeeds short-circuits
+/// the nsswitch chain at the first backend that answers, leaving every later
+/// module unloaded and the race exactly as it was.
+///
+/// Test builds only. A library has no business doing work at load time, and
+/// production resolves users during privilege drop, before any thread exists.
+#[cfg(all(test, target_os = "linux"))]
+mod nss_preload {
+    /// Walks the whole nsswitch chain for a name nothing can resolve.
+    ///
+    /// Errors are deliberately ignored: the lookup is expected to fail, and the
+    /// only thing being bought is the module load it performs on the way.
+    unsafe extern "C" fn preload_nss_backends() {
+        let probe = c"sipnab-nss-preload-definitely-absent";
+        // SAFETY: `libc::passwd` is a plain-old-data C struct of scalars and
+        // raw pointers, for which all-zero bytes is a valid (if meaningless)
+        // value. `getpwnam_r` below overwrites it before any field is read,
+        // and no field is read here at all.
+        let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut buf = [0 as libc::c_char; 1024];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: called by the dynamic loader on the initial thread before
+        // `main`, so nothing else can observe or race these locals. `pwd` and
+        // `buf` are owned here and outlive the call; `getpwnam_r` writes only
+        // into them and into `result`. A zeroed `libc::passwd` is valid POD
+        // input, and the return value is intentionally discarded.
+        unsafe {
+            libc::getpwnam_r(
+                probe.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut result,
+            );
+        }
+    }
+
+    /// ELF `.init_array`: run by the loader before `main`. This is the same
+    /// mechanism the `ctor` crate provides, written directly to avoid adding a
+    /// dependency for six lines.
+    #[used]
+    #[unsafe(link_section = ".init_array")]
+    static PRELOAD_NSS: unsafe extern "C" fn() = preload_nss_backends;
 }
 
 #[cfg(test)]
