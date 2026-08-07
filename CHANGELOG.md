@@ -8,6 +8,92 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.87] - 2026-08-07
+
+Streams learn where they came from, the MCP surface learns to say no, and an
+audit line learns whose call it was.
+
+### Changed
+
+- **A default that is ON: MCP tool calls are now rate limited to 100 per second
+  per peer.** A client that sustains more than that starts seeing refusals after
+  upgrading. `--mcp-rate-limit-per-peer 0` restores the previous behaviour.
+
+  The concurrency cap that shipped in 0.5.83 bounds calls *in flight*; it does
+  nothing about an agent that stays under the cap and loops as fast as it is
+  answered. That agent can still pin a capture host, which is what HEP's
+  per-peer limiter and REST's `--api-max-conn` already existed to prevent on
+  their surfaces.
+
+  It refuses with the same retryable `-32000` the concurrency cap uses, and the
+  check runs *ahead* of the concurrency permit so a flooding peer cannot also
+  occupy a slot. Refusals are counted and appear in the `mcp_audit` line.
+
+  The limiter is **shared** with HEP rather than reimplemented — `hep.rs` now
+  delegates to the same `FixedWindowLimiter`. Proven rather than asserted: one
+  mutation to the per-peer check fails four limiter tests, the MCP effect test
+  *and* HEP's own isolation test in a single run, which a second implementation
+  could not do. This tree has been bitten repeatedly by one concept getting two
+  implementations that then drift; the URI-parsing bug fixed in 0.5.86 was
+  exactly that.
+
+  A peer is what the transport can prove, so clients behind one proxy share an
+  allowance. There is no per-token accounting and no global calls/second
+  ceiling.
+
+### Added
+
+- **RTP streams carry the frame they began in.** Every other fact sipnab emits
+  already pointed at its bytes; streams did not (`grep -rn frame_ref src/rtp/`
+  matched nothing). `RtpStream` now records a `FrameRef`, stamped only in the
+  branch that runs for a key the store has never seen — so it is the frame the
+  stream *opened* in, not its most recent packet. Surfaced through the existing
+  projections: `--json`, the `streams` array of `--call-report --json`, MCP
+  `rtp_stats`, REST `/v1/streams`, and the TUI stream export.
+
+- **The MCP audit line names which token made the call.** `AcceptedToken` now
+  carries the `id` that `mint` signs; the middleware stamps it, and the caller
+  field reads `bearer-verified scope=<scope> token=<id>`.
+
+  The id is recorded **verbatim**, percent-encoded and capped, not digested. It
+  is the same string the operator set with `--token-id` and would list in
+  `--mcp-revoked-file`, so a digest would break the hop from an audit line to
+  the credential to revoke — while buying no secrecy, since token ids are
+  low-entropy operator labels a wordlist reverses in seconds. Encoding matters
+  because the line is flat `key=value` text: an unencoded id could close the
+  quoted `caller="…"` field, forge a field, or forge a whole line.
+
+  stdio, loopback-unauthenticated and static shared secrets emit **no `token=`
+  key at all** — not blank, not a placeholder.
+
+- **`PACKET_FANOUT` support (`src/capture/fanout.rs`), not yet wired in.** A
+  live capture is one socket with one ring drained by one thread; when that ring
+  overflows the drops are counted by the kernel, not by anything sipnab parses,
+  so they never reach the output. This adds the mechanism — a `setsockopt` on a
+  handle libpcap already opened, no fork of libpcap — verified against the
+  running kernel rather than only against `af_packet.c`, including a second
+  socket joining the same group, since one socket in a group proves nothing.
+
+  It fans out **capture only**, and nothing calls it yet. Fanning out processing
+  is a larger change: the offline `--cores` path resolves cross-worker splits at
+  merge time and a live capture has no EOF at which to merge.
+
+### Fixed
+
+- **`docs/mcp.md` claimed every query tool returns `frame_ref`.** It does not,
+  and the two tools that do return a pointer use *different key names* —
+  `frame_ref` for `lint_dialog` findings, `frame` for the dialog and message
+  projections. A caller planning around the old sentence would have looked for a
+  key most responses never carried. The page now enumerates which tools return
+  which key and which return none.
+
+- **The test suite could hang indefinitely, and it was not a sipnab defect.**
+  The first `getpwnam_r` in a process makes glibc `dlopen` the NSS backends; on
+  an already-multithreaded process that dlopen waits for every thread to reach a
+  safe point while those threads are blocked in the dynamic loader on the lock
+  it holds. A `.init_array` constructor in test builds now loads the backends
+  before `main`, on the initial thread, when no other thread exists to wait for.
+
 ## [0.5.86] - 2026-08-07
 
 A caller could choose the host sipnab reported them under, and a test run that
