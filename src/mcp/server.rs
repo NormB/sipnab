@@ -108,9 +108,42 @@ pub struct SipnabMcp {
     /// backlog of callers pile up behind the cap, which is the resource
     /// exhaustion the cap exists to prevent, deferred rather than avoided.
     call_limiter: Option<Arc<tokio::sync::Semaphore>>,
+    /// Bounds tool calls per second from any ONE peer, or `None` for no rate
+    /// limit.
+    ///
+    /// The other half of `call_limiter`, and it is a different question. The
+    /// semaphore bounds calls IN FLIGHT; this bounds their ARRIVAL RATE. An
+    /// agent that never exceeds the concurrency cap and simply loops as fast
+    /// as it is answered is unbounded under the semaphore alone — it holds one
+    /// permit at a time and asks again the instant it is free.
+    ///
+    /// **Shared, not per-session**, for the same reason `call_limiter` is:
+    /// `SipnabMcp` is cloned per HTTP session, so a per-clone limiter would
+    /// give each session its own allowance and one peer could multiply its
+    /// budget by opening sessions — which is precisely the loop this bounds.
+    ///
+    /// Keyed on what the transport can prove about the caller (see
+    /// `PeerKey`), and refusing rather than delaying: a call held until its
+    /// allowance returns is a call still occupying the server, which is the
+    /// exhaustion the limit exists to prevent, only slower.
+    rate_limiter: Option<Arc<parking_lot::Mutex<crate::rate_limit::FixedWindowLimiter<PeerKey>>>>,
     /// rmcp router mapping tool names to the handler methods below.
     tool_router: ToolRouter<Self>,
 }
+
+/// The identity a per-peer MCP rate limit counts against.
+///
+/// The peer's IP address where the transport can prove one, and `None` where
+/// it cannot: the stdio pipe (one process, one peer, and its owner is the
+/// operator who started the server) and an HTTP request that arrived with no
+/// connection info both land there. Sharing one bucket between those two is
+/// harmless because a run serves one transport, never both — and it fails
+/// closed, which an "unattributable means unlimited" key would not.
+///
+/// The **address**, not address:port: a client that opens a fresh connection
+/// per call gets a new ephemeral port every time, so keying on the socket
+/// would hand a looping caller a fresh allowance on every loop.
+type PeerKey = Option<std::net::IpAddr>;
 
 /// Which capture this server holds, behind one lock so a swap is atomic.
 ///
@@ -178,6 +211,7 @@ impl SipnabMcp {
             findings: Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::new())),
             capture: Arc::new(RwLock::new(CaptureState::default())),
             call_limiter: None,
+            rate_limiter: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -190,6 +224,36 @@ impl SipnabMcp {
     pub fn with_max_concurrent(mut self, max: usize) -> Self {
         self.call_limiter = (max > 0).then(|| Arc::new(tokio::sync::Semaphore::new(max)));
         self
+    }
+
+    /// Cap the tool calls this server accepts per second from any ONE peer.
+    /// `per_second == 0` leaves the limit off, the same spelling of
+    /// "unlimited" [`Self::with_max_concurrent`] uses — a positive value
+    /// installs a shared limiter and a call over the cap is refused with a
+    /// retry-shortly error, not queued. See the `rate_limiter` field.
+    pub fn with_rate_limit_per_peer(mut self, per_second: u32) -> Self {
+        self.rate_limiter = (per_second > 0).then(|| {
+            Arc::new(parking_lot::Mutex::new(
+                // No global ceiling: the server-wide bound on MCP work is the
+                // concurrency cap, and a second server-wide knob metering the
+                // same calls would be two answers to one question.
+                crate::rate_limit::FixedWindowLimiter::new(0, u64::from(per_second)),
+            ))
+        });
+        self
+    }
+
+    /// Tool calls this server has refused for exceeding a peer's rate limit,
+    /// since it started. `0` when no limit is configured.
+    ///
+    /// Read on the refusal path so the audit line carries the running total: a
+    /// single `outcome=refused` line says a call was turned away, and the
+    /// total is what says whether that is one confused client or a flood.
+    fn rate_limit_refusals(&self) -> u64 {
+        self.rate_limiter
+            .as_ref()
+            .map(|l| l.lock().refused_total())
+            .unwrap_or(0)
     }
 
     /// Declare the capture inputs this server is reading so the file tools
@@ -4778,6 +4842,30 @@ fn caller_of(_extensions: &rmcp::model::Extensions) -> String {
     "stdio".to_string()
 }
 
+/// The peer a call is rate-limited against.
+///
+/// Derived from the same HTTP `Parts` `caller_of` reads, but deliberately
+/// narrower: the audit line wants everything the transport knows (address,
+/// port, admission record), while the limiter wants the one field that
+/// identifies the *sender across calls*. Scope and token identity are not it —
+/// a token is a credential, and rate limiting a credential rather than an
+/// address would let one flooding host hide behind a handful of tokens.
+#[cfg(feature = "mcp-http")]
+fn peer_key_of(extensions: &rmcp::model::Extensions) -> PeerKey {
+    let parts = extensions.get::<axum::http::request::Parts>()?;
+    parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip())
+}
+
+/// Without the HTTP transport compiled in, every call arrives on stdio, which
+/// is one peer with no address.
+#[cfg(not(feature = "mcp-http"))]
+fn peer_key_of(_extensions: &rmcp::model::Extensions) -> PeerKey {
+    None
+}
+
 /// The scope the caller's admission record grants, for the per-tool check in
 /// `call_tool`.
 ///
@@ -4848,6 +4936,54 @@ fn acquire_call_permit(
             )),
         },
     }
+}
+
+/// Count one tool call against its peer's rate limit, returning the refusal to
+/// send when that peer has already spent its allowance for this second.
+///
+/// Split out from `call_tool` so the limit is a plain function a test can
+/// drive directly, the same reason [`acquire_call_permit`] and
+/// [`scope_refusal`] are. The refusal carries [`AT_CAPACITY_CODE`], not a
+/// second code of its own: to the caller both mean the identical thing — the
+/// call did not run, nothing is wrong with it, retry shortly — and a client
+/// that has to learn a second "try again" code will eventually treat one of
+/// them as fatal.
+///
+/// `None` for the limiter means no limit is configured and every call
+/// proceeds. The clock is passed in rather than read here so `call_tool` meters
+/// against the same instant it audits with, and so tests can cross a window
+/// boundary without sleeping.
+fn rate_limit_refusal(
+    limiter: &Option<Arc<parking_lot::Mutex<crate::rate_limit::FixedWindowLimiter<PeerKey>>>>,
+    peer: PeerKey,
+    now: std::time::Instant,
+) -> Option<rmcp::ErrorData> {
+    let mut limiter = limiter.as_ref()?.lock();
+    let refusal = limiter.check(peer, now).err()?;
+    let per_second = limiter.per_peer_max();
+    let refused = limiter.refused_total();
+    drop(limiter);
+    // A caller refused because the tracking table is full is told THAT, not
+    // that it exceeded an allowance it never touched. Its very first call can
+    // land here — the table fails closed once too many distinct peers have
+    // been seen this second — and "you are over 100 calls/s" would send
+    // whoever debugs it looking for a loop that does not exist.
+    let cause = match refusal {
+        crate::rate_limit::Refusal::TrackingFull => {
+            " (too many distinct peers this second to account for yours)".to_string()
+        }
+        _ => format!(" of {per_second} call(s)/s"),
+    };
+    tracing::debug!(
+        "MCP per-peer rate limit{cause} exceeded for {}, refusing \
+         (total refused: {refused})",
+        peer.map_or_else(|| "stdio".to_string(), |ip| ip.to_string())
+    );
+    Some(rmcp::ErrorData::new(
+        rmcp::model::ErrorCode(AT_CAPACITY_CODE),
+        format!("sipnab MCP server is at its per-peer rate limit{cause}; retry shortly"),
+        None,
+    ))
 }
 
 /// Decide whether `scope` is allowed to invoke the tool, returning the
@@ -4960,6 +5096,38 @@ impl ServerHandler for SipnabMcp {
         let args = audit_args(request.arguments.as_ref());
         let started = std::time::Instant::now();
 
+        // One emitter for every outcome. Three copies of this format string
+        // used to be two refusals and a tail that could drift apart field by
+        // field, and an audit trail whose lines do not share a shape is one
+        // nobody can grep.
+        let audit = |outcome: &str, error: &str| {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            tracing::info!(
+                target: "mcp_audit",
+                "tool={tool} id={request_id} caller=\"{caller}\" outcome={outcome} \
+                 elapsed_ms={elapsed_ms} args={args}{error}"
+            );
+        };
+
+        // Arrival rate first, ahead of the concurrency permit: a peer past its
+        // calls/second allowance is turned away before it can also take a slot
+        // that a peer inside its allowance is competing for. Same ordering, and
+        // the same reason, as the per-peer check in `HepRateLimiter`.
+        if let Some(refusal) = rate_limit_refusal(
+            &self.rate_limiter,
+            peer_key_of(&context.extensions),
+            started,
+        ) {
+            audit(
+                "refused",
+                &format!(
+                    " error=rate limited ({} refused since start)",
+                    self.rate_limit_refusals()
+                ),
+            );
+            return Err(refusal);
+        }
+
         // Concurrency cap, before scope and before dispatch: take a permit if
         // one is configured, held for the whole call so it bounds tool calls
         // in flight. A call that cannot take one immediately is refused and
@@ -4967,12 +5135,7 @@ impl ServerHandler for SipnabMcp {
         let _permit = match acquire_call_permit(&self.call_limiter) {
             Ok(permit) => permit,
             Err(refusal) => {
-                let elapsed_ms = started.elapsed().as_millis() as u64;
-                tracing::info!(
-                    target: "mcp_audit",
-                    "tool={tool} id={request_id} caller=\"{caller}\" outcome=refused \
-                     elapsed_ms={elapsed_ms} args={args} error=at capacity"
-                );
+                audit("refused", " error=at capacity");
                 return Err(refusal);
             }
         };
@@ -4985,7 +5148,6 @@ impl ServerHandler for SipnabMcp {
             }
         };
 
-        let elapsed_ms = started.elapsed().as_millis() as u64;
         let outcome = match &result {
             Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error == Some(true) => {
                 "tool_error"
@@ -4997,11 +5159,7 @@ impl ServerHandler for SipnabMcp {
             Err(e) => format!(" error={}", e.message),
             Ok(_) => String::new(),
         };
-        tracing::info!(
-            target: "mcp_audit",
-            "tool={tool} id={request_id} caller=\"{caller}\" outcome={outcome} \
-             elapsed_ms={elapsed_ms} args={args}{error}"
-        );
+        audit(outcome, &error);
         result
     }
     /// Advertise server capabilities (tools only) and the human-readable
@@ -8444,6 +8602,137 @@ mod tests {
 
         drop(p2);
         drop(p3);
+    }
+
+    /// With no rate limit configured, the per-peer gate is a no-op that never
+    /// refuses — pinned so a future default cannot start silently throttling a
+    /// deployment that asked for none.
+    #[test]
+    fn no_rate_limit_never_refuses_a_call() {
+        let server = empty_server();
+        assert!(
+            server.rate_limiter.is_none(),
+            "a server built without a rate limit must carry none"
+        );
+        let now = std::time::Instant::now();
+        for _ in 0..1000 {
+            assert!(
+                rate_limit_refusal(&server.rate_limiter, None, now).is_none(),
+                "no rate limit must never refuse"
+            );
+        }
+    }
+
+    /// `with_rate_limit_per_peer(0)` is the documented spelling of "unlimited"
+    /// and must leave the limit off — not install a zero-per-second limiter
+    /// that refuses the very first call and wedges the server shut, which is
+    /// the failure `--mcp-max-concurrent` documents for its own zero.
+    #[test]
+    fn a_zero_rate_limit_means_unlimited_not_a_dead_server() {
+        let server = empty_server().with_rate_limit_per_peer(0);
+        assert!(
+            server.rate_limiter.is_none(),
+            "0 must mean unlimited, not a 0/s limiter that refuses everything"
+        );
+        assert!(
+            rate_limit_refusal(&server.rate_limiter, None, std::time::Instant::now()).is_none(),
+            "a 0 rate limit must admit every call"
+        );
+    }
+
+    /// The rate limit actually bounds arrivals: with three calls a second
+    /// allowed, the fourth inside that window is refused, a second peer keeps
+    /// its own allowance, and the next window admits again.
+    ///
+    /// This drives the same function `call_tool` calls, so it tests the effect
+    /// — a real refusal at the boundary — not a restatement of the predicate.
+    /// The window is stepped by passing `now`, never by sleeping: a limiter
+    /// whose test sleeps for a second is a limiter nobody runs.
+    #[test]
+    fn the_rate_limit_refuses_the_call_that_exceeds_it() {
+        let server = empty_server().with_rate_limit_per_peer(3);
+        assert!(
+            server.rate_limiter.is_some(),
+            "a positive rate limit must install a limiter"
+        );
+        let peer: PeerKey = Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
+        let other: PeerKey = Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 8)));
+        let now = std::time::Instant::now();
+
+        for i in 1..=3 {
+            assert!(
+                rate_limit_refusal(&server.rate_limiter, peer, now).is_none(),
+                "call {i} of 3 is inside the allowance and must be admitted"
+            );
+        }
+
+        let refusal = rate_limit_refusal(&server.rate_limiter, peer, now)
+            .expect("a fourth call inside a 3/s window must be refused");
+        assert_eq!(
+            refusal.code.0, AT_CAPACITY_CODE,
+            "a rate-limit refusal must carry the same retryable server-error \
+             code the concurrency cap uses, not invalid-params (a client error) \
+             or internal-error (reads as a bug)"
+        );
+        assert!(
+            refusal.message.contains("rate limit") && refusal.message.contains("retry"),
+            "the refusal must tell the caller it is a rate limit to retry: {}",
+            refusal.message
+        );
+        assert_eq!(
+            server.rate_limit_refusals(),
+            1,
+            "the refusal must be counted, or the audit line and any later \
+             metric are quoting a number nobody maintains"
+        );
+
+        // One noisy peer must not spend another peer's allowance.
+        assert!(
+            rate_limit_refusal(&server.rate_limiter, other, now).is_none(),
+            "a second peer keeps its own allowance while the first is throttled"
+        );
+
+        // A fresh window restores the throttled peer, and only then.
+        let next = now + std::time::Duration::from_secs(1);
+        assert!(
+            rate_limit_refusal(&server.rate_limiter, peer, next).is_none(),
+            "the next window must restore the peer's allowance"
+        );
+        assert_eq!(
+            server.rate_limit_refusals(),
+            1,
+            "an admitted call must not count as a refusal"
+        );
+    }
+
+    /// A caller refused because the peer table is full is told THAT, not that
+    /// it exceeded an allowance it never used.
+    ///
+    /// The table fails closed once too many distinct peers have been seen in
+    /// one second, so a well-behaved client's FIRST call can land here. Being
+    /// told "you are over 100 calls/s" would send whoever debugs it hunting a
+    /// loop that does not exist, which is why the two refusals do not share
+    /// one sentence.
+    #[test]
+    fn a_full_peer_table_refuses_with_its_own_reason() {
+        let server = empty_server().with_rate_limit_per_peer(1);
+        let now = std::time::Instant::now();
+        for i in 0..crate::rate_limit::MAX_TRACKED_PEERS as u32 {
+            let peer: PeerKey = Some(IpAddr::V4(Ipv4Addr::from(i)));
+            assert!(
+                rate_limit_refusal(&server.rate_limiter, peer, now).is_none(),
+                "the first call from fresh peer {i} is inside its own allowance"
+            );
+        }
+        let newcomer: PeerKey = Some(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)));
+        let refusal = rate_limit_refusal(&server.rate_limiter, newcomer, now)
+            .expect("a peer the table cannot account for must be refused, not waved through");
+        assert!(
+            refusal.message.contains("distinct peers"),
+            "the refusal must name the real cause, not an allowance this peer \
+             never touched: {}",
+            refusal.message
+        );
     }
 
     /// The admission record maps to the scope dispatch enforces: a verified

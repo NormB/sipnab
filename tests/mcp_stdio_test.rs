@@ -935,3 +935,146 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
         refused_lines[0]
     );
 }
+
+/// `--mcp-rate-limit-per-peer` refuses a looping caller, on the wire and in
+/// the audit trail.
+///
+/// The end-to-end gate for the flag: it proves the whole chain an operator
+/// depends on — the flag reaches the server, `call_tool` meters the call, the
+/// refusal is a retryable JSON-RPC error rather than a hang or a dropped
+/// connection, and the refusal lands on the `mcp_audit` line with a running
+/// total. The unit tests in `mcp::server` drive the limiter directly; nothing
+/// but this proves the wiring between them.
+///
+/// Five calls against a cap of one, sequentially. The assertion is "at least
+/// three refused" rather than "exactly four" on purpose: the window is a wall
+/// clock, so a boundary crossing during the run can hand back one extra
+/// allowance. It cannot hand back three, so the gate is both tight enough to
+/// fail if the limiter is not wired and loose enough never to flake on it.
+#[test]
+fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() {
+    let binary = env!("CARGO_BIN_EXE_sipnab");
+    let pcap = fixture("sip_call.pcap");
+    let pcap_str = pcap.to_string_lossy().to_string();
+
+    let mut child = Command::new(binary)
+        .args([
+            "-N",
+            "-I",
+            &pcap_str,
+            "--mcp",
+            "--mcp-transport",
+            "stdio",
+            "--mcp-rate-limit-per-peer",
+            "1",
+            "--quiet",
+        ])
+        .env("SIPNAB_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sipnab --mcp");
+
+    let mut stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(&mut stdout);
+
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "sipnab-test", "version": "0"}
+            }
+        }),
+    );
+    read_response_with_id(&mut reader, 1, test_timeout(5)).expect("initialize response");
+    send(
+        &mut child,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    );
+
+    let mut admitted = 0;
+    let mut refused = 0;
+    for id in 2..=6 {
+        send(
+            &mut child,
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "stats", "arguments": {}}
+            }),
+        );
+        let resp = read_response_with_id(&mut reader, id, test_timeout(5)).unwrap_or_else(|| {
+            panic!("no response to call {id} — a rate limit must REFUSE, not hang")
+        });
+        if let Some(error) = resp.get("error") {
+            refused += 1;
+            assert_eq!(
+                error["code"].as_i64(),
+                Some(-32000),
+                "a rate-limit refusal must carry the retryable server-error code: {resp}"
+            );
+            let message = error["message"].as_str().unwrap_or_default();
+            assert!(
+                message.contains("rate limit") && message.contains("retry"),
+                "the refusal must tell the caller to retry shortly: {message}"
+            );
+        } else {
+            admitted += 1;
+            assert!(
+                resp["result"].is_object(),
+                "an admitted call must carry a result: {resp}"
+            );
+        }
+    }
+    assert!(admitted >= 1, "the first call is inside the allowance");
+    assert!(
+        refused >= 3,
+        "five calls against a 1/s cap must be refused at least three times; \
+         admitted {admitted}, refused {refused}"
+    );
+
+    drop(reader);
+    drop(stdout);
+    if let Some(stdin) = child.stdin.take() {
+        drop(stdin);
+    }
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    let mut stderr_text = String::new();
+    {
+        use std::io::Read;
+        let mut stderr = child.stderr.take().expect("stderr");
+        stderr
+            .read_to_string(&mut stderr_text)
+            .expect("read child stderr");
+    }
+    let _ = child.wait();
+
+    let limited: Vec<&str> = stderr_text
+        .lines()
+        .filter(|l| l.contains("mcp_audit") && l.contains("error=rate limited"))
+        .collect();
+    assert!(
+        limited.len() >= 3,
+        "every rate-limited call must leave an audit line saying so; found \
+         {} in:\n{stderr_text}",
+        limited.len()
+    );
+    assert!(
+        limited.iter().all(|l| l.contains("outcome=refused")),
+        "a rate-limit refusal must be audited as a refusal like any other \
+         outcome:\n{}",
+        limited.join("\n")
+    );
+    assert!(
+        limited.iter().any(|l| l.contains("refused since start")),
+        "the audit line must carry the running refusal count, or a flood and a \
+         confused client read identically:\n{}",
+        limited.join("\n")
+    );
+}

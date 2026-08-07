@@ -77,6 +77,11 @@ pub mod privilege;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod process_isolation;
 pub mod provenance;
+// One fixed-window limiter for every surface that meters a peer: the HEP
+// receiver's packets and the MCP server's tool calls. Compiled when either is,
+// so a build with neither carries no dead counter.
+#[cfg(any(feature = "hep", feature = "mcp"))]
+pub mod rate_limit;
 pub mod rtp;
 pub mod security;
 #[doc(hidden)]
