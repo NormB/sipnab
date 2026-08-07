@@ -21,6 +21,10 @@ pub mod decrypt;
 pub mod device;
 #[cfg(feature = "tls")]
 pub mod dtls;
+/// Kernel-side distribution of one interface across N capture sockets.
+/// Capture only — see the module docs before assuming it shards processing.
+#[cfg(feature = "native")]
+pub mod fanout;
 #[cfg(feature = "native")]
 pub mod file;
 #[cfg(feature = "hep")]
