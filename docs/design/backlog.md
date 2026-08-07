@@ -1594,12 +1594,23 @@ authoritative; the PB text above adds only what they do not already say.
   turning those reads into IPC is a new wire protocol, not a refactor.
 
 - [x] **Packet loss map** — visual representation of RTP loss patterns. **Done:** new `StreamLossMap` view (key `L` from Stream Detail / Quality Dashboard) rendering a sequence-space density strip from `RtpStream.lost_sequences` — bursty loss shows as a dark cluster, diffuse as scattered specks — with a summary header (loss %, burst count/pattern from `burst_gap_analysis`) and sequence axis. Pure wraparound-aware `build_loss_map` binning core in `src/rtp/loss_map.rs` (9 unit tests); spec at docs/superpowers/specs/2026-07-24-packet-loss-map-design.md.
-- [ ] **OpenSSF Best Practices Badge** — answer sheet prepared and grounded at
-  `docs/design/openssf-badge-answers.md`; no criterion is unmet. Blocked on the
-  maintainer's own bestpractices.dev session, since registration assigns the
-  project ID the README badge URL needs. Two criteria (`report_responses`,
-  `vulnerability_report_response`) have no history to cite because no issue or
-  vulnerability report has ever been filed — say so rather than claim a number.
+- [x] **OpenSSF Best Practices Badge** — **Done 2026-08-06.** Registered as
+  project **13931**, `badge_level: passing`, `badge_percentage_0: 100`. The
+  badge is wired into `README.md` and the website homepage, and
+  `openssf_badge_test.rs` gates that it stays wired. `LICENSES/{MIT,Apache-2.0}.txt`
+  exists for this: the criterion detector does not recognise the Rust
+  `LICENSE-MIT`/`LICENSE-APACHE` split.
+
+  **This line said "Blocked on the maintainer's own bestpractices.dev session"
+  until 2026-08-07**, a day after registration completed — the one genuinely
+  stale open entry found in an audit of all 43. The answer sheet it points at
+  had drifted the other way too, restating a release count and a crate version
+  that nothing produced; both were removed rather than bumped, on the same
+  reasoning that keeps the benchmark pages off the version markers.
+
+  Two criteria (`report_responses`, `vulnerability_report_response`) still cite
+  no external history because none exists — that remains the honest answer, not
+  a number to invent.
 - [x] **WASM plugin API** — **Done in 0.5.69:** specced at
   [`wasm-plugin-api.md`](./wasm-plugin-api.md), implemented behind the
   non-default `plugins` feature, with a worked example at

@@ -42,7 +42,7 @@ No criterion is unmet.
 | `documentation_interface` | Met | CLI reference, REST API and MCP pages document every external surface |
 | `sites_https` | Met | Site and repository are HTTPS only |
 | `discussion` | Met | GitHub Discussions enabled (`has_discussions: true`) |
-| `maintained` | Met | Active release cadence — 98 releases |
+| `maintained` | Met | Active release cadence; `git tag -l 'v*'` is the count, deliberately not restated here — a figure with no producer goes stale silently |
 
 `contribution_requirements`, `floss_license_osi` and `english` (all SHOULD) are
 met: MIT and Apache-2.0 are both OSI-approved, and everything is in English.
@@ -54,7 +54,7 @@ met: MIT and Apache-2.0 are both OSI-approved, and everything is in English.
 | `repo_public` | Met | `https://github.com/NormB/sipnab` |
 | `repo_track` | Met | Git |
 | `repo_interim` | Met | Work lands on `main` continuously between releases |
-| `version_unique` | Met | Crate version, currently 0.5.83 |
+| `version_unique` | Met | Every release carries a unique semver, single-sourced from `Cargo.toml` and held there by `docs_current_version_markers_match_cargo` |
 | `release_notes` | Met | `CHANGELOG.md`, Keep a Changelog format |
 | `release_notes_vulns` | Met | The changelog calls out security-relevant fixes in the entry carrying them |
 
