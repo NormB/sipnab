@@ -114,6 +114,16 @@ mod http {
         BearerVerified {
             /// The verified token's scope claim.
             scope: String,
+            /// The verified token's `id` claim, so the audit line can name
+            /// WHICH credential made the call rather than only that one
+            /// verified. `None` for a static shared secret, which carries no
+            /// claims and so has no id — recorded as absent, never as a
+            /// blank id that would read like a real one.
+            ///
+            /// Stamped here for the same reason `scope` is: after this
+            /// middleware returns, the `Authorization` header is gone by
+            /// design and nothing downstream can re-derive it.
+            token_id: Option<String>,
         },
         /// No verifier is configured (loopback-only mode): the request was
         /// admitted without credentials. This is implicitly FULL access — the
@@ -164,6 +174,7 @@ mod http {
                 .ok_or(StatusCode::UNAUTHORIZED)?;
             McpAuth::BearerVerified {
                 scope: accepted.scope,
+                token_id: accepted.id,
             }
         };
         // Stamped AFTER the reject paths: a request that reaches the tools
@@ -301,9 +312,20 @@ mod http {
 
         /// Echo the stamped admission record, so tests assert on what a
         /// downstream consumer would actually see.
+        ///
+        /// A token id renders as a third segment, and a credential that has
+        /// none renders as two — the same rule the audit line follows, so a
+        /// build that stamped a blank id could not pass by looking absent.
         async fn probe(axum::Extension(auth): axum::Extension<McpAuth>) -> String {
             match auth {
-                McpAuth::BearerVerified { scope } => format!("bearer:{scope}"),
+                McpAuth::BearerVerified {
+                    scope,
+                    token_id: Some(id),
+                } => format!("bearer:{scope}:{id}"),
+                McpAuth::BearerVerified {
+                    scope,
+                    token_id: None,
+                } => format!("bearer:{scope}"),
                 McpAuth::Unauthenticated => "unauthenticated".to_string(),
             }
         }
@@ -340,14 +362,20 @@ mod http {
             String::from_utf8(bytes.to_vec()).expect("utf8")
         }
 
-        /// A `read`-scoped token is ADMITTED and stamped with its scope.
+        /// A `read`-scoped token is ADMITTED and stamped with its scope AND
+        /// the id it was minted with.
         ///
         /// This is the middleware half of per-tool scoping: the old guard
         /// demanded `full` from every request, so a read token could not even
         /// initialize. Admission and authorization are now different layers —
         /// the middleware proves the credential, dispatch decides per tool.
+        ///
+        /// The id rides along because this is the last place it exists: the
+        /// `Authorization` header is never forwarded past this layer, so a
+        /// stamp that drops the id leaves the audit record unable to say which
+        /// credential made the call.
         #[tokio::test]
-        async fn a_read_scoped_token_is_admitted_and_stamped_with_its_scope() {
+        async fn a_read_scoped_token_is_admitted_and_stamped_with_its_scope_and_id() {
             let app = router(VerifierConfig {
                 signing_keys: vec![KEY.to_vec()],
                 audience: crate::auth::AUDIENCE_MCP.to_string(),
@@ -365,11 +393,12 @@ mod http {
                 .await
                 .expect("oneshot");
             assert_eq!(resp.status(), StatusCode::OK);
-            assert_eq!(body_string(resp).await, "bearer:read");
+            assert_eq!(body_string(resp).await, "bearer:read:agent");
         }
 
         /// A full token (which omits the scope claim) and a static secret
-        /// (which cannot carry one) both stamp `full`.
+        /// (which cannot carry one) both stamp `full` — and they differ on the
+        /// id: the token names itself, the static secret has none to name.
         #[tokio::test]
         async fn full_tokens_and_static_secrets_stamp_full() {
             let app = router(VerifierConfig {
@@ -390,13 +419,18 @@ mod http {
                 .oneshot(probe_request(Some(&token)))
                 .await
                 .expect("oneshot");
-            assert_eq!(body_string(resp).await, "bearer:full");
+            assert_eq!(body_string(resp).await, "bearer:full:ops");
 
             let resp = app
                 .oneshot(probe_request(Some("legacy-static")))
                 .await
                 .expect("oneshot");
-            assert_eq!(body_string(resp).await, "bearer:full");
+            assert_eq!(
+                body_string(resp).await,
+                "bearer:full",
+                "a static secret carries no claims, so it stamps no id — the \
+                 absence is the record, not a blank one"
+            );
         }
 
         /// With a verifier configured, a missing or invalid token is 401 and

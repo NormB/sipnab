@@ -2010,7 +2010,28 @@ past 1000 does nothing: the cap clamps it. Page instead.
   flood. The caller field names what the transport can prove:
   `stdio` for the local pipe, and for HTTP the peer socket plus whether the
   request was `bearer-verified` (with its `scope=full`/`scope=read`) or
-  admitted `unauthenticated` in loopback-only mode. The log records a scope
+  admitted `unauthenticated` in loopback-only mode. A verified token also
+  names itself — `token=<id>`, the same id you set with `--token-id` and the
+  same id you would list in `--mcp-revoked-file`, so a line goes straight to
+  the credential to revoke. Two agents on one host present two tokens from one
+  address, and the socket alone does not tell them apart.
+
+  ```text
+  tool=list_dialogs id=7 caller="10.0.0.9:51544 bearer-verified scope=read token=ci-runner-1" outcome=ok elapsed_ms=3 args={"limit":50}
+  ```
+
+  **A caller with no token carries no `token=` field at all** — not a blank
+  one and not a placeholder. Three cases have none to give: stdio (there is no
+  bearer token), an HTTP call admitted `unauthenticated` in loopback-only
+  mode, and a static shared secret, which carries no claims and so has no id.
+  Grep `token=` and you get exactly the calls that presented a token.
+
+  sipnab percent-encodes the id, so one carrying a space, a quote or a newline
+  cannot forge a field or a line in the record. Ordinary ids contain none of
+  those and appear verbatim. sipnab shortens an id longer than 64 characters
+  and marks it `…(truncated)`, so a prefix never reads as a whole id.
+
+  The log records a scope
   refusal like any other, naming the tool and the scope it needed. Audit
   lines ride the normal log at `info`, so `--quiet`
   suppresses them unless you re-enable them explicitly:

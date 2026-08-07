@@ -914,6 +914,16 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
         stats_line.contains("caller=\"stdio\""),
         "a stdio call must be attributed to the stdio boundary: {stats_line}"
     );
+    // Absence recorded as absence. An HTTP call that presents a verified token
+    // carries `token=<id>` in the caller field; stdio has no bearer token at
+    // all, so it must carry no such key rather than an empty or placeholder
+    // one — `token=` or `token=-` would be indistinguishable from a real token
+    // whose id is blank, and would put stdio into a `token=` grep.
+    assert!(
+        !stats_line.contains("token="),
+        "stdio presents no token, so the audit line must name none — an empty \
+         or placeholder id would read as a real credential: {stats_line}"
+    );
     assert!(
         stats_line.contains("id=2"),
         "the audit line must carry the JSON-RPC request id: {stats_line}"

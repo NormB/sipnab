@@ -4863,6 +4863,13 @@ impl SipnabMcp {
 /// is whoever owns the other end of the pipe, and "stdio" names that boundary
 /// honestly rather than inventing an identity the transport cannot prove.
 ///
+/// A verified token is named by its `id`, so the record answers WHICH
+/// credential and not merely that one verified — see [`audit_token_id`] for
+/// what is recorded and why. A credential with no id (a static shared secret)
+/// gets NO `token=` key at all: an empty or placeholder value would be
+/// indistinguishable from a real id, and would put credentials that never had
+/// one into a `token=` search.
+///
 /// The `no-admission-record` arm should be unreachable — the auth layer stamps
 /// every request it admits — but if a future transport skips the middleware,
 /// an audit line that SAYS the record is missing beats one that quietly
@@ -4878,8 +4885,12 @@ fn caller_of(extensions: &rmcp::model::Extensions) -> String {
                 .map(|ci| ci.0.to_string())
                 .unwrap_or_else(|| "unknown-peer".to_string());
             match parts.extensions.get::<McpAuth>() {
-                Some(McpAuth::BearerVerified { scope }) => {
-                    format!("{addr} bearer-verified scope={scope}")
+                Some(McpAuth::BearerVerified { scope, token_id }) => {
+                    let named = match token_id {
+                        Some(id) => format!(" token={}", audit_token_id(id)),
+                        None => String::new(),
+                    };
+                    format!("{addr} bearer-verified scope={scope}{named}")
                 }
                 Some(McpAuth::Unauthenticated) => format!("{addr} unauthenticated"),
                 None => format!("{addr} no-admission-record"),
@@ -4887,6 +4898,84 @@ fn caller_of(extensions: &rmcp::model::Extensions) -> String {
         }
         None => "stdio".to_string(),
     }
+}
+
+/// Render a verified token's id for the audit line's `token=` field.
+///
+/// # What is recorded, and why it is the id itself
+///
+/// The id verbatim, escaped and bounded — not a digest and not a prefix. The
+/// point of naming the token is that somebody can act on the name: the id is
+/// the same string the operator passed to `--token-id` and the same string a
+/// revocation denylist matches on, so an audit line carrying it goes straight
+/// to "revoke that credential". A digest would break that hop for no gain,
+/// because token ids are low-entropy operator-chosen labels (`ci-runner-1`,
+/// `prom-scraper`) that a wordlist reverses in seconds — it would cost
+/// legibility and buy no secrecy. The id is also not a secret to begin with:
+/// the credential is `s2.<payload>.<signature>`, and the id alone reconstructs
+/// none of it without the HMAC signing key. What the audit line must never
+/// carry is the presented token or its signature, and neither is in scope
+/// here — the `Authorization` header never reaches this code.
+///
+/// # Why it is encoded and bounded anyway
+///
+/// The id arrives from a signed payload, which makes it operator-chosen while
+/// the keys are intact — and an audit log is what gets read when they are not.
+/// Anyone holding a signing key chooses ids, and the audit line is flat text:
+/// the caller is written as `caller="…"` and its neighbours are
+/// space-separated `key=value`. So an id of `x" outcome=ok` closes the quoted
+/// field, an id of `x outcome=ok` does not even need to — every reader in this
+/// repo greps these lines, and a substring search cannot tell a forged
+/// `outcome=ok` from the real one. A newline forges a whole line.
+///
+/// Percent-encoding is what closes all three at once: everything outside a
+/// conservative unreserved set becomes `%XX`, so the rendered id is a single
+/// run of characters with no space, quote, backslash, `=` or control byte in
+/// it, and it is still reversible — an operator percent-decodes to get the
+/// exact id back. Ordinary ids are entirely inside the safe set and render
+/// verbatim, so the encoding is invisible on every real line.
+///
+/// The cap bounds the field: the token format puts no length on `id`, and the
+/// audit record is one line per call. It is applied BEFORE encoding, so the
+/// cut can never land inside a `%XX` triple and leave a half-escape behind.
+/// Shortening is marked, so a reader cannot take a prefix for a whole id and
+/// then fail to find it in the issuance record.
+#[cfg(feature = "mcp-http")]
+fn audit_token_id(id: &str) -> String {
+    /// Characters of the id kept before encoding. Comfortably longer than
+    /// anything sipnab mints (an auto-derived `tok-<micros>` is 24 and a UUID
+    /// is 36) so the real cases render whole, and short enough that the caller
+    /// field cannot dominate the line.
+    const CAP: usize = 64;
+    /// Uppercase hex digits for the `%XX` escapes.
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    /// Bytes recorded as themselves: RFC 3986 unreserved plus the few
+    /// punctuation marks real token ids carry. None of them can end the quoted
+    /// caller field, separate a field, or start a line.
+    fn is_safe(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b':' | b'@' | b'+')
+    }
+
+    // Cut by characters, not bytes: a byte cut could split a UTF-8 sequence.
+    let kept: String = id.chars().take(CAP).collect();
+    let mut out = String::with_capacity(kept.len());
+    for b in kept.bytes() {
+        if is_safe(b) {
+            out.push(char::from(b));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(b >> 4)]));
+            out.push(char::from(HEX[usize::from(b & 0x0f)]));
+        }
+    }
+    if id.chars().count() > CAP {
+        // No space in the marker — it would forge a field of its own. Nothing
+        // the encoder emits can produce this sequence, so it cannot be
+        // mistaken for part of an id.
+        out.push_str("…(truncated)");
+    }
+    out
 }
 
 /// Without the HTTP transport compiled in, stdio is the only way a call can
@@ -4941,7 +5030,7 @@ fn scope_of(extensions: &rmcp::model::Extensions) -> String {
     use crate::mcp::transport::McpAuth;
     match extensions.get::<axum::http::request::Parts>() {
         Some(parts) => match parts.extensions.get::<McpAuth>() {
-            Some(McpAuth::BearerVerified { scope }) => scope.clone(),
+            Some(McpAuth::BearerVerified { scope, .. }) => scope.clone(),
             Some(McpAuth::Unauthenticated) | None => crate::auth::SCOPE_FULL.to_string(),
         },
         None => crate::auth::SCOPE_FULL.to_string(),
@@ -8850,6 +8939,24 @@ mod tests {
         );
     }
 
+    /// Extensions carrying HTTP `Parts` stamped with `auth` (or nothing) —
+    /// what `caller_of` and `scope_of` see for an HTTP call. No `ConnectInfo`
+    /// is inserted, so the peer renders as `unknown-peer`; these tests are
+    /// about the admission record, not the socket.
+    #[cfg(feature = "mcp-http")]
+    fn http_extensions(auth: Option<crate::mcp::transport::McpAuth>) -> rmcp::model::Extensions {
+        let request = axum::http::Request::builder()
+            .body(())
+            .expect("build request");
+        let (mut parts, ()) = request.into_parts();
+        if let Some(auth) = auth {
+            parts.extensions.insert(auth);
+        }
+        let mut extensions = rmcp::model::Extensions::default();
+        extensions.insert(parts);
+        extensions
+    }
+
     /// The admission record maps to the scope dispatch enforces: a verified
     /// bearer token carries its claim; unauthenticated (loopback, no
     /// verifier), a missing stamp, and stdio are all full.
@@ -8858,23 +8965,10 @@ mod tests {
     fn scope_of_maps_each_admission_record() {
         use crate::mcp::transport::McpAuth;
 
-        /// Extensions carrying HTTP `Parts` stamped with `auth` (or nothing).
-        fn http_extensions(auth: Option<McpAuth>) -> rmcp::model::Extensions {
-            let request = axum::http::Request::builder()
-                .body(())
-                .expect("build request");
-            let (mut parts, ()) = request.into_parts();
-            if let Some(auth) = auth {
-                parts.extensions.insert(auth);
-            }
-            let mut extensions = rmcp::model::Extensions::default();
-            extensions.insert(parts);
-            extensions
-        }
-
         assert_eq!(
             scope_of(&http_extensions(Some(McpAuth::BearerVerified {
-                scope: crate::auth::SCOPE_READ.to_string()
+                scope: crate::auth::SCOPE_READ.to_string(),
+                token_id: Some("agent".to_string()),
             }))),
             crate::auth::SCOPE_READ,
             "a verified token's scope claim is the scope dispatch enforces"
@@ -8895,6 +8989,142 @@ mod tests {
             crate::auth::SCOPE_FULL,
             "stdio is full: process ownership is the boundary"
         );
+    }
+
+    /// The caller field names WHICH token made the call, and says nothing at
+    /// all when there is no token to name (PB10).
+    ///
+    /// The audit log's job is to answer "who read this capture", and until the
+    /// id landed the answer stopped at "someone holding a valid token, from
+    /// this socket". Two agents on one host present two tokens from the same
+    /// address, so the socket does not separate them.
+    ///
+    /// The absence cases are the other half and are asserted as the ABSENCE of
+    /// the key, not as a placeholder value. A `token=-` or `token=` would be
+    /// indistinguishable from a token whose id is literally `-` or empty, and
+    /// a reader who greps for `token=` would find lines that never carried
+    /// one. Three different credentials have no id to give — stdio (there is
+    /// no token), a loopback call admitted with no verifier configured, and a
+    /// static shared secret, which carries no claims at all — and all three
+    /// must produce no key.
+    #[cfg(feature = "mcp-http")]
+    #[test]
+    fn the_caller_field_names_the_token_or_says_nothing() {
+        use crate::mcp::transport::McpAuth;
+
+        let named = caller_of(&http_extensions(Some(McpAuth::BearerVerified {
+            scope: crate::auth::SCOPE_READ.to_string(),
+            token_id: Some("ci-runner-1".to_string()),
+        })));
+        assert_eq!(
+            named, "unknown-peer bearer-verified scope=read token=ci-runner-1",
+            "a verified token must be named by the id it was minted with — the \
+             same string the operator wrote in --token-id and would write in \
+             --mcp-revoked-file"
+        );
+
+        // A static secret verifies but carries no claims, so there is no id.
+        let static_secret = caller_of(&http_extensions(Some(McpAuth::BearerVerified {
+            scope: crate::auth::SCOPE_FULL.to_string(),
+            token_id: None,
+        })));
+        assert_eq!(
+            static_secret, "unknown-peer bearer-verified scope=full",
+            "a static secret has no id; the field must be absent, not blank"
+        );
+
+        for (what, caller) in [
+            (
+                "loopback with no verifier configured",
+                caller_of(&http_extensions(Some(McpAuth::Unauthenticated))),
+            ),
+            (
+                "a missing admission record",
+                caller_of(&http_extensions(None)),
+            ),
+            ("stdio", caller_of(&rmcp::model::Extensions::default())),
+            ("a static secret", static_secret.clone()),
+        ] {
+            assert!(
+                !caller.contains("token="),
+                "{what} has no token to name, so the audit line must carry no \
+                 token key at all: {caller}"
+            );
+        }
+        assert_eq!(
+            caller_of(&rmcp::model::Extensions::default()),
+            "stdio",
+            "stdio names the boundary it can prove and nothing else"
+        );
+    }
+
+    /// A token id cannot forge a field or a line on the audit record, and
+    /// cannot run away with it.
+    ///
+    /// The id is read out of a signed payload, which makes it operator-chosen
+    /// on the happy path — but an audit log is what gets read on the unhappy
+    /// one, where a signing key is in the wrong hands and its holder chooses
+    /// ids. The line is flat text, so `x" outcome=ok` closes the quoted caller
+    /// field and `x outcome=ok` does not even need to: every reader of these
+    /// lines, including this repo's own tests, matches substrings. A newline
+    /// forges a whole line.
+    ///
+    /// So the assertion is the strong one — the rendered id contains no
+    /// separator of any kind — rather than "it was escaped somehow", which a
+    /// half-measure could satisfy.
+    #[cfg(feature = "mcp-http")]
+    #[test]
+    fn a_hostile_token_id_cannot_forge_a_field_or_run_away_with_the_line() {
+        use crate::mcp::transport::McpAuth;
+
+        /// The rendered `token=` value from a bearer-verified call with `id`.
+        fn token_field(id: &str) -> String {
+            let caller = caller_of(&http_extensions(Some(McpAuth::BearerVerified {
+                scope: crate::auth::SCOPE_FULL.to_string(),
+                token_id: Some(id.to_string()),
+            })));
+            let rendered = caller
+                .strip_prefix("unknown-peer bearer-verified scope=full token=")
+                .unwrap_or_else(|| {
+                    panic!("the id must render as the caller's token field: {caller}")
+                });
+            rendered.to_string()
+        }
+
+        let forged = token_field("x\" outcome=ok caller=\"10.0.0.1\nsecond line\r\t");
+        assert!(
+            !forged.contains(['"', '\n', '\r', ' ', '\t', '\\', '=']),
+            "an id must not be able to close the quoted caller field, separate a \
+             field, or start a line: {forged}"
+        );
+        assert!(
+            !forged.contains("outcome=ok"),
+            "a forged key=value must not survive into the line an operator greps: \
+             {forged}"
+        );
+
+        let bounded = token_field(&"z".repeat(4096));
+        assert!(
+            bounded.len() < 128,
+            "an unbounded id must not run away with the audit line ({} bytes)",
+            bounded.len()
+        );
+        assert!(
+            bounded.contains("truncated"),
+            "a shortened id must READ as shortened — an operator must not take a \
+             prefix for the whole id and then fail to find it: {bounded}"
+        );
+
+        // The common case is untouched: real ids are inside the safe set and
+        // render verbatim, so the encoding never shows up on a real line.
+        for id in ["tok-1754500000000000", "ci-runner-1", "alice@example.com"] {
+            assert_eq!(
+                token_field(id),
+                id,
+                "an ordinary id must survive verbatim; the encoding is for the \
+                 hostile case only"
+            );
+        }
     }
 
     // ---- save_findings: the one write verb, and its dead end ----------------

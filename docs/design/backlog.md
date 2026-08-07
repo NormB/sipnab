@@ -1438,6 +1438,21 @@ implementation.
   holds `scope` and nothing else, so the `id` that `mint` signs into the
   payload is validated and then dropped. That is a smaller change than this
   line implies, and it is no longer blocked on anything.
+  **The token-naming half shipped 2026-08-07.** `AcceptedToken` carries `id`,
+  the MCP auth middleware stamps it beside the scope, and the caller field now
+  reads `"{addr} bearer-verified scope={scope} token={id}"` — the id verbatim,
+  because it is the same string the operator set with `--token-id` and would
+  list in `--mcp-revoked-file`, so a line goes straight to the credential to
+  revoke. A digest was considered and rejected: token ids are low-entropy
+  operator-chosen labels a wordlist reverses, so it would cost the lookup and
+  buy no secrecy. A caller with no token — stdio, loopback-`unauthenticated`,
+  or a static secret, which carries no claims — gets NO `token=` key rather
+  than a blank one. Ids are percent-encoded and capped at 64 characters so an
+  id cannot forge a field or a line in the record. Gated end to end over real
+  HTTP and real stdio, and mutation-proved at each hop.
+  **ONE thing still keeps this open:** the record rides the normal log rather
+  than an append-only sink. Untouched here on purpose — that needs the sink
+  decision, which is the operator's call and not a code change to guess at.
 - [x] **PB11 — Rate limiting and concurrency caps for MCP.** HEP had per-peer
   limits and REST had `--api-max-conn`; MCP HTTP had neither, so a looping
   agent could pin a capture host.

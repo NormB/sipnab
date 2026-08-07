@@ -38,15 +38,21 @@ include!("support/timeout.rs");
 /// in-test minting.
 const SIGNING_KEY: &str = "e2e-scope-signing-key-0123456789abcdef";
 
-/// Mint a token bound to the MCP audience with the given scope, one hour out.
-fn mint(scope: &str) -> String {
+/// Mint a token bound to the MCP audience with the given id and scope, one
+/// hour out.
+fn mint_with_id(id: &str, scope: &str) -> String {
     sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
-        &format!("scope-test-{scope}"),
+        id,
         chrono::Utc::now().timestamp() + 3600,
         sipnab::auth::AUDIENCE_MCP,
         scope,
     )
+}
+
+/// Mint a token bound to the MCP audience with the given scope, one hour out.
+fn mint(scope: &str) -> String {
+    mint_with_id(&format!("scope-test-{scope}"), scope)
 }
 
 /// Like `support/mcp.rs`'s `spawn_http`, but KEEPS the stderr channel so the
@@ -380,5 +386,61 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
             .iter()
             .any(|l| l.contains("tool=stats ") && l.contains("outcome=ok")),
         "the accepted read-scope stats call must be audited ok:\n{audit:#?}"
+    );
+}
+
+/// The audit line names WHICH token made the call (PB10).
+///
+/// Everything else on the caller field describes the connection — the peer
+/// socket, and that *a* credential verified. Under a legal hold that is not
+/// enough: two agents sharing a host present two different tokens from the
+/// same address, and "somebody with a valid token read this capture" does not
+/// answer whose. The id is what closes that, because it is the same string the
+/// operator passed to `--token-id` and the same string they would write into
+/// `--mcp-revoked-file`.
+///
+/// Driven end to end on purpose. Every hop between the minted payload and the
+/// log line is a place the id can be dropped — `verify_claims` returning it,
+/// the auth middleware stamping it, the extensions carrying it into dispatch —
+/// and a unit test on any one hop passes while the next one throws it away.
+/// The assertion is on the byte sequence an operator would grep for, inside
+/// the quoted caller field, so a build that logs the id somewhere else on the
+/// line does not pass either.
+#[test]
+fn the_audit_line_names_the_token_that_made_the_call() {
+    // Distinctive enough that it cannot match anything else on the line.
+    const TOKEN_ID: &str = "pb10-audit-e2e-token";
+
+    let (child, addr, stderr_rx) = spawn_with_stderr();
+    let token = mint_with_id(TOKEN_ID, sipnab::auth::SCOPE_FULL);
+
+    let session = establish_session(&addr, &token);
+    let ok = call_tool(&addr, &token, &session, 2, "stats", serde_json::json!({}));
+    assert!(
+        ok.get("error").is_none() && ok["result"].is_object(),
+        "the call must succeed, so the audit line below describes a real \
+         answered call rather than a refusal: {ok}"
+    );
+
+    // Tear down first so stderr is complete.
+    mcp::shutdown(child);
+    let mut audit = Vec::new();
+    while let Ok(line) = stderr_rx.recv_timeout(Duration::from_millis(200)) {
+        if line.contains("mcp_audit") {
+            audit.push(line);
+        }
+    }
+    let stats: Vec<&String> = audit.iter().filter(|l| l.contains("tool=stats ")).collect();
+    assert_eq!(
+        stats.len(),
+        1,
+        "exactly one audited stats call; audit lines were:\n{audit:#?}"
+    );
+    let line = stats[0];
+    assert!(
+        line.contains(&format!(" bearer-verified scope=full token={TOKEN_ID}\"")),
+        "the audit line must name the token that made the call, as the last \
+         field inside the quoted caller — a token named outside those quotes \
+         is not attributed to this caller: {line}"
     );
 }

@@ -295,6 +295,18 @@ pub struct AcceptedToken {
     /// [`SCOPE_FULL`] when the claim is absent (pre-scope tokens) or the
     /// credential is a static secret (which carries no claims at all).
     pub scope: String,
+    /// The verified token's `id` claim — the `jti` the operator set with
+    /// `--token-id`, and the string a revocation denylist matches on.
+    ///
+    /// Returned so an audit record can name WHICH credential made a call.
+    /// Without it the strongest thing a log could say was "somebody holding a
+    /// valid token, from this socket", which does not separate two agents
+    /// sharing a host — and does not tell an operator what to revoke.
+    ///
+    /// `None` for a static shared secret, which carries no claims and
+    /// therefore has no id. Absent rather than an empty string on purpose:
+    /// a blank id would be indistinguishable from a token minted with one.
+    pub id: Option<String>,
 }
 
 /// Outcome of the signed-token path, before the static-secret fallback.
@@ -382,7 +394,8 @@ impl TokenVerifier {
     /// requested tool's annotations are in hand.
     ///
     /// Returns `None` when the credential is invalid for any reason; a
-    /// returned [`AcceptedToken`] always carries a resolved scope.
+    /// returned [`AcceptedToken`] always carries a resolved scope, and the
+    /// token's id when the credential had one (see [`AcceptedToken::id`]).
     pub fn verify_claims(&self, presented: &str, now_unix: i64) -> Option<AcceptedToken> {
         match self.verify_signed(presented, now_unix) {
             SignedOutcome::Accepted(accepted) => Some(accepted),
@@ -396,6 +409,8 @@ impl TokenVerifier {
             // token, which is the mechanism that can carry the claim.
             SignedOutcome::NotAToken => self.verify_static(presented).then(|| AcceptedToken {
                 scope: SCOPE_FULL.to_string(),
+                // No claims at all means no id to report. See `AcceptedToken::id`.
+                id: None,
             }),
         }
     }
@@ -479,8 +494,13 @@ impl TokenVerifier {
         // caller compares it against whatever is being requested. Absent
         // means `full`; see `Payload::scope` for why that direction is safe
         // and `aud`'s is not.
+        //
+        // The id is carried out with it. It has already been consulted above
+        // (the revocation check) and was then dropped, which is why an audit
+        // record could not name the credential it had just verified.
         SignedOutcome::Accepted(AcceptedToken {
             scope: payload.scope.unwrap_or_else(|| SCOPE_FULL.to_string()),
+            id: Some(payload.id),
         })
     }
 
@@ -1136,7 +1156,8 @@ mod tests {
         assert_eq!(
             v.verify_claims(&token, 1_000),
             Some(AcceptedToken {
-                scope: SCOPE_READ.to_string()
+                scope: SCOPE_READ.to_string(),
+                id: Some("agent".to_string()),
             }),
             "the scope claim must come back exactly as minted"
         );
@@ -1175,6 +1196,43 @@ mod tests {
             v.verify_claims("wrong-secret", 1_000),
             None,
             "a wrong static secret must yield no claims"
+        );
+    }
+
+    /// The `id` a token was minted with survives verification, and a static
+    /// secret reports having none.
+    ///
+    /// This is the claim the MCP audit line names the caller by. It has to be
+    /// the id verbatim: it is the same string the operator passed to
+    /// `--token-id` and the same string they would write into
+    /// `--api-revoked-file`/`--mcp-revoked-file`, so anything else breaks the
+    /// hop from "this line" to "revoke that credential". A static secret is
+    /// `None` rather than an empty string — the credential genuinely has no
+    /// id, and a blank one would read like a token whose id happens to be
+    /// empty.
+    #[test]
+    fn verify_claims_carries_the_token_id_and_a_static_secret_has_none() {
+        let token = mint(KEY_A, "ci-runner-1", 2_000, AUDIENCE_API, SCOPE_READ);
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            static_keys: vec!["legacy-secret".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(
+            v.verify_claims(&token, 1_000),
+            Some(AcceptedToken {
+                scope: SCOPE_READ.to_string(),
+                id: Some("ci-runner-1".to_string()),
+            }),
+            "the id must come back exactly as minted, beside the scope"
+        );
+        assert_eq!(
+            v.verify_claims("legacy-secret", 1_000),
+            Some(AcceptedToken {
+                scope: SCOPE_FULL.to_string(),
+                id: None,
+            }),
+            "a static secret carries no id at all — absent, not empty"
         );
     }
 
