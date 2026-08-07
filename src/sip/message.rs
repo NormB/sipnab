@@ -268,24 +268,73 @@ impl SipMessage {
     }
 }
 
+/// Strip a leading quoted display name, returning what follows it.
+///
+/// RFC 3261 § 25.1: `display-name = *(token LWS) / quoted-string`, and a
+/// `quoted-string` may hold any octet except an unescaped `"` — including `<`,
+/// `>` and a complete decoy URI, with `\` forming a `quoted-pair`.
+///
+/// So scanning a raw header value for `<` or `sip:` reads caller-controlled
+/// text. `"<sip:evil@attacker.test>" <sip:alice@real.test>` puts a
+/// syntactically perfect URI *before* the real one, and a plain `find` returns
+/// the decoy: the first textual match is not the addressable URI.
+///
+/// An unterminated quote yields `""`, not the remainder. A header whose display
+/// name never closes has no parseable addr-spec, and returning the tail would
+/// resume scanning inside the region this exists to skip.
+fn skip_quoted_display_name(header_value: &str) -> &str {
+    let trimmed = header_value.trim_start();
+    let Some(rest) = trimmed.strip_prefix('"') else {
+        return trimmed;
+    };
+    let mut escaped = false;
+    // char_indices, not bytes: a `\` may escape a multi-byte character, and
+    // stepping two BYTES past it would slice mid-character and panic — a crash
+    // reachable from the same header value this guards.
+    for (idx, ch) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            // '"' is one byte, so idx + 1 is always a char boundary.
+            '"' => return &rest[idx + 1..],
+            _ => {}
+        }
+    }
+    ""
+}
+
+/// Isolate the addr-spec: the URI inside `<...>` for the name-addr form,
+/// otherwise the bare addr-spec up to the first header parameter.
+///
+/// Both [`extract_uri_user`] and [`extract_uri_host_port`] call this. They used
+/// to locate the URI two different ways — one anchored on `<`, the other
+/// scanning for `sip:` anywhere — and drifted apart exactly as duplicated logic
+/// does: the user side was hardened against a decoy and the host side was not,
+/// thirty lines below it. One locator is the fix; a second scanner was the bug.
+fn addr_spec(header_value: &str) -> &str {
+    let value = skip_quoted_display_name(header_value);
+    match value.find('<') {
+        Some(lt) => {
+            let rest = &value[lt + 1..];
+            match rest.find('>') {
+                Some(gt) => &rest[..gt],
+                None => "",
+            }
+        }
+        None => value.trim().split(';').next().unwrap_or("").trim(),
+    }
+}
+
 /// Extract the user part from a SIP URI inside a header value.
 ///
 /// Handles both `<sip:user@host>` and bare `sip:user@host` forms (RFC 3261 § 20.20).
 /// Returns `None` when no `sip:`/`sips:` URI is found, when the URI has no
 /// `@` (host-only), or when the user part is empty.
 pub(crate) fn extract_uri_user(header_value: &str) -> Option<String> {
-    // The addressable URI is inside <...> for the name-addr form, otherwise
-    // the (trimmed) value up to the first header parameter is the bare
-    // addr-spec. A quoted/token display name must NEVER be scanned for the
-    // user, so a crafted `"sip:evil@x"` display name cannot spoof it.
-    let uri = match header_value.find('<') {
-        Some(lt) => {
-            let rest = &header_value[lt + 1..];
-            let gt = rest.find('>')?;
-            &rest[..gt]
-        }
-        None => header_value.trim().split(';').next().unwrap_or("").trim(),
-    };
+    let uri = addr_spec(header_value);
 
     // The URI must itself be a sip/sips addr-spec (not tel:, etc.).
     let after_scheme = uri
@@ -308,16 +357,15 @@ pub(crate) fn extract_uri_user(header_value: &str) -> Option<String> {
 /// hosts (`sip:user@[2001:db8::1]:5060`). Returns `None` for non-SIP URIs (e.g.
 /// `tel:`) or when no host is present (RFC 3261 § 19.1).
 fn extract_uri_host_port(header_value: &str) -> Option<String> {
-    let scheme_pos = header_value
-        .find("<sip:")
-        .or_else(|| header_value.find("<sips:"))
-        .or_else(|| header_value.find("sip:"))
-        .or_else(|| header_value.find("sips:"))?;
+    // The SAME isolation extract_uri_user uses. This function used to scan the
+    // raw header for a scheme anywhere -- `find("<sip:")`, then three fallbacks
+    // ending in a bare `find("sip:")` -- which reads a quoted display name.
+    let uri = addr_spec(header_value);
 
-    let after_scheme = &header_value[scheme_pos..];
-    // Skip past the scheme name to just after its ':'.
-    let colon_pos = after_scheme.find(':')?;
-    let mut rest = &after_scheme[colon_pos + 1..];
+    // The URI must itself be a sip/sips addr-spec (not tel:, etc.).
+    let mut rest = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))?;
 
     // Drop the userinfo (everything up to and including the first '@'). Hosts
     // never contain '@', and IPv6 literals are bracketed, so this is safe.
@@ -325,11 +373,13 @@ fn extract_uri_host_port(header_value: &str) -> Option<String> {
         rest = &rest[at + 1..];
     }
 
-    // host[:port] ends at the first URI delimiter: ';' (uri-parameters), '>'
-    // (end of angle form), '?' (headers), ',' (next header value), or
-    // whitespace. ':' is left intact so it can carry the port (and IPv6 colons).
+    // host[:port] ends at the first URI delimiter: ';' (uri-parameters, which
+    // survive inside the angle form), '?' (headers), ',' (next header value),
+    // or whitespace. ':' is left intact so it can carry the port (and IPv6
+    // colons). '>' is no longer in this set: `addr_spec` returns what is
+    // BETWEEN the brackets, so it cannot appear here.
     let end = rest
-        .find(|c: char| matches!(c, ';' | '>' | '?' | ',') || c.is_whitespace())
+        .find(|c: char| matches!(c, ';' | '?' | ',') || c.is_whitespace())
         .unwrap_or(rest.len());
     let host_port = rest[..end].trim();
 
@@ -705,6 +755,52 @@ mod tests {
     }
 
     // ── extract_uri_host_port ────────────────────────────────────────
+
+    /// A quoted display name may legally contain a complete URI — RFC 3261
+    /// § 25.1 lets a `quoted-string` hold any octet except an unescaped `"`,
+    /// including `<`, `>` and a scheme. Neither the user nor the host may ever
+    /// be read from one, or a caller chooses what it is reported as.
+    #[test]
+    fn quoted_display_name_cannot_spoof_user_or_host() {
+        let crafted = r#""<sip:evil@attacker.test>" <sip:alice@real.test>"#;
+        assert_eq!(extract_uri_user(crafted), Some("alice".to_string()));
+        assert_eq!(
+            extract_uri_host_port(crafted),
+            Some("real.test".to_string())
+        );
+    }
+
+    /// The same attack with a bare scheme rather than a bracketed decoy.
+    #[test]
+    fn quoted_scheme_in_display_name_is_not_the_uri() {
+        let crafted = r#""sip:evil@attacker.test" <sip:bob@real.test>"#;
+        assert_eq!(extract_uri_user(crafted), Some("bob".to_string()));
+        assert_eq!(
+            extract_uri_host_port(crafted),
+            Some("real.test".to_string())
+        );
+    }
+
+    /// `\"` is a quoted-pair and does not close the display name, so a decoy
+    /// placed after one is still inside it.
+    #[test]
+    fn escaped_quote_does_not_end_the_display_name() {
+        let crafted = r#""he said \"<sip:evil@attacker.test>\"" <sip:carol@real.test>"#;
+        assert_eq!(extract_uri_user(crafted), Some("carol".to_string()));
+        assert_eq!(
+            extract_uri_host_port(crafted),
+            Some("real.test".to_string())
+        );
+    }
+
+    /// An unterminated display name has no addressable URI. Resuming the scan
+    /// past it would read the exact region the quote encloses.
+    #[test]
+    fn unterminated_display_name_yields_nothing() {
+        let crafted = r#""<sip:evil@attacker.test> <sip:dave@real.test>"#;
+        assert_eq!(extract_uri_user(crafted), None);
+        assert_eq!(extract_uri_host_port(crafted), None);
+    }
 
     /// Host and port are extracted past a display name and userinfo.
     #[test]
