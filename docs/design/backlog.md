@@ -1165,7 +1165,25 @@ output path.
     `Authorization` / `Proxy-Authorization` (username, realm, and the
     nonce+response pair, which is an offline dictionary attack against HA1 — a
     credential disclosure, not a privacy nit); `Call-ID` and SDP `o=` (internal
-    hostnames and IPs); `MESSAGE` bodies, `application/kpml+xml`, SIP INFO DTMF.
+    hostnames and IPs); **`P-Charging-Vector`, every parameter of it**;
+    `MESSAGE` bodies, `application/kpml+xml`, SIP INFO DTMF.
+  - **`P-Charging-Vector` is the worst of the hostname-leaking group and was
+    missing from this list until 2026-08-08**, when
+    [`icid-correlation.md`](icid-correlation.md) §5 caught it while adding the
+    two RFC 7315 correlation strategies. It is not one field but five leaks:
+    `icid-generated-at` and `related-icid-generated-at` are, per §5.6, the
+    hostname or IP of a generating proxy; `orig-ioi` / `term-ioi` name the
+    operators on each side of an interconnect and `transit-ioi` the ordered
+    list of transit operators (its `void` convention exists precisely because
+    operators treat that as secret); and `icid-value` itself is opaque only in
+    theory — §4.6's own suggested construction concatenates a local value with
+    *"the hostname or IP address of the SIP proxy that generated"* it, so a
+    "meaningless token" is frequently a router name in disguise. Redacting
+    `Call-ID` and SDP `o=` for internal hostnames while leaving this header
+    intact would redact the two lesser sources of one leak and not the greater.
+    Nothing surfaces it today — the correlation strategies report their NAME and
+    never the matched value — so this is a prerequisite of the redaction
+    feature, not an outstanding exposure.
   - **RFC 4733 telephone-event is the one that gets missed**, and sipnab does
     decode it — `src/rtp/dtmf.rs` reconstructs digits into `DtmfEvent { digit }`.
     Post-answer IVR entry is card numbers, PINs, SSNs, DOBs. Verified 2026-08-03:

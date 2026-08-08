@@ -457,9 +457,14 @@ fn wiki_intra_docs_links_resolve() {
     // sections, and pointers from those back to the HEP, tunnel and
     // client-cookbook sections they compare against. The wiki mirror is ONE
     // copy, so this counts each authored link once.
+    // Raised 310 -> 312 by the RFC 7315 charging-vector strategies, taken from
+    // this gate's own failing count rather than added up: the walkthrough's
+    // correlation-identifier note and mcp.md's strategy table each gained a
+    // pointer to docs/design/icid-correlation.md, which is where the argument
+    // and its open questions live instead of being restated on either page.
     assert_eq!(
-        seen, 310,
-        "extractor found {seen} wiki links, expected 310. More is fine — bump \
+        seen, 312,
+        "extractor found {seen} wiki links, expected 312. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );

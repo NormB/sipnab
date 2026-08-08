@@ -64,6 +64,41 @@ pub enum CorrelationReason {
     SdpOrigin,
     /// Matched via X-Call-ID header.
     XCallId,
+    /// One leg's RFC 7315 `related-icid` names the other leg's `icid-value`.
+    ///
+    /// The B2BUA case, in the parameter the RFC provides for it. §4.6.4.1: a
+    /// UAS acting as a B2BUA *MAY* add `related-icid`, whose *"value is the
+    /// icid value of the original dialog towards the remote end"*. So a match
+    /// here is an intermediary DECLARING the link rather than sipnab inferring
+    /// one, which is why it outranks plain [`Self::ChargingVectorIcid`].
+    ///
+    /// Scored 95, below both 100s. `Session-ID` is a Proposed Standard whose
+    /// purpose is surviving intermediaries and whose match is symmetric set
+    /// intersection; `X-Call-ID` only exists because an operator deliberately
+    /// configured a header to mean "this is the other leg". `related-icid` is
+    /// standardised, which beats a vendor convention, but it is optional, it is
+    /// a one-way pointer, and it lives in a header §4.6.2.2 explicitly permits
+    /// the next hop to modify.
+    ChargingVectorRelatedIcid,
+    /// Two legs carry the same RFC 7315 `icid-value`.
+    ///
+    /// An identifier comparison — §4.6 requires the value to be globally
+    /// unique, a real normative MUST — but read what it identifies: *"a dialog
+    /// or a transaction outside a dialog"*. A B2BUA is two dialogs, so a
+    /// CONFORMANT one emits two different icids and this strategy is silent
+    /// across it. Equality across two differing Call-IDs therefore means some
+    /// intermediary copied a per-dialog identifier onto a second dialog: useful
+    /// where it happens, and a vendor behaviour rather than anything an RFC
+    /// grants.
+    ///
+    /// Scored 85, between [`Self::SdpOrigin`] (90) and [`Self::ViaBranch`]
+    /// (80). Below the SDP origin tuple because that tuple's uniqueness is
+    /// structural and its failure mode is silence, whereas this is a value the
+    /// next hop MAY rewrite and whose semantic scope (one dialog) is not what
+    /// it is being used for (two). Above a shared Via branch because a branch
+    /// match is a transaction coincidence with no uniqueness requirement behind
+    /// it, and this at least carries a MUST.
+    ChargingVectorIcid,
     /// Matched via shared Via branch parameter.
     ViaBranch,
     /// Matched via endpoint overlap + timing heuristic.
@@ -916,13 +951,24 @@ impl DialogStore {
 
     /// Find dialogs correlated to the given Call-ID with confidence scores.
     ///
-    /// Checks three correlation strategies per candidate dialog (first match wins):
-    /// 1. **X-Call-ID** (score=100): B-leg carries X-Call-ID pointing to source, or vice versa.
-    /// 2. **Via branch** (score=80): INVITE messages share a Via branch parameter.
-    /// 3. **Timing heuristic** (score=50): both INVITE dialogs share an endpoint IP
-    ///    and were created within 2 seconds of each other.
+    /// Checks seven correlation strategies per candidate dialog, in descending
+    /// score order, first match wins:
+    /// 1. **RFC 7989 `Session-ID`** (100): set intersection over the non-nil
+    ///    halves, which is what survives a B2BUA swapping them.
+    /// 2. **Correlation header** (100): the B-leg carries a configured header
+    ///    (`X-Call-ID` by default) pointing at the source Call-ID, or vice versa.
+    /// 3. **RFC 7315 `related-icid`** (95): one leg's `related-icid` names the
+    ///    other's `icid-value` — an intermediary declaring the link.
+    /// 4. **RFC 8866 SDP origin tuple** (90): the whole uniqueness tuple, never
+    ///    `sess-id` alone.
+    /// 5. **RFC 7315 `icid-value`** (85): both legs carry the same charging
+    ///    identifier.
+    /// 6. **Via branch** (80): INVITE messages share a Via branch parameter.
+    /// 7. **Timing heuristic** (50): both INVITE dialogs share an endpoint IP
+    ///    and were created within 2 seconds of each other. The only one of the
+    ///    seven that is a guess rather than an identifier comparison.
     ///
-    /// Results are deduplicated (highest score wins) and sorted by score descending.
+    /// Results are sorted by score descending.
     ///
     /// # Arguments
     ///
@@ -956,6 +1002,27 @@ impl DialogStore {
             .iter()
             .filter_map(|m| m.header("Session-ID"))
             .filter_map(crate::sip::session_id::SessionId::parse)
+            .collect();
+
+        // Charging-vector data: every RFC 7315 `icid-value` and every
+        // `related-icid` the source dialog carried, across repeated
+        // `P-Charging-Vector` headers and every message. Sets, so the candidate
+        // side is O(1) per value.
+        //
+        // Empty and malformed values never reach here — the parser returns
+        // `None` for them — which is what keeps two legs that both lack the
+        // header from correlating on a shared nothing. `icid-generated-at`,
+        // `orig-ioi`, `term-ioi` and `transit-ioi` are never read: matching on
+        // a generating address would correlate every call one proxy touched.
+        let src_icids: std::collections::HashSet<std::borrow::Cow<'_, str>> = dialog
+            .messages
+            .iter()
+            .flat_map(crate::sip::charging_vector::message_icids)
+            .collect();
+        let src_related_icids: std::collections::HashSet<std::borrow::Cow<'_, str>> = dialog
+            .messages
+            .iter()
+            .flat_map(crate::sip::charging_vector::message_related_icids)
             .collect();
 
         // Strategy 1.5 data: RFC 8866 SDP origin tuples the source dialog
@@ -1031,6 +1098,40 @@ impl DialogStore {
                 continue;
             }
 
+            // Strategy 1.2: RFC 7315 `related-icid` (score=95). Matched in BOTH
+            // directions — this dialog's `related-icid` against the candidate's
+            // `icid-value`, and the reverse — because the pointer the RFC
+            // describes is one-way (the new leg names the old one) and the
+            // caller may ask from either end. What that costs is the record of
+            // which leg came first, which nothing downstream reads today.
+            //
+            // Placed ABOVE the SDP origin tuple, which is a DIVERGENCE from
+            // docs/design/icid-correlation.md §4: that section says both new
+            // checks sit between `sdp_origin` and `via_branch`, and also that
+            // "order of evaluation follows score". Those disagree at 95 > 90.
+            // The principle wins: this loop is first-match-wins and the results
+            // are then sorted by score, so a 95 check running after a 90 check
+            // would report a leg that matched both as the weaker strategy at
+            // the weaker score.
+            if !src_related_icids.is_empty() || !src_icids.is_empty() {
+                let related_match = candidate.messages.iter().any(|m| {
+                    crate::sip::charging_vector::message_icids(m)
+                        .iter()
+                        .any(|icid| src_related_icids.contains(icid.as_ref()))
+                        || crate::sip::charging_vector::message_related_icids(m)
+                            .iter()
+                            .any(|rel| src_icids.contains(rel.as_ref()))
+                });
+                if related_match {
+                    results.push(CorrelationResult {
+                        dialog: candidate,
+                        score: 95,
+                        reason: CorrelationReason::ChargingVectorRelatedIcid,
+                    });
+                    continue;
+                }
+            }
+
             // Strategy 1.5: SDP origin tuple (score=90). Between the
             // correlation headers and the Via branch: it is a real identifier
             // that the RFC defines as globally unique, but it names the media
@@ -1050,6 +1151,27 @@ impl DialogStore {
                         dialog: candidate,
                         score: 90,
                         reason: CorrelationReason::SdpOrigin,
+                    });
+                    continue;
+                }
+            }
+
+            // Strategy 1.7: plain RFC 7315 `icid-value` equality (score=85),
+            // between the SDP origin tuple and the Via branch. Reached only
+            // when `related-icid` did not match, so the two reasons stay
+            // distinguishable: this one is "an intermediary carried a
+            // per-dialog identifier onto a second dialog", which no RFC grants.
+            if !src_icids.is_empty() {
+                let icid_match = candidate
+                    .messages
+                    .iter()
+                    .flat_map(crate::sip::charging_vector::message_icids)
+                    .any(|icid| src_icids.contains(icid.as_ref()));
+                if icid_match {
+                    results.push(CorrelationResult {
+                        dialog: candidate,
+                        score: 85,
+                        reason: CorrelationReason::ChargingVectorIcid,
                     });
                     continue;
                 }
@@ -1101,13 +1223,18 @@ impl DialogStore {
         results
     }
 
-    /// Find dialogs correlated to the given Call-ID via X-Call-ID headers,
-    /// Via branch overlap, or timing heuristics.
+    /// Find dialogs correlated to the given Call-ID, discarding the reason.
     ///
-    /// Returns every correlated dialog, regardless of score. All three
-    /// correlation strategies emit a score of at least 50 (X-Call-ID=100,
-    /// Via-branch=80, timing=50), so there is no sub-threshold tier to
-    /// discard here; empty when the Call-ID is unknown or nothing correlates.
+    /// Returns every correlated dialog, regardless of score. All seven
+    /// strategies [`find_correlated_scored`](Self::find_correlated_scored)
+    /// evaluates emit a score of at least 50, so there is no sub-threshold tier
+    /// to discard here; empty when the Call-ID is unknown or nothing
+    /// correlates.
+    ///
+    /// Callers that will report the answer should prefer
+    /// [`find_correlated_scored`](Self::find_correlated_scored): dropping the
+    /// reason makes an identifier match and a timing guess indistinguishable,
+    /// which is how a hypothesis gets presented as a finding.
     pub fn find_correlated(&self, call_id: &str) -> Vec<&SipDialog> {
         self.find_correlated_scored(call_id)
             .into_iter()
@@ -3254,6 +3381,306 @@ mod tests {
                 .iter()
                 .all(|r| r.reason != CorrelationReason::SessionId),
             "nil is absence; two calls both saying 'unknown' are not one call"
+        );
+    }
+
+    // ── RFC 7315 P-Charging-Vector correlation ───────────────────────────
+    //
+    // EVERY fixture below is SYNTHETIC and has to be: `P-Charging-Vector`
+    // appears in no capture this repository holds or can reach, so there is
+    // nothing to derive one from. Addresses come from RFC 5737's documentation
+    // ranges and names from RFC 2606's. RFC 7315 §4.6.2.3's own example icid
+    // is NOT copied — it embeds 192.0.6.8, which is not a documentation
+    // address.
+    //
+    // The positive tests below DENY EVERY OTHER STRATEGY, because
+    // `find_correlated_scored` answers from seven of them and a test that
+    // asserts "something correlated" passes without any charging-vector code
+    // at all. Denials, one per strategy:
+    //
+    //   session_id       no `Session-ID` header on either leg
+    //   x_call_id        no `X-Call-ID`, and no configured alternative
+    //   sdp_origin       no body at all, so no origin tuple
+    //   via_branch       distinct branch parameters
+    //   timing_heuristic disjoint endpoint IPs AND created_at more than 2 s
+    //                    apart — both, since either alone leaves the other
+    //                    free to match
+    //
+    // With all of those denied the assertion can be the strong one: EXACTLY
+    // one result, with the expected reason and score, or none at all.
+
+    /// One leg of an isolated pair: distinct branch, distinct endpoints, no
+    /// body, no correlation header, and a caller-chosen instant.
+    ///
+    /// `vectors` may be empty, which yields an INVITE with no
+    /// `P-Charging-Vector` at all — the fall-through case a helper that always
+    /// writes one cannot express.
+    fn make_isolated_invite(
+        call_id: &str,
+        vectors: &[&str],
+        src: IpAddr,
+        dst: IpAddr,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let mut headers = vec![
+            format!("Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK{call_id}"),
+            "From: <sip:alice@example.com>;tag=t1".to_string(),
+            "To: <sip:bob@example.net>".to_string(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".to_string(),
+            "Content-Length: 0".to_string(),
+        ];
+        headers.extend(vectors.iter().map(|v| format!("P-Charging-Vector: {v}")));
+        let borrowed: Vec<&str> = headers.iter().map(String::as_str).collect();
+        let raw = build_sip("INVITE sip:bob@example.net SIP/2.0", &borrowed, b"");
+        parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+            .expect("should parse INVITE with P-Charging-Vector")
+    }
+
+    /// A store holding two isolated legs, `leg-a@access` and `leg-b@core`.
+    ///
+    /// The two are three seconds apart on disjoint endpoint pairs, so the
+    /// timing heuristic cannot answer for the strategy under test.
+    fn isolated_pair(a_vectors: &[&str], b_vectors: &[&str]) -> DialogStore {
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_isolated_invite(
+            "leg-a@access",
+            a_vectors,
+            ip(192, 0, 2, 1),
+            ip(192, 0, 2, 2),
+            base_ts(),
+        ));
+        store.process_message(make_isolated_invite(
+            "leg-b@core",
+            b_vectors,
+            ip(198, 51, 100, 1),
+            ip(198, 51, 100, 2),
+            base_ts() + TimeDelta::seconds(3),
+        ));
+        store
+    }
+
+    /// The isolation itself, asserted rather than assumed: two legs carrying no
+    /// charging vector correlate on NOTHING.
+    ///
+    /// Without this, every "expect exactly one result" below could be passing
+    /// because some other strategy was quietly answering, and nobody would
+    /// know which. This is the fixture's own proof of denial.
+    #[test]
+    fn the_isolated_pair_correlates_on_nothing_at_all() {
+        assert!(
+            isolated_pair(&[], &[])
+                .find_correlated_scored("leg-a@access")
+                .is_empty(),
+            "the fixture must deny all seven strategies, or the icid tests below \
+             prove nothing about the icid"
+        );
+    }
+
+    /// The B2BUA case, in the parameter RFC 7315 §4.6.4.1 provides for it: the
+    /// new leg's `related-icid` names the original dialog's `icid-value`.
+    #[test]
+    fn related_icid_correlates_the_leg_it_points_at() {
+        const A_ICID: &str = "P-CSCF1.example.net-1718452800-0001";
+        const B_ICID: &str = "SBC1.example.net-1718452800-0002";
+        let store = isolated_pair(
+            &[&format!("icid-value={A_ICID}")],
+            &[&format!(
+                "icid-value={B_ICID};related-icid={A_ICID};related-icid-generated-at=192.0.2.1"
+            )],
+        );
+        let found = store.find_correlated_scored("leg-a@access");
+        assert_eq!(found.len(), 1, "exactly one leg, from exactly one strategy");
+        assert_eq!(found[0].dialog.call_id, "leg-b@core");
+        assert_eq!(
+            found[0].reason,
+            CorrelationReason::ChargingVectorRelatedIcid
+        );
+        assert_eq!(found[0].score, 95);
+    }
+
+    /// The pointer is one-way, so the query must work from the leg that does
+    /// NOT carry it. Asking from the far end is the ordinary case: an operator
+    /// starts from whichever Call-ID the complaint named.
+    #[test]
+    fn related_icid_correlates_in_both_query_directions() {
+        const A_ICID: &str = "P-CSCF1.example.net-1718452800-0001";
+        let store = isolated_pair(
+            &[&format!("icid-value={A_ICID}")],
+            &[&format!(
+                "icid-value=SBC1.example.net-1718452800-0002;related-icid={A_ICID}"
+            )],
+        );
+        let from_b = store.find_correlated_scored("leg-b@core");
+        assert_eq!(from_b.len(), 1);
+        assert_eq!(from_b[0].dialog.call_id, "leg-a@access");
+        assert_eq!(
+            from_b[0].reason,
+            CorrelationReason::ChargingVectorRelatedIcid
+        );
+    }
+
+    /// Plain `icid-value` equality: an intermediary carried a per-dialog
+    /// identifier onto a second dialog. A different claim from `related-icid`
+    /// and a different score, which is why the two reasons are separate.
+    #[test]
+    fn a_shared_icid_value_correlates_at_a_lower_score_than_related_icid() {
+        const ICID: &str = "P-CSCF1.example.net-1718452800-0001";
+        let store = isolated_pair(
+            &[&format!("icid-value={ICID};icid-generated-at=192.0.2.1")],
+            &[&format!("orig-ioi=home1.example.net;icid-value=\"{ICID}\"")],
+        );
+        let found = store.find_correlated_scored("leg-a@access");
+        assert_eq!(found.len(), 1, "exactly one leg, from exactly one strategy");
+        assert_eq!(found[0].dialog.call_id, "leg-b@core");
+        assert_eq!(found[0].reason, CorrelationReason::ChargingVectorIcid);
+        assert_eq!(
+            found[0].score, 85,
+            "below sdp_origin's 90 and above via_branch's 80"
+        );
+    }
+
+    /// THE negative control, and the one that catches the likeliest bug:
+    /// matching on the header's PRESENCE rather than on its value. Identical
+    /// to the two positives except for ONE CHARACTER.
+    ///
+    /// Expect NOTHING — not a lower score, not a timing fallback. The pair is
+    /// isolated, so anything at all here is the charging-vector code answering
+    /// when it should be silent.
+    #[test]
+    fn icids_differing_by_one_character_correlate_on_nothing() {
+        let store = isolated_pair(
+            &["icid-value=P-CSCF1.example.net-1718452800-0001"],
+            &["icid-value=P-CSCF1.example.net-1718452800-0002"],
+        );
+        assert!(
+            store.find_correlated_scored("leg-a@access").is_empty(),
+            "one character apart is a different identifier"
+        );
+    }
+
+    /// The same control for `related-icid`: a pointer that names something
+    /// else, off by one character, points at nothing here.
+    #[test]
+    fn a_related_icid_off_by_one_character_correlates_on_nothing() {
+        let store = isolated_pair(
+            &["icid-value=P-CSCF1.example.net-1718452800-0001"],
+            &["icid-value=SBC1.example.net-1718452800-0002;\
+               related-icid=P-CSCF1.example.net-1718452800-0009"],
+        );
+        assert!(
+            store.find_correlated_scored("leg-a@access").is_empty(),
+            "a related-icid naming a different dialog is not a link to this one"
+        );
+    }
+
+    /// Parameter isolation: two legs whose `icid-value` differs but whose
+    /// `icid-generated-at` is identical — the NORMAL case, one proxy
+    /// generating both.
+    ///
+    /// An implementation that compared whole header values, or fell back to
+    /// the generating address, would correlate every call that proxy touched.
+    /// The address is also the one parameter that must never be surfaced.
+    #[test]
+    fn a_shared_generating_address_does_not_correlate() {
+        let store = isolated_pair(
+            &["icid-value=P-CSCF1.example.net-1718452800-0001;icid-generated-at=192.0.2.1"],
+            &["icid-value=P-CSCF1.example.net-1718452800-0002;icid-generated-at=192.0.2.1"],
+        );
+        assert!(
+            store.find_correlated_scored("leg-a@access").is_empty(),
+            "one proxy generated both; that is not one call"
+        );
+    }
+
+    /// An `icid-value` that is present but empty is absence, and two legs
+    /// emitting it must not be joined by it.
+    #[test]
+    fn an_empty_icid_value_does_not_correlate() {
+        let store = isolated_pair(
+            &["icid-value=;icid-generated-at=192.0.2.1"],
+            &["icid-value=\"\";icid-generated-at=192.0.2.2"],
+        );
+        assert!(
+            store.find_correlated_scored("leg-a@access").is_empty(),
+            "an empty charging identifier is not a charging identifier"
+        );
+    }
+
+    /// End to end, through the store, of the attack the parser refuses: the
+    /// text `icid-value=<the other leg's id>` sitting between two `;` inside a
+    /// quoted `orig-ioi`. A substring scan — or any splitter that does not
+    /// track quotes — correlates these and reports `identifier_match: true`
+    /// for text the far end chose.
+    #[test]
+    fn a_decoy_icid_inside_another_parameter_does_not_correlate() {
+        const ICID: &str = "P-CSCF1.example.net-1718452800-0001";
+        let store = isolated_pair(
+            &[&format!("icid-value={ICID}")],
+            &[&format!("orig-ioi=\"x;icid-value={ICID};y\"")],
+        );
+        assert!(
+            store.find_correlated_scored("leg-a@access").is_empty(),
+            "the identifier is the parameter, not the text anywhere in the header"
+        );
+    }
+
+    /// The header can arrive more than once — it has no comma-separated list
+    /// form, so a second node that inserts its own inserts a whole header line.
+    /// Every one of them is read.
+    #[test]
+    fn a_repeated_charging_vector_header_is_read_in_full() {
+        const ICID: &str = "IBCF1.example.net-1718452800-0009";
+        let store = isolated_pair(
+            &[
+                "icid-value=P-CSCF1.example.net-1718452800-0001",
+                &format!("icid-value={ICID}"),
+            ],
+            &[&format!("icid-value={ICID}")],
+        );
+        let found = store.find_correlated_scored("leg-a@access");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].reason,
+            CorrelationReason::ChargingVectorIcid,
+            "the second header carried the match and must not be ignored"
+        );
+    }
+
+    /// A leg with NO `P-Charging-Vector` falls through to the strategies that
+    /// do apply, rather than matching on an absent value.
+    ///
+    /// Deliberately NOT the isolated fixture: these two legs share endpoints
+    /// and an instant, so the timing heuristic is available and the assertion
+    /// is that it — and not a charging-vector strategy — is what answers.
+    #[test]
+    fn a_leg_with_no_charging_vector_falls_through_to_the_other_strategies() {
+        let ts = base_ts();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_isolated_invite(
+            "leg-a@access",
+            &[],
+            ip(192, 0, 2, 1),
+            ip(192, 0, 2, 2),
+            ts,
+        ));
+        store.process_message(make_isolated_invite(
+            "leg-b@core",
+            &[],
+            ip(192, 0, 2, 1),
+            ip(192, 0, 2, 3),
+            ts,
+        ));
+        let found = store.find_correlated_scored("leg-a@access");
+        assert_eq!(
+            found
+                .iter()
+                .map(|r| r.reason.clone())
+                .collect::<Vec<_>>()
+                .as_slice(),
+            [CorrelationReason::TimingHeuristic],
+            "absence is not an identifier, and the leg must still be found by \
+             the strategy that does apply"
         );
     }
 

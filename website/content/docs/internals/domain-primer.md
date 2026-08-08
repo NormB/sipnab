@@ -207,16 +207,23 @@ sequenceDiagram
 
 A B2BUA (SBC, PBX) terminates one call and originates another, so one
 human call is two Call-IDs with no shared identifier by default.
-[`dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs) correlates legs five ways,
+[`dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs) correlates legs seven ways,
 each with a confidence score and each reported under its own reason:
 
 | Reason | Score | Survives a B2BUA? |
 |---|---|---|
 | `SessionId` — RFC 7989 `Session-ID` | 100 | **Yes, by design** |
 | `XCallId` — a configured header, `X-Call-ID` by default | 100 | Only if the SBC inserts it |
+| `ChargingVectorRelatedIcid` — RFC 7315 `related-icid` names the other leg's `icid-value` | 95 | Yes, when the B2BUA chose to emit it (`MAY`) |
 | `SdpOrigin` — the RFC 8866 SDP origin tuple | 90 | Only if the SBC forwards SDP untouched |
+| `ChargingVectorIcid` — both legs carry the same RFC 7315 `icid-value` | 85 | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `ViaBranch` — a shared branch parameter | 80 | No: a new transaction gets a new branch |
 | `TimingHeuristic` — endpoint overlap plus timing | 50 | Not an identifier at all |
+
+The two charging-vector rows are one header and two different claims, which is
+why they are two reasons rather than one with a sub-field. The argument, and
+what is still unverified about it, is
+[`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md).
 
 `SdpOrigin` compares the whole uniqueness tuple RFC 8866 defines —
 `<username> <sess-id> <nettype> <addrtype> <unicast-address>` — and never
