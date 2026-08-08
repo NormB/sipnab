@@ -2149,10 +2149,14 @@ fn no_documentation_table_repeats_a_row() {
     // of the new tuning page.
     // 125 -> 127 by `CLA.md` (the Contributor License Agreement, also the gist
     // source) and `website/content/cla.md` (the sipnab.com/cla/ page).
+    // Raised 130 -> 131 by `docs/design/icid-correlation.md`, the
+    // P-Charging-Vector `icid-value` correlation spec. A design doc has no site
+    // mirror, so it costs this counter one file and not two. The number is the
+    // one this gate reported on a failing run, not one added up by hand.
     assert_eq!(
         files.len(),
-        130,
-        "found {} tracked markdown files, expected 130. More is fine — bump \
+        131,
+        "found {} tracked markdown files, expected 131. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2256,9 +2260,18 @@ fn no_documentation_table_repeats_a_row() {
     // docs/install.md, which the project's own task-first rule requires of
     // every how-to page. That page HAS a site mirror, so one authored table
     // counts twice.
+    // Raised 487 -> 495 by docs/design/icid-correlation.md, the
+    // P-Charging-Vector `icid-value` correlation spec: eight authored tables on
+    // one page (the five existing strategies, the RFCs updating RFC 7315, what
+    // a plain icid match means per hop, where the header is present per hop,
+    // the two proposed reasons, the parameters that must never be surfaced, the
+    // files a fifth strategy touches, and how a fixture denies each existing
+    // strategy). A design doc has no site mirror, so each counts ONCE — unlike
+    // the mirrored pages above, which cost two apiece. The number is the one
+    // this gate reported on a failing run, not one added up by hand.
     assert_eq!(
-        tables, 487,
-        "walked {tables} tables, expected 487. More is fine — bump this. FEWER \
+        tables, 495,
+        "walked {tables} tables, expected 495. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
