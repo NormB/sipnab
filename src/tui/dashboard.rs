@@ -11,7 +11,12 @@
 //! and legend from that cached snapshot.
 
 use crate::rtp::quality::estimate_mos;
-use crate::rtp::stream::{RtpStream, StreamKey};
+// `RtpStream` is no longer named here: the loss figure moved onto the type
+// itself (`RtpStream::loss_percent`), so this module reaches streams only
+// through the store's iterator. The test module imports it for its own
+// fixtures — deliberately there rather than as a `#[cfg(test)]` import beside
+// this line, which would gate a use without gating its binding.
+use crate::rtp::stream::StreamKey;
 use crate::rtp::stream_store::StreamStore;
 use crate::tui::App;
 
@@ -67,16 +72,6 @@ pub struct DashboardSnapshot {
     pub rows: Vec<StreamHealth>,
 }
 
-/// Cumulative loss percentage of a stream; `0.0` for an empty stream.
-fn stream_loss_pct(s: &RtpStream) -> f64 {
-    let total = s.packet_count + s.lost_packets;
-    if total > 0 {
-        (s.lost_packets as f64 / total as f64) * 100.0
-    } else {
-        0.0
-    }
-}
-
 impl DashboardSnapshot {
     /// Build a snapshot from the stream store.
     ///
@@ -96,7 +91,7 @@ impl DashboardSnapshot {
         let mut rows: Vec<StreamHealth> = store
             .iter()
             .map(|s| {
-                let loss_pct = stream_loss_pct(s);
+                let loss_pct = s.loss_percent();
                 let codec = s.codec.clone();
                 let mos = estimate_mos(s.jitter, loss_pct, codec.as_deref());
                 let trend = s
@@ -381,6 +376,7 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
 mod tests {
     use super::*;
     use crate::rtp::parser::RtpHeader;
+    use crate::rtp::stream::RtpStream;
     use chrono::{Duration, Utc};
     use std::net::SocketAddr;
 
@@ -444,6 +440,45 @@ mod tests {
         assert_eq!(snap.worst_mos, None);
         assert_eq!(snap.streams_with_loss, 0);
         assert!(snap.rows.is_empty());
+    }
+
+    /// The dashboard's loss column reads the shared figure, not a private
+    /// copy of the arithmetic.
+    ///
+    /// This file used to carry `stream_loss_pct`, byte-identical to the
+    /// stream list's `loss_percent` and to `event_exec`'s `loss_pct`. Three
+    /// copies of one definition do not disagree on the day they are written;
+    /// they disagree on the day one of them is corrected. The dashboard is
+    /// where that would be worst — the loss figure feeds `estimate_mos`, so a
+    /// drifted denominator moves the MOS ranking the whole view sorts by, and
+    /// the number never looks wrong on its own.
+    ///
+    /// 90 received and 10 lost is the pair that discriminates: `lost /
+    /// received` reads 11.1% where the definition reads 10.0%.
+    #[test]
+    fn the_dashboard_loss_column_is_the_shared_loss_figure() {
+        let mut s = clean_stream(1, 5);
+        s.packet_count = 90;
+        s.lost_packets = 10;
+        let expected = s.loss_percent();
+
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let row = &snap.rows[0];
+
+        assert!(
+            (expected - 10.0).abs() < f64::EPSILON,
+            "the fixture must be one a wrong denominator gets wrong: {expected}"
+        );
+        assert!(
+            (row.loss_pct - expected).abs() < f64::EPSILON,
+            "the dashboard row must carry RtpStream::loss_percent, not its own \
+             arithmetic: row {} vs shared {expected}",
+            row.loss_pct
+        );
+        assert_eq!(
+            snap.streams_with_loss, 1,
+            "and the derived totals must be counted off the same figure"
+        );
     }
 
     /// One clean PCMU stream scores MOS > 4.0 and its row equals both

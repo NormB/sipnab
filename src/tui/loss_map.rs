@@ -100,7 +100,7 @@ pub fn render_loss_map(f: &mut Frame, app: &App, area: Rect, key: &StreamKey) {
         ),
     ]));
 
-    let loss_pct = crate::tui::stream_list::loss_percent(stream);
+    let loss_pct = stream.loss_percent();
     let total_pkts = stream.packet_count.saturating_add(stream.lost_packets);
     lines.push(Line::from(vec![
         Span::styled("  Loss ", Style::default().fg(theme.muted)),

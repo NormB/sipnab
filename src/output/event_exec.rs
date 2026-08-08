@@ -417,7 +417,11 @@ impl EventExecEngine {
         };
 
         // Estimate MOS from jitter and loss via the canonical E-model
-        let mos = quality::estimate_mos(stream.jitter, loss_pct(stream), stream.codec.as_deref());
+        let mos = quality::estimate_mos(
+            stream.jitter,
+            stream.loss_percent(),
+            stream.codec.as_deref(),
+        );
         if mos >= self.quality_threshold {
             return;
         }
@@ -434,7 +438,7 @@ impl EventExecEngine {
             ("SIPNAB_SSRC", format!("0x{:08x}", stream.key.ssrc)),
             ("SIPNAB_MOS", format!("{mos:.2}")),
             ("SIPNAB_JITTER", format!("{:.1}", stream.jitter)),
-            ("SIPNAB_LOSS", format!("{:.1}", loss_pct(stream))),
+            ("SIPNAB_LOSS", format!("{:.1}", stream.loss_percent())),
         ];
 
         self.pending.push(ExecRequest { cmd, env });
@@ -670,17 +674,6 @@ impl Drop for EventExecEngine {
                 counts.unfinished(),
             );
         }
-    }
-}
-
-/// Calculate loss percentage for a stream as `lost / (received + lost)`
-/// (0.0 when no packets).
-fn loss_pct(stream: &RtpStream) -> f64 {
-    let total = stream.packet_count + stream.lost_packets;
-    if total > 0 {
-        (stream.lost_packets as f64 / total as f64) * 100.0
-    } else {
-        0.0
     }
 }
 
@@ -1110,6 +1103,52 @@ mod tests {
         engine.dispatch_pending();
         assert_eq!(engine.pending_depth(), 0);
         assert_eq!(engine.outcomes().spawned, 1, "dispatch must spawn it");
+    }
+
+    /// `SIPNAB_LOSS` carries the shared loss figure, not a private copy of
+    /// the arithmetic.
+    ///
+    /// This file used to carry `loss_pct`, byte-identical to the TUI's
+    /// `loss_percent`. It could not simply call the TUI's copy — that one was
+    /// `pub(in crate::tui)` and this module is outside it — which is exactly
+    /// how a second implementation gets written instead of a call.
+    ///
+    /// What reaches the operator's hook script is the reason this is pinned
+    /// here and not left to the dashboard's test alone: this number leaves the
+    /// process. It becomes an argument to somebody's alerting command, and a
+    /// threshold tuned against 11.1% fires differently from one tuned against
+    /// 10.0% — the same 90-received/10-lost pair that separates the correct
+    /// denominator from the plausible wrong one.
+    #[test]
+    fn the_quality_hook_exports_the_shared_loss_figure() {
+        let mut engine = EventExecEngine::new(None, Some("true".to_string()), 0, 5.0);
+        let mut stream = make_stream();
+        stream.packet_count = 90;
+        stream.lost_packets = 10;
+        let expected = stream.loss_percent();
+        assert!(
+            (expected - 10.0).abs() < f64::EPSILON,
+            "the fixture must be one a wrong denominator gets wrong: {expected}"
+        );
+
+        engine.queue_quality_event(&stream);
+        let request = engine.pending.first().expect("the event must be queued");
+        let loss = request
+            .env
+            .iter()
+            .find(|(k, _)| *k == "SIPNAB_LOSS")
+            .map(|(_, v)| v.as_str())
+            .expect("SIPNAB_LOSS must be exported");
+
+        assert_eq!(
+            loss,
+            format!("{expected:.1}"),
+            "the exported loss must be RtpStream::loss_percent, not this \
+             module's own arithmetic"
+        );
+        assert_eq!(loss, "10.0", "and that figure is 10 lost out of 100 sent");
+
+        engine.dispatch_pending();
     }
 
     /// A gate that rejects the event queues nothing, so `dispatch_pending` has

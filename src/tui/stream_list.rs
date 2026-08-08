@@ -43,30 +43,23 @@ pub enum StreamHealth {
     Orphaned,
 }
 
-/// Packet-loss percentage for a stream: lost packets over received-plus-lost,
-/// as a percentage in `0.0..=100.0`; `0.0` when no packets have been seen.
-///
-/// Single source of truth for the loss figure, shared by `classify_stream`,
-/// the stream-list loss column and the stream-detail view. Pure.
-pub(in crate::tui) fn loss_percent(stream: &RtpStream) -> f64 {
-    let total = stream.packet_count + stream.lost_packets;
-    if total > 0 {
-        (stream.lost_packets as f64 / total as f64) * 100.0
-    } else {
-        0.0
-    }
-}
-
 /// Classify stream health based on jitter and loss metrics.
 ///
-/// Orphaned streams win outright; otherwise the loss percentage (lost over
-/// received plus lost) and the jitter are compared against the module's
-/// warning/bad thresholds, the worse classification winning. Pure.
+/// Orphaned streams win outright; otherwise the loss percentage
+/// ([`RtpStream::loss_percent`] — lost over received plus lost) and the jitter
+/// are compared against the module's warning/bad thresholds, the worse
+/// classification winning. Pure.
+///
+/// The loss arithmetic itself is deliberately NOT here. A `loss_percent` free
+/// function used to sit in this file calling itself the single source of truth
+/// while two byte-identical copies lived elsewhere; it is now
+/// [`RtpStream::loss_percent`], on the type that owns the two counters, where
+/// `src/output/` can reach it without a `pub(in crate::tui)` carve-out.
 pub fn classify_stream(stream: &RtpStream) -> StreamHealth {
     if stream.orphaned {
         return StreamHealth::Orphaned;
     }
-    let loss_pct = loss_percent(stream);
+    let loss_pct = stream.loss_percent();
 
     if stream.jitter >= JITTER_BAD_MS || loss_pct >= LOSS_BAD_PCT {
         StreamHealth::Bad
@@ -364,7 +357,7 @@ pub fn render_stream_list(
     // Format only the visible rows
     for stream in visible_streams {
         let health = classify_stream(stream);
-        let loss_pct = loss_percent(stream);
+        let loss_pct = stream.loss_percent();
 
         let duration = {
             let diff = stream.last_seen.signed_duration_since(stream.first_seen);

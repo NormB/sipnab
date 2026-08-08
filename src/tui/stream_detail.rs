@@ -107,7 +107,7 @@ pub fn render_stream_detail(
     lines.push(Line::raw(""));
 
     // ── Quality Metrics ─────────────────────────────────────────────
-    let loss_pct = super::stream_list::loss_percent(stream);
+    let loss_pct = stream.loss_percent();
     let mos = estimate_mos(stream.jitter, loss_pct, stream.codec.as_deref());
 
     let mos_band = MosBand::of(mos);

@@ -8,6 +8,15 @@
 //! nothing to scroll and no list to select. `Close` is therefore the only
 //! action by design — the view is intentionally non-navigable, not a
 //! placeholder awaiting navigation.
+//!
+//! Both halves of that are tested, and they are tested in different places
+//! because the input takes different paths. Keys go through
+//! [`timeline_action`], which
+//! `timeline_action_leaves_navigation_keys_unbound` pins. The WHEEL does not
+//! reach this file at all — it goes to the mouse dispatcher in the parent
+//! module, whose `View::CallTimeline(_) => {}` arm is what makes the contract
+//! true, and `timeline_wheel_moves_no_selection_and_no_scroll_offset` is what
+//! makes that arm observable.
 
 use crate::tui::*;
 
@@ -140,5 +149,89 @@ mod tests {
                 "{code:?} must stay unbound: the timeline is a static view"
             );
         }
+    }
+
+    /// The wheel is inert in the timeline, and no other view's state moves
+    /// behind it either.
+    ///
+    /// The sibling above covers the KEYBOARD half of the static contract and
+    /// was for a while described as covering both. It does not: the wheel does
+    /// not go through `timeline_action` at all. It goes through the mouse
+    /// dispatcher, where the whole of the contract is `View::CallTimeline(_)
+    /// => {}` — an arm whose correctness nothing observed, which is the one
+    /// kind of code that can be deleted without a single test noticing.
+    ///
+    /// Asserting "the timeline did not scroll" alone would be weak, because
+    /// the timeline has no scroll offset of its own to check. So this snapshots
+    /// every field a wheel arm in that dispatcher can write — the four
+    /// selections and the five scroll offsets — and requires all of them
+    /// unmoved. That is what makes it catch the realistic regression: the arm
+    /// being folded into a neighbour's, or replaced by a `_ =>` catch-all,
+    /// scrolls SOMETHING, and it would be another view's state that moved.
+    ///
+    /// The call-list selection is deliberately moved off row 0 first. Left at
+    /// 0, a stray `move_up()` clamps to 0 and reads as inert.
+    #[test]
+    fn timeline_wheel_moves_no_selection_and_no_scroll_offset() {
+        use crossterm::event::MouseEventKind as MK;
+
+        let mut app = app_with_dialogs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char('T'));
+        assert!(
+            matches!(app.current_view, View::CallTimeline(_)),
+            "the fixture has to actually be in the timeline, or this test \
+             pins some other view's wheel arm"
+        );
+        assert_ne!(
+            app.call_list.selected(),
+            0,
+            "the selection must start off row 0, or a stray move_up() clamps \
+             to 0 and is indistinguishable from doing nothing"
+        );
+
+        // Every field `handle_mouse_event` writes in some view, in one tuple:
+        // the four selections and the five scroll offsets.
+        let snapshot = |a: &App| {
+            (
+                a.call_list.selected(),
+                a.stream_list.selected(),
+                a.dashboard_selected,
+                a.flow.selected,
+                a.flow.detail_scroll,
+                a.raw_msg_scroll,
+                a.diff_scroll,
+                a.stream_detail_scroll,
+                a.help_scroll,
+                a.stats_scroll,
+            )
+        };
+        let before = snapshot(&app);
+        let view_before = app.current_view.clone();
+
+        // Several of each, in both directions: one step of a saturating
+        // offset already at 0 can be invisible, and a wheel arm that only
+        // moves on the way down would survive a single ScrollUp.
+        for _ in 0..3 {
+            app.handle_mouse_kind(MK::ScrollDown);
+            app.handle_mouse_kind(MK::ScrollUp);
+        }
+        for _ in 0..3 {
+            app.handle_mouse_kind(MK::ScrollDown);
+        }
+
+        assert_eq!(
+            snapshot(&app),
+            before,
+            "the wheel is inert in the timeline: it has nothing to scroll and \
+             nothing to select, so no selection and no scroll offset anywhere \
+             in the app may move. Tuple order: call_list, stream_list, \
+             dashboard, flow.selected, flow.detail_scroll, raw_msg, diff, \
+             stream_detail, help, stats"
+        );
+        assert_eq!(
+            app.current_view, view_before,
+            "and the wheel must not navigate out of the view either"
+        );
     }
 }
