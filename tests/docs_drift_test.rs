@@ -2175,10 +2175,14 @@ fn no_documentation_table_repeats_a_row() {
     // of the new tuning page.
     // 125 -> 127 by `CLA.md` (the Contributor License Agreement, also the gist
     // source) and `website/content/cla.md` (the sipnab.com/cla/ page).
+    // Raised 130 -> 131 by `docs/design/icid-correlation.md`, the
+    // P-Charging-Vector `icid-value` correlation spec. A design doc has no site
+    // mirror, so it costs this counter one file and not two. The number is the
+    // one this gate reported on a failing run, not one added up by hand.
     assert_eq!(
         files.len(),
-        130,
-        "found {} tracked markdown files, expected 130. More is fine — bump \
+        131,
+        "found {} tracked markdown files, expected 131. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2289,9 +2293,22 @@ fn no_documentation_table_repeats_a_row() {
     // the script), each doubled by the site mirror. The strategy table on that
     // page grew a `via_branch` row and a fourth column, which is growth inside a
     // table that already existed and so does not count here.
+    //
+    // Raised again by docs/design/icid-correlation.md, the P-Charging-Vector
+    // `icid-value` correlation spec: eight authored tables on one page (the five
+    // existing strategies, the RFCs updating RFC 7315, what a plain icid match
+    // means per hop, where the header is present per hop, the two proposed
+    // reasons, the parameters that must never be surfaced, the files a new
+    // strategy touches, and how a fixture denies each existing strategy). A
+    // design doc has no site mirror, so each counts ONCE — unlike the mirrored
+    // pages above, which cost two apiece.
+    //
+    // Those two landed on separate branches, and neither side's total was right
+    // for the merged tree. As with the 479 entry above, this number was taken
+    // from a clean run of this gate rather than added up.
     assert_eq!(
-        tables, 493,
-        "walked {tables} tables, expected 493. More is fine — bump this. FEWER \
+        tables, 501,
+        "walked {tables} tables, expected 501. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
