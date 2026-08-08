@@ -601,7 +601,7 @@ jobs:
       # sipnab binary published here, which is the safe direction to err.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2
         with:
           tool: cargo-cyclonedx
 
