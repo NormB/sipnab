@@ -8,6 +8,49 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.89] - 2026-08-08
+
+A 40% throughput regression that shipped in four releases, found because the
+benchmarks page finally got re-run instead of re-dated.
+
+### Fixed
+
+- **`--cores` throughput lost 40% in 0.5.84 and nobody noticed for four
+  releases.** Bisected against checksum-verified release artifacts on the
+  reference host, fixed-state 535k-packet corpus, two cores, interleaved
+  replicates: 0.5.83 measures 2.27-2.34M pkts/s and 0.5.84 through 0.5.88
+  measure 1.37-1.42M. In the same runs voipmonitor measured 0.40M in both
+  arms, exactly, so this was not host drift.
+
+  The cause was the frame-provenance stamp added in 0.5.84. It fixed a real
+  bug -- the parallel path was silently dropping frame pointers on exactly the
+  large captures where provenance matters most -- but it computed the digest on
+  the **serial reader**, the one stage the whole `--cores` design waits on: a
+  single thread reads, copies and host-pair-peeks every packet while N workers
+  idle. That charged it ~240 bytes of dependent FNV multiplies per packet, or
+  129 MB hashed one byte at a time on this corpus.
+
+  The digest is a pure function of bytes the reader has already finished with,
+  so the workers compute it now. The reader still stamps the ordinal, which is
+  the one fact only it can know. **Same input, same FNV-1a, same value** -- a
+  pointer from a `--cores` run resolves identically to one from a
+  single-threaded run, and stored pointers are unaffected. Measured 1.64-1.66M,
+  **+18%**.
+
+  That is a third of the loss, and the rest is written down rather than
+  implied. Roughly 20% more is hashing every frame when only a *retained*
+  pointer needs one -- a dialog's `first_frame`, a stream's `first_frame`, a
+  finding's `frame_ref`, which on this corpus is ~35k of 535k frames. Two
+  obvious shortcuts are already ruled out by tests that predate this work:
+  computing it in `frame_ref()` breaks that method's pure-accessor contract,
+  and a faster hash is barred by the FNV-1a spec vectors that exist so a stored
+  pointer still verifies against a future build. A further ~12% is not the
+  digest at all and is unidentified. All of it is PERF1 in
+  `docs/design/backlog.md`.
+
+  **Nothing in CI measures throughput**, and `docs/benchmarks.md` was 41
+  releases stale. That combination is why this shipped four times.
+
 ## [0.5.88] - 2026-08-08
 
 Two call legs learn they are one call, a laptop learns to follow that call
