@@ -1531,6 +1531,79 @@ implementation.
 - [ ] **PB16 — "Since version" column in the MCP tool table.** The surface is
   versioned in the wild now, and this review misread the tool set from the
   published site — which is precisely the error the column prevents.
+- [ ] **PB17 — `P-Charging-Vector` correlation: `related-icid` first, then
+  `icid-value`.** `find_correlated` matches on `session_id`, `x_call_id`,
+  `sdp_origin`, `via_branch` and `timing_heuristic`;
+  `grep -rin 'icid\|charging-vector' src/` matches nothing. In IMS and carrier
+  networks the operator's own equipment already generates and carries these, so
+  they correlate a call across nodes with **no configuration change from the
+  user** — unlike Session-ID, which is the durable fix but requires touching the
+  SBC.
+
+  **Two strategies, not one, and which one you get decides whether a B2BUA is
+  crossed at all.** RFC 7315 §4.6 scopes `icid-value` to "a dialog or a
+  transaction outside a dialog" and requires it to be globally unique
+  (`ICID MUST be a globally unique value`). A B2BUA makes two dialogs, so a
+  conformant pair carries two DIFFERENT icids and plain icid equality cannot
+  cross the hop this entry was opened for. §4.6.4.1 is the parameter that can:
+  a B2BUA MAY add `related-icid` carrying "the icid value of the original
+  dialog towards the remote end". So `ChargingVectorRelatedIcid` scores 95 and
+  `ChargingVectorIcid` 85, and plain icid equality across a B2BUA is a vendor
+  behaviour rather than a guarantee.
+
+  **Cite RFC 7315, not RFC 3455.** `related-icid` does not exist in 3455. A
+  design written against the obsolete RFC misses the only parameter that
+  addresses a B2BUA at all.
+
+  **It is useless at the access edge.** §5.6: "The first proxy that receives the
+  request generates this value" — so the leg arriving from an endpoint carries
+  none. This helps on internal hops and nowhere else.
+
+  Wanted by an operator running sipnab on an SBC, a proxy and a PBX where the
+  SBC and/or proxy may be in B2BUA mode **or not, per call**, depending on call
+  type, endpoints and real-time configuration. That is the case where no
+  strategy can be chosen in advance and whichever identifier survives is what
+  matters.
+
+  **Built for the deployments that have it, which are not this repo's only
+  readers.** `P-Charging-Vector` is a trust-domain header and stripping it at a
+  network boundary is a conventional configuration (RFC 3324/3325 spec-net
+  handling) — *conventional*, note, not mandated: RFC 7315 §4.6.2.2's own
+  boundary sentence names `P-Charging-Function-Addresses` where it means this
+  header, and no erratum covers that, so what a proxy owes the header on the
+  way out is genuinely undefined rather than merely permissive. Either way it
+  will be absent at many edges — including the one that
+  prompted this entry: that operator's SBC does not pass it through and their
+  deployment is not IMS. That makes it useless *there*, and says nothing about
+  an IMS or carrier network where the operator's own equipment already
+  generates and carries it end to end.
+
+  A first pass of this entry scoped the decision to the requesting operator's
+  topology and concluded "do not build". That was wrong: one deployment's
+  border policy is not the product's user base, and this identifier costs an
+  IMS operator nothing to have — no SBC change, unlike Session-ID.
+
+  **No test data exists on this machine.** `P-Charging-Vector` appears in ZERO
+  files across the repo's fixtures and the real corpus (checked 2026-08-08,
+  filenames and counts only). So the fixture must be SYNTHETIC, and the
+  correlation gate must be written to fail when the header is absent — a
+  correlation test that passes on a capture without the identifier proves
+  nothing.
+
+  Both are `identifier_match: true` strategies, ranking with the other
+  identifier strategies rather than near `timing_heuristic`: an icid comparison
+  compares values, not timing, so `heuristic_only` stays false on an icid-only
+  match. Privacy is not optional: the
+  header carries operator-internal identifiers, and this project's rule is that
+  no capture-derived identifier reaches a report or a doc.
+
+  For an edge that carries no correlation header at all — the requesting
+  operator's case — the answer remains RFC 7989 Session-ID, the only
+  identifier-grade option that survives a re-originating B2BUA by design, which
+  `src/sip/session_id.rs` already reads. That work is SBC configuration, not
+  sipnab code.
+
+  `docs/design/icid-correlation.md` carries the full analysis.
 
 **Cross-references, so nothing is built twice.** PB's `aggregate_dialogs` is
 PA2. PB's resources and prompts are PA3. PB's redaction is PA5. PB's SIPp

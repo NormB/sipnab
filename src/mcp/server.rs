@@ -3928,8 +3928,14 @@ impl SipnabMcp {
     ///   describe what a remote endpoint asserted, and `process_rtcp` is
     ///   handed parsed reports without the packet they arrived in.
     /// * Every capture-level counter — `stats`, `capture_status`,
-    ///   `capture_health` — which is about the run, not about a frame. Those
-    ///   carry `capture_identity` instead.
+    ///   `capture_health` — which is about the run, not about a frame.
+    ///   `stats` and `capture_status` carry `capture_identity` instead.
+    ///   `capture_health` carries NEITHER, which is deliberate rather than an
+    ///   omission: it reads relaxed atomics and nothing else, so that it can
+    ///   run against a live production capture, and taking a store generation
+    ///   would mean taking the store locks it exists to avoid. A caller that
+    ///   needs to attribute a health reading to a node reads `capture_status`
+    ///   alongside it.
     ///
     /// Granularity is whole-frame throughout: `FrameOrigin` is
     /// `{ ordinal, digest }`, so a pointer names a packet and never a byte
@@ -7447,6 +7453,40 @@ mod tests {
                 "{tool} carries no store generations: {v}"
             );
         }
+    }
+
+    /// `capture_health` carries no `capture_identity`, and that is a decision.
+    ///
+    /// Pinned because the omission reads as an oversight and a later change
+    /// would "fix" it: `capture_health` reads relaxed atomics and nothing
+    /// else, so it can be polled against a live production capture, and a
+    /// store generation costs the store locks that property exists to avoid.
+    /// Asserted as an ABSENCE rather than left undocumented, so that adding
+    /// the field has to be a deliberate act that deletes this test — which is
+    /// the moment to re-argue the locking, not to discover it later from a
+    /// health poll that started blocking.
+    #[tokio::test]
+    async fn capture_health_carries_no_capture_identity() {
+        let server = server_with_dialog("health@x");
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                // One second, the smallest window the tool accepts: this test
+                // is about the response SHAPE, and the window only decides how
+                // long it sleeps first.
+                .capture_health(Parameters(CaptureHealthParams { sample_seconds: 1 }))
+                .await
+                .expect("health"),
+        ))
+        .unwrap();
+        assert!(
+            v["capture_identity"].is_null(),
+            "capture_health grew a capture_identity: {v}"
+        );
+        // Not a response that failed to serialise: it answered, with content.
+        assert!(
+            v["schema_version"].is_u64(),
+            "capture_health did not answer at all: {v}"
+        );
     }
 
     /// The generation must move when the store does, or the etag says
