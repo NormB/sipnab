@@ -291,6 +291,105 @@ else
 fi
 rm -f "$CRATE/tests/reduced.rs"
 
+# non-Linux cfg gate: the same shape as the reduced-combo gate, one axis over.
+#
+# The fixture is the FIRST of the two real breaks in miniature (34defd5): a
+# cross-platform function whose Linux arm owns a `#[cfg(target_os = "linux")]`
+# constant, and an UNGATED `#[cfg(test)]` module that reaches for it. That
+# compiles here and fails on macOS with E0425, which is exactly why nothing
+# local caught it.
+#
+# `pub` on the constant is not decoration. Private and read only from tests, it
+# is dead code in the lib target, so `cargo clippy --all-targets -- -D warnings`
+# would block at the CLIPPY gate and this scenario would report a pass it never
+# earned -- the gate under test never reached.
+write_platform_lib() { # $1 = attribute on the test module
+	cat >"$CRATE/src/lib.rs" <<EOF
+#[cfg(feature = "native")]
+pub mod gated {
+    pub fn thing() {}
+}
+
+/// Linux-only, like PACKET_FANOUT's mode flags.
+#[cfg(target_os = "linux")]
+pub const FLAG: u32 = 0x1000;
+
+/// Real on Linux, a stub everywhere else -- the platform split, written once.
+#[cfg(target_os = "linux")]
+pub fn arg(group: u16) -> u32 {
+    (FLAG << 16) | u32::from(group)
+}
+
+/// Non-Linux arm of the same function.
+#[cfg(not(target_os = "linux"))]
+pub fn arg(_group: u16) -> u32 {
+    0
+}
+
+$1
+mod platform_tests {
+    #[test]
+    fn flag_is_in_the_high_half() {
+        assert_eq!(super::arg(1) >> 16, super::FLAG);
+    }
+}
+EOF
+	( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+}
+
+write_platform_lib '#[cfg(test)]'
+if run_hook ""; then
+	bad "non-Linux cfg gate did NOT block Linux-only tests for a cross-platform module"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "non-Linux cfg gate blocks Linux-only tests for a cross-platform module"
+fi
+
+# ...and passes once the test module carries the platform decision too, which is
+# the fix 34defd5 actually shipped.
+write_platform_lib '#[cfg(all(test, target_os = "linux"))]'
+if run_hook ""; then
+	ok "non-Linux cfg gate passes once the test module is gated as well"
+else
+	bad "non-Linux cfg gate blocked a correctly gated test module"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# The SECOND real break (82eb8ff), which fails by a different mechanism: name
+# resolution succeeds everywhere, and it is `-D warnings` that rejects a
+# parameter whose only reader is behind a cfg. A gate that caught the first and
+# not this one would have let the day's second red CI through.
+cat >"$CRATE/src/main.rs" <<'EOF'
+fn join(group: Option<u16>) -> u32 {
+    #[cfg(target_os = "linux")]
+    if let Some(g) = group {
+        return throwaway::arg(g);
+    }
+    0
+}
+
+fn main() {
+    let _ = join(None);
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+if run_hook ""; then
+	bad "non-Linux cfg gate did NOT block a parameter whose only use is Linux-gated"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "non-Linux cfg gate blocks a parameter whose only use is Linux-gated"
+fi
+cat >"$CRATE/src/main.rs" <<'EOF'
+fn main() {}
+EOF
+cat >"$CRATE/src/lib.rs" <<'EOF'
+#[cfg(feature = "native")]
+pub mod gated {
+    pub fn thing() {}
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+
 # v* tag gate: a tag must point at a commit whose CI is green.
 #
 # `gh` is stubbed on PATH, the way ops/tsan/test-verdict.sh stubs nm. The gate's

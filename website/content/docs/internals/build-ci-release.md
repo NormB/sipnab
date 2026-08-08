@@ -289,11 +289,12 @@ rustdoc and three of the eleven combinations before anything leaves the
 machine, and CI runs the rest. Moving them into the pre-commit hook buys
 nothing — it is the same wait, on every commit instead of every push.
 
-[`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) adds seven hard gates that `cargo test`
+[`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) adds eight hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, a check of the reduced feature combinations `tls`, `api` and
-`wasm`, and the two prose linters — Vale and codespell. Rustdoc lints and the
+`wasm`, a non-Linux compile of the whole tree, and the two prose linters — Vale
+and codespell. Rustdoc lints and the
 separate fuzz workspace compile independently of the test build, and no cargo
 command reads prose at all, so these are exactly the failures that otherwise
 appear ten minutes later in CI. The prose pair arrived last and for cause: on
@@ -302,7 +303,7 @@ followed with two spelling hits in `src/` doc comments, each found only after
 a push. A missing Vale or codespell binary reports `NOT CHECKED` rather than
 passing, because a gate that goes quiet when its tool is absent is worse than
 no gate. `SKIP_FMT_HOOK=1` bypasses all of them. If you use it, expect CI to
-notice. After those seven comes one gate that is not hard — the corpus gate
+notice. After those eight comes one gate that is not hard — the corpus gate
 below, which runs only when the machine holds the capture corpus.
 
 Those gates let their tool write straight to the terminal instead of capturing
@@ -321,9 +322,35 @@ where the breakage lives, and `wasm` is the most distant target. The full matrix
 stays in CI. CI skips a combination the crate does not define, the way the
 fuzz gate skips a missing `fuzz/`.
 
+The non-Linux gate sits directly beneath it and answers the same question one
+axis over. Feature gating is one way to write a `#[cfg]` nobody local ever
+compiles. `target_os` is the other, and it is worse, because CI holds the only
+non-Linux build in this project. Two macOS breaks reached it hours apart on
+2026-08-07 — `cannot find value FANOUT_HASH_WITH_ROLLOVER`, then `unused
+variable: fanout_group` under `-D warnings` — and every gate above said OK on
+both. [`scripts/check-non-linux.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-non-linux.sh) copies
+the tree to `target/nonlinux-shim/tree`, swaps the `target_os` values there so
+that `"linux"` names nothing and `"macos"` names the host, and runs CI's own
+macOS invocation over the result. The Linux arms drop out, the
+`not(target_os = "linux")` arms compile, and both breaks fail the gate by name
+and line. It costs 50 seconds the first time and 10 seconds after that, and it
+touches only the copy, so an interrupt leaves the working tree alone. Its
+`target/nonlinux-shim` directory holds 1.3 GB after that first run and grows
+with use — 1.7 GB after a dozen — because cargo keeps what it has already
+built. Delete the directory whenever the space matters more than the ten
+seconds. The script's header records the four alternatives it replaced and the
+evidence against each — the FreeBSD cross-check cannot escape mimalloc's C
+build, and the wasm check never compiles `capture/` at all.
+
+Two things keep it honest. It counts `target_os` predicates before and after
+the rewrite and refuses when the numbers disagree, because a pattern that
+quietly matches nothing would compile an unmodified tree and print OK forever.
+And on a non-Linux host it prints `NOT CHECKED` instead of running: there, your
+ordinary `cargo clippy` already is the non-Linux build.
+
 ### The corpus gate
 
-The last thing `pre-push` does differs from the five
+The corpus gate differs from the eight hard
 gates above in one way: it runs only when it can. `SIPNAB_CORPUS` names a
 directory of real captures — traffic recorded off live networks, with PII in
 every packet. The rule for that corpus is 100% validation, and anything short of
@@ -346,7 +373,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the seven hard gates. Each of those fails in
+**When it runs.** Last, after the eight hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:
