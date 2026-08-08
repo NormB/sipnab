@@ -1628,6 +1628,53 @@ PA2. PB's resources and prompts are PA3. PB's redaction is PA5. PB's SIPp
 export is PA7. PB's multi-leg ladder is PA10. Those PA entries stay
 authoritative; the PB text above adds only what they do not already say.
 
+- [ ] **PERF1 — the frame digest is computed for every packet, and ~93% of
+  them can never be pointed at.** Measured 2026-08-08 against checksum-verified
+  release artifacts on the reference host, fixed-state 535k corpus, 2 cores,
+  interleaved replicates:
+
+  | build | pkts/s |
+  |---|---|
+  | 0.5.83 | 2.27–2.34M |
+  | 0.5.84 → 0.5.88 | 1.37–1.42M |
+  | 0.5.88 + digest off the serial reader (shipped) | 1.64–1.66M |
+  | 0.5.88 with the digest removed entirely | 2.01–2.10M |
+
+  Bisected to `9e12653` (#128, 0.5.84), which stamps
+  `frame_digest(&packet.data)` in the parallel reader. Two separate costs, and
+  the fix that shipped addresses only the first:
+
+  1. **It ran on the serial reader** — the one stage `--cores` is already
+     bottlenecked on. Moving it to the workers recovers ~18%. Done.
+  2. **It runs for every frame at all** — another ~20%. A digest exists to
+     verify one resolvable pointer, and only a retained pointer needs one: a
+     dialog's `first_frame`, a stream's `first_frame`, a finding's `frame_ref`.
+     On the benchmark corpus that is ~35k SIP messages plus 200 stream-openers
+     out of 535k frames.
+
+  **The obvious fix is wrong and there is a test that says so.** Computing the
+  digest inside `Packet::frame_ref()` fails
+  `a_frame_ref_needs_both_halves_or_it_is_not_offered`, which pins that method
+  as a pure accessor that does not invent a digest — and `parse_packet` calls
+  it for every packet anyway, so it would not have helped. Changing
+  `frame_digest` to something faster is also ruled out:
+  `tests/frame_provenance_test.rs` pins it to the published FNV-1a spec vectors
+  precisely so a stored pointer still verifies against a future build.
+
+  What is left is a design change, not a tweak: carry the frame bytes forward
+  (`bytes::Bytes` is refcounted, so the clone is O(1)) so the retention sites
+  can hash on demand. Spec it before building it.
+
+  **Separately, ~12% of the 0.5.84 regression is NOT the digest** — the
+  digest-removed build still measures 2.05M against 0.5.83's 2.33M. Unidentified.
+  Candidates in that range touch the per-message path: `167b2f7` (dialog state
+  transition), `7e77cac` / `7477cfc` (#128 frame pointers on JSON and reports).
+  Bisecting it needs source builds rather than release artifacts.
+
+  **How this went unnoticed for four releases:** `docs/benchmarks.md` was 41
+  releases stale, and nothing in CI measures throughput. A perf gate would have
+  caught a 40% drop the day it landed.
+
 ## P5 — features & long-term / exploratory
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->

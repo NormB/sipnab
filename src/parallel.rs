@@ -383,6 +383,25 @@ fn reconstruct(
 /// stream↔dialog association is resolved globally.
 ///
 /// Returns the merged stores for report generation. Reconstruction only — see
+/// Fill in the frame digest the reader deliberately left empty.
+///
+/// The reader stamps the ordinal — a serial fact only it can know — and leaves
+/// `digest: None`, because hashing is a pure function of bytes and the reader
+/// is the stage every worker waits on. This runs in the workers, where the
+/// cores are idle, and produces the identical FNV-1a value the single-threaded
+/// reader produces, so a pointer from a `--cores` run resolves the same way.
+///
+/// Idempotent, and it never invents provenance: a packet that arrived with no
+/// origin at all (live capture, HEP) is left alone rather than given one, and a
+/// digest already present is not recomputed.
+fn stamp_digest(packet: &mut crate::capture::packet::Packet) {
+    if let Some(origin) = packet.origin.as_mut()
+        && origin.digest.is_none()
+    {
+        origin.digest = Some(crate::capture::packet::frame_digest(&packet.data));
+    }
+}
+
 /// `reconstruct`; advanced features stay on the single-threaded path.
 pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     use crate::capture::packet::Packet;
@@ -408,7 +427,9 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                 ss.set_audio_capture(false); // batch mode never reads audio buffers
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
-                for packet in wrx.iter() {
+                for mut packet in wrx.iter() {
+                    // Off the reader's serial path, onto this idle core.
+                    stamp_digest(&mut packet);
                     for pp in processor.process(&packet) {
                         total += 1;
                         reconstruct(
@@ -604,13 +625,27 @@ fn shard_opened(
                     Some(std::sync::Arc::clone(&source)),
                     link_type,
                 );
-                // Stamped beside the source, before the send, for the reasons
+                // The ORDINAL is stamped here, before the send, for the reasons
                 // in `crate::capture::file`: once the packet is on a worker's
                 // channel this thread cannot amend it, and an ordinal inferred
                 // from arrival order would be wrong the moment a shard reorders.
+                //
+                // The DIGEST is deliberately NOT computed here. It is a pure
+                // function of bytes this thread has already finished with, so
+                // it does not need the serial stage — and this is the one stage
+                // the whole `--cores` design is bottlenecked on: one thread
+                // reads, copies and host-pair-peeks every packet while N
+                // workers wait. Hashing here charged that thread ~240 bytes of
+                // dependent multiplies per packet and cost 39% of two-core
+                // throughput (2.27M -> 1.39M pkts/s on the 535k benchmark
+                // corpus, bisected to this stamp in 0.5.84). `stamp_digest`
+                // runs it in the workers instead, where the cores are idle.
+                // Same input, same FNV-1a, same value: a pointer emitted by a
+                // `--cores` run still resolves identically to one from a
+                // single-threaded run.
                 packet.origin = Some(crate::capture::packet::FrameOrigin {
                     ordinal,
-                    digest: Some(crate::capture::packet::frame_digest(&packet.data)),
+                    digest: None,
                 });
                 ordinal += 1;
                 // Observed here rather than in the workers: this is the only
@@ -827,8 +862,10 @@ pub fn run_offline_parallel_file(
                 ss.set_audio_capture(false);
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
-                for batch in wrx.iter() {
-                    for packet in &batch {
+                for mut batch in wrx.iter() {
+                    for packet in batch.iter_mut() {
+                        // Off the reader's serial path, onto this idle core.
+                        stamp_digest(packet);
                         for pp in processor.process(packet) {
                             total += 1;
                             reconstruct(
@@ -1580,6 +1617,65 @@ mod tests {
                  single-threaded path does, or the pointer resolves UNVERIFIED"
             );
         }
+    }
+
+    /// The digest a `--cores` run stamps must be the value the bytes hash to,
+    /// not merely *a* value.
+    ///
+    /// `parallel_read_stamps_a_verifiable_frame_pointer_on_every_dialog` above
+    /// proves a digest is PRESENT, which a constant would satisfy too. This
+    /// pins what it equals, and it is the gate that makes moving the hash off
+    /// the serial reader safe: the work now runs in the workers, so if that
+    /// relocation ever stamped the wrong packet's bytes — an off-by-one across
+    /// a shard boundary, a batch reused between packets — every pointer from a
+    /// parallel run would resolve as "the capture changed under you" while
+    /// pointing at bytes that never moved. Cheap to assert, and the failure it
+    /// catches is one that looks like a corrupted capture rather than a bug.
+    #[test]
+    fn a_parallel_digest_is_the_digest_of_that_frames_bytes() {
+        use crate::capture::CaptureConfig;
+        use crate::capture::packet::frame_digest;
+
+        let path = "tests/pcap-samples/invite-opus-bye.pcap";
+        let cc = CaptureConfig::default();
+        let r = run_offline_parallel_file(&[std::path::PathBuf::from(path)], &cc, pcfg(2)).unwrap();
+
+        // Read the same file straight through, so ordinal -> bytes is known
+        // independently of anything the parallel path did.
+        let mut cap = pcap::Capture::from_file(path).expect("fixture opens");
+        let mut by_ordinal: std::collections::HashMap<u64, Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut n = 0u64;
+        while let Ok(pkt) = cap.next_packet() {
+            by_ordinal.insert(n, pkt.data.to_vec());
+            n += 1;
+        }
+        assert!(n > 0, "the fixture must contain frames to compare against");
+
+        let mut checked = 0usize;
+        for d in r.dialog_store.iter() {
+            let Some(frame) = d.first_frame.as_ref() else {
+                continue;
+            };
+            let Some(got) = frame.origin.digest else {
+                continue;
+            };
+            let bytes = by_ordinal
+                .get(&frame.origin.ordinal)
+                .unwrap_or_else(|| panic!("ordinal {} is past the file", frame.origin.ordinal));
+            assert_eq!(
+                got,
+                frame_digest(bytes),
+                "frame {} carries a digest that is not its own bytes' digest",
+                frame.origin.ordinal
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "no dialog carried a digest, so this asserted nothing — the \
+             comparison, not the capture, is what failed"
+        );
     }
 
     /// A two-file set whose SECOND member has a link type the filter cannot
