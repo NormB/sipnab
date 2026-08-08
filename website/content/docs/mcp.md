@@ -1283,7 +1283,7 @@ identifier onto a second dialog, which no RFC grants. The parameter that
 addresses the hop is `related-icid` (§4.6.4.1), and it is optional. Two limits
 worth knowing before you rely on either: the first proxy generates the icid
 (§5.6), so a leg arriving from an endpoint carries none and this is useless at
-the access edge; and §4.6.2.2 lets the next hop *"modify the contents"*, which
+the access edge. And §4.6.2.2 lets the next hop *"modify the contents"*, which
 §6.6 calls normal behaviour, so unlike `Session-ID` there is no end-to-end
 constancy requirement at all. Full argument:
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md).
@@ -1676,7 +1676,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.87",
+  "version": "0.5.88",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep

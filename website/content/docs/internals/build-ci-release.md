@@ -335,10 +335,14 @@ macOS invocation over the result. The Linux arms drop out, the
 `not(target_os = "linux")` arms compile, and both breaks fail the gate by name
 and line. It costs 50 seconds the first time and 10 seconds after that, and it
 touches only the copy, so an interrupt leaves the working tree alone. Its
-`target/nonlinux-shim` directory holds 1.3 GB after that first run and grows
-with use — 1.7 GB after a dozen — because cargo keeps what it has already
-built. Delete the directory whenever the space matters more than the ten
-seconds. The script's header records the four alternatives it replaced and the
+`target/nonlinux-shim` directory holds 1.3 GB after that first run and then
+grows with the number of **distinct source states** it has checked, because
+cargo keeps the artifacts of every version it has already built. This page
+used to say "1.7 GB after a dozen", which measured a handful of trees. Across
+a day of commits it reached **78 GB** on 2026-08-08 and exhausted the disk
+mid-release. Delete the directory as routine maintenance,
+not only when space is tight — it is disposable and the next run rebuilds it
+in 50 seconds. The script's header records the four alternatives it replaced and the
 evidence against each — the FreeBSD cross-check cannot escape mimalloc's C
 build, and the wasm check never compiles `capture/` at all.
 

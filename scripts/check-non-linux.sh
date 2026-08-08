@@ -72,13 +72,28 @@
 #   subsequent run, no source change ....................   10 s
 #   subsequent run, one source file changed .............   10-17 s
 #
-# The disk figure is the one that moves. 1.3 GB is what the first run leaves;
-# cargo keeps the artifacts of source versions it has already seen, so the
-# directory grows with use -- measured at 1.7 GB after a dozen runs over
-# several different trees. It is a second set of check artifacts, deliberately
-# NOT shared with `target/`: `cargo clippy` in a directory that also serves
-# ordinary builds is how a stale artifact gets picked up later. Reclaim the lot
-# with `rm -rf target/nonlinux-shim` at any time; the next run rebuilds it.
+# The disk figure is the one that moves, and it moves FAR harder than this
+# header used to say. 1.3 GB is what the first run leaves. Cargo keeps the
+# artifacts of every source version it has already seen, so the directory
+# scales with the number of DISTINCT SOURCE STATES checked -- not with the
+# number of runs, which is what the earlier "1.7 GB after a dozen runs" figure
+# actually measured, over a handful of trees.
+#
+# Measured 2026-08-08: 78 GB, on a machine that had run the gate across a day
+# of commits. That is 46x the documented figure, and it is not academic -- it
+# exhausted a 3.6 TB disk and failed a release build mid-`cargo test`, which is
+# how it was found. A busy day of commits is a busy day of source states.
+#
+# There is still no cap and no prune here, but the reason the last review gave
+# for not adding one ("a gigabyte on a machine with terabytes") does not
+# survive the real number, and docs/design/ has no entry for it yet. Until it
+# does, treat `rm -rf target/nonlinux-shim` as routine maintenance rather than
+# a thing you do when space is "genuinely wanted": it is disposable, the next
+# run rebuilds it in 50 seconds, and nothing else reads it.
+#
+# It is a second set of check artifacts, deliberately NOT shared with
+# `target/`: `cargo clippy` in a directory that also serves ordinary builds is
+# how a stale artifact gets picked up later.
 #
 # EXIT CODES (the hook depends on these)
 #   0  checked, and the non-Linux arm builds clean

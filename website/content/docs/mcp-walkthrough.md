@@ -124,7 +124,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.87 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+   # sipnab 0.5.88 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -924,15 +924,21 @@ degrees of one thing:
 |---|---|---|---|
 | `session_id` | **Yes, by design** (RFC 7989) | An identifier both ends agreed on | `true` |
 | `x_call_id` | Only if the box inserts it | An identifier, by vendor convention | `true` |
+| `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it (RFC 7315 makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
 | `sdp_origin` | Only if the box forwards SDP untouched | An identifier of the MEDIA session, not the dialog | `true` |
+| `charging_vector_icid` | Not by design — an ICID names ONE dialog and a B2BUA is two | An intermediary carried a per-dialog identifier onto a second dialog | `true` |
 | `via_branch` | **No** — a B2BUA opens a new transaction | Same transaction, so: same hop, not across one | `true` |
 | `timing_heuristic` | No | A guess from endpoint overlap and elapsed time | `false` |
+
+Listed in evaluation order, which is descending score. The loop stops at the
+first match, then sorts by score, so a leg that satisfies two strategies comes
+back as the stronger one.
 
 Four fields decide how much of that tree you should act on:
 
 | Field | Read it as |
 |---|---|
-| `strategy` | Which of the five above matched, per leg |
+| `strategy` | Which of the seven above matched, per leg |
 | `identifier_match` | `true`: two ends agreed on an identifier. `false`: a guess |
 | `heuristic_only` | `true`: **every** returned leg rests on a guess, so the whole tree is a hypothesis |
 | `timing_clock` | Present only when the answer contains a time-based match. Absent means no leg needed one |
@@ -1038,16 +1044,21 @@ calls"), and correlation on it reports `strategy: session_id` with
 one config line per box, and it converts every future trace from a guess into
 evidence.
 
-**2. Use an identifier the network already carries.** This is what `x_call_id`
-and `sdp_origin` are: sipnab is already looking for them, so if your SBC emits
-`X-Call-ID` by vendor convention, or forwards SDP untouched so the RFC 8866
-origin tuple survives, you get an identifier match today with no configuration
-at all. Check before you plan work — run `find_correlated` on a known B2BUA call
-and see what `strategy` comes back. Two caveats worth knowing: `sdp_origin`
-identifies the *media session* rather than the dialog, so it goes away the moment
-anything re-originates SDP; and `via_branch`, though it is an identifier match,
-never crosses a B2BUA, because a back-to-back user agent opens a new transaction
-by definition.
+**2. Use an identifier the network already carries.** This is what `x_call_id`,
+`sdp_origin` and the two `P-Charging-Vector` strategies are: sipnab is already
+looking for them, so if your SBC emits `X-Call-ID` by vendor convention,
+forwards SDP untouched so the RFC 8866 origin tuple survives, or sits in a
+carrier network where RFC 7315 charging headers are on the wire anyway, you get
+an identifier match today with no configuration at all. Check before you plan
+work — run `find_correlated` on a known B2BUA call and see what `strategy` comes
+back. Three caveats worth knowing: `sdp_origin` identifies the *media session*
+rather than the dialog, so it goes away the moment anything re-originates SDP;
+`via_branch`, though it is an identifier match, never crosses a B2BUA, because a
+back-to-back user agent opens a new transaction by definition; and
+`charging_vector_icid` is the weaker of the two charging strategies for the same
+reason the note below gives — a conformant B2BUA gives each of its two dialogs
+its own icid, so plain equality across one is a vendor behaviour rather than
+something the RFC promises.
 
 **3. Have sipnab compute its own identical id on each node. Do not.** The
 appeal is obvious — no config change on any SIP box — and it is the wrong trade.
@@ -1255,7 +1266,7 @@ the tool you were calling.
 **3. `initialize` hands back a session id you must echo.** The response carries
 an `mcp-session-id` header; every later request must send it back as
 `Mcp-Session-Id`. Drop it and the server does not answer "no session" — it
-answers as though you never handshook at all:
+answers as though you never completed the handshake at all:
 
 ```text
 422 Unexpected message, expect initialize request
@@ -1733,7 +1744,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.87",
+  "version": "0.5.88",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,

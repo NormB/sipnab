@@ -2306,9 +2306,15 @@ fn no_documentation_table_repeats_a_row() {
     // Those two landed on separate branches, and neither side's total was right
     // for the merged tree. As with the 479 entry above, this number was taken
     // from a clean run of this gate rather than added up.
+    //
+    // Raised 501 -> 502 by the 0.5.88 changelog entry, which tabulates the two
+    // `P-Charging-Vector` strategies against what a match on each one actually
+    // claims. CHANGELOG.md is walked by this gate and has no site mirror, so it
+    // costs one. Worth knowing before writing a release entry: a table in the
+    // changelog moves this ratchet exactly like a table in a doc page does.
     assert_eq!(
-        tables, 501,
-        "walked {tables} tables, expected 501. More is fine — bump this. FEWER \
+        tables, 502,
+        "walked {tables} tables, expected 502. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

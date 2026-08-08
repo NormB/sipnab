@@ -8,6 +8,116 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.88] - 2026-08-08
+
+Two call legs learn they are one call, a laptop learns to follow that call
+across three boxes without an agent in the loop, and a doc comment stops
+claiming a field that was never there.
+
+### Added
+
+- **Correlation on RFC 7315 `P-Charging-Vector`, as two strategies rather than
+  one.** In IMS and carrier networks this header is already on the wire, so it
+  correlates a call across nodes with no configuration change from the
+  operator — unlike RFC 7989 `Session-ID`, which is the durable fix but needs
+  the SBC touched.
+
+  It went in as two reasons because the RFC makes them two different claims,
+  and the difference is the whole point:
+
+  | Strategy | Score | What a match means |
+  |---|---|---|
+  | `charging_vector_related_icid` | 95 | one leg's `related-icid` names the other's `icid-value` — the intermediary **declared** the link |
+  | `charging_vector_icid` | 85 | plain `icid-value` equality — an intermediary carried a per-dialog identifier onto a second dialog |
+
+  **Plain `icid-value` does not cross a B2BUA, and a design that assumes it
+  does is wrong about the case it was built for.** §4.6 scopes the value to "a
+  dialog or a transaction outside a dialog" and makes uniqueness a MUST, so a
+  conformant back-to-back user agent emits a *different* icid on each side.
+  §4.6.4.1 is the parameter that survives it: a B2BUA MAY add `related-icid`
+  carrying "the icid value of the original dialog towards the remote end".
+  Plain equality across a re-origination is a vendor behaviour, not a
+  guarantee, and it scores accordingly.
+
+  Both report `identifier_match: true` — an icid comparison compares values,
+  not timing — so `heuristic_only` stays false on an icid-only match.
+  **Neither value ever reaches a response.** §4.6's suggested construction
+  embeds the generating proxy's hostname, so the identifier is
+  operator-internal by design and only the strategy name is surfaced.
+
+  Two limits worth knowing before planning around it. The first proxy
+  generates the icid (§5.6), so the leg arriving from an endpoint carries
+  none — this helps on internal hops and **not at the access edge**. And there
+  is no cardinality guard: a proxy that stamps one icid on every dialog would
+  make plain-icid matching a false-match generator. No threshold was invented
+  for it, because every candidate number was arbitrary;
+  `docs/design/icid-correlation.md` records it as open.
+
+  The header parser is quote-aware (RFC 3261 `quoted-pair` escapes included)
+  and compares parameter names by equality rather than containment, so
+  `x-icid-value`, `related-icid-value` and `related-icid-generated-at` are not
+  mistaken for the thing. It refuses rather than guesses on an empty value, an
+  unterminated quote, text after a closing quote, or two disagreeing copies of
+  one parameter. `icid-generated-at`, `orig-ioi`, `term-ioi` and `transit-ioi`
+  are never read at all, and a test proves two legs sharing a generating
+  address do not correlate.
+
+- **A step-by-step walkthrough for watching one call cross an SBC, a proxy and
+  a PBX**, in `docs/mcp-walkthrough.md`, written for the case where a box runs
+  back-to-back on one call and as a proxy on the next. That is the case where
+  no strategy can be chosen in advance, so the page teaches reading what
+  matched — the `strategy` and `identifier_match` the answer carries — instead
+  of predicting the topology. A proxy-mode hop returning **zero** correlated
+  legs is a finding, not a failure: the Call-ID crossed unchanged and the same
+  id is what to ask the next node for.
+
+  It also covers the wiring for readers who do not have direct reach: SSH
+  tunnels per node, NAT (the tunnel dials outward, so nothing changes), and a
+  jump host via `ProxyJump` in the SSH config rather than in the sipnab
+  configuration.
+
+- **`contrib/mcp/trace-call.py`** — follows one call across several nodes with
+  no interactive agent. Standard library only, because a support laptop may not
+  permit `pip install`. It documents the three transport details that each fail
+  in a way that does not look like its cause: the reply is `text/event-stream`
+  even for a single message, `Accept` must offer both media types or the server
+  answers 406 before any tool runs, and the `mcp-session-id` from `initialize`
+  must be echoed or later calls get 422.
+
+### Fixed
+
+- **A doc comment claimed `capture_health` carries `capture_identity`. It does
+  not, and it should not.** That tool reads relaxed atomics and nothing else so
+  it can be polled against a live production capture, and taking a store
+  generation would cost exactly the locks that property exists to avoid. The
+  comment now names the two responses that do carry it and says why the third
+  cannot, and a test asserts the **absence** — so adding the field has to be a
+  deliberate act that deletes the test, which is the moment to re-argue the
+  locking rather than discover it later from a health poll that started
+  blocking.
+
+### Changed
+
+- The `find_correlated` strategy table in `docs/mcp-walkthrough.md` had been
+  missing `via_branch`, which is real, reachable, and reports
+  `identifier_match: true`. The page now lists all seven strategies and the
+  four decision fields an answer carries.
+
+- **The non-Linux gate's scratch directory was documented at 1.7 GB and
+  measured at 78 GB.** `scripts/check-non-linux.sh` keeps a second set of
+  check artifacts under `target/nonlinux-shim`, and cargo retains the
+  artifacts of every source version it has seen — so the directory scales with
+  the number of **distinct source states** checked, not with the number of
+  runs, which is what the old "1.7 GB after a dozen runs" figure actually
+  measured. Across a day of commits it exhausted a 3.6 TB disk and failed a
+  release build mid-`cargo test`, which is how the discrepancy was found. Both
+  copies of the claim now carry the real number and the real mechanism, and
+  both say to delete the directory as routine maintenance rather than only
+  when space is tight. No cap and no prune were added — but the argument the
+  previous review gave against one ("a gigabyte on a machine with terabytes")
+  does not survive the measurement, and that is recorded where the decision
+  lives rather than left implied.
+
 ## [0.5.87] - 2026-08-07
 
 Streams learn where they came from, the MCP surface learns to say no, an

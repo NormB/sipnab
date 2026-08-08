@@ -242,6 +242,7 @@ hotspots
 href
 IANA's
 iat
+icid
 IDBs
 iface
 impl
@@ -626,6 +627,8 @@ TUI
 tunables
 tv_usec
 UAs
+UUID
+UUIDs
 uid
 Uid
 unbuffered
