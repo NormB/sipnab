@@ -337,9 +337,12 @@ fn linked_code_targets_exist() {
     // exist), and internals/README.md cites `src/sip/dsl.rs` (its annotation had
     // the field count backwards). Two links, two pages — both replacing a claim
     // with the artifact that settles it.
+    // Raised 300 -> 301 by the non-Linux pre-push gate: internals/build-ci-release.md
+    // now cites `scripts/check-non-linux.sh`, which is where the four rejected
+    // alternatives and the evidence against each are written down. One link, one page.
     assert_eq!(
-        seen, 300,
-        "code-link extraction found {seen} links, expected 300. More links is \
+        seen, 301,
+        "code-link extraction found {seen} links, expected 301. More links is \
          fine — bump this. FEWER means the extractor stopped matching, and \
          every assertion below it silently narrowed."
     );
