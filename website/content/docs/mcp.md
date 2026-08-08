@@ -1164,16 +1164,16 @@ into something a reader can check without reopening the capture.
 names.** A caller planning around "every tool returns `frame_ref`" would look
 for a key most responses do not carry:
 
-- **`frame_ref`** — the findings `lint_dialog` returns. Named apart because a
-  finding cites a message *index*, and the pointer is what makes it checkable
-  without the list that index counts within.
+- **`frame_ref`** — the findings `lint_dialog` and `validate_message` return.
+  Named apart because a finding cites a message *index*, and the pointer is
+  what makes it checkable without the list that index counts within.
 - **`frame`** — `list_dialogs`, `find_problems`, `tail_dialogs`, `get_dialog`
   (its dialog and its messages), `get_message`, the JSON `get_dialog_report`,
   and the streams in `rtp_stats`.
-- **No pointer at all** — `validate_message`, `search_messages`,
-  `search_by_time`, `find_correlated`, `triage_call`,
-  `check_codec_negotiation`, `diagnose_registration`, `compare_dialogs`,
-  `get_sdp_timeline`, the RTCP remote reports, and the capture-level counters.
+- **No pointer at all** — `search_messages`, `search_by_time`,
+  `find_correlated`, `triage_call`, `check_codec_negotiation`,
+  `diagnose_registration`, `compare_dialogs`, `get_sdp_timeline`, the RTCP
+  remote reports, and the capture-level counters.
 
 A fact with no pointer omits the key entirely — never `""`, never frame 0, both
 of which read as a real pointer.

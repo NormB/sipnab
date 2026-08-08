@@ -595,7 +595,11 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
             };
         }
         // The timeline is a fixed single screen (no scroll, no selection),
-        // so its wheel arm is intentionally empty.
+        // so its wheel arm is intentionally empty. Deleting it is a compile
+        // error, but FOLDING it into a neighbour is not, and that was the
+        // silent regression: `timeline_wheel_moves_no_selection_and_no_scroll_offset`
+        // holds the emptiness by requiring every selection and every scroll
+        // offset in the app to be unmoved after a wheel burst here.
         View::CallTimeline(_) => {}
         // The loss map is likewise a fixed single screen (density strip +
         // header + legend), so its wheel arm is intentionally empty too.

@@ -959,8 +959,9 @@ fn findings_with_refs(
 pub struct ShowEvidenceParams {
     /// Frame pointers to follow, in the `<source>#<ordinal>@<digest>` form the
     /// query tools emit — as `frame` on a dialog, a message or a stream, and
-    /// as `frame_ref` on a `lint_dialog` finding. Both names carry the same
-    /// text and both are accepted here; `show_evidence` lists which tools emit
+    /// as `frame_ref` on a `lint_dialog` or `validate_message` finding. Both
+    /// names carry the same text and both are accepted here; `show_evidence`
+    /// lists which tools emit
     /// which. The `@<digest>` half is what makes an answer verifiable; a
     /// pointer without it still resolves, and says it was not checked.
     pub refs: Vec<String>,
@@ -3797,7 +3798,15 @@ impl SipnabMcp {
                 "message_count": dialog.messages.len(),
                 "finding_count": findings.len(),
                 "severity_counts": severity_counts(&findings),
-                "findings": findings,
+                // The same projection `lint_dialog` runs its findings through.
+                // A finding cites a message INDEX, which means nothing without
+                // the list it counts within; `frame_ref` is what a reviewer
+                // can actually follow. Passing the whole message list rather
+                // than the one message keeps the index the finding carries
+                // meaningful — `findings_with_refs` indexes by it, and a
+                // one-element slice would silently re-point every finding at
+                // message 0.
+                "findings": findings_with_refs(&findings, &dialog.messages),
                 "suppressions": suppression_json(suppressions.as_ref(), withheld),
                 "findings_withheld": withheld_json(withheld),
                 "rules_not_evaluated": skipped_rules(LintRun::OneMessage),
@@ -3885,10 +3894,15 @@ impl SipnabMcp {
     /// and a caller told "some tools" cannot plan at all. Two key names, and
     /// they are not interchangeable:
     ///
-    /// * **`frame_ref`** — the findings `lint_dialog` returns, via
+    /// * **`frame_ref`** — the findings `lint_dialog` returns and — corrected
+    ///   2026-08-08 — the findings `validate_message` returns, both via
     ///   `findings_with_refs`. Named apart from `frame` because a finding is
     ///   not the message: it cites a message INDEX, and the pointer is what
     ///   makes it checkable without the list that index counts within.
+    ///   `validate_message` used to serialize the same `Vec<Finding>` raw, so
+    ///   one tool's finding was checkable and the other tool's identical
+    ///   finding was an assertion; `validate_message_findings_cite_their_frame_or_say_nothing`
+    ///   holds them together, against a message that really trips a rule.
     /// * **`frame`** — every object projected through `DialogSummary`
     ///   (`list_dialogs`, `find_problems`, `tail_dialogs`, and the `dialog`
     ///   half of `get_dialog`); every SIP message projected through
@@ -3905,11 +3919,6 @@ impl SipnabMcp {
     /// What carries NO pointer, stated so a caller stops looking for one
     /// rather than concluding the capture lost it:
     ///
-    /// * `validate_message`, whose findings serialize raw. Its sibling
-    ///   `lint_dialog` runs the same findings through `findings_with_refs`, so
-    ///   this one is an inconsistency rather than a design choice — a
-    ///   one-expression fix, left for a change that can test it against a
-    ///   message that actually trips a rule.
     /// * The tools that return an index or a Call-ID instead of the thing
     ///   itself: `search_messages`, `search_by_time`, `find_correlated`.
     /// * The derived verdicts, which summarise many packets rather than cite
@@ -3969,8 +3978,8 @@ impl SipnabMcp {
         name = "show_evidence",
         description = "Follows frame pointers (the `frame` field on a dialog, \
                        message or stream, or the `frame_ref` field on a \
-                       lint_dialog finding — both of the form \
-                       <source>#<ordinal>@<digest>) \
+                       lint_dialog or validate_message finding — both of the \
+                       form <source>#<ordinal>@<digest>) \
                        back to the captured bytes, so a claim about a capture \
                        can be checked against the packet it came from. Each \
                        pointer resolves as `verified` (bytes match the digest \
@@ -7973,6 +7982,130 @@ mod tests {
             .await
             .expect_err("out of range");
         assert!(err.message.contains("out of range"), "{}", err.message);
+    }
+
+    /// `validate_message` findings cite the frame they were drawn from — and
+    /// stay silent when the message carries no pointer.
+    ///
+    /// `lint_dialog` ran its findings through `findings_with_refs` and this
+    /// sibling serialized the same `Vec<Finding>` raw, so the identical
+    /// finding was checkable from one tool and an unfollowable assertion from
+    /// the other. The fix is one expression; what this test is really for is
+    /// making it non-vacuous, which means a message that ACTUALLY trips a
+    /// rule. A clean fixture asserts nothing: an empty `findings` array
+    /// satisfies "every finding carries a pointer" without exercising a line
+    /// of the projection.
+    ///
+    /// `BRANCH_COOKIE` (RFC 3261 §8.1.1.7) is the rule chosen because it is
+    /// message-scoped — `validate_message` reads one message alone, so a
+    /// dialog- or media-scoped rule would not run at all — and because a
+    /// branch without the `z9hG4bK` prefix is a one-header edit that cannot
+    /// accidentally stop firing.
+    ///
+    /// Three messages, not one, and the middle one is why. A finding carries
+    /// the message's index WITHIN THE DIALOG, so the projection has to be
+    /// handed the whole message list: a `slice::from_ref(msg)` would look
+    /// right on message 0 and cite nothing from then on, and an index that
+    /// slipped by one would cite a neighbouring frame — which is worse than
+    /// citing none, because it resolves.
+    ///
+    /// The third message is the half that matters most. A finding on a message
+    /// with no frame must emit NO `frame_ref` key: `""` and `"x#0"` both read
+    /// as a real pointer, and a finding citing frame 0 of nothing is exactly
+    /// the manufactured confidence #128 exists to prevent.
+    #[tokio::test]
+    async fn validate_message_findings_cite_their_frame_or_say_nothing() {
+        use crate::capture::packet::{FrameOrigin, FrameRef};
+
+        // Every request carries a pre-RFC-3261 branch, so BRANCH_COOKIE fires
+        // on each; the CSeq differs so each is a new request rather than a
+        // retransmission of the one before it.
+        let pre_3261 = |cseq: u32| {
+            build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    &format!("Via: SIP/2.0/UDP 127.0.0.1:5060;branch=oldstack-{cseq}"),
+                    "From: Alice <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    "Call-ID: vm-frame@example.com",
+                    &format!("CSeq: {cseq} INVITE"),
+                    "Content-Length: 0",
+                ],
+                b"",
+            )
+        };
+        // Distinct ordinals AND distinct digests, so a pointer that came from
+        // the wrong message cannot pass by coincidence.
+        let framed = |cseq: u32, ordinal: u64, digest: u64| {
+            let mut msg = parse_at(&pre_3261(cseq), base_ts());
+            msg.frame = Some(FrameRef {
+                source: "calls.pcap".into(),
+                origin: FrameOrigin {
+                    ordinal,
+                    digest: Some(digest),
+                },
+            });
+            msg
+        };
+
+        let mut unciteable = parse_at(&pre_3261(3), base_ts());
+        unciteable.frame = None;
+
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(framed(1, 41, 0x6d1f_4c0a_9b2e_7a53));
+        ds.process_message(framed(2, 77, 0x0b3c_8e19_54d7_a260));
+        ds.process_message(unciteable);
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+
+        let validate = async |index: u32| {
+            let result = server
+                .validate_message(Parameters(ValidateMessageParams {
+                    call_id: "vm-frame@example.com".to_string(),
+                    index,
+                    suppression_file: None,
+                }))
+                .await
+                .expect("validate_message");
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("valid JSON");
+            let findings = v["findings"].as_array().expect("findings").clone();
+            // Without this the rest of the test is a property of an empty
+            // list: "every finding carries a pointer" is satisfied by a clean
+            // message, and not one line of the projection runs.
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f["rule_id"] == crate::sip::lint::BRANCH_COOKIE.id),
+                "message {index} has to actually trip a message-scoped \
+                 rule: {v}"
+            );
+            findings
+        };
+
+        for f in validate(0).await {
+            assert_eq!(
+                f["frame_ref"], "calls.pcap#41@6d1f4c0a9b2e7a53",
+                "a finding on a message with a pointer must carry it, digest \
+                 and all -- the same projection lint_dialog uses: {f:?}"
+            );
+        }
+        for f in validate(1).await {
+            assert_eq!(
+                f["frame_ref"], "calls.pcap#77@0b3c8e1954d7a260",
+                "and must cite ITS OWN frame: message 1 is where a projection \
+                 handed one message, or an index off by one, stops agreeing \
+                 with a projection handed the dialog: {f:?}"
+            );
+        }
+        for f in validate(2).await {
+            assert!(
+                f.get("frame_ref").is_none(),
+                "a finding on a message with NO pointer must omit the key \
+                 entirely, not emit an empty or zero one: {f:?}"
+            );
+        }
     }
 
     // ── capture_health ──────────────────────────────────────────────────

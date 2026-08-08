@@ -270,6 +270,43 @@ impl RtpStream {
         self.last_seen > now - chrono::Duration::seconds(30)
     }
 
+    /// Packet-loss percentage: lost over received-plus-lost, in `0.0..=100.0`;
+    /// `0.0` when no packets have been seen.
+    ///
+    /// The denominator is what the packets that SHOULD have arrived add up to,
+    /// so 10 lost out of 100 sent is 10.0% and not the 11.1% that dividing by
+    /// the received count alone produces.
+    ///
+    /// # Why this lives on the stream
+    ///
+    /// It was a `pub(in crate::tui) fn loss_percent` in `src/tui/stream_list.rs`,
+    /// a view module, whose own doc comment called it the *"single source of
+    /// truth for the loss figure"* while two byte-identical copies of the same
+    /// three lines sat in `src/tui/dashboard.rs` and `src/output/event_exec.rs`.
+    /// The second copy is the instructive one: `event_exec` is outside
+    /// `crate::tui` and so literally could not call the shared function, which
+    /// is how a second implementation gets written instead of a call.
+    ///
+    /// The figure is derived from two fields of this struct and nothing else,
+    /// so this is where it belongs — beside [`is_active_at`](Self::is_active_at)
+    /// and [`impossible_rate_multiple`](Self::impossible_rate_multiple), the
+    /// other facts about a stream that are computed rather than stored. Public,
+    /// so no layer has to earn access before it can stop writing copy number
+    /// six.
+    ///
+    /// Callers that want the figure BUCKETED rather than exact want
+    /// `crate::tui::stream_list::classify_stream`, which compares this against
+    /// the view's warning/bad thresholds.
+    #[must_use]
+    pub fn loss_percent(&self) -> f64 {
+        let total = self.packet_count + self.lost_packets;
+        if total > 0 {
+            (self.lost_packets as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+
     /// Create a new stream from its first observed RTP packet.
     ///
     /// # Arguments
@@ -1156,6 +1193,47 @@ mod tests {
             stream.lost_sequences.back().copied(),
             Some(2501),
             "newest should be seq 2501"
+        );
+    }
+
+    /// The loss figure is lost over received-PLUS-lost, and an empty stream
+    /// is 0%, not a division by zero.
+    ///
+    /// The fixture is 90 received and 10 lost because that is the pair the
+    /// plausible wrong denominator gets wrong: `lost / received` reads 11.1%
+    /// where the definition reads 10.0%. A 50/50 fixture cannot tell the two
+    /// apart at all, and a 0-loss fixture cannot tell them apart either — so
+    /// this is the arithmetic the callers downstream are actually pinned to.
+    #[test]
+    fn loss_percent_divides_by_received_plus_lost() {
+        let t0 = chrono::Utc::now();
+        let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), t0);
+
+        s.packet_count = 0;
+        s.lost_packets = 0;
+        assert_eq!(
+            s.loss_percent(),
+            0.0,
+            "a stream that has seen nothing has lost nothing -- it must not \
+             divide by zero and must not report NaN, which formats as 'NaN%' \
+             in every consumer"
+        );
+
+        s.packet_count = 90;
+        s.lost_packets = 10;
+        assert!(
+            (s.loss_percent() - 10.0).abs() < f64::EPSILON,
+            "10 lost out of 100 sent is 10.0%, not 11.1% -- the denominator \
+             is received plus lost, not received: got {}",
+            s.loss_percent()
+        );
+
+        s.packet_count = 0;
+        s.lost_packets = 7;
+        assert!(
+            (s.loss_percent() - 100.0).abs() < f64::EPSILON,
+            "a stream where every packet was lost is 100%: got {}",
+            s.loss_percent()
         );
     }
 }

@@ -645,7 +645,7 @@ Tiers:
 - [x] src/tui/controllers/call_flow.rs:413 — [efficiency] `flow_visible_msg_count` computes raw_count even when cached value wins. **Done:** `flow_visible_msg_count` returns the cached count early, computing `raw_count` only on a cache miss.
 - [x] src/tui/controllers/call_list.rs:307 — [efficiency] `clear_calls` Vec::contains inside retain O(n·m); HashSet. **Done:** `clear_calls` builds a HashSet of the ids to remove once — O(n+m) instead of O(n·m).
 - [x] src/tui/controllers/save_dialog.rs:35 — [missed-edge-case] Enter queues PendingSave with empty path; validate at dialog. **Done:** Enter on a blank/whitespace path is rejected with a status message and keeps the dialog open instead of queuing a doomed save.
-- [ ] src/tui/timeline.rs — [tracking] timeline wheel/navigation are placeholders; don't ship navigation-less. **Done:** resolved as: the CallTimeline is a static single-screen view (one call, always fits, no scroll/selection), so "no navigation" is correct — the placeholder wording was the defect. Misleading language removed, the static contract documented in code + help, and tests pin that nav keys are inert. **Corrected 2026-08-06:** this used to end *"tests pin that wheel/nav keys are inert"*, and only the nav half is tested. `timeline_action_leaves_navigation_keys_unbound` (`src/tui/controllers/timeline.rs:122`) covers Up/Down/j/k/Left/Right/PgUp/PgDn/Home/End/Enter. Wheel inertness is code-only — `View::CallTimeline(_) => {}` in the mouse dispatcher (`src/tui/controllers/mod.rs:599`) — and no test anywhere drives a wheel event in this view, so the arm that makes the contract true is the one nothing would notice losing.
+- [x] src/tui/timeline.rs — [tracking] timeline wheel/navigation are placeholders; don't ship navigation-less. **Done:** resolved as: the CallTimeline is a static single-screen view (one call, always fits, no scroll/selection), so "no navigation" is correct — the placeholder wording was the defect. Misleading language removed, the static contract documented in code + help, and tests pin that nav keys are inert. **Corrected 2026-08-06:** this used to end *"tests pin that wheel/nav keys are inert"*, and only the nav half was tested. **Closed 2026-08-08 — the wheel half is now tested too.** `timeline_wheel_moves_no_selection_and_no_scroll_offset` opens the timeline and drives six `ScrollDown`/`ScrollUp` events through the real mouse dispatcher, then requires every field that dispatcher can write — the four selections (call list, stream list, dashboard, call-flow) and the five scroll offsets (call-flow detail, raw message, diff, stream detail, help, statistics) — to be unmoved, plus the view itself unchanged. **What the arm is actually at risk from, measured:** deleting `View::CallTimeline(_) => {}` is NOT a silent regression — it is `error[E0004]`, non-exhaustive match, so the compiler already held that much. What nothing held was the REPAIR someone writes for that error. Folding the arm into its neighbour (`View::StreamDetail(_) | View::CallTimeline(_)`) moved `stream_detail_scroll` 0→9 and the test fails; giving it the call-list arm's body moved the call-list selection 1→2 and the test fails. The selection is deliberately moved off row 0 before the burst, because a stray `move_up()` at row 0 clamps and reads as inert.
 - [x] src/tui/render/popups.rs:648 — [edge-case] `field_width - 2` debug underflow on very narrow terminal. **Done:** `field_width.saturating_sub(2)` — no debug underflow on a sub-2-column field.
 - [x] src/tui/render/popups.rs:801 — [edge-case] `(iw - 4)` underflow below ~6 cols. **Done:** `iw.saturating_sub(4)` for the separator — no underflow below ~6 columns.
 - [x] src/tui/render/status.rs:48 — [edge-case] byte-offset slicing vs char-count padding misaligns styled span for non-ASCII filenames. **Done:** status line 1 is assembled from discrete width-placed spans with a display-width trailing fill, eliminating byte-offset-into-padded-string slicing and the fragile `find("PAUSED")`; non-ASCII capture-mode labels align.
@@ -787,7 +787,7 @@ Tiers:
 - [x] src/tui/controllers/mod.rs:341 — [duplication] dashboard wheel handler re-implements dashboard.rs row clamp. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/render/mod.rs:206 — [refactor] fold-label duplicates "(+N retx)" format knowledge owned by prepare. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/stream_detail.rs:109 — [naming] MOS label/color band boundaries inconsistent at 3.0–3.5. **Done (P3 code-health wave, 2026-07-24).**
-- [ ] stream_list.rs:307 / stream_detail.rs:91 — [refactor] loss-% computation duplicated in three places. **Three of five, and this line claimed all of it until 2026-08-06.** `loss_percent` (`src/tui/stream_list.rs:51`) is now the shared implementation for the stream list (`:69`, `:367`), stream detail (`stream_detail.rs:110`) and the loss map (`loss_map.rs:103`). Two byte-identical copies of the same `lost / (packet_count + lost) * 100` survive: `stream_loss_pct` (`src/tui/dashboard.rs:71`) and `loss_pct` (`src/output/event_exec.rs:678`). The second cannot be folded in as things stand — `loss_percent` is `pub(in crate::tui)` and `event_exec` is outside that module — so closing this needs the function moved somewhere both can reach, not another call-site edit. Note `loss_percent`'s own doc comment calls itself the *"Single source of truth for the loss figure"*; that claim and this line were wrong in the same way.
+- [x] stream_list.rs:307 / stream_detail.rs:91 — [refactor] loss-% computation duplicated in three places. **Three of five, and this line claimed all of it until 2026-08-06. Closed 2026-08-08 — five of five.** The blocker was real and was a VISIBILITY problem, not a call-site one: `loss_percent` was `pub(in crate::tui)` in a view module, and `src/output/event_exec.rs` is outside `crate::tui`, so it literally could not call the shared function. That is how a second implementation gets written instead of a call. **The function moved to `RtpStream::loss_percent` (`src/rtp/stream.rs`), not to a shared TUI helper.** The figure is derived from exactly two fields of `RtpStream` and nothing else, `RtpStream` already carries derived accessors of the same shape (`is_active_at`, `impossible_rate_multiple`), and being `pub` on the model type means no layer — TUI, output, MCP, REST — has to earn access before it can stop writing the next copy. `stream_loss_pct` (dashboard) and `loss_pct` (event_exec) are deleted; the five call sites are `stream_list.rs` (`classify_stream` + the loss column), `stream_detail.rs`, `loss_map.rs`, `dashboard.rs` and `event_exec.rs`. The *"single source of truth"* doc comment that was false in two ways is replaced by one that says where the figure lives and why. **Held by three tests on a 90-received/10-lost fixture** — the pair the plausible wrong denominator gets wrong, reading 11.1% where the definition reads 10.0%: `loss_percent_divides_by_received_plus_lost` pins the arithmetic (including 0-packet → 0.0, not NaN), `the_dashboard_loss_column_is_the_shared_loss_figure` and `the_quality_hook_exports_the_shared_loss_figure` pin the two folded call sites. Mutation-measured: re-growing a divergent private copy in either file fails that file's test (dashboard row 11.1 vs 10, `SIPNAB_LOSS` "11.1" vs "10.0"), and changing the shared denominator fails five tests across three modules. **What these tests cannot catch, stated rather than implied:** a byte-IDENTICAL copy re-appearing. Nothing observable distinguishes it until it drifts — and the drift is the moment these fail. **Not folded, deliberately:** ~15 other sites open-code the same expression (`json.rs`, `call_report.rs`, `api.rs`, `dsl.rs`, `model.rs`, `wasm.rs`, `mcp/server.rs`, `stream_store.rs`, `dialog_report.rs`). They are out of this line's scope and several aggregate rather than report a single stream's figure, so each needs reading before it is assumed to be the same computation.
 - [x] src/tui/call_list.rs:637 — [simplification] DeltaPrev and Scaled arms byte-identical; merge. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/call_list.rs:521 — [duplication] `base_labels` restates COLUMN_LABELS with one divergence. **Done (P3 code-health wave, 2026-07-24).**
 - [x] call_list.rs:880 vs save.rs:206 — [duplication] near-identical 12-arm state-display matches ("FAILED" vs "Failed"). **Done (P3 code-health wave, 2026-07-24).**
@@ -1027,20 +1027,46 @@ output path.
       rustdoc that said *"every query tool emits `frame_ref` on the facts it
       returns"* now enumerates both key names (`frame` on dialogs, messages and
       streams; `frame_ref` on `lint_dialog` findings) and, more usefully, names
-      what carries no pointer at all — `validate_message`, `search_messages`,
-      `search_by_time`, `find_correlated`, the derived verdicts, the RTCP
-      remote reports, and the capture-level counters.
+      what carries no pointer at all — `search_messages`, `search_by_time`,
+      `find_correlated`, the derived verdicts, the RTCP remote reports, and
+      the capture-level counters. (`validate_message` was on that list until
+      2026-08-08; see the bullet below.)
+    - **`validate_message` findings carry a pointer too (2026-08-08).** It
+      serialized its findings raw where its sibling `lint_dialog` ran the same
+      `Vec<Finding>` through `findings_with_refs`, so an identical finding was
+      checkable from one tool and an unfollowable assertion from the other. The
+      fix was the one expression this bullet predicted; the work was making a
+      test of it that is not vacuous, which a clean fixture cannot be — an
+      empty `findings` array satisfies "every finding carries a pointer"
+      without running a line of the projection.
+      `validate_message_findings_cite_their_frame_or_say_nothing` uses three
+      INVITEs whose top `Via` branch predates the RFC 3261 magic cookie, so
+      `BRANCH_COOKIE` (message-scoped — a dialog- or media-scoped rule would
+      not run at all here) really fires on each. Three, not one, because the
+      projection is handed `&dialog.messages` and a finding cites an index
+      within it: message 1 carries its own distinct ordinal AND digest, so
+      `slice::from_ref(msg)` (looks right on message 0, cites nothing after)
+      and an index off by one (cites a neighbouring frame, which is worse than
+      citing none because it resolves) both fail. Message 2 has no frame and
+      its findings must emit no key at all. Mutation-measured: all three
+      mutations fail the test. The rustdoc enumeration on `show_evidence`,
+      the `show_evidence` tool description and `docs/mcp.md` moved
+      `validate_message` from the no-pointer list to the `frame_ref` list in
+      the same change.
     - **Still open.** Granularity is whole-frame: `FrameOrigin` is
       `{ ordinal, digest }`, with no byte range and no field span, so a lint
       finding still points at the message rather than the malformed `Contact`.
-      `validate_message` serializes its findings raw where its sibling
-      `lint_dialog` runs them through `findings_with_refs` — a one-expression
-      fix left for a change that can test it against a message that really
-      trips a rule. RTCP reception and XR reports carry no pointer, because
+      RTCP reception and XR reports carry no pointer, because
       `process_rtcp` is handed parsed reports without the packet they arrived
       in; giving them one is a signature change across five call sites and
-      belongs with the byte-range work. And `docs/mcp.md` still repeats the
-      corrected overclaim in prose. Tracked as task #128, still PRIORITY 1.
+      belongs with the byte-range work. **The `docs/mcp.md` half of this
+      sentence was stale and is struck 2026-08-08:** that page's "Frame
+      pointers" section already carried the corrected enumeration rather than
+      the overclaim; what it did need — moving `validate_message` between the
+      two lists — landed with the change above. What `docs/mcp.md` still does
+      not do is show a `frame_ref` in either lint tool's example payload, for
+      `lint_dialog` or `validate_message`; the prose is right and the samples
+      are abbreviated. Tracked as task #128, still PRIORITY 1.
 
 - [ ] **PA2 — Aggregation: `group_dialogs` and `timeline`.** Ranked second
   because it removes the single largest source of confidently-wrong answers
