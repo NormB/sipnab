@@ -325,9 +325,12 @@ the tree to `target/nonlinux-shim/tree`, swaps the `target_os` values there so
 that `"linux"` names nothing and `"macos"` names the host, and runs CI's own
 macOS invocation over the result. The Linux arms drop out, the
 `not(target_os = "linux")` arms compile, and both breaks fail the gate by name
-and line. It costs 50 seconds and 1.3 GB the first time and 10 seconds after
-that, and it touches only the copy, so an interrupt leaves the working tree
-alone. The script's header records the four alternatives it replaced and the
+and line. It costs 50 seconds the first time and 10 seconds after that, and it
+touches only the copy, so an interrupt leaves the working tree alone. Its
+`target/nonlinux-shim` directory holds 1.3 GB after that first run and grows
+with use — 1.7 GB after a dozen — because cargo keeps what it has already
+built. Delete the directory whenever the space matters more than the ten
+seconds. The script's header records the four alternatives it replaced and the
 evidence against each — the FreeBSD cross-check cannot escape mimalloc's C
 build, and the wasm check never compiles `capture/` at all.
 

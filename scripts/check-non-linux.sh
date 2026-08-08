@@ -72,10 +72,13 @@
 #   subsequent run, no source change ....................   10 s
 #   subsequent run, one source file changed .............   10-17 s
 #
-# The 1.3 GB is a second set of check artifacts, deliberately NOT shared with
-# `target/`: `cargo clippy` in a directory that also serves ordinary builds is
-# how a stale artifact gets picked up later. Reclaim it with
-# `rm -rf target/nonlinux-shim` at any time; the next run rebuilds it.
+# The disk figure is the one that moves. 1.3 GB is what the first run leaves;
+# cargo keeps the artifacts of source versions it has already seen, so the
+# directory grows with use -- measured at 1.7 GB after a dozen runs over
+# several different trees. It is a second set of check artifacts, deliberately
+# NOT shared with `target/`: `cargo clippy` in a directory that also serves
+# ordinary builds is how a stale artifact gets picked up later. Reclaim the lot
+# with `rm -rf target/nonlinux-shim` at any time; the next run rebuilds it.
 #
 # EXIT CODES (the hook depends on these)
 #   0  checked, and the non-Linux arm builds clean
