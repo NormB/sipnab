@@ -105,7 +105,29 @@ pub fn join_fanout_group(_fd: std::os::fd::RawFd, _group_id: u16) -> std::io::Re
     ))
 }
 
-#[cfg(test)]
+/// Non-Linux behaviour, which is the whole contract off Linux: report
+/// unsupported so the caller takes its single-socket path.
+///
+/// Split from the Linux tests because those reach for `FANOUT_HASH_WITH_ROLLOVER`
+/// and for real `errno` values, neither of which exists here. Writing a
+/// cross-platform module and then Linux-only tests for it is how this file
+/// broke the macOS build once already.
+#[cfg(all(test, not(target_os = "linux")))]
+mod non_linux_tests {
+    use super::*;
+
+    #[test]
+    fn fanout_is_reported_unsupported_not_silently_ok() {
+        let err = join_fanout_group(-1, 1).expect_err("there is no PACKET_FANOUT here");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::Unsupported,
+            "the caller distinguishes 'unavailable' from a real failure by kind"
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;

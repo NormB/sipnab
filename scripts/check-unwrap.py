@@ -65,6 +65,46 @@ _START = (_CODE, 0)
 _INTERESTING = re.compile(r'[/"\']')
 
 
+def _is_test_cfg(stripped):
+    """True for a cfg attribute that only compiles under `cfg(test)`.
+
+    This used to be `stripped == '#[cfg(test)]'`, an exact string match, so a
+    CONDITIONALLY compiled test module — `#[cfg(all(test, target_os = "linux"))]`,
+    which is how you write a test module for a platform-specific code path — was
+    scanned as production code and every `.expect()` in it reported. That is a
+    normal Rust pattern, and the checker calling it a production violation is a
+    false positive that pushes an author toward deleting the cfg or bypassing
+    the hook.
+
+    Deliberately narrow. `all(test, ...)` is exempt because every arm must hold,
+    so the item cannot exist outside a test build. `any(test, ...)` is NOT: it
+    compiles when the OTHER arm holds, which is production. `not(test)` is
+    production by definition. Getting that backwards would silently exempt real
+    code, which is the failure this whole check exists to prevent.
+    """
+    if not (stripped.startswith('#[cfg(') and stripped.endswith(')]')):
+        return False
+    inner = stripped[len('#[cfg('):-len(')]')].strip()
+    if inner == 'test':
+        return True
+    if inner.startswith('all(') and inner.endswith(')'):
+        # Split the top-level arms of all(...) and look for a bare `test`.
+        args, depth, cur = [], 0, ''
+        for ch in inner[len('all('):-1]:
+            if ch == ',' and depth == 0:
+                args.append(cur.strip())
+                cur = ''
+                continue
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+            cur += ch
+        args.append(cur.strip())
+        return 'test' in args
+    return False
+
+
 def _raw_hashes(line, q):
     """Hash count if the `"` at index `q` opens a raw string, else None.
 
@@ -226,7 +266,7 @@ for src_root in ROOTS:
                       continue
                   pending = False
 
-              if stripped == '#[cfg(test)]':
+              if _is_test_cfg(stripped):
                   pending = True
 
               exempt = exempt_until is not None

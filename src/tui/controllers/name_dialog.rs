@@ -172,6 +172,35 @@ pub(in crate::tui) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
 /// when configured, into the user's sipnabrc via `names_config_path` —
 /// write failures are reported on the status line. Sets `app.status_error`
 /// to a named/cleared summary.
+/// Say which rule the name broke, and for length, by how much.
+///
+/// The old text was `"Invalid name (control characters or too long); not
+/// saved"` — it named both possible causes and committed to neither, and gave
+/// no length. That mattered: this dialog seeds the field with the name already
+/// stored for the address, so an operator who types rather than clears is
+/// EXTENDING an existing name. Once the result crosses the limit every save
+/// fails, and a message that will not say "too long, by this much" leaves the
+/// only visible symptom as a dialog that refuses to close.
+///
+/// Found because an end-to-end test did exactly that on every run and grew a
+/// stored name to 250 bytes, at which point the test could never pass again on
+/// that machine.
+fn name_rejection_reason(name: &str) -> String {
+    if name.chars().any(|c| c.is_control()) {
+        "Name contains control characters; not saved".to_string()
+    } else if name.len() > crate::names::MAX_NAME_LEN {
+        format!(
+            "Name is {} bytes, over the {} limit — clear the field or shorten it; not saved",
+            name.len(),
+            crate::names::MAX_NAME_LEN
+        )
+    } else {
+        // is_valid_name also rejects an interior NUL, which cannot be typed but
+        // can arrive from a config file.
+        "Name is not storable (embedded NUL); not saved".to_string()
+    }
+}
+
 fn apply_name_dialog(app: &mut App) -> bool {
     let mut set = 0usize;
     let mut cleared = 0usize;
@@ -186,8 +215,7 @@ fn apply_name_dialog(app: &mut App) -> bool {
     // Validate everything BEFORE applying anything.
     for (_, name) in &targets {
         if !name.is_empty() && !crate::names::is_valid_name(name) {
-            app.name_dialog.error =
-                Some("Invalid name (control characters or too long); not saved".to_string());
+            app.name_dialog.error = Some(name_rejection_reason(name));
             return false;
         }
     }
@@ -364,6 +392,46 @@ mod validation_tests {
     use super::*;
     use crossterm::event::KeyModifiers;
 
+    /// An over-length name must say it is over-length, and by how much.
+    ///
+    /// This is the regression guard for a defect that hid for a long time: the
+    /// dialog seeds its field with the name already stored for the address, so
+    /// an operator who types rather than clears EXTENDS it. Once the result
+    /// crosses `MAX_NAME_LEN` every save is refused, and the old message —
+    /// "Invalid name (control characters or too long)" — named both causes and
+    /// committed to neither. The only visible symptom was a dialog that would
+    /// not close. An end-to-end test drove a stored name to 250 bytes this way
+    /// and could then never pass again on that machine.
+    #[test]
+    fn an_over_length_name_says_so_and_gives_the_numbers() {
+        let too_long = "a".repeat(crate::names::MAX_NAME_LEN + 1);
+        let msg = name_rejection_reason(&too_long);
+        assert!(
+            msg.contains(&format!("{}", crate::names::MAX_NAME_LEN + 1)),
+            "the message must state the actual length: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("{}", crate::names::MAX_NAME_LEN)),
+            "the message must state the limit: {msg}"
+        );
+        assert!(
+            !msg.contains("control characters"),
+            "a length failure must not also blame control characters: {msg}"
+        );
+    }
+
+    /// A control character is reported as a control character, not as a length
+    /// problem — the two rules must not be conflated in either direction.
+    #[test]
+    fn a_control_character_is_not_reported_as_a_length_problem() {
+        let msg = name_rejection_reason("bad\u{7}name");
+        assert!(msg.contains("control characters"), "got: {msg}");
+        assert!(
+            !msg.contains("limit"),
+            "a control-character failure must not blame length: {msg}"
+        );
+    }
+
     /// An invalid name must keep the popup open with an inline error and
     /// preserve the typed text — it used to close the dialog and discard
     /// the input, leaving only a status-bar message.
@@ -384,13 +452,16 @@ mod validation_tests {
             matches!(app.active_popup, Some(Popup::NameAddress)),
             "popup must stay open on validation failure"
         );
+        // Assert the CAUSE, not the wording. This used to require the literal
+        // "Invalid name", which the message could satisfy while telling the
+        // operator nothing about which of two rules it broke.
         assert!(
             app.name_dialog
                 .error
                 .as_deref()
                 .unwrap_or("")
-                .contains("Invalid name"),
-            "inline error expected, got: {:?}",
+                .contains("control characters"),
+            "the error must name the rule that was broken, got: {:?}",
             app.name_dialog.error
         );
         assert_eq!(

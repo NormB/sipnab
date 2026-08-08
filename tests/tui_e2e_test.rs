@@ -53,11 +53,35 @@ mod tui_e2e {
             let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
             let name = format!("sipnab_e2e_{}_{}", std::process::id(), seq);
 
+            // Every session gets its own XDG_CONFIG_HOME.
+            //
+            // sipnab stores manual address names in
+            // `$XDG_CONFIG_HOME/sipnab/hosts`, and the Name-Address dialog SEEDS
+            // its edit field from whatever is stored for that address. Without
+            // this, `tui_name_address_resolves_in_columns` wrote "edge-proxy"
+            // into the developer's real ~/.config/sipnab/hosts on every run,
+            // then re-loaded it and appended on the next: after enough runs the
+            // stored name passed MAX_NAME_LEN, every save was refused, and the
+            // test could NEVER pass again on that machine. It was found at 250
+            // bytes on the self-hosted runner, which shares $HOME with
+            // everything else on the box.
+            //
+            // A test that writes to $HOME is not a test, it is a side effect
+            // with an assertion attached.
+            // pid spelled out rather than inherited via `name` (which already
+            // embeds it): `every_temp_path_is_unique_per_process` reads the
+            // statement, and a discriminator it cannot see is one it cannot
+            // enforce. Being unique is not the same as being checkably unique.
+            let cfg_home =
+                std::env::temp_dir().join(format!("sipnab-e2e-cfg-{}-{seq}", std::process::id()));
+            std::fs::create_dir_all(&cfg_home).expect("create isolated config dir");
+
             // tmux runs the command via the shell; cd first so the file browser
             // and any relative paths resolve under the fixture directory.
             let cmd = format!(
-                "cd {} && exec {} {}",
+                "cd {} && XDG_CONFIG_HOME={} exec {} {}",
                 shell_quote(cwd),
+                shell_quote(&cfg_home.to_string_lossy()),
                 shell_quote(bin),
                 args.iter()
                     .map(|a| shell_quote(a))

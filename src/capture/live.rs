@@ -172,6 +172,152 @@ pub fn capture_live(
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
+    capture_live_group(device, config, tx, ready_tx, None)
+}
+
+/// How many sockets a fanout request resolves to, and why.
+///
+/// Pure so the decision can be tested without a capture device: the interesting
+/// cases are all "do not fan out", and each has a different reason a reader
+/// needs to see in a log line.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FanoutPlan {
+    /// One socket, no group. `PACKET_FANOUT` was not asked for, is not
+    /// available on this platform, or the kernel refused the probe.
+    Solo(&'static str),
+    /// `n` sockets sharing one group.
+    Group(usize),
+}
+
+/// Decide the plan from the request and the platform. The kernel probe is the
+/// caller's job; this answers everything knowable without touching a device.
+pub(crate) fn plan_fanout(sockets: usize) -> FanoutPlan {
+    if !cfg!(target_os = "linux") {
+        return FanoutPlan::Solo("PACKET_FANOUT is Linux-only");
+    }
+    match sockets {
+        0 | 1 => FanoutPlan::Solo("one socket requested"),
+        n => FanoutPlan::Group(n),
+    }
+}
+
+/// Group id for this process.
+///
+/// Derived from the pid so two sipnab instances capturing the same interface do
+/// not land in one group and split each other's traffic. `0` is a legal group
+/// id but is also what an uninitialised value looks like, so it is mapped away.
+pub(crate) fn fanout_group_id() -> u16 {
+    let pid = std::process::id() as u16;
+    if pid == 0 { 0xA1B2 } else { pid }
+}
+
+/// Capture from `device` across `sockets` kernel-fanned sockets.
+///
+/// Every socket feeds the SAME `tx`, so this widens capture only — the
+/// processing loop, the stores and the sweep are untouched. See
+/// [`crate::capture::fanout`] for why that boundary matters.
+///
+/// Falls back to a single socket, with a warning naming the reason, when the
+/// platform has no `PACKET_FANOUT` or the kernel refuses the probe. The probe
+/// exists so the refusal is discovered once, on a throwaway handle, rather than
+/// by N capture threads each having to decide what to do about it.
+pub fn capture_live_fanout(
+    device: &str,
+    config: &CaptureConfig,
+    tx: PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    sockets: usize,
+) -> Result<()> {
+    let group = match plan_fanout(sockets) {
+        FanoutPlan::Solo(reason) => {
+            if sockets > 1 {
+                tracing::warn!(
+                    "'{device}': capturing on one socket ({reason}); \
+                     --cores {sockets} does not widen a live capture here."
+                );
+            }
+            return capture_live(device, config, tx, ready_tx);
+        }
+        FanoutPlan::Group(_) => fanout_group_id(),
+    };
+
+    // Probe on a throwaway handle before committing N threads. A kernel that
+    // refuses PACKET_FANOUT refuses it for every socket, and discovering that
+    // once is cheaper — and far easier to report — than N threads each failing
+    // separately after the ready signal has already been sent.
+    if let Err(e) = probe_fanout(device, config, group) {
+        tracing::warn!(
+            "'{device}': the kernel refused PACKET_FANOUT ({e}); capturing on \
+             one socket. Live capture will not scale past a single core here."
+        );
+        return capture_live(device, config, tx, ready_tx);
+    }
+
+    tracing::info!("'{device}': capturing on {sockets} sockets, fanout group {group}");
+    let mut handles = Vec::with_capacity(sockets);
+    for index in 0..sockets {
+        let device = device.to_string();
+        let config = config.clone();
+        let tx = tx.clone();
+        // Only the first socket answers the readiness handshake. N answers to a
+        // one-shot channel would leave the caller's meaning of "ready" up to
+        // whichever thread won.
+        let ready = if index == 0 { ready_tx.clone() } else { None };
+        handles.push(
+            std::thread::Builder::new()
+                .name(format!("capture-{device}-{index}"))
+                .spawn(move || capture_live_group(&device, &config, tx, ready, Some(group)))?,
+        );
+    }
+
+    let mut first_err = None;
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                first_err.get_or_insert(e);
+            }
+            Err(_) => {
+                first_err.get_or_insert_with(|| anyhow::anyhow!("a capture thread panicked"));
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Open a handle, try to join `group`, and drop it. Answers "will this kernel
+/// fan out on this device" without disturbing a real capture.
+fn probe_fanout(device: &str, config: &CaptureConfig, group: u16) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let cap = pcap::Capture::from_device(device)?
+            .promisc(config.promisc && device != "any")
+            .snaplen(config.snaplen as i32)
+            .timeout(read_timeout_ms(config.immediate_mode))
+            .open()?;
+        super::fanout::join_fanout_group(cap.as_raw_fd(), group)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (device, config, group);
+        anyhow::bail!("PACKET_FANOUT is Linux-only")
+    }
+}
+
+/// The single-socket capture loop, optionally joined to a fanout group.
+fn capture_live_group(
+    device: &str,
+    config: &CaptureConfig,
+    tx: PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    fanout_group: Option<u16>,
+) -> Result<()> {
     // Promiscuous mode is opt-out (`--no-promisc` / `config.promisc`). The "any"
     // pseudo-device on Linux does not support it regardless.
     let use_promisc = config.promisc && device != "any";
@@ -303,6 +449,29 @@ pub fn capture_live(
         use std::os::unix::io::AsRawFd;
         cap.as_raw_fd()
     };
+
+    // Join the fanout group, when one was asked for.
+    //
+    // A FAILURE HERE IS FATAL TO THIS SOCKET, deliberately. An ungrouped socket
+    // on the same interface does not capture a share of the traffic — it
+    // captures ALL of it. Falling back to "carry on without the group" would
+    // therefore feed the channel a duplicate of every packet for each socket
+    // that failed, and duplicated RTP is not a degraded reading: it doubles
+    // octet counts and reports a stream at twice its codec's rate. Refusing to
+    // capture is the honest outcome; the caller probes before committing (see
+    // `capture_live_fanout`) so this is the unexpected path, not the normal one.
+    #[cfg(all(unix, target_os = "linux"))]
+    if let Some(group) = fanout_group {
+        use std::os::unix::io::AsRawFd;
+        if let Err(e) = super::fanout::join_fanout_group(cap.as_raw_fd(), group) {
+            anyhow::bail!(
+                "'{device}': could not join PACKET_FANOUT group {group}: {e}. \
+                 Refusing to capture on this socket rather than duplicate every \
+                 packet the other sockets in the group already carry."
+            );
+        }
+        tracing::debug!("'{device}': joined PACKET_FANOUT group {group}");
+    }
 
     // Signal that the capture device is open and ready.
     if let Some(ready) = ready_tx {
@@ -660,6 +829,67 @@ pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
 
 /// Tests for live-capture support code: device-open error messages, poll
 /// timeout conversion, bounded fd waits, and timestamp hardening.
+#[cfg(test)]
+mod fanout_plan_tests {
+    use super::*;
+
+    /// One socket is not a fanout group, and asking for zero is the same
+    /// request. Both take the ordinary single-socket path — never a group of
+    /// one, which costs a setsockopt and buys nothing.
+    #[test]
+    fn one_or_zero_sockets_capture_solo() {
+        assert!(matches!(plan_fanout(0), FanoutPlan::Solo(_)));
+        assert!(matches!(plan_fanout(1), FanoutPlan::Solo(_)));
+    }
+
+    /// Every "do not fan out" answer carries a reason, because it is reported
+    /// to an operator who asked for N cores and is getting one. "It did not
+    /// work" is not something they can act on.
+    #[test]
+    fn every_solo_answer_explains_itself() {
+        for n in [0, 1] {
+            match plan_fanout(n) {
+                FanoutPlan::Solo(reason) => assert!(
+                    !reason.is_empty(),
+                    "a solo decision must say why, sockets={n}"
+                ),
+                FanoutPlan::Group(_) => panic!("{n} sockets must not form a group"),
+            }
+        }
+    }
+
+    /// On Linux a real request becomes a group of exactly that size; off Linux
+    /// it degrades rather than failing the capture.
+    #[test]
+    fn a_real_request_becomes_a_group_on_linux_and_degrades_elsewhere() {
+        let plan = plan_fanout(4);
+        if cfg!(target_os = "linux") {
+            assert_eq!(plan, FanoutPlan::Group(4));
+        } else {
+            assert!(
+                matches!(plan, FanoutPlan::Solo(_)),
+                "a platform without PACKET_FANOUT must capture, not refuse"
+            );
+        }
+    }
+
+    /// The group id is per-process. Two sipnab instances on one interface must
+    /// not share a group, or each would receive a share of the other's traffic
+    /// and both would under-report. Zero is avoided because it is also what an
+    /// uninitialised value looks like.
+    #[test]
+    fn the_group_id_is_per_process_and_never_zero() {
+        let id = fanout_group_id();
+        assert_ne!(id, 0, "0 is indistinguishable from unset");
+        assert_eq!(id, fanout_group_id(), "must be stable within a process");
+        assert_eq!(
+            id,
+            std::process::id() as u16,
+            "must be derived from the pid so instances do not collide"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
