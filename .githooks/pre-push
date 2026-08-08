@@ -193,6 +193,89 @@ else
 fi
 fi
 
+# -- Hard gate: the non-Linux arm of every platform cfg -----------------------
+# Sibling of the feature-combination gates above, for the same reason and one
+# axis over: those cover `#[cfg(feature = ...)]` rot, and this covers
+# `#[cfg(target_os = ...)]` rot. Both are invisible to a check that only ever
+# compiles one arm.
+#
+# The gap it closes is total. CI is the ONLY non-Linux build in this project, so
+# until now nothing local could see a macOS break -- and two reached CI on
+# 2026-08-07, hours apart, out of the same module:
+#
+#   34defd5  error[E0425]: cannot find value `FANOUT_HASH_WITH_ROLLOVER`
+#   82eb8ff  error: unused variable: `fanout_group`   (under -D warnings)
+#
+# Every gate above this one passed on both. Verified rather than assumed: with
+# 82eb8ff reverted, `cargo clippy --all-features --all-targets -- -D warnings`
+# exits 0 here, and so does the wasm check -- `capture::fanout` is
+# `#[cfg(feature = "native")]` and `wasm` excludes `native`, so an unconditional
+# `compile_error!` in that file does not even fail the wasm gate. With both
+# breaks reintroduced one at a time, this gate blocks and names each.
+#
+# scripts/check-non-linux.sh explains HOW (it re-checks a copy of the tree with
+# the `target_os` values swapped, on a Linux host) and, at length, which four
+# alternatives were tried and what killed each -- the FreeBSD cross-check dying
+# in libmimalloc-sys is the one already on the record, in 82eb8ff's own message.
+#
+# Resolved from the HOOK's location, not the working directory, so that
+# scripts/test-pre-push.sh -- which runs this hook from inside a throwaway
+# fixture crate -- exercises the real script instead of skipping a gate that
+# happens not to exist over there. A gate the BDD suite cannot reach is a gate
+# nobody has tested; the reduced-combo comment above records that exact lesson.
+NONLINUX_GATE="$(dirname "$0")/../scripts/check-non-linux.sh"
+if [ ! -f "$NONLINUX_GATE" ]; then
+	printf '%b  non-Linux cfg: NOT CHECKED -- scripts/check-non-linux.sh is missing%b\n' \
+		"$YELLOW" "$NC"
+else
+	printf '  non-Linux cfg (the macOS arm of every target_os split) ... '
+	set +e
+	NONLINUX_OUTPUT=$(sh "$NONLINUX_GATE" 2>&1)
+	NONLINUX_RC=$?
+	set -e
+	case "$NONLINUX_RC" in
+	0)
+		printf '%bOK%b\n' "$GREEN" "$NC"
+		;;
+	2)
+		# The script could not run -- wrong host, no clippy, no platform cfgs
+		# to invert. It says which on its first line. NOT CHECKED and never
+		# silence, the same rule the corpus and prose gates follow: an absent
+		# verdict that reads as a pass is worse than no gate at all.
+		printf '%b%s%b\n' "$YELLOW" "$(printf '%s\n' "$NONLINUX_OUTPUT" | head -1)" "$NC"
+		;;
+	*)
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		NONLINUX_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-push-nonlinux.log"
+		printf '%s\n' "$NONLINUX_OUTPUT" >"$NONLINUX_LOG"
+		# Name what broke, here, now. Sending someone away to re-run a
+		# 50-second check just to learn the error is the cost pre-commit
+		# already charged once and had to stop charging. `error:` lines carry
+		# the message and `--> ` the file and line, which together are the
+		# whole diagnosis for this class.
+		printf '%s\n' "$NONLINUX_OUTPUT" \
+			| grep -E '^(error|warning)(\[[^]]*\])?:|^ +--> ' \
+			| head -20 | sed 's/^/    /'
+		printf '  Full output: %s\n' "$NONLINUX_LOG"
+		printf '\n'
+		printf '%bPush blocked: the code does not build for a non-Linux target.%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    sh scripts/check-non-linux.sh\n'
+		printf 'Line numbers are the real ones -- the check compiles a copy of this\n'
+		printf 'tree under target/nonlinux-shim/tree with the target_os values\n'
+		printf 'swapped, so a fix belongs in the file the error names.\n'
+		printf '\n'
+		printf 'Usually one platform decision written twice: a cfg on a use but not\n'
+		printf 'on the binding, or Linux-only tests for a cross-platform module.\n'
+		printf 'Prefer making the mistake unrepresentable -- one platform split, in\n'
+		printf 'one place -- over adding a second cfg to paper over the first.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+		;;
+	esac
+fi
+
 # -- Hard gate: a v* tag must point at a commit whose CI is green -------------
 # `docs/internals/build-ci-release.md` used to open with "a release is a pushed
 # v* tag" and say nothing about checking first -- so the entire safeguard was
