@@ -1261,9 +1261,29 @@ the same claim:
 |---|---|---|
 | `session_id` | RFC 7989 `Session-ID` matched | **Yes, by design** |
 | `x_call_id` | A configured header matched (`X-Call-ID` by default) | Only if the SBC inserts it |
+| `charging_vector_related_icid` | One leg's RFC 7315 `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
 | `sdp_origin` | The RFC 8866 SDP origin tuple matched | Only if the SBC forwards SDP untouched |
+| `charging_vector_icid` | Both legs carry the same RFC 7315 `icid-value` | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
 | `timing_heuristic` | Same endpoint, close in time | Not an identifier at all |
+
+**The two `P-Charging-Vector` rows are one header and two different claims.**
+RFC 7315 §4.6 says the ICID identifies *a dialog*, so a conformant B2BUA emits
+a different `icid-value` on each side and `charging_vector_icid` is silent
+across it — a match there means some intermediary copied a per-dialog
+identifier onto a second dialog, which no RFC grants. The parameter that
+addresses the hop is `related-icid` (§4.6.4.1), and it is optional. Two limits
+worth knowing before you rely on either: the first proxy generates the icid
+(§5.6), so a leg arriving from an endpoint carries none and this is useless at
+the access edge; and §4.6.2.2 lets the next hop *"modify the contents"*, which
+§6.6 calls normal behaviour, so unlike `Session-ID` there is no end-to-end
+constancy requirement at all. Full argument:
+[`docs/design/icid-correlation.md`](design/icid-correlation.md).
+
+Neither strategy puts the matched value in the response. RFC 7315 §4.6's own
+suggested construction embeds the generating proxy's hostname or address in the
+icid, so it is operator-internal rather than opaque, and `strategy` names the
+strategy and nothing else.
 
 `identifier_match` carries that distinction as a boolean, so a caller can filter
 on it without knowing which names mean what. `heuristic_only` says whether
@@ -1891,8 +1911,10 @@ created within two seconds of each other, and two seconds is smaller than the
 skew an undisciplined host accumulates in a day. A clock three seconds fast
 fails to correlate legs that belong together, and a slow one pulls unrelated
 legs inside the window. Read `clock` from both servers before trusting a time-based
-match, and prefer `session_id`, `x_call_id` or `sdp_origin`, none of which care
-what time anyone thinks it is.
+match, and prefer any of the six identifier strategies — `session_id`,
+`x_call_id`, `charging_vector_related_icid`, `sdp_origin`,
+`charging_vector_icid` or `via_branch` — none of which care what time anyone
+thinks it is.
 
 `available: false` means the platform gave no answer — NOT that the clock is
 bad. The two are different facts and only one of them is a problem.

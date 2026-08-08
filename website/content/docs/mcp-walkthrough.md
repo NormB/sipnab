@@ -1069,14 +1069,28 @@ broken one — so the finding states what arrived on the wire and declines to
 assert which. A computed cross-node id would be the opposite move: asserting an
 identity the wire never established.
 
-> **Known gap for IMS and carrier readers.** `P-Charging-Vector`'s `icid-value`
-> (RFC 7315) is the identifier those networks already carry across
-> interconnects, and **sipnab does not read it** — verified against 0.5.87,
-> where the parameter appears in the
-> [SIP parameter registry page](@/docs/sip-parameters.md) and in no code path. So it
-> cannot be a correlation strategy today, and an IMS operator with a perfectly
-> good `icid-value` on the wire still gets `timing_heuristic`. Until that
-> changes, options 1 and 2 above are the ones available to you.
+> **For IMS and carrier readers: sipnab now reads `P-Charging-Vector`, in two
+> strategies, and the difference between them decides whether it helps you.**
+> RFC 7315 §4.6 says the ICID identifies *a dialog*, and a B2BUA is two
+> dialogs — so a conformant B2BUA emits a **different** `icid-value` on each
+> side, and plain `icid-value` equality does **not** solve the re-origination
+> case. What crosses that hop is the separate `related-icid` parameter
+> (§4.6.4.1), whose value is the icid of the original dialog, and which the
+> B2BUA *MAY* emit rather than must. So:
+>
+> * `charging_vector_related_icid` (95) — the intermediary declared the link.
+>   This is the one that crosses a B2BUA, and only when the box chose to send it.
+> * `charging_vector_icid` (85) — the two legs carry the same `icid-value`.
+>   Useful where it happens, and it means some intermediary copied a per-dialog
+>   identifier onto a second dialog; no RFC grants that.
+>
+> Two further limits, both from the RFC rather than from the implementation.
+> The first proxy generates the icid (§5.6), so the leg arriving from an
+> endpoint carries none and this is useless at the access edge. And §4.6.2.2
+> permits the next hop to *"modify the contents"*, which §6.6 calls normal
+> behaviour — there is no end-to-end constancy requirement of any kind, so this
+> is not a substitute for `Session-ID`. Full argument, including what is still
+> unverified: [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md).
 
 ### Choose between federated and centralised
 

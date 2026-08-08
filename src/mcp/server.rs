@@ -719,8 +719,12 @@ pub struct CorrelatedLeg {
     ///
     /// `session_id` and `x_call_id` both score 100 and are not the same claim:
     /// one is an RFC 7989 identifier designed to cross a B2BUA, the other a
-    /// vendor header someone configured. `timing_heuristic` is not an
-    /// identifier at all.
+    /// vendor header someone configured. `charging_vector_related_icid` and
+    /// `charging_vector_icid` come out of ONE header and are likewise not the
+    /// same claim: RFC 7315's `related-icid` is an intermediary declaring the
+    /// link across a B2BUA, while plain `icid-value` equality is silent across
+    /// a conformant one, because an ICID identifies a dialog and a B2BUA is
+    /// two. `timing_heuristic` is not an identifier at all.
     pub strategy: String,
     /// True when this strategy compared identifiers. False for a guess.
     ///
@@ -4475,11 +4479,13 @@ impl SipnabMcp {
         description = "Finds other dialogs belonging to the same call — the far \
                        legs of a B2BUA, SBC or PBX hop. Returns each with a \
                        score AND the strategy that matched it. Read the \
-                       strategy, not just the score: session_id and x_call_id \
-                       are identifier matches, timing_heuristic is a guess from \
-                       endpoint overlap and elapsed time, and on a busy server \
-                       unrelated calls routinely share an endpoint inside its \
-                       window.",
+                       strategy, not just the score: every strategy except \
+                       timing_heuristic is an identifier match, and \
+                       timing_heuristic is a guess from endpoint overlap and \
+                       elapsed time on which a busy server routinely puts \
+                       unrelated calls. charging_vector_related_icid crosses a \
+                       B2BUA; charging_vector_icid does NOT, because an RFC \
+                       7315 ICID identifies one dialog and a B2BUA is two.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn find_correlated(
@@ -4512,6 +4518,20 @@ impl SipnabMcp {
                         // MEDIA SESSION rather than the dialog. It is the whole
                         // RFC 8866 uniqueness tuple, never `sess-id` alone.
                         R::SdpOrigin => ("sdp_origin", true),
+                        // Both charging-vector strategies compare identifiers,
+                        // so both are `true` — and they are two names rather
+                        // than one because they are two claims. RFC 7315's
+                        // `related-icid` is an intermediary DECLARING the link
+                        // across a B2BUA; plain `icid-value` equality is an
+                        // intermediary having copied a per-dialog identifier
+                        // onto a second dialog, which no RFC grants.
+                        //
+                        // Neither value leaves the server. RFC 7315 §4.6's own
+                        // suggested construction embeds the generating proxy's
+                        // hostname or address in the icid, so it is treated as
+                        // operator-internal, not as an opaque token.
+                        R::ChargingVectorRelatedIcid => ("charging_vector_related_icid", true),
+                        R::ChargingVectorIcid => ("charging_vector_icid", true),
                         R::ViaBranch => ("via_branch", true),
                         R::TimingHeuristic => ("timing_heuristic", false),
                         // NO CATCH-ALL, deliberately. `CorrelationReason` is
@@ -9482,6 +9502,160 @@ mod tests {
         assert_eq!(
             v["heuristic_only"], false,
             "an identifier match is not a hypothesis"
+        );
+    }
+
+    /// Two isolated legs, three seconds and two subnets apart, carrying only
+    /// the charging vector. Nothing else can answer for it.
+    ///
+    /// SYNTHETIC: `P-Charging-Vector` is in no fixture and no capture this
+    /// repository can reach. RFC 2606 names, RFC 5737 addresses, invented
+    /// sequence numbers.
+    fn charging_vector_pair(a: &str, b: &str) -> Arc<RwLock<DialogStore>> {
+        let mut ds = DialogStore::new(100, false);
+        for (call_id, vector, host, ts) in [
+            ("leg-a@access", a, "192.0.2.1", base_ts()),
+            (
+                "leg-b@core",
+                b,
+                "198.51.100.1",
+                base_ts() + chrono::TimeDelta::seconds(3),
+            ),
+        ] {
+            let raw = build_sip(
+                "INVITE sip:bob@example.net SIP/2.0",
+                &[
+                    &format!("Via: SIP/2.0/UDP {host}:5060;branch=z9hG4bK{call_id}"),
+                    "From: Alice <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.net>",
+                    &format!("Call-ID: {call_id}"),
+                    &format!("P-Charging-Vector: {vector}"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            ds.process_message(parse_at(&raw, ts));
+        }
+        Arc::new(RwLock::new(ds))
+    }
+
+    /// RFC 7315's `related-icid` — the parameter that addresses a B2BUA —
+    /// reports its own name, flags itself as an identifier match, and does NOT
+    /// rank or read like the timing guess.
+    ///
+    /// The last assertion is the privacy one: RFC 7315 §4.6's own suggested
+    /// construction embeds the generating proxy's hostname or address in the
+    /// icid, so like every other strategy here the response carries the
+    /// strategy's NAME and never the value it matched on.
+    #[tokio::test]
+    async fn find_correlated_reports_a_related_icid_match_as_an_identifier_match() {
+        const A_ICID: &str = "P-CSCF1.example.net-1718452800-0001";
+        let ds = charging_vector_pair(
+            &format!("icid-value={A_ICID}"),
+            &format!("icid-value=SBC1.example.net-1718452800-0002;related-icid={A_ICID}"),
+        );
+        let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
+
+        let body = text_of(
+            &server
+                .find_correlated(Parameters(FindCorrelatedParams {
+                    call_id: "leg-a@access".into(),
+                    limit: None,
+                }))
+                .await
+                .expect("correlates"),
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+
+        assert_eq!(v["total_matched"], 1);
+        assert_eq!(v["legs"][0]["call_id"], "leg-b@core");
+        assert_eq!(v["legs"][0]["strategy"], "charging_vector_related_icid");
+        assert_eq!(
+            v["legs"][0]["identifier_match"], true,
+            "the icid is compared, not guessed at"
+        );
+        assert_eq!(v["legs"][0]["score"], 95);
+        assert!(
+            v["legs"][0]["observed_gap_ms"].is_null(),
+            "a timing gap is evidence for a guess, not for an identifier match"
+        );
+        assert_eq!(
+            v["heuristic_only"], false,
+            "an identifier match is not a hypothesis"
+        );
+        assert!(
+            v["timing_clock"].is_null(),
+            "the clock is not why these legs matched"
+        );
+        assert!(
+            !body.contains(A_ICID),
+            "the charging identifier must not reach the response; it is \
+             operator-internal and the strategy NAME is the finding"
+        );
+    }
+
+    /// Plain `icid-value` equality is a DIFFERENT strategy with a different
+    /// name and a lower score, because it is a different claim — an
+    /// intermediary copied a per-dialog identifier onto a second dialog, which
+    /// no RFC grants.
+    ///
+    /// The two live in one test file precisely so a change that collapses them
+    /// into one name fails here.
+    #[tokio::test]
+    async fn find_correlated_reports_a_plain_icid_match_under_its_own_name() {
+        const ICID: &str = "P-CSCF1.example.net-1718452800-0001";
+        let ds = charging_vector_pair(
+            &format!("icid-value={ICID};icid-generated-at=192.0.2.1"),
+            &format!("orig-ioi=home1.example.net;icid-value=\"{ICID}\""),
+        );
+        let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
+
+        let body = text_of(
+            &server
+                .find_correlated(Parameters(FindCorrelatedParams {
+                    call_id: "leg-a@access".into(),
+                    limit: None,
+                }))
+                .await
+                .expect("correlates"),
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+
+        assert_eq!(v["total_matched"], 1);
+        assert_eq!(v["legs"][0]["strategy"], "charging_vector_icid");
+        assert_eq!(v["legs"][0]["identifier_match"], true);
+        assert_eq!(v["legs"][0]["score"], 85);
+        assert_eq!(v["heuristic_only"], false);
+        assert!(
+            !body.contains(ICID) && !body.contains("192.0.2.1"),
+            "neither the icid nor the generating address may reach the response"
+        );
+    }
+
+    /// The negative control on the same surface: one character apart is a
+    /// different call, and the tool says so by answering with nothing.
+    #[tokio::test]
+    async fn find_correlated_reports_nothing_for_icids_one_character_apart() {
+        let ds = charging_vector_pair(
+            "icid-value=P-CSCF1.example.net-1718452800-0001",
+            "icid-value=P-CSCF1.example.net-1718452800-0002",
+        );
+        let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .find_correlated(Parameters(FindCorrelatedParams {
+                    call_id: "leg-a@access".into(),
+                    limit: None,
+                }))
+                .await
+                .expect("answers"),
+        ))
+        .expect("json");
+        assert_eq!(v["total_matched"], 0);
+        assert_eq!(
+            v["heuristic_only"], false,
+            "no legs is not the same as legs we guessed at"
         );
     }
 
