@@ -2151,8 +2151,8 @@ fn no_documentation_table_repeats_a_row() {
     // source) and `website/content/cla.md` (the sipnab.com/cla/ page).
     assert_eq!(
         files.len(),
-        127,
-        "found {} tracked markdown files, expected 127. More is fine — bump \
+        130,
+        "found {} tracked markdown files, expected 130. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2250,13 +2250,15 @@ fn no_documentation_table_repeats_a_row() {
     // first two on main, the third on the stale-documentation sweep. Neither
     // side's total was right for the merged tree, so this number was taken
     // from a clean run rather than added up.
-    // Raised 477 -> 479 by the "I want to" goal index added to the top of
+    // Raised 479 -> 487 by the three design specs (live-fanout, syscall-sandbox,
+    // mid-dialog-state-machine). Previously raised 477 -> 479 by the "I want to"
+    // goal index added to the top of
     // docs/install.md, which the project's own task-first rule requires of
     // every how-to page. That page HAS a site mirror, so one authored table
     // counts twice.
     assert_eq!(
-        tables, 479,
-        "walked {tables} tables, expected 479. More is fine — bump this. FEWER \
+        tables, 487,
+        "walked {tables} tables, expected 487. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

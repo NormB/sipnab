@@ -253,7 +253,22 @@ pub fn capture_live_fanout(
         return capture_live(device, config, tx, ready_tx);
     }
 
-    tracing::info!("'{device}': capturing on {sockets} sockets, fanout group {group}");
+    // -B is PER HANDLE, so N sockets ask the kernel for N rings of that size.
+    // Say the total out loud rather than letting a flag that allocated one
+    // buffer yesterday quietly allocate several today: at the 64 MiB default,
+    // `--cores 8` is half a gigabyte of locked ring, and the operator who set
+    // -B did not agree to a multiplier.
+    //
+    // Whether N should DIVIDE the request instead is a live design question
+    // (see docs/design/live-fanout.md) and is deliberately not decided here —
+    // dividing silently shrinks a buffer an operator sized on purpose, which is
+    // the same class of surprise in the other direction.
+    let total_ring_mb = u64::from(config.buffer_mb) * sockets as u64;
+    tracing::info!(
+        "'{device}': capturing on {sockets} sockets, fanout group {group}; \
+         -B {} MiB is per socket, so ~{total_ring_mb} MiB of ring in total",
+        config.buffer_mb,
+    );
     let mut handles = Vec::with_capacity(sockets);
     for index in 0..sockets {
         let device = device.to_string();
