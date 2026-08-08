@@ -8,9 +8,13 @@ your MCP client / Claude Code runs), or **[proxy]** (your SIP proxy, in
 the HEP scenario).
 
 Every command here ran end to end against a real build at 0.5.20. The
-`docs_drift_test` holds the flag names to the current CLI, but the walkthrough
-itself has not been re-run since, so treat the transcript as illustrative rather
-than freshly measured.
+`docs_drift_test` holds the flag names to the current CLI, but most of the
+walkthrough has not been re-run since, so treat those transcripts as
+illustrative rather than freshly measured. Two sections are the exception:
+everything under [Follow one call across an SBC and its PBXes](#follow-one-call-across-an-sbc-and-its-pbxes)
+and [Drive it from a script](#drive-it-from-a-script) ran against 0.5.87 while
+writing this page, and where no run could confirm a claim, those sections say so
+outright rather than presenting it as fact.
 
 The client steps use Claude Code; the server side is identical for every
 MCP-capable agent. If you drive Codex CLI, Cursor, VS Code, Gemini CLI, or
@@ -34,6 +38,10 @@ above it.
 | Capture from proxies I cannot install sipnab on | [Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place) |
 | Let agents outside my network reach it | [Reach sipnab from outside your network](#reach-sipnab-from-outside-your-network) |
 | Point one agent at many capture hosts | [Query many capture hosts from one agent](#query-many-capture-hosts-from-one-agent) |
+| **See one call cross an SBC, a proxy and a PBX** | [Follow one call across an SBC and its PBXes](#follow-one-call-across-an-sbc-and-its-pbxes) |
+| Work out whether my SBC was a B2BUA on this call | [Read what matched, because the topology is not fixed](#read-what-matched-because-the-topology-is-not-fixed) |
+| Decide whether to add a correlation identifier | [Choose a correlation identifier](#choose-a-correlation-identifier) |
+| Drive the tools from a script, no agent involved | [Drive it from a script](#drive-it-from-a-script) |
 | Run diagnostics on a schedule, no human involved | [Run diagnostics on a schedule, with no agent attached](#run-diagnostics-on-a-schedule-with-no-agent-attached) |
 | Use Codex, Cursor, VS Code, Gemini CLI or Windsurf instead | [Use an agent other than Claude Code](#use-an-agent-other-than-claude-code) |
 | Work out why it does not connect | [Fix it when it does not connect](#fix-it-when-it-does-not-connect) |
@@ -787,19 +795,83 @@ entry in one client config:
 
 ```mermaid
 flowchart LR
-    AG["agent (laptop)"]
+    AG["agent or script (laptop)"]
     SBC["sipnab on the SBC<br/>node: sbc-edge-1"]
-    P1["sipnab on pbx-1"]
-    P2["sipnab on pbx-2"]
+    PX["sipnab on the proxy<br/>node: proxy-1"]
+    P1["sipnab on the PBX<br/>node: pbx-1"]
 
     AG -->|"1. find_correlated(access leg)"| SBC
-    SBC -.->|"names the core-side Call-ID"| AG
-    AG -->|"2. get_dialog(that Call-ID)"| P1
-    AG -.->|"only if the SBC named nothing"| P2
+    SBC -.->|"a Call-ID, and the strategy that tied it"| AG
+    AG -->|"2. get_dialog(whatever the SBC named)"| PX
+    AG -->|"3. and again, one hop further in"| P1
 ```
 
 The previous section registers several servers. This one is about the ORDER to
 ask them in, and about what the answer is worth.
+
+### Wire up three nodes from one laptop
+
+Three hops means three MCP servers and one client. Nothing about the wiring is
+different from a single node — you register each one, and the client namespaces
+the tools per server. What changes is only how the laptop reaches each server.
+
+**The laptop reaches all three directly.** Nothing between them, so use the
+2C shape on each node — a loopback bind plus an SSH tunnel per node, which
+needs no token and opens no port:
+
+```bash
+# Run all of these, in order.
+ssh -f -N -L 8811:127.0.0.1:8731 sbc-edge-1.example.net
+ssh -f -N -L 8812:127.0.0.1:8731 proxy-1.example.net
+ssh -f -N -L 8813:127.0.0.1:8731 pbx-1.example.net
+```
+
+The local port differs per node; the remote port does not, because each node
+binds its own loopback. Then register the three:
+
+```bash
+# Run all of these, in order.
+claude mcp add --transport http sipnab-sbc   http://127.0.0.1:8811/mcp
+claude mcp add --transport http sipnab-proxy http://127.0.0.1:8812/mcp
+claude mcp add --transport http sipnab-pbx   http://127.0.0.1:8813/mcp
+```
+
+Give each node a `--node-name` that matches how you think of it, because that
+string is what comes back in `capture_identity.node` and it is the only thing
+that attributes a fact to a box:
+
+```ini
+ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
+    --mcp-bind 127.0.0.1:8731 --node-name sbc-edge-1 -d eth0
+```
+
+**The nodes are behind NAT.** The tunnel commands above still work, because SSH
+dials outward from the laptop and the tunnel carries the MCP traffic back — no
+inbound rule, no port forward, no change to the MCP wiring. What does not work
+is 2B (HTTP plus a token) against a node behind NAT: there is no address to put
+in the URL. If SSH itself cannot reach the node, the node has to reach out
+instead, which means the HEP shape —
+[Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place)
+— and then you have one server, not three.
+
+**A jump host sits in the way.** Put the hop in your SSH config rather than in
+the sipnab wiring, and every command above still works word for word:
+
+```text
+Host sbc-edge-1.example.net proxy-1.example.net pbx-1.example.net
+    ProxyJump bastion.example.net
+```
+
+For the 2A stdio shape, `ssh -J bastion.example.net sbc-edge-1.example.net
+/usr/local/bin/sipnab --mcp -N …` does the same thing inline.
+
+> **Not measured.** Everything in this subsection above the `--node-name` line
+> is the same wiring the 2A/2B/2C sections document, applied three times. The
+> tunnel, NAT and `ProxyJump` commands were **not** run against three real
+> hosts for this page: there was one machine available. The behaviour that
+> *was* measured — on three sipnab servers on one host, each with its own
+> `--node-name` and its own capture — is everything below, and the transcripts
+> say which build produced them.
 
 ### Ask the SBC first
 
@@ -812,40 +884,191 @@ That ordering also matters for a reason the section on performance makes
 concrete: server-side query time is under a millisecond, while each agent
 round trip costs seconds. Following one pointer beats fanning out.
 
-### Read `strategy`, then decide whether to believe the tree
+Ask it first even when you expect the box to stay a proxy on this call. If it
+did, `find_correlated` returns nothing and you carry the same Call-ID inward,
+which costs one query; if it did not, you now hold the identifier the next hop
+knows the call by. The next section is about telling those two apart.
 
-`find_correlated` returns each leg with the strategy that matched it. Across a
-B2BUA only some of them mean anything:
+### Read what matched, because the topology is not fixed
 
-| `strategy` | Crosses the SBC? | What a match is worth |
-|---|---|---|
-| `session_id` | **Yes, by design** (RFC 7989) | An identifier both ends agreed on |
-| `x_call_id` | Only if the SBC inserts it | An identifier, by vendor convention |
-| `sdp_origin` | Only if the SBC forwards SDP untouched | An identifier of the MEDIA session |
-| `timing_heuristic` | No | A guess from endpoint overlap and elapsed time |
+Here is the thing that makes this hard, and it is not a corner case: **an SBC or
+proxy may run back-to-back on one call and stay a proxy on the next.** Whether it
+re-originates depends on the call type, on which endpoints take part, and on
+configuration that can change while you are watching. So you cannot pick a
+correlation strategy in advance, and any procedure that says "our SBC is a
+B2BUA, therefore look for X" is right until the day it quietly is not.
 
-`identifier_match` carries that distinction as a boolean, and `heuristic_only`
-says whether *every* returned leg was a guess.
+The way out is to stop predicting and start reading. You ask the same question
+every time — `find_correlated` on the leg you have — and the answer tells you
+which topology you were in:
 
-**Check the clocks before believing a `timing_heuristic` match across nodes.**
-The window is two seconds, which is smaller than the skew an undisciplined host
-accumulates in a day, and the failure is silent in both directions — a fast
-clock misses legs that belong together, a slow one pulls unrelated legs in. When
-the response returns a time-based match, it carries `timing_clock`, and
-`capture_health` reports the same for each node. If either box is not
-`synchronised`, treat the tree as a hypothesis.
+- **A call that stayed in proxy mode keeps its Call-ID across the hop.**
+  Nothing correlates, because there is nothing to correlate *to*: the same
+  identifier is simply present on the next node. `find_correlated` returning
+  zero legs is not a failure here, it is the finding.
+- **A call that went back-to-back gets a new Call-ID**, and `strategy` names what
+  tied the two together — or admits to a guess.
+
+Every leg carries the strategy that matched it, and the strategies are not
+degrees of one thing:
+
+| `strategy` | Crosses a B2BUA? | What a match is worth | `identifier_match` |
+|---|---|---|---|
+| `session_id` | **Yes, by design** (RFC 7989) | An identifier both ends agreed on | `true` |
+| `x_call_id` | Only if the box inserts it | An identifier, by vendor convention | `true` |
+| `sdp_origin` | Only if the box forwards SDP untouched | An identifier of the MEDIA session, not the dialog | `true` |
+| `via_branch` | **No** — a B2BUA opens a new transaction | Same transaction, so: same hop, not across one | `true` |
+| `timing_heuristic` | No | A guess from endpoint overlap and elapsed time | `false` |
+
+Four fields decide how much of that tree you should act on:
+
+| Field | Read it as |
+|---|---|
+| `strategy` | Which of the five above matched, per leg |
+| `identifier_match` | `true`: two ends agreed on an identifier. `false`: a guess |
+| `heuristic_only` | `true`: **every** returned leg rests on a guess, so the whole tree is a hypothesis |
+| `timing_clock` | Present only when the answer contains a time-based match. Absent means no leg needed one |
+
+sipnab omits `timing_clock` rather than sending a healthy-looking default when
+every leg matched on an identifier — a clock reading beside an identifier match
+invites you to weigh one against the other, and they do not trade off.
+
+**Check the clock before believing a `timing_heuristic` match across nodes.**
+The window is two seconds, and the failure is silent in both directions: a fast
+clock misses legs that belong together, a slow one pulls unrelated calls in.
+`timing_clock` reports the answering node's NTP discipline at the moment of the
+query (`synchronised`, `max_error_us`, `est_error_us`, `available`), and
+`capture_health` reports the same under `clock` for any node you want to check
+without running a correlation. `synchronised: false` means treat the tree as a
+hypothesis. `synchronised: true` with a `max_error_us` approaching the two-second
+window means the same thing — the flag says a time daemon is disciplining the
+clock, not that the clock is accurate to within the window you are matching in.
+
+#### Compare the two answers to the same question
+
+Both transcripts below are real output from sipnab 0.5.87, from the script in
+[Drive it from a script](#drive-it-from-a-script), against sipnab servers reading
+`tests/pcap-samples/`. Same command shape, opposite evidence.
+
+**The hop stayed a proxy.** Zero legs, and the Call-ID turns up unchanged one
+node in — which is what proxy mode looks like, not what a lost call looks like:
+
+```text
+[proxy] sipnab 0.5.87 node=proxy-1
+[pbx] sipnab 0.5.87 node=pbx-2
+[proxy] 0 leg(s) correlated to proxied-call-synth@192.0.2.101
+  (nothing correlated: a call that stayed in proxy mode keeps its
+   Call-ID, so ask the other nodes for the SAME id.)
+[pbx] holds proxied-call-synth@192.0.2.101  (node=pbx-2, state=Completed, 11 msgs)
+```
+
+**The hop went back-to-back.** A leg comes back, and the strategy names a guess
+from a 3 ms gap and a shared endpoint — no identifier crossed the box:
+
+```text
+[sbc] sipnab 0.5.87 node=sbc-edge-1
+[sbc] 1 leg(s) correlated to b2bua-leg-synth@203.0.113.101:5060
+  b2bua-caller-synth@203.0.113.1
+      via timing_heuristic [GUESS] score 50, gap 3ms
+  !! every leg was a timing guess, not an identifier match.
+     clock on sbc: synchronised=True max_error_us=1944000
+     The window is 2s. Skew larger than that invents legs and hides legs.
+```
+
+Read the second one carefully, because it is the case operators act on wrongly.
+A leg came back. It has a Call-ID, a score, and a plausible-looking 3 ms gap. It
+is still a guess: `identifier_match` is `false`, `heuristic_only` is `true`, and
+`max_error_us` says 1.944 s against a 2 s window — the clock on that box could
+account for the entire match on its own. Two unrelated calls through the same
+SBC inside the same two seconds produce output that looks exactly like this.
+
+`max_error_us` is a live reading, not a constant, and it moves between calls:
+a second run of the identical command on the identical host reported 2.38 s —
+past the correlation window entirely, while still saying `synchronised=True`.
+Expect your own number, and read it each time rather than once.
 
 ### Check what federation cannot prove
 
-If the SBC emits no `Session-ID` and no `X-Call-ID`, and re-originates SDP, then
+If the box emits no `Session-ID` and no `X-Call-ID`, and re-originates SDP, then
 **nothing in the signalling proves the two legs are one call**. The honest answer
 is that they may be, and sipnab says so rather than drawing a tree on a timing
-guess. Configuring the SBC to insert a correlation header is the fix; sipnab
-watches a wire and cannot add one, because the SBC forwards its own message to
-the far side regardless of what sipnab saw.
+guess. Configuring the box to insert a correlation identifier is the fix —
+[Choose a correlation identifier](#choose-a-correlation-identifier) covers the
+options. sipnab watches a wire and cannot add one, because the SBC forwards its
+own message to the far side regardless of what sipnab saw.
 
-Every answer carries `capture_identity.node`, so you can always attribute a fact
-to the box that saw it — "answered 407" is incomplete until you know where.
+Attribution needs one more step than you might expect. **Not every response
+carries `capture_identity`** — the whole-store answers do, the per-dialog ones do
+not. Measured against 0.5.87:
+
+| Carries `capture_identity.node` | Does not |
+|---|---|
+| `capture_status`, `stats`, `list_dialogs`, `tail_dialogs`, `find_correlated` | `get_dialog`, `get_dialog_report`, `triage_call`, `search_messages`, `capture_health` |
+
+So call `capture_status` once per node and hold the name, rather than expecting
+every answer to carry it. It matters: "answered 407" is incomplete until you
+know which box answered, and with three servers registered the agent has three
+places that sentence could have come from. Per-message answers carry a `frame`
+pointer instead (`tests/pcap-samples/sip-proxy.pcap#0@a57665bcdb62f03a`), which
+names the capture the message came out of rather than the node.
+
+### Choose a correlation identifier
+
+The transcript above ends in a guess. The durable fix is not a better guess, it
+is an identifier that survives the hop. Three options get raised, and they are
+not equally good.
+
+**1. Configure the SBC, proxy and PBX to insert one. Do this.** RFC 7989
+`Session-ID` exists for exactly this problem: it is a *pair* of UUIDs, one
+contributed by each endpoint, and each side reports the pair from its own point
+of view, so it survives a box that rewrites Call-ID, From tag and Via. sipnab
+already reads it — `src/sip/session_id.rs` parses the header, intersects the
+non-nil halves rather than comparing strings (the halves swap direction across a
+B2BUA, so string equality would find nothing and look exactly like "unrelated
+calls"), and correlation on it reports `strategy: session_id` with
+`identifier_match: true`. Nothing on the sipnab side needs changing. The work is
+one config line per box, and it converts every future trace from a guess into
+evidence.
+
+**2. Use an identifier the network already carries.** This is what `x_call_id`
+and `sdp_origin` are: sipnab is already looking for them, so if your SBC emits
+`X-Call-ID` by vendor convention, or forwards SDP untouched so the RFC 8866
+origin tuple survives, you get an identifier match today with no configuration
+at all. Check before you plan work — run `find_correlated` on a known B2BUA call
+and see what `strategy` comes back. Two caveats worth knowing: `sdp_origin`
+identifies the *media session* rather than the dialog, so it goes away the moment
+anything re-originates SDP; and `via_branch`, though it is an identifier match,
+never crosses a B2BUA, because a back-to-back user agent opens a new transaction
+by definition.
+
+**3. Have sipnab compute its own identical id on each node. Do not.** The
+appeal is obvious — no config change on any SIP box — and it is the wrong trade.
+sipnab is a passive wire observer: it cannot inject a header, so "the same id on
+both nodes" would have to be *computed* from what each node independently sees.
+Across a re-originating B2BUA there is no guaranteed invariant to compute it
+from. Call-ID, From tag, Via branch, Contact and usually the SDP are all
+legitimately new on the far side — that is what re-origination *means*, not a
+defect to work around. Any id derived from the remainder is a heuristic dressed
+as an identifier, and that is worse than the labelled heuristic already in the
+output: `timing_heuristic` announces itself as a guess and sets
+`heuristic_only`, whereas a computed id would arrive looking like proof and
+correlate two unrelated calls with no field left to catch it.
+
+That is the same judgement this codebase makes elsewhere. sipnab records the
+RFC 7329 legacy `Session-ID` form as an interop **notice**, not a violation,
+because a single message cannot distinguish a legacy implementation from a
+broken one — so the finding states what arrived on the wire and declines to
+assert which. A computed cross-node id would be the opposite move: asserting an
+identity the wire never established.
+
+> **Known gap for IMS and carrier readers.** `P-Charging-Vector`'s `icid-value`
+> (RFC 7315) is the identifier those networks already carry across
+> interconnects, and **sipnab does not read it** — verified against 0.5.87,
+> where the parameter appears in the
+> [SIP parameter registry page](sip-parameters.md) and in no code path. So it
+> cannot be a correlation strategy today, and an IMS operator with a perfectly
+> good `icid-value` on the wire still gets `timing_heuristic`. Until that
+> changes, options 1 and 2 above are the ones available to you.
 
 ### Choose between federated and centralised
 
@@ -863,6 +1086,205 @@ Centralising needs no new code. See
 [Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place).
 It is also what Homer does, at the scale of a whole enterprise system; sipnab is
 one binary, and it can feed Homer rather than replace it.
+
+---
+
+## Drive it from a script
+
+*No agent, no model, no `pip install`. The MCP server is a JSON-RPC API and you
+can talk to it directly.*
+
+[`contrib/mcp/trace-call.py`](../contrib/mcp/trace-call.py) does the whole
+federated trace above from a script: connect to each node, ask the edge node
+first, print each leg with the strategy that matched it and whether that was an
+identifier or a guess. Standard library only, because a support laptop may not
+permit installing anything.
+
+### Run it against a local server first
+
+You do not need three machines to prove the wiring — three sipnab processes on
+one box behave, to a client, exactly like three nodes. From a source checkout,
+against captures the repo already ships (an installed `sipnab` works the same;
+the paths are what tie these to the repo):
+
+```bash
+# Run all of these, in order. Each backgrounds itself with &.
+./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8811 \
+    --node-name sbc-edge-1 -I tests/pcap-samples/b2bua-asterisk.pcapng &
+./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8822 \
+    --node-name proxy-1 -I tests/pcap-samples/sip-proxy.pcap &
+./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8823 \
+    --node-name pbx-1 -I tests/pcap-samples/sip-rtp-g711.pcap &
+```
+
+Give each one its own `--node-name`: that is the string the client reads back
+as `capture_identity.node`, and with three servers answering it is the only
+thing that says which box a fact came from.
+
+Confirm they are serving before involving the client — this endpoint needs no
+headers and no token, so a non-200 is a wiring problem and nothing else:
+
+```bash
+curl -sS -w '\n%{http_code}\n' http://127.0.0.1:8811/health
+```
+
+```text
+ok
+200
+```
+
+**A loopback bind needs no authentication at all**, which is worth stating
+because it is easy to read the token machinery as mandatory and then distrust a
+request that succeeds without one. It is deliberate: a non-loopback bind
+*refuses to start* without a token, so the only way to reach a sipnab that
+authenticates nobody is from the box it runs on. Try it and the refusal is
+explicit:
+
+```bash
+./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 0.0.0.0:8812 \
+    -I tests/fixtures/sip_call.pcap
+```
+
+```text
+ERROR sipnab::app::servers: MCP HTTP server error: MCP HTTP refuses to start:
+--mcp-bind 0.0.0.0:8812 is non-loopback but no --mcp-token / --mcp-token-file /
+SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file /
+SIPNAB_MCP_SIGNING_KEY was supplied.
+```
+
+Now run the script. Nodes are `NAME=URL`, repeated, **edge node first** — the
+order is the argument, for the reason
+[Ask the SBC first](#ask-the-sbc-first) gives:
+
+```bash
+python3 contrib/mcp/trace-call.py \
+    --node sbc=http://127.0.0.1:8811 \
+    --node proxy=http://127.0.0.1:8822 \
+    --node pbx=http://127.0.0.1:8823
+```
+
+```text
+[sbc] sipnab 0.5.87 node=sbc-edge-1
+[proxy] sipnab 0.5.87 node=proxy-1
+[pbx] sipnab 0.5.87 node=pbx-1
+[sbc] 1 leg(s) correlated to b2bua-leg-synth@203.0.113.101:5060
+  b2bua-caller-synth@203.0.113.1
+      via timing_heuristic [GUESS] score 50, gap 3ms
+  !! every leg was a timing guess, not an identifier match.
+     clock on sbc: synchronised=True max_error_us=1944000
+     The window is 2s. Skew larger than that invents legs and hides legs.
+```
+
+Omit `--call-id` and it traces the newest INVITE the edge node holds, which is
+enough to prove the plumbing before you have a complaint to chase. Add
+`--token-file ~/.config/sipnab/prod01.token` for the 2B shape.
+
+### Get the transport right, because three details are not obvious
+
+Running a client turned up each of these; reading the spec did not. Each one
+fails in a way that does not look like its cause.
+
+**1. The response is `text/event-stream`, not JSON.** A single reply still
+arrives as Server-Sent Events, so `requests.post(...).json()` raises on the
+first character. The JSON-RPC message sits on a `data:` line, and the first
+frame carries an empty `data:` keepalive that a naive parser tries to parse and
+dies on. Skip empty payloads, then parse:
+
+```python
+for line in body.splitlines():
+    if not line.startswith("data:"):
+        continue
+    chunk = line[len("data:"):].strip()
+    if not chunk:            # keepalive frame — not an error, not a message
+        continue
+    msg = json.loads(chunk)
+```
+
+Seen on the wire, that is:
+
+```text
+HTTP/1.1 200 OK
+content-type: text/event-stream
+mcp-session-id: cca996f4-b3f8-4913-89c4-deae5999e7fc
+
+data:
+id: 0
+retry: 3000
+
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18", ... }}
+```
+
+**2. `Accept` must offer both types.** Not one, not the wrong one:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8811/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+```
+
+```text
+406
+```
+
+`Accept: application/json, text/event-stream` returns 200. The rejection happens
+before any tool runs, so nothing in the error mentions sipnab, the capture, or
+the tool you were calling.
+
+**3. `initialize` hands back a session id you must echo.** The response carries
+an `mcp-session-id` header; every later request must send it back as
+`Mcp-Session-Id`. Drop it and the server does not answer "no session" — it
+answers as though you never handshook at all:
+
+```text
+422 Unexpected message, expect initialize request
+```
+
+Then send `notifications/initialized` (a notification: no `id`, and the server
+answers `202` with an empty body) before calling tools. The protocol version is
+`2025-06-18`. On 0.5.87 a `tools/list` sent *before* the notification was still
+answered — but that is leniency in one build, not a promise, and a client that
+skips the notification is relying on behaviour no server owes it.
+
+The full sequence, which is what the script does:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as your script
+    participant S as sipnab MCP (HTTP)
+
+    C->>S: POST initialize (Accept: json + event-stream)
+    S-->>C: 200, mcp-session-id header, SSE body
+    C->>S: POST notifications/initialized (+ Mcp-Session-Id)
+    S-->>C: 202, empty body
+    C->>S: POST tools/call (+ Mcp-Session-Id)
+    S-->>C: 200, SSE body, JSON on a data: line
+```
+
+One more shape to know: every tool wraps its payload in an MCP text content
+block, so your client parses JSON **twice** — once out of the SSE frame, and
+once out of `result.content[0].text`. That is protocol, not a sipnab quirk, and
+it catches everyone once.
+
+### Know which errors mean what
+
+The script maps each status to its cause, because the raw codes are terse and
+three of the four are wiring rather than sipnab:
+
+| Status | Cause | Fix |
+|---|---|---|
+| `401` | Wrong or missing bearer token | Check the token file is non-empty |
+| `403` | `Host:` not in the allowlist | `--mcp-allowed-host <what the client sends>` |
+| `404` | Path is not exactly `/mcp` | Strip the trailing slash, check any proxy rewrite |
+| `406` | `Accept` missing a type | Offer `application/json, text/event-stream` |
+| `422` | Session id not echoed | Send `Mcp-Session-Id` on every post after `initialize` |
+
+An unknown Call-ID is different from all of these: `get_dialog` answers with a
+JSON-RPC error (`-32602`, `call_id … not found`) rather than an empty result.
+The script leans on that to tell "this node never saw that dialog" apart from
+"this node saw it and it correlated to nothing" — which, as
+[Read what matched](#read-what-matched-because-the-topology-is-not-fixed)
+explains, are opposite findings that look identical if you only count legs.
 
 ---
 
@@ -890,10 +1312,12 @@ Nothing about MCP requires an interactive session.
    ```
 
 **No LLM at all** — the MCP server is also just a stable JSON-RPC API for
-scripts: the Python/TypeScript clients in
+scripts: [Drive it from a script](#drive-it-from-a-script) has a working
+standard-library client with the transport details spelled out, and the
+Python/TypeScript clients in
 [mcp.md § Client cookbook](mcp.md#client-cookbook) drive the same tools
-directly (e.g. a nightly job calling `find_problems` and opening a ticket
-when the count is nonzero).
+through the official MCP SDK (e.g. a nightly job calling `find_problems` and
+opening a ticket when the count is nonzero).
 
 ---
 

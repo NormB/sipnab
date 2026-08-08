@@ -450,9 +450,16 @@ fn wiki_intra_docs_links_resolve() {
     // task-first rule requires of every how-to page, plus an Uninstall section
     // and two pointers from the installer straight to "Check it worked". Every
     // one of those is an intra-page link the extractor counts.
+    // Raised 297 -> 310 by the MCP walkthrough's B2BUA-correlation and
+    // scripted-client work, taken from this gate's own count: four new rows in
+    // the page's "I want to" index, cross-links between the new
+    // read-what-matched, correlation-identifier and drive-it-from-a-script
+    // sections, and pointers from those back to the HEP, tunnel and
+    // client-cookbook sections they compare against. The wiki mirror is ONE
+    // copy, so this counts each authored link once.
     assert_eq!(
-        seen, 297,
-        "extractor found {seen} wiki links, expected 297. More is fine — bump \
+        seen, 310,
+        "extractor found {seen} wiki links, expected 310. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
     );
