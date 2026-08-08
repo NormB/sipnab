@@ -450,8 +450,18 @@ fn capture_live_group(
         cap.as_raw_fd()
     };
 
-    // Join the fanout group, when one was asked for.
+    // Not gated on `target_os = "linux"`, deliberately.
     //
+    // `join_fanout_group` already carries the platform split: it is a real
+    // setsockopt on Linux and a stub returning `Unsupported` elsewhere. Gating
+    // the CALL as well duplicated that decision, and got it wrong — the cfg
+    // covered the use of `fanout_group` but not the binding, so on macOS the
+    // parameter was unused and `-D warnings` failed the build. Twice.
+    //
+    // Keeping one platform decision in one place makes that mistake
+    // unrepresentable: the parameter is read on every unix target, so it cannot
+    // become unused on one of them. The `bail!` is unreachable off Linux
+    // because `plan_fanout` returns `Solo` there, so `fanout_group` is `None`.
     // A FAILURE HERE IS FATAL TO THIS SOCKET, deliberately. An ungrouped socket
     // on the same interface does not capture a share of the traffic — it
     // captures ALL of it. Falling back to "carry on without the group" would
@@ -460,7 +470,7 @@ fn capture_live_group(
     // octet counts and reports a stream at twice its codec's rate. Refusing to
     // capture is the honest outcome; the caller probes before committing (see
     // `capture_live_fanout`) so this is the unexpected path, not the normal one.
-    #[cfg(all(unix, target_os = "linux"))]
+    #[cfg(unix)]
     if let Some(group) = fanout_group {
         use std::os::unix::io::AsRawFd;
         if let Err(e) = super::fanout::join_fanout_group(cap.as_raw_fd(), group) {
