@@ -105,6 +105,32 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     // Alpine's package manager, in the musl/Alpine build recipes.
     ("no-cache", &["website/content/docs/build.md"]),
+    // contrib/mcp/trace-call.py's own flags, in the "Drive it from a script"
+    // section. That script is an MCP *client*: it never launches sipnab, so
+    // these are argparse options belonging to the example, not sipnab's CLI.
+    // Scoped to the two mcp-walkthrough surfaces so the same names anywhere
+    // else still fail the gate.
+    (
+        "node",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    (
+        "call-id",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
+    (
+        "token-file",
+        &[
+            "docs/mcp-walkthrough.md",
+            "website/content/docs/mcp-walkthrough.md",
+        ],
+    ),
     // bench/carrier.py and bench/scaling.sh flags, in the reproduce recipes.
     // These belong to the benchmark harness, not to sipnab's CLI.
     (
@@ -2256,9 +2282,16 @@ fn no_documentation_table_repeats_a_row() {
     // docs/install.md, which the project's own task-first rule requires of
     // every how-to page. That page HAS a site mirror, so one authored table
     // counts twice.
+    // Raised 487 -> 493 by the B2BUA-correlation and scripted-client work in
+    // docs/mcp-walkthrough.md, taken from this gate's own count rather than
+    // added up: three NEW tables (the four fields to read off `find_correlated`,
+    // which responses carry `capture_identity`, and the HTTP-status decoder for
+    // the script), each doubled by the site mirror. The strategy table on that
+    // page grew a `via_branch` row and a fourth column, which is growth inside a
+    // table that already existed and so does not count here.
     assert_eq!(
-        tables, 487,
-        "walked {tables} tables, expected 487. More is fine — bump this. FEWER \
+        tables, 493,
+        "walked {tables} tables, expected 493. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
