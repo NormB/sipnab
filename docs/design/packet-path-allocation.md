@@ -129,6 +129,41 @@ Expected: removes ~93% of the per-packet `Arc` refcount traffic and the
 associated digest work. Verify with `bench/regression-gate.sh` and by
 re-profiling — the `parse_packet` share of `ldadd8_relax` should collapse.
 
+**The blocker, found 2026-08-09 while scoping it.** There are exactly two
+production consumers of `parsed.frame`:
+
+| site | assigns |
+|---|---|
+| `pipeline.rs:1747` | `sip_msg.frame = pp.frame.clone()` |
+| `rtp/stream_store.rs:460` | `stream.first_frame = parsed.frame.clone()` |
+
+Everything else is test code or reads `msg.frame` downstream. That looks like
+"build the pointer at those two places instead" — but **neither can reach the
+`Packet`.** `classify_packet(pp: &ParsedPacket, …)` takes no packet, and the
+stream store is further downstream still. So the source `Arc<str>` has to be
+inside `ParsedPacket` for either site to build a `FrameRef`, and putting it
+there is the per-packet clone we are trying to remove.
+
+Skipping non-SIP packets does not work either: `stream.first_frame` is
+deliberate, the code says *"a stream with no provenance must say so"*, and
+`tests/provenance_surfaces_test.rs` asserts it.
+
+Three ways out, none of them a small edit — pick one and spec it before coding:
+
+1. **Borrow the source.** `ParsedPacket<'a>` holding `&'a str`. Cheapest at
+   runtime, ripples a lifetime through every signature that touches a parsed
+   packet.
+2. **Intern the source.** `FrameRef.source` becomes an index into a small
+   per-run table, resolved when the pointer is rendered. No atomic per packet.
+   Changes a public type that `--json`, the REST API and MCP all surface.
+3. **Give the consumers their own handle.** The `StreamStore` and the SIP path
+   each hold one `Arc<str>` per source, set once, and build the `FrameRef`
+   themselves from a `FrameOrigin` — which is `Copy` and therefore free to
+   carry in `ParsedPacket`. Smallest blast radius of the three, but it must
+   handle a multi-file set where the source differs per packet.
+
+Option 3 looks best on current evidence. It is the one to spec first.
+
 ### P2 — Stop allocating a fresh buffer per packet on the reader
 
 `pkt.data.to_vec()` allocates for every frame on the serial reader, and the
