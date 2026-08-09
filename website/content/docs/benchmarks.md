@@ -17,7 +17,7 @@ The generator was rewritten from the documented corpus parameters and now
 reproduces every one of them exactly (535,000 packets, 35,000 SIP messages,
 500,000 RTP, 93.5% RTP, 100 Call-IDs, 200 streams).
 
-**Measured on the released 0.5.47 artifact, checksum-verified, 2026-07-27, on
+**Measured on the released 0.5.89 artifact, checksum-verified, 2026-08-08, on
 an idle host.** Numbers on this page are not comparable to the pre-0.5.47
 figures: they came from the old unpublished corpus, and while the new
 one matches its documented composition exactly it is not byte-identical. Where
@@ -41,7 +41,7 @@ causes rather than guessing between them.
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.47 (release artifact). **Date:** 2026-07-27.
+- **Version:** sipnab 0.5.89 (release artifact). **Date:** 2026-08-08.
 
 ## Multi-core offline reconstruction
 
@@ -50,39 +50,56 @@ threads. On the 535k-packet fixed-state corpus (100 Call-IDs, 200 streams):
 
 | cores | pkts/s |
 |------:|-------:|
-| 1 | 1.06M |
-| 2 | **2.32M** |
-| 4 | 2.03M |
-| 8 | 1.89M |
+| 1 | 0.96M |
+| 2 | 1.69M |
+| 4 | **1.90M** |
+| 8 | 1.73M |
 
 The plateau past 2 cores is the single sequential pcap reader (read + buffer
 copy + host-pair peek), not the core count. Before v0.4.16 a per-packet
 cross-core hand-off collapsed this to 0.84M @ 4 cores and 0.50M @ 8. Batching
 the hand-off removed the regression.
 
-## Is the packet path still what it was at 0.5.18?
+## Is the packet path still what it was at 0.5.47?
 
-This page used to assert that the numbers carried forward because "the current
-release changes no packet-path code versus 0.5.18". Nobody ever checked it, and
-the version number in the sentence moved release after release.
+No. Throughput fell 40% in 0.5.84, stayed there for four releases, and 0.5.89
+recovers most of it.
 
-Someone has now checked. Both release artifacts, both checksum-verified, run
-against the identical corpus on the same idle host in the same session:
+The version of this section published on 2026-07-27 concluded the opposite, and
+ended by telling the reader not to restate it with a higher version number but
+to re-run it. Re-running it is what found this. Both release artifacts
+checksum-verified, identical corpus, same idle host, same session, interleaved
+replicates so host drift cannot pass for a difference between versions:
 
-| cores | 0.5.18 | 0.5.47 | delta |
-|------:|-------:|-------:|------:|
-| 1 | 1.06M | 1.06M | 0.0% |
-| 2 | 2.37M | 2.32M | −2.1% |
-| 4 | 2.08M | 2.03M | −2.4% |
-| 8 | 1.96M | 1.89M | −3.6% |
+| cores | 0.5.47 | 0.5.88 | 0.5.89 | 0.5.89 vs 0.5.47 |
+|------:|-------:|-------:|-------:|-----------------:|
+| 1 | 1.06M | 0.91M | 0.96M | −9% |
+| 2 | 2.27M | 1.39M | 1.69M | −26% |
+| 4 | 2.02M | 1.33M | **1.90M** | **−6%** |
+| 8 | 1.91M | 1.29M | 1.73M | −9% |
 
-Three interleaved replicates at 2 and 8 cores put that delta inside the noise
-floor: 0.5.47 measured 2.32 / 2.33 / 2.36M at 2 cores against 0.5.18's 2.37 /
-2.42 / 2.34M, so the between-version gap (~2%) is smaller than the
-within-version spread (~3.4%), and one replicate has 0.5.47 ahead. **Twenty-nine
-releases on, throughput holds within measurement noise.** The judgement
-this page carried for a year happens to have been correct — but it is now a
-measurement, and re-checking it is three commands.
+Within-version spread is about 2% and the 0.5.47 → 0.5.88 gap is about 39%, so
+that gap is roughly eighteen times the noise floor. voipmonitor measured 0.40M
+in both arms, exactly — an unrelated binary that did not move on the same
+corpus on the same afternoon, which is what rules out the host.
+
+**The cause.** 0.5.84 began stamping a frame-provenance digest on the serial
+reader, the one stage `--cores` waits on: a single thread reads, copies and
+host-pair-peeks every packet while the workers idle. That charged it about 240
+bytes of dependent multiplies per packet, or 129 MB hashed a byte at a time on
+this corpus. 0.5.89 moves the hash to the workers, computing the same FNV-1a
+over the same bytes, so pointers already written down still resolve. Because
+the work now spreads across workers, the recovery scales with them: about 81%
+of the loss at four cores, about 34% at two.
+
+**Still outstanding**, rather than left for the next re-run to discover:
+sipnab hashes every frame when only a retained pointer needs a digest (~35,000
+of 535,000 here), and a further ~12% of the original regression comes from
+something other than the digest that nobody has identified yet. PERF1 tracks
+both.
+
+**Nothing in CI measures throughput**, which is why a 40% regression shipped
+four times.
 
 The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measures 1.06M
 single-core here against the 1.20M this page published for it — same binary,
@@ -98,10 +115,10 @@ a throughput number only means something next to the work behind it.
 | tool | pkts/s | × sngrep | what it reconstructs |
 |---|---:|---:|---|
 | sngrep 1.8.0 | 0.19M | 1.0× | SIP dialogs; no RTP-stream reconstruction headless |
-| sipgrep 2.2.1 | 2.19M | 11.8× | grep-style SIP line match + Call-ID grouping; **no RTP** |
-| voipmonitor 2026.07.1 | 0.40M | 2.2× | full call/CDR + RTP-stream association |
-| **sipnab 0.5.47 `--cores 1`** | 1.04M | **5.6×** | SIP dialogs + **200 RTP streams** |
-| **sipnab 0.5.47 `--cores 4`** | 2.06M | **11.1×** | identical full SIP + RTP reconstruction |
+| sipgrep 2.2.1 | 2.34M | 12.3× | grep-style SIP line match + Call-ID grouping; **no RTP** |
+| voipmonitor 2026.07.1 | 0.40M | 2.1× | full call/CDR + RTP-stream association |
+| **sipnab 0.5.89 `--cores 1`** | 1.00M | **5.3×** | SIP dialogs + **200 RTP streams** |
+| **sipnab 0.5.89 `--cores 4`** | 1.89M | **9.9×** | identical full SIP + RTP reconstruction |
 
 Read it in three buckets:
 
@@ -150,10 +167,10 @@ volume. Measured at `--cores 4`:
 
 | calls | pkts | dialogs | streams | pkts/s | peak RSS |
 |------:|-----:|--------:|--------:|-------:|---------:|
-| 500 | 53.5k | 500 | 1,000 | 1.56M | 18.6 MiB |
-| 2,000 | 214k | 2,000 | 4,000 | 1.84M | 53.4 MiB |
-| 8,000 | 856k | 8,000 | 16,000 | 1.93M | 192.9 MiB |
-| 20,000 | 2.14M | 20,000 | 40,000 | 1.94M | 448.2 MiB |
+| 500 | 53.5k | 500 | 1,000 | 1.52M | 21.0 MiB |
+| 2,000 | 214k | 2,000 | 4,000 | 1.69M | 55.4 MiB |
+| 8,000 | 856k | 8,000 | 16,000 | 1.70M | 205.6 MiB |
+| 20,000 | 2.14M | 20,000 | 40,000 | 1.75M | 460.6 MiB |
 
 **Honest read:** throughput is flat from 2k calls up — reconstruction cost is
 per-packet, not per-dialog, and 40k concurrent streams do not degrade it.
@@ -166,10 +183,10 @@ Against voipmonitor on the same corpora, same method:
 
 | calls | pkts | voipmonitor | sipnab | speed-up | RSS edge |
 |------:|-----:|---|---|---:|---:|
-| 500 | 53.5k | 0.12M p/s · 60.6 MiB | 1.56M p/s · 18.6 MiB | 12.6× | 3.3× |
-| 2,000 | 214k | 0.29M p/s · 170.8 MiB | 1.84M p/s · 53.4 MiB | 6.4× | 3.2× |
-| 8,000 | 856k | 0.45M p/s · 596.2 MiB | 1.93M p/s · 192.9 MiB | 4.3× | 3.1× |
-| 20,000 | 2.14M | 0.50M p/s · 1455 MiB | 1.94M p/s · 448.2 MiB | 3.9× | 3.2× |
+| 500 | 53.5k | 0.13M p/s · 58.2 MiB | 1.52M p/s · 21.0 MiB | 11.7× | 2.8× |
+| 2,000 | 214k | 0.29M p/s · 167.6 MiB | 1.69M p/s · 55.4 MiB | 5.8× | 3.0× |
+| 8,000 | 856k | 0.42M p/s · 594.0 MiB | 1.70M p/s · 205.6 MiB | 4.0× | 2.9× |
+| 20,000 | 2.14M | 0.48M p/s · 1451.9 MiB | 1.75M p/s · 460.6 MiB | 3.6× | 3.2× |
 
 sipnab leads on throughput at every scale, but the lead *narrows* with volume —
 12.6× at 500 calls down to 3.9× at 20,000 — because voipmonitor's multithreaded

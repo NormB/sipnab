@@ -1340,7 +1340,11 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // 0.5%. A smaller number a reader can reproduce beats a larger one they
     // cannot — and quoting a 2-core throughput beside a 4-core ratio invited
     // the two tiles to be read as one result.
-    for (count, suffix) in [("2.06", "M pkts/s"), ("11.1", "&times; sngrep")] {
+    // Re-measured on the released 0.5.89 artifact, 2026-08-08, after the
+    // regression bisected to 0.5.84 was partly fixed: 2.06 -> 1.89M pkts/s and
+    // 11.1 -> 9.9x sngrep. Updated here and on the benchmarks page in the same
+    // commit, which is what this gate exists to force.
+    for (count, suffix) in [("1.89", "M pkts/s"), ("9.9", "&times; sngrep")] {
         let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
         assert!(
             idx.contains(&tile),

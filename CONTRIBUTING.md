@@ -142,6 +142,7 @@ which blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
 |---|---|
+| `scripts/preflight.sh` | **Run this first.** About a minute, and it checks only the things that actually bounce a commit — Vale at CI's pinned version, codespell, both site-mirror generators, the documentation ratchets, and whether a changed test count left the homepage tile behind. On 2026-08-08 four commits bounced on exactly these at ~25 minutes each; none needed the suite to find. It does NOT run the suite, clippy, the corpus gate or the feature matrix, so a green preflight means the paperwork is right, not that the change is. |
 | `cargo fmt --all -- --check` | Formatting is never checked by a build. |
 | `cargo clippy --all-features --all-targets -- -D warnings` | Broader than pre-commit's `--features full`: also lints tests, benches, examples, and every feature-gated path. |
 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |

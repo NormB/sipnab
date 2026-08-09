@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Throughput baseline for bench/regression-gate.sh. Raising this is a",
+    "deliberate act in a commit, the same as the documentation ratchets in",
+    "tests/docs_drift_test.rs. Do NOT lower it to make a red run pass: that",
+    "records a regression as the new normal, which is precisely how the 0.5.84",
+    "drop survived four releases.",
+    "",
+    "The figure is 4-core offline reconstruction over the fixed-state 535k",
+    "corpus that bench/carrier.py generates (5000 calls, 100 Call-IDs, 200",
+    "streams). Four cores rather than the 2-core peak because it is the most",
+    "reproducible point on the curve -- measured 1.88 / 1.89 / 1.90M across",
+    "three replicates here, against a 2-core peak that spans ~2% run to run.",
+    "",
+    "Measured on a LOCAL release build of the recorded commit, not on a release",
+    "artifact -- the gate has to catch a regression the day it lands, not once",
+    "it has shipped. The two agree on this host: the published 0.5.89 artifact",
+    "measured 1.87-1.90M over the same corpus in the same session."
+  ],
+  "cores_4_pkts_per_s": 1890000,
+  "measured": {
+    "version": "0.5.89",
+    "date": "2026-08-08",
+    "host": "NVIDIA Jetson Thor devboard (aarch64), 14 cores, PREEMPT_RT, idle",
+    "corpus": "bench/carrier.py --calls 5000 (535000 packets, 93.5% RTP)",
+    "method": "median-of-5 after one discarded warmup, three replicates",
+    "replicates_pkts_per_s": [1890000, 1880000, 1900000]
+  },
+  "floor_pct": 80,
+  "_floor_rationale": [
+    "The regression this gate exists to catch was 40%. Run-to-run spread is ~2%",
+    "on an idle host and ~10% when something else shares it, so 20% sits clear",
+    "of both. A tighter band on a runner that also serves CI would be flaky in",
+    "the direction that gets a gate muted, and a muted gate catches nothing.",
+    "",
+    "Sanity check against real numbers: 0.5.88 measured 1.33M here, which is",
+    "70% of this baseline and trips the floor. 0.5.83 measured 2.02M and does",
+    "not."
+  ]
+}
