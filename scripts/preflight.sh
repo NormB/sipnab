@@ -167,8 +167,13 @@ fi
 #    or a backlog entry, moves a number nobody expected to be moving.
 # ---------------------------------------------------------------------------
 step "docs + site gates"
+# dev_docs_drift_test is here because it caught something preflight missed on
+# the day preflight was written: adding a twelfth workflow moves a spelled-out
+# count in a heading ("The eleven workflows") AND requires a row in the table
+# under it. Both are decidable in seconds and both bounced a commit.
 if cargo test --features full --test docs_drift_test --test link_integrity_test \
-    --test site_journey_test >/tmp/.sipnab-preflight-gates.$$ 2>&1; then
+    --test site_journey_test --test dev_docs_drift_test \
+    >/tmp/.sipnab-preflight-gates.$$ 2>&1; then
     ok
 else
     bad
