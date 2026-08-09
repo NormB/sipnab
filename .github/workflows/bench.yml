@@ -1,0 +1,65 @@
+name: Throughput
+
+# Offline reconstruction throughput against a committed baseline.
+#
+# Why this exists. A 40% `--cores` regression landed in 0.5.84 and shipped in
+# four consecutive releases. Every test passed the whole time -- the change was
+# correct, it just moved a per-packet hash onto the one serial stage the
+# parallel design waits on. Nothing in this repository measured speed, so the
+# only thing that could have caught it was docs/benchmarks.md, which is
+# re-measured by hand and had gone 41 releases stale. It was found by re-running
+# that page and bisecting across release artifacts, weeks late.
+#
+# Why nightly and not per-push. The reference host is one self-hosted runner
+# that also serves CI. Two jobs on it measure their own contention rather than
+# the tool, so a per-PR wall-clock gate would be flaky in the direction that
+# gets a gate muted -- and a muted gate catches nothing. Nightly, on a wide
+# band, catches the class of regression that actually shipped.
+#
+# What it will NOT catch: slow erosion. A 5% drift stays inside the floor. That
+# is a deliberate trade, argued in bench/baseline.json.
+on:
+  schedule:
+    # 03:29 UTC daily. Offset from fuzz.yml (Mondays 05:17) and sanitizers.yml
+    # (Tuesdays 06:11) so the long jobs never contend on the one runner.
+    - cron: '29 3 * * *'
+  workflow_dispatch:
+  # Deliberately NOT on push. See the header: a per-push gate on this host
+  # measures queue contention, and would have to be so loose it caught nothing.
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never two of these at once: the second would measure the first.
+  group: throughput
+  cancel-in-progress: false
+
+jobs:
+  throughput:
+    name: Offline reconstruction (4 cores)
+    # The baseline is a property of THIS machine. Running elsewhere would
+    # compare one host's number against another's, which is not a regression
+    # signal at all.
+    runs-on: [self-hosted, thor-02]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
+
+      - name: Build the release binary
+        # Release, not debug: a debug build measures the absence of
+        # optimisation, and the baseline was recorded from a release build.
+        run: cargo build --features full --release
+
+      - name: Measure against the committed baseline
+        run: bench/regression-gate.sh target/release/sipnab
+
+      - name: Record what was measured
+        if: always()
+        run: |
+          echo "Baseline and rationale: bench/baseline.json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat bench/baseline.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

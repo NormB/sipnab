@@ -29,7 +29,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The eleven workflows
+## The twelve workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -44,6 +44,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `release.yml` | `v*` tags | The release. See below. |
 | `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the thor-02 self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
+| `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in `bench/baseline.json`, failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
 
 ### ThreadSanitizer
 
