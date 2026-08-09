@@ -1665,11 +1665,23 @@ authoritative; the PB text above adds only what they do not already say.
   (`bytes::Bytes` is refcounted, so the clone is O(1)) so the retention sites
   can hash on demand. Spec it before building it.
 
-  **Separately, ~12% of the 0.5.84 regression is NOT the digest** — the
-  digest-removed build still measures 2.05M against 0.5.83's 2.33M. Unidentified.
-  Candidates in that range touch the per-message path: `167b2f7` (dialog state
-  transition), `7e77cac` / `7477cfc` (#128 frame pointers on JSON and reports).
-  Bisecting it needs source builds rather than release artifacts.
+  **Separately, ~12% is NOT the digest, and it is NOT where this entry first
+  said.** A digest-removed build measures 2.05M at 2 cores against 0.5.83's
+  2.33M. The first version of this entry blamed three 0.5.84 commits on the
+  per-message path (`167b2f7`, `7e77cac`, `7477cfc`). **Measured 2026-08-08,
+  that is wrong**: a source build of `7e77cac` — the last commit before the
+  digest landed, carrying 22 of 0.5.84's 28 source commits — measures
+  2.29–2.31M at 2 cores against 0.5.83's 2.30–2.39M in the same interleaved
+  session. Identical within noise. Nothing before the digest cost anything.
+
+  So the residual entered somewhere in `9e12653..HEAD`, which spans 0.5.84's
+  remaining commits plus everything in 0.5.85, 0.5.87, 0.5.88 and 0.5.89 — a
+  wider range than this entry claimed, and the diagnostic build that produced
+  2.05M was itself built from 0.5.89-era source with the hash disabled, so it
+  measures the accumulation rather than 0.5.84 alone. Bisect forward from
+  `9e12653` with the digest disabled at each step, or the digest's own 20%
+  swamps the signal. Source builds are ~5.5 minutes each on the reference host;
+  a binary search over that range is about five of them.
 
   **How this went unnoticed for four releases:** `docs/benchmarks.md` was 41
   releases stale, and nothing in CI measures throughput. A perf gate would have
