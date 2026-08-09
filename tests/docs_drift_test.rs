@@ -2379,9 +2379,12 @@ fn no_documentation_table_repeats_a_row() {
     // docs/design/packet-path-allocation.md (the symbol profile, the driver
     // attribution, the targets) which count once because a design doc has no
     // mirror.
+    // Raised 509 -> 510 by the measured-ceilings table in
+    // docs/design/packet-path-allocation.md. A design doc has no site mirror,
+    // so it costs one.
     assert_eq!(
-        tables, 509,
-        "walked {tables} tables, expected 509. More is fine — bump this. FEWER \
+        tables, 510,
+        "walked {tables} tables, expected 510. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
