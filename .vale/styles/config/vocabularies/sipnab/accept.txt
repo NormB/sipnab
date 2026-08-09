@@ -55,7 +55,9 @@ burst_gap
 burstiness
 bursty
 Bursty
+bytehound
 cacheable
+cachegrind
 Caddy
 callee
 callgrind
@@ -230,6 +232,7 @@ hardcode
 hardcoded
 hardcodes
 headlessly
+heaptrack
 HEP
 hep_bind_is_loopback
 hexdump
@@ -419,6 +422,9 @@ preloading
 Prepended
 process_isolation
 process_message
+profiler
+Profiler
+profilers
 prometheus
 prometheus_server
 Promisc
@@ -449,6 +455,7 @@ recv
 refcount
 refcounted
 refcounting
+refcounts
 regexes
 rehosted
 rehydrated
@@ -494,6 +501,7 @@ rustdoc
 Rustdoc
 rustfmt
 rustls
+samply
 sandboxed
 sanitization
 SBCs
@@ -627,6 +635,8 @@ TUI
 tunables
 tv_usec
 UAs
+unstripped
+unwinding
 UUID
 UUIDs
 uid
@@ -665,6 +675,7 @@ Userspace
 usize
 utoipa
 [Uu]ndecodable
+valgrind
 validator
 Vec
 vendored
