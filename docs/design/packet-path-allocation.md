@@ -164,6 +164,41 @@ Three ways out, none of them a small edit — pick one and spec it before coding
 
 Option 3 looks best on current evidence. It is the one to spec first.
 
+### Option 3, specified — chosen 2026-08-09
+
+The reader mints **one `Arc<str>` per file** (`parallel.rs:609`,
+`capture/file.rs:607`) and clones it into every packet's `interface`.
+`parse_packet` then clones it a *second* time inside `frame_ref()`, and each
+retention site clones the resulting `FrameRef` a *third*. Only the third is
+ever kept.
+
+So the consumers need something `Copy` that identifies the source, not an
+`Arc`. The mechanism:
+
+1. The reader owns a `Vec<Arc<str>>` of sources for the run — one entry per
+   file, which is a handful of entries even for a large set — and stamps each
+   packet with a `source_idx: u32` alongside its ordinal. Both are `Copy`, so
+   this costs no atomic.
+2. `ParsedPacket` carries `frame_origin: Option<FrameOrigin>` and that index
+   instead of `frame: Option<FrameRef>`. `FrameOrigin` is already `Copy`.
+   `parse_packet` performs **no** refcount traffic.
+3. Each worker holds one clone of the source table, taken once at spawn.
+4. The two retention sites — `pipeline.rs:1747` and
+   `rtp/stream_store.rs:460` — build the `FrameRef` themselves:
+   `FrameRef { source: table[idx].clone(), origin }`. One atomic, paid only by
+   the ~6.5% of frames that keep a pointer.
+
+**Multi-file is what this design exists to handle**, and it is the thing to
+test first: a two-file set must give each packet the source of *its own* file,
+which the index does by construction and a per-worker single `Arc` would not.
+`resolver_orders_a_set_by_first_packet_time` and the two-file fixtures in
+`tests/frame_provenance_test.rs` already cover the ordering; the new assertion
+is that a pointer from file B names file B.
+
+**`FrameRef` itself does not change**, so `--json`, the REST API and MCP keep
+their current shape and every stored pointer still resolves. That is the whole
+reason to prefer this over interning, which would have changed a public type.
+
 ### P2 — Stop allocating a fresh buffer per packet on the reader
 
 `pkt.data.to_vec()` allocates for every frame on the serial reader, and the
