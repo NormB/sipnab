@@ -2316,9 +2316,12 @@ fn no_documentation_table_repeats_a_row() {
     // which tabulates four builds against the throughput each one measured.
     // Same rule as the changelog entry above: that file is walked by this gate
     // and has no site mirror, so a table there costs one rather than two.
+    // Raised 503 -> 504 by PERF1's bisect table, which records what each
+    // commit measured with the digest zeroed. Same rule as the two entries
+    // above: backlog.md has no site mirror, so a table there costs one.
     assert_eq!(
-        tables, 503,
-        "walked {tables} tables, expected 503. More is fine — bump this. FEWER \
+        tables, 504,
+        "walked {tables} tables, expected 504. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
