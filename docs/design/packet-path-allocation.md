@@ -222,6 +222,36 @@ evaluated:
 Both make the common single-source case one atomic per *run* rather than per
 packet, which is the entire point.
 
+**Decided: the leaked `&'static str`.** The index does not actually avoid the
+table — a consumer memoising `(idx, Arc<str>)` still needs something to resolve
+the index the *first* time, which is the plumbing the alternative existed to
+avoid. A `&'static str` is self-describing: the consumer builds its `Arc<str>`
+straight from it and memoises the pair, so no table reaches either consumer and
+no constructor signature changes.
+
+What is being leaked is one interned path per capture source, for the process
+lifetime — a handful of short strings for a file set, exactly one for a live
+capture or a HEP listener. That is interning, not a leak in the sense that
+matters: the count is bounded by the number of sources a run opens, which is
+the same thing already true of the `Arc<str>` it replaces.
+
+The multi-file case falls out correctly by construction, which is the property
+worth having: each packet carries its own source pointer, so a pointer from the
+second file names the second file without anyone tracking which file is
+current. That is what a single per-worker `Arc` would have got silently wrong.
+
+Implementation order, with the multi-file assertion written first:
+
+1. `tests/frame_provenance_test.rs` — a two-file set where a pointer from the
+   second file must name the second file. It should pass today and keep passing;
+   if it ever fails, this design is wrong and the number is not worth it.
+2. Reader interns the source once per file and stamps `Packet` with it.
+3. `ParsedPacket::frame` becomes the `Copy` locator. Zero literal churn — all
+   28 sites are `None`.
+4. `parse_packet` stores the locator instead of calling `frame_ref()`.
+5. The two retention sites build the `FrameRef`, each memoising one
+   `(&'static str, Arc<str>)` pair.
+
 **`FrameRef` itself does not change**, so `--json`, the REST API and MCP keep
 their current shape and every stored pointer still resolves. That is the whole
 reason to prefer this over interning, which would have changed a public type.
