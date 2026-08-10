@@ -25,12 +25,26 @@ jobs:
     # group, which never supersedes. Observed: 11.7 min ubuntu / 8.0 macos.
     timeout-minutes: 40
     name: Check (${{ matrix.os }})
-    # The Linux leg runs on the thor-02 self-hosted runner (aarch64, the CI
-    # toolchain 1.97.1 and all build deps are installed on the box). macOS
-    # cannot run there, so it stays on a GitHub-hosted runner. `matrix.os`
+    # The Linux leg runs on ubuntu-24.04-arm: GitHub's hosted aarch64 runner,
+    # free for public repositories. It KEEPS the architecture this project
+    # cares about while running in parallel.
+    #
+    # It used to be [self-hosted, thor-02], and that was the whole bottleneck.
+    # thor-02 executes one job per runner instance, so 21 jobs queued
+    # single-file; a PR took 20-60 minutes, and because branch protection also
+    # requires up-to-date branches, four open PRs meant four sequential full
+    # runs. Adding runner instances widened it and immediately introduced a new
+    # failure -- concurrent `apt-get install` racing for a machine-wide lock.
+    # Hosted runners remove the constraint instead of widening it.
+    #
+    # thor-02 keeps exactly the two jobs that genuinely need THAT box:
+    # bench.yml (its throughput baseline is a property of that hardware) and
+    # self-hosted-smoke.yml (which exists to prove the box works).
+    #
+    # macOS cannot run on arm64 Linux, so it stays macos-latest. `matrix.os`
     # keeps its ubuntu-latest / macos-latest values so the step conditionals
     # below (e.g. the published-test-count gate, ubuntu-only) are unchanged.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","thor-02"]') || 'macos-latest' }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -69,12 +83,12 @@ jobs:
         # `|| true`: don't let a flaky preconfigured third-party apt repo
         # (e.g. packages.microsoft.com 403s) fail the job; the packages we
         # need are in the main Ubuntu archives, which still refresh.
-        # Skip when already present. These jobs run on a self-hosted runner
-        # with SEVERAL runner instances on one box, and apt takes a
-        # MACHINE-WIDE lock -- two concurrent jobs racing here fail with
-        # 'Could not get lock /var/lib/dpkg/lock-frontend'. That is exactly
-        # what broke a dependabot PR once the extra runners were added.
-        # dpkg -s is a read, so it never contends.
+        # Skip when already present. Kept after the move to hosted runners:
+        # a hosted image may already carry these, and the check costs one
+        # dpkg -s. It also stays correct if a job is ever moved back to the
+        # self-hosted box, where several runner instances share ONE apt lock --
+        # concurrent installs there failed a dependabot PR with
+        # 'Could not get lock /var/lib/dpkg/lock-frontend'.
         run: |
           need=""
           for p in libpcap-dev libasound2-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
@@ -347,7 +361,7 @@ jobs:
     # group, which never supersedes. Observed: 7.2 min slowest combo.
     timeout-minutes: 30
     name: Features (${{ matrix.features }})
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
@@ -395,12 +409,12 @@ jobs:
         # `|| true`: don't let a flaky preconfigured third-party apt repo
         # (e.g. packages.microsoft.com 403s) fail the job; the packages we
         # need are in the main Ubuntu archives, which still refresh.
-        # Skip when already present. These jobs run on a self-hosted runner
-        # with SEVERAL runner instances on one box, and apt takes a
-        # MACHINE-WIDE lock -- two concurrent jobs racing here fail with
-        # 'Could not get lock /var/lib/dpkg/lock-frontend'. That is exactly
-        # what broke a dependabot PR once the extra runners were added.
-        # dpkg -s is a read, so it never contends.
+        # Skip when already present. Kept after the move to hosted runners:
+        # a hosted image may already carry these, and the check costs one
+        # dpkg -s. It also stays correct if a job is ever moved back to the
+        # self-hosted box, where several runner instances share ONE apt lock --
+        # concurrent installs there failed a dependabot PR with
+        # 'Could not get lock /var/lib/dpkg/lock-frontend'.
         run: |
           need=""
           for p in libpcap-dev libasound2-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
@@ -471,12 +485,12 @@ jobs:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
       - name: Install libpcap
-        # Skip when already present. These jobs run on a self-hosted runner
-        # with SEVERAL runner instances on one box, and apt takes a
-        # MACHINE-WIDE lock -- two concurrent jobs racing here fail with
-        # 'Could not get lock /var/lib/dpkg/lock-frontend'. That is exactly
-        # what broke a dependabot PR once the extra runners were added.
-        # dpkg -s is a read, so it never contends.
+        # Skip when already present. Kept after the move to hosted runners:
+        # a hosted image may already carry these, and the check costs one
+        # dpkg -s. It also stays correct if a job is ever moved back to the
+        # self-hosted box, where several runner instances share ONE apt lock --
+        # concurrent installs there failed a dependabot PR with
+        # 'Could not get lock /var/lib/dpkg/lock-frontend'.
         run: |
           need=""
           for p in libpcap-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
@@ -527,7 +541,7 @@ jobs:
     # group, which never supersedes. Observed: 3.8 min.
     timeout-minutes: 20
     name: Fuzz targets compile
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -537,12 +551,12 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
       - name: Install libpcap
-        # Skip when already present. These jobs run on a self-hosted runner
-        # with SEVERAL runner instances on one box, and apt takes a
-        # MACHINE-WIDE lock -- two concurrent jobs racing here fail with
-        # 'Could not get lock /var/lib/dpkg/lock-frontend'. That is exactly
-        # what broke a dependabot PR once the extra runners were added.
-        # dpkg -s is a read, so it never contends.
+        # Skip when already present. Kept after the move to hosted runners:
+        # a hosted image may already carry these, and the check costs one
+        # dpkg -s. It also stays correct if a job is ever moved back to the
+        # self-hosted box, where several runner instances share ONE apt lock --
+        # concurrent installs there failed a dependabot PR with
+        # 'Could not get lock /var/lib/dpkg/lock-frontend'.
         run: |
           need=""
           for p in libpcap-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
@@ -573,7 +587,7 @@ jobs:
     # check on main still green.
     needs: [check, install-sh, deb-package, homebrew-formula, tsan-verdict,
             bench-scripts, features, audit, fuzz-check]
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
         run: |
