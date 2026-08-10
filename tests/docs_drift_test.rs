@@ -2236,8 +2236,8 @@ fn no_documentation_table_repeats_a_row() {
     // one. Also from a failing run.
     assert_eq!(
         files.len(),
-        134,
-        "found {} tracked markdown files, expected 134. More is fine — bump \
+        135,
+        "found {} tracked markdown files, expected 135. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2389,9 +2389,11 @@ fn no_documentation_table_repeats_a_row() {
     // Raised 512 -> 513 by the 0.5.91 changelog's throughput table.
     // CHANGELOG.md is walked by this gate and has no site mirror, so it
     // costs one.
+    // Raised 513 -> 514 by the surface-comparison table in
+    // docs/design/i18n.md. Design doc, no mirror, costs one.
     assert_eq!(
-        tables, 513,
-        "walked {tables} tables, expected 513. More is fine — bump this. FEWER \
+        tables, 514,
+        "walked {tables} tables, expected 514. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
