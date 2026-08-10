@@ -1744,7 +1744,10 @@ pub fn classify_packet(
                 // `Arc<str>` already interned once per source, plus two words.
                 // Paid per SIP message rather than per packet, which on real
                 // traffic is a small fraction of the frames.
-                sip_msg.frame = pp.frame.clone();
+                // Materialise the owned pointer HERE, where the message keeps
+                // it. The parser carries a Copy locator precisely so the ~93%
+                // of frames that never reach a retention site pay no refcount.
+                sip_msg.frame = pp.frame.map(|l| l.to_frame_ref());
                 let mut sdp_links = Vec::new();
                 if !opts.no_dialog
                     && let Some(sdp) = sip_msg.sdp()

@@ -524,8 +524,13 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
 
     for pkt in &packets {
         let Ok(pp) = parse_packet(pkt) else { continue };
+        // The parser now carries a Copy locator rather than an owned
+        // FrameRef, so compare what it MATERIALISES to. That is the stronger
+        // claim and the one the change rests on: the cheap form must round-trip
+        // to exactly the pointer the old path built, or every stored pointer
+        // shifts meaning.
         assert_eq!(
-            pp.frame,
+            pp.frame.map(|l| l.to_frame_ref()),
             pkt.frame_ref(),
             "the parse boundary dropped or altered the frame pointer"
         );
