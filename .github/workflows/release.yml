@@ -601,7 +601,7 @@ jobs:
       # sipnab binary published here, which is the safe direction to err.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2
         with:
           tool: cargo-cyclonedx
 
@@ -648,7 +648,7 @@ jobs:
       # copy is detectable. Anyone can check a download with
       #   gh attestation verify <file> --repo NormB/sipnab
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
             artifacts/*.tar.gz
