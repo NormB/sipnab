@@ -140,8 +140,18 @@ on 2026-08-10. It says nothing about anything released after. Do not restate it
 with a higher version number: re-run it, or leave the claim where its evidence
 is.
 
-**Nothing in CI measures throughput.** A 40% regression shipped four times
-because the only thing that would have caught it was a page nobody re-ran.
+**CI measures throughput now, nightly rather than per push.** When that 40%
+regression shipped four times, nothing in the repository measured speed and the
+only thing that would have caught it was this page, which nobody re-ran. The
+`Throughput` workflow now runs `bench/regression-gate.sh` at 03:29 UTC daily
+against the figure committed in `bench/baseline.json`, and fails below a stated
+floor.
+
+It is nightly on purpose: the reference host is one self-hosted runner that also
+serves CI, so two jobs on it measure their own contention rather than the tool,
+and a per-push wall-clock gate would be flaky in the direction that gets a gate
+muted. What it will not catch is slow erosion — a drift inside the floor passes.
+That is a deliberate trade, argued in `bench/baseline.json`.
 
 The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measured 1.06M
 single-core against the 1.20M this page once published for it — same binary,

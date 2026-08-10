@@ -55,15 +55,23 @@ threads. On the 535k-packet fixed-state corpus (100 Call-IDs, 200 streams):
 | 4 | **2.32M** |
 | 8 | 2.13M |
 
-The plateau past 2 cores is the single sequential pcap reader (read + buffer
-copy + host-pair peek), not the core count. Before v0.4.16 a per-packet
-cross-core hand-off collapsed this to 0.84M @ 4 cores and 0.50M @ 8. Batching
-the hand-off removed the regression.
+The ceiling is the single sequential pcap reader (read + buffer copy +
+host-pair peek), not the core count — which is why 8 cores is slower than 4
+rather than faster.
+
+**The peak sits at 4 cores, and it used to sit at 2.** Through 0.5.88 the
+reader also computed the frame-provenance digest on that same sequential stage,
+so the extra work capped every core count at once. 0.5.89 moved it to the
+workers, which is what lets more workers help. If you are tuning against older
+advice, this is the number that changed.
+
+Before v0.4.16 a per-packet cross-core hand-off collapsed this to 0.84M @ 4
+cores and 0.50M @ 8. Batching the hand-off removed that one.
 
 ## Is the packet path still what it was at 0.5.47?
 
-No. Throughput fell 40% in 0.5.84, stayed there for four releases, and 0.5.89
-recovers most of it.
+No — it is **faster**. Throughput fell 40% in 0.5.84 and held that loss for four
+releases. 0.5.89 recovered part of it, and 0.5.91 went past where it started.
 
 The version of this section published on 2026-07-27 concluded the opposite, and
 ended by telling the reader not to restate it with a higher version number but
@@ -92,14 +100,30 @@ over the same bytes, so pointers already written down still resolve. Because
 the work now spreads across workers, the recovery scales with them: about 81%
 of the loss at four cores, about 34% at two.
 
+**Why 0.5.91 overshot.** Two further changes, both from the same profile.
+`parse_packet` stopped building a `FrameRef` per packet — a `FrameRef` owns an
+`Arc<str>`, so each one cost an atomic pair for a pointer that ~93% of frames
+never keep. The reader also stopped allocating each frame separately: it now
+cuts them from a shared 64 KiB block, so the allocator's cross-thread free path
+runs once per ~270 frames instead of once per frame. Together those put
+four-core throughput **above** where it was before the regression — 2.32M
+against 0.5.47's 2.02M. The second change beat its own predicted ceiling,
+because frames sharing a block are also sequential in memory, which a
+diagnostic that scattered them into an arena could not show.
+
 **Still outstanding**, rather than left for the next re-run to discover:
 sipnab hashes every frame when only a retained pointer needs a digest (~35,000
 of 535,000 here), and a further ~12% of the original regression comes from
 something other than the digest that nobody has identified yet. PERF1 tracks
 both.
 
-**Nothing in CI measures throughput**, which is why a 40% regression shipped
-four times.
+**CI measures throughput now, nightly rather than per push.** When that
+regression shipped four times, nothing here measured speed. The `Throughput`
+workflow now runs a regression gate at 03:29 UTC daily against a committed
+baseline and fails below a stated floor. It is nightly on purpose: the reference
+host is one self-hosted runner that also serves CI, so two jobs on it would
+measure their own contention. What it will not catch is slow erosion inside the
+floor — a deliberate trade.
 
 The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measures 1.06M
 single-core here against the 1.20M this page published for it — same binary,
