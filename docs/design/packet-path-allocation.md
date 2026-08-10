@@ -195,6 +195,33 @@ which the index does by construction and a per-worker single `Arc` would not.
 `tests/frame_provenance_test.rs` already cover the ordering; the new assertion
 is that a pointer from file B names file B.
 
+**The 28 sites are all `frame: None` — there are zero `frame: Some(...)`.**
+Measured 2026-08-09. That matters more than it sounds: `None` is `None`
+whatever `T` is, so changing the *type* of `ParsedPacket::frame` breaks none of
+those literals. The refactor is far smaller than the site count suggested. What
+actually changes is:
+
+- a new `Copy` locator type (`FrameOrigin` plus a source discriminator),
+- `Packet` carrying that discriminator, set by the reader,
+- `parse_packet` storing it instead of calling `frame_ref()`,
+- the two retention sites building the `FrameRef`.
+
+**The unresolved question is where the source table lives**, and it is the only
+thing still worth thinking about before coding. `PipelineOptions` reaches the
+SIP consumer and `StreamStore` reaches the media one, but threading a table
+through both constructors is plumbing. Two lighter alternatives, neither yet
+evaluated:
+
+- Leak one `&'static str` per capture file in the reader — bounded, a handful
+  of short strings for a process lifetime — and have each consumer memoise a
+  single `(&'static str, Arc<str>)` pair, re-deriving only when the source
+  changes. No table, no plumbing, correct across a multi-file set.
+- Keep the index, and give each consumer a one-entry cache of the last
+  `(idx, Arc<str>)` it resolved.
+
+Both make the common single-source case one atomic per *run* rather than per
+packet, which is the entire point.
+
 **`FrameRef` itself does not change**, so `--json`, the REST API and MCP keep
 their current shape and every stored pointer still resolves. That is the whole
 reason to prefer this over interning, which would have changed a public type.
