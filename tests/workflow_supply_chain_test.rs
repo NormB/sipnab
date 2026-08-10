@@ -332,3 +332,193 @@ fn every_workflow_job_bounds_its_runtime() {
         missing.join("\n  ")
     );
 }
+
+/// A job that declares its own `permissions:` must grant everything its steps
+/// need, because a job-level block REPLACES the workflow-level one rather than
+/// extending it.
+///
+/// This is the failure mode that gate exists for. `docker.yml` declared
+/// `security-events: write` at workflow level for Trivy, then the publishing job
+/// restated `contents/packages/id-token/attestations` and omitted it. The
+/// workflow read as if the grant were present -- it was there, eight lines up --
+/// and the job that needed it silently had none.
+///
+/// What made it expensive is where it surfaced. The image built, Trivy ran, the
+/// scan found nothing, and only the final `upload-sarif` step failed, with
+/// `Resource not accessible by integration`. That message names neither the
+/// missing permission nor the override that dropped it, and it is the same
+/// message a fork PR produces for entirely legitimate reasons -- so the obvious
+/// reading is "expected on forks", which is exactly wrong on a push to main.
+///
+/// The file already carried a comment explaining that a job block replaces the
+/// workflow block, written when `contents: read` had to be restated for the same
+/// reason. The comment did not prevent the next omission. A comment states the
+/// rule once, where a reader has to remember to apply it; this applies it.
+///
+/// Only permissions inferable from a step are checked. `packages: write` for a
+/// registry push is not: it is implied by intent rather than by any string in
+/// the file, and guessing it would fail jobs that legitimately only read.
+#[test]
+fn a_job_permissions_block_grants_what_its_steps_need() {
+    // (marker in a `uses:` line, permission that marker requires)
+    const NEEDS: &[(&str, &str)] = &[
+        ("upload-sarif", "security-events"),
+        ("attest-build-provenance", "attestations"),
+    ];
+
+    let mut gaps: Vec<String> = Vec::new();
+    let mut jobs_needing = 0usize;
+
+    for (name, body) in workflows() {
+        let mut wf_perms: Vec<String> = Vec::new();
+        let mut in_wf_perms = false;
+        let mut in_jobs = false;
+
+        let mut job: Option<String> = None;
+        let mut job_perms: Option<Vec<String>> = None;
+        let mut in_job_perms = false;
+        let mut needs: Vec<&str> = Vec::new();
+
+        // Borrowed by the loop and again after it, so it takes its state as
+        // arguments rather than capturing.
+        fn close(
+            file: &str,
+            job: &Option<String>,
+            perms: &Option<Vec<String>>,
+            wf: &[String],
+            needs: &[&str],
+            counter: &mut usize,
+            out: &mut Vec<String>,
+        ) {
+            let Some(j) = job else { return };
+            if needs.is_empty() {
+                return;
+            }
+            *counter += 1;
+            // No job block means the workflow block applies unmodified.
+            let effective = perms.as_deref().unwrap_or(wf);
+            for need in needs {
+                if !effective.iter().any(|p| p == need) {
+                    let via = if perms.is_some() {
+                        "its own permissions block"
+                    } else {
+                        "the workflow-level block"
+                    };
+                    out.push(format!(
+                        "{file}: job `{j}` needs `{need}` -- {via} omits it"
+                    ));
+                }
+            }
+        }
+
+        for line in body.lines() {
+            let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            if indent == 0 {
+                close(
+                    &name,
+                    &job,
+                    &job_perms,
+                    &wf_perms,
+                    &needs,
+                    &mut jobs_needing,
+                    &mut gaps,
+                );
+                job = None;
+                job_perms = None;
+                needs.clear();
+                in_job_perms = false;
+                in_wf_perms = trimmed.starts_with("permissions:");
+                in_jobs = trimmed.starts_with("jobs:");
+                continue;
+            }
+
+            // Workflow-level `permissions:` keys sit at indent 2, before `jobs:`.
+            if in_wf_perms && !in_jobs && indent == 2 {
+                if let Some(k) = trimmed.split(':').next() {
+                    wf_perms.push(k.to_string());
+                }
+                continue;
+            }
+            if !in_jobs {
+                continue;
+            }
+
+            if indent == 2 && trimmed.ends_with(':') {
+                close(
+                    &name,
+                    &job,
+                    &job_perms,
+                    &wf_perms,
+                    &needs,
+                    &mut jobs_needing,
+                    &mut gaps,
+                );
+                job = Some(trimmed.trim_end_matches(':').to_string());
+                job_perms = None;
+                needs.clear();
+                in_job_perms = false;
+                continue;
+            }
+            if job.is_none() {
+                continue;
+            }
+
+            if indent == 4 {
+                in_job_perms = trimmed.starts_with("permissions:");
+                if in_job_perms {
+                    job_perms = Some(Vec::new());
+                }
+            } else if in_job_perms
+                && indent == 6
+                && let Some(k) = trimmed.split(':').next()
+                && let Some(p) = job_perms.as_mut()
+            {
+                p.push(k.to_string());
+            }
+
+            // Steps live deeper than the job's own keys; a `uses:` anywhere
+            // inside the job is this job's step.
+            if trimmed.contains("uses:") {
+                for (marker, perm) in NEEDS {
+                    if trimmed.contains(marker) && !needs.contains(perm) {
+                        needs.push(perm);
+                    }
+                }
+            }
+        }
+        close(
+            &name,
+            &job,
+            &job_perms,
+            &wf_perms,
+            &needs,
+            &mut jobs_needing,
+            &mut gaps,
+        );
+    }
+
+    // A detector that recognises nothing reports every workflow as correct.
+    assert!(
+        jobs_needing >= 3,
+        "only {jobs_needing} jobs were seen to need an inferable permission -- \
+         upload-sarif and attest-build-provenance are used by more than that, so \
+         the parser is broken and a pass here means nothing"
+    );
+
+    assert!(
+        gaps.is_empty(),
+        "these jobs run a step whose permission their own block does not \
+         grant:\n  {}\n\n\
+         A job-level `permissions:` block REPLACES the workflow-level one, so a \
+         grant declared at the top of the file does not reach a job that \
+         restates permissions. The step fails with `Resource not accessible by \
+         integration`, which names neither the permission nor the override, and \
+         which fork PRs produce for unrelated reasons.",
+        gaps.join("\n  ")
+    );
+}

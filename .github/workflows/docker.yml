@@ -25,11 +25,17 @@ jobs:
     runs-on: ubuntu-latest
     # A job-level block REPLACES the workflow-level one, so `contents: read`
     # must be restated here — without it the checkout has no read grant.
+    # `security-events: write` is restated for the same reason, and was missed
+    # when Trivy was added: the workflow-level grant on line 14 looked
+    # sufficient, the scan itself passed, and only the SARIF upload failed with
+    # "Resource not accessible by integration" — a permissions error that names
+    # neither the permission nor the job-level override that dropped it.
     permissions:
       contents: read
       packages: write
       id-token: write
       attestations: write
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
