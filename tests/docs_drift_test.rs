@@ -33,6 +33,57 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `perf` and `cargo` flags in the profiling recipes. None of these is a
+    // sipnab flag; they belong to the tools the page tells you to run.
+    (
+        "call-graph",
+        &[
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
+    ),
+    (
+        "features",
+        &[
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
+    ),
+    (
+        "no-children",
+        &[
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
+    ),
+    (
+        "profile",
+        &[
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
+    ),
+    (
+        "runs",
+        &[
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
+    ),
+    (
+        "sort",
+        &[
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
+    ),
+    (
+        "stdio",
+        &[
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
+    ),
     // `rustc --print deployment-target`, in the macOS floor recipe. The floors
     // are the compiler's defaults, so the compiler is what the doc tells the
     // reader to ask — a copy of the number would be the thing this avoids.
@@ -2179,10 +2230,14 @@ fn no_documentation_table_repeats_a_row() {
     // P-Charging-Vector `icid-value` correlation spec. A design doc has no site
     // mirror, so it costs this counter one file and not two. The number is the
     // one this gate reported on a failing run, not one added up by hand.
+    // Raised 131 -> 134 by the profiling work: docs/internals/profiling.md and
+    // its site mirror (an internals page IS mirrored, so it costs two), plus
+    // docs/design/packet-path-allocation.md, which is a design doc and costs
+    // one. Also from a failing run.
     assert_eq!(
         files.len(),
-        131,
-        "found {} tracked markdown files, expected 131. More is fine — bump \
+        134,
+        "found {} tracked markdown files, expected 134. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2316,9 +2371,22 @@ fn no_documentation_table_repeats_a_row() {
     // which tabulates four builds against the throughput each one measured.
     // Same rule as the changelog entry above: that file is walked by this gate
     // and has no site mirror, so a table there costs one rather than two.
+    // Raised 503 -> 504 by PERF1's bisect table, which records what each
+    // commit measured with the digest zeroed. Same rule as the two entries
+    // above: backlog.md has no site mirror, so a table there costs one.
+    // Raised 504 -> 509 by the profiling work: the tool-selection table in
+    // docs/internals/profiling.md, doubled by its site mirror, plus three in
+    // docs/design/packet-path-allocation.md (the symbol profile, the driver
+    // attribution, the targets) which count once because a design doc has no
+    // mirror.
+    // Raised 509 -> 510 by the measured-ceilings table in
+    // docs/design/packet-path-allocation.md. A design doc has no site mirror,
+    // so it costs one.
+    // Raised 510 -> 511 by the consumer table in P1's blocker analysis
+    // (docs/design/packet-path-allocation.md). Design doc, no mirror, costs one.
     assert_eq!(
-        tables, 503,
-        "walked {tables} tables, expected 503. More is fine — bump this. FEWER \
+        tables, 511,
+        "walked {tables} tables, expected 511. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

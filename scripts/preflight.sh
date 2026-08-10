@@ -160,6 +160,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. Untracked files that the ratchets count.
+#
+#     Several gates count TRACKED files -- `git ls-files`, not the working
+#     tree -- so a brand-new page is invisible to them until it is staged. That
+#     is how this script reported clean on a commit that then bounced on three
+#     ratchets at once: the two new pages did not exist as far as
+#     `docs_drift_test` was concerned. Stage first, or check here.
+# ---------------------------------------------------------------------------
+step "new files staged for the ratchets"
+UNTRACKED_MD=$(git ls-files --others --exclude-standard -- '*.md' | grep -v '^SESSION_STATE.md$' || true)
+if [ -z "$UNTRACKED_MD" ]; then
+    ok
+else
+    warn
+    note "untracked markdown the tracked-file gates cannot see yet:"
+    printf '      %s\n' $UNTRACKED_MD
+    note "git add them, then re-run: the file, table, wiki-link and docs-page"
+    note "ratchets all count tracked files and will move."
+fi
+
+# ---------------------------------------------------------------------------
 # 5. The documentation gates themselves. These need a build, so they are last:
 #    on a warm tree they are seconds, and on a cold one you wanted the compile
 #    anyway. They are where the table and wiki-link ratchets live -- the

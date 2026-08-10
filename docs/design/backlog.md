@@ -1674,14 +1674,35 @@ authoritative; the PB text above adds only what they do not already say.
   2.29–2.31M at 2 cores against 0.5.83's 2.30–2.39M in the same interleaved
   session. Identical within noise. Nothing before the digest cost anything.
 
-  So the residual entered somewhere in `9e12653..HEAD`, which spans 0.5.84's
-  remaining commits plus everything in 0.5.85, 0.5.87, 0.5.88 and 0.5.89 — a
-  wider range than this entry claimed, and the diagnostic build that produced
-  2.05M was itself built from 0.5.89-era source with the hash disabled, so it
-  measures the accumulation rather than 0.5.84 alone. Bisect forward from
-  `9e12653` with the digest disabled at each step, or the digest's own 20%
-  swamps the signal. Source builds are ~5.5 minutes each on the reference host;
-  a binary search over that range is about five of them.
+  **Bisected 2026-08-09, and the answer reframes this whole entry.** Source
+  builds with `frame_digest` patched to `return 0` — patching the function, not
+  its call site, because the stamp MOVED during the range — measured at 2 cores
+  against the pre-digest reference:
+
+  | build (digest zeroed) | pkts/s |
+  |---|---|
+  | `7e77cac` — last commit before the digest | 2.29–2.31M |
+  | `7477cfc` — first commit after it | **2.00M** |
+  | `167b2f7` | 1.95M |
+  | `15b6337` | 1.86M |
+
+  **`9e12653` costs ~13% with the hashing removed entirely.** Only two commits
+  separate 7e77cac from 7477cfc, and the other is an output-side change, so the
+  cost is the REST of what that commit put on the serial reader: an
+  `Arc<str>` source clone and a `FrameOrigin` write, 535,000 times, on the one
+  thread every worker waits for. The remaining ~9% accrues across `167b2f7`
+  and `15b6337`.
+
+  This also reconciles a discrepancy: the earlier 2.05M diagnostic removed the
+  WHOLE stamp, while these zero only the hash and keep the stamping — and land
+  lower. The two interventions are not the same measurement.
+
+  **So "hash fewer frames" is only half the fix.** The other half is doing less
+  per packet on the serial stage at all: the ordinal genuinely must be assigned
+  there, but the source `Arc` clone and the origin write may not have to be.
+  Whatever replaces this should be measured with the stamp removed as the
+  ceiling (2.05M) and 0.5.83 (2.30M) as the target, not against the digest
+  alone.
 
   **How this went unnoticed for four releases:** `docs/benchmarks.md` was 41
   releases stale, and nothing in CI measures throughput. A perf gate would have

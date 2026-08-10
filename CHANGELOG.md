@@ -8,6 +8,68 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.90] - 2026-08-09
+
+Profiling, and what it overturned.
+
+### Changed
+
+- **The packet path was profiled, and the answer was not what bisection said.**
+  `perf` over the profiling build puts **~40% of samples in outlined atomics**
+  — `__aarch64_ldadd8_relax`, `__aarch64_ldadd8_rel`, `__aarch64_cas8_acq_rel`,
+  `__aarch64_swp4_rel` — reproduced on both the 535k and 2.14M corpora.
+  `frame_digest` does not appear in the top 18 symbols at all.
+
+  The drivers, by nearest caller: mimalloc's cross-thread free path, then
+  `parse_packet` cloning an `Arc<str>` per packet for a pointer ~93% of frames
+  discard, then `bytes` refcounting. The reader allocates every packet with
+  `pkt.data.to_vec()` and the workers free it, so the allocator's cross-thread
+  path runs 535,000 times.
+
+  PERF1 had said the cost was hashing every frame. That came from a bisect and
+  a diff, and it was wrong. `docs/design/packet-path-allocation.md` records the
+  measurement, the corrected diagnosis, and the fixes that follow from it.
+
+- **Both proposed fixes were measured before either was implemented**, and the
+  numbers reversed their order. P1 (build no `FrameRef` for frames that keep no
+  pointer) is worth **+13% at two cores and +10% at four**. P2 (stop allocating
+  per packet on the reader) is worth **+16% at two cores and nothing at four** —
+  and four is the operating point the tool comparison and the nightly gate both
+  use. P1 goes first.
+
+  One of those measurements was initially wrong in a way worth recording: P2's
+  first diagnostic ended in `b.clone()`, allocating a fresh `Vec` per packet, so
+  it kept the allocation it meant to remove. It reported "no improvement", which
+  would have killed a real change on the strength of a harness bug.
+
+- **P1's design is decided and specified, not yet built.** Its two consumers
+  cannot reach the `Packet`, so the source must arrive as something `Copy`: the
+  reader keeps a small `Vec<Arc<str>>` and stamps a source index beside each
+  ordinal, and the two retention sites build the `FrameRef` themselves.
+  `FrameRef` is unchanged, so `--json`, the REST API and MCP keep their shape
+  and every stored pointer still resolves.
+
+### Added
+
+- **A nightly throughput gate** (`bench.yml`, `bench/regression-gate.sh`,
+  `bench/baseline.json`). Nothing in this repository measured speed, which is
+  why a 40% regression shipped in four consecutive releases. Verified against
+  the actual history rather than asserted: 0.5.88 measures 70.4% of baseline
+  and fails; 0.5.83 measures 106.9% and passes.
+
+- **`docs/internals/profiling.md`** — how to profile on this hardware without
+  relearning it, including that plain `perf` reports "not found for kernel
+  6.8.12-rt" while the working binary sits in `/usr/lib/linux-tools`.
+
+- **`scripts/preflight.sh`** — the gates that actually bounce a commit, in about
+  a minute, instead of discovering them from a 25-minute hook run.
+
+### Fixed
+
+- The licence appeared twice on the homepage; the pill is gone and the footer
+  credit stands. The signed-provenance badge now links to the instructions for
+  verifying a download rather than to a raw attestations list.
+
 ## [0.5.89] - 2026-08-08
 
 A 40% throughput regression that shipped in four releases, found because the

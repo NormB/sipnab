@@ -463,7 +463,7 @@ fn wiki_intra_docs_links_resolve() {
     // pointer to docs/design/icid-correlation.md, which is where the argument
     // and its open questions live instead of being restated on either page.
     assert_eq!(
-        seen, 312,
+        seen, 314,
         "extractor found {seen} wiki links, expected 312. More is fine — bump \
          this. FEWER means the regex stopped matching and the anchor checks \
          above it silently narrowed."
@@ -893,7 +893,7 @@ fn every_docs_page_is_linked_from_the_index() {
     // count. Adding a docs page fails this once, deliberately: bump the number.
     // Raised 34 -> 35 by `tuning-capture.md`.
     assert_eq!(
-        checked, 36,
+        checked, 37,
         "docs-page walk saw {checked} pages, expected 36. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
