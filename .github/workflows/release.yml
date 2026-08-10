@@ -45,6 +45,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Compare the tag against Cargo.toml
         run: |
           set -euo pipefail
@@ -124,6 +129,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Install Rust
         uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
@@ -576,6 +586,11 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -601,7 +616,7 @@ jobs:
       # sipnab binary published here, which is the safe direction to err.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2
         with:
           tool: cargo-cyclonedx
 
@@ -648,7 +663,7 @@ jobs:
       # copy is detectable. Anyone can check a download with
       #   gh attestation verify <file> --repo NormB/sipnab
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
             artifacts/*.tar.gz
@@ -733,6 +748,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       # Pull the SHA256SUMS.txt that the release job just attached to the GitHub
       # release; it is the single source of truth for every artifact checksum.
       - name: Download release checksums
