@@ -115,6 +115,14 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "TUI Testing",
         "Snapshot, state and interaction testing for the terminal UI.",
     ),
+    (
+        "profiling.md",
+        "profiling.md",
+        10,
+        "Profiling",
+        "Where sipnab's time actually goes, and how to find out on this "
+        "hardware without guessing.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.
@@ -167,6 +175,7 @@ DOCS_TO_SITE = {
     "mcp-walkthrough.md": "mcp-walkthrough.md",
     "sip-lint-rules.md": "sip-lint-rules.md",
     "benchmarks.md": "benchmarks.md",
+    "internals/profiling.md": "internals/profiling.md",
     # Registering the page in build-site-pages.py's PAGES only makes the page
     # exist; this map is what makes other site pages LINK to it. Missing here,
     # troubleshooting.md's three pointers at the drop diagnosis rewrote to
