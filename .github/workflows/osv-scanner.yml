@@ -1,0 +1,93 @@
+name: OSV-Scanner
+
+# Vulnerability matching across EVERY lockfile in this repository, not just the
+# crate graph.
+#
+# Why this exists alongside `cargo audit` in ci.yml, which it does not replace:
+#
+#   cargo audit reads Cargo.lock against the RustSec database. That covers Rust
+#   crates and nothing else. This repository also carries SHA-pinned GitHub
+#   Actions, two Dockerfiles, and a fuzz workspace with its own lockfile
+#   outside the root workspace; an advisory against any of those is invisible
+#   to it.
+#
+#   osv.dev aggregates RustSec AND the GitHub Advisory Database AND distro
+#   trackers, so one tool answers for the whole tree.
+#
+#   It also fails differently, which is the point of running two scanners. On
+#   2026-08-09 cargo audit broke for a day because its LOCAL clone of the
+#   advisory database held a duplicate RUSTSEC id and its incremental fetch
+#   never removed the stale copy -- one cache produced a red main, a red PR and
+#   a blocked release. OSV-Scanner queries a service and keeps no such clone.
+#
+# The action is used directly rather than upstream's reusable workflow, because
+# a `uses:` job cannot carry `timeout-minutes` and
+# every_workflow_job_bounds_its_runtime requires one. That gate exists because a
+# wedged concurrency group once left a run pending with zero jobs for 80
+# minutes, indistinguishable from ordinary contention. Weakening it to import a
+# convenience wrapper would be the wrong trade.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Wednesdays 05:41 UTC. Offset from fuzz.yml (Mondays 05:17), scorecard
+    # (Mondays 07:20) and sanitizers (Tuesdays 06:11) so the scheduled jobs do
+    # not land on top of each other.
+    - cron: '41 5 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osv-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  scan:
+    name: OSV (all lockfiles)
+    runs-on: ubuntu-latest
+    # Observed: well under a minute. This bounds a hang, not the work.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # For the SARIF upload below.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. This job only reads the tree.
+          persist-credentials: false
+
+      # Both lockfiles named explicitly: fuzz/ is a separate workspace outside
+      # the root one, so a scan of the root alone silently skips it -- the same
+      # gap ci.yml's second `cargo audit` invocation exists to close.
+      #
+      # `|| true` so a finding does not fail the job before the SARIF is
+      # uploaded. The upload step below is what surfaces it, and the report is
+      # the deliverable here: cargo audit already blocks the merge on Rust
+      # advisories, so a second blocking gate over the same crates would mostly
+      # duplicate that while adding the Actions and Docker ecosystems as a new
+      # way to stop a release on someone else's schedule.
+      - name: Scan every lockfile
+        uses: google/osv-scanner-action/osv-scanner-action@8deb546fdb875b9996d27d4950be7312dac076a1 # v2.5.0
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=sarif
+            --output=osv.sarif
+            --lockfile=./Cargo.lock
+            --lockfile=./fuzz/Cargo.lock
+            --recursive
+            ./
+
+      # always(): a scan that found something must still publish what it found.
+      - name: Upload results
+        if: always()
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          sarif_file: osv.sarif
+          category: osv-scanner

@@ -10,6 +10,8 @@ on:
 # to push to GHCR.
 permissions:
   contents: read
+  # Trivy uploads its image scan as SARIF.
+  security-events: write
 
 env:
   REGISTRY: ghcr.io
@@ -70,6 +72,37 @@ jobs:
           tags: sipnab:smoke
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Scan the image BEFORE it is pushed, so a vulnerable layer never
+      # reaches ghcr.io in the first place.
+      #
+      # Nothing else covers this. `cargo audit` and Dependabot read Cargo.lock,
+      # which says nothing about the Debian base layer -- a vulnerable OpenSSL
+      # or zlib lives there, not in the crate graph. The image is the artifact
+      # users `docker pull`, and until now it was the one published thing with
+      # no vulnerability scan at all.
+      - name: Scan the image for vulnerable OS packages
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: sipnab:smoke
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          # Only what can actually be acted on: an advisory with no fixed
+          # version cannot be resolved by rebuilding, so failing on it would
+          # block every release until upstream moves. Those still appear in the
+          # Security tab via the SARIF upload below.
+          ignore-unfixed: true
+          exit-code: '1'
+
+      # Uploaded even when the scan failed, or the findings that caused the
+      # failure would never be visible anywhere.
+      - name: Upload image scan results
+        if: always()
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-image
 
       - name: Smoke test the image
         run: |
