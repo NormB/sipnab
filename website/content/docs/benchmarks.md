@@ -17,7 +17,7 @@ The generator was rewritten from the documented corpus parameters and now
 reproduces every one of them exactly (535,000 packets, 35,000 SIP messages,
 500,000 RTP, 93.5% RTP, 100 Call-IDs, 200 streams).
 
-**Measured on the released 0.5.89 artifact, checksum-verified, 2026-08-08, on
+**Measured on the released 0.5.91 artifact, checksum-verified, 2026-08-10, on
 an idle host.** Numbers on this page are not comparable to the pre-0.5.47
 figures: they came from the old unpublished corpus, and while the new
 one matches its documented composition exactly it is not byte-identical. Where
@@ -41,7 +41,7 @@ causes rather than guessing between them.
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.89 (release artifact). **Date:** 2026-08-08.
+- **Version:** sipnab 0.5.91 (release artifact). **Date:** 2026-08-10.
 
 ## Multi-core offline reconstruction
 
@@ -50,10 +50,10 @@ threads. On the 535k-packet fixed-state corpus (100 Call-IDs, 200 streams):
 
 | cores | pkts/s |
 |------:|-------:|
-| 1 | 0.96M |
-| 2 | 1.69M |
-| 4 | **1.90M** |
-| 8 | 1.73M |
+| 1 | 1.07M |
+| 2 | 2.21M |
+| 4 | **2.32M** |
+| 8 | 2.13M |
 
 The plateau past 2 cores is the single sequential pcap reader (read + buffer
 copy + host-pair peek), not the core count. Before v0.4.16 a per-packet
@@ -71,12 +71,12 @@ to re-run it. Re-running it is what found this. Both release artifacts
 checksum-verified, identical corpus, same idle host, same session, interleaved
 replicates so host drift cannot pass for a difference between versions:
 
-| cores | 0.5.47 | 0.5.88 | 0.5.89 | 0.5.89 vs 0.5.47 |
-|------:|-------:|-------:|-------:|-----------------:|
-| 1 | 1.06M | 0.91M | 0.96M | −9% |
-| 2 | 2.27M | 1.39M | 1.69M | −26% |
-| 4 | 2.02M | 1.33M | **1.90M** | **−6%** |
-| 8 | 1.91M | 1.29M | 1.73M | −9% |
+| cores | 0.5.47 | 0.5.88 | 0.5.89 | 0.5.91 | 0.5.91 vs 0.5.47 |
+|------:|-------:|-------:|-------:|-------:|-----------------:|
+| 1 | 1.06M | 0.91M | 0.96M | 1.07M | +1% |
+| 2 | 2.27M | 1.39M | 1.69M | 2.21M | −3% |
+| 4 | 2.02M | 1.33M | 1.90M | **2.32M** | **+15%** |
+| 8 | 1.91M | 1.29M | 1.73M | 2.13M | +12% |
 
 Within-version spread is about 2% and the 0.5.47 → 0.5.88 gap is about 39%, so
 that gap is roughly eighteen times the noise floor. voipmonitor measured 0.40M
@@ -115,10 +115,10 @@ a throughput number only means something next to the work behind it.
 | tool | pkts/s | × sngrep | what it reconstructs |
 |---|---:|---:|---|
 | sngrep 1.8.0 | 0.19M | 1.0× | SIP dialogs; no RTP-stream reconstruction headless |
-| sipgrep 2.2.1 | 2.34M | 12.3× | grep-style SIP line match + Call-ID grouping; **no RTP** |
+| sipgrep 2.2.1 | 2.17M | 11.4× | grep-style SIP line match + Call-ID grouping; **no RTP** |
 | voipmonitor 2026.07.1 | 0.40M | 2.1× | full call/CDR + RTP-stream association |
-| **sipnab 0.5.89 `--cores 1`** | 1.00M | **5.3×** | SIP dialogs + **200 RTP streams** |
-| **sipnab 0.5.89 `--cores 4`** | 1.89M | **9.9×** | identical full SIP + RTP reconstruction |
+| **sipnab 0.5.91 `--cores 1`** | 1.06M | **5.6×** | SIP dialogs + **200 RTP streams** |
+| **sipnab 0.5.91 `--cores 4`** | 2.31M | **12.2×** | identical full SIP + RTP reconstruction |
 
 Read it in three buckets:
 

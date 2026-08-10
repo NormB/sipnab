@@ -1344,7 +1344,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // regression bisected to 0.5.84 was partly fixed: 2.06 -> 1.89M pkts/s and
     // 11.1 -> 9.9x sngrep. Updated here and on the benchmarks page in the same
     // commit, which is what this gate exists to force.
-    for (count, suffix) in [("1.89", "M pkts/s"), ("9.9", "&times; sngrep")] {
+    for (count, suffix) in [("2.31", "M pkts/s"), ("12.2", "&times; sngrep")] {
         let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
         assert!(
             idx.contains(&tile),

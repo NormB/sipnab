@@ -5,7 +5,7 @@ as of 0.5.47 that is a checked claim rather than an asserted one: the corpus
 generator and the timing harness are in [`bench/`](../bench/), so you can
 regenerate the corpus and re-run every table below.
 
-> **Measured against 0.5.89, on 2026-08-08.** Every table below is that
+> **Measured against 0.5.91, on 2026-08-10.** Every table below is that
 > measurement, taken on the released artifact rather than a local build. The
 > previous version of this page carried 0.5.47 figures from 2026-07-27 and said
 > so; re-running them is what found the regression the
@@ -21,7 +21,7 @@ The generator was rewritten from the documented corpus parameters and now
 reproduces every one of them exactly (535,000 packets, 35,000 SIP messages,
 500,000 RTP, 93.5% RTP, 100 Call-IDs, 200 streams).
 
-**Measured on the released 0.5.89 artifact, checksum-verified, 2026-08-08, on
+**Measured on the released 0.5.91 artifact, checksum-verified, 2026-08-10, on
 an idle host.** Comparable to the 0.5.47 figures this page carried before:
 the corpus generator still reproduces the same composition
 (535,000 packets, 35,000 SIP, 500,000 RTP, 100 Call-IDs, 200 streams), and
@@ -47,7 +47,7 @@ nobody can rebuild.
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.89 (release artifact). **Date:** 2026-08-08.
+- **Version:** sipnab 0.5.91 (release artifact). **Date:** 2026-08-10.
 
 ## Multi-core offline reconstruction
 
@@ -56,24 +56,25 @@ fixed-state corpus (100 Call-IDs, 200 streams):
 
 | cores | pkts/s |
 |------:|-------:|
-| 1 | 0.96M |
-| 2 | 1.69M |
-| 4 | **1.90M** |
-| 8 | 1.73M |
+| 1 | 1.07M |
+| 2 | 2.21M |
+| 4 | **2.32M** |
+| 8 | 2.13M |
 
-**The peak moved from 2 cores to 4 in 0.5.89, and that is the fix showing up.**
+**The peak moved from 2 cores to 4, and that is the fix showing up.**
 Through 0.5.88 the reader computed the frame-provenance digest on the single
 sequential stage that already sets this ceiling (read + buffer copy +
 host-pair peek), so adding work there capped every core count at once.
-0.5.89 computes it in the workers, which is why more workers now help: at 2
+0.5.89 moved it to the workers, which is why more workers help: at 2
 cores there are two to absorb it and at 4 there are four. Before v0.4.16 a
 per-packet cross-core hand-off collapsed this to 0.84M @ 4 cores and 0.50M @ 8.
 Batching the hand-off removed that one.
 
 ## Is the packet path still what it was at 0.5.47?
 
-No. It lost 40% in 0.5.84, held that loss for four releases, and 0.5.89 gets
-most of it back.
+No — it is **faster**. Throughput fell 40% in 0.5.84 and held that loss for
+four releases. 0.5.89 recovered part of it, and 0.5.91 went past where it
+started.
 
 The previous version of this section concluded "twenty-nine releases on,
 throughput holds within measurement noise", and closed by telling the reader
@@ -85,12 +86,12 @@ Both artifacts checksum-verified, identical corpus, same idle host, same
 session, **interleaved** replicates so drift in the host cannot masquerade as a
 difference between versions:
 
-| cores | 0.5.47 | 0.5.88 | 0.5.89 | 0.5.89 vs 0.5.47 |
-|------:|-------:|-------:|-------:|-----------------:|
-| 1 | 1.06M | 0.91M | 0.96M | −9% |
-| 2 | 2.27M | 1.39M | 1.69M | −26% |
-| 4 | 2.02M | 1.33M | **1.90M** | **−6%** |
-| 8 | 1.91M | 1.29M | 1.73M | −9% |
+| cores | 0.5.47 | 0.5.88 | 0.5.89 | 0.5.91 | 0.5.91 vs 0.5.47 |
+|------:|-------:|-------:|-------:|-------:|-----------------:|
+| 1 | 1.06M | 0.91M | 0.96M | 1.07M | +1% |
+| 2 | 2.27M | 1.39M | 1.69M | 2.21M | −3% |
+| 4 | 2.02M | 1.33M | 1.90M | **2.32M** | **+15%** |
+| 8 | 1.91M | 1.29M | 1.73M | 2.13M | +12% |
 
 Within-version spread is ~2% and the 0.5.47 → 0.5.88 gap is ~39%, so that gap
 is roughly eighteen times the noise floor. In the same runs **voipmonitor
@@ -106,12 +107,24 @@ This page had already named that stage as the plateau past two cores. Hashing
 there charged it ~240 bytes of dependent FNV multiplies per packet — 129 MB
 hashed one byte at a time on this corpus.
 
-**What 0.5.89 does.** The workers compute the digest. The reader still assigns
+**What 0.5.89 did.** The workers compute the digest. The reader still assigns
 the ordinal, the one fact only it can know. Same input, same FNV-1a, same
 value — a pointer from a `--cores` run resolves identically to one from a
 single-threaded run, and pointers already written down still resolve. Because
 the work now scales with worker count, the recovery does too: **~81% of the
 loss at four cores, ~34% at two.** Four cores is within 6% of 0.5.47.
+
+**What 0.5.91 did, and why it overshot.** Two more changes, both from the same
+profile. `parse_packet` stopped building a `FrameRef` per packet — a `FrameRef`
+owns an `Arc<str>`, so each one cost an atomic pair for a pointer ~93% of
+frames never keep. The reader also stopped allocating each frame separately:
+it now cuts them from a shared 64 KiB block, so the allocator's cross-thread
+free path runs once per ~270 frames instead of once per frame.
+
+Together those put four-core throughput **above where it was before the
+regression** — 2.32M against 0.5.47's 2.02M. The second change even beat its
+own predicted ceiling, because frames sharing a block are also sequential in
+memory, which a diagnostic that scattered them into an arena could not show.
 
 **What is still wrong, stated rather than left for the next re-run to find.**
 sipnab hashes every frame when only a *retained* pointer needs a digest — a dialog's `first_frame`, a stream's `first_frame`, a finding's
@@ -122,8 +135,8 @@ digest at all and remains unidentified. Both are PERF1 in
 `docs/design/backlog.md`, together with the two obvious fixes and the tests
 that already reject each.
 
-**And the same trap is open again.** This A/B spans 0.5.47 → 0.5.89, measured
-on 2026-08-08. It says nothing about anything released after. Do not restate it
+**And the same trap is open again.** This A/B spans 0.5.47 → 0.5.91, measured
+on 2026-08-10. It says nothing about anything released after. Do not restate it
 with a higher version number: re-run it, or leave the claim where its evidence
 is.
 
@@ -144,10 +157,10 @@ a throughput number only means something next to the work behind it.
 | tool | pkts/s | × sngrep | what it reconstructs |
 |---|---:|---:|---|
 | sngrep 1.8.0 | 0.19M | 1.0× | SIP dialogs; no RTP-stream reconstruction headless |
-| sipgrep 2.2.1 | 2.34M | 12.3× | grep-style SIP line match + Call-ID grouping; **no RTP** |
+| sipgrep 2.2.1 | 2.17M | 11.4× | grep-style SIP line match + Call-ID grouping; **no RTP** |
 | voipmonitor 2026.07.1 | 0.40M | 2.1× | full call/CDR + RTP-stream association |
-| **sipnab 0.5.89 `--cores 1`** | 1.00M | **5.3×** | SIP dialogs + **200 RTP streams** |
-| **sipnab 0.5.89 `--cores 4`** | 1.89M | **9.9×** | identical full SIP + RTP reconstruction |
+| **sipnab 0.5.91 `--cores 1`** | 1.06M | **5.6×** | SIP dialogs + **200 RTP streams** |
+| **sipnab 0.5.91 `--cores 4`** | 2.31M | **12.2×** | identical full SIP + RTP reconstruction |
 
 Read it in three buckets:
 
@@ -156,15 +169,15 @@ Read it in three buckets:
   the 500k RTP packets into streams). Its lead is mostly "it does less."
 - **Full reconstruction (sngrep, voipmonitor, sipnab)** parse SIP into dialogs;
   voipmonitor and sipnab additionally associate RTP into media streams.
-- Within that class **sipnab leads**: single-core is **5.3× sngrep and 2.5×
-  voipmonitor**, four-core is **9.9× sngrep and 4.7× voipmonitor**. There is no
+- Within that class **sipnab leads**: single-core is **5.6× sngrep and 2.6×
+  voipmonitor**, four-core is **12.2× sngrep and 5.8× voipmonitor**. There is no
   configuration where sipnab is the slowest at comparable work.
-- **The gap to grep-only sipgrep widened, and it is the regression's residue.**
-  This page used to report four-core landing within 6% of sipgrep's wall clock
-  (0.259 s vs 0.245 s). Measured now it is 0.283 s against 0.229 s — 24%
-  behind — while still reconstructing all 200 RTP streams that sipgrep never
-  touches. 0.5.89 recovered most of what 0.5.84 lost but not all of it; the
-  ~6% still missing at four cores is PERF1 in `docs/design/backlog.md`.
+- **And four-core sipnab is now faster than grep-only sipgrep** — 2.31M against
+  2.17M, 0.2315 s against 0.2461 s — *while also reconstructing all 200 RTP
+  streams that sipgrep never touches*. That ordering is new. Every previous
+  measurement on this page had sipgrep ahead, and the note under it said its
+  lead was mostly "it does less". It still does less; it is no longer faster
+  for it.
 
 > **How voipmonitor ran.** No package exists for the reference host, so it
 > builds from source in a container
@@ -292,7 +305,7 @@ comparison with an absent competitor:
 voipmonitor -r corpus.pcap -c -k --config-file=bench/vm.conf
 ```
 
-sipnab 0.5.89 at four cores, with the per-message stream suppressed so only the
+sipnab 0.5.91 at four cores, with the per-message stream suppressed so only the
 end-of-run report prints:
 
 ```sh
