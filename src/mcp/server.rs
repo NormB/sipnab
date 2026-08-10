@@ -1217,6 +1217,16 @@ pub struct CaptureStatusResponse {
     pub dialog_count: usize,
     /// RTP streams held right now.
     pub stream_count: usize,
+    /// Streams with no dialog to attach to.
+    pub orphaned_stream_count: usize,
+    /// Dialogs in any non-terminal state, calls and subscriptions alike.
+    pub active_dialog_count: usize,
+    /// Calls that are UP — dialogs in `InCall`, and nothing else. Never
+    /// greater than `active_dialog_count`, which also counts setup and
+    /// subscriptions.
+    pub active_call_count: usize,
+    /// Drops, invalid timestamps and undecodable frames on the capture path.
+    pub capture_quality: CaptureQualityJson,
     /// True once a file source has been read to the end.
     pub source_exhausted: bool,
     /// Where packets are being written, if anywhere.
@@ -1325,66 +1335,6 @@ pub struct RuntimeFlags {
     /// Whether `save_findings` may record an annotation
     /// (`--mcp-allow-save-findings`). The only write verb on this surface.
     pub mcp_allow_save_findings: bool,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-/// Aggregate counts returned by the `stats` tool.
-pub struct StatsResponse {
-    /// Version of this response schema.
-    pub schema_version: u32,
-    /// Number of dialogs currently tracked.
-    pub dialog_count: usize,
-    /// Number of RTP streams currently tracked.
-    pub stream_count: usize,
-    /// Streams not yet correlated to any dialog.
-    pub orphaned_stream_count: usize,
-    /// Dialogs currently in one of six active states: `Trying`, `Ringing`,
-    /// `InCall`, `Transferring`, `Pending`, `Active`.
-    ///
-    /// Two of those are SUBSCRIBE dialogs carrying no media, so this is not a
-    /// count of calls. Under `schema_version` 1 this number was published as
-    /// `active_call_count`; the name moved because it never described what it
-    /// counted.
-    pub active_dialog_count: usize,
-    /// Calls that are up right now: dialogs in `InCall`, and nothing else.
-    ///
-    /// A dialog enters `InCall` on the 200 OK to its INVITE and leaves on the
-    /// BYE, so this is the concurrent-call figure — channels in use.
-    ///
-    /// Under `schema_version` 1 this key carried the number now published as
-    /// `active_dialog_count`, which was larger whenever anything was ringing
-    /// or subscribed. A reader that has not checked `schema_version` is
-    /// reading a different quantity than it was before.
-    pub active_call_count: usize,
-    /// SIP messages seen OUTSIDE `--portrange` and therefore analysed by
-    /// nothing: they are in no dialog, no stream and no count above.
-    ///
-    /// Always present, including when it is zero. A field that appears only
-    /// when something went wrong is a field the reader never learns exists,
-    /// and this reader is a model that cannot ask a follow-up question. The
-    /// CLI already prints this beside its summary; before this field the MCP
-    /// surface returned a byte-identical key set whether a third of the
-    /// capture had been dropped or none of it had.
-    pub unanalysed_sip_messages: u64,
-    /// The busiest ports carrying that unanalysed SIP, busiest first, capped
-    /// at five. Empty when nothing was skipped.
-    ///
-    /// The service port — destination of a request, source of a response —
-    /// never the ephemeral port, which differs per dialog and names nothing.
-    pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
-    /// How much of the wire the counts above are drawn from, and whether the
-    /// clock behind any timing figure can be believed.
-    ///
-    /// Without this, every count in this response reads as a total when it
-    /// may be a floor. A reader that cannot ask a follow-up question has no
-    /// other way to tell the two apart.
-    pub capture_quality: CaptureQualityJson,
-    /// Which capture these counts describe, and which revision of its stores.
-    ///
-    /// Every number above is a whole-store aggregate, so a swap changes all of
-    /// them at once with nothing else in the response to say why.
-    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 /// The three ways this run's analysis can be incomplete or mistimed, plus the
@@ -2966,62 +2916,6 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(findings)?]))
     }
 
-    /// Aggregate counters across the active stores, returned as a
-    /// `StatsResponse` JSON object. Takes no parameters and never fails
-    /// beyond JSON serialization.
-    #[tool(
-        name = "stats",
-        description = "Returns aggregate counters: total dialogs, total \
-                       streams, orphaned-stream count, active-call count, \
-                       the count of SIP messages seen outside --portrange \
-                       that nothing analysed, and a capture_quality block \
-                       giving packets dropped by the kernel capture ring, \
-                       packets dropped by the interface or driver, packets \
-                       whose pcap timestamp was unusable, and whether any \
-                       of those three is non-zero.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub async fn stats(&self) -> Result<CallToolResult, rmcp::ErrorData> {
-        // Read before the locks below: process-global atomics unrelated to
-        // either store's revision, so nothing is gained by holding a guard
-        // across the read.
-        let capture_quality = crate::output::prometheus::CaptureQuality::current().into();
-        let payload = {
-            // Capture lock first, then the stores — see `CaptureState`.
-            let state = self.capture.read();
-            let ds = self.dialog_store.read();
-            let ss = self.stream_store.read();
-            let skipped = crate::pipeline::portrange_skip_report();
-            let resp = StatsResponse {
-                capture_identity: state.identity.etag(ds.generation(), ss.generation()),
-                // 2: `active_call_count` narrowed to InCall and the old
-                // meaning moved to `active_dialog_count`.
-                schema_version: 2,
-                dialog_count: ds.len(),
-                stream_count: ss.len(),
-                orphaned_stream_count: ss.orphaned_count(),
-                active_dialog_count: ds.active_dialog_count(),
-                active_call_count: ds.active_call_count(),
-                unanalysed_sip_messages: skipped.messages,
-                unanalysed_busiest_ports: skipped
-                    .ports
-                    .iter()
-                    .take(5)
-                    .map(|p| UnanalysedPort {
-                        port: p.port,
-                        messages: p.messages,
-                    })
-                    .collect(),
-                capture_quality,
-            };
-            drop(ss);
-            drop(ds);
-            drop(state);
-            resp
-        };
-        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
-    }
-
     /// What this server is attached to: live interface or file, for how long,
     /// how much it holds, and whether stopping would lose anything.
     #[tool(
@@ -3034,6 +2928,10 @@ impl SipnabMcp {
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn capture_status(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Read before the locks below: a process-global atomic unrelated to
+        // either store's revision, so nothing is gained by holding a guard
+        // across it.
+        let capture_quality = crate::output::prometheus::CaptureQuality::current().into();
         let payload = {
             // Capture lock first, then the stores — see `CaptureState`. Held
             // together so the identity, the source name and the counts all
@@ -3080,12 +2978,18 @@ impl SipnabMcp {
                 .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire));
             let skipped = crate::pipeline::portrange_skip_report();
             let resp = CaptureStatusResponse {
-                schema_version: 1,
+                // 2: absorbed the `stats` tool — the counters and
+                // capture_quality it used to return alone now live here.
+                schema_version: 2,
                 source,
                 name,
                 uptime_sec,
                 dialog_count: ds.len(),
                 stream_count: ss.len(),
+                orphaned_stream_count: ss.orphaned_count(),
+                active_dialog_count: ds.active_dialog_count(),
+                active_call_count: ds.active_call_count(),
+                capture_quality,
                 source_exhausted: exhausted,
                 writing_to: writing_to.clone(),
                 // Only a live capture can hold packets that exist nowhere else.
@@ -5642,7 +5546,7 @@ mod tests {
         );
         // Present on `stats` too, and the two must not drift into naming the
         // same fact differently.
-        let stats = empty_server().stats().await.expect("stats");
+        let stats = empty_server().capture_status().await.expect("stats");
         let sv: serde_json::Value = serde_json::from_str(&text_of(&stats)).unwrap();
         for key in ["unanalysed_sip_messages", "unanalysed_busiest_ports"] {
             assert!(
@@ -7051,7 +6955,7 @@ mod tests {
     #[tokio::test]
     async fn stats_empty_store_all_zero() {
         let server = empty_server();
-        let result = server.stats().await.expect("stats should succeed");
+        let result = server.capture_status().await.expect("stats should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
         assert_eq!(v["schema_version"], 2);
         assert_eq!(v["dialog_count"], 0);
@@ -7073,7 +6977,7 @@ mod tests {
     #[tokio::test]
     async fn stats_separates_dialog_and_call_gauges() {
         let server = empty_server();
-        let result = server.stats().await.expect("stats should succeed");
+        let result = server.capture_status().await.expect("stats should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
 
         assert!(
@@ -7109,7 +7013,7 @@ mod tests {
     async fn stats_reports_the_sip_left_outside_the_port_range() {
         crate::pipeline::reset_portrange_skips();
         let server = empty_server();
-        let result = server.stats().await.expect("stats should succeed");
+        let result = server.capture_status().await.expect("stats should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
 
         assert!(
@@ -7142,7 +7046,7 @@ mod tests {
     #[tokio::test]
     async fn stats_reports_capture_quality_with_the_three_losses_apart() {
         let server = empty_server();
-        let result = server.stats().await.expect("stats should succeed");
+        let result = server.capture_status().await.expect("stats should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
 
         let q = &v["capture_quality"];
@@ -7200,7 +7104,7 @@ mod tests {
     #[tokio::test]
     async fn stats_counts_dialogs() {
         let server = server_with_dialog("stat@x");
-        let result = server.stats().await.expect("stats should succeed");
+        let result = server.capture_status().await.expect("stats should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
         assert_eq!(v["dialog_count"], 1);
         assert_eq!(v["stream_count"], 0);
@@ -7453,8 +7357,9 @@ mod tests {
                     .unwrap(),
             ),
             (
-                "stats",
-                serde_json::from_str(&text_of(&server.stats().await.expect("stats"))).unwrap(),
+                "capture_status",
+                serde_json::from_str(&text_of(&server.capture_status().await.expect("stats")))
+                    .unwrap(),
             ),
             (
                 "list_dialogs",
@@ -7533,13 +7438,13 @@ mod tests {
     async fn the_generation_moves_when_the_store_does() {
         let server = server_with_dialog("gen@x");
         let before: serde_json::Value =
-            serde_json::from_str(&text_of(&server.stats().await.expect("stats"))).unwrap();
+            serde_json::from_str(&text_of(&server.capture_status().await.expect("stats"))).unwrap();
         {
             let mut ds = server.dialog_store.write();
             ds.process_message(invite("gen2@x", base_ts()));
         }
         let after: serde_json::Value =
-            serde_json::from_str(&text_of(&server.stats().await.expect("stats"))).unwrap();
+            serde_json::from_str(&text_of(&server.capture_status().await.expect("stats"))).unwrap();
         assert_eq!(
             before["capture_identity"]["instance"], after["capture_identity"]["instance"],
             "a new message is the same capture"
@@ -9423,7 +9328,10 @@ mod tests {
             .expect("recorded");
 
         let reads = vec![
-            ("stats", text_of(&server.stats().await.expect("stats"))),
+            (
+                "capture_status",
+                text_of(&server.capture_status().await.expect("stats")),
+            ),
             (
                 "list_dialogs",
                 text_of(

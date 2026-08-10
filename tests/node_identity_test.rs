@@ -30,13 +30,14 @@ const CAPTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 fn the_node_name_flag_lands_in_capture_identity() {
     let mut session = McpSession::start(CAPTURE, &["--node-name", "sbc-edge-1"]);
 
-    for tool in ["stats", "capture_status"] {
-        let v = ok_payload(&session.call(tool, serde_json::json!({})));
-        assert_eq!(
-            v["capture_identity"]["node"], "sbc-edge-1",
-            "{tool} must say which box answered it"
-        );
-    }
+    // One tool now, where this looped over two: `stats` was folded into
+    // `capture_status`, which carries the identity it used to duplicate.
+    let tool = "capture_status";
+    let v = ok_payload(&session.call(tool, serde_json::json!({})));
+    assert_eq!(
+        v["capture_identity"]["node"], "sbc-edge-1",
+        "{tool} must say which box answered it"
+    );
 }
 
 /// Without the flag a node is still reported — never blank.
@@ -46,7 +47,7 @@ fn the_node_name_flag_lands_in_capture_identity() {
 #[test]
 fn a_node_is_always_reported_even_with_no_flag() {
     let mut session = McpSession::start(CAPTURE, &[]);
-    let v = ok_payload(&session.call("stats", serde_json::json!({})));
+    let v = ok_payload(&session.call("capture_status", serde_json::json!({})));
     let node = v["capture_identity"]["node"].as_str().unwrap_or_default();
     assert!(
         !node.is_empty(),
@@ -60,8 +61,8 @@ fn two_servers_with_different_names_are_told_apart() {
     let mut a = McpSession::start(CAPTURE, &["--node-name", "pbx-1"]);
     let mut b = McpSession::start(CAPTURE, &["--node-name", "pbx-2"]);
 
-    let va = ok_payload(&a.call("stats", serde_json::json!({})));
-    let vb = ok_payload(&b.call("stats", serde_json::json!({})));
+    let va = ok_payload(&a.call("capture_status", serde_json::json!({})));
+    let vb = ok_payload(&b.call("capture_status", serde_json::json!({})));
 
     assert_eq!(va["capture_identity"]["node"], "pbx-1");
     assert_eq!(vb["capture_identity"]["node"], "pbx-2");

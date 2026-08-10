@@ -327,7 +327,6 @@ ordinary update.
 | [`search_messages`](#search_messages) | `query`, `limit?` | Substring search across method/From/To/UA/body |
 | [`tail_dialogs`](#tail_dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
 | [`security_findings`](#security_findings) | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
-| [`stats`](#stats) | -- | Aggregate counters (dialog_count, stream_count, etc.) |
 | [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`capture_health`](#capture_health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
 | [`triage_call`](#triage_call) | `call_id` | First-pass verdict: signalling problem, media problem, both, or none, with evidence |
@@ -1637,7 +1636,7 @@ an admission of ignorance.
 changed. Compare it across calls: a higher generation on the same instance means
 the capture grew, and a different instance means `open_capture` loaded a
 different file and every cursor you hold is void. The same object appears on
-`stats`, `list_dialogs`, `find_problems`, `search_by_time`, `tail_dialogs` and
+`capture_status`, `list_dialogs`, `find_problems`, `search_by_time`, `tail_dialogs` and
 the capture-wide `rtp_stats` sweep — every response whose meaning depends on the
 whole store.
 
@@ -1689,94 +1688,13 @@ discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
 
-### `stats`
-
-Aggregate counters across the active stores.
-
-No parameters. Returns:
-
-```jsonc
-{
-  "schema_version": 2,
-  "dialog_count": 42,
-  "stream_count": 18,
-  "orphaned_stream_count": 2,
-  // Six states: Trying, Ringing, InCall, Transferring, Pending, Active.
-  // Two of those are SUBSCRIBE dialogs, so this is not a call count.
-  "active_dialog_count": 9,
-  // Calls up right now: InCall only. Under schema_version 1 this key
-  // carried the number now published as active_dialog_count.
-  "active_call_count": 5,
-  "unanalysed_sip_messages": 4249,
-  "unanalysed_busiest_ports": [
-    { "port": 8090, "messages": 2430 },
-    { "port": 5080, "messages": 598 }
-  ],
-  "capture_quality": {
-    "kernel_dropped_packets": 0,
-    "interface_dropped_packets": 0,
-    "invalid_timestamps": 0,
-    "undecodable_frames": 0,
-    "degraded": false
-  },
-  "capture_identity": {
-    "instance": "1f4a17c8e2b91d40-1",
-    "dialog_generation": 412,
-    "stream_generation": 96
-  }
-}
-```
-
-> **`unanalysed_sip_messages` is the count the other numbers do not include.**
-> `--portrange` decides which ports sipnab parses as SIP, and its default is
-> `5060-5061`. SIP on 5070, 5080 and elsewhere is ordinary — carriers and SBCs
-> use those routinely — so on real traffic the counters above can describe a
-> fraction of the capture. On one carrier trunk that fraction was two thirds:
-> 2,311 dialogs reported against 3,712 present.
->
-> The field is always there, including when it is zero, so nobody has to
-> read meaning into its absence. A non-zero value means the answer to "how many calls
-> are in this capture" is larger than `dialog_count`, and re-running with
-> `--portrange 1-65535` is what makes the difference visible.
->
-> `unanalysed_busiest_ports` names the service port — destination of a request,
-> source of a response — never the ephemeral port, which differs on every
-> dialog and identifies nothing.
-
-> **`capture_quality` says how much of the wire the other counts draw
-> from.** Read it first. With `degraded` true, every count in this response is
-> a floor rather than a total, and any timing figure elsewhere in the session
-> — post-dial delay, jitter, MOS, call duration — may rest on
-> a substituted clock.
->
-> The three counters are separate because the fixes disagree.
-> `kernel_dropped_packets` means the capture ring was full: raise
-> `-B`/`--buffer`, narrow the BPF filter, or cut `--snaplen`.
-> `interface_dropped_packets` means the NIC or its driver dropped the packet
-> before libpcap saw it, and a bigger buffer cannot recover those.
-> `invalid_timestamps` loses no packet at all — it makes the run's timing
-> unreliable. Summing them names one problem where there are three.
->
-> `undecodable_frames` is a fourth channel, and the only one that is about
-> sipnab rather than the host: those frames arrived intact and no decoder here
-> could read them, so the analysis saw none of their contents. Non-zero means a
-> zero elsewhere in this response may mean *unknown* rather than *none* — which
-> matters most to a reader that cannot ask a follow-up question. It stays out
-> of `degraded` because ARP is undecodable by definition and appears on nearly
-> every capture, so a flag including it would always be true.
->
-> `degraded` is `false` when nothing was *observed* to go wrong, which is not
-> the same as the capture provably having seen every packet: loss upstream of
-> the capture point, such as an oversubscribed SPAN port or a tap mirroring
-> one direction, is invisible to all three counters.
-
 ### `capture_health`
 
 Reads the capture counters, waits, and reads them again. The response carries
 the run totals **and** the change across that window, which turns a pile of
 monotonic counters into a rate.
 
-`stats` tells you what the counters say right now. `capture_health` tells you
+`capture_status` tells you what the counters say right now. `capture_health` tells you
 what they did over a window you chose, which is the difference between "this
 process has dropped 4 million packets since Tuesday" and "this process is
 dropping packets **now**".

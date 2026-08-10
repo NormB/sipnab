@@ -473,7 +473,10 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 313 -> 345 by linking all 32 rows of the MCP tool reference to
     // their own sections: the sections existed and the index did not point at
     // them, so no tool was addressable from the table a reader starts at.
-    const EXPECTED_WIKI_LINKS: usize = 345;
+    // Lowered 345 -> 344 by folding `stats` into `capture_status`: its row in
+    // the tool reference was one of the 32 links added above, and the section
+    // it pointed at is gone with the tool.
+    const EXPECTED_WIKI_LINKS: usize = 344;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \

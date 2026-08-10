@@ -1799,9 +1799,12 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // fact something a caller can actually check.
     // Raised 30 -> 31 by `find_correlated`, which exposes the multi-leg
     // correlation engine that had existed in DialogStore with no way to reach it.
+    // LOWERED 32 -> 31 by folding `stats` into `capture_status`: the two shared
+    // six identical fields, so orienting cost two calls for the same numbers.
+    // A DECREASE here is normally suspicious; this one is a deliberate merge.
     assert_eq!(
         registered.len(),
-        32,
+        31,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -1833,7 +1836,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // an extractor that matched everything would report none — assert it saw
     // a plausible number of rows before trusting the comparison below.
     assert!(
-        documented.len() >= 32,
+        documented.len() >= 31,
         "the tool-table extractor found only {} rows — its pattern no longer \
          matches the table's markup, so the comparison below is meaningless: \
          {documented:?}",

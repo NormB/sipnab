@@ -379,7 +379,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         "rtp_stats",
         "search_messages",
         "tail_dialogs",
-        "stats",
+        "capture_status",
     ] {
         assert!(
             names.contains(&tool.to_string()),
@@ -525,7 +525,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         &mut child,
         &serde_json::json!({
             "jsonrpc": "2.0", "id": 12, "method": "tools/call",
-            "params": {"name": "stats", "arguments": {}}
+            "params": {"name": "capture_status", "arguments": {}}
         }),
     );
     let resp = read_response_with_id(&mut reader, 12, test_timeout(5)).expect("stats response");
@@ -689,7 +689,6 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     names.sort();
     let mut expected = vec![
         "capture_health",
-        "capture_status",
         "check_codec_negotiation",
         "compare_dialogs",
         "diagnose_registration",
@@ -716,14 +715,14 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "server_capabilities",
         "show_evidence",
         "shutdown_server",
-        "stats",
+        "capture_status",
         "tail_dialogs",
         "triage_call",
         "validate_message",
     ];
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 32, "expected exactly 32 MCP tools");
+    assert_eq!(names.len(), 31, "expected exactly 31 MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(
@@ -846,7 +845,7 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
         &mut child,
         &serde_json::json!({
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": "stats", "arguments": {}}
+            "params": {"name": "capture_status", "arguments": {}}
         }),
     );
     let ok_resp = read_response_with_id(&mut reader, 2, test_timeout(5)).expect("stats response");
@@ -898,7 +897,7 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() {
 
     let stats_lines: Vec<&&str> = audit_lines
         .iter()
-        .filter(|l| l.contains("tool=stats "))
+        .filter(|l| l.contains("tool=capture_status "))
         .collect();
     assert_eq!(
         stats_lines.len(),
@@ -1013,7 +1012,7 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() {
             &mut child,
             &serde_json::json!({
                 "jsonrpc": "2.0", "id": id, "method": "tools/call",
-                "params": {"name": "stats", "arguments": {}}
+                "params": {"name": "capture_status", "arguments": {}}
             }),
         );
         let resp = read_response_with_id(&mut reader, id, test_timeout(5)).unwrap_or_else(|| {

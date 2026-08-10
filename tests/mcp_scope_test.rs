@@ -7,7 +7,7 @@
 //! `tools/call` requests through the streamable-HTTP transport to prove the
 //! GATE in both directions:
 //!
-//! - a read token is ACCEPTED by a read-only tool (`stats` answers), and
+//! - a read token is ACCEPTED by a read-only tool (`capture_status` answers), and
 //! - a read token is REFUSED by a non-read-only tool (`shutdown_server`),
 //!   with a refusal that names the tool and the scope — BEFORE the tool's
 //!   own gating, so the server is provably not relying on `shutdown_server`
@@ -293,7 +293,7 @@ fn call_tool(
 /// refused by a non-read-only one, and the refusal is audited.
 ///
 /// Both directions live in ONE test on ONE server on purpose: a build that
-/// refuses everything fails the `stats` half, a build that accepts
+/// refuses everything fails the `capture_status` half, a build that accepts
 /// everything fails the `shutdown_server` half, and neither can pass by the
 /// other's success. A full-scope control call then proves the refusal was
 /// the SCOPE's — not the tool being generally broken — because the same
@@ -312,12 +312,12 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
         &read_token,
         &session,
         2,
-        "stats",
+        "capture_status",
         serde_json::json!({}),
     );
     assert!(
         ok.get("error").is_none() && ok["result"].is_object(),
-        "a read token must be able to call the read-only stats tool: {ok}"
+        "a read token must be able to call the read-only capture_status tool: {ok}"
     );
 
     // ── Refuse half: a write tool refuses the same token. ────────────
@@ -384,8 +384,8 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
     assert!(
         audit
             .iter()
-            .any(|l| l.contains("tool=stats ") && l.contains("outcome=ok")),
-        "the accepted read-scope stats call must be audited ok:\n{audit:#?}"
+            .any(|l| l.contains("tool=capture_status ") && l.contains("outcome=ok")),
+        "the accepted read-scope capture_status call must be audited ok:\n{audit:#?}"
     );
 }
 
@@ -415,7 +415,14 @@ fn the_audit_line_names_the_token_that_made_the_call() {
     let token = mint_with_id(TOKEN_ID, sipnab::auth::SCOPE_FULL);
 
     let session = establish_session(&addr, &token);
-    let ok = call_tool(&addr, &token, &session, 2, "stats", serde_json::json!({}));
+    let ok = call_tool(
+        &addr,
+        &token,
+        &session,
+        2,
+        "capture_status",
+        serde_json::json!({}),
+    );
     assert!(
         ok.get("error").is_none() && ok["result"].is_object(),
         "the call must succeed, so the audit line below describes a real \
@@ -430,13 +437,16 @@ fn the_audit_line_names_the_token_that_made_the_call() {
             audit.push(line);
         }
     }
-    let stats: Vec<&String> = audit.iter().filter(|l| l.contains("tool=stats ")).collect();
+    let calls: Vec<&String> = audit
+        .iter()
+        .filter(|l| l.contains("tool=capture_status "))
+        .collect();
     assert_eq!(
-        stats.len(),
+        calls.len(),
         1,
-        "exactly one audited stats call; audit lines were:\n{audit:#?}"
+        "exactly one audited capture_status call; audit lines were:\n{audit:#?}"
     );
-    let line = stats[0];
+    let line = calls[0];
     assert!(
         line.contains(&format!(" bearer-verified scope=full token={TOKEN_ID}\"")),
         "the audit line must name the token that made the call, as the last \
