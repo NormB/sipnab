@@ -38,7 +38,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (390)
+## Rust crates (393)
 
 | Crate | Version | Licence |
 |---|---|---|
@@ -65,7 +65,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | axum | 0.8.9 | MIT |
 | axum-core | 0.5.6 | MIT |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
-| base64 | 0.23.0 | MIT OR Apache-2.0 |
+| base64 | 0.23.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
 | bit-set | 0.5.3 | MIT/Apache-2.0 |
 | bit-vec | 0.6.3 | MIT/Apache-2.0 |
@@ -115,8 +115,11 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | csscolorparser | 0.6.2 | MIT OR Apache-2.0 |
 | ctutils | 0.4.2 | Apache-2.0 OR MIT |
 | darling | 0.23.0 | MIT |
+| darling | 0.24.0 | MIT |
 | darling_core | 0.23.0 | MIT |
+| darling_core | 0.24.0 | MIT |
 | darling_macro | 0.23.0 | MIT |
+| darling_macro | 0.24.0 | MIT |
 | deltae | 0.3.2 | MIT |
 | der | 0.7.10 | Apache-2.0 OR MIT |
 | deranged | 0.5.8 | MIT OR Apache-2.0 |
@@ -284,8 +287,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.0.1 | Apache-2.0 |
-| rmcp-macros | 3.1.0 | Apache-2.0 |
+| rmcp | 3.1.1 | Apache-2.0 |
+| rmcp-macros | 3.1.2 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
