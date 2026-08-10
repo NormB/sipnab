@@ -2085,6 +2085,72 @@ mod demo_terminal_method_rendering {
 
     /// Render the current screen and assert every method on it is readable in
     /// full — the effect, not the `Constraint` that was requested.
+    /// EVERY demo tape that opens a capture must render every SIP method whole
+    /// at the recorded cell geometry — not just the one tape that was reported.
+    ///
+    /// `demo_terminal_renders_every_sip_method_whole` above reads
+    /// `demos/04-filter.tape` and nothing else, because Search is the tab
+    /// somebody happened to look at. Multi-Leg shipped `SUBSCRIB` for nineteen
+    /// days with that gate green, on the same 88-column geometry, from the same
+    /// column arithmetic. A guard scoped to the case that prompted it is a
+    /// guard that passes confidently about everything it never opened.
+    ///
+    /// Driven off the tape list on disk, so a NEW tape is covered the day it
+    /// lands rather than when someone remembers to extend a list here.
+    #[test]
+    fn every_demo_tape_renders_methods_whole() {
+        let mut checked = 0usize;
+        let mut dir: Vec<_> = std::fs::read_dir(repo().join("demos"))
+            .expect("demos/ is readable")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("tape"))
+            .collect();
+        dir.sort();
+
+        for tape_path in dir {
+            let tape = std::fs::read_to_string(&tape_path).expect("tape is readable");
+            // The pcap a tape opens, if it opens one. `hero` and the CLI demo
+            // may not drive the call list at all.
+            let Some(rel) = tape
+                .lines()
+                .filter_map(|l| l.split("sipnab -I ").nth(1))
+                .filter_map(|r| r.split_whitespace().next())
+                .map(|r| r.trim_matches('"').to_string())
+                .next()
+            else {
+                continue;
+            };
+            let pcap = repo().join(&rel);
+            if !pcap.is_file() {
+                continue;
+            }
+
+            let mut app = App::new_test();
+            app.handle_key(KeyCode::Char('O'));
+            app.handle_key(KeyCode::Tab);
+            app.open_path_clear_for_test();
+            for c in pcap.to_string_lossy().chars() {
+                app.handle_key(KeyCode::Char(c));
+            }
+            app.handle_key(KeyCode::Enter);
+
+            let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS)).unwrap();
+            let what = format!("{} (unfiltered list)", tape_path.display());
+            assert_methods_render_whole(&mut app, &mut term, &what, "");
+            checked += 1;
+        }
+
+        // A walk that matched nothing would pass silently, which is the exact
+        // failure mode this test exists to end.
+        assert!(
+            checked >= 4,
+            "only {checked} demo tapes were checked — the tape walk or the \
+             `sipnab -I` extraction stopped matching, so this gate is asserting \
+             about almost nothing"
+        );
+    }
+
     fn assert_methods_render_whole(
         app: &mut App,
         term: &mut Terminal<TestBackend>,
