@@ -33,6 +33,23 @@ export SIPNAB_INSTALL_TEST
 # shellcheck disable=SC1090
 . "$SCRIPT" || { echo "FAIL install.sh is not sourceable"; exit 1; }
 
+# ── sudo_can_find ────────────────────────────────────────────────────
+# RHEL's secure_path excludes /usr/local/bin, which is where this installer
+# puts the binary, so `sudo sipnab` says "command not found" on a machine where
+# `sipnab` works. Debian's includes it. An unparseable/absent secure_path must
+# stay silent rather than warn wrongly.
+sudo_can_find_with() { # <secure_path> <dir>
+  _sp=$1; _dir=$2
+  [ -n "$_sp" ] || return 0
+  case ":$_sp:" in *":$_dir:"*) return 0 ;; *) return 1 ;; esac
+}
+sudo_can_find_with "/sbin:/bin:/usr/sbin:/usr/bin" "/usr/local/bin"
+t_err "sudo_can_find rhel secure_path misses /usr/local/bin" $?
+sudo_can_find_with "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin" "/usr/local/bin"
+t "sudo_can_find debian secure_path has /usr/local/bin" "0" "$?"
+sudo_can_find_with "" "/usr/local/bin"
+t "sudo_can_find unknown secure_path stays silent" "0" "$?"
+
 # ── detect_os ────────────────────────────────────────────────────────
 t "detect_os Linux"  "linux"  "$(detect_os Linux)"
 t "detect_os Darwin" "darwin" "$(detect_os Darwin)"
@@ -54,7 +71,19 @@ detect_arch 'x86_64\evil' >/dev/null 2>&1; t_err "detect_arch backslash rejected
 t "parse_glibc debian ldd"  "2.36" "$(parse_glibc_version 'ldd (Debian GLIBC 2.36-9+deb12u10) 2.36')"
 t "parse_glibc ubuntu ldd"  "2.39" "$(parse_glibc_version 'ldd (Ubuntu GLIBC 2.39-0ubuntu8.4) 2.39')"
 t "parse_glibc trixie ldd"  "2.41" "$(parse_glibc_version 'ldd (Debian GLIBC 2.41-12) 2.41')"
-parse_glibc_version 'musl libc (x86_64)' >/dev/null 2>&1; t_err "parse_glibc musl rejected" $?
+# RHEL family prints "GNU libc", not "GLIBC". None of these were covered, which
+# is why a parser keyed on "GLIBC" shipped: the table only held the distros
+# whoever wrote it happened to run, so it proved Debian and said nothing about
+# half of Linux.
+t "parse_glibc rhel9 ldd"    "2.34" "$(parse_glibc_version 'ldd (GNU libc) 2.34')"
+t "parse_glibc rhel8 ldd"    "2.28" "$(parse_glibc_version 'ldd (GNU libc) 2.28')"
+t "parse_glibc fedora ldd"   "2.39" "$(parse_glibc_version 'ldd (GNU libc) 2.39')"
+t "parse_glibc rhel10 ldd"   "2.39" "$(parse_glibc_version 'ldd (GNU libc) 2.39')"
+t "parse_glibc gentoo ldd"   "2.37" "$(parse_glibc_version 'ldd (Gentoo 2.37-r7 (patchset 8)) 2.37')"
+
+# Alpine: no glibc is the CORRECT answer, and it is what routes the host to the
+# static musl build. Named for the outcome, not the mechanism.
+parse_glibc_version 'musl libc (x86_64)' >/dev/null 2>&1; t_err "parse_glibc alpine/musl -> no glibc" $?
 parse_glibc_version '' >/dev/null 2>&1; t_err "parse_glibc empty rejected" $?
 
 t "glibc_at_least 2.41 >= 2.39" "yes" "$(glibc_at_least 2.41 2.39)"

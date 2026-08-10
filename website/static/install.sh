@@ -38,9 +38,25 @@ detect_arch() {
   esac
 }
 
-# Parse "ldd (Debian GLIBC 2.36-9) 2.36" → "2.36". Fails on musl/unknown.
+# Read the glibc version out of ldd's first line. Empty exit 1 on musl, which
+# is how an Alpine host reaches the static build it wants.
+#
+# Keyed on POSITION, not on a vendor string. This used to match the literal
+# "GLIBC", which only Debian and Ubuntu print:
+#
+#   ldd (Debian GLIBC 2.36-9) 2.36     matched
+#   ldd (Ubuntu GLIBC 2.39-...) 2.39   matched
+#   ldd (GNU libc) 2.34                DID NOT -- RHEL, CentOS, Rocky, Alma
+#   ldd (GNU libc) 2.39                DID NOT -- Fedora, RHEL 10
+#
+# so every RHEL-family host reported "no glibc detected" and took the musl
+# build, including hosts far above the gnu floor, which silently cost them the
+# audio feature. Matching "GNU libc" too would have fixed those distros and
+# waited for the next vendor to rename its banner. The version is the last
+# token of line 1 in every glibc family, and musl prints no version there.
 parse_glibc_version() {
-  _v=$(printf '%s' "${1:-}" | sed -n 's/.*GLIBC[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
+  _v=$(printf '%s\n' "${1:-}" | awk 'NR==1{print $NF}' \
+       | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
   [ -n "$_v" ] || { printf 'sipnab-install: not a glibc host\n' >&2; return 1; }
   echo "$_v"
 }
@@ -143,6 +159,47 @@ main() {
     sudo install -m 755 "$bin" "$dest/sipnab" || err "install to $dest failed"
   fi
   info "installed $dest/sipnab — run 'sipnab --version' to confirm"
+  post_install_hint "$dest"
+}
+
+# Return 0 when $1 is a directory sudo would search, per sudo's secure_path.
+#
+# RHEL, CentOS, Rocky, Alma and Fedora ship
+# secure_path=/sbin:/bin:/usr/sbin:/usr/bin, which does NOT include
+# /usr/local/bin -- the default install prefix. So the interactive shell finds
+# sipnab and `sudo sipnab` answers "command not found", which reads like the
+# install failed. Debian and Ubuntu include /usr/local/bin and never see it.
+#
+# Best effort by design: `sudo -l` may prompt or be denied, so an inconclusive
+# answer means "say nothing" rather than "warn wrongly".
+sudo_can_find() {
+  _dir=$1
+  command -v sudo >/dev/null 2>&1 || return 0
+  _sp=$(sudo -n -l 2>/dev/null | sed -n 's/.*secure_path=\([^ ]*\).*/\1/p' | head -1)
+  [ -n "$_sp" ] || return 0
+  case ":$_sp:" in
+    *":$_dir:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# What to actually run next, said once, only when it is not obvious.
+#
+# sipnab needs CAP_NET_RAW to open a live capture, so the step after install is
+# almost always an attempt to get privileges. Pointing at setcap first is
+# deliberate: it is the narrower grant, and it means the tool never runs as
+# root at all.
+post_install_hint() {
+  _dest=$1
+  printf 'sipnab-install: live capture needs CAP_NET_RAW. Grant it once:\n' >&2
+  printf 'sipnab-install:   sudo setcap cap_net_raw,cap_net_admin+ep %s/sipnab\n' "$_dest" >&2
+  printf 'sipnab-install: (re-apply after each upgrade — replacing the binary drops it)\n' >&2
+  printf 'sipnab-install: reading a pcap needs no privileges at all: sipnab -I capture.pcap\n' >&2
+  if ! sudo_can_find "$_dest"; then
+    printf 'sipnab-install: NOTE %s is not in sudo secure_path on this host, so\n' "$_dest" >&2
+    printf 'sipnab-install: "sudo sipnab" reports "command not found". Use the setcap\n' >&2
+    printf 'sipnab-install: line above, or the full path: sudo %s/sipnab\n' "$_dest" >&2
+  fi
 }
 
 # Under test, expose functions without executing.
