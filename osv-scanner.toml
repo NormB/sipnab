@@ -1,0 +1,32 @@
+# OSV-Scanner configuration.
+#
+# This exists so the three dependency scanners agree. `cargo audit` and
+# `cargo deny` were both already told to accept the advisory below, in
+# .github/workflows/ci.yml and deny.toml respectively, with the same reasoning.
+# OSV-Scanner was not, so it kept filing the same finding as a Code Scanning
+# alert -- two tools recording an accepted risk while a third reported it as
+# open. A permanently-open alert that everyone has learned to scroll past is
+# worse than no alert, because it hides the next real one.
+#
+# Applied to every scanned file via `--config` in .github/workflows/osv-scanner.yml
+# rather than by sitting here on its own: OSV-Scanner reads `osv-scanner.toml`
+# from the directory of each scanned file and does NOT propagate it to
+# subdirectories, so a root-only config would silently miss fuzz/Cargo.lock --
+# which is the tree that feeds hostile input to the parsers, i.e. the one least
+# worth leaving unscanned. `--config` applies one file to all of them, so the
+# reasoning below cannot drift between two copies.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+# Also filed as CVE-2023-49092 and GHSA-c827-hfw6-qwvm.
+reason = """
+rsa "Marvin Attack" timing sidechannel. This is an ONLINE chosen-ciphertext \
+oracle attack: it requires a service that decrypts attacker-supplied RSA \
+ciphertexts and leaks decryption timing back to the attacker. sipnab uses the \
+rsa crate only under the optional `tls` feature, for offline passive \
+decryption of a pre-master secret from an already-captured TLS handshake \
+(`--tls-key`). No network-facing decryption oracle exists, and nothing an \
+attacker supplies is decrypted on demand, so the attack does not apply. No \
+fixed rsa release exists as of 0.9.x -- this is not waiting out a pending \
+upgrade. Re-evaluate if sipnab ever grows an online decryption path.\
+"""

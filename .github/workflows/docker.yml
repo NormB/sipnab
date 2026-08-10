@@ -8,10 +8,16 @@ on:
 # Read by default; the one job that publishes declares what it needs. A
 # workflow-level `packages: write` would hand any job added later the ability
 # to push to GHCR.
+#
+# `security-events: write` used to sit here for Trivy's SARIF upload and has
+# been removed. The only job in this file restates it in its own block -- which
+# REPLACES this one -- so the grant here reached nothing, while still widening
+# the default for any job added later. Scorecard's Token-Permissions check
+# flagged it as a top-level write, correctly. Read-only here; every write is
+# declared by the job that needs it, and a test enforces that
+# (workflow_supply_chain_test.rs).
 permissions:
   contents: read
-  # Trivy uploads its image scan as SARIF.
-  security-events: write
 
 env:
   REGISTRY: ghcr.io
@@ -25,11 +31,13 @@ jobs:
     runs-on: ubuntu-latest
     # A job-level block REPLACES the workflow-level one, so `contents: read`
     # must be restated here — without it the checkout has no read grant.
-    # `security-events: write` is restated for the same reason, and was missed
-    # when Trivy was added: the workflow-level grant on line 14 looked
+    # `security-events: write` is here for the same reason, and was missed when
+    # Trivy was added: a workflow-level grant (since removed, see above) looked
     # sufficient, the scan itself passed, and only the SARIF upload failed with
     # "Resource not accessible by integration" — a permissions error that names
     # neither the permission nor the job-level override that dropped it.
+    #
+    # This block is now the ONLY place any of these are granted.
     permissions:
       contents: read
       packages: write

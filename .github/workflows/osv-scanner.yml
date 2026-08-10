@@ -79,6 +79,7 @@ jobs:
           scan-args: |-
             --format=sarif
             --output=osv.sarif
+            --config=osv-scanner.toml
             --lockfile=./Cargo.lock
             --lockfile=./fuzz/Cargo.lock
             --recursive

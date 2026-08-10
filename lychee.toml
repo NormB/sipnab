@@ -34,8 +34,14 @@ max_concurrency = 8
 # margin of 1.5s on a link the docs legitimately cite, and a retry does not
 # help when the SLOW path is the one being retried.
 timeout = 30
-max_retries = 2
-retry_wait_time = 2
+# Raised from 2/2. This widens the window for the TIMEOUT class only -- the
+# kamailio.org case above -- and deliberately does not pretend to fix the
+# rejected-status case that motivated the look (see bestpractices.dev below).
+# lychee doubles the wait each time, so 4 retries at 3s rides out about 45s
+# (3 + 6 + 12 + 24) where 2 at 2s gave 6s. Retries cost nothing on a healthy
+# run: they happen only after a failure.
+max_retries = 4
+retry_wait_time = 3
 
 # 429 is rate limiting, not a dead link -- GitHub and crates.io both do it under
 # CI concurrency. 206 is partial content, which some CDNs answer HEAD with.
@@ -94,6 +100,42 @@ exclude = [
   # check the numbers against the body that assigns them; dropping the URL to
   # satisfy a link checker would remove the provenance the page exists to carry.
   'standards-oui\.ieee\.org',
+  # The OpenSSF Best Practices badge, cited in README.md and in
+  # docs/design/openssf-badge-answers.md. It answered a Quality job with 503
+  # Service Unavailable on four links at once and failed the run with ZERO dead
+  # links in the repository -- 1842 of 1851 successful, every error that one
+  # host. It was healthy from here minutes later: five consecutive fetches of
+  # the failing URL, HTTP 200 every time, 0.12-0.20s, two redirects each.
+  #
+  # This is the one case above where raising `max_retries` looks like the
+  # obvious fix and is inert. lychee only retries a rejected status code when it
+  # is 429 (lychee-lib/src/retry.rs):
+  #
+  #     impl RetryExt for ErrorKind {
+  #         fn should_retry(&self) -> bool {
+  #             ...
+  #             } else {
+  #                 matches!(self, Self::RejectedStatusCode(StatusCode::TOO_MANY_REQUESTS))
+  #             }
+  #
+  # A 503 that arrives as a completed HTTP response becomes
+  # `RejectedStatusCode(503)` and falls into that arm. The `is_server_error()`
+  # branch in the same file belongs to the `reqwest::StatusCode` impl, which is
+  # reached for transport-level failures, not for a status lychee rejected
+  # against `accept`. The CI log wording -- "Rejected status code: 503" -- names
+  # the variant. Retrying more would have changed nothing.
+  #
+  # Adding 503 to `accept` was the other option and is worse: it would blind
+  # every link in the repository to server errors, which is most of how a page
+  # dies, to rescue one badge.
+  #
+  # What this costs, stated plainly because it is a real loss and not a free
+  # win: nothing now checks that this URL resolves, so a changed project ID or a
+  # retired badge page would go unnoticed here. Unlike the three entries above,
+  # the host is not refusing the runner -- it was simply down -- so this is an
+  # exclusion for availability, not for access. Reverse it if lychee grows
+  # per-host accepts or retries rejected 5xx.
+  'bestpractices\.dev',
 ]
 
 exclude_path = [
