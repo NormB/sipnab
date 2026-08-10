@@ -457,7 +457,9 @@ impl StreamStore {
             // `None` when the packet had no origin (live capture, HEP, a
             // synthetic packet). Left `None` rather than filled in from a
             // neighbour — a stream with no provenance must say so.
-            stream.first_frame = parsed.frame.clone();
+            // STREAM, not per packet -- and now the refcount is paid here
+            // too, once per stream, rather than once per parsed frame.
+            stream.first_frame = parsed.frame.map(|l| l.to_frame_ref());
             // RFC 3551 knows the clock rate for twenty-four static payload
             // types; `RtpStream::new` knows eight of them and answers 8000 Hz
             // for the rest. Correct it here, before the first packet feeds the
@@ -1834,11 +1836,13 @@ a=rtpmap:96 H264/90000\r\n";
     /// the same frame the test would pass either way and prove nothing.
     #[test]
     fn a_stream_cites_the_frame_it_began_in_not_its_latest() {
-        use crate::capture::packet::{FrameOrigin, FrameRef};
+        use crate::capture::packet::FrameOrigin;
 
+        // A parsed packet now carries the Copy locator, so the fixture builds
+        // that; the store materialises the owned FrameRef when it keeps one.
         let pointer = |ordinal: u64| {
-            Some(FrameRef {
-                source: "calls.pcap".into(),
+            Some(crate::capture::packet::FrameLocator {
+                source: "calls.pcap",
                 origin: FrameOrigin {
                     ordinal,
                     digest: Some(0x0102_0304_0506_0708),
@@ -1864,7 +1868,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(stream.packet_count, 2, "both packets must reach the stream");
         assert_eq!(
             stream.first_frame,
-            pointer(7),
+            pointer(7).map(|l| l.to_frame_ref()),
             "the stream must cite the frame its FIRST packet arrived in; \
              citing frame 4211 means the pointer is reassigned per packet and \
              every long stream names the wrong frame"

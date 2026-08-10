@@ -86,6 +86,91 @@ pub fn frame_digest(bytes: &[u8]) -> u64 {
     h
 }
 
+/// A frame pointer's two halves, both `Copy`, carried through the pipeline
+/// without touching a refcount.
+///
+/// [`FrameRef`] owns an `Arc<str>` for its source, so building one costs an
+/// atomic increment and dropping it costs a decrement. `parse_packet` used to
+/// build a `FrameRef` for EVERY packet — a profile put ~40% of the packet
+/// path in outlined atomics, and `parse_packet`'s share of them was the second
+/// largest driver — while only the frames that end up keeping a pointer need
+/// one. On a carrier capture that is roughly 35,000 of 535,000.
+///
+/// The source here is `&'static str` rather than `Arc<str>` precisely so this
+/// is `Copy`: it is interned once per capture source by [`intern_source`], and
+/// a pointer is only materialised as a `FrameRef` at the two sites that
+/// actually retain one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameLocator {
+    /// The interned source name — a capture file path, device, or listener.
+    pub source: &'static str,
+    /// Where in that source the frame sat.
+    pub origin: FrameOrigin,
+}
+
+impl FrameLocator {
+    /// Materialise the owned pointer. Pays one refcount, at the point a fact
+    /// actually keeps the pointer rather than once per packet.
+    #[must_use]
+    pub fn to_frame_ref(self) -> FrameRef {
+        FrameRef {
+            source: source_arc(self.source),
+            origin: self.origin,
+        }
+    }
+}
+
+thread_local! {
+    /// Last `(Arc source, interned)` pair this thread saw, and the owned `Arc`
+    /// it hands back out.
+    ///
+    /// One entry is enough because the source changes once per capture FILE,
+    /// not per packet — a whole file's frames hit the same entry. The hit test
+    /// is `Arc::ptr_eq`, a pointer comparison, so the common path costs no
+    /// allocation, no hash, and no atomic.
+    static SOURCE_MEMO: std::cell::RefCell<Option<(Arc<str>, &'static str)>> =
+        const { std::cell::RefCell::new(None) };
+    static ARC_MEMO: std::cell::RefCell<Option<(&'static str, Arc<str>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Intern a capture source so it can be carried as `Copy`.
+///
+/// Leaks one `str` per distinct source for the process lifetime. That is
+/// bounded by how many captures a run opens — a handful for a file set,
+/// exactly one for a live capture or a HEP listener — and is the same bound
+/// the `Arc<str>` it replaces already had.
+#[must_use]
+pub fn intern_source(source: &Arc<str>) -> &'static str {
+    SOURCE_MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if let Some((cached, interned)) = m.as_ref()
+            && Arc::ptr_eq(cached, source)
+        {
+            return *interned;
+        }
+        // Cold: a new file, or the first packet on this thread.
+        let leaked: &'static str = Box::leak(source.to_string().into_boxed_str());
+        *m = Some((Arc::clone(source), leaked));
+        leaked
+    })
+}
+
+/// The owned `Arc<str>` for an interned source, memoised per thread.
+fn source_arc(source: &'static str) -> Arc<str> {
+    ARC_MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if let Some((cached, arc)) = m.as_ref()
+            && std::ptr::eq(*cached, source)
+        {
+            return Arc::clone(arc);
+        }
+        let arc: Arc<str> = Arc::from(source);
+        *m = Some((source, Arc::clone(&arc)));
+        arc
+    })
+}
+
 /// A resolvable pointer to the bytes a fact came from.
 ///
 /// Produced by [`Packet::frame_ref`]. Rendered as `<source>#<ordinal>`, which
@@ -181,6 +266,26 @@ impl Packet {
         Some(FrameRef {
             source: Arc::clone(self.interface.as_ref()?),
             origin: (self.origin)?,
+        })
+    }
+
+    /// This packet's provenance as a `Copy` locator — the cheap form.
+    ///
+    /// Same requirement as [`Packet::frame_ref`]: BOTH halves or nothing, for
+    /// the same reason. The difference is what it costs. `frame_ref` clones an
+    /// `Arc<str>`, which is an atomic increment now and a decrement when the
+    /// pointer drops; this interns the source instead and hands back something
+    /// `Copy`.
+    ///
+    /// `parse_packet` calls THIS for every packet, and the retention sites turn
+    /// the survivor into a `FrameRef`. On a carrier capture that is ~35,000
+    /// materialisations instead of 535,000 — the other ~93% were built and
+    /// dropped without anyone reading them.
+    #[must_use]
+    pub fn frame_locator(&self) -> Option<FrameLocator> {
+        Some(FrameLocator {
+            source: intern_source(self.interface.as_ref()?),
+            origin: self.origin?,
         })
     }
 
