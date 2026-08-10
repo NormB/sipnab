@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
@@ -477,6 +477,89 @@ pub fn displayed_dialogs<'a>(
 
 /// Render the call list table into the given area.
 ///
+/// The text colour to draw on a filled header band, or `None` when the band
+/// is not filled at all.
+///
+/// `Color::Reset` means "the terminal's own background", so there is nothing
+/// to contrast against and nothing should be emitted — that is the NO_COLOR
+/// theme, where drawing a foreground would defeat the point.
+///
+/// For a real colour, black or white is chosen by perceived luminance
+/// (Rec. 601 weights: green dominates, blue barely registers), which is the
+/// same rule browsers and terminals use to keep text readable on an arbitrary
+/// swatch. The named ANSI colours are mapped to their conventional sRGB values
+/// rather than guessed, and the bright variants count as light.
+pub(crate) fn header_foreground(bg: Color) -> Option<Color> {
+    let (r, g, b) = match bg {
+        Color::Reset => return None,
+        Color::Black => (0, 0, 0),
+        Color::Red => (170, 0, 0),
+        Color::Green => (0, 170, 0),
+        Color::Yellow => (170, 85, 0),
+        Color::Blue => (0, 0, 170),
+        Color::Magenta => (170, 0, 170),
+        Color::Cyan => (0, 170, 170),
+        Color::Gray => (170, 170, 170),
+        Color::DarkGray => (85, 85, 85),
+        Color::LightRed => (255, 85, 85),
+        Color::LightGreen => (85, 255, 85),
+        Color::LightYellow => (255, 255, 85),
+        Color::LightBlue => (85, 85, 255),
+        Color::LightMagenta => (255, 85, 255),
+        Color::LightCyan => (85, 255, 255),
+        Color::White => (255, 255, 255),
+        Color::Rgb(r, g, b) => (r, g, b),
+        // An indexed colour has no portable RGB here. White-on-dark is the
+        // safer default for the 16-255 range, which is mostly mid-to-dark.
+        Color::Indexed(_) => return Some(Color::White),
+    };
+    let luma = (299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b)) / 1000;
+    Some(if luma >= 140 {
+        Color::Black
+    } else {
+        Color::White
+    })
+}
+
+/// The rendered width of a laid-out column, or `None` when it is not laid out.
+pub(crate) fn laid_out_width(widths: &[Option<Constraint>; 11], i: usize) -> Option<usize> {
+    match widths.get(i) {
+        Some(Some(Constraint::Length(w))) => Some(*w as usize),
+        _ => None,
+    }
+}
+
+/// Shorten `s` to `width` by removing from the MIDDLE, keeping both ends.
+///
+/// ratatui truncates a cell from the right, which for an address destroys the
+/// host octet — the one part that differs between two legs of the same call.
+/// At the demo geometry the address columns are 11 cells and an IPv4 literal
+/// needs 15, so `203.0.113.145` and `203.0.113.101` both rendered as
+/// `203.0.113`: two different hosts, one string.
+///
+/// The tail is favoured on an odd budget for the same reason — the end is what
+/// disambiguates. A value that already fits is returned untouched, and an
+/// unknown width never mangles anything.
+pub(crate) fn elide_middle(s: &str, width: Option<usize>) -> String {
+    let Some(width) = width else {
+        return s.to_string();
+    };
+    let len = s.chars().count();
+    if len <= width {
+        return s.to_string();
+    }
+    if width <= 1 {
+        return s.chars().take(width).collect();
+    }
+    // One cell goes to the ellipsis; the tail gets the larger half.
+    let keep = width - 1;
+    let head = keep / 2;
+    let tail = keep - head;
+    let head_s: String = s.chars().take(head).collect();
+    let tail_s: String = s.chars().skip(len - tail).collect();
+    format!("{head_s}\u{2026}{tail_s}")
+}
+
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video
 /// selected row, full-width layout. No title line -- status is rendered
 /// separately at the top of the screen. When the displayed list is
@@ -513,10 +596,26 @@ pub fn render_call_list(
     // The entire area is used for the table (no title line)
     let table_area = area;
 
-    // sngrep header style: bold on header-color background
-    let header_style = Style::default()
-        .bg(theme.header)
-        .add_modifier(Modifier::BOLD);
+    // Bold, on the header colour, with a foreground CHOSEN AGAINST IT.
+    //
+    // This used to set a background and no foreground, so the labels inherited
+    // whatever the terminal's default text colour was — light grey on most —
+    // and the header band rendered as near-illegible grey-on-cyan. It is
+    // visible in every demo recording on the homepage.
+    //
+    // The foreground cannot be hardcoded. `theme.header` is user-configurable
+    // and is `Color::Reset` in the NO_COLOR theme, where emitting any colour
+    // at all would be wrong; a fixed black would also vanish against a dark
+    // custom header. So it is derived from the background: no background means
+    // no foreground either (bold alone carries it), and a real colour gets
+    // black or white by luminance.
+    let header_style = match header_foreground(theme.header) {
+        Some(fg) => Style::default()
+            .bg(theme.header)
+            .fg(fg)
+            .add_modifier(Modifier::BOLD),
+        None => Style::default().add_modifier(Modifier::BOLD),
+    };
 
     // Dynamic column widths for this terminal width. A column too narrow to
     // say anything comes back as `None` — not laid out at all — so it costs
@@ -712,16 +811,21 @@ pub fn render_call_list(
                         display.resolver,
                         display.name_mode,
                     ))),
-                    4 => Cell::from(Span::raw(
-                        display
+                    // Elided from the MIDDLE, not the right: at narrow widths
+                    // the last octet is the only thing telling two hosts on
+                    // one network apart.
+                    4 => Cell::from(Span::raw(elide_middle(
+                        &display
                             .resolver
                             .label_ip(dialog.src_addr, display.name_mode),
-                    )),
-                    5 => Cell::from(Span::raw(
-                        display
+                        laid_out_width(&all_widths, 4),
+                    ))),
+                    5 => Cell::from(Span::raw(elide_middle(
+                        &display
                             .resolver
                             .label_ip(dialog.dst_addr, display.name_mode),
-                    )),
+                        laid_out_width(&all_widths, 5),
+                    ))),
                     // State, plus a signalling-diagnosis marker when one fired.
                     //
                     // The marker shares the State cell rather than taking a
@@ -1322,6 +1426,122 @@ mod tests {
     /// invariant that makes the request honest, and
     /// `demo_terminal_renders_every_sip_method_whole` in
     /// `tests/site_journey_test.rs` for what actually reaches the screen.
+    /// The header band must never draw text in the terminal's default colour
+    /// on top of a filled background.
+    ///
+    /// It did exactly that: `Style::default().bg(theme.header)` with no `.fg`,
+    /// so the labels inherited the terminal foreground — light grey on most —
+    /// and rendered as grey-on-cyan. Visible in every homepage demo.
+    ///
+    /// Asserts the CHOICE, and the companion below asserts what reaches the
+    /// screen; a style that is right in isolation can still be overdrawn.
+    #[test]
+    fn a_filled_header_band_always_gets_a_foreground() {
+        // A filled band must name its own text colour.
+        for bg in [
+            Color::Cyan,
+            Color::Blue,
+            Color::White,
+            Color::Rgb(10, 14, 20),
+            Color::Rgb(240, 240, 240),
+        ] {
+            let fg = header_foreground(bg);
+            assert!(
+                fg.is_some(),
+                "header background {bg:?} left the foreground unset, so the \
+                 labels inherit the terminal default and can be illegible"
+            );
+            assert_ne!(
+                fg.unwrap(),
+                bg,
+                "header foreground equals its background ({bg:?}) — invisible"
+            );
+        }
+
+        // NO_COLOR: no band, so nothing to contrast with and nothing emitted.
+        assert_eq!(
+            header_foreground(Color::Reset),
+            None,
+            "the NO_COLOR theme must emit no header foreground at all"
+        );
+    }
+
+    /// Light backgrounds get dark text and dark backgrounds get light text.
+    ///
+    /// Without this, "set a foreground" is satisfied by always choosing white,
+    /// which is unreadable on the light header a user is free to configure.
+    #[test]
+    fn header_foreground_follows_the_luminance_of_its_background() {
+        for dark in [Color::Blue, Color::Black, Color::Rgb(10, 14, 20)] {
+            assert_eq!(
+                header_foreground(dark),
+                Some(Color::White),
+                "dark header {dark:?} needs light text"
+            );
+        }
+        for light in [
+            Color::White,
+            Color::LightYellow,
+            Color::Gray,
+            Color::Rgb(240, 240, 240),
+        ] {
+            assert_eq!(
+                header_foreground(light),
+                Some(Color::Black),
+                "light header {light:?} needs dark text"
+            );
+        }
+    }
+
+    /// Two hosts that differ only in the last octet must not render as the
+    /// same string at the demo geometry.
+    ///
+    /// They did. The address columns get 11 cells at 88 columns, an IPv4
+    /// literal needs 15, and ratatui truncates from the RIGHT — so
+    /// 203.0.113.145 and 203.0.113.101 both rendered as "203.0.113" and two
+    /// different hosts looked like one. On a proxy or an SBC the two legs of a
+    /// call differ ONLY in address, which is precisely the comparison the call
+    /// list exists to support.
+    #[test]
+    fn addresses_differing_only_in_the_last_octet_stay_distinguishable() {
+        for width in [9usize, 11, 13, 15] {
+            let a = elide_middle("203.0.113.145", Some(width));
+            let b = elide_middle("203.0.113.101", Some(width));
+            assert_ne!(
+                a, b,
+                "at {width} cells the two hosts render identically as {a:?} —                  the distinguishing octet was truncated away"
+            );
+            assert!(
+                a.chars().count() <= width,
+                "elided {a:?} is wider than the {width} cells it must fit"
+            );
+        }
+    }
+
+    /// An address that fits is left exactly as it is: no ellipsis, no loss.
+    #[test]
+    fn an_address_that_fits_is_not_elided() {
+        assert_eq!(elide_middle("203.0.113.145", Some(15)), "203.0.113.145");
+        assert_eq!(elide_middle("10.0.0.1", Some(11)), "10.0.0.1");
+        // No width known (column not laid out): never mangle the value.
+        assert_eq!(elide_middle("203.0.113.145", None), "203.0.113.145");
+    }
+
+    /// The TAIL is what survives, because that is what differs between hosts
+    /// on the same network — the case the call list is read for.
+    #[test]
+    fn elision_keeps_the_end_of_the_address() {
+        let out = elide_middle("203.0.113.145", Some(11));
+        assert!(
+            out.ends_with("145"),
+            "the last octet must survive elision, got {out:?}"
+        );
+        assert!(
+            out.starts_with("203"),
+            "the network prefix must remain recognisable, got {out:?}"
+        );
+    }
+
     #[test]
     fn method_column_fits_longest_sip_method_below_120_cols() {
         // Longest common SIP methods: SUBSCRIBE(9), REGISTER(8), OPTIONS(7).

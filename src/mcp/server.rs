@@ -562,9 +562,20 @@ pub struct GetDialogParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct GetMessageParams {
-    /// Call-ID identifying the dialog.
+    /// Call-ID identifying the dialog, as returned by `list_dialogs`.
     pub call_id: String,
-    /// Zero-based index of the message in the dialog.
+    /// Zero-based position of the message within this dialog, in the order the
+    /// dialog holds them.
+    ///
+    /// How to obtain one, because the number is meaningless on its own:
+    /// `get_dialog` returns a page of messages beginning at its `cursor`, so
+    /// the Nth message of that page is at index `cursor + N`. The upper bound
+    /// is `msg_count` from `list_dialogs` — the last valid index is
+    /// `msg_count - 1`.
+    ///
+    /// An index at or past the end is refused with `invalid_params`, and the
+    /// error names how many messages the dialog actually has, so a caller that
+    /// guessed can correct itself without another round trip.
     pub index: u32,
 }
 
@@ -2534,9 +2545,16 @@ impl SipnabMcp {
     /// of range for the dialog.
     #[tool(
         name = "get_message",
-        description = "Returns a single SIP message at the given zero-based \
-                       index of a dialog. Returns invalid_params when the \
-                       Call-ID is unknown or the index is out of range.",
+        description = "Returns one SIP message from a dialog, by its position \
+                       in that dialog's message list. Use it to re-read a \
+                       single message in full after `get_dialog` showed you a \
+                       page of them. To find an index: `get_dialog` returns \
+                       messages in order starting at its `cursor`, so the Nth \
+                       message of that page is at index cursor+N, and \
+                       `list_dialogs` reports `msg_count`, which is one past \
+                       the last valid index. Returns invalid_params when the \
+                       Call-ID is unknown, or when the index is out of range \
+                       — that error names the dialog's message count.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_message(

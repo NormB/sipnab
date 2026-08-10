@@ -470,7 +470,10 @@ fn wiki_intra_docs_links_resolve() {
     // previous bump moved the number and not the sentence describing it. A
     // gate whose failure message contradicts its own condition sends the next
     // reader looking for a discrepancy that is not there.
-    const EXPECTED_WIKI_LINKS: usize = 313;
+    // Raised 313 -> 345 by linking all 32 rows of the MCP tool reference to
+    // their own sections: the sections existed and the index did not point at
+    // them, so no tool was addressable from the table a reader starts at.
+    const EXPECTED_WIKI_LINKS: usize = 345;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \

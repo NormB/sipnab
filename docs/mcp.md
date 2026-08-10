@@ -317,38 +317,38 @@ ordinary update.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `list_dialogs` | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
-| `get_dialog_report` | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
-| `find_problems` | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
-| `get_dialog` | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
-| `get_message` | `call_id`, `index` | Single SIP message at a given index |
-| `render_ladder` | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
-| `rtp_stats` | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
-| `search_messages` | `query`, `limit?` | Substring search across method/From/To/UA/body |
-| `tail_dialogs` | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
-| `security_findings` | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
-| `stats` | -- | Aggregate counters (dialog_count, stream_count, etc.) |
-| `capture_status` | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
-| `capture_health` | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
-| `triage_call` | `call_id` | First-pass verdict: signalling problem, media problem, both, or none, with evidence |
-| `lint_dialog` | `call_id`, `rulesets?`, `severity_min?` | Conformance findings for one call, declaration against observation included, each with its RFC and section |
-| `validate_message` | `call_id`, `index` | Conformance findings for one message, read alone |
-| `explain_rule` | `rule_id` | The catalogue entry behind one rule identifier: citation, basis, scope, selectors |
-| `show_evidence` | `refs`, `max_bytes` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
-| `check_codec_negotiation` | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
-| `diagnose_registration` | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
-| `explain_response_code` | `code` | IANA registry meaning and class for a SIP status code |
-| `compare_dialogs` | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
-| `find_correlated` | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
-| `get_sdp_timeline` | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
-| `search_by_time` | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
-| `list_captures` | -- | Capture files in `--mcp-file-root`, with sizes |
-| `export_capture` | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
-| `export_audio` | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
-| `shutdown_server` | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
-| `open_capture` | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
-| `save_findings` | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
-| `server_capabilities` | -- | sipnab version and the optional features this binary carries |
+| [`list_dialogs`](#list_dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
+| [`get_dialog_report`](#get_dialog_report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
+| [`find_problems`](#find_problems) | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
+| [`get_dialog`](#get_dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
+| [`get_message`](#get_message) | `call_id`, `index` | Single SIP message at a given index |
+| [`render_ladder`](#render_ladder) | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
+| [`rtp_stats`](#rtp_stats) | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
+| [`search_messages`](#search_messages) | `query`, `limit?` | Substring search across method/From/To/UA/body |
+| [`tail_dialogs`](#tail_dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
+| [`security_findings`](#security_findings) | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
+| [`stats`](#stats) | -- | Aggregate counters (dialog_count, stream_count, etc.) |
+| [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
+| [`capture_health`](#capture_health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
+| [`triage_call`](#triage_call) | `call_id` | First-pass verdict: signalling problem, media problem, both, or none, with evidence |
+| [`lint_dialog`](#lint_dialog) | `call_id`, `rulesets?`, `severity_min?` | Conformance findings for one call, declaration against observation included, each with its RFC and section |
+| [`validate_message`](#validate_message) | `call_id`, `index` | Conformance findings for one message, read alone |
+| [`explain_rule`](#explain_rule) | `rule_id` | The catalogue entry behind one rule identifier: citation, basis, scope, selectors |
+| [`show_evidence`](#show_evidence) | `refs`, `max_bytes` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
+| [`check_codec_negotiation`](#check_codec_negotiation) | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
+| [`diagnose_registration`](#diagnose_registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
+| [`explain_response_code`](#explain_response_code) | `code` | IANA registry meaning and class for a SIP status code |
+| [`compare_dialogs`](#compare_dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
+| [`find_correlated`](#find_correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
+| [`get_sdp_timeline`](#get_sdp_timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
+| [`search_by_time`](#search_by_time) | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
+| [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
+| [`export_capture`](#export_capture) | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
+| [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
+| [`shutdown_server`](#shutdown_server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
+| [`open_capture`](#open_capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
+| [`save_findings`](#save_findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
+| [`server_capabilities`](#server_capabilities) | -- | sipnab version and the optional features this binary carries |
 
 ### `list_dialogs`
 
@@ -842,9 +842,10 @@ empty array rather than erroring.
 []
 ```
 
-### `triage_call` — start here
+### `triage_call`
 
-The first question in VoIP triage is which half of the stack failed.
+**Start here.** The first question in VoIP triage is which half of the stack
+failed.
 Signalling decides whether a call *connects*. RTP decides whether you can
 *hear* it. They have different causes and different fixes, and confusing them
 is the most common wrong turn — so ask this before anything else.

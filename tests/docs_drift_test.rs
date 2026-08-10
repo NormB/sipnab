@@ -1814,13 +1814,31 @@ fn mcp_tool_table_lists_every_registered_tool() {
         .expect("docs/mcp.md has no tool table")
         .1;
     let table = &table[..table.find("\n\n").unwrap_or(table.len())];
-    let documented: BTreeSet<String> = regex::RegexBuilder::new(r"^\| `([a-z_]+)`")
+    // The name may be plain (`get_message`) or a link into its own section
+    // ([`get_message`](#get_message)) — the table became a real index on
+    // 2026-08-10, when every row gained a link to the tool's documentation
+    // further down. Matching only the plain form made this gate report ALL 32
+    // tools missing, which is a formatting change reading as a catastrophe:
+    // the extraction was coupled to markup that has nothing to do with what
+    // the gate is checking.
+    let documented: BTreeSet<String> = regex::RegexBuilder::new(r"^\| \[?`([a-z_]+)`")
         .multi_line(true)
         .build()
         .expect("regex")
         .captures_iter(table)
         .map(|c| c[1].to_string())
         .collect();
+
+    // An extractor that matched nothing would report every tool missing and
+    // an extractor that matched everything would report none — assert it saw
+    // a plausible number of rows before trusting the comparison below.
+    assert!(
+        documented.len() >= 32,
+        "the tool-table extractor found only {} rows — its pattern no longer \
+         matches the table's markup, so the comparison below is meaningless: \
+         {documented:?}",
+        documented.len()
+    );
 
     let missing: Vec<_> = registered.difference(&documented).collect();
     assert!(
