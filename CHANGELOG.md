@@ -8,6 +8,28 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+- **`--hep-send` forwards RTCP, not only SIP.** RTCP now travels as HEP
+  protocol type 5 alongside signalling as type 1, so a remote collector can
+  report media quality — loss, jitter, MOS — rather than only whether calls
+  connect. The receiving half of `capture/hep.rs` has understood type 5 since
+  it was written; only the sender never emitted it, which made a remote viewer
+  strictly worse than running sngrep on the box, because sngrep at least sees
+  the media.
+
+  **RTP is not forwarded.** RFC 3550 §6.2 holds RTCP to a small fraction of
+  session bandwidth, so the quality summary crosses at a rate a WAN link and a
+  UDP feed can absorb. Media is the opposite on both counts, and forwarding it
+  would turn a monitoring feed into a call recorder aimed at the collector.
+
+  The `-I <file>` export notice moves with the behaviour rather than after it.
+  It exists because naming the socket described the plumbing and not the
+  consequence, and a notice that still said "every SIP message" while RTCP also
+  left the machine would have reintroduced exactly the silence it was written
+  to end. It now names both, and says the audio is never forwarded.
+
 ## [0.5.91] - 2026-08-10
 
 Most of the 0.5.84 throughput regression, recovered.

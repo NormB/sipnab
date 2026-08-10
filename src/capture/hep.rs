@@ -1726,12 +1726,15 @@ pub fn file_export_notice(
         )
     };
     Some(format!(
-        "{} {} forwards every SIP message this run reads to that address, and \
-         this run is reading {files}. The signalling in those captures leaves \
-         this machine: request lines, headers, URIs, and any message bodies \
-         they hold. sipnab forwards them as they were recorded and redacts \
-         nothing. Point {} at a collector you control, or drop it to analyse \
-         the captures without forwarding them.",
+        "{} {} forwards every SIP message and every RTCP report this run reads \
+         to that address, and this run is reading {files}. The signalling in \
+         those captures leaves this machine: request lines, headers, URIs, and \
+         any message bodies they hold. The RTCP carries the media quality \
+         summary alongside it — SSRCs, loss, jitter and the endpoints \
+         reporting them — but not the audio, which is never forwarded. sipnab \
+         forwards what it does send as it was recorded and redacts nothing. \
+         Point {} at a collector you control, or drop it to analyse the \
+         captures without forwarding them.",
         destination.flag(),
         destination.as_str(),
         destination.flag(),
@@ -1933,14 +1936,56 @@ impl HepSender {
             src_port: msg.src_port,
             dst_port: msg.dst_port,
         };
-        let auth_bytes = self.auth_bytes_for(&msg.raw);
+        self.send_payload(&endpoint, msg.timestamp, HepProtocol::Sip, &msg.raw)
+    }
+
+    /// Forward one RTCP datagram, verbatim, as HEP protocol type 5.
+    ///
+    /// Signalling alone is half an answer. A remote viewer that receives only
+    /// SIP can say a call connected and nothing about whether it sounded like
+    /// anything — no MOS, no jitter, no loss — which makes it *worse* than
+    /// running sngrep on the box, because sngrep at least sees the media.
+    /// The receiving side of this module has understood protocol type 5 since
+    /// it was written — the protocol-type chunk carries `1=SIP, 5=RTCP,
+    /// 32=RTP` — and only the sender never emitted it.
+    ///
+    /// RTP is deliberately NOT forwarded. RTCP is a control channel that
+    /// RFC 3550 §6.2 holds to a small fraction of session bandwidth
+    /// (conventionally 5%, with a minimum reporting interval), so it carries
+    /// the quality summary at a rate a WAN link and a UDP feed can absorb.
+    /// Media itself is the opposite on both counts, and forwarding it would
+    /// turn a monitoring feed into a call recorder aimed at somebody's laptop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the UDP send fails.
+    pub fn send_rtcp(
+        &self,
+        endpoint: &HepEndpoint,
+        timestamp: DateTime<Utc>,
+        payload: &[u8],
+    ) -> Result<()> {
+        self.send_payload(endpoint, timestamp, HepProtocol::Rtcp, payload)
+    }
+
+    /// Shared by every public send. The permit-guarded [`Self::transmit`] is
+    /// reached from here and nowhere else, so adding a protocol does not add a
+    /// second answer to "what can put bytes on the network".
+    fn send_payload(
+        &self,
+        endpoint: &HepEndpoint,
+        timestamp: DateTime<Utc>,
+        protocol: HepProtocol,
+        payload: &[u8],
+    ) -> Result<()> {
+        let auth_bytes = self.auth_bytes_for(payload);
         let pkt = build_hep_v3_bytes(
-            &endpoint,
-            msg.timestamp,
-            HepProtocol::Sip,
+            endpoint,
+            timestamp,
+            protocol,
             self.capture_id,
             auth_bytes.as_deref(),
-            &msg.raw,
+            payload,
         );
 
         self.transmit(&self.permit, &pkt)
@@ -1979,6 +2024,97 @@ impl HepSender {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// `send_rtcp` puts protocol type 5 on the wire, and the payload crosses
+    /// verbatim.
+    ///
+    /// Asserts the EFFECT — a real datagram, received off a real socket and
+    /// parsed back — rather than that a builder was handed an enum. That byte
+    /// is the whole feature: at type 1 a receiver hands the payload to the SIP
+    /// parser, which discards it, and the remote viewer this exists for gets
+    /// no MOS, jitter or loss while appearing to work.
+    #[test]
+    fn send_rtcp_puts_protocol_type_5_on_the_wire() {
+        let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+        collector
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+        let dest = collector.local_addr().expect("collector addr").to_string();
+
+        let sender = HepSender::new(&dest, 42, None, HepAuthMode::Plain).expect("build sender");
+
+        // Minimal RTCP Receiver Report: version 2, PT 201, length 1, one SSRC.
+        let rtcp: [u8; 8] = [0x80, 201, 0x00, 0x01, 0xde, 0xad, 0xbe, 0xef];
+        let endpoint = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5000,
+            dst_port: 5001,
+        };
+        sender
+            .send_rtcp(&endpoint, Utc::now(), &rtcp)
+            .expect("send_rtcp");
+
+        let mut buf = [0u8; 2048];
+        let n = collector
+            .recv(&mut buf)
+            .expect("receive the forwarded datagram");
+        let pkt = parse_hep(&buf[..n]).expect("parse what we just sent");
+
+        assert_eq!(
+            pkt.protocol,
+            HepProtocol::Rtcp,
+            "RTCP must be stamped protocol type 5; type 1 sends it to the SIP \
+             parser, which drops it"
+        );
+        assert_eq!(
+            pkt.payload, rtcp,
+            "the RTCP report must cross verbatim — a receiver recomputes \
+             quality from these bytes"
+        );
+        assert_eq!(pkt.src_port, 5000, "inner endpoint must survive");
+        assert_eq!(pkt.dst_port, 5001, "inner endpoint must survive");
+    }
+
+    /// The SIP path still stamps type 1 after `send` was refactored to share
+    /// `send_payload` with `send_rtcp`.
+    ///
+    /// Without this, a swapped argument in the shared helper would send every
+    /// SIP message as RTCP and no existing test would notice: both paths would
+    /// still put a well-formed HEP datagram on the wire.
+    #[test]
+    fn send_still_stamps_sip_as_protocol_type_1() {
+        let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+        collector
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+        let dest = collector.local_addr().expect("collector addr").to_string();
+
+        let sender = HepSender::new(&dest, 7, None, HepAuthMode::Plain).expect("build sender");
+
+        let raw = b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
+        let msg = crate::sip::parse_sip(
+            raw,
+            Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            5060,
+            5060,
+            crate::capture::parse::TransportProto::Udp,
+        )
+        .expect("parse the SIP fixture");
+        sender.send(&msg).expect("send");
+
+        let mut buf = [0u8; 2048];
+        let n = collector.recv(&mut buf).expect("receive");
+        let pkt = parse_hep(&buf[..n]).expect("parse");
+
+        assert_eq!(
+            pkt.protocol,
+            HepProtocol::Sip,
+            "SIP must stay protocol type 1"
+        );
+    }
 
     /// EINTR / WouldBlock / TimedOut are transient recv errors (retry);
     /// genuine socket failures are not.

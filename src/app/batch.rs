@@ -2287,6 +2287,33 @@ impl BatchRunner {
                 {
                     tracing::debug!("HEP send failed: {e}");
                 }
+
+                // --hep-send: and the RTCP alongside it, as protocol type 5.
+                //
+                // Separate `if` rather than an `else` on the one above: the SIP
+                // arm can fall through for reasons that are not "this was not
+                // SIP" (a parse failure), and an `else` would then hand a
+                // malformed SIP datagram to the RTCP detector. These are two
+                // independent questions about the same bytes.
+                //
+                // RTP is not forwarded — see `HepSender::send_rtcp`.
+                #[cfg(feature = "hep")]
+                if let Some(ref sender) = hep_sender
+                    && !sip::is_sip_message(&effective_pp.payload)
+                    && crate::pipeline::is_rtcp_packet(&effective_pp.payload, effective_pp.dst_port)
+                    && let Err(e) = sender.send_rtcp(
+                        &crate::capture::hep::HepEndpoint {
+                            src_addr: effective_pp.src_addr,
+                            dst_addr: effective_pp.dst_addr,
+                            src_port: effective_pp.src_port,
+                            dst_port: effective_pp.dst_port,
+                        },
+                        effective_pp.timestamp,
+                        &effective_pp.payload,
+                    )
+                {
+                    tracing::debug!("HEP RTCP send failed: {e}");
+                }
             }
 
             // Check --count limit

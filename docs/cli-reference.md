@@ -677,7 +677,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
 | `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
-| `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. **On `-I <file>` this forwards the file's contents**: every SIP message sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). Feature: `hep` |
+| `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). Feature: `hep` |
 | `--hep-id` | `<ID>` | `1` | Capture-agent id (HEP `0x000c` chunk) stamped on packets sent via `--hep-send`. Feature: `hep` |
 | `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` sipnab stamps it on every outgoing packet; on `--hep-listen` it **enables receiver-side authentication** — incoming packets must carry a matching key, which sipnab compares in constant time, or it drops them. Also read from `SIPNAB_HEP_AUTH`. **Security note:** the key travels in cleartext inside the HEP datagram, so it defeats blind/off-path spoofing but an on-path sniffer can capture and replay it. Over an untrusted path, tunnel HEP through WireGuard/IPsec/stunnel (the same posture as terminating API TLS in a reverse proxy) rather than relying on the key alone. Feature: `hep` |
 | `--hep-auth-file` | `<FILE>` | -- | Read the HEP shared secret from a file (contents trimmed), keeping it out of the process list. Takes precedence over `--hep-auth`. Feature: `hep` |
@@ -715,10 +715,18 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 ### What `--hep-send` sends
 
-`--hep-send <ADDR>` forwards every SIP message sipnab reads to the collector at
-`<ADDR>`, byte for byte as the capture holds it. On a live capture that matches
-what the flag sounds like. Traffic passes the interface, and a copy reaches
-Homer.
+`--hep-send <ADDR>` forwards every SIP message **and every RTCP report** sipnab
+reads to the collector at `<ADDR>`, byte for byte as the capture holds it. On a
+live capture that matches what the flag sounds like. Traffic passes the
+interface, and a copy reaches Homer.
+
+RTCP travels as HEP protocol type 5, which is what lets a remote collector
+report media quality — loss, jitter, MOS — rather than only whether calls
+connect. **RTP is never forwarded.** RTCP is a control channel that RFC 3550
+§6.2 holds to a small fraction of session bandwidth, so it carries the quality
+summary at a rate a WAN link and a UDP feed can absorb. The media itself is the
+opposite on both counts, and forwarding it would make this a call recorder
+pointed at the collector.
 
 On `-I <file>` the same sentence carries a sharper meaning. The messages sipnab
 reads come out of the capture file, so that file's signalling leaves the
@@ -731,8 +739,9 @@ sipnab announces this before it reads the first packet:
 
 ```text
 WARN sipnab::app::bootstrap: --hep-send collector.example:9060 forwards every
-SIP message this run reads to that address, and this run is reading a capture
-FILE (customer.pcap). The signalling in those captures leaves this machine ...
+SIP message and every RTCP report this run reads to that address, and this run
+is reading a capture FILE (customer.pcap). The signalling in those captures
+leaves this machine ...
 ```
 
 That line is a warning rather than a refusal, because you chose the
