@@ -19,7 +19,7 @@ COPY . .
 RUN cargo build --release --features full
 RUN strip target/release/sipnab
 
-FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 # trixie renamed these runtime libs in the 64-bit time_t transition
 # (libpcap0.8 -> libpcap0.8t64, libasound2 -> libasound2t64).
 RUN apt-get update && apt-get install -y libpcap0.8t64 libasound2t64 && rm -rf /var/lib/apt/lists/*
