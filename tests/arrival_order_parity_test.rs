@@ -7,9 +7,12 @@
 //!
 //! PR1 (`docs/design/backlog.md`) proposes N reader threads, each opening its
 //! own file from an `-I` directory or glob, all sharding into one worker pool.
-//! That attacks a measured bottleneck: `--cores` throughput *declines* past two
-//! cores (1 core 1.06M pkts/s, 2 cores 2.32M, 4 cores 2.03M, 8 cores 1.89M —
-//! `docs/benchmarks.md`) because one thread reads the whole set serially.
+//! That attacks a measured bottleneck: `--cores` throughput *declines* past
+//! four cores (1 core 1.07M pkts/s, 2 cores 2.21M, 4 cores 2.32M, 8 cores
+//! 2.13M — `docs/benchmarks.md`) because one thread reads the whole set
+//! serially. The peak sat at two cores until 0.5.89 moved the frame-provenance
+//! digest off that reader; the reader is still the ceiling, so the argument
+//! below is unchanged — only the core count where it starts to bite moved.
 //!
 //! It also removes something the current design gives for free. Today a worker
 //! sees one file at a time, in file order, so messages arrive in timestamp

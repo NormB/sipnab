@@ -301,7 +301,7 @@ Tiers:
   silence for `--metrics` on the `--cores` path. Tests from `bootstrap.rs:2431`
   pin both the message and the paths that must stay quiet.
 - [x] **LK1 — `fork`/`exec`, stdout writes and a third lock all happen while
-  holding BOTH store write locks.** `src/app/batch.rs:1553-1554` takes
+  holding BOTH store write locks.** `src/app/batch.rs:2243-2244` takes
   `dialog_store.write()` and `stream_store.write()` and holds both across the
   whole per-packet body. Inside that critical section:
   `event_exec.fire_dialog_event(..)` at `:2038` and `fire_quality_event(..)` at
@@ -525,17 +525,21 @@ Tiers:
   escape hatch to force immediate mode back on for a headless run; that is
   re-scoped and tracked as CT7b in `capture-tuning-tasks.md` rather than left
   implied here.
-- [ ] **PR1 — `--cores` plateaus at 2 because one thread reads the whole `-I`
-  set serially.** Measured, `docs/benchmarks.md:46-56`: 1 core 1.06M pkts/s,
-  2 cores 2.32M, 4 cores 2.03M, 8 cores 1.89M — throughput *declines* past two.
-  The published cause is *"the single sequential pcap reader (read + buffer copy
-  + host-pair peek), not the core count"*, and `src/parallel.rs:558` confirms
+- [ ] **PR1 — `--cores` plateaus at 4 because one thread reads the whole `-I`
+  set serially.** Measured, `docs/benchmarks.md:57-62`: 1 core 1.07M pkts/s,
+  2 cores 2.21M, 4 cores 2.32M, 8 cores 2.13M — throughput *declines* past four.
+  The plateau sat at two cores until 0.5.89 moved the frame-provenance digest
+  off the reader; that raised the ceiling without removing it, so this item's
+  premise survives its own evidence being restated.
+  The published cause is *"the single sequential stage that already sets this
+  ceiling (read + buffer copy + host-pair peek)"*, and `src/parallel.rs:758`
+  confirms
   it: a serial `for (i, path) in paths.iter().enumerate()` loop. Since `-I`
   routinely names a directory or glob of rotated captures, N reader threads each
   opening their own file — all sharding into the *same* worker pool, preserving
   cross-file dialog stitching — attacks the measured bottleneck directly.
   Threads, not processes: `--cores` workers already hold zero shared locks
-  (`src/parallel.rs:275-283`), so there is nothing a fork would isolate.
+  (`src/parallel.rs:421-426`), so there is nothing a fork would isolate.
   **Blocker: SETTLED 2026-08-06, and the answer is NO.** Out-of-order arrival
   is *not* harmless to `process_message`, and finding out why turned up a
   defect that has nothing to do with this feature.

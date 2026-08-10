@@ -157,24 +157,27 @@ contended. There is no handle problem to solve.
 This is the argument that fails hardest, and it fails on data rather than on
 opinion.
 
-`--cores N` scaling, from [`docs/benchmarks.md:46-51`](../benchmarks.md):
+`--cores N` scaling, from [`docs/benchmarks.md:57-62`](../benchmarks.md):
 
 | cores | pkts/s |
 |------:|-------:|
-| 1 | 1.06M |
-| 2 | **2.32M** |
-| 4 | 2.03M |
-| 8 | 1.89M |
+| 1 | 1.07M |
+| 2 | 2.21M |
+| 4 | **2.32M** |
+| 8 | 2.13M |
 
-Throughput *peaks at two cores and then declines*. The published cause
-([`benchmarks.md:53-54`](../benchmarks.md)) is:
+Throughput *peaks at four cores and then declines*. It peaked at two until
+0.5.89 moved the frame-provenance digest off the sequential reader; the reader
+is still the ceiling, which is why 8 cores remains slower than 4. The published
+cause ([`benchmarks.md:64-70`](../benchmarks.md)) is:
 
-> The plateau past 2 cores is the single sequential pcap reader (read + buffer
-> copy + host-pair peek), not the core count.
+> Through 0.5.88 the reader computed the frame-provenance digest on the single
+> sequential stage that already sets this ceiling (read + buffer copy +
+> host-pair peek), so adding work there capped every core count at once.
 
 And critically: **`--cores` mode holds no shared locks at all.** Each worker
 owns a thread-local `DialogStore` and `StreamStore`
-([`parallel.rs:275-283`](../../src/parallel.rs)), merged at EOF. There is no
+([`parallel.rs:421-426`](../../src/parallel.rs)), merged at EOF. There is no
 lock to bypass. Forking the workers would change nothing about the ceiling and
 would make the merge worse — it becomes serialization and IPC of two whole
 stores instead of a move.
@@ -183,7 +186,7 @@ Elsewhere, contention is **asserted but never measured**. The oldest claim,
 [`implementation-plan-v6.md:368`](implementation-plan-v6.md), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:1553`](../../src/app/batch.rs)), so at 2.3M pkts/s writes are the
+([`batch.rs:2243`](../../src/app/batch.rs)), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -251,7 +254,7 @@ security claim. Fix the sentence.
 
 ### R2 — Get `fork`/`exec` and stdout out of the store write locks *(P1, days)*
 Not a forking change — the opposite. The batch loop takes **both** store write
-locks at [`batch.rs:1553-1554`](../../src/app/batch.rs) and holds them across
+locks at [`batch.rs:2243-2244`](../../src/app/batch.rs) and holds them across
 the entire per-packet body, which includes:
 
 - `Command::spawn` (a real `fork`/`exec`) for `--on-*-exec` at
@@ -350,7 +353,7 @@ cost a line of `unsafe` in this crate.
 ### Where the throughput actually is, ranked
 
 #### R4 — Parallel readers, so `--cores` can exceed 2× *(P2, the big one)*
-[`parallel.rs:558`](../../src/parallel.rs) reads a multi-file `-I` set in a
+[`parallel.rs:758`](../../src/parallel.rs) reads a multi-file `-I` set in a
 **serial `for` loop on one thread**. Since the reader is the proven ceiling, and
 `-I` routinely names a directory or glob of rotated captures, N reader threads
 each opening their own file — all sharding into the same worker pool, so

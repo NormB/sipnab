@@ -456,13 +456,20 @@ irrelevant. Look outside sipnab:
 `--cores N` parallelises **offline** reconstruction (`-I`), not live capture.
 
 ```bash
-sipnab -N -I /var/captures/ --cores 2 --report
+sipnab -N -I /var/captures/ --cores 4 --report
 ```
 
 Measured on the reference corpus ([benchmarks](@/docs/benchmarks.md)), throughput peaks
-at **two** cores and then declines: 1.06M pkts/s at 1, 2.32M at 2, 2.03M at 4,
-1.89M at 8. The limit is the single sequential pcap reader, not the core count,
-so **`--cores 2` is the sweet spot and higher values are usually worse.**
+at **four** cores and then declines: 1.07M pkts/s at 1, 2.21M at 2, 2.32M at 4,
+2.13M at 8. The limit is still the single sequential pcap reader, not the core
+count — that is why 8 cores is slower than 4 rather than faster — so
+**`--cores 4` is the sweet spot and higher values buy nothing.**
+
+The peak used to be two cores, and moved in 0.5.89. Through 0.5.88 the reader
+computed the frame-provenance digest on that same sequential stage, so the extra
+work capped every core count at once. Moving it onto the workers is what lets
+more workers help. If you are tuning against older advice, this is the number
+that changed.
 
 `--cores` is silently ignored on live capture — it requires `-I`.
 
