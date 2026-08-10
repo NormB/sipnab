@@ -38,6 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
           # The suite includes site_advertises_only_a_released_version, which
           # asks git whether published_version has a matching tag. actions/
           # checkout fetches NO tags by default, so that gate saw zero and
@@ -65,7 +69,21 @@ jobs:
         # `|| true`: don't let a flaky preconfigured third-party apt repo
         # (e.g. packages.microsoft.com 403s) fail the job; the packages we
         # need are in the main Ubuntu archives, which still refresh.
-        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+        # Skip when already present. These jobs run on a self-hosted runner
+        # with SEVERAL runner instances on one box, and apt takes a
+        # MACHINE-WIDE lock -- two concurrent jobs racing here fail with
+        # 'Could not get lock /var/lib/dpkg/lock-frontend'. That is exactly
+        # what broke a dependabot PR once the extra runners were added.
+        # dpkg -s is a read, so it never contends.
+        run: |
+          need=""
+          for p in libpcap-dev libasound2-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
+          if [ -n "$need" ]; then
+            sudo apt-get update || true
+            sudo apt-get install -y $need
+          else
+            echo "already installed: libpcap-dev libasound2-dev"
+          fi
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
@@ -184,9 +202,17 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Installer (install.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: pure POSIX sh, no Rust toolchain.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Run install.sh test suite
         run: sh tests/install-sh/run-tests.sh
       - name: Shellcheck
@@ -200,9 +226,17 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Deb packaging (build-deb.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: packaging script, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Test build-deb.sh (full + noaudio variants)
         run: bash packaging/deb/test-build-deb.sh
 
@@ -217,9 +251,17 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Homebrew formula (update-formula.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: formula text, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Test update-formula.sh
         run: bash packaging/homebrew/test-update-formula.sh
 
@@ -236,9 +278,17 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Ops scripts (verdict.sh, platform-table.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: shell scripts, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Test ops/tsan/verdict.sh
         run: bash ops/tsan/test-verdict.sh
 
@@ -272,9 +322,17 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Bench scripts (live-capture.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: shell script, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Shellcheck (bash)
         run: shellcheck -s bash bench/live-capture.sh
       - name: Self-test (no root, no netns, no capture device)
@@ -310,6 +368,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
           # The suite includes site_advertises_only_a_released_version, which
           # asks git whether published_version has a matching tag. actions/
           # checkout fetches NO tags by default, so that gate saw zero and
@@ -333,7 +395,21 @@ jobs:
         # `|| true`: don't let a flaky preconfigured third-party apt repo
         # (e.g. packages.microsoft.com 403s) fail the job; the packages we
         # need are in the main Ubuntu archives, which still refresh.
-        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+        # Skip when already present. These jobs run on a self-hosted runner
+        # with SEVERAL runner instances on one box, and apt takes a
+        # MACHINE-WIDE lock -- two concurrent jobs racing here fail with
+        # 'Could not get lock /var/lib/dpkg/lock-frontend'. That is exactly
+        # what broke a dependabot PR once the extra runners were added.
+        # dpkg -s is a read, so it never contends.
+        run: |
+          need=""
+          for p in libpcap-dev libasound2-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
+          if [ -n "$need" ]; then
+            sudo apt-get update || true
+            sudo apt-get install -y $need
+          else
+            echo "already installed: libpcap-dev libasound2-dev"
+          fi
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -383,20 +459,42 @@ jobs:
     # group, which never supersedes. Observed: 0.6 min.
     timeout-minutes: 15
     name: Security audit
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: cargo audit reads Cargo.lock; also gets a FRESH advisory-db each run rather than this box's cache, which went stale and broke every audit on 2026-08-09.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - name: Install libpcap
-        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
+        # Skip when already present. These jobs run on a self-hosted runner
+        # with SEVERAL runner instances on one box, and apt takes a
+        # MACHINE-WIDE lock -- two concurrent jobs racing here fail with
+        # 'Could not get lock /var/lib/dpkg/lock-frontend'. That is exactly
+        # what broke a dependabot PR once the extra runners were added.
+        # dpkg -s is a read, so it never contends.
+        run: |
+          need=""
+          for p in libpcap-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
+          if [ -n "$need" ]; then
+            sudo apt-get update || true
+            sudo apt-get install -y $need
+          else
+            echo "already installed: libpcap-dev"
+          fi
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
       - name: Install cargo-audit
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2
         with:
           tool: cargo-audit
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2
         with:
           tool: cargo-deny
 
@@ -432,9 +530,28 @@ jobs:
     runs-on: [self-hosted, thor-02]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
       - name: Install libpcap
-        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
+        # Skip when already present. These jobs run on a self-hosted runner
+        # with SEVERAL runner instances on one box, and apt takes a
+        # MACHINE-WIDE lock -- two concurrent jobs racing here fail with
+        # 'Could not get lock /var/lib/dpkg/lock-frontend'. That is exactly
+        # what broke a dependabot PR once the extra runners were added.
+        # dpkg -s is a read, so it never contends.
+        run: |
+          need=""
+          for p in libpcap-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
+          if [ -n "$need" ]; then
+            sudo apt-get update || true
+            sudo apt-get install -y $need
+          else
+            echo "already installed: libpcap-dev"
+          fi
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
       - name: Check fuzz targets

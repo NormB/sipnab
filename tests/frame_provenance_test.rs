@@ -227,6 +227,90 @@ fn each_file_of_a_set_numbers_its_own_frames_from_zero() {
     }
 }
 
+/// The PARALLEL reader must give each file's frames that file's own source.
+///
+/// `each_file_of_a_set_numbers_its_own_frames_from_zero` above asserts exactly
+/// this property — and drives `capture::file::capture_files`, the
+/// single-threaded reader. Nothing exercised `run_offline_parallel_file` with a
+/// multi-file set, which is the gap this closes.
+///
+/// It is not a hypothetical gap. `9e12653` had to fix the parallel reader
+/// silently producing NO provenance at all while the single-threaded path
+/// looked fine, and every test passed throughout. The same blind spot would
+/// hide a reader that stamped one source for every packet: pointers would still
+/// resolve, still carry plausible ordinals, and name the wrong file. A pointer
+/// that names the wrong file is worse than no pointer, because it manufactures
+/// confidence — which is the failure this whole subsystem exists to prevent.
+///
+/// Read as: reconstruct a two-file set through the `--cores` path, then require
+/// that the dialogs between them name BOTH files. One source means the reader
+/// collapsed them.
+#[test]
+fn the_parallel_reader_gives_each_file_of_a_set_its_own_source() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
+    let a = dir.join("invite-opus-bye.pcap");
+    let b = dir.join("codec-negotiation.pcap");
+    assert!(a.is_file() && b.is_file(), "both fixtures must exist");
+
+    let cc = sipnab::capture::CaptureConfig::default();
+    let cfg = sipnab::parallel::ParallelConfig {
+        cores: 2,
+        max_streams: 100_000,
+        max_dialogs: 100_000,
+        rotate: false,
+        max_reassembly: 1024,
+        reassembly: Default::default(),
+        parse_limit: Default::default(),
+        portrange: (1, 65535),
+        no_dialog: false,
+        dialog_tracking: Default::default(),
+        no_rtp: false,
+        quiet_bad_parse: false,
+        xcid_headers: Vec::new(),
+    };
+    let r = sipnab::parallel::run_offline_parallel_file(&[a.clone(), b.clone()], &cc, cfg)
+        .expect("the two-file set reconstructs");
+
+    let mut sources: std::collections::BTreeSet<String> = Default::default();
+    let mut dialogs = 0usize;
+    for d in r.dialog_store.iter() {
+        dialogs += 1;
+        if let Some(f) = d.first_frame.as_ref() {
+            sources.insert(f.source.to_string());
+        }
+    }
+
+    // Without this the source assertion could pass vacuously on a run that
+    // reconstructed nothing at all.
+    assert!(
+        dialogs > 0,
+        "the set reconstructed no dialogs, so this test asserted nothing about \
+         provenance — the fixtures or the reader changed, not the property"
+    );
+    assert!(
+        !sources.is_empty(),
+        "{dialogs} dialogs and not one carried a frame pointer: the parallel \
+         path has stopped stamping provenance, which is what 9e12653 fixed"
+    );
+    assert_eq!(
+        sources.len(),
+        2,
+        "a two-file set produced {} distinct source(s) {:?}, expected 2. One \
+         means the reader stamped a single source for every packet, so a \
+         pointer from one file now names the other — plausible, resolvable, and \
+         wrong",
+        sources.len(),
+        sources
+    );
+    for want in [&a, &b] {
+        let want = want.display().to_string();
+        assert!(
+            sources.contains(&want),
+            "no dialog names {want}; sources were {sources:?}"
+        );
+    }
+}
+
 // ── helpers ───────────────────────────────────────────────────────────
 
 /// Read every packet of one capture through the real file reader.
