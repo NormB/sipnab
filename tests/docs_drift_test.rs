@@ -2392,10 +2392,18 @@ fn no_documentation_table_repeats_a_row() {
     // Raised 513 -> 514 by the surface-comparison table in
     // docs/design/i18n.md. Design doc, no mirror, costs one.
     // Raised 514 -> 516 by docs/design/positioning.md, which carries two: the
-    // sngrep/Homer gap comparison and the verified-capability inventory.
-    // Design doc, no mirror, so it costs two rather than four.
+    // gap comparison and the verified-capability inventory. Design doc, no
+    // mirror, so it costs two rather than four.
+    //
+    // LOWERED 516 -> 512 on 2026-08-10, which this gate normally treats as
+    // suspicious and is not here: the tool-comparison tables were REMOVED from
+    // both benchmarks copies (a head-to-head table and a memory table in each,
+    // four in total). sipnab is not positioned against those tools -- see
+    // docs/design/positioning.md -- and the pages now state what sipnab
+    // reconstructs rather than how it ranks. If this count drops again without
+    // a deletion named here, the detection broke.
     assert_eq!(
-        tables, 516,
+        tables, 512,
         "walked {tables} tables, expected 516. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."

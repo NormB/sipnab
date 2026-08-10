@@ -973,7 +973,7 @@ you want and just need the invocation. Every flag used here appears in
 
 ### Triage a capture fast
 
-- `sudo sipnab -d eth0` — watch SIP interactively on an interface (TUI, sngrep-style)
+- `sudo sipnab -d eth0` — watch SIP interactively on an interface (TUI)
 - `sipnab -N -I capture.pcap --problems` — show only problem calls from a pcap. The `--problems` flag is a narrow sweep: retransmits, or a Failed dialog. For the broad diagnostic set (one-way audio, loss/jitter, NAT, asymmetry, late media) use the same-named DSL alias instead: `sipnab -N -I capture.pcap --filter problems`
 - `sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1'` — deep-dive one call: ladder, timing, SDP, RTP quality, diagnosis
 - `sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --markdown > call.md` — the same as a Markdown report for a ticket

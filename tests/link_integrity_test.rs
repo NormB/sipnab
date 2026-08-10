@@ -462,11 +462,20 @@ fn wiki_intra_docs_links_resolve() {
     // correlation-identifier note and mcp.md's strategy table each gained a
     // pointer to docs/design/icid-correlation.md, which is where the argument
     // and its open questions live instead of being restated on either page.
+    // Lowered 314 -> 313 on 2026-08-10 by removing the tool-comparison section
+    // from the benchmarks pages, which carried one authored link.
+    //
+    // The expectation is interpolated rather than typed twice: this assertion
+    // read `seen, 314` under a message that said "expected 312", because a
+    // previous bump moved the number and not the sentence describing it. A
+    // gate whose failure message contradicts its own condition sends the next
+    // reader looking for a discrepancy that is not there.
+    const EXPECTED_WIKI_LINKS: usize = 313;
     assert_eq!(
-        seen, 314,
-        "extractor found {seen} wiki links, expected 312. More is fine — bump \
-         this. FEWER means the regex stopped matching and the anchor checks \
-         above it silently narrowed."
+        seen, EXPECTED_WIKI_LINKS,
+        "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \
+         More is fine — bump this. FEWER means the regex stopped matching and \
+         the anchor checks above it silently narrowed."
     );
     assert!(
         problems.is_empty(),

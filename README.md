@@ -138,8 +138,8 @@ sudo sipnab -N -d eth0 --kill-scanner --alert syslog
 
 ## TUI
 
-The default interactive mode provides an sngrep-compatible terminal interface
-with additional features:
+The default interactive mode is a full terminal interface for reading SIP and
+RTP as they happen:
 
 - **Call list** with sortable columns, multi-select, inline search, filter DSL
 - **Call flow ladder** with color-coded arrows, SDP codec display, PDD annotation

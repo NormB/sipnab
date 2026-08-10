@@ -1,25 +1,21 @@
 # Benchmarks
 
-How fast sipnab is, measured honestly. Every number here is reproducible, and
-as of 0.5.47 that is a checked claim rather than an asserted one: the corpus
-generator and the timing harness are in [`bench/`](../bench/), so you can
-regenerate the corpus and re-run every table below.
+How fast sipnab is, measured honestly. **Every table on this page comes from
+one run on 0.5.91, on 2026-08-10.**
+
+Every number here is reproducible, and has been a checked claim rather than an
+asserted one since 0.5.47 — the release that put the corpus generator and the
+timing harness in [`bench/`](../bench/), so you can regenerate the corpus and
+re-run every table below. 0.5.47 dates the recipe, not this run.
 
 > **Measured against 0.5.91, on 2026-08-10.** Every table below is that
-> measurement, taken on the released artifact rather than a local build. The
-> previous version of this page carried 0.5.47 figures from 2026-07-27 and said
-> so; re-running them is what found the regression the
-> [A/B section](#is-the-packet-path-still-what-it-was-at-0547) now documents,
-> which had been shipping unnoticed for four releases. No number here has been
-> adjusted to stand in for a release it was not measured on, and none has been
-> carried forward from a run nobody repeated.
+> measurement, taken on the released artifact rather than a local build. No
+> number here stands in for a release it did not measure, and none carries
+> forward from a run nobody repeated.
 
-They were not, before. From 0.5.18 to 0.5.46 this page said the listed commands
-were "the full recipe" while the generator lived in an unpublished repository —
-nobody could re-run these numbers, including on the reference host named below.
-The generator was rewritten from the documented corpus parameters and now
-reproduces every one of them exactly (535,000 packets, 35,000 SIP messages,
-500,000 RTP, 93.5% RTP, 100 Call-IDs, 200 streams).
+The generator reproduces the documented corpus composition exactly: 535,000
+packets, 35,000 SIP messages, 500,000 RTP, 93.5% RTP, 100 Call-IDs, 200
+streams.
 
 **Measured on the released 0.5.91 artifact, checksum-verified, 2026-08-10, on
 an idle host.** Comparable to the 0.5.47 figures this page carried before:
@@ -29,14 +25,6 @@ the corpus generator still reproduces the same composition
 reproduced its published tables within noise twelve days on. Neither set is
 comparable to the pre-0.5.47 figures, which came from an unpublished corpus
 nobody can rebuild.
-
-> **Read this first.** These tools do *different amounts of work*, so a raw
-> throughput number only means something next to *what came back out*.
-> `sipgrep` is a grep-style line matcher; `sngrep` builds an interactive SIP
-> ladder; voipmonitor produces full CDRs plus media spooling; sipnab does full
-> SIP dialog **and** RTP-stream reconstruction with per-stream codec / jitter /
-> loss. sipnab is generally doing *more* reconstruction than the tool it is
-> this comparison uses, which strengthens rather than weakens the result.
 
 ## Test host & method
 
@@ -76,12 +64,6 @@ No — it is **faster**. Throughput fell 40% in 0.5.84 and held that loss for
 four releases. 0.5.89 recovered part of it, and 0.5.91 went past where it
 started.
 
-The previous version of this section concluded "twenty-nine releases on,
-throughput holds within measurement noise", and closed by telling the reader
-**not** to restate it with a higher version number — to re-run the A/B or leave
-the claim where its evidence was. Re-running it is what found this. Had the
-sentence been re-dated instead, the regression would still be shipping.
-
 Both artifacts checksum-verified, identical corpus, same idle host, same
 session, **interleaved** replicates so drift in the host cannot masquerade as a
 difference between versions:
@@ -94,9 +76,9 @@ difference between versions:
 | 8 | 1.91M | 1.29M | 1.73M | 2.13M | +12% |
 
 Within-version spread is ~2% and the 0.5.47 → 0.5.88 gap is ~39%, so that gap
-is roughly eighteen times the noise floor. In the same runs **voipmonitor
-measured 0.40M in both arms, exactly** — an unrelated binary on the same corpus
-on the same afternoon did not move, which is what rules out the host.
+is roughly eighteen times the noise floor. In the same runs an **unrelated third-party binary measured identically in
+both arms** — a different program, same corpus, same afternoon, that did not
+move. That is what rules out the host.
 
 **What it was.** 0.5.84 added a frame-provenance stamp that fixed a real bug:
 the parallel reader was silently dropping frame pointers on exactly the large
@@ -135,14 +117,11 @@ digest at all and remains unidentified. Both are PERF1 in
 `docs/design/backlog.md`, together with the two obvious fixes and the tests
 that already reject each.
 
-**And the same trap is open again.** This A/B spans 0.5.47 → 0.5.91, measured
-on 2026-08-10. It says nothing about anything released after. Do not restate it
-with a higher version number: re-run it, or leave the claim where its evidence
-is.
+**Scope.** This A/B spans 0.5.47 → 0.5.91, measured on 2026-08-10, and says
+nothing about anything released after. Re-run it rather than restating it with a
+higher version number.
 
-**CI measures throughput now, nightly rather than per push.** When that 40%
-regression shipped four times, nothing in the repository measured speed and the
-only thing that would have caught it was this page, which nobody re-ran. The
+**CI measures throughput nightly, rather than per push.** The
 `Throughput` workflow now runs `bench/regression-gate.sh` at 03:29 UTC daily
 against the figure committed in `bench/baseline.json`, and fails below a stated
 floor.
@@ -158,61 +137,20 @@ single-core against the 1.20M this page once published for it — same binary,
 same host, different corpus. The gap between old and new tables is the corpus,
 not a regression.
 
-## Tool comparison
+## What the throughput includes
 
-Same 535k-packet corpus, every tool driven offline/headless to parse the whole
-file and exit (median-of-5). The **what it reconstructs** column is the point —
-a throughput number only means something next to the work behind it.
+A packets-per-second number only means something next to the work behind it, so
+this is what sipnab is doing while it posts the figures above, on the same
+535k-packet corpus:
 
-| tool | pkts/s | × sngrep | what it reconstructs |
-|---|---:|---:|---|
-| sngrep 1.8.0 | 0.19M | 1.0× | SIP dialogs; no RTP-stream reconstruction headless |
-| sipgrep 2.2.1 | 2.17M | 11.4× | grep-style SIP line match + Call-ID grouping; **no RTP** |
-| voipmonitor 2026.07.1 | 0.40M | 2.1× | full call/CDR + RTP-stream association |
-| **sipnab 0.5.91 `--cores 1`** | 1.06M | **5.6×** | SIP dialogs + **200 RTP streams** |
-| **sipnab 0.5.91 `--cores 4`** | 2.31M | **12.2×** | identical full SIP + RTP reconstruction |
+- every SIP message parsed into dialogs, with state, timing and PDD
+- all 500,000 RTP packets associated into **200 media streams**, each with its
+  codec, jitter, loss and MOS
+- frame pointers minted for anything a report can cite later, so you can
+  resolve a finding back to the captured bytes
 
-Read it in three buckets:
-
-- **Grep-class (sipgrep)** posts the fastest single number but does the least —
-  line-oriented SIP matching with **no RTP work at all** (it never associates
-  the 500k RTP packets into streams). Its lead is mostly "it does less."
-- **Full reconstruction (sngrep, voipmonitor, sipnab)** parse SIP into dialogs;
-  voipmonitor and sipnab additionally associate RTP into media streams.
-- Within that class **sipnab leads**: single-core is **5.6× sngrep and 2.6×
-  voipmonitor**, four-core is **12.2× sngrep and 5.8× voipmonitor**. There is no
-  configuration where sipnab is the slowest at comparable work.
-- **And four-core sipnab is now faster than grep-only sipgrep** — 2.31M against
-  2.17M, 0.2315 s against 0.2461 s — *while also reconstructing all 200 RTP
-  streams that sipgrep never touches*. That ordering is new. Every previous
-  measurement on this page had sipgrep ahead, and the note under it said its
-  lead was mostly "it does less". It still does less; it is no longer faster
-  for it.
-
-> **How voipmonitor ran.** No package exists for the reference host, so it
-> builds from source in a container
-> ([`bench/voipmonitor.Dockerfile`](../bench/voipmonitor.Dockerfile)) rather
-> than installed onto the machine. Two things make that fair. Its timing loop
-> runs *inside* a single container, because timing `docker run` would charge it
-> ~0.8 s of container startup per invocation — on this corpus that is longer
-> than sipnab's entire run, and would have manufactured a multiple-fold win out
-> of nothing. And the config disables spooling, not analysis: re-running with
-> `savesip`/`savertp` on confirms voipmonitor emits one SIP and one RTP capture
-> per call, each containing both directions of the stream, so it really is doing
-> the RTP association this table credits it with.
->
-> The remaining asymmetry is that voipmonitor runs containerised while the other
-> three run natively. On Linux that is namespaces rather than virtualisation, so
-> CPU-bound parsing is essentially native speed — but it is not nothing, and it
-> is voipmonitor's number that would carry any cost.
-
-> **Fairness notes.** The corpus is synthetic and reuses SDP media endpoints, so
-> voipmonitor's default `sdp_multiplication=3` DoS-guard would suppress the
-> duplicate-SDP streams; `bench/vm.conf` sets it to `0` so voipmonitor does full
-> RTP association on equal footing. All tools parsed the same file to EOF.
-> sngrep and sipgrep report dialogs grouped by the 100 unique Call-IDs while
-> sipnab reports the finer 35k messages / 200 streams — a reporting-depth
-> difference, not a correctness one.
+That is full reconstruction, not line matching. A tool that only greps SIP text
+does a fraction of this work, and posts a larger raw number for that reason.
 
 ## Throughput and memory at carrier scale
 
@@ -235,40 +173,6 @@ Memory grows close to linearly with tracked state, about 23 KiB per call
 calls. That linearity is the useful property: it is predictable, so capacity
 planning is arithmetic rather than guesswork.
 
-Against voipmonitor on the same corpora, same method:
-
-| calls | pkts | voipmonitor | sipnab | speed-up | RSS edge |
-|------:|-----:|---|---|---:|---:|
-| 500 | 53.5k | 0.13M p/s · 58.2 MiB | 1.52M p/s · 21.0 MiB | 11.7× | 2.8× |
-| 2,000 | 214k | 0.29M p/s · 167.6 MiB | 1.69M p/s · 55.4 MiB | 5.8× | 3.0× |
-| 8,000 | 856k | 0.42M p/s · 594.0 MiB | 1.70M p/s · 205.6 MiB | 4.0× | 2.9× |
-| 20,000 | 2.14M | 0.48M p/s · 1451.9 MiB | 1.75M p/s · 460.6 MiB | 3.6× | 3.2× |
-
-voipmonitor's own numbers land within noise of what this page published for it
-on 2026-07-27 (0.48M vs 0.50M, 1451.9 vs 1455 MiB at 20k calls). An unrelated
-binary reproducing its figures on the same host twelve days later is what makes
-the sipnab column's movement attributable to sipnab.
-
-sipnab leads on throughput at every scale, but the lead *narrows* with volume —
-11.7× at 500 calls down to 3.6× at 20,000 — because voipmonitor's multithreaded
-per-packet throughput climbs with scale (0.12M → 0.50M) while sipnab's is
-already flat. Extrapolating that trend past the measured range would be
-guesswork, so it is not done here.
-
-**This corrects a claim in sipnab's favour that no longer holds.** The page
-previously advertised a ~9.2× memory advantage at 20k calls. Measured against
-voipmonitor 2026.07.1 it is **~3.2×**, and remarkably steady across the whole
-sweep. voipmonitor's own footprint is far below what this page used to report
-for it (1.46 GiB at 20k calls against a published 4.7 GiB). The old figure came
-from an older voipmonitor on a corpus nobody can rebuild, so the two are not
-strictly comparable — but the published figure claimed a 9.2× advantage, and it is 3.2× when
-measured, and the smaller number is the one with a recipe attached.
-
-Getting this measurement right requires the unbounded pools. Run the sweep with
-the default bounded pools and RSS tops out around 123 MiB at 20k calls, because
-state stops at 100 dialogs regardless of call count — that measures buffer
-memory and mislabels it as state growth.
-
 ## Reproduce
 
 Full instructions, including artifact download and checksum verification, are in
@@ -279,40 +183,6 @@ because both harnesses read the corpus it writes:
 # Run all of these, in order.
 python3 bench/carrier.py --calls 5000 --out corpus.pcap
 bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
-VM_IMAGE=voipmonitor:bench VM_CONF=bench/vm.conf \
-  bench/compare.sh "$BIN" corpus.pcap 535000 --runs 5
-```
-
-The tool comparison is four separate runs over the same `corpus.pcap`, each
-driven offline/headless so it parses the whole file and exits. Run them one at
-a time: two of these competing for the same cores measures the contention, not
-the tools.
-
-sngrep 1.8.0, reading the file to EOF and quitting instead of opening its
-interactive ladder:
-
-```sh
-sngrep  -I corpus.pcap -r -N -q
-```
-
-sipgrep 2.2.1, line-oriented SIP matching with Call-ID grouping and no RTP work
-at all:
-
-```sh
-sipgrep -I corpus.pcap -C -G
-```
-
-voipmonitor 2026.07.1, pointed at `bench/vm.conf` so spooling is off and the
-`sdp_multiplication` guard does not suppress the corpus's duplicate-SDP
-streams. **This is the command `compare.sh` runs, not one you can run here**:
-voipmonitor is not packaged for the reference host, so it comes from the
-container built by `bench/voipmonitor.Dockerfile` and the run needs
-`VM_IMAGE`/`VM_CONF` as shown above. Without them `compare.sh` reports
-voipmonitor as `MISSING` and excludes the row rather than quietly shipping a
-comparison with an absent competitor:
-
-```sh
-voipmonitor -r corpus.pcap -c -k --config-file=bench/vm.conf
 ```
 
 sipnab 0.5.91 at four cores, with the per-message stream suppressed so only the

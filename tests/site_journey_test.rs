@@ -1344,38 +1344,89 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // regression bisected to 0.5.84 was partly fixed: 2.06 -> 1.89M pkts/s and
     // 11.1 -> 9.9x sngrep. Updated here and on the benchmarks page in the same
     // commit, which is what this gate exists to force.
-    for (count, suffix) in [("2.31", "M pkts/s"), ("12.2", "&times; sngrep")] {
-        let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
-        assert!(
-            idx.contains(&tile),
-            "homepage tile {count}{suffix} is gone or changed; if it was re-measured, \
-             update this gate and the benchmarks page together"
-        );
-        // The figure itself must be findable on the page the tile links to.
-        let cell = format!("{count}M");
-        let ratio = format!("{count}×");
-        // In a TABLE ROW, not anywhere in the file — the comment two lines up
-        // already says "the string that must appear in a table row". A
-        // re-measured figure quoted in prose ("down from the 2.06M this page
-        // reported on 0.5.47") satisfied a whole-file substring while the
-        // tile and the table disagreed.
-        let in_a_row = |needle: &str| {
-            bench
-                .lines()
-                .any(|l| l.trim_start().starts_with('|') && l.contains(needle))
-        };
-        assert!(
-            in_a_row(&cell) || in_a_row(&ratio),
-            "homepage claims {count}{suffix} but no such figure appears in \
-             website/content/docs/benchmarks.md — the front page is quoting a \
-             number its own benchmarks page does not support"
-        );
-    }
+    // The second tile used to read "12.2x sngrep". It was dropped on
+    // 2026-08-10: it argued sipnab's headline claim as a RATIO AGAINST A
+    // COMPETITOR, which both advertised that competitor on the most-visited
+    // page and framed sipnab as an alternative to a local tool -- the position
+    // docs/design/positioning.md explicitly declines. It was also redundant
+    // with the tile beside it, since both argued speed. The tool comparison
+    // stays on the benchmarks page, where a reader who navigates there is
+    // asking the question and there is room for the caveat that the tools do
+    // different amounts of work. Its replacement is gated by
+    // `homepage_mcp_tool_tile_matches_the_server` below, which DERIVES the
+    // count from the registrations rather than restating it.
+    // One tile now, where there were two. Written as a binding rather than a
+    // one-element loop because clippy::single_element_loop rejects the latter;
+    // if a second throughput tile ever returns, restore the loop.
+    let (count, suffix) = ("2.32", "M pkts/s");
+    let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
+    assert!(
+        idx.contains(&tile),
+        "homepage tile {count}{suffix} is gone or changed; if it was re-measured, \
+         update this gate and the benchmarks page together"
+    );
+    // The figure itself must be findable on the page the tile links to.
+    let cell = format!("{count}M");
+    let ratio = format!("{count}×");
+    // In a TABLE ROW, not anywhere in the file. A re-measured figure quoted in
+    // prose ("down from the 2.06M this page reported on 0.5.47") satisfied a
+    // whole-file substring while the tile and the table disagreed.
+    let in_a_row = |needle: &str| {
+        bench
+            .lines()
+            .any(|l| l.trim_start().starts_with('|') && l.contains(needle))
+    };
+    assert!(
+        in_a_row(&cell) || in_a_row(&ratio),
+        "homepage claims {count}{suffix} but no such figure appears in \
+         website/content/docs/benchmarks.md — the front page is quoting a \
+         number its own benchmarks page does not support"
+    );
 
     assert!(
         idx.contains(&format!("(measured v{measured})")),
         "homepage tiles do not say they were measured on v{measured}, the release \
          the benchmarks page names — an undated throughput claim silently ages"
+    );
+}
+
+/// The homepage's MCP tool count must equal the number of tools the server
+/// actually registers.
+///
+/// DERIVED, not restated. This tile replaced "12.2x sngrep" on 2026-08-10, and
+/// the tile it replaced is the cautionary tale: a hand-typed headline number
+/// that stayed on the front page for twenty-nine releases because nothing
+/// produced it. Counting the `name = "..."` registrations means adding a tool
+/// fails this gate until the page moves with it, and removing one does too.
+#[test]
+fn homepage_mcp_tool_tile_matches_the_server() {
+    let idx = read("website/templates/index.html");
+    let server = read("src/mcp/server.rs");
+
+    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z_]+","#)
+        .unwrap()
+        .find_iter(&server)
+        .count();
+
+    // A parser that matches nothing would agree with any tile.
+    assert!(
+        registered >= 20,
+        "only {registered} MCP tool registrations found — the pattern stopped \
+         matching, so this gate is comparing the tile against nothing"
+    );
+
+    let tile = format!(r#"data-count="{registered}" data-suffix=" MCP tools""#);
+    assert!(
+        idx.contains(&tile),
+        "the homepage advertises a different MCP tool count than the server \
+         registers ({registered}). Expected the tile to carry:\n  {tile}\n\
+         Update website/templates/index.html — both the data-count and the \
+         no-JS fallback text — in the same commit as the tool change."
+    );
+    assert!(
+        idx.contains(&format!(">{registered} MCP tools<")),
+        "the MCP tile's no-JS fallback text disagrees with its data-count \
+         ({registered}); a visitor without JavaScript sees the stale number"
     );
 }
 

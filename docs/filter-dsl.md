@@ -43,7 +43,7 @@ All 30 addressable fields, organized by type.
 | `method` | SIP request method | `"INVITE"`, `"REGISTER"`, `"BYE"` |
 | `ua` | User-Agent header (first non-empty across dialog messages) | `"Olle"`, `"friendly-scanner"` |
 | `call_id` | SIP Call-ID header | `"abc123@host"` |
-| `payload` | Raw message content — matches when ANY message in the dialog contains/matches the value (sngrep-style payload grep) | `"X-Custom-Header"`, `"sipsak"` |
+| `payload` | Raw message content — matches when ANY message in the dialog contains/matches the value (payload grep) | `"X-Custom-Header"`, `"sipsak"` |
 | `src.ip` | Source IP address (first message) | `"192.0.2.1"` |
 | `dst.ip` | Destination IP address (first message) | `"192.0.2.2"` |
 | `state` | Dialog state machine value | `"Trying"`, `"InCall"`, `"Failed"` |
