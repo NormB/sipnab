@@ -70,6 +70,7 @@ PAGES: dict[str, str] = {
     "internals/build-ci-release.md": "Internals-Build-CI-Release",
     "internals/domain-primer.md": "Internals-Domain-Primer",
     "internals/threading.md": "Internals-Threading",
+    "internals/profiling.md": "Internals-Profiling",
     "internals/tui-testing.md": "Internals-TUI-Testing",
     "internals/zero-copy-payloads.md": "Internals-Zero-Copy-Payloads",
 }
@@ -97,6 +98,7 @@ GROUPS: list[tuple[str, list[str]]] = [
                                  "internals/testing.md",
                                  "internals/walkthroughs.md",
                                  "internals/build-ci-release.md",
+                                 "internals/profiling.md",
                                  "internals/domain-primer.md", "library.md",
                                  "benchmarks.md", "fault-model.md",
                                  "architecture.md",
