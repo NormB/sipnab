@@ -103,6 +103,33 @@ const HEP2_MIN_HEADER: usize = 16;
 ///
 /// A `Packet` whose `data` is the HEP payload and whose `pre_parsed`
 /// carries the HEP-asserted addressing.
+/// Identify the SENDER of a HEP packet — the node whose traffic this is —
+/// rather than the listener that received it.
+///
+/// The listener used to record its own bind address, so a collector fed by an
+/// SBC and two PBXes labelled every dialog `hep:0.0.0.0:9060`. Every node
+/// collapsed into one identity, and "which node did this leg come from" had no
+/// answer even though the answer arrived in the packet: HEP chunk 0x000c
+/// carries the sender's capture-agent id (`--hep-id`), and the datagram's peer
+/// address says where it came from. Both were parsed and discarded.
+///
+/// The id alone is not enough — it defaults to 1, so an estate that never sets
+/// it would collapse again — and the address alone is not enough either, since
+/// two sipnab instances can share a host. Both, so neither collision hides a
+/// node.
+pub(crate) fn hep_source_label(capture_id: Option<u32>, peer: IpAddr) -> String {
+    match capture_id {
+        Some(id) => format!("{id}@{peer}"),
+        None => peer.to_string(),
+    }
+}
+
+/// Turn a parsed HEP packet into a `Packet` the rest of the pipeline accepts.
+///
+/// The inner addresses and ports come from the HEP chunks rather than an IP
+/// header walk, and `source` names where the frame came from — see
+/// [`hep_source_label`], which is what makes a multi-node fan-in
+/// distinguishable.
 fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
     Packet::with_pre_parsed(
         hep.timestamp,
@@ -1546,7 +1573,9 @@ pub fn capture_hep(
         // Convert to a Packet that the rest of the pipeline can process.
         // The HEP chunks (src/dst addr+port, IP protocol) flow into
         // PreParsed so the parser short-circuits the IP-header walk.
-        let packet = hep_to_packet(hep, bind_addr);
+        // Provenance is the SENDER, not this listener — see hep_source_label.
+        let source = hep_source_label(hep.capture_id, peer.ip());
+        let packet = hep_to_packet(hep, &source);
 
         if tx.send(packet).is_err() {
             tracing::debug!("Receiver dropped, stopping HEP listener");
@@ -2113,6 +2142,55 @@ mod tests {
             pkt.protocol,
             HepProtocol::Sip,
             "SIP must stay protocol type 1"
+        );
+    }
+
+    /// Two nodes feeding one collector must not collapse into one identity.
+    ///
+    /// The listener recorded `hep:{bind_addr}` — the address IT listens on —
+    /// so every sender in a fan-in produced the same provenance string. A
+    /// dialog from the SBC and a dialog from the PBX were indistinguishable by
+    /// origin, which is precisely the question a multi-node collector exists to
+    /// answer: "which node did this leg come from, and is any node silent?"
+    ///
+    /// `--hep-id` already exists to distinguish an agent, and the receiver
+    /// parsed it (chunk 0x000c) and threw it away.
+    #[test]
+    fn two_hep_senders_get_distinct_provenance() {
+        let a = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
+        let b = hep_source_label(Some(9), "192.0.2.11".parse().unwrap());
+        assert_ne!(a, b, "two senders collapsed to one source label");
+
+        // Same box, different agents (two sipnab instances on one host) must
+        // still separate — that is what the capture-agent id is for.
+        let c = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
+        let d = hep_source_label(Some(8), "192.0.2.10".parse().unwrap());
+        assert_ne!(c, d, "same host, different --hep-id collapsed together");
+
+        // A sender that sets no id is still identified by where it came from,
+        // rather than by the listener it happened to reach.
+        let e = hep_source_label(None, "192.0.2.10".parse().unwrap());
+        let f = hep_source_label(None, "192.0.2.11".parse().unwrap());
+        assert_ne!(e, f, "id-less senders collapsed to one source label");
+        assert!(
+            e.contains("192.0.2.10"),
+            "an id-less sender must still name its address, got {e:?}"
+        );
+    }
+
+    /// The label must not name the listener: that is the bug, and a label that
+    /// merely ADDED the sender while keeping the bind address would still make
+    /// every node share a prefix that reads like the origin.
+    #[test]
+    fn hep_provenance_names_the_sender_not_the_listener() {
+        let label = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
+        assert!(
+            !label.contains("0.0.0.0") && !label.contains("9060"),
+            "the source label leaks the listener bind address: {label:?}"
+        );
+        assert!(
+            label.contains('7'),
+            "the capture-agent id is missing: {label:?}"
         );
     }
 
