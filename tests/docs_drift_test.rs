@@ -2386,9 +2386,12 @@ fn no_documentation_table_repeats_a_row() {
     // (docs/design/packet-path-allocation.md). Design doc, no mirror, costs one.
     // Raised 511 -> 512 by P2's measurement table in
     // docs/design/packet-path-allocation.md. Design doc, no mirror, costs one.
+    // Raised 512 -> 513 by the 0.5.91 changelog's throughput table.
+    // CHANGELOG.md is walked by this gate and has no site mirror, so it
+    // costs one.
     assert_eq!(
-        tables, 512,
-        "walked {tables} tables, expected 512. More is fine — bump this. FEWER \
+        tables, 513,
+        "walked {tables} tables, expected 513. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

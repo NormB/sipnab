@@ -8,6 +8,87 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.91] - 2026-08-10
+
+Most of the 0.5.84 throughput regression, recovered.
+
+### Changed
+
+- **`--cores` reconstruction is ~10% faster at four cores and ~11% faster at
+  two**, measured interleaved against 0.5.90 on the reference host:
+
+  | cores | 0.5.90 | 0.5.91 |
+  |------:|-------:|-------:|
+  | 2 | 1.60–1.65M | **1.72–1.83M** |
+  | 4 | 1.85–1.90M | **2.04–2.08M** |
+
+  `parse_packet` built a `FrameRef` for every packet. A `FrameRef` owns an
+  `Arc<str>`, so that is one atomic increment per packet and a decrement when
+  it drops — for a pointer that roughly **93% of frames never keep**. A
+  profiler put ~40% of the packet path in outlined atomics with this as the
+  second-largest driver; the bisect that preceded it had blamed hashing, and
+  was wrong.
+
+  `ParsedPacket` now carries a `Copy` locator — the same `FrameOrigin` plus an
+  interned source — and the two sites that actually retain a pointer build the
+  owned `FrameRef` themselves. On the benchmark corpus that is ~35,000
+  materialisations instead of 535,000.
+
+  Four cores reaches the ceiling a diagnostic build predicted for removing the
+  provenance stamp **entirely**, so this captures essentially all of the
+  available win at the operating point the tool comparison and the nightly gate
+  use.
+
+  Nothing about provenance changes. `frame_ref()` is untouched and still a pure
+  accessor; `frame_digest` keeps its published FNV-1a vectors, so every stored
+  pointer still verifies; and the parse-boundary test now asserts the locator
+  round-trips to the *identical* `FrameRef` the old path built.
+
+### Added
+
+- **A multi-file provenance gate for the parallel reader.** The existing gate
+  covered only the single-threaded path, so a reader that stamped one source
+  for every packet would have passed every test while pointers from the second
+  file silently named the first. Written and mutation-proved *before* the
+  change above, since that is the property it could plausibly break.
+
+### Fixed
+
+- **`actions/checkout` left `GITHUB_TOKEN` in `.git/config`** on 26 of 27
+  steps, where any later step or third-party action could read it. All 27 now
+  set `persist-credentials: false`. Nothing depended on the persisted
+  credential — the two workflows that write pass the token explicitly.
+
+- **`font-src` omitted `'self'`**, overriding `default-src` rather than adding
+  to it, so a self-hosted font would have been blocked. Fixed in all three
+  places the policy is defined.
+
+- **Concurrent CI jobs raced for `apt`'s machine-wide lock**, failing with
+  `Could not get lock /var/lib/dpkg/lock-frontend` before compiling anything.
+  Steps now check `dpkg -s` first.
+
+### Dependencies
+
+- **`rmcp` 3.0.1 → 3.1.1**, which carries the upstream fix for
+  [SEP-2260](https://github.com/modelcontextprotocol/rust-sdk): an MCP *client*
+  accepted restricted server-to-client requests (`sampling/createMessage`,
+  `roots/list`, `elicitation/create`) without confirming they belonged to the
+  originating request context, so a malicious server could drive client-side
+  capabilities as a confused deputy. The fix rejects unassociated restricted
+  requests with `-32602`.
+
+  **sipnab was never exposed to it.** `rmcp` is declared
+  `default-features = false` with only the `server` feature, and there is no
+  client handler in the tree — sipnab is the server in every deployment, so it
+  never occupies the vulnerable role. The bump is taken because running a
+  version with a known advisory invites the reachability argument on every
+  scan, not because anything here was reachable.
+
+  Also `base64` 0.23.0 → 0.23.1 and `jsonschema` in the same group. `rmcp-macros`
+  pulls in `darling`, `darling_core` and `darling_macro` as new transitive
+  dependencies; `THIRD-PARTY-NOTICES.md` records them, since that file is
+  generated from the dependency graph rather than maintained by hand.
+
 ## [0.5.90] - 2026-08-09
 
 Profiling, and what it overturned.
