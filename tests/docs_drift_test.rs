@@ -2384,9 +2384,11 @@ fn no_documentation_table_repeats_a_row() {
     // so it costs one.
     // Raised 510 -> 511 by the consumer table in P1's blocker analysis
     // (docs/design/packet-path-allocation.md). Design doc, no mirror, costs one.
+    // Raised 511 -> 512 by P2's measurement table in
+    // docs/design/packet-path-allocation.md. Design doc, no mirror, costs one.
     assert_eq!(
-        tables, 511,
-        "walked {tables} tables, expected 511. More is fine — bump this. FEWER \
+        tables, 512,
+        "walked {tables} tables, expected 512. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
