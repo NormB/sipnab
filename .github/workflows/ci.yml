@@ -184,7 +184,10 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Installer (install.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: pure POSIX sh, no Rust toolchain.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run install.sh test suite
@@ -200,7 +203,10 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Deb packaging (build-deb.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: packaging script, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test build-deb.sh (full + noaudio variants)
@@ -217,7 +223,10 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Homebrew formula (update-formula.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: formula text, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test update-formula.sh
@@ -236,7 +245,10 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Ops scripts (verdict.sh, platform-table.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: shell scripts, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test ops/tsan/verdict.sh
@@ -272,7 +284,10 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Bench scripts (live-capture.sh)
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: shell script, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Shellcheck (bash)
@@ -383,7 +398,10 @@ jobs:
     # group, which never supersedes. Observed: 0.6 min.
     timeout-minutes: 15
     name: Security audit
-    runs-on: [self-hosted, thor-02]
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: cargo audit reads Cargo.lock; also gets a FRESH advisory-db each run rather than this box's cache, which went stale and broke every audit on 2026-08-09.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install libpcap
