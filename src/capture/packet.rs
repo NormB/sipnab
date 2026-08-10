@@ -289,6 +289,41 @@ impl Packet {
         })
     }
 
+    /// Like [`Packet::with_source`], but takes bytes that already exist.
+    ///
+    /// The offline reader cuts every frame from a shared block, so its bytes
+    /// arrive as a `Bytes` view of one allocation rather than as a freshly
+    /// allocated `Vec`. Going through `with_source` would mean handing it an
+    /// empty `Vec` and assigning `data` afterwards, which sidesteps the
+    /// `caplen == data.len()` check that constructor exists to enforce — and
+    /// that check earned its keep here, catching exactly that mistake.
+    #[must_use]
+    pub fn from_bytes(
+        timestamp: DateTime<Utc>,
+        data: bytes::Bytes,
+        caplen: usize,
+        origlen: usize,
+        source: Option<Arc<str>>,
+        link_type: i32,
+    ) -> Self {
+        debug_assert_eq!(
+            caplen,
+            data.len(),
+            "Packet::from_bytes: caplen ({caplen}) must equal data.len() ({})",
+            data.len(),
+        );
+        Self {
+            timestamp,
+            data,
+            caplen,
+            origlen,
+            interface: source,
+            link_type,
+            pre_parsed: None,
+            origin: None,
+        }
+    }
+
     /// Create a new packet from raw capture data starting at the link layer.
     ///
     /// Pure constructor: converts `data` into refcounted `bytes::Bytes` and

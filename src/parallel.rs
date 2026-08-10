@@ -608,6 +608,23 @@ fn shard_opened(
     // packet provenance from every surface.
     let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
     let mut ordinal: u64 = 0;
+
+    // Frames are cut from a shared block rather than allocated one at a time.
+    //
+    // `pkt.data.to_vec()` was one allocation per packet on the reader, freed
+    // later by whichever WORKER finished with it. mimalloc's cross-thread free
+    // path is atomic, so a 535k-packet capture paid it 535k times -- the
+    // largest single driver in the profile. Slicing from a block makes the
+    // allocation and its free amortise across every frame that shares it: at
+    // 64 KiB and ~240-byte frames that is ~270 packets per allocation, so the
+    // cross-thread traffic falls by the same factor.
+    //
+    // 64 KiB deliberately, not larger. A block stays alive until the LAST
+    // slice cut from it drops, so an oversized block keeps a whole span of
+    // memory resident because one packet in it is still being processed.
+    // Bigger blocks buy fewer allocations and cost bounded-ness.
+    const BLOCK: usize = 64 * 1024;
+    let mut block = bytes::BytesMut::with_capacity(BLOCK);
     loop {
         if let Some(max) = capture_config.count
             && progress.count >= max
@@ -617,9 +634,24 @@ fn shard_opened(
         }
         match cap.next_packet() {
             Ok(pkt) => {
-                let mut packet = Packet::with_source(
+                // NOT `n`: that name is already the SHARD COUNT in this
+                // function, and shadowing it fed the frame length to
+                // `shard_for` -- a 236-byte frame indexed shard 236 of 2.
+                let frame_len = pkt.data.len();
+                // A frame larger than the block gets its own exact-sized one:
+                // `split_to` below must not outrun the capacity, and a jumbo
+                // frame should not force every later frame into a bigger block.
+                if block.capacity() < frame_len {
+                    block = bytes::BytesMut::with_capacity(BLOCK.max(frame_len));
+                }
+                block.extend_from_slice(pkt.data);
+                // `split_to` hands back the bytes just written and leaves the
+                // remaining capacity in `block`, both views of ONE allocation.
+                let data = block.split_to(frame_len).freeze();
+
+                let mut packet = Packet::from_bytes(
                     pcap_ts_to_chrono(pkt.header.ts),
-                    pkt.data.to_vec(),
+                    data,
                     pkt.header.caplen as usize,
                     pkt.header.len as usize,
                     Some(std::sync::Arc::clone(&source)),
