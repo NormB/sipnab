@@ -95,7 +95,11 @@ pub struct ParsedPacket {
     /// `None` for synthetic packets, which is most of the ones built by hand
     /// in tests. That is the honest value: a packet nobody read from anything
     /// has no provenance, and a downstream guess would be worse than the gap.
-    pub frame: Option<crate::capture::packet::FrameRef>,
+    /// Where this frame sat, carried as `Copy` so the parser touches no
+    /// refcount. Materialise it with `FrameLocator::to_frame_ref()` at the
+    /// point a fact actually keeps the pointer — see the type's docs for why
+    /// building one per packet cost ~40% of the packet path in atomics.
+    pub frame: Option<crate::capture::packet::FrameLocator>,
     /// IP fragment identification (IPv4 16-bit `Identification`, or the IPv6
     /// Fragment extension header's 32-bit `Identification`) for reassembly
     /// keying. `None` when the packet is not fragmented.
@@ -2188,7 +2192,7 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
     // down through `parse_inner_ip` and `parse_gre` would be one more thing the
     // next decapsulation path could forget to pass, and a frame that silently
     // loses its pointer is indistinguishable from one that never had one.
-    parsed.frame = packet.frame_ref();
+    parsed.frame = packet.frame_locator();
     Ok(parsed)
 }
 
