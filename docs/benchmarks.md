@@ -150,7 +150,7 @@ floor.
 It is nightly on purpose: the reference host is one self-hosted runner that also
 serves CI, so two jobs on it measure their own contention rather than the tool,
 and a per-push wall-clock gate would be flaky in the direction that gets a gate
-muted. What it will not catch is slow erosion — a drift inside the floor passes.
+muted. It does not catch slow erosion — a drift inside the floor passes.
 That is a deliberate trade, argued in `bench/baseline.json`.
 
 The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measured 1.06M

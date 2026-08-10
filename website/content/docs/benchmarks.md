@@ -122,8 +122,8 @@ regression shipped four times, nothing here measured speed. The `Throughput`
 workflow now runs a regression gate at 03:29 UTC daily against a committed
 baseline and fails below a stated floor. It is nightly on purpose: the reference
 host is one self-hosted runner that also serves CI, so two jobs on it would
-measure their own contention. What it will not catch is slow erosion inside the
-floor — a deliberate trade.
+measure their own contention. It does not catch slow erosion inside the floor —
+a deliberate trade.
 
 The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measures 1.06M
 single-core here against the 1.20M this page published for it — same binary,
