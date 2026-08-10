@@ -276,6 +276,55 @@ and watching `mi_free`, `mi_abandoned_page_try_reclaim` and
 removes work from the same per-packet path, so these are not additive and P2's
 remaining value may be smaller again.
 
+### P2, specified — measured 2026-08-10, and worth MORE after P1
+
+Re-measured on the tree P1 produced, because the two touch the same per-packet
+path and are not additive:
+
+| | P1 (shipped) | P1 + P2 | |
+|---|---|---|---|
+| 2 cores | 1.85-1.88M | **2.23-2.24M** | +20% |
+| 4 cores | 2.05-2.10M | **2.15-2.18M** | +5% |
+
+**The prediction was that P2 would be worth LESS after P1. It is worth more** —
++20% where it was +16%, and +5% at four cores where it was nothing. P1 removed
+the per-packet `Arc` traffic that was masking the allocator, so the allocator's
+share rose; and at four cores P1 lifted the ceiling far enough that allocation
+became the constraint where it previously was not.
+
+For scale: 0.5.47, before the regression, measured 2.02M at four cores. P1+P2
+measures 2.18M. This is not recovery, it is faster than the tool has ever been
+on this corpus.
+
+**The diagnostic is not the implementation.** It bump-allocates every frame
+into a leaked 512 MB arena — no per-packet allocation, no cross-thread free,
+and correct bytes for the workers — but it never reclaims, so a long capture
+exhausts memory. It exists to prove the ceiling.
+
+**What to build.** The cost is not the allocation itself but *where it is
+freed*: the reader calls `pkt.data.to_vec()` and a worker drops it, so
+mimalloc's cross-thread path runs 535,000 times. Make allocation and free
+happen on the same thread:
+
+1. **Recycle buffers back to the reader.** Each worker returns finished buffers
+   through a channel; the reader reuses them instead of allocating. The batched
+   path already sends `Vec<Packet>` over `bounded::<Vec<Packet>>(64)`
+   (`parallel.rs:846`), so a return channel of `Vec<Vec<u8>>` fits the existing
+   shape. The single-packet path (`parallel.rs:411`,
+   `bounded::<Packet>(8192)`) would need the same treatment or to be left
+   alone.
+2. **Bound the pool.** A pool that only grows is the leak again with extra
+   steps. Cap it, and fall back to a plain allocation when empty — under
+   backpressure that is the correct behaviour, not a failure.
+3. **Do not hold buffers past the worker.** `Packet::data` is
+   `bytes::Bytes`; anything that retains a packet beyond its batch pins that
+   buffer, so recycling must happen where the batch is known finished.
+
+**Verify** with `bench/regression-gate.sh` and by re-profiling: `mi_free`,
+`mi_free_try_collect_mt`, `mi_abandoned_page_try_reclaim` and
+`_mi_page_malloc_zero` should all collapse. If they do not, the buffers are
+still crossing threads and the pool is not doing its job.
+
 ### P3 — Confirm with a causal profiler before optimising further
 
 The `--cores` path is one serial reader feeding N workers. A conventional
