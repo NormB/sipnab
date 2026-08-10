@@ -14,13 +14,33 @@ Most of the 0.5.84 throughput regression, recovered.
 
 ### Changed
 
-- **`--cores` reconstruction is ~10% faster at four cores and ~11% faster at
-  two**, measured interleaved against 0.5.90 on the reference host:
+- **`--cores` reconstruction is ~23% faster at four cores**, measured
+  interleaved against 0.5.90 on the reference host:
 
   | cores | 0.5.90 | 0.5.91 |
   |------:|-------:|-------:|
-  | 2 | 1.60–1.65M | **1.72–1.83M** |
-  | 4 | 1.85–1.90M | **2.04–2.08M** |
+  | 4 | 1.84–1.90M | **2.28–2.29M** |
+
+  For scale: 0.5.47, measured before the 0.5.84 regression, reached 2.02M at
+  four cores. This is **faster than sipnab has ever been on this corpus**, not
+  a recovery to where it was.
+
+  Two changes, both found by profiling after a bisect had blamed the wrong
+  thing entirely.
+
+  **The frame pointer.** `parse_packet` built a `FrameRef` for every packet.
+  A `FrameRef` owns an `Arc<str>`, so that is one atomic increment per packet
+  and a decrement when it drops — for a pointer roughly **93% of frames never
+  keep**. `ParsedPacket` now carries a `Copy` locator and the two sites that
+  actually retain a pointer build the owned one: ~35,000 materialisations
+  instead of 535,000.
+
+  **The frame bytes.** The reader called `pkt.data.to_vec()` per frame and a
+  *worker* freed it, so the allocator's cross-thread path ran 535,000 times.
+  Frames are now cut from a shared 64 KiB block, so one allocation serves ~270
+  frames and both it and its free amortise across all of them. This landed
+  above its own predicted ceiling, because frames sharing a block are also
+  sequential in memory.
 
   `parse_packet` built a `FrameRef` for every packet. A `FrameRef` owns an
   `Arc<str>`, so that is one atomic increment per packet and a decrement when
