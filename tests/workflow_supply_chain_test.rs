@@ -355,57 +355,105 @@ fn every_workflow_job_bounds_its_runtime() {
 /// reason. The comment did not prevent the next omission. A comment states the
 /// rule once, where a reader has to remember to apply it; this applies it.
 ///
-/// Only permissions inferable from a step are checked. `packages: write` for a
-/// registry push is not: it is implied by intent rather than by any string in
-/// the file, and guessing it would fail jobs that legitimately only read.
+/// Only permissions inferable from a step are checked, and the level is part of
+/// the inference: `write` satisfies a `read` requirement and `read` does not
+/// satisfy `write`. Ignoring the level would make two of these checks vacuous,
+/// because every job in this repository grants `contents: read` -- so a check
+/// that asked only "is `contents` present?" would clear the release job whether
+/// or not it could actually create a release.
+///
+/// `packages: write` is inferred only for the `build-push-action` invocation
+/// that sets `push: true`. The same job also builds a local image for Trivy to
+/// scan, and requiring push rights for a build that never pushes would fail a
+/// job that is correct as written.
+///
+/// Two things stay out of the table deliberately. `codecov-action` needs
+/// `id-token: write` only under `use_oidc`, which is not how it is called here.
+/// A `permissions:` block written as `write-all` has no child keys and so reads
+/// here as granting nothing, failing loudly; that is the wanted outcome, since
+/// the blanket form is what Scorecard marks down.
 #[test]
 fn a_job_permissions_block_grants_what_its_steps_need() {
-    // (marker in a `uses:` line, permission that marker requires)
-    const NEEDS: &[(&str, &str)] = &[
-        ("upload-sarif", "security-events"),
-        ("attest-build-provenance", "attestations"),
+    // (marker in a `uses:` line, permission that marker requires, level)
+    const NEEDS: &[(&str, &str, &str)] = &[
+        ("upload-sarif", "security-events", "write"),
+        ("codeql-action/analyze", "security-events", "write"),
+        ("attest-build-provenance", "attestations", "write"),
+        ("attest-build-provenance", "id-token", "write"),
+        ("deploy-pages", "pages", "write"),
+        ("deploy-pages", "id-token", "write"),
+        ("action-gh-release", "contents", "write"),
     ];
+    // Conditional on `push: true`, so it is resolved per job rather than here.
+    const PUSH_MARKER: &str = "build-push-action";
+
+    fn grants(perms: &[(String, String)], need: &str, level: &str) -> bool {
+        perms
+            .iter()
+            .any(|(k, v)| k == need && (v == "write" || v == level))
+    }
 
     let mut gaps: Vec<String> = Vec::new();
     let mut jobs_needing = 0usize;
 
     for (name, body) in workflows() {
-        let mut wf_perms: Vec<String> = Vec::new();
+        let mut wf_perms: Vec<(String, String)> = Vec::new();
         let mut in_wf_perms = false;
         let mut in_jobs = false;
 
         let mut job: Option<String> = None;
-        let mut job_perms: Option<Vec<String>> = None;
+        let mut job_perms: Option<Vec<(String, String)>> = None;
         let mut in_job_perms = false;
-        let mut needs: Vec<&str> = Vec::new();
+        let mut markers: Vec<&str> = Vec::new();
+        let mut job_pushes = false;
 
         // Borrowed by the loop and again after it, so it takes its state as
         // arguments rather than capturing.
+        #[allow(clippy::too_many_arguments)]
         fn close(
             file: &str,
             job: &Option<String>,
-            perms: &Option<Vec<String>>,
-            wf: &[String],
-            needs: &[&str],
+            perms: &Option<Vec<(String, String)>>,
+            wf: &[(String, String)],
+            markers: &[&str],
+            pushes: bool,
             counter: &mut usize,
             out: &mut Vec<String>,
         ) {
             let Some(j) = job else { return };
+
+            let mut needs: Vec<(&str, &str)> = Vec::new();
+            for m in markers {
+                for (marker, perm, level) in NEEDS {
+                    if m == marker && !needs.iter().any(|(p, _)| p == perm) {
+                        needs.push((perm, level));
+                    }
+                }
+            }
+            // `push: true` is an input written below the `uses:` line, so this
+            // cannot be decided where the marker is seen.
+            if pushes
+                && markers.contains(&PUSH_MARKER)
+                && !needs.iter().any(|(p, _)| *p == "packages")
+            {
+                needs.push(("packages", "write"));
+            }
             if needs.is_empty() {
                 return;
             }
             *counter += 1;
+
             // No job block means the workflow block applies unmodified.
             let effective = perms.as_deref().unwrap_or(wf);
-            for need in needs {
-                if !effective.iter().any(|p| p == need) {
+            for (need, level) in needs {
+                if !grants(effective, need, level) {
                     let via = if perms.is_some() {
                         "its own permissions block"
                     } else {
                         "the workflow-level block"
                     };
                     out.push(format!(
-                        "{file}: job `{j}` needs `{need}` -- {via} omits it"
+                        "{file}: job `{j}` needs `{need}: {level}` -- {via} omits it"
                     ));
                 }
             }
@@ -424,13 +472,15 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
                     &job,
                     &job_perms,
                     &wf_perms,
-                    &needs,
+                    &markers,
+                    job_pushes,
                     &mut jobs_needing,
                     &mut gaps,
                 );
                 job = None;
                 job_perms = None;
-                needs.clear();
+                markers.clear();
+                job_pushes = false;
                 in_job_perms = false;
                 in_wf_perms = trimmed.starts_with("permissions:");
                 in_jobs = trimmed.starts_with("jobs:");
@@ -439,8 +489,8 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
 
             // Workflow-level `permissions:` keys sit at indent 2, before `jobs:`.
             if in_wf_perms && !in_jobs && indent == 2 {
-                if let Some(k) = trimmed.split(':').next() {
-                    wf_perms.push(k.to_string());
+                if let Some((k, v)) = trimmed.split_once(':') {
+                    wf_perms.push((k.to_string(), v.trim().to_string()));
                 }
                 continue;
             }
@@ -454,13 +504,15 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
                     &job,
                     &job_perms,
                     &wf_perms,
-                    &needs,
+                    &markers,
+                    job_pushes,
                     &mut jobs_needing,
                     &mut gaps,
                 );
                 job = Some(trimmed.trim_end_matches(':').to_string());
                 job_perms = None;
-                needs.clear();
+                markers.clear();
+                job_pushes = false;
                 in_job_perms = false;
                 continue;
             }
@@ -475,20 +527,26 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
                 }
             } else if in_job_perms
                 && indent == 6
-                && let Some(k) = trimmed.split(':').next()
+                && let Some((k, v)) = trimmed.split_once(':')
                 && let Some(p) = job_perms.as_mut()
             {
-                p.push(k.to_string());
+                p.push((k.to_string(), v.trim().to_string()));
             }
 
             // Steps live deeper than the job's own keys; a `uses:` anywhere
             // inside the job is this job's step.
             if trimmed.contains("uses:") {
-                for (marker, perm) in NEEDS {
-                    if trimmed.contains(marker) && !needs.contains(perm) {
-                        needs.push(perm);
+                for (marker, _, _) in NEEDS {
+                    if trimmed.contains(marker) && !markers.contains(marker) {
+                        markers.push(marker);
                     }
                 }
+                if trimmed.contains(PUSH_MARKER) && !markers.contains(&PUSH_MARKER) {
+                    markers.push(PUSH_MARKER);
+                }
+            }
+            if trimmed == "push: true" {
+                job_pushes = true;
             }
         }
         close(
@@ -496,7 +554,8 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
             &job,
             &job_perms,
             &wf_perms,
-            &needs,
+            &markers,
+            job_pushes,
             &mut jobs_needing,
             &mut gaps,
         );
@@ -504,9 +563,10 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
 
     // A detector that recognises nothing reports every workflow as correct.
     assert!(
-        jobs_needing >= 3,
+        jobs_needing >= 6,
         "only {jobs_needing} jobs were seen to need an inferable permission -- \
-         upload-sarif and attest-build-provenance are used by more than that, so \
+         SARIF upload, CodeQL analysis, attestation, Pages deployment, release \
+         creation and the GHCR push are spread across more jobs than that, so \
          the parser is broken and a pass here means nothing"
     );
 
