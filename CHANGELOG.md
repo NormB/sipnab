@@ -8,6 +8,37 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A call report showed `Setup: -27.98s`.** A negative duration is not a
+  measurement. The capture had opened after the call was already up, so the
+  dialog's first message was the 200 OK of an INVITE transaction that had
+  already finished, and 28 seconds later the far end sent a re-INVITE. sipnab
+  took `invite_sent` from that re-INVITE and `answered_at` from the earlier
+  transaction, then subtracted one from the other.
+
+  Two rules now stand between those milestones and a number. An INVITE that
+  carries a To-tag is in-dialog (RFC 3261 §8.1.1.2) and is never recorded as
+  the call's first INVITE, so a re-INVITE cannot start the clock however late
+  the capture began — the message says so itself, rather than the answer
+  depending on what the recording happened to catch. And no derived interval
+  is ever negative: where the milestones cannot belong to one transaction, the
+  time is reported as unknown rather than as a duration.
+
+  Matching CSeq numbers could not have caught this. Each side of a dialog keeps
+  its own CSeq space (RFC 3261 §12.2.1.1), and here both were at 102.
+
+  Across a 2,740-dialog corpus the fix withdraws 11 setup times, every one a
+  session-timer re-INVITE (RFC 4028, `Session-Expires: 1800;refresher=uac`)
+  whose 164 ms round trip had been published as a call's setup time. No call
+  that was genuinely timed loses its measurement.
+
+  The rules live in the timing accessors, which every surface reads, so the
+  call report, `--json-dialogs`, REST, MCP, the DSL's `setup_time`, the TUI
+  timeline and the WASM build all correct together.
+
 ## [0.5.93] - 2026-08-11
 
 MOS stops guessing, and the browser analyzer stops being eleven releases old.

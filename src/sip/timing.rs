@@ -46,50 +46,69 @@ pub struct DialogTiming {
     pub transfer_completed_at: Option<DateTime<Utc>>,
 }
 
+/// Milliseconds from `from` to `to`, or `None` when the pair cannot be a
+/// measurement.
+///
+/// A milestone pair that runs backwards is not a slow call. It means the two
+/// timestamps came from different transactions — a capture that opened
+/// mid-dialog, a merge of files whose clocks disagree, or a pairing rule with
+/// a hole in it. Publishing the difference anyway turns that into a duration
+/// an operator reads as measured, which is how a call report came to show
+/// `Setup: -27.98s`. Unknown is reported as unknown.
+fn elapsed_ms(from: DateTime<Utc>, to: DateTime<Utc>) -> Option<i64> {
+    let ms = (to - from).num_milliseconds();
+    (ms >= 0).then_some(ms)
+}
+
 impl DialogTiming {
     /// Post-Dial Delay: INVITE sent to first 180 Ringing, in milliseconds.
     ///
-    /// Returns `None` if either timestamp is missing.
+    /// Returns `None` if either timestamp is missing, and also when the two
+    /// cannot belong to one transaction — an interval that runs backwards is
+    /// not a measurement, so it is reported as unknown rather than published
+    /// as a duration.
     pub fn pdd_ms(&self) -> Option<i64> {
-        let invite = self.invite_sent?;
-        let ringing = self.ringing_at?;
-        Some((ringing - invite).num_milliseconds())
+        elapsed_ms(self.invite_sent?, self.ringing_at?)
     }
 
     /// Setup time: INVITE sent to 200 OK, in milliseconds.
     ///
-    /// Returns `None` if either timestamp is missing.
+    /// Returns `None` if either timestamp is missing, and also when the two
+    /// cannot belong to one transaction — an interval that runs backwards is
+    /// not a measurement, so it is reported as unknown rather than published
+    /// as a duration.
     pub fn setup_ms(&self) -> Option<i64> {
-        let invite = self.invite_sent?;
-        let answered = self.answered_at?;
-        Some((answered - invite).num_milliseconds())
+        elapsed_ms(self.invite_sent?, self.answered_at?)
     }
 
     /// Ring duration: first 180 Ringing to 200 OK, in milliseconds.
     ///
-    /// Returns `None` if either timestamp is missing.
+    /// Returns `None` if either timestamp is missing, and also when the two
+    /// cannot belong to one transaction — an interval that runs backwards is
+    /// not a measurement, so it is reported as unknown rather than published
+    /// as a duration.
     pub fn ring_ms(&self) -> Option<i64> {
-        let ringing = self.ringing_at?;
-        let answered = self.answered_at?;
-        Some((answered - ringing).num_milliseconds())
+        elapsed_ms(self.ringing_at?, self.answered_at?)
     }
 
     /// Trying delay: INVITE sent to 100 Trying, in milliseconds.
     ///
-    /// Returns `None` if either timestamp is missing.
+    /// Returns `None` if either timestamp is missing, and also when the two
+    /// cannot belong to one transaction — an interval that runs backwards is
+    /// not a measurement, so it is reported as unknown rather than published
+    /// as a duration.
     pub fn trying_delay_ms(&self) -> Option<i64> {
-        let invite = self.invite_sent?;
-        let trying = self.trying_at?;
-        Some((trying - invite).num_milliseconds())
+        elapsed_ms(self.invite_sent?, self.trying_at?)
     }
 
     /// Teardown time: BYE sent to 200 OK for BYE, in milliseconds.
     ///
-    /// Returns `None` if either timestamp is missing.
+    /// Returns `None` if either timestamp is missing, and also when the two
+    /// cannot belong to one transaction — an interval that runs backwards is
+    /// not a measurement, so it is reported as unknown rather than published
+    /// as a duration.
     pub fn teardown_ms(&self) -> Option<i64> {
-        let bye = self.bye_sent?;
-        let answered = self.bye_answered?;
-        Some((answered - bye).num_milliseconds())
+        elapsed_ms(self.bye_sent?, self.bye_answered?)
     }
 
     /// Total retransmission count across all transactions in this dialog.
@@ -123,8 +142,16 @@ impl DialogTiming {
 pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method: &SipMethod) {
     if msg.is_request {
         match msg.method.as_ref() {
+            // A request outside a dialog MUST NOT carry a To-tag (RFC 3261
+            // §8.1.1.2); an in-dialog request carries the peer's (§12.2.1.1).
+            // So a tagged INVITE is a re-INVITE, whatever the capture happens
+            // to have seen before it. Without this, a capture that opened
+            // mid-call took its `invite_sent` from a re-INVITE that arrived
+            // long after the call was already up.
             Some(SipMethod::Invite)
-                if *dialog_method == SipMethod::Invite && timing.invite_sent.is_none() =>
+                if *dialog_method == SipMethod::Invite
+                    && timing.invite_sent.is_none()
+                    && msg.to_tag().is_none() =>
             {
                 timing.invite_sent = Some(msg.timestamp);
                 // Remember which INVITE transaction this dialog began with so
@@ -340,6 +367,182 @@ mod tests {
         assert_eq!(
             timing.answered_at, None,
             "a re-INVITE's 200 must not be recorded as the answer time"
+        );
+    }
+
+    /// Build an in-dialog re-INVITE: an INVITE that carries a To-tag.
+    ///
+    /// RFC 3261 §8.1.1.2 — a request outside a dialog MUST NOT contain a To
+    /// tag; §12.2.1.1 — an in-dialog request carries the peer's tag. The tag
+    /// is what separates a call's one initial INVITE from every later
+    /// re-INVITE, and it is stated on the message itself, so it holds however
+    /// late the capture started.
+    fn make_reinvite(ts: DateTime<Utc>, cseq: u32) -> SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                "Call-ID: timing-test@example.com",
+                &format!("CSeq: {cseq} INVITE"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse re-INVITE")
+    }
+
+    /// A capture that opens mid-call must report no setup time, not a negative
+    /// one.
+    ///
+    /// Reproduces a real capture. Recording started after the call was up, so
+    /// the dialog's first message was the 200 OK of an INVITE transaction that
+    /// had already completed, and 28 s later the *callee* sent a re-INVITE.
+    /// Each side numbers its own CSeq space (RFC 3261 §12.2.1.1), so the
+    /// callee's re-INVITE was also CSeq 102 and matched by number.
+    /// `invite_sent` was then taken from that re-INVITE while `answered_at`
+    /// came from the earlier transaction, and the call report read
+    /// `Setup: -27.98s`.
+    #[test]
+    fn a_capture_opening_mid_call_reports_no_setup_time() {
+        let mut timing = DialogTiming::default();
+        let t0 = base_ts();
+
+        // The tail of a transaction whose INVITE preceded the capture.
+        update_timing(
+            &mut timing,
+            &make_response(200, "OK", "INVITE", t0),
+            &SipMethod::Invite,
+        );
+        // 28 s on, the far end re-INVITEs, reusing 102 from its own CSeq space.
+        update_timing(
+            &mut timing,
+            &make_reinvite(t0 + TimeDelta::seconds(28), 102),
+            &SipMethod::Invite,
+        );
+
+        assert_eq!(
+            timing.invite_sent, None,
+            "a re-INVITE 28 s into an established call is not the call's first INVITE"
+        );
+        assert_eq!(
+            timing.setup_ms(),
+            None,
+            "the initial INVITE was never captured, so setup time is unknown — not negative"
+        );
+    }
+
+    /// An in-dialog INVITE is not the initial INVITE even when it is the very
+    /// first message the capture holds for the dialog.
+    ///
+    /// The To-tag settles this without reference to what was seen earlier,
+    /// which is why the tag is the test rather than the arrival order.
+    #[test]
+    fn an_in_dialog_invite_is_never_the_initial_invite() {
+        let mut timing = DialogTiming::default();
+        update_timing(
+            &mut timing,
+            &make_reinvite(base_ts(), 7),
+            &SipMethod::Invite,
+        );
+
+        assert_eq!(
+            timing.invite_sent, None,
+            "an INVITE bearing a To-tag is in-dialog (RFC 3261 §8.1.1.2)"
+        );
+    }
+
+    /// An initial INVITE — no To-tag — still opens the dialog.
+    ///
+    /// The anti-vacuity half of the test above: a guard that rejected every
+    /// INVITE would also pass it.
+    #[test]
+    fn an_initial_invite_still_starts_the_clock() {
+        let mut timing = DialogTiming::default();
+        let t0 = base_ts();
+        update_timing(&mut timing, &make_invite(t0), &SipMethod::Invite);
+
+        assert_eq!(
+            timing.invite_sent,
+            Some(t0),
+            "an INVITE with no To-tag is the dialog's initial INVITE"
+        );
+    }
+
+    /// No derived interval is ever negative.
+    ///
+    /// Backstop for the pairing rules above: a negative duration is not a slow
+    /// call, it is two milestones that do not belong to one transaction, and
+    /// publishing it as a measurement is worse than publishing nothing. Every
+    /// surface reads these accessors — report, JSON, REST, MCP, DSL, TUI and
+    /// WASM — so the rule belongs here rather than in any one renderer.
+    #[test]
+    fn derived_intervals_are_never_negative() {
+        let late = base_ts();
+        let early = late - TimeDelta::seconds(28);
+
+        let setup = DialogTiming {
+            invite_sent: Some(late),
+            answered_at: Some(early),
+            ..Default::default()
+        };
+        assert_eq!(
+            setup.setup_ms(),
+            None,
+            "answered before INVITE is not a setup time"
+        );
+
+        let pdd = DialogTiming {
+            invite_sent: Some(late),
+            ringing_at: Some(early),
+            ..Default::default()
+        };
+        assert_eq!(
+            pdd.pdd_ms(),
+            None,
+            "ringing before INVITE is not a post-dial delay"
+        );
+
+        let trying = DialogTiming {
+            invite_sent: Some(late),
+            trying_at: Some(early),
+            ..Default::default()
+        };
+        assert_eq!(
+            trying.trying_delay_ms(),
+            None,
+            "100 Trying before INVITE is not a trying delay"
+        );
+
+        let ring = DialogTiming {
+            ringing_at: Some(late),
+            answered_at: Some(early),
+            ..Default::default()
+        };
+        assert_eq!(
+            ring.ring_ms(),
+            None,
+            "answered before ringing is not a ring duration"
+        );
+
+        let teardown = DialogTiming {
+            bye_sent: Some(late),
+            bye_answered: Some(early),
+            ..Default::default()
+        };
+        assert_eq!(
+            teardown.teardown_ms(),
+            None,
+            "BYE answered before it was sent is not a teardown time"
         );
     }
 
