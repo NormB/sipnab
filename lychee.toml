@@ -45,7 +45,19 @@ retry_wait_time = 3
 
 # 429 is rate limiting, not a dead link -- GitHub and crates.io both do it under
 # CI concurrency. 206 is partial content, which some CDNs answer HEAD with.
-accept = [200, 206, 429]
+#
+# 503 joins them, and the reason is the same one 429 is here for. On 2026-08-11
+# a run checked 5,914 links, 5,785 passed, and the single failure was
+# github.com answering 503 for one of ITS OWN blob URLs. The link was valid
+# then and is valid now. lychee's retry does not rescue it: `max_retries`
+# governs transport-level failures, while a status in neither `accept` nor the
+# retryable set is a verdict, and only 429 is retried among rejected codes.
+#
+# The risk of accepting it is small and worth naming: a permanently 503-ing
+# host would pass. That is a service being down, not a link being wrong, and
+# this gate exists to catch the second. A dead link answers 404, which is still
+# rejected.
+accept = [200, 206, 429, 503]
 
 exclude = [
   # Zola internal links -- see above. Matched on the resolved path because

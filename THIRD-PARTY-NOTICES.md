@@ -211,7 +211,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | litrs | 1.0.0 | MIT OR Apache-2.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.33 | MIT OR Apache-2.0 |
-| lru | 0.18.0 | MIT |
+| lru | 0.18.2 | MIT |
 | mac_address | 1.1.8 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
