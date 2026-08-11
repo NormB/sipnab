@@ -124,7 +124,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.91 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+   # sipnab 0.5.92 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -141,7 +141,7 @@ itself):
      sleep 0.3
      echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
      sleep 0.1
-     echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"stats","arguments":{}}}'
+     echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"capture_status","arguments":{}}}'
      sleep 0.5
    } | sipnab --mcp -N -I SIP_CALL_RTP_G711 --quiet | tail -1
    ```
@@ -239,7 +239,7 @@ running as root.
    ```
 
 3. **[laptop]** Verify with `claude mcp list`, generate or wait for SIP
-   traffic, and ask the agent for `stats` — `dialog_count` should climb.
+   traffic, and ask the agent for `capture_status` — `dialog_count` should climb.
 
 State is per-session: the capture starts when the agent connects and dies
 with it. For "always capturing, query whenever" on one box, use the
@@ -1017,7 +1017,7 @@ not. Measured against 0.5.87:
 
 | Carries `capture_identity.node` | Does not |
 |---|---|
-| `capture_status`, `stats`, `list_dialogs`, `tail_dialogs`, `find_correlated` | `get_dialog`, `get_dialog_report`, `triage_call`, `search_messages`, `capture_health` |
+| `capture_status`, `list_dialogs`, `tail_dialogs`, `find_correlated` | `get_dialog`, `get_dialog_report`, `triage_call`, `search_messages`, `capture_health` |
 
 So call `capture_status` once per node and hold the name, rather than expecting
 every answer to carry it. It matters: "answered 407" is incomplete until you
@@ -1744,7 +1744,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.91",
+  "version": "0.5.92",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,

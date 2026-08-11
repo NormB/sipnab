@@ -8,9 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.92] - 2026-08-10
+
+Remote capture becomes usable on more than one box, and on RHEL.
 
 ### Added
+
 - **`--hep-send` forwards RTCP, not only SIP.** RTCP now travels as HEP
   protocol type 5 alongside signalling as type 1, so a remote collector can
   report media quality — loss, jitter, MOS — rather than only whether calls
@@ -29,6 +32,65 @@ entry that carries them.
   consequence, and a notice that still said "every SIP message" while RTCP also
   left the machine would have reintroduced exactly the silence it was written
   to end. It now names both, and says the audio is never forwarded.
+
+- **Exported frames carry the sender's identity.** Every HEP frame now sets the
+  capture-agent chunk (`0x000c`) and labels itself `{id}@{peer}`, so a
+  collector receiving a fan-in from several SBCs can tell which box a leg came
+  from. Frames from every node previously arrived indistinguishable, which left
+  multi-node capture — the reason to run HEP export at all — unable to answer
+  the first question anyone asks of it.
+
+### Changed
+
+- **The MCP walkthrough's smoke test called the tool this release removes.**
+  `docs/mcp-walkthrough.md` Step 0 -- the first thing an operator runs to check
+  their server works -- called `stats`, so a CORRECTLY working server answered
+  "tool not found" and the page told them it was broken. Caught by an audit of
+  this release, not after it. It now calls `capture_status`.
+
+- **BREAKING (MCP): `stats` is gone; `capture_status` replaces it.** Capture
+  health was split across two tools that had to be called together and
+  reconciled by the caller, so the first question an operator asks — is this
+  capture healthy enough to trust what it is telling me? — cost two round trips
+  and some arithmetic. `capture_status` answers it in one call and adds
+  `orphaned_stream_count`, `active_dialog_count`, `active_call_count` and a
+  `capture_quality` summary. The MCP `schema_version` moves 1 → 2; a client
+  pinned to `stats` must move to `capture_status`.
+
+### Fixed
+
+- **The installer failed on every RHEL-family host.** `parse_glibc_version`
+  read a fixed field position that is only correct on Debian and Ubuntu, so
+  RHEL, Rocky, Alma and Fedora all reported `no glibc detected` and fell
+  through to the musl build. It now reads the version from the end of the line,
+  where every distribution puts it, and the test matrix covers RHEL 8/9/10,
+  Fedora, Gentoo and Alpine rather than Debian alone.
+
+- **`sudo sipnab` reported "command not found" after a successful install.**
+  RHEL's `secure_path` excludes `/usr/local/bin`, so the binary the installer
+  had just placed was invisible to the one shell that most needs it. The
+  installer now detects this and prints an invocation that works.
+
+- **The capture-permission error named `CAP_NET_RAW` and stopped there.** It
+  told an operator which capability was missing but not how to obtain it, which
+  is the only part they needed. It now gives the `setcap` command.
+
+- **The call list rendered distinct hosts identically.** Source and destination
+  truncated to 11 cells, so `10.0.0.41` and `10.0.0.412` — different endpoints
+  — displayed as the same string, and the header set a background colour
+  without ever setting a foreground, leaving it unreadable on light terminals.
+  Addresses now elide in the middle, keeping both ends, and the header derives
+  its foreground from the background's luminance.
+
+- **Documentation bookmarks resolved to the wrong section.** Zola strips a
+  trailing `{...}` from a heading before slugifying, so `GET /v1/dialogs/{call_id}`
+  and `GET /v1/dialogs` produced the same anchor and the second became
+  `…-1` — a suffix that moves whenever a heading is added above it. Path
+  params are now written `:call_id`, repeated headings in three design
+  documents name the feature they belong to, and a gate refuses any two
+  headings that slugify alike under GitHub, Zola or wiki rules. Repo paths in
+  the docs are links rather than bare code spans, and sample captures point at
+  `/raw/` so they download instead of rendering as markup.
 
 ## [0.5.91] - 2026-08-10
 
