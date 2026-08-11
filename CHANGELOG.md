@@ -8,6 +8,60 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.93] - 2026-08-11
+
+MOS stops guessing, and the browser analyzer stops being eleven releases old.
+
+### Added
+
+- **One-way delay is an input to MOS, not a constant.** `estimate_mos` assumed
+  100 ms of network delay and fed it to G.107's `Id` term for every score
+  sipnab reported. G.107's delay penalty has a knee at 177.3 ms, so the
+  assumption did not merely shift the answer, it kept the calculation on the
+  wrong side of that knee: at a true 300 ms one-way, sipnab reported **4.35**
+  where the truth is **1.00**. A satellite leg was called excellent.
+
+  `--one-way-delay`, or `[media] one_way_delay_ms`. The figure is resolved in
+  order — what the operator declared, then a round trip the far end reported in
+  an RFC 3611 VoIP-metrics block (halved), then the assumption — and the stream
+  detail says which of the three it used: `(delay 280ms declared)`,
+  `(delay 225ms per far end)`, `(delay 100ms assumed)`. The remedies differ,
+  which is why the source is shown: a wrong declared value is yours to fix, a
+  wrong reported one means suspecting the endpoint, and an assumed one means
+  the delay was never known.
+
+  The operator's figure wins because it is the only one no packet on the wire
+  can change. The default is unchanged at 100 ms, so no existing reading moves.
+
+- **`--mcp-max-rows` / `[limits] mcp_max_rows`.** The MCP response ceiling was a
+  compile-time constant. The right value belongs to the consumer — a
+  small-context agent wants far fewer than 1000 rows, a batch client piping to
+  a file wants far more.
+
+### Fixed
+
+- **The browser analyzer at sipnab.com/analyze ran a 0.5.80 build.** `zola
+  build` copies `static/` verbatim, so the committed WASM was what shipped, and
+  nothing rebuilt it. Eleven releases of analysis fixes never reached anyone
+  using the page. It is rebuilt, and `pages.yml` now builds it from source, so
+  the committed copy is no longer what ships.
+
+- **A dialog with one endpoint drew no ladder.** Where a PBX talks to itself —
+  every message `10.0.0.1:5060 -> 10.0.0.1:5060`, as any hairpinned leg looks
+  when captured at a single tap — the participants collapsed to one column and
+  the arrow was skipped, leaving a sized, empty pane beside a detail view
+  showing the whole message. Self-messages now draw the way a sequence diagram
+  draws them.
+
+- **`--filter "rtp.mos < 3.0"` scored streams differently from the display.**
+  The DSL carried its own formula with no codec term and no delay term,
+  diverging from the E-model by up to 1.7 MOS, so the filter selected calls the
+  detail view showed as fine. One scorer now, and a gate that fails if a second
+  appears.
+
+- **RUSTSEC-2026-0253** — `lru` 0.18.0 to 0.18.2, a potential use-after-free
+  from missing panic safety in `LruCache::pop()`.
+
 ## [0.5.92] - 2026-08-11
 
 Remote capture becomes usable on more than one box, and on RHEL.
