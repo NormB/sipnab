@@ -627,7 +627,41 @@ pub fn render_call_flow_direct(
                 // Arrow between source and destination pipes
                 let src_x = pipe_positions[src_col];
                 let dst_x = pipe_positions[dst_col];
-                if src_x != dst_x {
+                if src_x == dst_x {
+                    // ONE endpoint: the message leaves and arrives at the same
+                    // pipe. There is no span between columns to draw an arrow
+                    // in, and the old code simply skipped the row — so a PBX
+                    // talking to itself (every message
+                    // `100.127.26.27:5060 -> 100.127.26.27:5060`) rendered a
+                    // pipe and nothing else. The detail pane does not use
+                    // endpoints, so it showed the whole message beside an empty
+                    // ladder, which reads as a broken tool rather than as a
+                    // one-sided capture.
+                    //
+                    // Drawn the way a sequence diagram shows a self-message: a
+                    // loop glyph against the pipe, then the label.
+                    let mut label = match &msg.fold_label {
+                        Some(fl) if msg.folded_count > 0 && fl.starts_with("(+") => {
+                            format!("{} (+{} retx)", msg.label, msg.folded_count)
+                        }
+                        _ => msg.label.clone(),
+                    };
+                    if let Some(ref note) = msg.diagnosis_note {
+                        label.push_str(&format!(" [{note}]"));
+                    }
+                    let style = match msg.selection_state {
+                        SelectionState::Selected => {
+                            msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD)
+                        }
+                        _ => msg.style,
+                    };
+                    let start = src_x.saturating_add(1);
+                    let room = area.right().saturating_sub(start) as usize;
+                    if room > 2 {
+                        let text = format!("\u{21ba} {label}");
+                        buf.set_string(start, y, truncate(&text, room), style);
+                    }
+                } else {
                     // Retx fold headers carry their count ON the arrow: the
                     // annotation zone right of the ladder may be covered by
                     // the split detail pane, and a hidden fold reads as data
@@ -2051,6 +2085,62 @@ mod tests {
             raw_index: None,
             diagnosis_note: None,
         }
+    }
+
+    /// A dialog with ONE endpoint still shows its messages.
+    ///
+    /// Reported from a real Asterisk capture: selecting the first INVITE, and
+    /// the CANCELs, showed full message detail beside an EMPTY ladder. Four of
+    /// that capture's eight dialogs were the PBX talking to ITSELF — every
+    /// message `100.127.26.27:5060 -> 100.127.26.27:5060` — which collapses to
+    /// a single participant, so `src_x == dst_x` and the arrow branch was
+    /// skipped entirely. The pipe glyph still painted, so the pane looked
+    /// present and empty rather than obviously broken.
+    ///
+    /// A PBX looping through itself is ordinary, as is any hairpinned leg
+    /// captured on one interface.
+    #[test]
+    fn a_single_endpoint_dialog_still_paints_its_messages() {
+        let theme = Theme::default();
+        let parts = vec![Participant {
+            addr: "100.127.26.27:5060".into(),
+            label: "100.127.26.27:5060".into(),
+        }];
+        // Every message leaves and arrives at the same column, as the capture does.
+        let msgs = vec![fmt_msg("11:58:49.000", SelectionState::Selected, 0, 0), {
+            let mut m = fmt_msg("11:58:49.100", SelectionState::Normal, 0, 0);
+            m.label = "CANCEL".into();
+            m
+        }];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+        };
+        let mut term = terminal(80, 24);
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let text: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            text.contains("INVITE"),
+            "a self-addressed INVITE must still appear in the ladder; got:\n{text}"
+        );
+        assert!(
+            text.contains("CANCEL"),
+            "a self-addressed CANCEL must still appear in the ladder; got:\n{text}"
+        );
     }
 
     /// The current row is marked by a full-width background highlight, never
