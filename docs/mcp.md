@@ -340,7 +340,7 @@ ordinary update.
 | [`compare_dialogs`](#compare_dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
 | [`find_correlated`](#find_correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`get_sdp_timeline`](#get_sdp_timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
-| [`search_by_time`](#search_by_time) | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an RFC 3339 window |
+| [`search_by_time`](#search_by_time) | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
 | [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
@@ -369,7 +369,7 @@ Returns one page of dialog summaries from the live capture store.
 | `truncated` | bool | `true` when matches remain after this page. |
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
 
-The example below runs against `tests/pcap-samples/sipp-branch-scenario.pcapng`,
+The example below runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng),
 which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so:
 
 ```jsonc
@@ -697,7 +697,7 @@ and on any network carrying AMR-WB, EVS or G.722 the second one is the truth.
 Omit both bounds and the sweep lists every stream, including the codecs with no
 published value, each still carrying `mos_grounded`.
 
-The example runs against `tests/pcap-samples/codec-negotiation.pcap`, which
+The example runs against [`tests/pcap-samples/codec-negotiation.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/codec-negotiation.pcap), which
 carries four streams — two PCMU, two G722 — and no dialogs at all:
 
 ```jsonc
@@ -778,7 +778,7 @@ unmodified. A client that rebuilds a bare timestamp from a dialog's
 filter and loses or repeats the tied dialogs — that bare-timestamp
 form is still accepted, so the mistake is silent rather than an error.
 `|` occurs in neither an RFC 3339 timestamp nor a valid Call-ID
-(RFC 3261 `word`), so the split is unambiguous.
+([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) `word`), so the split is unambiguous.
 
 `source_exhausted` is `false` while more dialog updates can still
 arrive and `true` once the capture source is fully drained — the end of
@@ -940,8 +940,8 @@ payload type 8, that RTP arrived on a port no `m=` line advertised, that
 or that the packet spacing contradicts `a=ptime`. A linter reading message text
 reaches none of that, because the defect sits in neither message.
 
-The RFC 3261 syntax rules and the RFC 3264 offer/answer rules run alongside
-them. Everything citing RFC 4566, 3551 or 5761 belongs to the observation half.
+The RFC 3261 syntax rules and the [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264) offer/answer rules run alongside
+them. Everything citing [RFC 4566](https://www.rfc-editor.org/rfc/rfc4566), 3551 or 5761 belongs to the observation half.
 [SIP conformance rules](sip-lint-rules.md) lists every rule, the section behind
 it, and the suppression syntax.
 
@@ -959,7 +959,7 @@ and `syntax` — and one per RFC the rules cite: `rfc3261`, `rfc3264`, `rfc4566`
 naming the whole vocabulary, so a typo such as `rfc3621` cannot quietly select
 nothing and hand back an empty list that reads as a clean call.
 
-The example runs against `tests/pcap-samples/b2bua-asterisk.pcapng`. Its SDP
+The example runs against [`tests/pcap-samples/b2bua-asterisk.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/b2bua-asterisk.pcapng). Its SDP
 negotiates `sendrecv` in both directions, and the capture carries 355 RTP
 packets in one:
 
@@ -1108,7 +1108,7 @@ finding new ones.
 }
 ```
 
-That example runs against `tests/pcap-samples/sip-488-codec-reject.pcapng`,
+That example runs against [`tests/pcap-samples/sip-488-codec-reject.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-488-codec-reject.pcapng),
 whose first `OPTIONS` ping carries neither a `Max-Forwards` header field nor
 the RFC 3261 branch cookie.
 
@@ -1259,16 +1259,16 @@ the same claim:
 
 | `strategy` | What it means | Survives a B2BUA? |
 |---|---|---|
-| `session_id` | RFC 7989 `Session-ID` matched | **Yes, by design** |
+| `session_id` | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` matched | **Yes, by design** |
 | `x_call_id` | A configured header matched (`X-Call-ID` by default) | Only if the SBC inserts it |
-| `charging_vector_related_icid` | One leg's RFC 7315 `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
-| `sdp_origin` | The RFC 8866 SDP origin tuple matched | Only if the SBC forwards SDP untouched |
+| `charging_vector_related_icid` | One leg's [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
+| `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) SDP origin tuple matched | Only if the SBC forwards SDP untouched |
 | `charging_vector_icid` | Both legs carry the same RFC 7315 `icid-value` | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
 | `timing_heuristic` | Same endpoint, close in time | Not an identifier at all |
 
 **The two `P-Charging-Vector` rows are one header and two different claims.**
-RFC 7315 §4.6 says the ICID identifies *a dialog*, so a conformant B2BUA emits
+[RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, so a conformant B2BUA emits
 a different `icid-value` on each side and `charging_vector_icid` is silent
 across it — a match there means some intermediary copied a per-dialog
 identifier onto a second dialog, which no RFC grants. The parameter that
@@ -1280,7 +1280,7 @@ the access edge. And §4.6.2.2 lets the next hop *"modify the contents"*, which
 constancy requirement at all. Full argument:
 [`docs/design/icid-correlation.md`](design/icid-correlation.md).
 
-Neither strategy puts the matched value in the response. RFC 7315 §4.6's own
+Neither strategy puts the matched value in the response. [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own
 suggested construction embeds the generating proxy's hostname or address in the
 icid, so it is operator-internal rather than opaque, and `strategy` names the
 strategy and nothing else.
@@ -1374,7 +1374,7 @@ quiet window reads differently from a truncated one.
 `filter` turns "failed calls between 14:00 and 14:05" into a single call. The
 window narrows first and the filter runs over what survives.
 
-The example runs against `tests/pcap-samples/sipp-branch-scenario.pcapng`. The
+The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng). The
 same window without a filter answers `total_matched: 247`:
 
 ```jsonc
@@ -2063,7 +2063,7 @@ putting it first would have broken every client that indexes block 0.
 
 In stdio mode, **stdout is the JSON-RPC wire**. sipnab routes all
 logging through `tracing-subscriber` to stderr (Phase 8.0b), and a regression
-test (`tests/parse_path_test.rs`) verifies that no log line ever leaks
+test ([`tests/parse_path_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/parse_path_test.rs)) verifies that no log line ever leaks
 to stdout. If you see "Parse error" from your MCP client after a
 sipnab log line, that's a regression — please file an issue with the
 `SIPNAB_LOG` level you reproduced it under.

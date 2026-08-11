@@ -12,7 +12,7 @@
 >
 > - **gRPC API (D11 RPC slot, `grpc` feature flag) was dropped.** Replaced by
 >   REST + OpenAPI (Phase 9) + MCP (Phase 8). The `grpc` flag has never
->   existed in `Cargo.toml`.
+>   existed in [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml).
 > - **Pluggable crypto backend (D14) was dropped.** Only the pure-Rust `tls`
 >   feature (`ring` + `rustls`) ever shipped; `tls-wolfssl` and `tls-openssl`
 >   were never implemented and remain phantom flags in this document's
@@ -20,7 +20,7 @@
 > - **Lab-internal SIP server fleet** assumptions in some risk-register
 >   entries are not reflective of current public release scope.
 >
-> Use `Cargo.toml`'s `[features]` block as the authoritative feature list.
+> Use [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml)'s `[features]` block as the authoritative feature list.
 > Use `implementation-plan-phases-8-10.md` for current phase status.
 
 > **⚠ HISTORICAL RECORD — an unchecked `- [ ]` box here is not an open
@@ -35,7 +35,7 @@
 >
 > The live queues are [`backlog.md`](backlog.md) and, for capture work,
 > [`capture-tuning-tasks.md`](capture-tuning-tasks.md). The authoritative
-> statements of what exists are `Cargo.toml`, `src/cli.rs` and
+> statements of what exists are [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml), [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) and
 > [`../internals/`](../internals/). Where a section here has been checked
 > against the tree and found wrong, the correction is written **in place**, in
 > a quoted block like this one, rather than by editing the original sentence —
@@ -170,7 +170,7 @@ sipnab captures network traffic, decrypts TLS/SRTP, injects packets (scanner kil
 
 **T4 — Information disclosure.** Key material leakage (addressed by D11). API exposes dialog content which may contain PII (phone numbers, caller names, SIP credentials in malformed traffic). Prometheus metrics reveal traffic patterns. Mitigation: API key auth, localhost-default bind for all listeners, key material never crosses IPC boundaries, no key material in logs/metrics/API responses.
 
-**T5 — Supply chain compromise.** `build.rs` downloading CFCA prefix data at compile time. Cargo dependencies with unsafe code or known vulnerabilities. Mitigation: pinned hashes for external data, bundled fallback, cargo-audit + cargo-deny + cargo-geiger in CI.
+**T5 — Supply chain compromise.** [`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs) downloading CFCA prefix data at compile time. Cargo dependencies with unsafe code or known vulnerabilities. Mitigation: pinned hashes for external data, bundled fallback, cargo-audit + cargo-deny + cargo-geiger in CI.
 
 **T6 — Scanner kill amplification.** If `--kill-scanner` is tricked into sending responses to spoofed source IPs, sipnab becomes a traffic amplifier. Mitigation: rate limit (10 responses/sec, enforced in isolated child process), validate that scanner source IP was actually observed in capture, never respond to packets from broadcast/multicast addresses.
 
@@ -403,7 +403,7 @@ Capture threads own their reassembly state — no shared mutable state between c
 > contention judgement in this plan rests on it.** It read: *"read-heavy,
 > write-rare, so RwLock contention is minimal."*
 >
-> The real shape is the opposite. `src/app/batch.rs` takes
+> The real shape is the opposite. [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) takes
 > `dialog_store.write()` **and** `stream_store.write()` **once per packet**,
 > and holds both across the entire per-packet body. Writes are therefore the
 > single most frequent operation in the process — one write-lock acquisition
@@ -558,7 +558,7 @@ StreamStore ──────── stores RtpStream objects, keyed by SSRC + s
 
 3. **RTP discovery does not require SDP.** SDP tells sipnab where media *should* go. Heuristic detection finds where media *actually* goes — even-port UDP with RTP v2 header structure, valid payload type, incrementing sequence numbers. After NAT, after RTPEngine, after any middlebox that rewrites media addresses, the actual stream is discoverable.
 
-4. **RTCP is parsed.** Sender Reports (SR) and Receiver Reports (RR) contain the remote side's quality experience. RTCP XR (RFC 3611) carries MOS, burst loss metrics, and round-trip delay. Ignoring RTCP means seeing only half the quality picture.
+4. **RTCP is parsed.** Sender Reports (SR) and Receiver Reports (RR) contain the remote side's quality experience. RTCP XR ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)) carries MOS, burst loss metrics, and round-trip delay. Ignoring RTCP means seeing only half the quality picture.
 
 5. **Quality is per-interval, not per-call.** A call averaging 20ms jitter might have a 3-second burst at 200ms that caused the user to hang up. sipnab records quality metrics per configurable interval (default: 1 second) so the shape of degradation is visible, not just the average.
 
@@ -854,7 +854,7 @@ Testing is not a phase — every phase includes its own tests. This section defi
 
 ### Pcap Test Corpus (≥ 50 pcaps, built incrementally)
 
-Basic calls, REGISTER, SUBSCRIBE/NOTIFY, forked calls, fragmented IP, TCP SIP, TLS SIP, WebSocket SIP, HEP, malformed messages, scanner traffic, STIR/SHAKEN Identity headers, RFC 4733 DTMF, codec negotiation edge cases, orphaned RTP streams (no SIP in capture), RTP with quality degradation (jitter bursts, packet loss), RTCP SR/RR/XR reports, SRTP with SDES keys in SDP, one-way audio scenarios (RTP in one direction only), RTPEngine-rewritten media addresses, comfort noise (CN) and silence suppression.
+Basic calls, REGISTER, SUBSCRIBE/NOTIFY, forked calls, fragmented IP, TCP SIP, TLS SIP, WebSocket SIP, HEP, malformed messages, scanner traffic, STIR/SHAKEN Identity headers, [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) DTMF, codec negotiation edge cases, orphaned RTP streams (no SIP in capture), RTP with quality degradation (jitter bursts, packet loss), RTCP SR/RR/XR reports, SRTP with SDES keys in SDP, one-way audio scenarios (RTP in one direction only), RTPEngine-rewritten media addresses, comfort noise (CN) and silence suppression.
 
 ---
 
@@ -865,7 +865,7 @@ Added to Phase 1.1 project scaffold and enforced in CI from day one.
 - **`cargo-audit`** — fail CI on known vulnerabilities in dependencies.
 - **`cargo-deny`** — enforce GPLv3 license compatibility, reject duplicate dependencies, ban specific crates.
 - **`cargo-geiger`** — audit `unsafe` usage in dependency tree. Report, don't block (some FFI crates require unsafe).
-- **`Cargo.lock` committed** to git. sipnab is a binary, not a library.
+- **[`Cargo.lock`](https://github.com/NormB/sipnab/blob/main/Cargo.lock) committed** to git. sipnab is a binary, not a library.
 - **Dependency review checklist** for any new dependency added after Phase 1:
   1. Is it maintained? (Last commit < 6 months)
   2. Does it have known advisories? (`cargo audit`)
@@ -1124,7 +1124,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 ### 1.1 — Project Scaffold & CI
 
 - [ ] Initialize cargo workspace
-- [ ] `Cargo.toml` with all planned dependencies and feature flags
+- [ ] [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) with all planned dependencies and feature flags
 - [ ] `cli.rs` with full unified flag set via `clap` derive macros
 - [ ] `config.rs` — config file parsing (`~/.config/sipnab/sipnab.toml`, `/etc/sipnab/sipnab.toml`)
 - [ ] Logging setup (`SIPNAB_LOG=debug`)
@@ -1134,9 +1134,9 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
   - `cargo audit` (fail on known vulnerabilities)
   - `cargo deny check` (license compatibility, duplicate deps)
   - Linux x86_64 + macOS runners
-- [ ] **`Cargo.lock` committed** to git
+- [ ] **[`Cargo.lock`](https://github.com/NormB/sipnab/blob/main/Cargo.lock) committed** to git
 - [ ] **CONTRIBUTING.md** — contribution guide, build instructions, test instructions (shipped early, not deferred to Phase 7)
-- [ ] **`deny.toml`** — cargo-deny configuration for license and advisory checks
+- [ ] **[`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml)** — cargo-deny configuration for license and advisory checks
 
 **Gate — 1.1 is done when:**
 - [ ] `cargo build` succeeds with no warnings
@@ -1152,13 +1152,13 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] CI pipeline green on Linux x86_64 and macOS
 
 **Docs — 1.1 deliverables:**
-- [ ] `README.md` — initial: project description, build instructions, license, "under development" notice
-- [ ] `CONTRIBUTING.md` — build from source, run tests, code style, PR process
-- [ ] `SECURITY.md` — vulnerability reporting process (email, GPG key, disclosure timeline)
+- [ ] [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) — initial: project description, build instructions, license, "under development" notice
+- [ ] [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md) — build from source, run tests, code style, PR process
+- [ ] [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md) — vulnerability reporting process (email, GPG key, disclosure timeline)
 - [ ] Inline rustdoc on all public types and functions in `cli.rs` and `config.rs`
-- [ ] `docs/cli-reference.md` — full unified flag set with descriptions (generated from clap derive if possible, manually maintained otherwise)
-- [ ] `docs/config-reference.md` — all config file keys, types, defaults, and descriptions
-- [ ] `man/sipnab.1` — man page skeleton with NAME, SYNOPSIS, DESCRIPTION, OPTIONS (populated as flags are implemented)
+- [ ] [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) — full unified flag set with descriptions (generated from clap derive if possible, manually maintained otherwise)
+- [ ] [`docs/config-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md) — all config file keys, types, defaults, and descriptions
+- [ ] [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1) — man page skeleton with NAME, SYNOPSIS, DESCRIPTION, OPTIONS (populated as flags are implemented)
 
 ### 1.2 — Packet Capture Sources
 
@@ -1217,9 +1217,9 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] `docs/capture-guide.md` — how to capture: live devices, pcap files, HEP, replay, multi-device, privilege requirements
 - [ ] `docs/hep-guide.md` — HEP v2/v3 setup: listen mode, send mode, source allowlist, rate limiting, integration with Homer
 - [ ] `docs/privilege-guide.md` — privilege model: why root is needed, how priv drop works, `--user`, `--no-priv-drop`, `--chroot`, CAP_NET_RAW alternative
-- [ ] Update `man/sipnab.1` with capture flags
-- [ ] Update `docs/cli-reference.md` with capture flags
-- [ ] Update `docs/config-reference.md` with `[capture]` section
+- [ ] Update [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1) with capture flags
+- [ ] Update [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) with capture flags
+- [ ] Update [`docs/config-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md) with `[capture]` section
 
 ### 1.3 — Packet Parsing & Reassembly
 
@@ -1246,7 +1246,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] `capture::websocket` — WebSocket frame unwrapping for SIP-over-WS
   - **Max frame size: 64KB**
 - [ ] SCTP support (future — stub the interface)
-- [ ] **Fuzz targets:** `fuzz/fuzz_targets/` for packet parser, IP reassembly, TCP reassembly. Run in CI.
+- [ ] **Fuzz targets:** [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets) for packet parser, IP reassembly, TCP reassembly. Run in CI.
 
 **Gate — 1.3 is done when:**
 - [ ] Ethernet, VLAN (802.1Q), SLL, NFLOG link-layer parsing: each tested with a dedicated pcap fixture
@@ -1332,7 +1332,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
   - `l` = Content-Length, `c` = Content-Type, `e` = Content-Encoding
   - `k` = Supported, `s` = Subject
   - Carriers and B2BUAs use these in production; without support, sipnab misses headers
-- [ ] **Header folding** — headers continued on the next line with leading whitespace (SP or HTAB per RFC 3261 §7.3.1) must be unfolded before value extraction
+- [ ] **Header folding** — headers continued on the next line with leading whitespace (SP or HTAB per [RFC 3261 §7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) must be unfolded before value extraction
 - [ ] **Multiple headers with same name** — Via, Record-Route, Route can appear multiple times; parser returns all instances, not just the first
 - [ ] Header extraction (lazy, on-demand):
   - Call-ID, X-Call-ID
@@ -1388,7 +1388,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] `docs/sip-parser.md` — supported headers, compact forms, folding behavior, Content-Length handling, malformed message behavior
 - [ ] `docs/response-codes.md` — full table of SIP response codes with human-readable explanations and common causes (exportable as reference for VoIP engineers)
 - [ ] `docs/sdp-parsing.md` — supported SDP attributes, media types, crypto parsing, ICE candidate extraction
-- [ ] Update `man/sipnab.1` with SIP-related flags
+- [ ] Update [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1) with SIP-related flags
 
 ### 2.2 — Matching Engine
 
@@ -1421,7 +1421,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 **Docs — 2.2 deliverables:**
 - [ ] Rustdoc on `sip/matcher.rs`
 - [ ] `docs/filtering.md` — all filter types with examples: regex, word-boundary, case-insensitive, inverted, header-specific, method filters, combined logic
-- [ ] Update `docs/cli-reference.md` with filter flags
+- [ ] Update [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) with filter flags
 
 ### 2.3 — Filter DSL
 
@@ -1465,7 +1465,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 
 **Docs — 2.3 deliverables:**
 - [ ] Rustdoc on `sip/dsl.rs`
-- [ ] `docs/filter-dsl.md` — user-facing DSL reference: grammar, all fields, operators, examples, diagnostic aliases, combining filters
+- [ ] [`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md) — user-facing DSL reference: grammar, all fields, operators, examples, diagnostic aliases, combining filters
 - [ ] `docs/internals/dsl-grammar.md` — formal grammar specification (EBNF or PEG)
 
 ### 2.4 — Dialog Tracking
@@ -1590,7 +1590,7 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
   - **Default limit: 50,000 streams** (D17). Configurable via `--max-streams`.
   - Cross-reference with DialogStore: when SDP is parsed, link streams to their dialog by matching media IP:port. When a dialog is rotated/removed, unlink (but don't delete) its streams.
 - [ ] `rtp::quality` — basic per-interval metrics:
-  - Jitter calculation (RFC 3550 algorithm: running interarrival jitter)
+  - Jitter calculation ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) algorithm: running interarrival jitter)
   - Packet loss: gap detection from sequence number discontinuities
   - Per-interval recording (default: every 1 second, configurable via `--rtp-interval`)
   - Store as `Vec<QualityInterval>` per stream (circular buffer, configurable depth)
@@ -1795,7 +1795,7 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
 **Docs — 2.8 deliverables:**
 - [ ] Rustdoc on event exec implementation in `security/alerting.rs`
 - [ ] `docs/event-exec.md` — event exec hook reference: `--on-dialog-exec`, `--on-quality-exec`, template variables, rate limiting, examples (curl webhook, python script, syslog forward)
-- [ ] Update `docs/cli-reference.md` with exec flags
+- [ ] Update [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) with exec flags
 
 ---
 
@@ -1851,7 +1851,7 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
 **Docs — 3.1 deliverables:**
 - [ ] Rustdoc on `tui/mod.rs`, `tui/theme.rs`
 - [ ] `docs/tui-guide.md` — TUI overview: navigation, panel system, views available, how to switch between Call List and Stream List
-- [ ] `docs/keybindings.md` — all default keybindings, how to customize in config file
+- [ ] [`docs/keybindings.md`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md) — all default keybindings, how to customize in config file
 - [ ] `docs/themes.md` — theme system: available color names, how to customize, sngrep-compatible defaults
 
 ### 3.2 — Call List View (F1-F10 keybindings)
@@ -2045,7 +2045,7 @@ Top-level RTP stream view, peer of Call List, accessible via Tab key.
 - [ ] Rustdoc on `tui/msg_diff.rs`, `tui/filter_view.rs`, `tui/save_view.rs`, `tui/settings.rs`, `tui/column_select.rs`, `tui/stats.rs`, `tui/dashboard.rs`
 - [ ] `docs/tui-views.md` — guide for all additional views: help, diff, filter dialog, save dialog, settings, column select, statistics, dashboard
 - [ ] `docs/tui-dashboard.md` — dashboard user guide: what each gauge/chart shows, how to interpret, real-time monitoring workflow
-- [ ] Update `man/sipnab.1` with TUI section
+- [ ] Update [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1) with TUI section
 
 ### 3.6 — TUI Automated Testing
 
@@ -2080,11 +2080,11 @@ Automated testing for the interactive TUI using three complementary approaches.
 - [ ] ≥ 5 end-to-end PTY tests covering launch, navigation, and quit
 - [ ] All snapshot tests pass on 80×24 and 120×40 terminal sizes
 - [ ] State machine tests verify filter DSL application narrows visible dialogs
-- [ ] PTY tests run in CI (added to `.github/workflows/ci.yml`)
+- [ ] PTY tests run in CI (added to [`.github/workflows/ci.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml))
 - [ ] No test depends on specific terminal emulator features
 
 **Docs — 3.6 deliverables:**
-- [ ] `docs/internals/tui-testing.md` — how TUI tests work: snapshot approach, state machine tests, PTY tests, how to update snapshots, how to add new tests
+- [ ] [`docs/internals/tui-testing.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/tui-testing.md) — how TUI tests work: snapshot approach, state machine tests, PTY tests, how to update snapshots, how to add new tests
 - [ ] `tests/snapshots/README.md` — snapshot inventory and regeneration instructions
 
 ---
@@ -2145,7 +2145,7 @@ Automated testing for the interactive TUI using three complementary approaches.
 - [ ] Rustdoc on `security/scanner_detect.rs`, `security/scanner_kill.rs`
 - [ ] `docs/scanner-detection.md` — scanner detection guide: detected patterns, custom UA matching, behavioral detection, false positive rate expectations
 - [ ] `docs/scanner-kill.md` — scanner kill guide: how it works, safety model (isolated child process), rate limiting, injection mechanism, when to use, legal considerations
-- [ ] `contrib/fail2ban/sipnab-scanner.conf` — fail2ban filter for scanner detection output
+- [ ] [`contrib/fail2ban/sipnab-scanner.conf`](https://github.com/NormB/sipnab/blob/main/contrib/fail2ban/sipnab-scanner.conf) — fail2ban filter for scanner detection output
 
 ### 4.2 — Toll Fraud & IRSF Detection
 
@@ -2153,9 +2153,9 @@ Automated testing for the interactive TUI using three complementary approaches.
   - **IRSF destination database:** Embedded Rust `phf` (perfect hash) map of known high-risk E.164 prefixes, sourced from the CFCA public prefix list and ITU-T country code assignments.
   - **Supply chain hardening (D17):**
     - Bundled snapshot in-tree (`data/cfca-prefixes-YYYY-MM.csv`)
-    - `build.rs` uses bundled data by default
+    - [`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs) uses bundled data by default
     - Download only when explicitly requested: `SIPNAB_UPDATE_PREFIXES=1 cargo build`
-    - Downloaded data verified against SHA-256 hash pinned in `build.rs`
+    - Downloaded data verified against SHA-256 hash pinned in [`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs)
     - If download fails or hash mismatches, build uses bundled snapshot and logs warning
     - Users can override with local file via config: `[security] irsf_prefixes = "/path/to/custom.csv"`
   - Unusual call volume spike from single source
@@ -2248,7 +2248,7 @@ Automated testing for the interactive TUI using three complementary approaches.
 - [ ] Rustdoc on `security/alerting.rs`
 - [ ] `docs/alerting.md` — alerting rule reference: rule grammar (EBNF), all built-in rules, threshold examples, cooldown behavior, alert-exec templates, combining with fail2ban
 - [ ] `docs/security-guide.md` — unified security features guide: scanner detection, fraud, digest leak, reg flood, alerting, recommended deployment configurations
-- [ ] Update `man/sipnab.1` with security flags
+- [ ] Update [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1) with security flags
 - [ ] `contrib/fail2ban/sipnab-security.conf` — fail2ban filter for all security alert types
 
 ---
@@ -2478,8 +2478,8 @@ SIP over TLS (SIPS, port 5061) is increasingly common. Without decryption, sipna
 - [ ] Rustdoc on `output/prometheus.rs`
 - [ ] `docs/prometheus.md` — Prometheus integration guide: all metrics with descriptions, label values, histogram buckets, scrape configuration, recommended recording rules
 - [ ] `docs/grafana-dashboard.md` — example Grafana dashboard: panels for call rate, PDD, MOS distribution, concurrent calls, security alerts (include JSON dashboard definition)
-- [ ] `contrib/grafana/sipnab-dashboard.json` — importable Grafana dashboard
-- [ ] `contrib/prometheus/sipnab-alerts.yml` — example alerting rules for Prometheus Alertmanager
+- [ ] [`contrib/grafana/sipnab-dashboard.json`](https://github.com/NormB/sipnab/blob/main/contrib/grafana/sipnab-dashboard.json) — importable Grafana dashboard
+- [ ] [`contrib/prometheus/sipnab-alerts.yml`](https://github.com/NormB/sipnab/blob/main/contrib/prometheus/sipnab-alerts.yml) — example alerting rules for Prometheus Alertmanager
 
 ### 5.5 — Wireshark & tshark Integration
 
@@ -2501,7 +2501,7 @@ SIP over TLS (SIPS, port 5061) is increasingly common. Without decryption, sipna
 
 ### 5.6 — SRTP Decryption
 
-SRTP (RFC 3711) encrypts RTP media streams. Decryption requires the SRTP master key.
+SRTP ([RFC 3711](https://www.rfc-editor.org/rfc/rfc3711)) encrypts RTP media streams. Decryption requires the SRTP master key.
 
 **Key source chain (automatic):**
 
@@ -2678,7 +2678,7 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 - [ ] `docs/daemon-mode.md` — daemon deployment guide: systemd setup, syslog configuration, privilege model in daemon mode, monitoring the daemon
 - [ ] `contrib/sipnab.service` — systemd unit file with documentation comments
 - [ ] `contrib/sipnab-api.env` — example environment file for daemon mode
-- [ ] Update `man/sipnab.1` with API and daemon flags
+- [ ] Update [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1) with API and daemon flags
 
 ---
 
@@ -2730,7 +2730,7 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 - [ ] crates.io publish dry-run succeeds (`cargo publish --dry-run`)
 
 **Docs — 7.2 deliverables:**
-- [ ] `.github/workflows/` — CI workflow files with inline comments explaining each step
+- [ ] [`.github/workflows/`](https://github.com/NormB/sipnab/tree/main/.github/workflows) — CI workflow files with inline comments explaining each step
 - [ ] `docs/internals/ci-cd.md` — CI/CD pipeline documentation: what runs, when, how to debug failures, how to add new platforms
 
 ### 7.3 — Packaging
@@ -2744,7 +2744,7 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 - [ ] AUR package
 - [ ] Man page: `sipnab.1` (finalized — skeleton from Phase 1, populated across phases)
 - [ ] `contrib/sipnab.service` — systemd unit file (from Phase 6)
-- [ ] `contrib/fail2ban/` — fail2ban filter and jail configuration (from Phase 4)
+- [ ] [`contrib/fail2ban/`](https://github.com/NormB/sipnab/tree/main/contrib/fail2ban) — fail2ban filter and jail configuration (from Phase 4)
 
 **Gate — 7.3 is done when:**
 - [ ] `cargo install sipnab` from crates.io (dry-run) installs working binary
@@ -2758,7 +2758,7 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 - [ ] aarch64 binary runs on Jetson AGX Thor (or equivalent ARM64)
 
 **Docs — 7.3 deliverables:**
-- [ ] `docs/install.md` — installation guide for all platforms: cargo, static binary, deb, rpm, homebrew, docker, AUR, building from source
+- [ ] [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md) — installation guide for all platforms: cargo, static binary, deb, rpm, homebrew, docker, AUR, building from source
 - [ ] Package-specific READMEs in `contrib/deb/`, `contrib/rpm/`, `contrib/homebrew/`, `contrib/docker/`
 
 ### 7.4 — Documentation & Website

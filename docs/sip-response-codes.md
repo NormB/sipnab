@@ -5,20 +5,20 @@ defines it, and how sipnab classifies it.
 
 **Source.** <https://www.iana.org/assignments/sip-parameters/sip-parameters-7.csv>
 — the IANA *Response Codes* registry, retrieved 2026-07-30. IANA is the registry
-of record: RFC 3261 §21 defines 50 of these and later RFCs register the other 25,
+of record: [RFC 3261 §21](https://www.rfc-editor.org/rfc/rfc3261#section-21) defines 50 of these and later RFCs register the other 25,
 so no single RFC carries the whole list. A blank `Reference` in that CSV means
-RFC 3261, which is why those 50 line up exactly with RFC 3261 §21.
+RFC 3261, which is why those 50 line up exactly with [RFC 3261 §21](https://www.rfc-editor.org/rfc/rfc3261#section-21).
 
 **Wikipedia disagrees with the registry, so prefer this table.** Its list differs
 in five phrases and carries two codes that no registry has. 437 is *Unsupported
 Credential*, not *Unsupported Certificate* — [RFC 8224 §6.2.2] names the latter as
 the previous name. 500 is *Server Internal Error*, not *Internal Server Error*.
 202 reads *Accepted (Deprecated)*. 409 *Conflict* and 411 *Length Required* come from
-RFC 2543, which RFC 3261 obsoleted.
+[RFC 2543](https://www.rfc-editor.org/rfc/rfc2543), which RFC 3261 obsoleted.
 
 [RFC 8224 §6.2.2]: https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2
 
-**Reason phrases on the wire are free text.** RFC 3261 §7.2 lets a sender write
+**Reason phrases on the wire are free text.** [RFC 3261 §7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2) lets a sender write
 anything after the code, so a capture showing `500 Service Unavailable` or `487
 Request Cancelled` is legal, and both are common in the field. The phrase in this
 table is the canonical one. Match on the code, never on the text.

@@ -922,9 +922,9 @@ degrees of one thing:
 
 | `strategy` | Crosses a B2BUA? | What a match is worth | `identifier_match` |
 |---|---|---|---|
-| `session_id` | **Yes, by design** (RFC 7989) | An identifier both ends agreed on | `true` |
+| `session_id` | **Yes, by design** ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989)) | An identifier both ends agreed on | `true` |
 | `x_call_id` | Only if the box inserts it | An identifier, by vendor convention | `true` |
-| `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it (RFC 7315 makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
+| `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it ([RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
 | `sdp_origin` | Only if the box forwards SDP untouched | An identifier of the MEDIA session, not the dialog | `true` |
 | `charging_vector_icid` | Not by design — an ICID names ONE dialog and a B2BUA is two | An intermediary carried a per-dialog identifier onto a second dialog | `true` |
 | `via_branch` | **No** — a B2BUA opens a new transaction | Same transaction, so: same hop, not across one | `true` |
@@ -962,7 +962,7 @@ clock, not that the clock is accurate to within the window you are matching in.
 
 Both transcripts below are real output from sipnab 0.5.87, from the script in
 [Drive it from a script](#drive-it-from-a-script), against sipnab servers reading
-`tests/pcap-samples/`. Same command shape, opposite evidence.
+[`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples). Same command shape, opposite evidence.
 
 **The hop stayed a proxy.** Zero legs, and the Call-ID turns up unchanged one
 node in — which is what proxy mode looks like, not what a lost call looks like:
@@ -1036,7 +1036,7 @@ not equally good.
 `Session-ID` exists for exactly this problem: it is a *pair* of UUIDs, one
 contributed by each endpoint, and each side reports the pair from its own point
 of view, so it survives a box that rewrites Call-ID, From tag and Via. sipnab
-already reads it — `src/sip/session_id.rs` parses the header, intersects the
+already reads it — [`src/sip/session_id.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs) parses the header, intersects the
 non-nil halves rather than comparing strings (the halves swap direction across a
 B2BUA, so string equality would find nothing and look exactly like "unrelated
 calls"), and correlation on it reports `strategy: session_id` with
@@ -1047,7 +1047,7 @@ evidence.
 **2. Use an identifier the network already carries.** This is what `x_call_id`,
 `sdp_origin` and the two `P-Charging-Vector` strategies are: sipnab is already
 looking for them, so if your SBC emits `X-Call-ID` by vendor convention,
-forwards SDP untouched so the RFC 8866 origin tuple survives, or sits in a
+forwards SDP untouched so the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) origin tuple survives, or sits in a
 carrier network where RFC 7315 charging headers are on the wire anyway, you get
 an identifier match today with no configuration at all. Check before you plan
 work — run `find_correlated` on a known B2BUA call and see what `strategy` comes
@@ -1074,7 +1074,7 @@ output: `timing_heuristic` announces itself as a guess and sets
 correlate two unrelated calls with no field left to catch it.
 
 That is the same judgement this codebase makes elsewhere. sipnab records the
-RFC 7329 legacy `Session-ID` form as an interop **notice**, not a violation,
+[RFC 7329](https://www.rfc-editor.org/rfc/rfc7329) legacy `Session-ID` form as an interop **notice**, not a violation,
 because a single message cannot distinguish a legacy implementation from a
 broken one — so the finding states what arrived on the wire and declines to
 assert which. A computed cross-node id would be the opposite move: asserting an
@@ -1082,7 +1082,7 @@ identity the wire never established.
 
 > **For IMS and carrier readers: sipnab now reads `P-Charging-Vector`, in two
 > strategies, and the difference between them decides whether it helps you.**
-> RFC 7315 §4.6 says the ICID identifies *a dialog*, and a B2BUA is two
+> [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
 > dialogs — so a conformant B2BUA emits a **different** `icid-value` on each
 > side, and plain `icid-value` equality does **not** solve the re-origination
 > case. What crosses that hop is the separate `related-icid` parameter
@@ -1516,7 +1516,7 @@ half of the stack to look at, and getting it wrong costs an hour.
 
 Each recipe below is a question an operator actually arrives with, the tool
 calls that answer it, and **real output** — every block comes from running the
-tool against a capture in `tests/pcap-samples/`, not from writing plausible
+tool against a capture in [`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples), not from writing plausible
 JSON. You can reproduce any of them.
 
 You do not type these calls. You ask your agent the question in the heading and
@@ -1584,7 +1584,7 @@ problem is one-way audio, and the hint names the direction that is missing.
 Here it is `no_answer`: the far end rejected the call without returning SDP, so
 there is no mismatch to fix. Note that `offered` lists PCMU even though the
 INVITE carries no `a=rtpmap` — payload type 0 is PCMU permanently under
-RFC 3551, and an rtpmap is only required for the dynamic range.
+[RFC 3551](https://www.rfc-editor.org/rfc/rfc3551), and an rtpmap is only required for the dynamic range.
 
 Pair it with the registry text rather than an agent's recollection:
 

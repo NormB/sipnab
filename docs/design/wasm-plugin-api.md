@@ -215,7 +215,7 @@ Each step is independently useful; the sequence stops cleanly after any of them.
 
 ## Writing a plugin, start to finish
 
-The worked example lives at `crates/sipnab-plugin-example` and detects **short
+The worked example lives at [`crates/sipnab-plugin-example`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-plugin-example) and detects **short
 answered calls** — a call picked up and torn down within five seconds, which is
 a bad route, a codec the far end rejects, or wangiri-style fraud dialling. It is
 deliberately not a built-in: whether a three-second call is a problem depends

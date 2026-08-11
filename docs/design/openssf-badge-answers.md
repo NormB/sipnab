@@ -2,7 +2,7 @@
 
 **Status: registered and passing.** Project
 [13931](https://www.bestpractices.dev/projects/13931) — the badge is live in
-`README.md` and linked from the sipnab.com home page.
+[`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) and linked from the sipnab.com home page.
 
 The badge is a self-certification questionnaire at
 [bestpractices.dev](https://www.bestpractices.dev/). Submission requires signing
@@ -33,11 +33,11 @@ No criterion is unmet.
 | Criterion | Answer | Evidence |
 |---|---|---|
 | `homepage_url` | Met | `https://sipnab.com` |
-| `description_good` | Met | Site and `README.md` both open with what the tool does |
-| `interact` | Met | `SUPPORT.md` routes questions, bugs and vulnerabilities |
-| `contribution` | Met | `CONTRIBUTING.md` |
-| `floss_license` | Met | MIT OR Apache-2.0, declared in `Cargo.toml` |
-| `license_location` | Met | `LICENSE-MIT` and `LICENSE-APACHE` at the repo root |
+| `description_good` | Met | Site and [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) both open with what the tool does |
+| `interact` | Met | [`SUPPORT.md`](https://github.com/NormB/sipnab/blob/main/SUPPORT.md) routes questions, bugs and vulnerabilities |
+| `contribution` | Met | [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md) |
+| `floss_license` | Met | MIT OR Apache-2.0, declared in [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) |
+| `license_location` | Met | [`LICENSE-MIT`](https://github.com/NormB/sipnab/blob/main/LICENSE-MIT) and [`LICENSE-APACHE`](https://github.com/NormB/sipnab/blob/main/LICENSE-APACHE) at the repo root |
 | `documentation_basics` | Met | Install, usage and security are all published sections |
 | `documentation_interface` | Met | CLI reference, REST API and MCP pages document every external surface |
 | `sites_https` | Met | Site and repository are HTTPS only |
@@ -54,8 +54,8 @@ met: MIT and Apache-2.0 are both OSI-approved, and everything is in English.
 | `repo_public` | Met | `https://github.com/NormB/sipnab` |
 | `repo_track` | Met | Git |
 | `repo_interim` | Met | Work lands on `main` continuously between releases |
-| `version_unique` | Met | Every release carries a unique semver, single-sourced from `Cargo.toml` and held there by `docs_current_version_markers_match_cargo` |
-| `release_notes` | Met | `CHANGELOG.md`, Keep a Changelog format |
+| `version_unique` | Met | Every release carries a unique semver, single-sourced from [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) and held there by `docs_current_version_markers_match_cargo` |
+| `release_notes` | Met | [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md), Keep a Changelog format |
 | `release_notes_vulns` | Met | The changelog calls out security-relevant fixes in the entry carrying them |
 
 The three SUGGESTED items are also met: git is distributed, versioning is
@@ -65,12 +65,12 @@ semantic, and every release is tagged.
 
 | Criterion | Answer | Evidence |
 |---|---|---|
-| `report_process` | Met | `.github/ISSUE_TEMPLATE/` with bug and feature templates |
+| `report_process` | Met | [`.github/ISSUE_TEMPLATE/`](https://github.com/NormB/sipnab/tree/main/.github/ISSUE_TEMPLATE) with bug and feature templates |
 | `report_archive` | Met | The GitHub issue tracker is public and searchable |
-| `vulnerability_report_process` | Met | `SECURITY.md` |
+| `vulnerability_report_process` | Met | [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md) |
 | `vulnerability_report_private` | Met | Private advisories, linked from `ISSUE_TEMPLATE/config.yml` |
 | `report_responses` | Met | Issues #226-229 were each triaged and closed the same day they were opened |
-| `vulnerability_report_response` | Met | `SECURITY.md` defines the private channel; no external report received to date, and internally-found issues (e.g. #226) are fixed and disclosed in the changelog |
+| `vulnerability_report_response` | Met | [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md) defines the private channel; no external report received to date, and internally-found issues (e.g. #226) are fixed and disclosed in the changelog |
 
 The last two ask how quickly reports get answered. When this sheet was first
 drafted no issue had ever been filed, and the honest answer was to say so
@@ -83,8 +83,8 @@ same day, which is now the cited evidence.
 | Criterion | Answer | Evidence |
 |---|---|---|
 | `build` | Met | `cargo build`, reproduced by CI on every push |
-| `test` | Met | `cargo test --all-features`, ~4,600 tests, documented in `CONTRIBUTING.md` |
-| `test_policy` | Met | `CONTRIBUTING.md` pull request step 4: "Add or update tests for new functionality" |
+| `test` | Met | `cargo test --all-features`, ~4,600 tests, documented in [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md) |
+| `test_policy` | Met | [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md) pull request step 4: "Add or update tests for new functionality" |
 | `tests_are_added` | Met | Recent history shows tests landing with the change, not after |
 | `warnings` | Met | `cargo clippy --all-features --all-targets -- -D warnings` |
 | `warnings_fixed` | Met | That gate is deny-on-warning, so a warning cannot merge |
@@ -97,7 +97,7 @@ documented test requirements are all met.
 
 | Criterion | Answer | Evidence |
 |---|---|---|
-| `know_secure_design` | Met | Privilege drop, chroot, and an explicitly documented threat model in `SECURITY.md` |
+| `know_secure_design` | Met | Privilege drop, chroot, and an explicitly documented threat model in [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md) |
 | `know_common_errors` | Met | The in-scope list names parser crashes, key-material leakage, privilege-drop escapes, authentication bypass and command injection |
 | `crypto_published` | Met | TLS through `rustls`, no bespoke protocol |
 | `crypto_floss` | Met | `rustls`, `ring`, `aes`, `hmac`, `sha2` |
@@ -124,11 +124,11 @@ protection, and sipnab does not.
 | `static_analysis_fixed` | Met | Both gate the merge, so findings block rather than accumulate |
 
 The SUGGESTED dynamic-analysis items are met beyond what the level asks:
-15 fuzz targets under `fuzz/fuzz_targets/` — `sip_parser`, `sdp_parser`,
+15 fuzz targets under [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets) — `sip_parser`, `sdp_parser`,
 `rtp_parser`, `rtcp_parser`, `hep_parser`, `dtls`, `tls_records`, `srtp_keys`,
 `stir_shaken`, `siprec`, `tcp_reassembly`, `websocket_frame`, `pcap_reader`,
 `keylog_line` and `filter_dsl` — with `fuzz-check` keeping them compiling in CI
-and `tests/smoke_fuzz_test.rs` running a no-nightly smoke tier.
+and [`tests/smoke_fuzz_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/smoke_fuzz_test.rs) running a no-nightly smoke tier.
 
 Every one of those targets sits on an attack surface that eats
 attacker-controlled bytes, which is the reason the coverage is this wide.
@@ -141,7 +141,7 @@ targets cover the same ground.
 
 Registered and submitted at project
 [13931](https://www.bestpractices.dev/projects/13931), reading **passing**.
-The badge markup is live in `README.md`:
+The badge markup is live in [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md):
 
 ```markdown
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13931/badge)](https://www.bestpractices.dev/projects/13931)

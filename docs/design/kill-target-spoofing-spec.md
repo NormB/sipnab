@@ -17,7 +17,7 @@ the scanner accepts and acts on it.
 ## 1. The core constraint: privilege timing
 
 Spoofing the UDP source requires either a raw socket (`CAP_NET_RAW`) or libpcap
-frame injection. sipnab's lifecycle (see `src/privilege.rs`, `src/app/bootstrap.rs`):
+frame injection. sipnab's lifecycle (see [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs), [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)):
 
 1. `capture::start_capture()` opens the pcap handle — **privileged** (root or
    `cap_net_raw,cap_net_admin+ep`).
@@ -85,7 +85,7 @@ The dispatch site in `batch.rs` already has both: the request is
 
 ## 4. Packet construction (Option A, IPv4)
 
-New module `src/security/kill_packet.rs`:
+New module [`src/security/kill_packet.rs`](https://github.com/NormB/sipnab/blob/main/src/security/kill_packet.rs):
 
 - `build_ipv4_udp(src: SocketAddrV4, dst: SocketAddrV4, payload: &[u8]) -> Vec<u8>`
   — 20-byte IPv4 header (IHL=5, TTL=64, proto=17, correct total-length, header

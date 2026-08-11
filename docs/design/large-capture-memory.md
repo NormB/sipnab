@@ -62,7 +62,7 @@ share a directory:
 18,241 + 707 = 18,948 exactly, so the two sets share no Call-ID and the combined
 figure is a clean sum. The `tg` ring buffer has wrapped — `tg.pcap7` holds the
 oldest packets and `tg.pcap6` the newest — which is the case
-`src/capture/input_set.rs` was written for and which its module doc describes at
+[`src/capture/input_set.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs) was written for and which its module doc describes at
 lines 12–17.
 
 Re-measured at 0.5.78, the dialog and SIP-message totals are unchanged to the
@@ -83,7 +83,7 @@ The difference is not subtle or corpus-specific, and the packet mix says why.
 Of `tg`'s 3,406,114 packets, 2,846,542 (83.6%) classified as RTP and 82,324
 (2.4%) as SIP; of `direct-01`'s 1,126,158, 742,241 (65.9%) were RTP and 2,558
 (0.2%) SIP. Capture files are overwhelmingly media, and media is bounded per
-call: G.711 at 8,000 Hz (RFC 3551 §4.5.14) packetised at 20 ms is 50
+call: G.711 at 8,000 Hz ([RFC 3551 §4.5.14](https://www.rfc-editor.org/rfc/rfc3551#section-4.5.14)) packetised at 20 ms is 50
 packets/second/direction, which is what the `--report` stream table shows —
 1,827 packets over 37 s and 3,407 over 68 s, both 49–50 pps. Signalling is a
 handful of packets per call regardless of how long the call runs. **Bytes on
@@ -114,7 +114,7 @@ ratios of a single point.
 | 100,000 | 18,948 | 303,616 |
 
 The retained count sits a little under the cap because `evict_oldest` drains in
-batches of `max_dialogs / 100` — its doc comment in `src/sip/dialog_store.rs`
+batches of `max_dialogs / 100` — its doc comment in [`src/sip/dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs)
 says so: "The store may briefly sit up to cap/100 below the cap; the cap remains
 a hard upper bound". Above 18,948 the curve is flat, which confirms the cap is
 the only thing being varied.
@@ -164,8 +164,8 @@ exactly: measured 221,056 KB with dialogs on, predicted
 `9,088 + 1.83×18,948 + 2.072×84,836 = 219,542 KB`. Within 0.7%.
 
 **What the coefficients mean.** `SipDialog` holds
-`pub messages: Vec<SipMessage>` (`src/sip/dialog.rs:111`), and `SipMessage`
-(`src/sip/message.rs:34`) holds both the raw bytes —
+`pub messages: Vec<SipMessage>` ([`src/sip/dialog.rs:111`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L111)), and `SipMessage`
+([`src/sip/message.rs:34`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L34)) holds both the raw bytes —
 
 ```rust
     /// Full raw message bytes as captured (refcounted view of the
@@ -174,7 +174,7 @@ exactly: measured 221,056 KB with dialogs on, predicted
 ```
 
 — and an eagerly parsed `pub headers: Vec<SipHeader>` where each `SipHeader`
-carries `value: String` (`src/sip/message.rs:20-26`). Every header value is
+carries `value: String` ([`src/sip/message.rs:20-26`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L20-L26)). Every header value is
 therefore resident twice: once inside `raw`, once as an owned `String` with its
 own allocation. 2.1 KB per message for traffic whose median message is a few
 hundred bytes is that duplication plus per-allocation overhead. This paragraph
@@ -203,12 +203,12 @@ At 0.5.71 the batch path called `ss.set_audio_capture(false)` unconditionally,
 so no batch run retained a frame. On that basis this section said the
 `max_audio_frames` cap (default 1,500/stream) "applies only to the TUI path".
 That was true of the *effect* and not of the code — 0.5.71 applied the cap in
-both `src/app/batch.rs` and `src/app/tui_mode.rs`, as section 2.1 correctly
+both [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) and [`src/app/tui_mode.rs`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs), as section 2.1 correctly
 says; retention being off in batch was what made it moot there. The sentence
 should have said so, because the moment retention stopped being unconditionally
 off the conclusion inverted with nothing in the wording to warn a reader.
 
-Which is what happened. `apply_audio_retention` in `src/app/batch.rs` now sets
+Which is what happened. `apply_audio_retention` in [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) now sets
 retention to `audio_retention_wanted(cli)`, which is `cli.mcp`, so **a `--mcp`
 batch run retains audio.** Its doc comment records why the assignment replaced
 an `if`: the previous one-armed `if` gated the operator *notice* and never the
@@ -227,7 +227,7 @@ closer to the cap without changing a limit.
 
 ## 2. Where the caps actually are
 
-The obvious answer — the shipped caps live in `src/config.rs` under `[limits]`,
+The obvious answer — the shipped caps live in [`src/config.rs`](https://github.com/NormB/sipnab/blob/main/src/config.rs) under `[limits]`,
 where `dialog_limit` is the one to tune — is what the config file, the config
 reference and the example `sipnabrc` all say. **At 0.5.71 that was wrong, in a
 way that mattered more than any particular number. It was fixed in 0.5.72 and
@@ -236,12 +236,12 @@ the fix follows from the shape of the defect.
 
 ### 2.1 The config finding, as it stood at 0.5.71
 
-**`[limits] dialog_limit` did nothing.** The field existed in `src/config.rs`,
+**`[limits] dialog_limit` did nothing.** The field existed in [`src/config.rs`](https://github.com/NormB/sipnab/blob/main/src/config.rs),
 was validated there (rejecting zero with a message naming the key), was
-documented as the way to tune RAM (`docs/config-reference.md`: `dialog_limit =
+documented as the way to tune RAM ([`docs/config-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md): `dialog_limit =
 50000  # Max tracked dialogs (tune for RAM)`), shipped in
-`contrib/sipnabrc.example:50` as `dialog_limit = 10000` — and was never read.
-`src/app/bootstrap.rs` applied exactly three `[limits]` keys, none of them this
+[`contrib/sipnabrc.example:50`](https://github.com/NormB/sipnab/blob/main/contrib/sipnabrc.example#L50) as `dialog_limit = 10000` — and was never read.
+[`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) applied exactly three `[limits]` keys, none of them this
 one:
 
 ```rust
@@ -253,7 +253,7 @@ one:
     }
 ```
 
-`max_audio_frames` was applied in `src/app/batch.rs` and `src/app/tui_mode.rs`
+`max_audio_frames` was applied in [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) and [`src/app/tui_mode.rs`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs)
 (applied, though on the batch path it could not bite — section 1.4). That was
 the complete set: `dialog_limit`, `max_streams`, `max_reassembly` and
 `hep_rate_limit` were parsed, validated, documented and inert.
@@ -268,7 +268,7 @@ the appendix marks it.
 
 The keys were not forgotten at the call site. They could not take effect,
 because clap filled each flag in whether or not the operator passed anything.
-`Cli::DEFAULT_DIALOG_LIMIT`'s doc comment in `src/cli.rs` records it:
+`Cli::DEFAULT_DIALOG_LIMIT`'s doc comment in [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) records it:
 
 > These were `default_value` attributes on the flags themselves, which is why
 > `[limits]` could never take effect: clap filled the field in whether or not
@@ -290,9 +290,9 @@ flag has a second source.
 ### 2.3 The caps as they stand
 
 **The dialog cap is `--limit`, default 100,000** —
-`Cli::DEFAULT_DIALOG_LIMIT` in `src/cli.rs`, resolved through
+`Cli::DEFAULT_DIALOG_LIMIT` in [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs), resolved through
 `Cli::dialog_limit(config)` and reaching the store as `max_dialogs` in
-`src/app/batch.rs`. The RTP cap is `--max-streams`, default 50,000
+[`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs). The RTP cap is `--max-streams`, default 50,000
 (`Cli::DEFAULT_MAX_STREAMS`). Both now accept the matching `[limits]` key when
 the flag is absent, and both still default to the same numbers, so every
 measurement below is unaffected. Rotation is on by default —
@@ -302,7 +302,7 @@ drop-oldest.
 **`--limit` bounds cumulative dialogs, not concurrent ones.** Still true.
 Nothing removes a completed dialog. `DialogStore::compact_idle` trims an idle
 dialog's *messages* but leaves the dialog itself; `retain` and `clear` have no
-caller in `src/app/` (the TUI calls `clear` when opening a different file, which
+caller in [`src/app/`](https://github.com/NormB/sipnab/tree/main/src/app) (the TUI calls `clear` when opening a different file, which
 is a reset, not a bound). So in an offline run the store grows monotonically
 with capture duration, and the cap is reached after N total calls have been
 observed, not N simultaneous ones. This is the single most counter-intuitive
@@ -316,7 +316,7 @@ most `KEEP_MESSAGES_PER_IDLE_DIALOG` messages CHOSEN by what they say rather
 than by position: keeping the last N took the outcome first, because on an
 `INVITE` dialog the `200 OK` arrives early, and a completed call was reported
 as having no final response. See `carries_dialog_outcome` in
-`src/sip/dialog_store.rs`. The memory bound is the same; which 20 survive is
+[`src/sip/dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs). The memory bound is the same; which 20 survive is
 not.
 
 ### 2.4 When each cap engages
@@ -365,7 +365,7 @@ A reader grepping for instrumentation finds `capacity_dialogs_dropped` and
 concludes eviction is counted but unreported. Counted-but-unreported was true as
 far as it went — the field was declared, the accessor
 `total_capacity_dialogs_dropped` existed, and every one of its five callers sat
-inside the `#[cfg(test)]` module. `docs/design/backlog.md` records it landing as
+inside the `#[cfg(test)]` module. [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) records it landing as
 "[observability] no-rotate capacity drops are uncounted … **Done:** … a lifetime
 `capacity_dialogs_dropped` counter with a public getter and merge accumulation",
 and nothing consumed it.
@@ -412,7 +412,7 @@ such paths, `process_message` and `merge`, which is exactly the sort of pair a
 call-site increment misses.
 
 **One warning at the end of the run**, `report_retention_losses` in
-`src/app/batch.rs`, built by `retention_summary` — split from the logging so
+[`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs), built by `retention_summary` — split from the logging so
 the wording is testable, "the value of this line is entirely in what it says,
 and a test that only checked 'something was logged' would pass on a sentence
 naming the wrong number". It names all three loss channels separately and stays
@@ -433,8 +433,8 @@ ticketed.
 
 **The warning names a flag that does not exist.** `retention_summary` ends
 "raise `--limit`, or `--max-dialogs`, to keep more". There is no `--max-dialogs`
-flag in `src/cli.rs` and none in the docs. An operator who follows the advice
-gets a clap error. Needs its own fix in `src/app/batch.rs`, out of scope here.
+flag in [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) and none in the docs. An operator who follows the advice
+gets a clap error. Needs its own fix in [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs), out of scope here.
 
 **`StreamStore` still has no loss counter.** It tracks `evict_shift_work`, which
 counts *entries shifted while evicting* — a cost probe for a past O(n²)
@@ -518,7 +518,7 @@ For an offline analyser that is a reproducibility defect independent of
 capacity: a colleague re-running the command on a slower laptop got a different
 call flow and had no way to know.
 
-**What shipped.** `SweepClock` in `src/app/batch.rs`, a two-variant enum that
+**What shipped.** `SweepClock` in [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs), a two-variant enum that
 makes the wrong clock unrepresentable rather than merely discouraged. `Live`
 paces on `Instant::elapsed` and answers `Utc::now()`; `Capture` paces on packet
 timestamps and answers the packet clock, seeded from the first packet so the
@@ -564,7 +564,7 @@ rather than the resolved set, and `main.rs` dispatched the mode before
 worker pool, so a call split across two files still shards to one worker by
 host pair and reconstructs as one dialog. Error policy matches
 `capture_files`: the first file's open failure is fatal, later files are
-skipped with a log. Covered by `tests/multi_input_test.rs`.
+skipped with a log. Covered by [`tests/multi_input_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/multi_input_test.rs).
 
 The measurements in this document are all `--cores 1` and are unaffected by
 either the defect or the fix.
@@ -615,12 +615,12 @@ and `capacity_dialogs_evicted` for drop-oldest — with the increment inside
 `evict_oldest` rather than at its call sites. Section 3.2 has the detail.
 
 **Warn once at the end of the run — SHIPPED**, as `report_retention_losses` in
-`src/app/batch.rs`. The recommendation was to copy the repository's existing
+[`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs). The recommendation was to copy the repository's existing
 idiom rather than reinvent it. The shipped code does not reuse the two method
 names, but it does reuse the shape and the discipline behind it — silent on a
 clean run, one sentence naming the numbers, split from the logging so the
 wording itself is under test. The idiom it was modelled on is
-`src/output/group.rs:172-184`:
+[`src/output/group.rs:172-184`](https://github.com/NormB/sipnab/blob/main/src/output/group.rs#L172-L184):
 
 ```rust
     /// `true` when a cap refused at least one message, so the caller can warn.
@@ -638,12 +638,12 @@ wording itself is under test. The idiom it was modelled on is
     }
 ```
 
-consumed in `src/app/batch.rs` as
+consumed in [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) as
 `if buf.truncated() { tracing::warn!("{}", buf.truncation_note()); }`. The
 requirement that the note "name the flag that fixes it (`--limit`) and say which
 end was lost" is met — with the caveat in section 3.3 that it also names a flag
 that does not exist. The precedent for warning loudly rather than counting
-quietly is also in the backlog: `docs/design/backlog.md` records
+quietly is also in the backlog: [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) records
 `src/sip/parser.rs:279 — [silent-loss] headers beyond MAX_HEADERS_PER_MESSAGE
 silently dropped without parse_error. **Done:** … so the truncation is visible.`
 This is the same class of defect one layer up.
@@ -654,28 +654,28 @@ reading stderr and nobody else — not an MCP client, not a scrape, not a report
 pasted into a ticket. These are the surfaces and the insertion points, each a
 typed struct or a literal that a new field slots into:
 
-- MCP: `StatsResponse` in `src/mcp/server.rs` already has `dialog_count` /
+- MCP: `StatsResponse` in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) already has `dialog_count` /
   `stream_count` / `orphaned_stream_count`, and already carries
   `unanalysed_sip_messages` for the same reason this field is wanted — its doc
   comment argues that a field appearing only when something went wrong "is a
   field the reader never learns exists, and this reader is a model that cannot
   ask a follow-up question". Retention loss is the same species and should be
   present-and-zero on the same grounds.
-- REST: the `json!` literal behind `/v1/stats` in `src/output/api.rs` — a
+- REST: the `json!` literal behind `/v1/stats` in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) — a
   `"dropped"` key inside the existing `"dialogs"` object, beside `total` /
   `active` / `completed` / `failed` / `cancelled`.
-- Prometheus: `PrometheusMetrics` in `src/output/prometheus.rs`, alongside the
+- Prometheus: `PrometheusMetrics` in [`src/output/prometheus.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs), alongside the
   existing `pub capture_backpressure_blocks_total: u64`, which is the same
   species of "we could not keep up" counter. Note this needs the field populated
-  in **both** `src/output/prometheus_server.rs` (`collect_metrics`) and
-  `src/output/api.rs` (`get_metrics`), which build the struct independently.
-- TUI: the counts string at `src/tui/render/status.rs:80`, with the width
+  in **both** [`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) (`collect_metrics`) and
+  [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) (`get_metrics`), which build the struct independently.
+- TUI: the counts string at [`src/tui/render/status.rs:80`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L80), with the width
   accounting in `line1_used_cols` at `:34` updated to match — that helper sizes
   the status background from the rendered text, so added text that skips it
   under-fills the bar. The honest-truncation idiom already exists here too —
-  `src/tui/loss_map.rs:138-146` renders `"Showing most recent {} of {} losses"`
+  [`src/tui/loss_map.rs:138-146`](https://github.com/NormB/sipnab/blob/main/src/tui/loss_map.rs#L138-L146) renders `"Showing most recent {} of {} losses"`
   in `theme.warning` when `LossMap::truncated` is set.
-- The `--report` table (`print_dialog_report` in `src/output/dialog_report.rs`)
+- The `--report` table (`print_dialog_report` in [`src/output/dialog_report.rs`](https://github.com/NormB/sipnab/blob/main/src/output/dialog_report.rs))
   has no footer at all; one is needed, because a report is exactly the artifact
   that gets pasted into a ticket without its stderr.
 
@@ -683,7 +683,7 @@ Section 3.3's `StreamStore` gap belongs in the same change: two of these five
 surfaces report a stream count beside the dialog count, and a stream count with
 no loss figure has the defect this section exists to remove.
 
-**Exit code: no.** `src/app/batch.rs` reserves a non-zero exit for output-write
+**Exit code: no.** [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) reserves a non-zero exit for output-write
 failure, with the reasoning that "a partial capture is worth looking at, it just
 must not be mistaken for a whole one by a script reading `$?`". That reasoning
 argues *for* flagging eviction, but changing the exit code of a run that
@@ -723,7 +723,7 @@ window and never admit others. This is the policy that actually matches the
 question ("what happened at 14:00?"): it bounds memory by a quantity the
 operator understands, it is deterministic, and both the retained set and the
 excluded set are describable in one sentence. It still has no flag — `--filter`
-exists but is applied *after* the dialog is stored (`src/app/batch.rs`, comment:
+exists but is applied *after* the dialog is stored ([`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs), comment:
 `// Apply DSL filter (evaluated after dialog update)`), so it cannot bound
 memory. That placement is unchanged at 0.5.81. Measured at 0.5.71: `--filter
 "method == 'INVITE'"` yields the same 18,948 dialogs and 302,552 KB as no filter
@@ -771,7 +771,7 @@ set from five surfaces needs its loss figure readable from more than stderr.
 ### 4.3 Processing sets larger than memory
 
 The criterion that matters here is the one the multi-file feature exists for.
-`src/capture/input_set.rs` orders files by first-packet timestamp specifically
+[`src/capture/input_set.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs) orders files by first-packet timestamp specifically
 so that a wrapped ring buffer replays in real time order, because — its module
 doc, lines 20–25 — "replaying it by name feeds sipnab thirty-five seconds of
 traffic before the thirty-four seconds preceding it … so a mis-ordered set does
@@ -815,7 +815,7 @@ spinning media it is a second full-file read. Both passes benefit from a BPF
 filter, and pass two can narrow to the target dialog's host pairs.
 
 This option also fits what already exists. `--call-report <CALL-ID>`
-(`src/app/batch.rs`, report built by `src/output/call_report.rs`) is already
+([`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs), report built by [`src/output/call_report.rs`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs)) is already
 a "detail for one dialog" mode; today it needs the whole store in memory to find
 that dialog, and two-pass is precisely the change that removes that requirement.
 `--wireshark` and `--tshark-filter` already emit per-dialog filters, which is
@@ -835,7 +835,7 @@ The reason it ranks below two-pass is that the capture files are already a
 perfectly good on-disk representation of the messages, already ordered, already
 indexed by the file set. Spilling writes a second copy of data that has not
 moved. It also needs a serialisation format for `SipMessage`, and there is no
-embedded store in the dependency tree to lean on — `Cargo.toml` carries no
+embedded store in the dependency tree to lean on — [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) carries no
 sqlite, sled or equivalent, and the project's posture on dependencies is not to
 add one lightly. `tempfile` is present (optional, `native` feature) so the file
 handling itself is solved. Reconsider spill if two-pass proves impractical
@@ -881,13 +881,13 @@ aggregation alone is not a forensic tool.
 **STILL OPEN at 0.5.81.** Nothing in this section shipped, and every claim in it
 was re-verified rather than assumed.
 
-It is tempting to say that `src/capture/input_set.rs` already visits every file
+It is tempting to say that [`src/capture/input_set.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs) already visits every file
 during resolution, so the total size is known before reading starts and a
 size-based warning is nearly free. **Neither half of that holds: the size is not
 collected, and the size is the wrong quantity anyway.**
 
 What resolution does is open every file and read its first packet
-(`first_packet_time` in `src/capture/input_set.rs`), which doubles as the "is
+(`first_packet_time` in [`src/capture/input_set.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs)), which doubles as the "is
 this a capture" test:
 
 ```rust
@@ -1018,7 +1018,7 @@ defect since fixed — a modern re-measurement could include it, and would want
 to, given that `merge` now enforces the cap.
 
 `SIPNAB_PERF_STATS=1` still enables the `dialogs=`/`streams=` line in
-`src/app/batch.rs`.
+[`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs).
 
 **Three of these commands answer differently against 0.5.72 or later**, each
 marked below. Two of them were the evidence for a defect that is now fixed, so

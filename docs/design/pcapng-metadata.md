@@ -2,7 +2,7 @@
 
 Status: **implemented** · design 2026-06-16
 
-Both block types specced here shipped: `src/capture/writer.rs` writes the NRB
+Both block types specced here shipped: [`src/capture/writer.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs) writes the NRB
 (`write_name_resolution_block`) and the DSB, with `strip-secrets` tooling for
 sanitization. This document is retained as the design rationale. Two block
 types were in scope, with **opposite risk profiles**:

@@ -9,7 +9,7 @@ Every method in the IANA registry, the RFC section that defines it, and which
 dialog state machine sipnab runs it through.
 
 **Source.** <https://www.iana.org/assignments/sip-parameters/sip-parameters-6.csv>
-— the IANA *Methods* registry, retrieved 2026-07-30. RFC 3261 defines six of
+— the IANA *Methods* registry, retrieved 2026-07-30. [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) defines six of
 these and later RFCs register the rest, the same arrangement as the response
 codes in [SIP response codes](@/docs/sip-response-codes.md).
 

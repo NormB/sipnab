@@ -84,7 +84,7 @@ enums (`TransportProto`, `RtcpPacket`, `FraudType`, `CipherSuite`, …) are
 
 ## Features
 
-The crate is heavily feature-gated (see `Cargo.toml`). For pure parsing
+The crate is heavily feature-gated (see [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml)). For pure parsing
 you only need `native`. `tls`, `hep`, `api` and `mcp` pull in their respective
 subsystems. See the feature table in
 [install.md](install.md#feature-flags).

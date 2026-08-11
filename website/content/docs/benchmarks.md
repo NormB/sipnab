@@ -19,7 +19,7 @@ Call-IDs, 200 streams — and re-run every table below on your own hardware.
 
 - **Host:** NVIDIA Jetson Thor devboard (aarch64), 14 cores, PREEMPT_RT
   kernel, idle. (A 4-vCPU VM is not used for throughput numbers.)
-- **Corpus:** `bench/carrier.py` — N concurrent calls, each
+- **Corpus:** [`bench/carrier.py`](https://github.com/NormB/sipnab/blob/main/bench/carrier.py) — N concurrent calls, each
   `INVITE → 100 → 180 → 200 → ACK → [bidirectional RTP] → BYE → 200`,
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one

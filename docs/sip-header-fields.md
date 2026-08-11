@@ -6,12 +6,12 @@ the RFC that defines it.
 **Source.** <https://www.iana.org/assignments/sip-parameters/sip-parameters-2.csv>
 — the IANA *Header Fields* registry, retrieved 2026-07-30, 134 fields. The same
 arrangement as [SIP request methods](sip-methods.md) and
-[SIP response codes](sip-response-codes.md): RFC 3261 defines 47 and later RFCs
+[SIP response codes](sip-response-codes.md): [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) defines 47 and later RFCs
 register the rest.
 
 ## Compact forms
 
-Nineteen fields have a single-letter alias. RFC 3261 §7.3.3 makes them exactly
+Nineteen fields have a single-letter alias. [RFC 3261 §7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) makes them exactly
 equivalent to the long form, so a parser that misses one misreads the message —
 and an attacker who knows which ones a tool ignores can hide a header in plain
 sight. `COMPACT_HEADERS` in [`src/sip/parser.rs`](../src/sip/parser.rs) carries
@@ -42,7 +42,7 @@ table.
 
 ## All header fields
 
-The Description column quotes RFC 3261 §20 for the fields it defines. A field
+The Description column quotes [RFC 3261 §20](https://www.rfc-editor.org/rfc/rfc3261#section-20) for the fields it defines. A field
 registered by a later RFC carries its reference without a description, because
 no single section defines them all — follow the link.
 
@@ -57,21 +57,18 @@ no single section defines them all — follow the link.
 | Accept-Encoding |  | [RFC 3261 §20.2](https://www.rfc-editor.org/rfc/rfc3261#section-20.2) | The Accept-Encoding header field is similar to Accept, but restricts the content-codings [H3.5] that are acceptable in the response. |
 | Accept-Language |  | [RFC 3261 §20.3](https://www.rfc-editor.org/rfc/rfc3261#section-20.3) | The Accept-Language header field is used in requests to indicate the preferred languages for reason phrases, session descriptions, or status responses carried as message bodies in the response. |
 | Accept-Resource-Priority |  | [RFC 4412](https://www.rfc-editor.org/rfc/rfc4412) |  |
-| Additional-Identity |  | [3GPP TS 24.229 v16.7.0]
-        [Dongwook_Kim] |  |
+| Additional-Identity |  | [3GPP TS 24.229 v16.7.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Alert-Info |  | [RFC 3261 §20.4](https://www.rfc-editor.org/rfc/rfc3261#section-20.4) | When present in an INVITE request, the Alert-Info header field specifies an alternative ring tone to the UAS. |
 | AlertMsg-Error |  | [RFC 8876](https://www.rfc-editor.org/rfc/rfc8876) |  |
 | Allow |  | [RFC 3261 §20.5](https://www.rfc-editor.org/rfc/rfc3261#section-20.5) | The Allow header field lists the set of methods supported by the UA generating the message. |
 | Allow-Events | `u` | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665) |  |
 | Answer-Mode |  | [RFC 5373](https://www.rfc-editor.org/rfc/rfc5373) |  |
-| Attestation-Info |  | [3GPP TS 24.229 v15.11.0]
-        [Dongwook_Kim] |  |
+| Attestation-Info |  | [3GPP TS 24.229 v15.11.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Authentication-Info |  | [RFC 3261 §20.6](https://www.rfc-editor.org/rfc/rfc3261#section-20.6) | The Authentication-Info header field provides for mutual authentication with HTTP Digest. |
 | Authorization |  | [RFC 3261 §20.7](https://www.rfc-editor.org/rfc/rfc3261#section-20.7) | The Authorization header field contains authentication credentials of a UA. |
 | Call-ID | `i` | [RFC 3261 §20.8](https://www.rfc-editor.org/rfc/rfc3261#section-20.8) | The Call-ID header field uniquely identifies a particular invitation or all registrations of a particular client. |
 | Call-Info |  | [RFC 3261 §20.9](https://www.rfc-editor.org/rfc/rfc3261#section-20.9) | The Call-Info header field provides additional information about the caller or callee, depending on whether it is found in a request or response. |
-| Cellular-Network-Info |  | [3GPP TS 24.229 v13.9.0]
-        [Dongwook_Kim] |  |
+| Cellular-Network-Info |  | [3GPP TS 24.229 v13.9.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Contact | `m` | [RFC 3261 §20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10) | A Contact header field value provides a URI whose meaning depends on the type of request or response it is in. |
 | Content-Disposition |  | [RFC 3261 §20.11](https://www.rfc-editor.org/rfc/rfc3261#section-20.11) | The Content-Disposition header field describes how the message body or, for multipart messages, a message body part is to be interpreted by the UAC or UAS. |
 | Content-Encoding | `e` | [RFC 3261 §20.12](https://www.rfc-editor.org/rfc/rfc3261#section-20.12) | The Content-Encoding header field is used as a modifier to the "media-type". |
@@ -81,8 +78,7 @@ no single section defines them all — follow the link.
 | Content-Type | `c` | [RFC 3261 §20.15](https://www.rfc-editor.org/rfc/rfc3261#section-20.15) | The Content-Type header field indicates the media type of the message-body sent to the recipient. |
 | CSeq |  | [RFC 3261 §20.16](https://www.rfc-editor.org/rfc/rfc3261#section-20.16) | A CSeq header field in a request contains a single decimal sequence number and the request method. |
 | Date |  | [RFC 3261 §20.17](https://www.rfc-editor.org/rfc/rfc3261#section-20.17) | The Date header field contains the date and time. |
-| DC-Info |  | [3GPP TS 24.229 v19.4.1]
-        [Dongwook_Kim] |  |
+| DC-Info |  | [3GPP TS 24.229 v19.4.1](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Encryption (Deprecated) |  | [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) |  |
 | Error-Info |  | [RFC 3261 §20.18](https://www.rfc-editor.org/rfc/rfc3261#section-20.18) | The Error-Info header field provides a pointer to additional information about the error status response. |
 | Event | `o` | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665), [RFC 6446](https://www.rfc-editor.org/rfc/rfc6446) |  |
@@ -106,8 +102,7 @@ no single section defines them all — follow the link.
 | Min-Expires |  | [RFC 3261 §20.23](https://www.rfc-editor.org/rfc/rfc3261#section-20.23) | The Min-Expires header field conveys the minimum refresh interval supported for soft-state elements managed by that server. |
 | Min-SE |  | [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) |  |
 | Organization |  | [RFC 3261 §20.25](https://www.rfc-editor.org/rfc/rfc3261#section-20.25) | The Organization header field conveys the name of the organization to which the SIP element issuing the request or response belongs. |
-| Origination-Id |  | [3GPP TS 24.229 v15.11.0]
-        [Dongwook_Kim] |  |
+| Origination-Id |  | [3GPP TS 24.229 v15.11.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | P-Access-Network-Info |  | [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) |  |
 | P-Answer-State |  | [RFC 4964](https://www.rfc-editor.org/rfc/rfc4964) |  |
 | P-Asserted-Identity |  | [RFC 3325](https://www.rfc-editor.org/rfc/rfc3325) |  |
@@ -137,10 +132,8 @@ no single section defines them all — follow the link.
 | Policy-Contact |  | [RFC 6794](https://www.rfc-editor.org/rfc/rfc6794) |  |
 | Policy-ID |  | [RFC 6794](https://www.rfc-editor.org/rfc/rfc6794) |  |
 | Priority |  | [RFC 3261 §20.26](https://www.rfc-editor.org/rfc/rfc3261#section-20.26) | The Priority header field indicates the urgency of the request as perceived by the client. |
-| Priority-Share |  | [3GPP TS 24.229 v13.16.0]
-      [Dongwook_Kim] |  |
-| Priority-Verstat |  | [3GPP TS 24.229]
-      [Lionel_Morand] |  |
+| Priority-Share |  | [3GPP TS 24.229 v13.16.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
+| Priority-Verstat |  | [3GPP TS 24.229](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Priv-Answer-Mode |  | [RFC 5373](https://www.rfc-editor.org/rfc/rfc5373) |  |
 | Privacy |  | [RFC 3323](https://www.rfc-editor.org/rfc/rfc3323) |  |
 | Proxy-Authenticate |  | [RFC 3261 §20.27](https://www.rfc-editor.org/rfc/rfc3261#section-20.27) | A Proxy-Authenticate header field value contains an authentication challenge. |
@@ -156,20 +149,16 @@ no single section defines them all — follow the link.
 | Refer-To | `r` | [RFC 3515](https://www.rfc-editor.org/rfc/rfc3515) |  |
 | Referred-By | `b` | [RFC 3892](https://www.rfc-editor.org/rfc/rfc3892) |  |
 | Reject-Contact | `j` | [RFC 3841](https://www.rfc-editor.org/rfc/rfc3841) |  |
-| Relayed-Charge |  | [3GPP TS 24.229 v12.14.0]
-        [Dongwook_Kim] |  |
+| Relayed-Charge |  | [3GPP TS 24.229 v12.14.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Replaces |  | [RFC 3891](https://www.rfc-editor.org/rfc/rfc3891) |  |
 | Reply-To |  | [RFC 3261 §20.31](https://www.rfc-editor.org/rfc/rfc3261#section-20.31) | The Reply-To header field contains a logical return URI that may be different from the From header field. |
 | Request-Disposition | `d` | [RFC 3841](https://www.rfc-editor.org/rfc/rfc3841) |  |
 | Require |  | [RFC 3261 §20.32](https://www.rfc-editor.org/rfc/rfc3261#section-20.32) | The Require header field is used by UACs to tell UASs about options that the UAC expects the UAS to support in order to process the request. |
 | Resource-Priority |  | [RFC 4412](https://www.rfc-editor.org/rfc/rfc4412) |  |
-| Resource-Share |  | [3GPP TS 24.229 v13.7.0]
-        [Dongwook_Kim] |  |
+| Resource-Share |  | [3GPP TS 24.229 v13.7.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Response-Key (Deprecated) |  | [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) |  |
-| Response-Source |  | [3GPP TS 24.229 v15.11.0]
-        [Dongwook_Kim] |  |
-| Restoration-Info |  | [3GPP TS 24.229 v12.14.0]
-        [Dongwook_Kim] |  |
+| Response-Source |  | [3GPP TS 24.229 v15.11.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
+| Restoration-Info |  | [3GPP TS 24.229 v12.14.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Retry-After |  | [RFC 3261 §20.33](https://www.rfc-editor.org/rfc/rfc3261#section-20.33) | The Retry-After header field can be used with a 500 (Server Internal Error) or 503 (Service Unavailable) response to indicate how long the service is expected to be unavailable to the requesting client and with |
 | Route |  | [RFC 3261 §20.34](https://www.rfc-editor.org/rfc/rfc3261#section-20.34) | The Route header field is used to force routing for a request through the listed set of proxies. |
 | RSeq |  | [RFC 3262](https://www.rfc-editor.org/rfc/rfc3262) |  |
@@ -177,8 +166,7 @@ no single section defines them all — follow the link.
 | Security-Server |  | [RFC 3329](https://www.rfc-editor.org/rfc/rfc3329) |  |
 | Security-Verify |  | [RFC 3329](https://www.rfc-editor.org/rfc/rfc3329) |  |
 | Server |  | [RFC 3261 §20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35) | The Server header field contains information about the software used by the UAS to handle the request. |
-| Service-Interact-Info |  | [3GPP TS 24.229 v13.18.0]
-        [Dongwook_Kim] |  |
+| Service-Interact-Info |  | [3GPP TS 24.229 v13.18.0](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1055) |  |
 | Service-Route |  | [RFC 3608](https://www.rfc-editor.org/rfc/rfc3608) |  |
 | Session-Expires | `x` | [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) |  |
 | Session-ID |  | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) |  |

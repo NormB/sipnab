@@ -1,0 +1,456 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Documentation links stay clickable, and stay out of code blocks.
+//!
+//! Two failures this catches, both reported by a reader rather than by CI:
+//!
+//! 1. A repo path sitting in a bare code span. `tests/pcap-samples/b2bua-asterisk.pcapng`
+//!    is a real file a reader wants to download, and as `` `like this` `` it is
+//!    a string they must copy, guess a URL for, and hope. The audit that
+//!    followed found 541 of them across every document, not the two dozen the
+//!    original fix was scoped to.
+//!
+//! 2. A citation like "RFC 3261 §17.1.1.3" with no link. The section number is
+//!    a promise that a specific paragraph says a specific thing; unlinked, the
+//!    reader has to find it by hand.
+//!
+//! Both gates skip fenced blocks deliberately: a path inside a shell example is
+//! part of a command, and a markdown link pasted into a terminal is a syntax
+//! error. See docs guidance on copy-safe code blocks.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn repo() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn tracked() -> BTreeSet<String> {
+    let out = Command::new("git")
+        .args(["ls-files"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files");
+    assert!(out.status.success(), "git ls-files failed");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn markdown_files() -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![repo().join("docs")];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("read_dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("md")
+                && !p.to_string_lossy().contains("/superpowers/")
+            {
+                // superpowers/ holds dated planning artifacts -- a record of
+                // what was believed on a date, not a claim about today. Held
+                // to these gates it would fail forever on documents that are
+                // correct as history. The linkers skip it for the same reason,
+                // and the two MUST agree: a gate demanding what its fixer will
+                // not produce is unfixable by design.
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Count the cell separators in a table row.
+///
+/// Not `matches('|').count()`: a cell may legitimately contain a pipe, either
+/// escaped (`<FILE\|DIR\|GLOB>` in cli-reference.md) or inside a code span.
+/// Counting those made the gate report a perfectly good 5-column row as
+/// 7-column and "not rendering", which is a false alarm on the most-read
+/// reference page in the repo.
+fn count_cells(row: &str) -> usize {
+    let mut n = 0;
+    let mut in_code = false;
+    let mut prev_backslash = false;
+    for c in row.chars() {
+        match c {
+            '`' if !prev_backslash => in_code = !in_code,
+            '|' if !in_code && !prev_backslash => n += 1,
+            _ => {}
+        }
+        prev_backslash = c == '\\' && !prev_backslash;
+    }
+    n
+}
+
+/// Prose lines only: fenced blocks are returned as `None` so callers skip them.
+///
+/// Closing only on the SAME marker matters: a ``` inside a ~~~ block is
+/// content, and treating it as a fence toggle inverts the state for the rest
+/// of the file, silently disabling the gate from that point on.
+fn prose_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut fence: Option<&str> = None;
+    for (i, line) in text.lines().enumerate() {
+        let t = line.trim_start();
+        let marker = if t.starts_with("```") {
+            Some("```")
+        } else if t.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        if let Some(m) = marker {
+            fence = match fence {
+                None => Some(m),
+                Some(f) if f == m => None,
+                other => other,
+            };
+            continue;
+        }
+        if fence.is_none() {
+            out.push((i + 1, line));
+        }
+    }
+    out
+}
+
+/// Every tracked repo path mentioned in prose is a link, not a bare code span.
+#[test]
+fn repo_paths_in_docs_are_clickable() {
+    let tracked = tracked();
+    // A code span that is NOT already a link label: `x` not preceded by [.
+    let span =
+        regex::Regex::new(r"(?:^|[^\[])`([A-Za-z0-9_.][A-Za-z0-9/._-]*)(?::[0-9-]+)?`").unwrap();
+
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+    for f in markdown_files() {
+        let text = std::fs::read_to_string(&f).expect("read");
+        for (lineno, line) in prose_lines(&text) {
+            for c in span.captures_iter(line) {
+                let p = &c[1];
+                scanned += 1;
+                // Under internals/, only paths build-wiki.py can rewrite may be
+                // linked -- its CODE_LINK_RE lists source trees and nothing
+                // else. Demanding a link for `Cargo.toml` there would demand
+                // one the linker must not produce, because it would reach the
+                // wiki relative and resolve to nothing.
+                let wiki_trees = [
+                    ".githooks",
+                    "packaging",
+                    ".config",
+                    ".github",
+                    ".vale",
+                    "benches",
+                    "contrib",
+                    "harness",
+                    "scripts",
+                    "website",
+                    "LICENSES",
+                    ".cargo",
+                    "crates",
+                    "docker",
+                    "bench",
+                    "demos",
+                    "tests",
+                    "fuzz",
+                    "man",
+                    "ops",
+                    "src",
+                ];
+                let in_internals = f.to_string_lossy().contains("/internals/");
+                let rewritable = p.split('/').next().is_some_and(|t| wiki_trees.contains(&t));
+                if in_internals && !rewritable {
+                    continue;
+                }
+                if tracked.contains(p) {
+                    offenders.push(format!(
+                        "{}:{lineno}: `{p}` is a tracked file, shown as text a reader must retype",
+                        f.strip_prefix(repo()).unwrap().display()
+                    ));
+                }
+            }
+        }
+    }
+
+    // A regex that matched nothing would report perfect hygiene. The docs
+    // contain thousands of code spans; a low count means the scan broke.
+    assert!(
+        scanned > 500,
+        "only {scanned} code spans were scanned - the reader or the regex broke, \
+         so this gate is checking nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "tracked repo paths shown as bare code spans ({}):\n  {}\n\n\
+         Run scripts/link-repo-paths.py --apply. Binaries need /raw/ (a /blob/ \
+         URL for a .pcapng renders a page saying it cannot be shown), \
+         directories need /tree/, and the URL must be absolute: docs/ is \
+         published to the website AND the GitHub wiki, where a relative hop out \
+         of the docs tree resolves to nothing -- EXCEPT under docs/internals/, \
+         which is wiki-only and whose links scripts/build-wiki.py rewrites, so \
+         those stay relative.",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}
+
+/// A citation naming a section must link to that section.
+#[test]
+fn rfc_section_citations_are_linked() {
+    let cite = regex::Regex::new(r"(?:^|[^\[])\bRFC ?(\d{3,5}) ?§ ?(\d+(?:\.\d+)*)").unwrap();
+
+    let mut offenders = Vec::new();
+    let mut total = 0usize;
+    for f in markdown_files() {
+        let text = std::fs::read_to_string(&f).expect("read");
+        for (lineno, line) in prose_lines(&text) {
+            for c in cite.captures_iter(line) {
+                total += 1;
+                offenders.push(format!(
+                    "{}:{lineno}: RFC {} §{} is not linked",
+                    f.strip_prefix(repo()).unwrap().display(),
+                    &c[1],
+                    &c[2]
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "RFC section citations with no link ({total}):\n  {}\n\n\
+         Run scripts/rfc-links.py --apply. Section citations are the ones a \
+         reader chases, so they are linked unconditionally; a bare `RFC N` is \
+         linked only on first mention per document, because one page cites RFC \
+         3261 248 times.",
+        offenders.join("\n  ")
+    );
+}
+
+/// The linkers must never write into a fenced block.
+///
+/// Without this, 7 links landed inside fenced blocks -- one mid-pipeline in a
+/// shell example. A reader copying that gets a syntax error, and the gate above
+/// would still be green because it only reads prose.
+#[test]
+fn no_generated_link_sits_inside_a_fenced_block() {
+    let mut offenders = Vec::new();
+    let mut fenced_lines = 0usize;
+    for f in markdown_files() {
+        let text = std::fs::read_to_string(&f).expect("read");
+        let prose: BTreeSet<usize> = prose_lines(&text).into_iter().map(|(n, _)| n).collect();
+        for (i, line) in text.lines().enumerate() {
+            let n = i + 1;
+            if prose.contains(&n) {
+                continue;
+            }
+            fenced_lines += 1;
+            if line.contains("](https://github.com/NormB/sipnab/")
+                || line.contains("](https://www.rfc-editor.org/rfc/")
+            {
+                offenders.push(format!(
+                    "{}:{n}: {}",
+                    f.strip_prefix(repo()).unwrap().display(),
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        fenced_lines > 100,
+        "only {fenced_lines} fenced lines seen - the fence reader broke, so this \
+         gate cannot detect a link inside a code block"
+    );
+    assert!(
+        offenders.is_empty(),
+        "generated links inside fenced code blocks ({}):\n  {}",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}
+
+/// A cited line number must go to that line.
+///
+/// The docs cite lines constantly -- `[`dialog_store.rs:595`](...)` and the
+/// bare `[`:993`](...)` form used inside tables. All 405 of them pointed at
+/// the file with no fragment, so every click landed at the top of the file the
+/// sentence had just given an exact position in. A citation that does not land
+/// is worse than a bare number, because it looks like it worked.
+#[test]
+fn cited_line_numbers_link_to_the_line() {
+    // A link label ending in :N or :N-M -- the author promised a position.
+    let cite = regex::Regex::new(r"\[`([^`]*?):(\d+(?:-\d+)?)`\]\(([^)]+)\)").unwrap();
+
+    let mut no_fragment = Vec::new();
+    let mut relative = Vec::new();
+    let mut total = 0usize;
+    for f in markdown_files() {
+        // docs/internals/** is exempt, and the exemption is a limitation
+        // rather than a preference. Those links MUST be relative
+        // (build-wiki.py rewrites them; an absolute blob URL pins a branch),
+        // and a relative one cannot carry #L today: CODE_LINK_RE has no
+        // fragment group and rewrite_code_link drops what its LINK_RE sibling
+        // preserves, so the line number would vanish from the wiki. Lift this
+        // exemption when the generator carries fragments.
+        if f.to_string_lossy().contains("/internals/") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&f).expect("read");
+        for (lineno, line) in prose_lines(&text) {
+            for c in cite.captures_iter(line) {
+                total += 1;
+                let href = &c[3];
+                let where_ = format!(
+                    "{}:{lineno}: `{}:{}`",
+                    f.strip_prefix(repo()).unwrap().display(),
+                    &c[1],
+                    &c[2]
+                );
+                if !href.contains("#L") {
+                    no_fragment.push(where_.clone());
+                }
+                if href.starts_with("../") || href.starts_with("./") {
+                    relative.push(where_);
+                }
+            }
+        }
+    }
+
+    assert!(
+        total > 100,
+        "only {total} line citations found - the docs are full of them, so the \
+         regex broke and this gate is checking nothing"
+    );
+    assert!(
+        no_fragment.is_empty(),
+        "line citations whose link has no #L fragment ({}):\n  {}\n\n\
+         Run scripts/fix-line-anchors.py --apply. The label promises a line; \
+         without #L the click lands at the top of the file.",
+        no_fragment.len(),
+        no_fragment.join("\n  ")
+    );
+    assert!(
+        relative.is_empty(),
+        "line citations using a relative href ({}):\n  {}\n\n\
+         docs/ is mirrored to the website and published to the GitHub wiki; \
+         from either, `../../src/...` points outside the tree at nothing.",
+        relative.len(),
+        relative.join("\n  ")
+    );
+}
+
+/// Every row of a table has the same number of cells as its header.
+///
+/// A markdown table ends at the first line that is not a row. Twelve rows in
+/// sip-header-fields.md were split across two lines by the IANA-registry
+/// scrape, which ended the table at line 60 and dropped roughly 128 of its 136
+/// rows to plain text. The page reads normally down to the break, so nothing
+/// short of rendering it -- or this gate -- catches it.
+///
+/// Compared per table, not against a fixed number: this file alone holds a
+/// 3-column table and a 4-column one.
+#[test]
+fn table_rows_match_their_header_width() {
+    let mut offenders = Vec::new();
+    let mut tables = 0usize;
+    for f in markdown_files() {
+        let text = std::fs::read_to_string(&f).expect("read");
+        let mut header: Option<(usize, usize)> = None; // (pipe count, line)
+        for (lineno, line) in prose_lines(&text) {
+            let t = line.trim_start();
+            if !t.starts_with('|') {
+                header = None;
+                continue;
+            }
+            let pipes = count_cells(t);
+            match header {
+                None => {
+                    header = Some((pipes, lineno));
+                    tables += 1;
+                }
+                Some((want, _)) if pipes != want => offenders.push(format!(
+                    "{}:{lineno}: row has {pipes} pipes, its table header has {want} \
+                     - the table stops rendering here",
+                    f.strip_prefix(repo()).unwrap().display()
+                )),
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        tables > 20,
+        "only {tables} tables seen - the reader broke, so this gate is checking nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "malformed table rows ({}):\n  {}\n\nRun scripts/fix-tables.py --apply.",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}
+
+/// A bracketed reference in a table must actually be a link.
+///
+/// `[3GPP TS 24.229 v16.7.0]` and `[Dongwook_Kim]` came out of the IANA
+/// registry as reference-style links whose definitions were never carried
+/// across. They render as literal bracketed text: they LOOK like links, and a
+/// reader who clicks gets nothing. 3GPP specs are not on rfc-editor.org, so the
+/// portal page is the citable target; the registry Contact column is a person's
+/// name with no meaning to a reader of the table, and is dropped rather than
+/// linked.
+#[test]
+fn bracketed_refs_in_tables_are_real_links() {
+    // [text] not followed by ( or : -- i.e. neither inline link nor definition.
+    // No lookahead: the `regex` crate does not support it, and the version
+    // that did compile silently would have been worse than this failing loudly.
+    let dangling = regex::Regex::new(r"\[([^\]\[]{2,60})\]([^(\[:]|$)").unwrap();
+    let mut offenders = Vec::new();
+    let definition = regex::Regex::new(r"(?m)^\[([^\]]+)\]:").unwrap();
+    for f in markdown_files() {
+        let text = std::fs::read_to_string(&f).expect("read");
+        let defined: BTreeSet<String> = definition
+            .captures_iter(&text)
+            .map(|c| c[1].to_string())
+            .collect();
+        for (lineno, line) in prose_lines(&text) {
+            if !line.trim_start().starts_with('|') {
+                continue;
+            }
+            for c in dangling.captures_iter(line) {
+                let label = &c[1];
+                // Only flag what a broken reference-style link actually looks
+                // like. A single bracketed word in a table is almost always a
+                // TOML section (`[capture]`, `[display]`) or a placeholder
+                // (`[<PORTS>]`), and flagging those made this gate fail on 42
+                // correct rows -- a gate that cries wolf gets muted, which is
+                // worse than not having it.
+                let looks_like_a_reference =
+                    !label.contains('"') && !label.contains(',') && label.contains(' ')
+                        || (label.contains('_')
+                            && label.chars().next().is_some_and(char::is_uppercase));
+                if !looks_like_a_reference
+                    || defined.contains(label)
+                    || label.starts_with('`')
+                    || label.contains('!')
+                {
+                    continue;
+                }
+                offenders.push(format!(
+                    "{}:{lineno}: [{label}] looks like a link and is not one",
+                    f.strip_prefix(repo()).unwrap().display()
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "dangling bracketed references in tables ({}):\n  {}",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}

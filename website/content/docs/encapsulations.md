@@ -97,12 +97,12 @@ Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD, which is why
 
 | EtherType | Protocol | Reference | Status |
 |---|---|---|---|
-| `0x0800` | IPv4 | RFC 894 | decoded |
-| `0x86DD` | IPv6 | RFC 2464 | decoded |
+| `0x0800` | IPv4 | [RFC 894](https://www.rfc-editor.org/rfc/rfc894) | decoded |
+| `0x86DD` | IPv6 | [RFC 2464](https://www.rfc-editor.org/rfc/rfc2464) | decoded |
 | `0x8100` | C-VLAN tag | IEEE 802.1Q | skipped to reach IP |
 | `0x88A8` | S-VLAN tag | IEEE 802.1Q | skipped to reach IP |
 | `0x9100` | legacy QinQ | **unregistered** | skipped to reach IP |
-| `0x8864` | PPPoE Session | RFC 2516 | decapsulated |
+| `0x8864` | PPPoE Session | [RFC 2516](https://www.rfc-editor.org/rfc/rfc2516) | decapsulated |
 | `0x8863` | PPPoE Discovery | RFC 2516 | recognised, never decapsulated |
 | `0x8847` | MPLS unicast | RFC 5332 | decapsulated |
 | `0x8848` | MPLS upstream-assigned | RFC 5332 | decapsulated |
@@ -136,21 +136,21 @@ names appearing nowhere else in the document.
 
 | Encapsulation | Key | Reference | Status |
 |---|---|---|---|
-| IP-in-IP / 6-in-4 | IP proto 4 / 41 | RFC 2003 / RFC 4213 | decoded |
-| GRE | IP proto 47 | RFC 2784 | decoded |
-| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | RFC 7637 §3.2 | decoded |
-| MPLS-in-IP | IP proto 137 | RFC 4023 | decoded |
-| AH | IP proto 51 | RFC 4302 | **traversed** — AH authenticates without encrypting, so the payload is readable |
-| ESP | IP proto 50 | RFC 4303 | encrypted — sipnab names it, never guesses |
+| IP-in-IP / 6-in-4 | IP proto 4 / 41 | [RFC 2003](https://www.rfc-editor.org/rfc/rfc2003) / [RFC 4213](https://www.rfc-editor.org/rfc/rfc4213) | decoded |
+| GRE | IP proto 47 | [RFC 2784](https://www.rfc-editor.org/rfc/rfc2784) | decoded |
+| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | [RFC 7637 §3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2) | decoded |
+| MPLS-in-IP | IP proto 137 | [RFC 4023](https://www.rfc-editor.org/rfc/rfc4023) | decoded |
+| AH | IP proto 51 | [RFC 4302](https://www.rfc-editor.org/rfc/rfc4302) | **traversed** — AH authenticates without encrypting, so the payload is readable |
+| ESP | IP proto 50 | [RFC 4303](https://www.rfc-editor.org/rfc/rfc4303) | encrypted — sipnab names it, never guesses |
 | GTP-U | UDP 2152 | 3GPP TS 29.281 | decoded |
-| VXLAN | UDP 4789 | RFC 7348 | decoded |
-| GENEVE | UDP 6081 | RFC 8926 | decoded |
-| Teredo | UDP 3544 | RFC 4380 | decoded |
-| UDP-encapsulated ESP | UDP 4500 | RFC 3948 | encrypted — sipnab names it, never guesses |
-| L2TPv2 | UDP 1701 | RFC 2661 | data messages only |
-| L2TPv3 over UDP | UDP 1701 | RFC 3931 | **refused** — see below |
+| VXLAN | UDP 4789 | [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348) | decoded |
+| GENEVE | UDP 6081 | [RFC 8926](https://www.rfc-editor.org/rfc/rfc8926) | decoded |
+| Teredo | UDP 3544 | [RFC 4380](https://www.rfc-editor.org/rfc/rfc4380) | decoded |
+| UDP-encapsulated ESP | UDP 4500 | [RFC 3948](https://www.rfc-editor.org/rfc/rfc3948) | encrypted — sipnab names it, never guesses |
+| L2TPv2 | UDP 1701 | [RFC 2661](https://www.rfc-editor.org/rfc/rfc2661) | data messages only |
+| L2TPv3 over UDP | UDP 1701 | [RFC 3931](https://www.rfc-editor.org/rfc/rfc3931) | **refused** — see below |
 
-**L2TPv3 over UDP is deliberately not decoded.** RFC 3931 §4.1 says:
+**L2TPv3 over UDP is deliberately not decoded.** [RFC 3931 §4.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1) says:
 
 <!-- vale off -->
 > The Session ID alone provides the necessary context for all further packet
@@ -198,7 +198,7 @@ frames says something else entirely, and sipnab says it differently.
 ## How this page stays true
 
 An end-to-end test backs every "decoded" row for a tunnel, in
-`tests/tunnel_integration_test.rs` that carries a real INVITE through
+[`tests/tunnel_integration_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/tunnel_integration_test.rs) that carries a real INVITE through
 `parse_packet` into the SIP parser and asserts the method and Call-ID —
 MPLS, MPLS-in-IP, NSH, PBB, MACsec (integrity-only), VXLAN, GTP-U, GRE-TEB and
 AH each have one. PPPoE and the loopback link types have their own suites.

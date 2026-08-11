@@ -1,4 +1,4 @@
-# sipnab — Full RFC 3261 / IANA Compact-Form Header Support
+# sipnab — Full [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) / IANA Compact-Form Header Support
 
 **Status:** IMPLEMENTED (2026-07-03) — table extended to all 19 forms,
 three gap tests (parser expansion, `r:` transfer tracking, `y:` STIR/SHAKEN
@@ -9,7 +9,7 @@ corpus seeded. Kept for the determination record.
 
 ## 1. What the standard requires
 
-RFC 3261 §7.3.3 ("Compact Form"):
+[RFC 3261 §7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) ("Compact Form"):
 
 > SIP provides a mechanism to represent common header field names in an
 > abbreviated form. This may be useful when messages would otherwise become
@@ -42,21 +42,21 @@ RFC 3261 itself defines ten compact forms, but the authoritative list is the
 | `s` | Subject | RFC 3261 | ✅ |
 | `t` | To | RFC 3261 | ✅ |
 | `v` | Via | RFC 3261 (+7118) | ✅ |
-| `a` | Accept-Contact | RFC 3841 | ❌ |
-| `b` | Referred-By | RFC 3892 | ❌ |
+| `a` | Accept-Contact | [RFC 3841](https://www.rfc-editor.org/rfc/rfc3841) | ❌ |
+| `b` | Referred-By | [RFC 3892](https://www.rfc-editor.org/rfc/rfc3892) | ❌ |
 | `d` | Request-Disposition | RFC 3841 | ❌ |
 | `j` | Reject-Contact | RFC 3841 | ❌ |
-| `o` | Event | RFC 6665 (+6446) | ❌ |
-| `r` | Refer-To | RFC 3515 | ❌ |
+| `o` | Event | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665) (+6446) | ❌ |
+| `r` | Refer-To | [RFC 3515](https://www.rfc-editor.org/rfc/rfc3515) | ❌ |
 | `u` | Allow-Events | RFC 6665 | ❌ |
-| `x` | Session-Expires | RFC 4028 | ❌ |
-| `y` | Identity | RFC 8224 | ❌ |
+| `x` | Session-Expires | [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) | ❌ |
+| `y` | Identity | [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) | ❌ |
 
 ## 2. Determination: what sipnab supports today
 
 **Partial.** The RFC 3261 core ten are fully supported end to end:
 
-- `src/sip/parser.rs` — `COMPACT_HEADERS` table + `expand_compact_header()`
+- [`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) — `COMPACT_HEADERS` table + `expand_compact_header()`
   expands single-letter names case-insensitively at parse time; all
   downstream lookups (`SipMessage::header()`, matcher, filter DSL,
   dialog/store logic, output surfaces) operate on the expanded long form,
@@ -88,8 +88,8 @@ long-form lookup misses it. Concrete consumer impact found by audit:
    miss.
 
 **Explicitly out of scope — SigComp.** "Compressed SIP" can also mean
-signaling compression (SigComp, RFC 3320, negotiated via the `comp=sigcomp`
-Via/URI parameter, RFC 3486). That is a bytecode-VM decompression layer,
+signaling compression (SigComp, [RFC 3320](https://www.rfc-editor.org/rfc/rfc3320), negotiated via the `comp=sigcomp`
+Via/URI parameter, [RFC 3486](https://www.rfc-editor.org/rfc/rfc3486)). That is a bytecode-VM decompression layer,
 essentially specific to 3GPP/IMS deployments; sipnab does not implement it
 and this spec does not propose to. If a capture contains SigComp-compressed
 SIP, sipnab will (correctly) not detect it as SIP. A future feature request
@@ -99,7 +99,7 @@ should be filed separately if IMS captures become a use case.
 
 ### 3.1 Parser table (the fix)
 
-Extend `COMPACT_HEADERS` in `src/sip/parser.rs` from 10 to the full IANA 19:
+Extend `COMPACT_HEADERS` in [`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) from 10 to the full IANA 19:
 
 ```rust
 const COMPACT_HEADERS: &[(u8, &str)] = &[
@@ -164,7 +164,7 @@ handling of the core ten. **Decision: keep normalizing; no config knob.**
 
 Write these failing tests first, run RED, then apply §3.1:
 
-1. **Parser expansion** (`src/sip/parser.rs` tests): a message using all
+1. **Parser expansion** ([`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) tests): a message using all
    nine extension compact forms (mixed upper/lower case, e.g. `R:`/`y:`)
    parses with all nine long names present and no single-letter names
    remaining. RED today.

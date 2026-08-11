@@ -1220,11 +1220,11 @@ Dialog vs transaction; Call-ID/From-tag/To-tag as dialog identity and why the st
 
 - [ ] **Step 3: Write the RTP half**
 
-SSRC as stream identity and why streams exist without dialogs; 16-bit sequence wraparound; RTP timestamps vs wall-clock and the clock-rate divisor; RFC 3550 signed transit-delta jitter; MOS/E-model; burst-gap loss; payload types and ptime; RFC 4733 telephone-event DTMF and its clock-rate dependence; symmetric RTP, NAT mismatch, one-way audio.
+SSRC as stream identity and why streams exist without dialogs; 16-bit sequence wraparound; RTP timestamps vs wall-clock and the clock-rate divisor; [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) signed transit-delta jitter; MOS/E-model; burst-gap loss; payload types and ptime; [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) telephone-event DTMF and its clock-rate dependence; symmetric RTP, NAT mismatch, one-way audio.
 
 - [ ] **Step 4: Add the "these are the bugs this prevents" section**
 
-Cross-reference the open P1 entries in `tasks/todo.md` that are domain-semantics bugs — RTCP jitter left in RTP-timestamp units, 24-bit signed `cumulative_lost` zero-extended, unsigned wrapping subtraction spiking jitter on reorder, TCP sequence comparison without RFC 1982 serial arithmetic, `answered_at` matching a re-INVITE's 200, delayed-offer misclassification. Verify each is still open before citing it; drop any that has since been fixed.
+Cross-reference the open P1 entries in `tasks/todo.md` that are domain-semantics bugs — RTCP jitter left in RTP-timestamp units, 24-bit signed `cumulative_lost` zero-extended, unsigned wrapping subtraction spiking jitter on reorder, TCP sequence comparison without [RFC 1982](https://www.rfc-editor.org/rfc/rfc1982) serial arithmetic, `answered_at` matching a re-INVITE's 200, delayed-offer misclassification. Verify each is still open before citing it; drop any that has since been fixed.
 
 - [ ] **Step 5: Add the six diagrams**
 

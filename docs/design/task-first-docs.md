@@ -141,7 +141,7 @@ Four steps, each independently shippable, in value order:
 1. **`mcp-walkthrough.md`** — the page that failed the user, and the worst
    measured (8%). Renames, goal-keyed index, and an explicit note that it is a
    collection of how-tos rather than a sequence to read through.
-2. **`docs/mcp.md`** — already partly fixed today (a transport-choice table and
+2. **[`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md)** — already partly fixed today (a transport-choice table and
    a step-by-step SSH quick start landed in 0.5.69), but its cross-links should
    point at the renamed anchors.
 3. **`examples.md`** — the 16 non-task-first headings above, plus a goal index.

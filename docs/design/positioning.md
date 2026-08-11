@@ -11,7 +11,7 @@ ranks them and §6 lists what it refuses.
 verified against the source and cited to file and line. The market judgements
 in §1 and §7 are judgements. Do not upgrade one to the other by restating it
 somewhere with fewer qualifiers — the same rule
-[`capture-tuning-tasks.md:22`](capture-tuning-tasks.md) applies to throughput
+[`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22) applies to throughput
 claims.
 
 ## 1. The gap
@@ -46,8 +46,8 @@ to leave the box and Homer never tried to avoid the database.
 |---|---|---|
 | Single binary, no database | — | ships |
 | Receives HEP from Kamailio/OpenSIPS/Asterisk | `-L`/`--hep-listen`, [`hep.rs`](../../src/capture/hep.rs) | ships — **nothing need be installed on production** |
-| Sender-side HEP | `--hep-send`, [`batch.rs:2273`](../../src/app/batch.rs) | ships, **SIP only** — guarded on `sip::is_sip_message` |
-| RTCP understood on the wire | [`hep.rs:59`](../../src/capture/hep.rs) — `1=SIP, 5=RTCP, 32=RTP` | receiver decodes it; the sender never emits it |
+| Sender-side HEP | `--hep-send`, [`batch.rs:2273`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2273) | ships, **SIP only** — guarded on `sip::is_sip_message` |
+| RTCP understood on the wire | [`hep.rs:59`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L59) — `1=SIP, 5=RTCP, 32=RTP` | receiver decodes it; the sender never emits it |
 | Bounded memory | `--limit` (100k dialogs, oldest-first), `--max-streams` (50k) | ships |
 | Conformance lint with RFC citations, triage, MOS diagnosis | — | ships |
 | Frame pointers with verifiable digests | `--show-frame` | ships |

@@ -2,19 +2,19 @@
 
 **Status:** IMPLEMENTED (0.5.54, 2026-07-27).
 **Context:** `--dialog-track <METHOD>` shipped from an unknown release until
-0.5.52 as a *dead flag* — declared in `src/cli.rs`, read nowhere, accepting any
+0.5.52 as a *dead flag* — declared in [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs), read nowhere, accepting any
 value including nonsense and changing nothing. It was removed rather than left
 advertising a capability the binary did not have. This spec is what would have
 to be true to reintroduce it honestly.
 
 ## The problem it solves
 
-sipnab groups SIP messages into dialogs keyed by **Call-ID**. That is RFC 3261's
+sipnab groups SIP messages into dialogs keyed by **Call-ID**. That is [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)'s
 dialog identity and it is right for ordinary traffic.
 
 It is wrong for two real populations:
 
-- **Load generators.** `tests/pcap-samples/sipp-branch-scenario.pcapng` is
+- **Load generators.** [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng) is
   8,989 packets in which one Call-ID is reused across many transactions. sipnab
   reports it as a handful of enormous dialogs; a reader wanting per-transaction
   detail cannot get it.
@@ -28,8 +28,8 @@ transaction identifier.
 
 | mode | groups by | unit |
 |---|---|---|
-| `call-id` (default) | Call-ID | dialog (RFC 3261 §12) |
-| `branch` | Call-ID + top-Via branch | transaction (RFC 3261 §17) |
+| `call-id` (default) | Call-ID | dialog ([RFC 3261 §12](https://www.rfc-editor.org/rfc/rfc3261#section-12)) |
+| `branch` | Call-ID + top-Via branch | transaction ([RFC 3261 §17](https://www.rfc-editor.org/rfc/rfc3261#section-17)) |
 
 `branch` composes *with* Call-ID rather than replacing it. A branch is only
 required to be unique within a transaction; keying on it alone would merge
@@ -68,10 +68,10 @@ branch  mode:  key = format!("{call_id}\n{branch}")     // \n cannot appear in
 ```
 
 `\n` is already used as a collision-proof separator by `seen_cseq_key` in
-`src/sip/dialog.rs` for exactly this reason; reuse it rather than inventing a
+[`src/sip/dialog.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) for exactly this reason; reuse it rather than inventing a
 second convention.
 
-Messages with no branch (RFC 2543 peers) fall back to the Call-ID alone, so
+Messages with no branch ([RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) peers) fall back to the Call-ID alone, so
 they group as they do today rather than vanishing into an empty-branch bucket.
 
 ### The blast radius, which is the real cost
@@ -82,8 +82,8 @@ dialog across every surface:
 | surface | lookup |
 |---|---|
 | `--call-report <call-id>` | `DialogStore::get(call_id)` |
-| REST API (`src/output/api.rs`) | call_id in paths and payloads |
-| MCP tools (`src/mcp/server.rs`) | call_id as the tool argument |
+| REST API ([`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)) | call_id in paths and payloads |
+| MCP tools ([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)) | call_id as the tool argument |
 | TUI timeline / raw message view | `store.get(call_id)` |
 | WASM analyzer | three `get(call_id)` sites |
 | RTP linkage | `stream_store.streams_for(call_id)` |

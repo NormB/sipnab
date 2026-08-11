@@ -230,7 +230,7 @@ message of the selection rendered as one scrollable document.
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
 | Esc | Back to the view you came from (RTP Streams, Call Flow, or Quality Dashboard) |
 
-The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis (RFC 3611), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
+The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
 
 ## Quality dashboard
 

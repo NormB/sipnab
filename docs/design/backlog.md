@@ -3,7 +3,7 @@
 Re-ranked by priority on 2026-07-23 (previously grouped by source area).
 Every open item from the 2026-07-23 documentation audit is retained
 verbatim with its file:line and category tag. Shipped work is recorded
-in `CHANGELOG.md`; completed audit-period features are kept at the
+in [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md); completed audit-period features are kept at the
 bottom for context.
 
 Tiers:
@@ -37,7 +37,7 @@ Tiers:
   confident wrong answer.** **Corrected 2026-08-05:** this used to open
   *"`pcap::Capture::stats()` is never called anywhere in the tree
   (`grep -rn '\.stats()' src/` matches only MCP tool tests)"*, which was true the
-  day it was written and is false now — `src/capture/live.rs:334` polls it on the
+  day it was written and is false now — [`src/capture/live.rs:334`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L334) polls it on the
   stats timer and `:424` reads once more at loop exit. The rest of the entry is
   the defect as it was found, kept because that reasoning is what set the
   priority. libpcap has
@@ -49,7 +49,7 @@ Tiers:
   nothing. This is the same defect class the `--cores` empty-output fix already
   closed on purpose: *"An empty output that exits 0 reads as 'there was nothing
   to report', which is the one conclusion the run had disproved"*
-  (`src/app/bootstrap.rs:396-401`). A forensics tool that cannot say it lost
+  ([`src/app/bootstrap.rs:396-401`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L396-L401)). A forensics tool that cannot say it lost
   evidence is worse than one that refuses to run. **Do:** poll `stats()` on the
   live capture sweep, carry `dropped`/`if_dropped` into the batch summary, the
   `/v1/stats` REST payload, the MCP `stats` tool and a Prometheus counter; warn
@@ -57,7 +57,7 @@ Tiers:
   **This is also the prerequisite for every item in CT2-CT5** — none of that
   tuning can be evaluated without a drop counter to tune against.
   **In progress (2026-08-03) — the counter half is done, the surfacing half is
-  not.** `src/capture/live.rs` now polls `cap.stats()` on a 1s timer
+  not.** [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs) now polls `cap.stats()` on a 1s timer
   (`STATS_INTERVAL`; a syscall, so deliberately not per packet), folds each
   reading into process-global `KERNEL_DROPPED` / `IFACE_DROPPED` via
   `fold_stats`, and reads once more at loop exit so drops in the final window
@@ -75,16 +75,16 @@ Tiers:
   --lib --all-targets` clean, `cargo fmt --check` clean, `cargo test --test
   capture_test` 16/16. **Done (the surfacing half, tracked as CT1b in
   `capture-tuning-tasks.md`):** the counts now reach the batch summary
-  (`src/app/batch.rs:938`, through `kernel_drop_counts()`), `/v1/stats`
-  (`src/output/api.rs:984`, `kernel_dropped_packets`), the MCP `stats` tool
-  (`src/mcp/server.rs`) and Prometheus (`src/output/prometheus.rs:499`,
+  ([`src/app/batch.rs:938`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L938), through `kernel_drop_counts()`), `/v1/stats`
+  ([`src/output/api.rs:984`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L984), `kernel_dropped_packets`), the MCP `stats` tool
+  ([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)) and Prometheus ([`src/output/prometheus.rs:499`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L499),
   `sipnab_capture_kernel_dropped_packets_total`, asserted in
-  `tests/metrics_test.rs`). `INVALID_PCAP_TIMESTAMPS` was closed in the same pass
+  [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs)). `INVALID_PCAP_TIMESTAMPS` was closed in the same pass
   — see G1 — so those counters travel together as one `capture_quality`
   block with a `degraded` flag. **Corrected 2026-08-06:** this used to read
   *"all three counters travel together … with a single `degraded` flag"*, and
   there are four counters now. `CaptureQuality`
-  (`src/output/prometheus.rs:107`) gained `undecodable_frames` — frames that
+  ([`src/output/prometheus.rs:107`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L107)) gained `undecodable_frames` — frames that
   arrived intact and produced nothing because no decoder here could read them —
   and its doc comment says it is deliberately **not** part of `degraded`. So the
   rollup no longer covers every counter in the block, and a dashboard reading
@@ -95,10 +95,10 @@ Tiers:
   here is measured on a live NIC at all (V1). Both are in
   `capture-tuning-tasks.md`.
 - [x] **CT2 — The kernel ring buffer defaults to 2 MiB, which silently drops on
-  any busy server.** `src/app/bootstrap.rs:1359` —
+  any busy server.** [`src/app/bootstrap.rs:1359`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1359) —
   `let buffer_mb = cli.buffer.or(config.capture.buffer).unwrap_or(2);` — fed to
   `.buffer_size((config.buffer_mb * 1_000_000) as i32)` at
-  `src/capture/live.rs:146`. Two megabytes is roughly 1,400 full-MTU frames: at
+  [`src/capture/live.rs:146`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L146). Two megabytes is roughly 1,400 full-MTU frames: at
   the 2.3M pkts/s this tool benchmarks at, that is **under a millisecond of
   slack**. Any scheduling hiccup, any `--api` request that makes the reader wait
   (see LK1), and the kernel starts discarding. The same reasoning as CT1 applies
@@ -121,7 +121,7 @@ Tiers:
   turn a working capture into a failing one; an explicit small `-B` is
   honoured exactly and never promoted. Four ladder tests cover
   requested-first, halving, no-promotion, and termination/non-zero. Docs
-  updated in `docs/cli-reference.md`, `docs/config-reference.md` and both
+  updated in [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md), [`docs/config-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md) and both
   website mirrors. **Caveat — read CT7. Corrected 2026-08-05:** this used to end
   *"so most of this win is unrealised until CT7 lands"*, and CT7 has since
   landed. The arithmetic still holds for the TUI, which keeps immediate mode by
@@ -133,7 +133,7 @@ Tiers:
   on the reference corpus replayed at line rate. The default raise is what
   shipped; the measurement did not.
 - [x] **G7 — `$SIPNAB_AUDIO_PLUGIN` is `dlopen`ed ahead of every trusted path.**
-  `src/rtp/playback.rs` `plugin_candidates()` pushed the env-var path **first**,
+  [`src/rtp/playback.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs) `plugin_candidates()` pushed the env-var path **first**,
   before the exe-adjacent build, `/usr/lib/sipnab/` and the loader search path,
   and `load_plugin()` returns the first that loads. So an attacker who controls
   the environment gets arbitrary **native, unsandboxed** code executed in
@@ -142,12 +142,12 @@ Tiers:
   asserts *"loading a trusted plugin library; any initializers it runs are our
   own code"*, which is exactly the assumption the env-var branch breaks. Note
   the contrast with the WASM plugin host, which is deliberately import-free and
-  fuel-metered (`src/plugin/mod.rs`) — the audio path has none of that.
+  fuel-metered ([`src/plugin/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs)) — the audio path has none of that.
   **Do:** try trusted paths first and treat the env var as a
   development-only override (gate it behind a debug build, an explicit
   `--allow-plugin-override`, or an ownership/permission check on the file), and
   correct the SAFETY comment either way. **Done:** `plugin_candidates()`
-  (`src/rtp/playback.rs:456`) is now `trusted_plugin_candidates()` followed by
+  ([`src/rtp/playback.rs:456`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs#L456)) is now `trusted_plugin_candidates()` followed by
   `.extend(env_override_candidate())`, so the override is tried **last** rather
   than first, and only after it survives an ownership and permission check —
   the process must have gained no privileges at `execve`, and the file must be a
@@ -162,14 +162,14 @@ Tiers:
   libpcap 1.10 `pcap-linux.c` upstream, not inferred. `prepare_tpacket_socket()`
   reads: *"The buffering cannot be disabled in that mode, so if the user has
   requested immediate mode, we don't use TPACKET_V3"* — guarded by
-  `if (!handle->opt.immediate)`. `src/capture/live.rs` set immediate mode
+  `if (!handle->opt.immediate)`. [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs) set immediate mode
   **unconditionally**, so sipnab never got the block-based V3 ring. The
   consequence compounds with CT3: TPACKET_V2 slots are fixed-size and sized from
   the snaplen (`frame_size = handle->snapshot; req.tp_frame_size =
   TPACKET_ALIGN(macoff + frame_size); req.tp_frame_nr = buffer_size /
   tp_frame_size`), and the Ethernet clamp is `offload ? MAX(mtu, 65535) : mtu`.
   **The clamp is guarded on `handle->linktype == DLT_EN10MB`, and sipnab's
-  default Linux device is `any` (`src/capture/device.rs:38-40`), which is
+  default Linux device is `any` ([`src/capture/device.rs:38-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L38-L40)), which is
   `DLT_LINUX_SLL2` — so on the DEFAULT configuration no clamp runs at all**
   and the slot is the full 65535-byte snaplen regardless of offload settings.
   The new 64 MiB ring therefore holds roughly **1,000 packets**; at the old
@@ -194,10 +194,10 @@ Tiers:
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` (`src/app/bootstrap.rs:1537`) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:1537`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1537)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
-  `CaptureConfig::immediate_mode`, and `src/capture/live.rs:219-220` passes that
+  `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
   one value to both `.immediate_mode()` and `.timeout()`. The V3 timeout trap
   above was handled rather than inherited: `read_timeout_ms`
   (`live.rs:60`) returns the interactive 100 ms only when immediate mode is on
@@ -214,7 +214,7 @@ Tiers:
 - [x] **CT9 — `-B/--buffer` used decimal MB while every surface said MiB, and
   overflowed to a NEGATIVE size past 2047.** Two bugs in one expression,
   `.buffer_size((config.buffer_mb * 1_000_000) as i32)`. **(a) Units:** the
-  field is `buffer_mb`, the `-B` help says MiB and `docs/cli-reference.md` says
+  field is `buffer_mb`, the `-B` help says MiB and [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) says
   MiB, but the multiplier was decimal — `--buffer 64` quietly requested 61.04
   MiB. **(b) Overflow:** `pcap_set_buffer_size` takes a C `int`, and nothing
   bounded the input. `--buffer 2148` computed `2_148_000_000` and handed libpcap
@@ -231,7 +231,7 @@ Tiers:
   `[2048, 2148, 4000, 5000, 100_000, u32::MAX]`. Verified: `cargo test --lib
   capture::live` 20/20, clippy clean, fmt clean.
 - [x] **CT8 — The capture loop called `poll(2)` once per packet.**
-  `src/capture/live.rs` polled the capture fd *before every* `next_packet()`,
+  [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs) polled the capture fd *before every* `next_packet()`,
   including when the memory-mapped ring already held data — which on a busy link
   is essentially always. At the rates sipnab is benchmarked at that is millions
   of wasted syscalls per second, and it bought nothing: draining a TPACKET ring
@@ -244,14 +244,14 @@ Tiers:
   live interface** — the throughput claim is reasoned from the syscall count,
   not benchmarked, and should be confirmed with CT1's drop counters under load.
 - [x] **PI1 — `architecture.md` claims a process isolation that does not
-  exist.** `docs/architecture.md:149-150` states *"D15/D16 — Privilege drop +
+  exist.** [`docs/architecture.md:149-150`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md#L149-L150) states *"D15/D16 — Privilege drop +
   process isolation … active responses run in an isolated child."* Active
   responses run in the `scanner-kill` **thread**
-  (`src/process_isolation.rs:5` — *"Provides thread-based isolation"*;
+  ([`src/process_isolation.rs:5`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L5) — *"Provides thread-based isolation"*;
   `:28` still carries *"Future enhancement: replace threads with
   `fork()`/`Command` for true process-level isolation"*), sharing the address
   space with the parsers, the stores, TLS key material and bearer tokens.
-  `docs/rest-api.md:1117` makes exactly the right disclosure for the API
+  [`docs/rest-api.md:1117`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L1117) makes exactly the right disclosure for the API
   (*"it is not a separate OS process; treat the API bind address and key
   accordingly"*); `architecture.md` owes the same for scanner-kill and does not
   make it. Overstating a security boundary in the architecture doc is a P0
@@ -260,7 +260,7 @@ Tiers:
   `PR_SET_NO_NEW_PRIVS`, core dumps disabled, optional `--chroot`); D16 is
   retitled *"specified, not shipped"* and says plainly that scanner-kill is a
   thread and the servers are tasks in the one address space, that
-  `panic = "abort"` (`Cargo.toml:262`) means threads buy no fault containment
+  `panic = "abort"` ([`Cargo.toml:262`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L262)) means threads buy no fault containment
   either, and where the analysis lives. Verified: `docs_drift_test` (32 tests)
   and `link_integrity_test` (9 tests) both pass.
 
@@ -282,7 +282,7 @@ Tiers:
 
 - [x] **G6 — `--cores N` is silently ignored on live capture.** `RunMode` is
   chosen by `cli.cores > 1 && cli.has_input() && !cli.multi_device`
-  (`src/app/bootstrap.rs`), so `--cores 8 -d eth0` falls through to
+  ([`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)), so `--cores 8 -d eth0` falls through to
   single-threaded `RunMode::Batch` with **no warning at all** — the operator
   asked for eight cores and silently got one. The adjacent block already sets
   the precedent for handling this honestly: `--cores` with `--json`/`-O` exits
@@ -292,7 +292,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  (`src/app/bootstrap.rs:1875`) returns the message and the reason —
+  ([`src/app/bootstrap.rs:1875`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1875)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -301,15 +301,15 @@ Tiers:
   silence for `--metrics` on the `--cores` path. Tests from `bootstrap.rs:2431`
   pin both the message and the paths that must stay quiet.
 - [x] **LK1 — `fork`/`exec`, stdout writes and a third lock all happen while
-  holding BOTH store write locks.** `src/app/batch.rs:2243-2244` takes
+  holding BOTH store write locks.** [`src/app/batch.rs:2243-2244`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2243-L2244) takes
   `dialog_store.write()` and `stream_store.write()` and holds both across the
   whole per-packet body. Inside that critical section:
   `event_exec.fire_dialog_event(..)` at `:2038` and `fire_quality_event(..)` at
   `:2348` reach `Command::new("sh").spawn()`
-  (`src/output/event_exec.rs:443`); `alert_engine.write().fire(..)` at `:2072`,
+  ([`src/output/event_exec.rs:443`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L443)); `alert_engine.write().fire(..)` at `:2072`,
   `:2122`, `:2160`, `:2172` and `:2185` takes a **third** lock
   (`Arc<RwLock<AlertEngine>>`) and reaches a second
-  `Command::new("sh").spawn()` (`src/security/alerting.rs:717`); and the
+  `Command::new("sh").spawn()` ([`src/security/alerting.rs:717`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L717)); and the
   buffered stdout sink is written. A `posix_spawn` costs hundreds of
   microseconds against a per-packet budget of hundreds of nanoseconds, so the
   most expensive syscall in the process runs in the most contended section of
@@ -317,7 +317,7 @@ Tiers:
   rules: [invariant 2](../internals/invariants.md) (*"Never hold both write
   locks simultaneously"*) and the threading page's claim that each store takes
   one write lock per packet, *briefly*. **Corrected 2026-08-05:** this used to
-  cite `docs/internals/threading.md:144-147` for that second quote, and the
+  cite [`docs/internals/threading.md:144-147`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L144-L147) for that second quote, and the
   quoted sentence is no longer there. The page was rewritten in the same pass
   that fixed this defect and now says the opposite in the batch case — see
   [`threading.md`](../internals/threading.md), which states that *"briefly"* is
@@ -327,13 +327,13 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` (`src/mcp/server.rs:2840`) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:2840`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2840)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
   drop, then add the missing lock-ordering rule to `invariants.md`. Ship with a
   before/after throughput number and a `dropped` delta from CT1. **Done:**
-  `DeferredEffects` (`src/app/batch.rs:341`, impl at `:464`) carries a packet's
+  `DeferredEffects` ([`src/app/batch.rs:341`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L341), impl at `:464`) carries a packet's
   output, alert findings and hook commands out of the guarded section. It is
   built at `:2032`, passed by `&mut` into the per-packet body (`:2695`) and
   destructured and replayed at `:2723`, after both guards have dropped — so the
@@ -344,7 +344,7 @@ Tiers:
   `dispatch_pending` spawns it once they are gone, with
   `TumblingWindow::allows_with_reserved` accounting for the decisions parked in
   between so `--exec-rate-limit N` still means N. The lock-ordering rule the
-  entry asks for is written down: `docs/internals/invariants.md` §2 is retitled
+  entry asks for is written down: [`docs/internals/invariants.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/invariants.md) §2 is retitled
   *"Dialog before stream, then alerts — one consistent order"* and carries a
   correction note recording what the old rule got wrong. **Not measured:** the
   before/after throughput number and the `dropped` delta were not taken — the
@@ -352,16 +352,16 @@ Tiers:
   `capture-tuning-tasks.md` is where that measurement lives.
 
 - [x] **`--version` never reports the `metrics` feature** — `compiled_features()`
-  in `src/cli.rs` walked `native, tui, audio, tls, hep, api, mcp, mcp-http, wasm`
+  in [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) walked `native, tui, audio, tls, hep, api, mcp, mcp-http, wasm`
   and omitted `metrics`, so a `--features full` binary printed
   `features: native,tui,audio,tls,hep,api,mcp,mcp-http` even though the
   Prometheus listener was compiled in. **Done:** `metrics` is now emitted after
   `mcp-http`. Verified: a `full` build prints
   `native,tui,audio,tls,hep,api,mcp,mcp-http,metrics` and a default build prints
-  `native,tui,audio,metrics`, matching `default` in `Cargo.toml` exactly. The
-  sample outputs in `docs/install.md`, `website/content/docs/install.md` and
+  `native,tui,audio,metrics`, matching `default` in [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) exactly. The
+  sample outputs in [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md), [`website/content/docs/install.md`](https://github.com/NormB/sipnab/blob/main/website/content/docs/install.md) and
   both MCP walkthroughs were updated to match. The version-string fixtures in
-  `src/tui/help.rs` and `tests/tui_snapshot_test.rs` are synthetic inputs to the
+  [`src/tui/help.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/help.rs) and [`tests/tui_snapshot_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/tui_snapshot_test.rs) are synthetic inputs to the
   renderer and do not call `compiled_features()`, so they were unaffected.
 - [x] **musl and `-noaudio` release builds silently shipped without `/metrics`**
   — `release.yml` computed `noaudio_set="native,tui,tls,hep,api,mcp,mcp-http"`
@@ -376,32 +376,32 @@ Tiers:
 - [x] src/tui/save.rs:676 — [correctness] `save_to_wav_path` indexes raw store order, not displayed order — wrong dialog's audio exported under filter/sort. **Done:** the call-list path now resolves the selection via `get_selected_call_id` (filter+search+sort display order), so the highlighted row's audio is exported.
 - [x] src/tui/controllers/call_list.rs:324,342 — [missed-edge-case] clear_non_matching/matching pass `&[]` streams to matches_dialog; stream-criteria rows misclassified and deleted. **Done:** both clear ops gather each dialog's real streams (`streams_for`) under dialog-then-stream locks and pass them to `matches_dialog`, so stream-criteria filters classify correctly.
 - [x] src/rtp/stream_store.rs:259 — [correctness] RTCP jitter (RTP timestamp units) overwrites millisecond jitter; feeds MOS 8x off at 8kHz. **Superseded:** converting the report jitter fixed the unit but kept the deeper error — one endpoint's assertion about a different path segment was still overwriting what sipnab measured. `process_rtcp` no longer writes `stream.jitter`/`stream.lost_packets` at all; reports go to a provenance side-table read via `StreamStore::remote_report`, and MOS is scored only from sipnab's own measurement.
-- [x] src/rtp/stream.rs:270 — [correctness] reordered packet inflates jitter (wrapping_sub as u64 → 4.29e9 spike); cast wrapped diff to i32 for RFC 3550 signed semantics. **Done:** wrapped diff cast `as i32 as f64` so a reordered packet yields a small signed transit delta, not a ~33M-ms jitter spike.
+- [x] src/rtp/stream.rs:270 — [correctness] reordered packet inflates jitter (wrapping_sub as u64 → 4.29e9 spike); cast wrapped diff to i32 for [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) signed semantics. **Done:** wrapped diff cast `as i32 as f64` so a reordered packet yields a small signed transit delta, not a ~33M-ms jitter spike.
 - [x] src/rtp/rtcp.rs:284 — [correctness] 24-bit signed cumulative_lost zero-extended; negative becomes huge positive. **Done:** `cumulative_lost` is now `i32`, sign-extended from the 24-bit field (`(raw24 << 8) as i32 >> 8`). The sign is now carried through into the remote-report side-table rather than clamped, so a net-duplicate stream reads as a small negative instead of being flattened to "no loss".
 - [x] src/capture/hep.rs:959 — [potential-bug] `build_hep_v3_bytes`: total_length `as u16` wraps past 65535 → corrupt header (same in test helper at 1732). **Done:** an oversized payload is truncated to what fits within the u16 length field so the declared total matches the actual size (both per-chunk and total lengths stay valid). Test-only helper at ~1744 left as-is.
 - [x] src/capture/pcap_reader.rs:484 — [correctness] `if_tsresol` not reset at new SHB; multi-interface/multi-section pcapng gets wrong resolution/link type (EPB interface_id ignored). **Done (multi-section):** a new SHB resets `if_tsresol`/`link_type` to defaults so a later section's IDB without `if_tsresol` no longer inherits stale resolution. **Done (per-interface):** the pcapng reader now keeps a per-section interface table (one entry per IDB in file order: link type, `if_tsresol`, `if_name`; a new SHB clears it) and each EPB resolves its `interface_id` against it — timestamp decoded with THAT interface's resolution, packet stamped with its link type and (new `PcapPacket.link_type`/`interface` fields) its name, which the WASM path now forwards into `Packet.interface`. An EPB referencing an undeclared `interface_id` is skipped like other bounded malformed blocks (no panic, no default-decode); a runt IDB still occupies its id slot so later interfaces' numbering stays aligned. Round-trip locked against the writer's multi-IDB output (eth0/eth1, differing link types, names + timestamps per packet).
-- [x] src/capture/reassembly.rs:520 — [correctness] TCP sequence comparison is non-wrapping; streams crossing 2^32 misclassify in-order segments as retransmits (needs serial arithmetic). *Scope note:* the drain buffer is a raw-`u32`-keyed BTreeMap, so a fully correct cross-wrap fix needs a serial-ordered buffer (or serial-next scan), not just swapping the `<` comparison — larger than a one-liner; deferred until tackled properly. **Done:** RFC 793/1982 serial arithmetic via a private `seq_lt` helper (`(a.wrapping_sub(b) as i32) < 0`; total order within any <2^31 window); the SYN-less downward-adjust in `insert` and retransmit classification in `drain_in_order` now use it. Design: kept the raw-`u32` BTreeMap and instead made `drain_in_order` select by serial position — direct `remove(&expected_seq)` lookup for the in-order segment, a serial-below scan to purge retransmits, never key-iteration order — chosen over relative-offset keys because SYN-less streams have no stable ISN (`expected_seq` can be adjusted downward), so there is no safe anchor for a relative keying scheme; stream eviction is time-based (`last_seen`) so "oldest" needed no change. Covered by wrap-crossing in-order/out-of-order/retransmit scenario tests + `seq_lt` boundary tests.
+- [x] src/capture/reassembly.rs:520 — [correctness] TCP sequence comparison is non-wrapping; streams crossing 2^32 misclassify in-order segments as retransmits (needs serial arithmetic). *Scope note:* the drain buffer is a raw-`u32`-keyed BTreeMap, so a fully correct cross-wrap fix needs a serial-ordered buffer (or serial-next scan), not just swapping the `<` comparison — larger than a one-liner; deferred until tackled properly. **Done:** [RFC 793](https://www.rfc-editor.org/rfc/rfc793)/1982 serial arithmetic via a private `seq_lt` helper (`(a.wrapping_sub(b) as i32) < 0`; total order within any <2^31 window); the SYN-less downward-adjust in `insert` and retransmit classification in `drain_in_order` now use it. Design: kept the raw-`u32` BTreeMap and instead made `drain_in_order` select by serial position — direct `remove(&expected_seq)` lookup for the in-order segment, a serial-below scan to purge retransmits, never key-iteration order — chosen over relative-offset keys because SYN-less streams have no stable ISN (`expected_seq` can be adjusted downward), so there is no safe anchor for a relative keying scheme; stream eviction is time-based (`last_seen`) so "oldest" needed no change. Covered by wrap-crossing in-order/out-of-order/retransmit scenario tests + `seq_lt` boundary tests.
 - [x] src/capture/mod.rs:295 — [correctness] leftover-map eviction victim is arbitrary (`keys().next()`), not oldest; active session's partial can be evicted. **Done:** `tcp_sip_leftover` is now an `IndexMap` where every touch removes-then-reinserts at the tail (map order = update recency) and eviction is `shift_remove_index(0)` — deterministic least-recently-updated victim, matching the crate's existing bounded-map pattern.
 - [x] src/capture/mod.rs:210 — [missed-edge-case] reassembled fragmented TCP datagram bypasses TCP reassembler/SIP framer. **Done:** when a completed IP reassembly re-parses as TCP, the segment's seq/flags are recovered from the reassembled TCP header and the datagram is routed through the normal TCP path (`process_tcp`), so it joins its stream at the correct sequence position and spanning SIP messages frame correctly; UDP reassemblies keep the direct path.
 - [x] src/capture/writer.rs:348 — [correctness] `--split filesize:N` counts only payload bytes, not record framing; systematic underestimate. **Done:** `bytes_written` now adds the on-disk record framing (16-byte classic-pcap header, or the 32-byte-plus-padded EPB) so rotation fires at the real file size.
-- [x] src/capture/writer.rs:335 — [missed-edge-case] every EPB written with interface_id 0; multi-device capture loses per-interface attribution. *Scope note:* the writer emits a single IDB by design, so proper per-interface attribution needs multi-IDB support (one IDB per source interface + mapping `Packet.interface` to an id) — a feature, not a one-liner; deferred. **Done:** `PcapWriter` now keeps an interface table (index = pcapng `interface_id`) and maps each packet's `Packet.interface` to its id, writing a new IDB mid-stream (with `if_name` + the tagging packet's own link type, since devices can differ, e.g. `any` = Linux SLL) the first time an unseen interface appears — pcapng explicitly allows interleaved IDBs, and `pcap-file`'s writer validates EPB ids against them. No `Packet` change was needed: live capture already tags every packet with its device name (one `capture_live` per device in multi-capture), file replay tags `None` (→ id 0, byte-identical single-interface output). `--split` rotation re-emits SHB + IDBs for ALL seen interfaces in id order so every file is self-contained, and the size accounting now counts SHB/IDB header bytes (EPB/IDB sizes come from `write_pcapng_block`'s return; SHB measured via a throwaway `Vec` serialization so the `BufWriter` is never flushed early; classic pcap accounting unchanged). Reader-side per-interface handling remains tracked separately (pcap_reader.rs entry above). **Corrected 2026-08-06:** this used to describe the table as having *"entry 0 = the constructor-supplied capture source"*, and a later refinement replaced that. The table now starts **empty** (`src/capture/writer.rs:353-356`); the first packet decides what interface 0 is called, identity is keyed on `(name, link_type)`, and the constructor's `default_source` is consulted only when that first packet carries no source of its own. The shipped behaviour is what the entry claims; the mechanism it names is not the one in the file.
+- [x] src/capture/writer.rs:335 — [missed-edge-case] every EPB written with interface_id 0; multi-device capture loses per-interface attribution. *Scope note:* the writer emits a single IDB by design, so proper per-interface attribution needs multi-IDB support (one IDB per source interface + mapping `Packet.interface` to an id) — a feature, not a one-liner; deferred. **Done:** `PcapWriter` now keeps an interface table (index = pcapng `interface_id`) and maps each packet's `Packet.interface` to its id, writing a new IDB mid-stream (with `if_name` + the tagging packet's own link type, since devices can differ, e.g. `any` = Linux SLL) the first time an unseen interface appears — pcapng explicitly allows interleaved IDBs, and `pcap-file`'s writer validates EPB ids against them. No `Packet` change was needed: live capture already tags every packet with its device name (one `capture_live` per device in multi-capture), file replay tags `None` (→ id 0, byte-identical single-interface output). `--split` rotation re-emits SHB + IDBs for ALL seen interfaces in id order so every file is self-contained, and the size accounting now counts SHB/IDB header bytes (EPB/IDB sizes come from `write_pcapng_block`'s return; SHB measured via a throwaway `Vec` serialization so the `BufWriter` is never flushed early; classic pcap accounting unchanged). Reader-side per-interface handling remains tracked separately (pcap_reader.rs entry above). **Corrected 2026-08-06:** this used to describe the table as having *"entry 0 = the constructor-supplied capture source"*, and a later refinement replaced that. The table now starts **empty** ([`src/capture/writer.rs:353-356`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L353-L356)); the first packet decides what interface 0 is called, identity is keyed on `(name, link_type)`, and the constructor's `default_source` is consulted only when that first packet carries no source of its own. The shipped behaviour is what the entry claims; the mechanism it names is not the one in the file.
 - [x] src/capture/decrypt.rs:846 — [correctness] TLS 1.2 CLIENT_RANDOM derivation accepts first ServerHello that works; concurrent handshakes can mis-bind. **Done:** ClientHello randoms are queued FIFO and each ServerHello is paired with the oldest unanswered one; a keylog CLIENT_RANDOM entry now binds only to the handshake whose ClientHello random matches exactly (fallback to unknown-client_random handshakes for mid-handshake captures). **Done (cross-connection):** `process_record` now takes the TCP 4-tuple as src/dst `SocketAddr`s (caller in batch.rs passes `pp.src_addr`/`pp.dst_addr` + ports); the pending-ClientHello FIFO is per-connection, keyed by the direction-normalized (ordered) endpoint pair, so a ServerHello pops only its own connection's queue and CH1(A),CH2(B),SH2(B),SH1(A) pairs correctly. Map bounded at 4096 connections (IndexMap, oldest-inserted out, matching `names.rs`) with a 32-entry per-connection queue cap.
 - [x] src/sip/dialog_store.rs:313 — [correctness] retransmission floods at message cap never advance `updated_at`; dialog can be wrongly compacted as idle. **Done:** the retransmission branch stamps `updated_at` from the arriving message's timestamp (not the stored tail's), so a dropped at-cap retransmission still counts as activity and `compact_idle` sees the dialog as live.
-- [x] src/sip/dialog.rs:369 — [missed-edge-case] CANCEL/200-OK race: 2xx after CANCEL leaves state Cancelled though the call was established per RFC 3261. **Done:** a 2xx to INVITE now transitions Cancelled → InCall (the 2xx wins the race per RFC 3261 §9/§15).
+- [x] src/sip/dialog.rs:369 — [missed-edge-case] CANCEL/200-OK race: 2xx after CANCEL leaves state Cancelled though the call was established per RFC 3261. **Done:** a 2xx to INVITE now transitions Cancelled → InCall (the 2xx wins the race per [RFC 3261 §9](https://www.rfc-editor.org/rfc/rfc3261#section-9)/§15).
 - [x] src/sip/dialog.rs (update_register_state) — [missed-edge-case] 401/407 challenge marks REGISTER dialog Failed; challenge-only capture reads as failure rather than auth-pending. **Done:** 401/407 leave the state unchanged (auth pending); only a genuine 4xx-6xx marks Failed, a later 2xx marks Registered.
 - [x] src/sip/timing.rs:135 — [edge-case] `answered_at` matches any 200-to-INVITE without CSeq check; re-INVITE 200 can be recorded as answer time. **Done:** `DialogTiming` records the initial INVITE's CSeq; the 100/180/200 INVITE-response milestones are pinned to it (fallback to first-match when the INVITE wasn't captured).
 - [x] src/sip/message.rs:117 — [edge-case] `cseq()` keeps trailing garbage in method (`"INVITE extra"`), defeating comparisons in timing.rs; untested. **Done:** `cseq()` returns only the single method token via `split_whitespace`.
-- [ ] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed (`src/sip/message.rs:276`): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` (`src/sip/message.rs:309`) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function.
-- [x] src/sip/siprec.rs:66 — [adversarial] `split_multipart` splits on `--boundary` anywhere, not line-anchored per RFC 2046. **Done:** the split is a manual scan that only accepts `--boundary` at the start of a line (body start or preceded by `\n`, covering CRLF and the parser's existing bare-LF tolerance); mid-line occurrences inside part content are literal text. Preamble, missing-terminator, and `--boundary--` handling unchanged.
+- [ ] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed ([`src/sip/message.rs:276`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L276)): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` ([`src/sip/message.rs:309`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L309)) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function.
+- [x] src/sip/siprec.rs:66 — [adversarial] `split_multipart` splits on `--boundary` anywhere, not line-anchored per [RFC 2046](https://www.rfc-editor.org/rfc/rfc2046). **Done:** the split is a manual scan that only accepts `--boundary` at the start of a line (body start or preceded by `\n`, covering CRLF and the parser's existing bare-LF tolerance); mid-line occurrences inside part content are literal text. Preamble, missing-terminator, and `--boundary--` handling unchanged.
 - [x] src/sip/sdp_timeline.rs:184 — [bug-risk] repeated T.38 re-INVITEs re-emit T38Switch every other exchange (suppression checks only previous event). **Done:** `SdpExchange` now records `is_t38` and suppression compares the previous exchange's media *state* (`is_t38 && !prev.is_t38`), matching how hold/resume compare `prev.mode` — one T38Switch per genuine audio→T.38 transition, re-emitted only after a real return to audio.
 - [x] src/sip/dsl.rs:1069 — [correctness] `compare_num` absolute-epsilon equality is effectively exact for values ≥2; `duration == 5.0` ~never matches. **Done:** `==`/`!=` use `NUM_EQ_TOLERANCE = 5e-4` — half the finest domain step, since every numeric field is integral (ports, counts) or millisecond-derived (duration/pdd/setup, jitter, MOS/loss to ≥0.1) — absorbing float noise while keeping adjacent domain values (5.001 vs 5.0) distinct.
 - [x] src/sip/dsl.rs:965 — [correctness] `src.port`/`dst.port` read `messages.first()`, which drifts after `compact_idle` drains oldest messages. **Done:** `SipDialog` captures `src_port`/`dst_port` at creation (alongside the existing `src_addr`/`dst_addr`; nothing else preserved the initial transport ports) and the DSL reads those, so the fields are stable across compaction instead of silently swapping to a response's reversed ports.
-- [x] src/sip/stir_shaken.rs:152 — [silent-loss] only first `dest.tn` kept; multi-destination PASSporTs drop the rest. **Done:** `dest_tn` widened to `Vec<String>` and the previously-unparsed `dest.uri` array (RFC 8225 §5.2.1) is now kept as `dest_uri`; new `dest_display()` joins all destinations for the one log consumer (`app/batch.rs`).
-- [x] src/mcp/server.rs:745 — [correctness] tail_dialogs truncates before sorting; next_cursor can permanently skip updates when >limit dialogs changed. **Done:** collects everything past the cursor, sorts by `(updated_at, call_id)` on real DateTimes (also killing a variable-precision RFC 3339 string-compare hazard), *then* truncates; `next_cursor` is a compound `<RFC3339>|<Call-ID>` derived from the last returned row, so tie groups split across pages are neither dropped nor duplicated. Bare-timestamp legacy cursors still work.
+- [x] src/sip/stir_shaken.rs:152 — [silent-loss] only first `dest.tn` kept; multi-destination PASSporTs drop the rest. **Done:** `dest_tn` widened to `Vec<String>` and the previously-unparsed `dest.uri` array ([RFC 8225 §5.2.1](https://www.rfc-editor.org/rfc/rfc8225#section-5.2.1)) is now kept as `dest_uri`; new `dest_display()` joins all destinations for the one log consumer (`app/batch.rs`).
+- [x] src/mcp/server.rs:745 — [correctness] tail_dialogs truncates before sorting; next_cursor can permanently skip updates when >limit dialogs changed. **Done:** collects everything past the cursor, sorts by `(updated_at, call_id)` on real DateTimes (also killing a variable-precision [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) string-compare hazard), *then* truncates; `next_cursor` is a compound `<RFC3339>|<Call-ID>` derived from the last returned row, so tie groups split across pages are neither dropped nor duplicated. Bare-timestamp legacy cursors still work.
 - [x] src/output/api.rs:827 — [correctness] `get_stream` matches SSRC alone; collisions return arbitrary stream. **Done:** on an SSRC collision the endpoint now returns the most-active matching stream (`max_by_key(packet_count)`) deterministically, so a colliding orphan can't shadow the real media stream.
 - [x] api.rs:949 vs prometheus_server.rs:433 — [correctness] `sipnab_messages_total` divergent semantics between the two servers. **Done:** the REST `/metrics` handler now counts messages (`+= d.messages.len()`) like the standalone server, instead of one per dialog; both agree.
 - [x] src/output/mod.rs:36 — [config] prometheus_server gated behind `api` feature though built to avoid it; `--metrics` without api can't work. **Done:** new `metrics = ["native", "dep:base64"]` feature (in `default` + `full`) gates the standalone server and its wiring instead of `api`, so `--metrics` works in the default build (which has no `api`); CI gained a `metrics`-only build to keep the decoupling enforced.
-- [x] src/output/synthetic.rs — [correctness] >64KiB payloads: length fields saturate but payload appended; header/size disagree. **Done in the code, and the code's own doc comment still says the opposite.** `build_synthetic_packet` (`src/output/synthetic.rs:29`) truncates the SIP payload to `u16::MAX - 28` so the IP/UDP length fields equal the bytes actually written (a single IPv4 datagram can't carry more), instead of a saturated length with a longer body. But the rustdoc four lines above it (`src/output/synthetic.rs:26-28`) still reads *"payloads longer than a u16 length field saturate the UDP/IP length fields at `u16::MAX` rather than panicking or truncating the data"* — the pre-fix behaviour, asserted as current, on a public function. Fixing the code and leaving the doc that contradicts it is the same defect one layer up.
+- [x] src/output/synthetic.rs — [correctness] >64KiB payloads: length fields saturate but payload appended; header/size disagree. **Done in the code, and the code's own doc comment still says the opposite.** `build_synthetic_packet` ([`src/output/synthetic.rs:29`](https://github.com/NormB/sipnab/blob/main/src/output/synthetic.rs#L29)) truncates the SIP payload to `u16::MAX - 28` so the IP/UDP length fields equal the bytes actually written (a single IPv4 datagram can't carry more), instead of a saturated length with a longer body. But the rustdoc four lines above it ([`src/output/synthetic.rs:26-28`](https://github.com/NormB/sipnab/blob/main/src/output/synthetic.rs#L26-L28)) still reads *"payloads longer than a u16 length field saturate the UDP/IP length fields at `u16::MAX` rather than panicking or truncating the data"* — the pre-fix behaviour, asserted as current, on a public function. Fixing the code and leaving the doc that contradicts it is the same defect one layer up.
 - [x] src/output/event_exec.rs:231 — [resource-leak] `try_wait` error drops Child from tracking without kill/wait. **Done:** a `try_wait` error now kills and waits the child before dropping it (via the extracted, testable `reap_action`), so it is reaped instead of leaked as a zombie.
 - [x] src/tui/save.rs:783 — [edge-case] SIPp export string-replaces destination port digits; can corrupt unrelated URI parts. **Done:** new `sipp_placeholder_uri` parses the R-URI structurally (userinfo/hostport/params, IPv6 brackets) and substitutes `[remote_ip]`/`[remote_port]` only for the actual host and port components — a user part like `15080` with dst port 5080 survives intact.
 - [x] src/tui/call_flow/export.rs:86 — [correctness] RTP-bar rows export as Mermaid self-arrows; want `is_rtp_bar` skip like `is_spacer`. **Done:** the exporter skips `is_rtp_bar` rows exactly like spacers; bars still render in the TUI ladder.
@@ -421,7 +421,7 @@ Tiers:
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
 - [x] **G1 — `INVALID_PCAP_TIMESTAMPS` is counted and warned but never
-  reportable.** `src/capture/live.rs` counts every packet whose pcap timestamp
+  reportable.** [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs) counts every packet whose pcap timestamp
   was corrupt and had to be stamped with the wall clock — which makes *all*
   timing analysis for that run (PDD, delta times, call duration) unreliable —
   and the only trace is a rate-limited `warn`. No report, no `/v1/stats`, no MCP
@@ -431,36 +431,36 @@ Tiers:
   one "capture quality" block carrying invalid timestamps, kernel drops and
   interface drops together, surfaced everywhere the counts are. **Done, in that
   same pass, and as one block:** `/v1/stats` carries `"invalid_timestamps"`
-  (`src/output/api.rs:986`) beside the two drop counts; Prometheus exports
+  ([`src/output/api.rs:986`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L986)) beside the two drop counts; Prometheus exports
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
-  `src/output/prometheus.rs:119`, read from the atomic at `:149`, rendered at
-  `:523`, and named in `tests/metrics_test.rs` so a rename cannot silently drop
-  it); the MCP `stats` tool carries the field (`src/mcp/server.rs:1330`,
+  [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
+  `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
+  it); the MCP `stats` tool carries the field ([`src/mcp/server.rs:1330`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1330),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
-  (`src/app/batch.rs:905-925`, the doc comment on `report_capture_quality`). The
+  ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
   three counters stay separate rather than summed, because the remedies
   disagree — a bigger `-B` fixes kernel drops, nothing about the buffer fixes a
   corrupt timestamp — with one `degraded` flag rolling them up for a dashboard.
   **Corrected 2026-08-06:** a fourth counter, `undecodable_frames`, has since
   joined the same `capture_quality` block and is deliberately outside
-  `degraded` (`src/output/prometheus.rs:187` lists what the flag actually
+  `degraded` ([`src/output/prometheus.rs:187`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L187) lists what the flag actually
   covers). The prose above describes three because three is what this pass
   shipped; the block is no longer three wide, and `degraded` is no longer a
   rollup of all of it. See CT1.
 - [ ] **CT3 — `--snaplen` defaults to 65535, so every packet is copied whole
-  even for SIP-only work.** `src/app/bootstrap.rs:1357` —
+  even for SIP-only work.** [`src/app/bootstrap.rs:1357`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1357) —
   `cli.snaplen.or(config.capture.snaplen).unwrap_or(65535)`. The flag exists
-  (`src/cli.rs:293-295`) and reaches `.snaplen(config.snaplen as i32)`
-  (`src/capture/live.rs:145`); the **default** is the full frame. For signalling
+  ([`src/cli.rs:293-295`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L293-L295)) and reaches `.snaplen(config.snaplen as i32)`
+  ([`src/capture/live.rs:145`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L145)); the **default** is the full frame. For signalling
   analysis, 200-400 bytes captures every SIP header worth matching on, and the
   saving is paid on *every* packet in the kernel copy, the ring buffer
-  occupancy (CT2) and the `to_vec()` at `src/capture/live.rs:266`. **This is not
+  occupancy (CT2) and the `to_vec()` at [`src/capture/live.rs:266`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L266). **This is not
   a free default change**, which is why it is a profile and not a number:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` (`src/app/bootstrap.rs:1933`,
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:1933`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1933),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -472,7 +472,7 @@ Tiers:
   a given capture was truncated.
 - [ ] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
   `grep -rn 'FANOUT\|fanout' src/` matches nothing. `--cores N` is offline-only
-  (`RunMode::CoresFile` requires `-I`, `src/app/bootstrap.rs:519`), so on a busy
+  (`RunMode::CoresFile` requires `-I`, [`src/app/bootstrap.rs:519`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L519)), so on a busy
   server the live path is one `capture-<device>` thread feeding one processing
   loop — exactly the topology CT2 overflows. Linux `PACKET_FANOUT` is the
   standard answer: N sockets on one interface, kernel-side flow-hashed
@@ -487,7 +487,7 @@ Tiers:
   question is already answered.** `PACKET_FANOUT_HASH` uses
   `__skb_get_hash_symmetric()` (af_packet.c:1362), which is *symmetric*, so both
   directions of an RTP stream already land on one worker — exactly the property
-  `src/parallel.rs:68` proves RTP/RTCP needs. Use
+  [`src/parallel.rs:68`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L68) proves RTP/RTCP needs. Use
   `PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_ROLLOVER`. What symmetric hashing
   still cannot do is co-locate a call's SIP (5060) with its media (ephemeral
   SDP-negotiated ports) — different 5-tuples, different workers; see CT11 for
@@ -511,7 +511,7 @@ Tiers:
   capability check beyond `SOCK_FILTER_LOCKED` — confirm in
   `net/core/filter.c` before relying on the "no CAP_BPF" claim.)*
 - [x] **CT5 — `immediate_mode(true)` is hardcoded, defeating kernel batching.**
-  `src/capture/live.rs:152` set it unconditionally, with the comment that the
+  [`src/capture/live.rs:152`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L152) set it unconditionally, with the comment that the
   `poll()`-driven non-blocking loop requires it. That is the right call for an
   interactive TUI (packets appear as they arrive) and the wrong one for a
   headless `-N` capture on a busy link, where it costs roughly a wakeup per
@@ -520,30 +520,30 @@ Tiers:
   still terminates promptly on `--duration`/Ctrl-C with it off (that is the
   constraint the comment is protecting, and it must not regress). Cheapest item
   in this group; measure with CT1's counter. **Closed as subsumed:** CT7 landed
-  exactly this, as `immediate_mode_for()` in `src/app/bootstrap.rs` — see that
+  exactly this, as `immediate_mode_for()` in [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) — see that
   entry for what shipped and what is still unverified. What did *not* ship is an
   escape hatch to force immediate mode back on for a headless run; that is
   re-scoped and tracked as CT7b in `capture-tuning-tasks.md` rather than left
   implied here.
 - [ ] **PR1 — `--cores` plateaus at 4 because one thread reads the whole `-I`
-  set serially.** Measured, `docs/benchmarks.md:57-62`: 1 core 1.07M pkts/s,
+  set serially.** Measured, [`docs/benchmarks.md:57-62`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md#L57-L62): 1 core 1.07M pkts/s,
   2 cores 2.21M, 4 cores 2.32M, 8 cores 2.13M — throughput *declines* past four.
   The plateau sat at two cores until 0.5.89 moved the frame-provenance digest
   off the reader; that raised the ceiling without removing it, so this item's
   premise survives its own evidence being restated.
   The published cause is *"the single sequential stage that already sets this
-  ceiling (read + buffer copy + host-pair peek)"*, and `src/parallel.rs:758`
+  ceiling (read + buffer copy + host-pair peek)"*, and [`src/parallel.rs:758`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L758)
   confirms
   it: a serial `for (i, path) in paths.iter().enumerate()` loop. Since `-I`
   routinely names a directory or glob of rotated captures, N reader threads each
   opening their own file — all sharding into the *same* worker pool, preserving
   cross-file dialog stitching — attacks the measured bottleneck directly.
   Threads, not processes: `--cores` workers already hold zero shared locks
-  (`src/parallel.rs:421-426`), so there is nothing a fork would isolate.
+  ([`src/parallel.rs:421-426`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L421-L426)), so there is nothing a fork would isolate.
   **Blocker: SETTLED 2026-08-06, and the answer is NO.** Out-of-order arrival
   is *not* harmless to `process_message`, and finding out why turned up a
   defect that has nothing to do with this feature.
-  `tests/arrival_order_parity_test.rs` is the gate.
+  [`tests/arrival_order_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs) is the gate.
 
   The dialog-CREATION branch of `process_message` called `SipDialog::new`,
   `update_timing` and `track_sdp` — and **never `update_state`**, so the
@@ -597,7 +597,7 @@ Tiers:
 - [x] src/capture/hep.rs:~1380 — [behavior] `--count` counts only forwarded packets, not received; may surprise operators. **Done:** `--count` counts RECEIVED packets (the less-surprising reading for a capture tool); CLI help + docs updated to say so.
 - [x] src/capture/hep.rs (hep_bind_is_loopback) — [latency] possible blocking DNS lookup in a security decision at startup. **Done:** the loopback check is now purely syntactic (literal-IP parse, no DNS); hostnames are conservatively non-loopback with a startup warning, preserving fail-closed posture.
 - [x] src/capture/parse.rs:460 — [missed-edge-case] no IPv6-in-IP (protocol 41) encapsulation support; tunneled IPv6 SIP dropped. **Done:** IPv4 protocol 41 is routed through the existing inner-IP path (depth-bounded), so tunneled IPv6 SIP is decoded.
-- [x] src/capture/parse.rs:203 — [known-gap] SCTP DATA fragment reassembly across packets unimplemented (documented follow-up). **Done:** cross-packet SCTP DATA fragment reassembly (RFC 4960 §3.3.1) via a bounded per-(association,SID,SSN) buffer on `PacketProcessor`; B/middle/E fragments accumulate in TSN order and emit the SIP payload on E, fail-closed on gap/overflow. Single-packet B+E path unchanged.
+- [x] src/capture/parse.rs:203 — [known-gap] SCTP DATA fragment reassembly across packets unimplemented (documented follow-up). **Done:** cross-packet SCTP DATA fragment reassembly ([RFC 4960 §3.3.1](https://www.rfc-editor.org/rfc/rfc4960#section-3.3.1)) via a bounded per-(association,SID,SSN) buffer on `PacketProcessor`; B/middle/E fragments accumulate in TSN order and emit the SIP payload on E, fail-closed on gap/overflow. Single-packet B+E path unchanged.
 - [x] src/capture/parse.rs:650 — [efficiency] `v6.extensions().clone()` per IPv6 packet on hot path. **Done:** the hot-path IPv6 extension-header clone is skipped for the common empty-chain case (guarded on `exts.is_empty()`, provably behavior-preserving).
 - [x] src/capture/parse.rs:163 — [robustness] `ip_protocol_to_transport` silently maps unknown protocols to UDP; mislabels e.g. ESP. **Done:** `ip_protocol_to_transport` returns `Option` and the pre-parsed path rejects unknown protocols with a new `UnsupportedIpProtocol` error instead of mislabeling them UDP (skip chosen over an `Other` variant after a ~45-consumer audit).
 - [x] src/capture/channel.rs:140 — [metric-accuracy] backpressure counter can overstate blocking (failed try_send then instant send). **Done:** split into two counters — raw `capacity_hits` (every try_send Full, visible live) and `backpressure_blocks` (only fall-back sends that waited ≥1ms), so the Prometheus metric's meaning is honest instead of overstated.
@@ -618,7 +618,7 @@ Tiers:
 - [x] src/sip/dsl.rs:939 — [efficiency] `payload` field does lossy String conversion per message per evaluation. **Done:** `payload` matches on `&[u8]` via a new `Value::ReBytes`/`compare_bytes` path (regex bytes engine) — no per-message lossy String allocation, and no fabricated U+FFFD matches on non-UTF-8 bodies.
 - [x] src/sip/dialog.rs:178 — [efficiency] `final_status_code` collects a Vec per call on the render path. **Done:** `final_status_code` scans once tracking max-non-auth and max-any instead of collecting a Vec; behavior identical.
 - [x] src/sip/mod.rs:72 — [edge-case] request detection accepts `ASIP/2.0` (ends_with not delimiter-anchored); same in parser.rs. **Done:** request/response detection anchors on the space-delimited ` SIP/2.0` token in both `mod.rs` and `parser.rs`, so `ASIP/2.0` no longer parses as SIP.
-- [x] src/sip/dialog.rs:348 — [edge-case] `update_invite_state` has the same `sub_state.starts_with("terminated")` false-positive fixed in timing.rs:117 (matches `terminatedfoo`); apply the exact-token match. *Found during the 2026-07-24 P2 wave.* **Done:** matches the exact `Subscription-State` value token (`split(';').next().trim() == "terminated"`) per RFC 6665 §8.4, so `terminatedfoo` no longer ends the transfer; pinned by `notify_terminatedfoo_does_not_return_to_incall`.
+- [x] src/sip/dialog.rs:348 — [edge-case] `update_invite_state` has the same `sub_state.starts_with("terminated")` false-positive fixed in timing.rs:117 (matches `terminatedfoo`); apply the exact-token match. *Found during the 2026-07-24 P2 wave.* **Done:** matches the exact `Subscription-State` value token (`split(';').next().trim() == "terminated"`) per [RFC 6665 §8.4](https://www.rfc-editor.org/rfc/rfc6665#section-8.4), so `terminatedfoo` no longer ends the transfer; pinned by `notify_terminatedfoo_does_not_return_to_incall`.
 - [x] src/tui/controllers/file_open.rs:411 — [doc-staleness] comment says the shared converter "clamps an out-of-range tv_usec"; after the file.rs:249 unification it rejects+counts+warns instead. Update the wording. *Found during the 2026-07-24 P2 wave.* **Done:** comment updated: the shared converter rejects+counts+warns on an unrepresentable tv_usec rather than clamping.
 - [x] src/sip/parser.rs:279 — [silent-loss] headers beyond MAX_HEADERS_PER_MESSAGE silently dropped without parse_error. **Done:** headers past `MAX_HEADERS_PER_MESSAGE` now set `parse_error` (verified: no downstream reader gates on it) so the truncation is visible.
 - [x] src/sip/parser.rs:369 — [edge-case] non-numeric Content-Length silently ignored, no parse_error. **Done:** a non-numeric Content-Length now sets `parse_error` (body bytes retained) instead of being silently treated as absent.
@@ -626,12 +626,12 @@ Tiers:
 - [x] src/sip/parser.rs:215 — [edge-case] Request-URI not trimmed; double space yields URI with leading space. **Done:** the Request-URI is trimmed, tolerating sloppy multi-space request lines instead of yielding a leading-space URI.
 - [x] src/sip/matcher.rs:170 — [efficiency] payload matching allocates lossy String per message; `regex::bytes` would be copy-free. **Done:** payload matching uses `regex::bytes` on `&msg.raw` directly — copy-free and correct on non-UTF-8 bodies.
 - [x] src/sip/matcher.rs:179 — [efficiency] from_user/to_user allocations computed even when full-header match already succeeded. **Done:** `from_user`/`to_user` are computed lazily only when the full-header regex misses, short-circuiting the allocation.
-- [x] src/sip/matcher.rs:160 — [inconsistency] `calls_only` matches method case-insensitively while `SipMethod::parse` is case-sensitive. **Done:** `calls_only` matches the method case-SENSITIVELY (RFC 3261 §7.1), aligned with `SipMethod::parse`; the case-insensitive compare was an undocumented one-off.
+- [x] src/sip/matcher.rs:160 — [inconsistency] `calls_only` matches method case-insensitively while `SipMethod::parse` is case-sensitive. **Done:** `calls_only` matches the method case-SENSITIVELY ([RFC 3261 §7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1)), aligned with `SipMethod::parse`; the case-insensitive compare was an undocumented one-off.
 - [x] src/sip/sdp.rs:127 — [efficiency] `parse_sdp` collects all lines into a Vec up front. **Done:** `parse_sdp` iterates `text.lines()` lazily instead of collecting a Vec; behavior unchanged.
-- [x] src/sip/sdp.rs:307 — [edge-case] `parse_rtpmap` accepts payload types 128–255 (doc says 0–127). **Done:** `parse_rtpmap` rejects payload types >127 (RFC 3551 7-bit) per the parser's skip-on-malformed convention.
+- [x] src/sip/sdp.rs:307 — [edge-case] `parse_rtpmap` accepts payload types 128–255 (doc says 0–127). **Done:** `parse_rtpmap` rejects payload types >127 ([RFC 3551](https://www.rfc-editor.org/rfc/rfc3551) 7-bit) per the parser's skip-on-malformed convention.
 - [x] src/sip/sdp_timeline.rs:116 — [limitation] delayed-offer INVITEs (offer in 200, answer in ACK) mislabeled by request/response classification. **Done:** delayed-offer INVITEs are classified by position — an ACK is the answer, and a response bearing SDP with no prior offer is the delayed offer; normal flows and T.38 suppression unchanged.
-- [x] src/sip/siprec.rs:83 — [limitation] per-part Content-Type requires line-start, no folded MIME headers. **Done:** part headers are unfolded (RFC 5322 SP/HTAB continuations) before the Content-Type scan; the line-anchored splitter is unchanged.
-- [x] src/sip/siprec.rs:121 — [gap] participant AOR misses `<nameID aor="...">` attribute form common in RFC 7865 metadata. **Done:** participant AOR reads the RFC 7865 `<nameID aor="...">` attribute form (precedence: attribute > `<aor>` element > nameID content).
+- [x] src/sip/siprec.rs:83 — [limitation] per-part Content-Type requires line-start, no folded MIME headers. **Done:** part headers are unfolded ([RFC 5322](https://www.rfc-editor.org/rfc/rfc5322) SP/HTAB continuations) before the Content-Type scan; the line-anchored splitter is unchanged.
+- [x] src/sip/siprec.rs:121 — [gap] participant AOR misses `<nameID aor="...">` attribute form common in [RFC 7865](https://www.rfc-editor.org/rfc/rfc7865) metadata. **Done:** participant AOR reads the RFC 7865 `<nameID aor="...">` attribute form (precedence: attribute > `<aor>` element > nameID content).
 - [x] src/sip/timing.rs:117 — [edge-case] `starts_with("terminated")` also matches `terminatedfoo`. **Done:** the transfer-complete check matches the exact `terminated` token (`split(';').next().trim()`), so `terminatedfoo` no longer false-matches.
 - [x] src/cli.rs:878 — [bug] HEP/syslog/alert-json flags carry `help_heading = "MCP (Model Context Protocol)"`; wrong `--help` section. **Done:** HEP flags moved to a new `HEP` help heading; `--syslog`/`--alert-json` to `Security` (with the other alert-channel flags).
 - [x] src/cli.rs:517,797,1028 — [refactor] `--color`, `--mcp-transport`, `--pcap-export-mode` are free-text Strings validated late; `value_enum` would reject at parse time (`--mcp-transport bogus` without `--mcp` passes silently). **Done:** `--color`/`--mcp-transport`/`--pcap-export-mode` use a clap `PossibleValuesParser` (rejects invalid values at parse time; kept as String for off-limits `.as_str()`/`parse_mode` consumers).
@@ -675,7 +675,7 @@ Tiers:
 - [x] src/rtp/diagnosis.rs:374 — [accuracy] inferred ptime inflated by packet loss; add loss guard. **Done:** inferred ptime divides by `packet_count + lost_packets - 1`, so packet loss no longer inflates the packetization interval.
 - [x] src/rtp/dtmf.rs:81 — [assumption] hardcodes 8 kHz telephone-event clock; 16 kHz reports double duration. **Done:** new `extract_dtmf_with_clock` scales duration by the negotiated telephone-event clock rate (`duration_ts * 1000 / clock_rate`); the old `extract_dtmf` is an 8000 Hz wrapper. Wired to the SDP-negotiated rate in batch.rs.
 - [x] src/rtp/playback.rs:32 — [safety] AudioPlayer raw fn pointers + handle; add invariant note/PhantomData for Send/Sync fragility. **Done:** `AudioPlayer` carries a `PhantomData<*const c_void>` pinning `!Send + !Sync` structurally (independent of the handle repr), with a thread-safety invariant doc and `compile_fail` doctests guarding against accidental Send/Sync.
-- [x] src/output/prometheus_server.rs:266 — [robustness] Authorization header matching only two casings, exactly one space. **Done:** Authorization handling is case-insensitive on both field name and scheme and tolerates OWS/multiple spaces (RFC 7235); the token comparison stays constant-time and exact.
+- [x] src/output/prometheus_server.rs:266 — [robustness] Authorization header matching only two casings, exactly one space. **Done:** Authorization handling is case-insensitive on both field name and scheme and tolerates OWS/multiple spaces ([RFC 7235](https://www.rfc-editor.org/rfc/rfc7235)); the token comparison stays constant-time and exact.
 - [x] src/output/cli_print.rs:130 — [edge-case] negative sub-second deltas render as `+0.500s`. **Done:** the delta sign is derived from the full signed value before formatting the magnitude, so a negative sub-second delta renders `-0.500s` instead of `+0.500s`.
 - [x] src/output/dialog_report.rs:220 — [edge-case] truncate_str max_len<=3 char-count can exceed byte contract. **Done:** `truncate_str` with tiny `max_len` walks down to a char boundary within the byte budget and drops the ellipsis when there's no room, so the result never exceeds `max_len` bytes on multibyte input.
 - [x] src/output/api.rs (list_*) — [api-design] `total` is unfiltered size while rows are filtered; paging broken. **Done:** `list_dialogs`/`list_streams` materialize the filtered set first and set `total` to the filtered count, so paging by total terminates correctly instead of over-paging the unfiltered size.
@@ -689,7 +689,7 @@ Tiers:
 - [x] src/auth.rs:73 — [dead-code+latent-bug] infallible-serialization fallback builds JSON by hand without escaping id. **Done:** the hand-built JSON fallback (unescaped `id`) is removed — serialization of the concrete payload is provably infallible, so `unwrap_or_default` handles the impossible error fail-closed with no hand-interpolation.
 - [x] src/process_isolation.rs:432 — [efficiency] PerDstRateLimiter::cleanup O(n) on every send. **Done:** `PerDstRateLimiter` cleanup is gated to at most once/second (`cleanup_if_due`, injected clock) like the HEP nonce-prune; the 60s window in `allow()` still governs limiting so a not-yet-swept bucket never mis-limits.
 - [x] process_isolation.rs:204 / parallel.rs:204,336 — [error-handling] `let _ = tx.send` drops dead-worker shard packets silently. **Done:** parallel.rs dead-worker shard sends go through `shard_send`, which returns a lost-packet count accumulated into `ReconResult.dropped_count` and warned — no more silent `let _ = tx.send`. (process_isolation's own dead-worker send was already handled loudly.)
-- [x] src/pipeline.rs:57 — [edge-case] is_rtcp_packet requires odd dst port; RFC 5761 mux RTCP on even port never recognized. **Done:** `is_rtcp_packet` recognizes RFC 5761 muxed RTCP on even ports by content (v2, PT 192-223, self-consistent RTCP length) while keeping the classic odd-port path; the length-consistency guard keeps existing even-port non-RTCP tests passing.
+- [x] src/pipeline.rs:57 — [edge-case] is_rtcp_packet requires odd dst port; [RFC 5761](https://www.rfc-editor.org/rfc/rfc5761) mux RTCP on even port never recognized. **Done:** `is_rtcp_packet` recognizes RFC 5761 muxed RTCP on even ports by content (v2, PT 192-223, self-consistent RTCP length) while keeping the classic odd-port path; the length-consistency guard keeps existing even-port non-RTCP tests passing.
 
 ## P3 — code health
 
@@ -700,22 +700,22 @@ Tiers:
   runtime (if `--metrics` or `--api` is used) reads from the `DialogStore`
   through a `parking_lot::RwLock` — read-heavy, write-rare, so RwLock contention
   is minimal."* The batch loop takes `dialog_store.write()` **once per packet**
-  (`src/app/batch.rs`), so at benchmarked rates writes are the single most
+  ([`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs)), so at benchmarked rates writes are the single most
   frequent operation in the process. "Write-rare" is the premise every later
   contention judgement rests on, and it is false. Correct it in place (the
   repo's own "refute your own claims in place" norm), and say what the real
   shape is: write-per-packet, read-rare-but-latency-sensitive. **Done:**
-  [`implementation-plan-v6.md:401-421`](implementation-plan-v6.md) carries a
+  [`implementation-plan-v6.md:401-421`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L401-L421) carries a
   *"Refuted 2026-08-03"* block that quotes the sentence it replaces, states the
   real shape, and keeps the original *conclusion* while replacing its reason —
   contention is usually low because in the common case there is no second party,
   not because writes are rare. It also points at the measured detail and at
   `invariants.md` §2 for the ordering rules the batch path does follow.
 - [x] **G3 — Invariant 2 and the batch applier contradict each other.**
-  `docs/internals/invariants.md` §2 states *"Never hold both write locks
+  [`docs/internals/invariants.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/invariants.md) §2 states *"Never hold both write locks
   simultaneously"* and then explains that *"The batch and `--cores` appliers
   hold their stores by `&mut` and so have no ordering to get wrong."* The batch
-  applier does not: `src/app/batch.rs` takes `dialog_store.write()` **and**
+  applier does not: [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) takes `dialog_store.write()` **and**
   `stream_store.write()` and holds both across the whole per-packet body,
   passing `&mut` borrows of the guards downward. There is no deadlock (the order
   is consistent), but the invariant page describes a discipline the main path
@@ -748,7 +748,7 @@ Tiers:
   have had no reviewable boundary.
 
 - [x] **`TransportProto::Sctp` doc comment said "stub for future use"** —
-  `src/net.rs`. SCTP is implemented: `src/capture/parse.rs` recognizes IP
+  [`src/net.rs`](https://github.com/NormB/sipnab/blob/main/src/net.rs). SCTP is implemented: [`src/capture/parse.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs) recognizes IP
   protocol 132, walks the chunk list, and extracts SIP from the first complete
   (B+E) DATA chunk, recovering the real src/dst ports from the common header.
   The comment predated that work and understated what the tree supports.
@@ -764,7 +764,7 @@ Tiers:
 - [x] src/sip/dialog_store.rs:617 — [dead-code] `.filter(score >= 50)` can never filter (min emitted score is 50). **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/dsl.rs:685 — [missed-edge-case] quoting-hint keyword exclusion is lowercase-only while parser is case-insensitive; `method == TRUE` gets misleading hint. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/mod.rs:84 — [duplication] `find_crlf` duplicated verbatim in parser.rs. **Done (P3 code-health wave, 2026-07-24).**
-- [x] src/sip/matcher.rs — [naming] REGEX_SIZE_LIMIT is described as a "ReDoS" guard; the regex crate is linear-time, so the limit bounds memory and compile cost, not backtracking. **Done 2026-08-06, after this line claimed it once already.** The 2026-08-05 audit found the P3 wave had corrected the const's own comment (matcher.rs:19) and left three sites asserting the refuted claim, two of them PUBLISHED rustdoc. All are now corrected, and the sweep was widened past matcher.rs on the reasoning that a refuted claim spreads by copy: seven occurrences across `src/sip/matcher.rs`, `src/security/scanner_detect.rs` and `tests/security_test.rs`. Every surviving mention of "ReDoS" in those files is now a correction that names the linear-time guarantee, so a reader who greps the word lands on the refutation rather than the claim.
+- [x] src/sip/matcher.rs — [naming] REGEX_SIZE_LIMIT is described as a "ReDoS" guard; the regex crate is linear-time, so the limit bounds memory and compile cost, not backtracking. **Done 2026-08-06, after this line claimed it once already.** The 2026-08-05 audit found the P3 wave had corrected the const's own comment (matcher.rs:19) and left three sites asserting the refuted claim, two of them PUBLISHED rustdoc. All are now corrected, and the sweep was widened past matcher.rs on the reasoning that a refuted claim spreads by copy: seven occurrences across [`src/sip/matcher.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/matcher.rs), [`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) and [`tests/security_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/security_test.rs). Every surviving mention of "ReDoS" in those files is now a correction that names the linear-time guarantee, so a reader who greps the word lands on the refutation rather than the claim.
 - [x] src/sip/sdp_timeline.rs:103 — [modeling] REFER transfers reuse Offer + magic `mode: "transfer"`; dedicated variant cleaner. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/stir_shaken.rs:160 — [testability] `parse_identity_header` reads Utc::now() internally; inject clock for deterministic iat tests. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/sip/stir_shaken.rs:278 — [naming] test `malformed_jwt_too_few_parts` actually exercises too many parts. **Done (P3 code-health wave, 2026-07-24).**
@@ -791,7 +791,7 @@ Tiers:
 - [x] src/tui/controllers/mod.rs:341 — [duplication] dashboard wheel handler re-implements dashboard.rs row clamp. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/render/mod.rs:206 — [refactor] fold-label duplicates "(+N retx)" format knowledge owned by prepare. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/stream_detail.rs:109 — [naming] MOS label/color band boundaries inconsistent at 3.0–3.5. **Done (P3 code-health wave, 2026-07-24).**
-- [x] stream_list.rs:307 / stream_detail.rs:91 — [refactor] loss-% computation duplicated in three places. **Three of five, and this line claimed all of it until 2026-08-06. Closed 2026-08-08 — five of five.** The blocker was real and was a VISIBILITY problem, not a call-site one: `loss_percent` was `pub(in crate::tui)` in a view module, and `src/output/event_exec.rs` is outside `crate::tui`, so it literally could not call the shared function. That is how a second implementation gets written instead of a call. **The function moved to `RtpStream::loss_percent` (`src/rtp/stream.rs`), not to a shared TUI helper.** The figure is derived from exactly two fields of `RtpStream` and nothing else, `RtpStream` already carries derived accessors of the same shape (`is_active_at`, `impossible_rate_multiple`), and being `pub` on the model type means no layer — TUI, output, MCP, REST — has to earn access before it can stop writing the next copy. `stream_loss_pct` (dashboard) and `loss_pct` (event_exec) are deleted; the five call sites are `stream_list.rs` (`classify_stream` + the loss column), `stream_detail.rs`, `loss_map.rs`, `dashboard.rs` and `event_exec.rs`. The *"single source of truth"* doc comment that was false in two ways is replaced by one that says where the figure lives and why. **Held by three tests on a 90-received/10-lost fixture** — the pair the plausible wrong denominator gets wrong, reading 11.1% where the definition reads 10.0%: `loss_percent_divides_by_received_plus_lost` pins the arithmetic (including 0-packet → 0.0, not NaN), `the_dashboard_loss_column_is_the_shared_loss_figure` and `the_quality_hook_exports_the_shared_loss_figure` pin the two folded call sites. Mutation-measured: re-growing a divergent private copy in either file fails that file's test (dashboard row 11.1 vs 10, `SIPNAB_LOSS` "11.1" vs "10.0"), and changing the shared denominator fails five tests across three modules. **What these tests cannot catch, stated rather than implied:** a byte-IDENTICAL copy re-appearing. Nothing observable distinguishes it until it drifts — and the drift is the moment these fail. **Not folded, deliberately:** ~15 other sites open-code the same expression (`json.rs`, `call_report.rs`, `api.rs`, `dsl.rs`, `model.rs`, `wasm.rs`, `mcp/server.rs`, `stream_store.rs`, `dialog_report.rs`). They are out of this line's scope and several aggregate rather than report a single stream's figure, so each needs reading before it is assumed to be the same computation.
+- [x] stream_list.rs:307 / stream_detail.rs:91 — [refactor] loss-% computation duplicated in three places. **Three of five, and this line claimed all of it until 2026-08-06. Closed 2026-08-08 — five of five.** The blocker was real and was a VISIBILITY problem, not a call-site one: `loss_percent` was `pub(in crate::tui)` in a view module, and [`src/output/event_exec.rs`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs) is outside `crate::tui`, so it literally could not call the shared function. That is how a second implementation gets written instead of a call. **The function moved to `RtpStream::loss_percent` ([`src/rtp/stream.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs)), not to a shared TUI helper.** The figure is derived from exactly two fields of `RtpStream` and nothing else, `RtpStream` already carries derived accessors of the same shape (`is_active_at`, `impossible_rate_multiple`), and being `pub` on the model type means no layer — TUI, output, MCP, REST — has to earn access before it can stop writing the next copy. `stream_loss_pct` (dashboard) and `loss_pct` (event_exec) are deleted; the five call sites are `stream_list.rs` (`classify_stream` + the loss column), `stream_detail.rs`, `loss_map.rs`, `dashboard.rs` and `event_exec.rs`. The *"single source of truth"* doc comment that was false in two ways is replaced by one that says where the figure lives and why. **Held by three tests on a 90-received/10-lost fixture** — the pair the plausible wrong denominator gets wrong, reading 11.1% where the definition reads 10.0%: `loss_percent_divides_by_received_plus_lost` pins the arithmetic (including 0-packet → 0.0, not NaN), `the_dashboard_loss_column_is_the_shared_loss_figure` and `the_quality_hook_exports_the_shared_loss_figure` pin the two folded call sites. Mutation-measured: re-growing a divergent private copy in either file fails that file's test (dashboard row 11.1 vs 10, `SIPNAB_LOSS` "11.1" vs "10.0"), and changing the shared denominator fails five tests across three modules. **What these tests cannot catch, stated rather than implied:** a byte-IDENTICAL copy re-appearing. Nothing observable distinguishes it until it drifts — and the drift is the moment these fail. **Not folded, deliberately:** ~15 other sites open-code the same expression (`json.rs`, `call_report.rs`, `api.rs`, `dsl.rs`, `model.rs`, `wasm.rs`, `mcp/server.rs`, `stream_store.rs`, `dialog_report.rs`). They are out of this line's scope and several aggregate rather than report a single stream's figure, so each needs reading before it is assumed to be the same computation.
 - [x] src/tui/call_list.rs:637 — [simplification] DeltaPrev and Scaled arms byte-identical; merge. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/tui/call_list.rs:521 — [duplication] `base_labels` restates COLUMN_LABELS with one divergence. **Done (P3 code-health wave, 2026-07-24).**
 - [x] call_list.rs:880 vs save.rs:206 — [duplication] near-identical 12-arm state-display matches ("FAILED" vs "Failed"). **Done (P3 code-health wave, 2026-07-24).**
@@ -817,7 +817,7 @@ Tiers:
 
 - [x] **Unlabeled code fences carry a copy button no gate reads** (2026-07-28).
   `shell_fence_is_one_clipboard_payload` reads fences whose info string names a
-  shell, but `website/templates/page.html:90` attaches the copy button to every
+  shell, but [`website/templates/page.html:90`](https://github.com/NormB/sipnab/blob/main/website/templates/page.html#L90) attaches the copy button to every
   `pre`, so an unlabeled fence gets a button no gate reads. **Done:** every
   fence in the scanned corpus now declares its language — 492 fences, 0
   unlabeled.
@@ -825,10 +825,10 @@ Tiers:
   **Regressed, and this line claimed otherwise until 2026-08-06.** The pass was
   real and the count was right on the day; neither survived. An open/close fence
   walk over `scanned_markdown()` today finds **two** unlabeled fences, and both
-  are the command-looking kind the item exists for: `docs/troubleshooting.md:549`
+  are the command-looking kind the item exists for: [`docs/troubleshooting.md:549`](https://github.com/NormB/sipnab/blob/main/docs/troubleshooting.md#L549)
   and `:562`, a bare ```` ``` ```` opener around `tcpdump -r sample.pcap …`
   invocations. They are copied into
-  `website/content/docs/troubleshooting.md:554` and `:567` by the site
+  [`website/content/docs/troubleshooting.md:554`](https://github.com/NormB/sipnab/blob/main/website/content/docs/troubleshooting.md#L554) and `:567` by the site
   generator, which the gate skips on its `Generated by scripts/build-site`
   marker — so fixing the two in `docs/` fixes all four on disk.
   Nothing caught the regression because nothing
@@ -842,7 +842,7 @@ Tiers:
   **The figure that motivated this item was wrong.** It read "230 unlabeled, 132
   command-looking"; the real number was **28**. The measuring script used
   `^```$ … ^```$`, which matches a *labelled* fence's closing ``` as an
-  unlabelled opener — the same fence-parsing bug `tests/docs_drift_test.rs`
+  unlabelled opener — the same fence-parsing bug [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
   documents when it warns against reusing `fenced_blocks`, made in the script
   written to find it. A proper open/close walk gives 28. Recorded because the
   wrong number reached this file, two commits and a release-cycle decision
@@ -856,12 +856,12 @@ Tiers:
   would reach for the sentinel to silence it.
 
 - [x] **Gates that hardcode their subjects cannot see a new one** — surfaced by
-  executing the `docs/internals/walkthroughs.md` checklists rather than
+  executing the [`docs/internals/walkthroughs.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/walkthroughs.md) checklists rather than
   reasoning about them (2026-07-25). Three cases, each proven by making the
   change and watching the gate pass: a deliberately malformed
-  `zzz_gate_probe.schema.json` in `tests/schemas/` left `json_schema_test` at
+  `zzz_gate_probe.schema.json` in [`tests/schemas/`](https://github.com/NormB/sipnab/tree/main/tests/schemas) left `json_schema_test` at
   6 passed / 0 failed, because `all_schemas_compile` iterates four hardcoded
-  filenames instead of reading the directory; a new `src/security/` module with
+  filenames instead of reading the directory; a new [`src/security/`](https://github.com/NormB/sipnab/tree/main/src/security) module with
   an uncapped `HashMap<IpAddr, u64>` left `resource_bounds_test` at 3/3 and
   `security_test` at 38/38; and an unregistered `fuzz/fuzz_targets/*.rs` holding
   a hard compile error left `cd fuzz && cargo check` at exit 0 (registering it
@@ -878,7 +878,7 @@ Tiers:
   returns the suite to 6 passed. The detector and fuzz-target cases remain
   convention-only and stay marked **(unenforced)**.
 
-- [x] .githooks/pre-commit test-count check — [flaky] `cargo test --features full` intermittently reports a partial sum (2291/2308 vs true count) when run immediately after another cargo build, aborting the commit; self-heals on retry. Observed 4× on 2026-07-24 (never in 5 isolated back-to-back runs). Suspect a suite aborting under fingerprint invalidation from an interleaved build (wasm-pack/rustup activity correlated twice). Capture the failing suite's output from inside the hook before fixing. **Done:** root cause was step 5 running `cargo test --features full` a SECOND time purely to count — that run could race a concurrent cargo, abort a binary's compile, drop its `test result:` line, and undercount. Step 5 now derives the count from step 2's already-captured `$TEST_OUTPUT`, and step 2 gates on the test exit code so a partial/aborted run fails there ("retry") instead of feeding a truncated sum downstream. Halves per-commit test time. Regression pinned by `scripts/test-pre-commit.sh` (asserts exactly one full-suite invocation + the exit-code gate).
+- [x] .githooks/pre-commit test-count check — [flaky] `cargo test --features full` intermittently reports a partial sum (2291/2308 vs true count) when run immediately after another cargo build, aborting the commit; self-heals on retry. Observed 4× on 2026-07-24 (never in 5 isolated back-to-back runs). Suspect a suite aborting under fingerprint invalidation from an interleaved build (wasm-pack/rustup activity correlated twice). Capture the failing suite's output from inside the hook before fixing. **Done:** root cause was step 5 running `cargo test --features full` a SECOND time purely to count — that run could race a concurrent cargo, abort a binary's compile, drop its `test result:` line, and undercount. Step 5 now derives the count from step 2's already-captured `$TEST_OUTPUT`, and step 2 gates on the test exit code so a partial/aborted run fails there ("retry") instead of feeding a truncated sum downstream. Halves per-commit test time. Regression pinned by [`scripts/test-pre-commit.sh`](https://github.com/NormB/sipnab/blob/main/scripts/test-pre-commit.sh) (asserts exactly one full-suite invocation + the exit-code gate).
 
 - [x] src/capture/device.rs (test list_devices_returns_vec) — [test-quality] asserts only "does not panic". **Done (P4 test-quality wave, 2026-07-24).**
 - [x] src/tui/call_flow/mod.rs (ladder_split_width) — [test-coverage] no test pins `total < DETAIL_FLOOR` geometry. **Done (P4 test-quality wave, 2026-07-24).**
@@ -912,7 +912,7 @@ Tiers:
 - [x] tests/api_test.rs:169 — [weak-assertion] limiter can't be exhausted; sequential 200s only. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/integration_test.rs:257 — [environment-dependence] accepts exit 0|1 by capture permissions. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/wasm_exports_test.rs:10 — [silent-skip] silently never runs if wasm build absent. **Done (P4 test-quality wave, 2026-07-24).**
-- [x] eight binary-spawn run() helpers — [duplicated-fixture] inconsistent env across cli/config/output/integration test crates; tests/support candidate. **Done:** consolidated into `tests/support/run.rs` with a documented env baseline (cwd=MANIFEST_DIR, NO_COLOR=1, explicit SIPNAB_LOG per caller — fixing cli_help's shell-inherited log); 5 files migrated (pipeline_test's run() was a trait-method false positive). Also gated security_test's counting-allocator block behind `feature=api` (its only consumer) to fix reduced-feature builds.
+- [x] eight binary-spawn run() helpers — [duplicated-fixture] inconsistent env across cli/config/output/integration test crates; tests/support candidate. **Done:** consolidated into [`tests/support/run.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/run.rs) with a documented env baseline (cwd=MANIFEST_DIR, NO_COLOR=1, explicit SIPNAB_LOG per caller — fixing cli_help's shell-inherited log); 5 files migrated (pipeline_test's run() was a trait-method false positive). Also gated security_test's counting-allocator block behind `feature=api` (its only consumer) to fix reduced-feature builds.
 - [x] spawn_http/post_status/shutdown — [duplicated-fixture] triplicated across mcp token/http tests. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] fuzz_corpus_replay.rs / smoke_fuzz_test.rs — [duplicated-fixture] two independent xorshift Rng+mutate impls. **Closed 2026-08-06 by fixing the hazard and DECLINING the merge — do not reopen it as a consolidation.** The 2026-08-05 audit was right that the `Rng` half was consolidated and the two `mutate` functions survived with the arguments in OPPOSITE order, so nothing caught a caller reaching for the wrong one. Both now take `(rng, seed)`; the signatures agree and the hazard is gone.
 
@@ -977,7 +977,7 @@ output path.
   - Refs inflate every response, so make them opt-out per call and keep the
     encoding compact.
   - **Sequencing, not a scheduling constraint any more.** This touches
-    `src/pipeline.rs`, `src/output/json.rs` and `src/capture/*`. **Corrected
+    [`src/pipeline.rs`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs), [`src/output/json.rs`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs) and `src/capture/*`. **Corrected
     2026-08-05:** the note here used to add that all three *"carry large
     uncommitted diffs from concurrent work as of 2026-08-03"* and to say "land
     the threading once the tree is quiet". That work landed in 0.5.77 and the
@@ -987,25 +987,25 @@ output path.
     refs so the retrofit never grows.
   - **In progress — the resolver end exists; the threading is partial (status
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
-    (`src/capture/packet.rs:94`) and `capture::resolve::resolve`
-    (`src/capture/resolve.rs:171`); the `show_evidence` MCP tool
-    (`#[tool(` at `src/mcp/server.rs:3852`, handler at `:3866`), confined to
+    ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
+    ([`src/capture/resolve.rs:171`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L171)); the `show_evidence` MCP tool
+    (`#[tool(` at [`src/mcp/server.rs:3852`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3852), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` (`src/mcp/server.rs:870`), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:870`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L870)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
-    (`src/provenance.rs`) rides every stats/status response.
+    ([`src/provenance.rs`](https://github.com/NormB/sipnab/blob/main/src/provenance.rs)) rides every stats/status response.
     **Corrected 2026-08-06:** this bullet used to say the threading did **not**
     exist and that *"lint findings are the only facts that cite their bytes
     today"*. That was true of the MCP surface only, and it is not true of the
-    tree. `SipMessage.frame` (`src/sip/message.rs:84`) and
-    `SipDialog.first_frame` (`src/sip/dialog.rs:148`) both carry a `FrameRef`;
-    `--json` emits it per message and per dialog (`src/output/json.rs:90`,
+    tree. `SipMessage.frame` ([`src/sip/message.rs:84`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L84)) and
+    `SipDialog.first_frame` ([`src/sip/dialog.rs:148`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L148)) both carry a `FrameRef`;
+    `--json` emits it per message and per dialog ([`src/output/json.rs:90`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L90),
     `:402`, populated at `:454` and `:662`), `call_report` carries the dialog's
-    (`src/output/call_report.rs:773`), and `--show-frame` (`src/cli.rs:519`)
+    ([`src/output/call_report.rs:773`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L773)), and `--show-frame` ([`src/cli.rs:519`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L519))
     follows one from the CLI.
     **Corrected 2026-08-07 — two of the three remaining gaps are closed.** This
     bullet used to end by naming three things still open: that **streams carry
@@ -1015,7 +1015,7 @@ output path.
     rather than annotated, because reading it as current would cause someone to
     build `RtpStream.first_frame` a second time.
     - **Streams cite their opening frame.** `RtpStream.first_frame`
-      (`src/rtp/stream.rs`) is stamped once, at stream creation, by
+      ([`src/rtp/stream.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs)) is stamped once, at stream creation, by
       `StreamStore::process_rtp` from the `ParsedPacket` that opened it — first
       and never latest, which
       `a_stream_cites_the_frame_it_began_in_not_its_latest` holds by mutation
@@ -1054,7 +1054,7 @@ output path.
       citing none because it resolves) both fail. Message 2 has no frame and
       its findings must emit no key at all. Mutation-measured: all three
       mutations fail the test. The rustdoc enumeration on `show_evidence`,
-      the `show_evidence` tool description and `docs/mcp.md` moved
+      the `show_evidence` tool description and [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) moved
       `validate_message` from the no-pointer list to the `frame_ref` list in
       the same change.
     - **Still open.** Granularity is whole-frame: `FrameOrigin` is
@@ -1063,11 +1063,11 @@ output path.
       RTCP reception and XR reports carry no pointer, because
       `process_rtcp` is handed parsed reports without the packet they arrived
       in; giving them one is a signature change across five call sites and
-      belongs with the byte-range work. **The `docs/mcp.md` half of this
+      belongs with the byte-range work. **The [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) half of this
       sentence was stale and is struck 2026-08-08:** that page's "Frame
       pointers" section already carried the corrected enumeration rather than
       the overclaim; what it did need — moving `validate_message` between the
-      two lists — landed with the change above. What `docs/mcp.md` still does
+      two lists — landed with the change above. What [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) still does
       not do is show a `frame_ref` in either lint tool's example payload, for
       `lint_dialog` or `validate_message`; the prose is right and the samples
       are abbreviated. Tracked as task #128, still PRIORITY 1.
@@ -1111,13 +1111,13 @@ output path.
 - [ ] **PA4 — Complete the linter rule corpus.** The engine and the
   declaration-versus-observation class shipped in 0.5.75 with 22 rules; the
   corpus has grown since, and the live set is `RULES` in
-  `src/sip/lint/finding.rs` rather than a number restated here. The engine is a
+  [`src/sip/lint/finding.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/finding.rs) rather than a number restated here. The engine is a
   day's work and anyone can copy it; two hundred *correct* interop rules is
   twenty-five years of carrier experience and does not transfer. That is the
   moat, and it is still mostly unbuilt.
   - **Corrected 2026-08-05.** This entry listed as *"verified absent today"*
     three things that have since shipped, and reading it as current would have
-    caused someone to write a rule twice. **RFC 4028 is no longer absent:**
+    caused someone to write a rule twice. **[RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) is no longer absent:**
     `SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE`,
     `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL`, `SIP-4028-5-MIN-SE-TOO-SMALL` and
     `SIP-4028-9-REFRESHER-MISSING` all exist. **Missing `Contact` on a 2xx to
@@ -1136,15 +1136,15 @@ output path.
   - **`.sipnablint` is half wired. Corrected 2026-08-05:** this used to read
     *"`LintConfig::suppress_list` parses the file shape and nothing loads a file
     or exposes a CLI flag"*, and the first half is no longer true.
-    `SUPPRESSION_FILENAME` (`src/sip/lint/mod.rs:70`),
+    `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    (`src/mcp/server.rs:360`), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:360`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L360)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
     matches nothing"*, and that grep now returns ten lines — `--lint`
-    (`src/cli.rs:718`) and `--lint-fail-on` (`:740`, `requires = "lint"`) both
+    ([`src/cli.rs:718`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L718)) and `--lint-fail-on` (`:740`, `requires = "lint"`) both
     ship, and `--lint --lint-fail-on error` is documented in the flag's own help
     as the CI gate. So the CLI linter exists; what it has no way to do is
     suppress anything. No CLI flag names a suppression file, and nothing on the
@@ -1174,7 +1174,7 @@ output path.
   - **`P-Charging-Vector` is the worst of the hostname-leaking group and was
     missing from this list until 2026-08-08**, when
     [`icid-correlation.md`](icid-correlation.md) §5 caught it while adding the
-    two RFC 7315 correlation strategies. It is not one field but five leaks:
+    two [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) correlation strategies. It is not one field but five leaks:
     `icid-generated-at` and `related-icid-generated-at` are, per §5.6, the
     hostname or IP of a generating proxy; `orig-ioi` / `term-ioi` name the
     operators on each side of an interconnect and `transit-ioi` the ordered
@@ -1188,8 +1188,8 @@ output path.
     Nothing surfaces it today — the correlation strategies report their NAME and
     never the matched value — so this is a prerequisite of the redaction
     feature, not an outstanding exposure.
-  - **RFC 4733 telephone-event is the one that gets missed**, and sipnab does
-    decode it — `src/rtp/dtmf.rs` reconstructs digits into `DtmfEvent { digit }`.
+  - **[RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) telephone-event is the one that gets missed**, and sipnab does
+    decode it — [`src/rtp/dtmf.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/dtmf.rs) reconstructs digits into `DtmfEvent { digit }`.
     Post-answer IVR entry is card numbers, PINs, SSNs, DOBs. Verified 2026-08-03:
     decoded digits reach the TUI and **not** the MCP or JSON surfaces today, so
     the exposure there is latent rather than live — but `export_audio` is on the
@@ -1360,7 +1360,7 @@ production traffic.
 
 - [ ] **PB1 — `structuredContent` + per-tool `outputSchema`.** Every payload is
   a JSON string inside `result.content[0].text`, so every client parses twice.
-  Verified: nothing in `src/mcp/` references structured content. The
+  Verified: nothing in [`src/mcp/`](https://github.com/NormB/sipnab/tree/main/src/mcp) references structured content. The
   2025-06-18 revision sipnab already negotiates supports it. Kills the double
   parse, gives clients validation, and lets a host render `rtp_stats` as a
   table. Cheapest protocol win on the list and the natural carrier for PA1's
@@ -1368,9 +1368,9 @@ production traffic.
 - [x] **PB2 — Tool annotations.** `readOnlyHint`, `destructiveHint`,
   `idempotentHint`, `openWorldHint`. **Done — verified against the tree
   2026-08-06:** every registered tool carries an `annotations(...)` block (32
-  of 32 `#[tool(` sites in `src/mcp/server.rs`; 27 `read_only_hint = true`,
+  of 32 `#[tool(` sites in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs); 27 `read_only_hint = true`,
   `shutdown_server` and `open_capture` the destructive pair), and
-  `docs/mcp.md` § "What the write verbs do" names the non-read-only set. The
+  [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) § "What the write verbs do" names the non-read-only set. The
   2026-08-05 correction on this entry ("only `capture_health` is annotated")
   described the tree between the first annotation and the full P8 sweep.
   Follow-on value now lives elsewhere: #141 derives per-tool authorization
@@ -1396,7 +1396,7 @@ production traffic.
   round-trip for `shutdown_server`, and for `open_capture`, which discards
   every held dialog. The convention was the right call before elicitation was
   available.
-- [ ] **PB7 — OAuth 2.1 / RFC 9728 protected-resource metadata.** Static and
+- [ ] **PB7 — OAuth 2.1 / [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata.** Static and
   HMAC bearer tokens cover self-hosted. Metadata plus a proper
   `WWW-Authenticate` on 401 is what hosted clients need to connect without a
   manual token paste.
@@ -1409,12 +1409,12 @@ implementation.
 
 | Item | Verified state | Proposed |
 |---|---|---|
-| DTMF / telephone-event | `src/rtp/dtmf.rs` decodes digits; nothing in `src/output/json.rs` carries them | `get_dtmf_digits(call_id?)` → digit, duration, SSRC, timestamp. **Gate on PA5:** IVR digits are card numbers and PINs |
-| STIR/SHAKEN | `src/sip/stir_shaken.rs` exists; `--stir-shaken` REPORTS the PASSporT claims and **verifies no signature** — corrected 2026-08-05, it never did | `report_stir_shaken(call_id)` → passport claims, attestation, `iat` freshness. NOT a cert-chain result: verifying means fetching the certificate the token references, and sipnab makes no outbound request to analyse a capture. A forged Identity header reports exactly like a genuine one. |
-| Wireshark / tshark filter | `src/output/wireshark.rs` exists; both flags refused under `--mcp` because they write to stdout | `generate_display_filter(call_id\|filter)`. The stdout invariant does not apply to a return value — this one is a pure oversight |
+| DTMF / telephone-event | [`src/rtp/dtmf.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/dtmf.rs) decodes digits; nothing in [`src/output/json.rs`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs) carries them | `get_dtmf_digits(call_id?)` → digit, duration, SSRC, timestamp. **Gate on PA5:** IVR digits are card numbers and PINs |
+| STIR/SHAKEN | [`src/sip/stir_shaken.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/stir_shaken.rs) exists; `--stir-shaken` REPORTS the PASSporT claims and **verifies no signature** — corrected 2026-08-05, it never did | `report_stir_shaken(call_id)` → passport claims, attestation, `iat` freshness. NOT a cert-chain result: verifying means fetching the certificate the token references, and sipnab makes no outbound request to analyse a capture. A forged Identity header reports exactly like a genuine one. |
+| Wireshark / tshark filter | [`src/output/wireshark.rs`](https://github.com/NormB/sipnab/blob/main/src/output/wireshark.rs) exists; both flags refused under `--mcp` because they write to stdout | `generate_display_filter(call_id\|filter)`. The stdout invariant does not apply to a return value — this one is a pure oversight |
 | fail2ban | format exists in tree | `ban_candidates(kinds?, since?)` → structured src_ip, rule, count, plus the jail line |
-| SIPp XML | **IN THE TREE** — `save_to_sipp_path` at `src/tui/save.rs:804`, with three tests. This row said "not in the tree" until 2026-08-05, which scheduled a rewrite of code that already exists | `export_sipp_scenario(call_id, filename)` is an EXTRACTION of the existing TUI writer to a callable path, not a build. Same wrapper shape as the rest of bucket 1 |
-| Mermaid ladder | `src/tui/call_flow/export.rs` renders mermaid; `render_ladder` offers markdown/text only | add `format: "mermaid"` — agents render it inline, which is the point of a ladder |
+| SIPp XML | **IN THE TREE** — `save_to_sipp_path` at [`src/tui/save.rs:804`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L804), with three tests. This row said "not in the tree" until 2026-08-05, which scheduled a rewrite of code that already exists | `export_sipp_scenario(call_id, filename)` is an EXTRACTION of the existing TUI writer to a callable path, not a build. Same wrapper shape as the rest of bucket 1 |
+| Mermaid ladder | [`src/tui/call_flow/export.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_flow/export.rs) renders mermaid; `render_ladder` offers markdown/text only | add `format: "mermaid"` — agents render it inline, which is the point of a ladder |
 | Multi-leg / B2BUA | TUI `x` stitches correlated legs | `render_ladder(call_id, extended: true)` + `get_correlated_legs`. Duplicate of PA10; keep PA10 as the entry |
 | Capture-wide report | `--report` incl. Orphaned Streams | `get_capture_report(format?)`. `stats` gives counters, not the report |
 | Orphaned streams | emitted per stream, `RtpStatsParams` has `min_mos`/`max_mos` and no orphan filter | add `orphaned: bool?` to the sweep |
@@ -1438,7 +1438,7 @@ implementation.
   Overlaps PA8's injection note from the opposite direction: PA8 is about what
   sipnab sends *to* a model, this is about what it hands *back*.
 - [x] **PB9 — MCP token scoping.** REST has `--token-scope full|metrics`;
-  verified that `src/mcp/` has no equivalent. `--mcp-token-scope
+  verified that [`src/mcp/`](https://github.com/NormB/sipnab/tree/main/src/mcp) has no equivalent. `--mcp-token-scope
   readonly|export|admin`, putting `export_*`, `shutdown_server` and
   `open_capture` behind a different credential than read.
   **Unblocked 2026-08-06:** the two structural prerequisites now exist — a
@@ -1450,12 +1450,12 @@ implementation.
   list. Full plan and gate requirements: task #141.
   **Done, and this entry read as unstarted-but-unblocked until 2026-08-06.**
   It shipped, and it shipped the way the entry argued for. `SCOPE_READ`
-  (`src/auth.rs:104`) joins `full`/`metrics` as a signed `scope` claim;
-  the flag is `--token-scope read` (`src/cli.rs:1463`,
+  ([`src/auth.rs:104`](https://github.com/NormB/sipnab/blob/main/src/auth.rs#L104)) joins `full`/`metrics` as a signed `scope` claim;
+  the flag is `--token-scope read` ([`src/cli.rs:1463`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1463),
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` (`src/mcp/server.rs:4798`), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:4798`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4798)), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -1478,11 +1478,11 @@ implementation.
   legal-hold answer needs the sink decision, which is the operator's call.
   **Corrected 2026-08-06, on the first of those two.** *"`verify` discards the
   claims it validated"* is no longer true, and *"lands with PB9's plumbing"*
-  has been overtaken: `verify_claims` (`src/auth.rs:386`) returns an
+  has been overtaken: `verify_claims` ([`src/auth.rs:386`](https://github.com/NormB/sipnab/blob/main/src/auth.rs#L386)) returns an
   `AcceptedToken`, PB9's plumbing landed on top of it, and the audit line
-  already records what it carries — `src/mcp/server.rs:4764` formats
+  already records what it carries — [`src/mcp/server.rs:4764`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4764) formats
   `"{addr} bearer-verified scope={scope}"`. The token still cannot be named,
-  but the reason has narrowed to one field: `AcceptedToken` (`src/auth.rs:293`)
+  but the reason has narrowed to one field: `AcceptedToken` ([`src/auth.rs:293`](https://github.com/NormB/sipnab/blob/main/src/auth.rs#L293))
   holds `scope` and nothing else, so the `id` that `mint` signs into the
   payload is validated and then dropped. That is a smaller change than this
   line implies, and it is no longer blocked on anything.
@@ -1516,7 +1516,7 @@ implementation.
   retryable `-32000` "retry shortly" error the concurrency cap uses — one code
   for "the call did not run, retry", not two for a client to learn — and lands
   on the `mcp_audit` line as `outcome=refused error=rate limited (N refused
-  since start)`. The counting is `src/rate_limit.rs`, **shared with the HEP
+  since start)`. The counting is [`src/rate_limit.rs`](https://github.com/NormB/sipnab/blob/main/src/rate_limit.rs), **shared with the HEP
   per-peer limiter this entry originally pointed at** rather than written a
   second time: one mutation to the per-peer comparison fails both surfaces'
   tests, which is the property a second implementation would not have. What is
@@ -1563,7 +1563,7 @@ implementation.
   SBC.
 
   **Two strategies, not one, and which one you get decides whether a B2BUA is
-  crossed at all.** RFC 7315 §4.6 scopes `icid-value` to "a dialog or a
+  crossed at all.** [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) scopes `icid-value` to "a dialog or a
   transaction outside a dialog" and requires it to be globally unique
   (`ICID MUST be a globally unique value`). A B2BUA makes two dialogs, so a
   conformant pair carries two DIFFERENT icids and plain icid equality cannot
@@ -1573,7 +1573,7 @@ implementation.
   `ChargingVectorIcid` 85, and plain icid equality across a B2BUA is a vendor
   behaviour rather than a guarantee.
 
-  **Cite RFC 7315, not RFC 3455.** `related-icid` does not exist in 3455. A
+  **Cite RFC 7315, not [RFC 3455](https://www.rfc-editor.org/rfc/rfc3455).** `related-icid` does not exist in 3455. A
   design written against the obsolete RFC misses the only parameter that
   addresses a B2BUA at all.
 
@@ -1589,8 +1589,8 @@ implementation.
 
   **Built for the deployments that have it, which are not this repo's only
   readers.** `P-Charging-Vector` is a trust-domain header and stripping it at a
-  network boundary is a conventional configuration (RFC 3324/3325 spec-net
-  handling) — *conventional*, note, not mandated: RFC 7315 §4.6.2.2's own
+  network boundary is a conventional configuration ([RFC 3324](https://www.rfc-editor.org/rfc/rfc3324)/3325 spec-net
+  handling) — *conventional*, note, not mandated: [RFC 7315 §4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2)'s own
   boundary sentence names `P-Charging-Function-Addresses` where it means this
   header, and no erratum covers that, so what a proxy owes the header on the
   way out is genuinely undefined rather than merely permissive. Either way it
@@ -1620,12 +1620,12 @@ implementation.
   no capture-derived identifier reaches a report or a doc.
 
   For an edge that carries no correlation header at all — the requesting
-  operator's case — the answer remains RFC 7989 Session-ID, the only
+  operator's case — the answer remains [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) Session-ID, the only
   identifier-grade option that survives a re-originating B2BUA by design, which
-  `src/sip/session_id.rs` already reads. That work is SBC configuration, not
+  [`src/sip/session_id.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs) already reads. That work is SBC configuration, not
   sipnab code.
 
-  `docs/design/icid-correlation.md` carries the full analysis.
+  [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md) carries the full analysis.
 
 **Cross-references, so nothing is built twice.** PB's `aggregate_dialogs` is
 PA2. PB's resources and prompts are PA3. PB's redaction is PA5. PB's SIPp
@@ -1662,7 +1662,7 @@ authoritative; the PB text above adds only what they do not already say.
   as a pure accessor that does not invent a digest — and `parse_packet` calls
   it for every packet anyway, so it would not have helped. Changing
   `frame_digest` to something faster is also ruled out:
-  `tests/frame_provenance_test.rs` pins it to the published FNV-1a spec vectors
+  [`tests/frame_provenance_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/frame_provenance_test.rs) pins it to the published FNV-1a spec vectors
   precisely so a stored pointer still verifies against a future build.
 
   What is left is a design change, not a tweak: carry the frame bytes forward
@@ -1708,7 +1708,7 @@ authoritative; the PB text above adds only what they do not already say.
   ceiling (2.05M) and 0.5.83 (2.30M) as the target, not against the digest
   alone.
 
-  **How this went unnoticed for four releases:** `docs/benchmarks.md` was 41
+  **How this went unnoticed for four releases:** [`docs/benchmarks.md`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md) was 41
   releases stale, and nothing in CI measures throughput. A perf gate would have
   caught a 40% drop the day it landed.
 
@@ -1717,7 +1717,7 @@ authoritative; the PB text above adds only what they do not already say.
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
 - [ ] **G5 — No seccomp and no Landlock, on a process whose whole job is
-  parsing hostile input.** `src/privilege.rs` does real work — `setgid`,
+  parsing hostile input.** [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) does real work — `setgid`,
   `setuid`, `drop_supplementary_groups`, `PR_SET_NO_NEW_PRIVS`,
   `PR_SET_DUMPABLE=0`, `setrlimit(RLIMIT_CORE, 0)`, optional `chroot` — but
   there is no syscall filter and no filesystem-access restriction
@@ -1727,24 +1727,24 @@ authoritative; the PB text above adds only what they do not already say.
   pre-drop `CAP_NET_RAW` socket. A seccomp-bpf allowlist installed after the
   privilege drop closes far more of that exploitation path than process
   isolation would (see PI2 and
-  `docs/design/process-isolation-and-hot-path-cost.md` §2b/§5), for a fraction
+  [`docs/design/process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md) §2b/§5), for a fraction
   of the architectural cost — the post-drop syscall set is small and stable.
   Landlock would additionally bound filesystem reach for runs without
   `--chroot`. Ranked P5 only because it needs a carefully-derived allowlist and
   a per-platform fallback; the argument for it is stronger than its rank.
 - [x] **CT14 — `any` costs ~41x ring capacity and all promiscuous mode:
-  DOCUMENTED.** Found 2026-08-03, written up as `docs/tuning-capture.md` §5.
+  DOCUMENTED.** Found 2026-08-03, written up as [`docs/tuning-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tuning-capture.md) §5.
   libpcap's `create_ring()` sizes each TPACKET_V2 slot from the snaplen, and
   the MTU+18 clamp that would rescue it is guarded by
   `if (handle->linktype == DLT_EN10MB)`. sipnab's Linux default device is `any`
-  (`src/capture/device.rs:35-40`), which is **`DLT_LINUX_SLL2`** — so the clamp
+  ([`src/capture/device.rs:35-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L35-L40)), which is **`DLT_LINUX_SLL2`** — so the clamp
   never runs and every slot is the full 65535-byte snaplen: **~1,000 slots on
   `any` against ~41,000** named-with-offloads-off, in the same 64 MiB. No
   `ethtool` setting reaches it — the guard tests link type, not offloads.
   `any` also **cannot go promiscuous** — `use_promisc` in `capture_live()`
-  (`src/capture/live.rs`) tests `device != "any"` — so it misses mirrored
+  ([`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)) tests `device != "any"` — so it misses mirrored
   traffic, and it forfeits the per-interface capture threads of
-  `--multi-device` (`src/capture/native.rs`). The default stays — it exists so
+  `--multi-device` ([`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)). The default stays — it exists so
   loopback SIP is not missed — so leaving it trades coverage for throughput,
   deliberately. No code change. Related: CT5 (TPACKET_V3).
 - [x] **CT13 — AF_XDP: DECLINED.** Investigated 2026-08-03 against mainline.
@@ -1783,17 +1783,17 @@ authoritative; the PB text above adds only what they do not already say.
   DPDK, netmap.** libpcap has shipped DPDK and netmap capture modules for years
   and selects them by device name (`dpdk:0`, `netmap:eth0`, `xdp:eth0`).
   sipnab passes device names through almost verbatim —
-  `parse_device_list` (`src/capture/device.rs:119-147`) rejects an empty or
+  `parse_device_list` ([`src/capture/device.rs:119-147`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L119-L147)) rejects an empty or
   whitespace-only spec, an empty entry from a stray comma, and an embedded NUL,
   and de-duplicates; nothing else is inspected, and
-  `pcap::Capture::from_device()` at `src/capture/live.rs:196` takes the string
+  `pcap::Capture::from_device()` at [`src/capture/live.rs:196`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L196) takes the string
   as given — so **these may
   already work today with no code change**, depending entirely on whether the
   linked libpcap was built with those modules. That makes step one *verification
   and packaging*, not engineering: check what `libpcap` the release artifacts
-  and the Docker image actually link (`Dockerfile`, `packaging/`), test one
+  and the Docker image actually link ([`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile), `packaging/`), test one
   alternate backend end to end, and either document the supported device-name
-  syntax in `docs/install.md` or state plainly that it is unsupported.
+  syntax in [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md) or state plainly that it is unsupported.
   **Corrected 2026-08-05:** this used to end *"Only after that is it worth
   discussing a native AF_XDP path"*, which contradicts CT13 above (AF_XDP:
   **declined** — an XSK steals traffic from the host with no tee, and libpcap
@@ -1806,7 +1806,7 @@ authoritative; the PB text above adds only what they do not already say.
   should be read that way. This is the genuine
   order-of-magnitude lever for live capture, and it is a kernel-interface
   change, not a language change — see
-  `docs/design/process-isolation-and-hot-path-cost.md` §5 for why rewriting hot
+  [`docs/design/process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md) §5 for why rewriting hot
   Rust into C or assembler is not (the per-packet cost is a `memcpy` plus a hash
   lookup, the copy was already measured at ~15 ns, and the sequential stage that
   caps `--cores` is libpcap itself). **Packaging half done:** netmap is built
@@ -1816,8 +1816,8 @@ authoritative; the PB text above adds only what they do not already say.
   presence can be asserted, pinned netmap headers, and an
   `ar t | grep -qx pcap-netmap.o` gate so the image build fails rather than
   quietly shipping a binary without the backend. **Open residue, and it is
-  operator documentation:** nothing in `docs/install.md` or
-  `docs/tuning-capture.md` mentions netmap, DPDK or XDP at all, so an operator
+  operator documentation:** nothing in [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md) or
+  [`docs/tuning-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tuning-capture.md) mentions netmap, DPDK or XDP at all, so an operator
   has no way to learn that the device-name syntax exists, which artifacts carry
   which backends (musl tarballs ship sipnab's own libpcap; gnu, .deb and Docker
   take stock Debian's; macOS has none), or that DPDK and AF_XDP are declined
@@ -1827,7 +1827,7 @@ authoritative; the PB text above adds only what they do not already say.
   specified).** The cleanest fork candidate in the tree and the only one worth
   doing: it is the sole component that *transmits*, it holds a `CAP_NET_RAW` raw
   socket opened before the privilege drop and kept for the whole run
-  (`src/process_isolation.rs:107-136`), and it already has no shared state — it
+  ([`src/process_isolation.rs:107-136`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L107-L136)), and it already has no shared state — it
   communicates over a crossbeam channel whose messages are **already**
   `Serialize`/`Deserialize` (`src/process_isolation.rs:307,329` — the derives on
   `KillRequest` and `KillResponse`), an otherwise
@@ -1836,7 +1836,7 @@ authoritative; the PB text above adds only what they do not already say.
   `docs/design/implementation-plan-v6.md:564,2019-2024`, and neither range is
   about D16 — `:564` is an RTP-quality bullet ("Quality is per-interval, not
   per-call") and `:2019-2024` is a list of dashboard gauges. The material is at
-  [`implementation-plan-v6.md:624`](implementation-plan-v6.md) (the D16 heading)
+  [`implementation-plan-v6.md:624`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L624) (the D16 heading)
   and `:1535`, which is the line that actually settles it: the IPC wire format
   was never built because no child process was ever created, and *"the
   `Serialize`/`Deserialize` derives on `KillRequest`/`KillResponse` are all that
@@ -1846,17 +1846,17 @@ authoritative; the PB text above adds only what they do not already say.
   higher only because `--kill-scanner` is off by default and niche; if it
   becomes a headline feature this moves up. **Not** a licence to fork anything
   else — forking the REST API or the `--cores` workers is analysed and declined
-  in `docs/design/process-isolation-and-hot-path-cost.md` §3-4, because the
+  in [`docs/design/process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md) §3-4, because the
   shared `Arc<RwLock<..>>` stores every surface reads are the product, and
   turning those reads into IPC is a new wire protocol, not a refactor.
 
-- [x] **Packet loss map** — visual representation of RTP loss patterns. **Done:** new `StreamLossMap` view (key `L` from Stream Detail / Quality Dashboard) rendering a sequence-space density strip from `RtpStream.lost_sequences` — bursty loss shows as a dark cluster, diffuse as scattered specks — with a summary header (loss %, burst count/pattern from `burst_gap_analysis`) and sequence axis. Pure wraparound-aware `build_loss_map` binning core in `src/rtp/loss_map.rs` (9 unit tests); spec at docs/superpowers/specs/2026-07-24-packet-loss-map-design.md.
+- [x] **Packet loss map** — visual representation of RTP loss patterns. **Done:** new `StreamLossMap` view (key `L` from Stream Detail / Quality Dashboard) rendering a sequence-space density strip from `RtpStream.lost_sequences` — bursty loss shows as a dark cluster, diffuse as scattered specks — with a summary header (loss %, burst count/pattern from `burst_gap_analysis`) and sequence axis. Pure wraparound-aware `build_loss_map` binning core in [`src/rtp/loss_map.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/loss_map.rs) (9 unit tests); spec at docs/superpowers/specs/2026-07-24-packet-loss-map-design.md.
 - [x] **OpenSSF Best Practices Badge** — **Done 2026-08-06.** Registered as
   project **13931**, `badge_level: passing`, `badge_percentage_0: 100`. The
-  badge is wired into `README.md` and the website homepage, and
+  badge is wired into [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) and the website homepage, and
   `openssf_badge_test.rs` gates that it stays wired. `LICENSES/{MIT,Apache-2.0}.txt`
   exists for this: the criterion detector does not recognise the Rust
-  `LICENSE-MIT`/`LICENSE-APACHE` split.
+  [`LICENSE-MIT`](https://github.com/NormB/sipnab/blob/main/LICENSE-MIT)/[`LICENSE-APACHE`](https://github.com/NormB/sipnab/blob/main/LICENSE-APACHE) split.
 
   **This line said "Blocked on the maintainer's own bestpractices.dev session"
   until 2026-08-07**, a day after registration completed — the one genuinely
@@ -1871,7 +1871,7 @@ authoritative; the PB text above adds only what they do not already say.
 - [x] **WASM plugin API** — **Done in 0.5.69:** specced at
   [`wasm-plugin-api.md`](./wasm-plugin-api.md), implemented behind the
   non-default `plugins` feature, with a worked example at
-  `crates/sipnab-plugin-example`. D7's three objections were answered
+  [`crates/sipnab-plugin-example`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-plugin-example). D7's three objections were answered
   individually and the supply-chain one measured (+1.56 MB, 15 crates) rather
   than argued. A plugin has no imports at all, so the sandbox is an empty
   import table rather than an allowlist.
@@ -1908,7 +1908,7 @@ authoritative; the PB text above adds only what they do not already say.
   abandoned/cancelled, high PDD, registration failure), rendered on every
   surface from one `SignalingDiagnosis`. **There are eight now, as of
   2026-08-06:** `SignalingDiagnosis` also carries `icmp_unreachable`
-  (`src/sip/diagnosis.rs`), added after this entry was written. The seven above
+  ([`src/sip/diagnosis.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/diagnosis.rs)), added after this entry was written. The seven above
   are what 0.5.68 shipped and the sentence is true of that release; it is no
   longer the whole set, so do not read it as an inventory. The spec's two
   load-bearing rules
@@ -1919,23 +1919,23 @@ authoritative; the PB text above adds only what they do not already say.
   11.0s from Table 2/E.721, the ACK window 32s from Timer H, the
   no-final-response window 180s from Timer C. Two guards exist only because
   the naive versions fired on healthy traffic: a `BYE` suppresses the
-  missing-ACK finding (RFC 3261 §15 means a hangup proves the ACK arrived),
+  missing-ACK finding ([RFC 3261 §15](https://www.rfc-editor.org/rfc/rfc3261#section-15) means a hangup proves the ACK arrived),
   and Timer C bounds the no-final-response case so calls in flight when the
   capture stopped stay quiet. Verified across 1398 real dialogs in the sample
   captures: 2 findings, both genuine.
-- [x] **Developer documentation** — **Done:** `docs/internals/` now carries a
+- [x] **Developer documentation** — **Done:** [`docs/internals/`](https://github.com/NormB/sipnab/tree/main/docs/internals) now carries a
   developer index (reading order, the live-vs-archaeological map of the
   root-level design corpus, and a glossary for D1–D21/D22, WS0–WS8, P0–P5,
   SN-01/02/03), a `subsystem-guide.md` walking one packet from wire to screen
   across all four packet paths, `invariants.md` (ten rules, each naming what
-  enforces it), `testing.md` (tiers, `tests/support/` helpers, the gate
+  enforces it), `testing.md` (tiers, [`tests/support/`](https://github.com/NormB/sipnab/tree/main/tests/support) helpers, the gate
   roster), `walkthroughs.md` (ordered checklists for a new TUI view, detector,
   CLI flag, MCP tool, output format and SIP header accessor),
   `build-ci-release.md` (the eleven features and their real implications, the
   eight workflows, what `ci-success` actually requires, hooks, the 1.97.1
   toolchain pins, and the release matrix) and `domain-primer.md` (the SIP/RTP
   model the code assumes). Seventeen `sequenceDiagram`s across the set. Held
-  true by `tests/dev_docs_drift_test.rs`: cited paths must exist, `()`-suffixed
+  true by [`tests/dev_docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs): cited paths must exist, `()`-suffixed
   symbols must resolve to a definition, links must be relative, every page must
   be registered in `build-wiki.py`, and the diagram conventions are enforced.
   `build-wiki.py` gained `CODE_LINK_RE` so code links rewrite to blob URLs
@@ -1956,7 +1956,7 @@ authoritative; the PB text above adds only what they do not already say.
   either way: every diagram has a prose line above it carrying the same point,
   so the pages degrade to correct rather than to broken.
 - [x] **glibc floor: installer runtime value** — **Already done; this entry was
-  stale.** `website/static/install.sh` and `website/config.toml` both carry
+  stale.** [`website/static/install.sh`](https://github.com/NormB/sipnab/blob/main/website/static/install.sh) and [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) both carry
   `2.36`, matching the floor `release.yml` enforces, and
   `published_glibc_floor_matches_release_gate` in `site_journey_test.rs` now
   compares the published value against the release gate so they cannot drift
@@ -1973,8 +1973,8 @@ authoritative; the PB text above adds only what they do not already say.
   unfragmented DATA chunk per packet. Enables SIGTRAN/Diameter (3GPP IMS).
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
-  `SctpReassembler` (`src/capture/parse.rs:1730`), constructed on every
-  `PacketProcessor` (`src/capture/mod.rs:625`, `:651`, `:686`). The P2 entry
+  `SctpReassembler` ([`src/capture/parse.rs:1730`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1730)), constructed on every
+  `PacketProcessor` ([`src/capture/mod.rs:625`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L625), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to
   notice, because each one reads as authoritative on its own.
@@ -2015,7 +2015,7 @@ authoritative; the PB text above adds only what they do not already say.
 ## Closed: the ThreadSanitizer "race" was the uninstrumented allocator
 
 *Diagnosed 2026-07-29. Not a defect in sipnab.* The reported race was
-**mimalloc**, which `src/main.rs` installs as the global allocator. mimalloc is
+**mimalloc**, which [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) installs as the global allocator. mimalloc is
 C compiled by the `cc` crate, and `-Zsanitizer=thread` instruments Rust only, so
 TSan sees neither its alloc/free (no shadow reset when a block is recycled) nor
 its internal cross-thread synchronisation (no happens-before edges). Every block
@@ -2034,7 +2034,7 @@ sides, which named the cause outright. The CI report did not: its stacks were
 `read`/`Vec::append_elements_unreserved` with no allocator frame at all, because
 the recorded shadow was the *user's* write to a block mimalloc later recycled.
 That is why a name-based TSan suppression was never an option — there is no
-allocator frame to match. `src/main.rs` now drops mimalloc under
+allocator frame to match. [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) now drops mimalloc under
 `--cfg sipnab_tsan`, set by the job; the shipped binary is unchanged.
 
 Four further defects fell out of this, all fixed:
@@ -2053,7 +2053,7 @@ Four further defects fell out of this, all fixed:
   straight back. `thread leak` is now in the job's fatal set rather than
   tolerated, and `cli_flag_behavior_test` (one of the five suites the job runs)
   exercises both shapes so a regression fails there.
-- **`tests/support/server.rs` named a timeout it never waited out.** When the
+- **[`tests/support/server.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/server.rs) named a timeout it never waited out.** When the
   spawned server died, stderr closed, and the `Disconnected` arm broke out of
   the wait loop to a panic that reported the whole budget — "did not report a
   listening address within 180s" for a suite that finished in 55s. All nine
@@ -2078,7 +2078,7 @@ Four further defects fell out of this, all fixed:
   while `nm` is still writing, `nm` dies of SIGPIPE (141), `pipefail` promotes
   that, and an instrumented binary is reported as uninstrumented — deterministic
   on a 284,000-symbol binary, invisible on a small one. Both now live in
-  `ops/tsan/verdict.sh` with `ops/tsan/test-verdict.sh` beside it and a CI job
+  [`ops/tsan/verdict.sh`](https://github.com/NormB/sipnab/blob/main/ops/tsan/verdict.sh) with [`ops/tsan/test-verdict.sh`](https://github.com/NormB/sipnab/blob/main/ops/tsan/test-verdict.sh) beside it and a CI job
   running it on every push, because inline YAML cannot be run against a fixture.
   The `nm` stub there emits ~100k symbols with the match first: a compiled
   fixture could not reproduce the SIGPIPE case at all, since the linker placed
@@ -2121,14 +2121,14 @@ happens-before edge covers the thread's exit; and TSan reset no shadow on the
 free, because the free was mimalloc's.
 
 `SIPNAB_TEST_TIMEOUT_SCALE` survives this — instrumented builds really are
-several times slower — but see `tests/support/timeout.rs` for the corrected
+several times slower — but see [`tests/support/timeout.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/timeout.rs) for the corrected
 reason it was introduced.
 
 ## Standing decisions
 
 | Decision | Status | Notes |
 |----------|--------|-------|
-| Release tarball names carry the Rust target triple | KEPT | `x86_64-unknown-linux-gnu`, not a friendlier alias. The `unknown` is the triple's *vendor* field — the canonical value for "no specific vendor", which is why the macOS artifacts say `apple` in the same slot — and it reads as a failure to people who have not met it. Renaming was considered and rejected: the name is derived from the build matrix, matches `rustc -vV`, is what `SHA256SUMS.txt` and the provenance attestation cover, and is what `install.sh` constructs. A friendly alias would be a second, hand-maintained name for the same file — the drift class this repo has spent a lot of effort removing. The gap was that nothing *explained* it, so `ops/release/platform-table.sh` now renders a decode table into the release body. |
+| Release tarball names carry the Rust target triple | KEPT | `x86_64-unknown-linux-gnu`, not a friendlier alias. The `unknown` is the triple's *vendor* field — the canonical value for "no specific vendor", which is why the macOS artifacts say `apple` in the same slot — and it reads as a failure to people who have not met it. Renaming was considered and rejected: the name is derived from the build matrix, matches `rustc -vV`, is what `SHA256SUMS.txt` and the provenance attestation cover, and is what `install.sh` constructs. A friendly alias would be a second, hand-maintained name for the same file — the drift class this repo has spent a lot of effort removing. The gap was that nothing *explained* it, so [`ops/release/platform-table.sh`](https://github.com/NormB/sipnab/blob/main/ops/release/platform-table.sh) now renders a decode table into the release body. |
 | wolfSSL/OpenSSL TLS backends | REMOVED | ring covers ~95% of cases; re-add only if FIPS demand arises. |
 | gRPC API | REMOVED | REST API is complete; re-add only if streaming demand arises. |
 | STIR/SHAKEN cert verification | DEFERRED | Would require HTTP cert fetching — added attack surface, intentionally skipped. |

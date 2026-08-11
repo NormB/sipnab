@@ -1,7 +1,7 @@
 # sipnab — Maintainability & Performance Improvement Spec
 
 **Scope:** `sipnab` @ `main` (v0.4.18), ~68,300 lines across 101 files in `src/`,
-plus `crates/sipnab-audio`.
+plus [`crates/sipnab-audio`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-audio).
 **Method:** five parallel review passes — documentation standards, architecture
 & complexity, idiomatic Rust / API design, hot-path performance, testing & CI —
 each grounded in file:line evidence.
@@ -13,7 +13,7 @@ each grounded in file:line evidence.
 > describe the state *at review time*, not today. Tree at 2026-07-20: 15 fuzz
 > targets, 2,569 tests — itself a dated observation, not a running total, and
 > the test count has moved since. The only live section is **WS8** (§10, perf
-> follow-ups), tracked against current `main`; see `CHANGELOG.md` for what
+> follow-ups), tracked against current `main`; see [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) for what
 > each workstream landed in.
 
 ---
@@ -91,8 +91,8 @@ Each item below is self-contained and can land as its own PR.
 
 ### WS0.1 Delete the batch-path `SipMessage` clone  *(perf, HIGH impact/trivial)*
 
-- `src/main.rs:1996` — `dialog_store.process_message(sip_msg.clone());`
-- `src/parallel.rs:134` — `ds.process_message(msg.clone());`
+- [`src/main.rs:1996`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L1996) — `dialog_store.process_message(sip_msg.clone());`
+- [`src/parallel.rs:134`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L134) — `ds.process_message(msg.clone());`
 
 `pipeline.rs:150-169` already shows the fix: extract `call_id.to_string()`,
 SDP links, and the `--tag`/event-exec fields *before* moving the message into
@@ -121,20 +121,20 @@ No workflow runs `cargo doc`. `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 (`persist_to_config`, `decode_lost`, `link_to_dialog`, `compact_idle`), public
 docs linking private items (`capture_hep` → `hep_to_packet`,
 `verify_srtp_auth_tag` → `derive_session_key`), unclosed HTML tag at
-`src/error.rs:31`. The crate is published — docs.rs renders these broken.
+[`src/error.rs:31`](https://github.com/NormB/sipnab/blob/main/src/error.rs#L31). The crate is published — docs.rs renders these broken.
 
 **Accept:** the command above exits 0 locally and runs as a CI step in
 `ci.yml`.
 
 ### WS0.3 `[workspace.lints]` table — lock in the discipline already achieved  *(idioms)*
 
-Lint policy is currently scattered across `src/lib.rs:23`
-(`warn(missing_docs)`), `src/mcp/mod.rs:24` (`deny(clippy::await_holding_lock)`),
-and two CI flag sites; `crates/sipnab-audio` has no `missing_docs` gate at all.
+Lint policy is currently scattered across [`src/lib.rs:23`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L23)
+(`warn(missing_docs)`), [`src/mcp/mod.rs:24`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L24) (`deny(clippy::await_holding_lock)`),
+and two CI flag sites; [`crates/sipnab-audio`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-audio) has no `missing_docs` gate at all.
 The codebase *already complies* with `unwrap_used`/`expect_used` in lib code —
 nothing prevents regression.
 
-Add to the workspace `Cargo.toml`:
+Add to the workspace [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml):
 
 ```toml
 [workspace.lints.rust]
@@ -152,7 +152,7 @@ await_holding_lock = "deny"
 with `lints.workspace = true` in both member crates. Backfill what the new
 lints flag: the ~46 missing `# Errors` sections (63 fallible pub fns, 17
 documented) and the 7 missing `// SAFETY:` comments (`src/privilege.rs:247,253`;
-`src/capture/live.rs:66,347,353,380`; `src/rtp/playback.rs:419`). Convert the
+`src/capture/live.rs:66,347,353,380`; [`src/rtp/playback.rs:419`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs#L419)). Convert the
 15 `#[allow]`s to `#[expect]` so stale suppressions self-report.
 
 **Accept:** `cargo clippy --workspace --all-features --all-targets -- -D warnings`
@@ -174,7 +174,7 @@ the gate.
 `security/` while `capture/` simultaneously imports `crate::sip` — the two
 layers point at each other, and `sip` can never compile without `capture`
 (relevant for wasm). Move it (and any shared vocabulary types) to a leaf
-`src/net.rs`; re-export from `capture::parse` for compatibility.
+[`src/net.rs`](https://github.com/NormB/sipnab/blob/main/src/net.rs); re-export from `capture::parse` for compatibility.
 
 **Accept:** `grep -r "capture::parse::TransportProto" src/sip src/security`
 empty; all feature combos build.
@@ -183,9 +183,9 @@ empty; all feature combos build.
 
 - `src/main.rs:1993,2013` — `dialog.state().to_string()` twice per message for
   change detection: compare the enum.
-- `src/sip/dialog.rs:136-144` — `format!` per message for the retransmission
+- [`src/sip/dialog.rs:136-144`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L136-L144) — `format!` per message for the retransmission
   probe key: packed tuple key or `SmallString`.
-- `src/capture/live.rs:224` — `interface_name.clone()` (an `Option<String>`)
+- [`src/capture/live.rs:224`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L224) — `interface_name.clone()` (an `Option<String>`)
   per packet: make `Packet.interface` an `Option<Arc<str>>` (`packet.rs:48`).
 
 **Accept:** covered by the WS4.0 benches; suite green.
@@ -196,7 +196,7 @@ The architecture content exists but hides in `implementation-plan-v6.md`
 (2,744 lines, planning-flavored name; README links it as "architecture and
 roadmap"). Extract the Module Map + design decisions into a top-level
 `../architecture.md` (matklad convention); link from CONTRIBUTING.md. Add
-`docs/internals/threading.md` with the actual topology (capture thread(s) →
+[`docs/internals/threading.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md) with the actual topology (capture thread(s) →
 PacketRx → processing thread → `Arc<RwLock<Store>>` ← TUI `try_read` readers;
 API/MCP/MCP-HTTP/Prometheus/DNS/scanner-kill side threads) — today it is
 reconstructible only by grep.
@@ -216,10 +216,10 @@ bodies:
 
 | Copy | Location | Size | Consumer |
 |---|---|---|---|
-| Canonical | `src/pipeline.rs:108` `process_packet` | 142 ln | TUI live |
-| Batch | `src/main.rs:1905` `process_parsed_packet` | 402 ln | batch mode |
+| Canonical | [`src/pipeline.rs:108`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L108) `process_packet` | 142 ln | TUI live |
+| Batch | [`src/main.rs:1905`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L1905) `process_parsed_packet` | 402 ln | batch mode |
 | TUI file-open | `src/tui/events.rs:1536` `load_pcap_file` | 194 ln | F3 open |
-| Sharded | `src/parallel.rs` + worker loops | ~200 ln | `--jobs N` |
+| Sharded | [`src/parallel.rs`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) + worker loops | ~200 ln | `--jobs N` |
 
 `pipeline.rs:100-105` admits it ("the testable core that batch mode's richer
 pipeline mirrors"). The TUI copy has already drifted: private
@@ -280,7 +280,7 @@ test and the existing 755 integration tests.
 
 ---
 
-## 4. WS2 — Decompose `main.rs` into `src/app/`  *(architecture)*
+## 4. WS2 — Decompose `main.rs` into [`src/app/`](https://github.com/NormB/sipnab/tree/main/src/app)  *(architecture)*
 
 ### WS2 — Problem
 
@@ -295,7 +295,7 @@ cut in half, not decomposed. All of it is untestable except through the CLI.
 
 ### WS2 — Design
 
-Create `src/app/` in the library (unit-testable, unlike `main.rs`):
+Create [`src/app/`](https://github.com/NormB/sipnab/tree/main/src/app) in the library (unit-testable, unlike `main.rs`):
 
 - `app/bootstrap.rs` — steps 1–17: config merge, validation, privilege
   drop/chroot, capture setup. Returns a `RunPlan` value describing what to
@@ -318,10 +318,10 @@ Create `src/app/` in the library (unit-testable, unlike `main.rs`):
 
 Same facade treatment for the other two cfg hotspots:
 
-- `src/rtp/srtp.rs` (26 × `tls` gates in 1,787 lines) → `srtp/parse.rs`
+- [`src/rtp/srtp.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/srtp.rs) (26 × `tls` gates in 1,787 lines) → `srtp/parse.rs`
   (always compiled) + `srtp/decrypt.rs` (one `#[cfg(feature = "tls")]` at the
   `mod` line).
-- `src/capture/mod.rs` (31 gates, 24 of them `native`) → `capture/native/`
+- [`src/capture/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs) (31 gates, 24 of them `native`) → `capture/native/`
   submodule gated once.
 
 Target: total inline `#[cfg(feature` sites ≤ 60 (from 167), with `main.rs`/
@@ -349,10 +349,10 @@ Five implementations of "dialog summary", already divergent on the wire:
 
 | Surface | Site | Drift |
 |---|---|---|
-| CLI/NDJSON | `src/output/json.rs:148` `DialogJson` | `msg_count`, `schema_version: 1` |
-| REST API | `src/output/api.rs:715` ad-hoc `json!` | `msg_count`, `method.as_str()` |
-| MCP | `src/mcp/server.rs:247` `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
-| TUI save | `src/tui/save.rs:212` hand-built `json!` | third field set, no `schema_version` |
+| CLI/NDJSON | [`src/output/json.rs:148`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L148) `DialogJson` | `msg_count`, `schema_version: 1` |
+| REST API | [`src/output/api.rs:715`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L715) ad-hoc `json!` | `msg_count`, `method.as_str()` |
+| MCP | [`src/mcp/server.rs:247`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L247) `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
+| TUI save | [`src/tui/save.rs:212`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L212) hand-built `json!` | third field set, no `schema_version` |
 | Report | `src/output/call_report.rs:50/183` | independent text/markdown re-derivations |
 
 Same pattern for streams (`api.rs:741` vs `json.rs:115` vs `save.rs:660`).
@@ -368,8 +368,8 @@ line occurs at 10 non-test sites — each duplicating lock-ordering decisions.
   `CallReportModel` — single constructors, serde-derived, consumed by JSON,
   API, MCP, TUI save, and the text/markdown renderers.
 - **Scope notes from implementation:** a sixth drifted copy exists in
-  `src/wasm.rs` (`get_dialogs` also says `message_count`), but the website
-  JS (`website/static/js/analyze.js`, `analyze.html`) consumes that shape —
+  [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) (`get_dialogs` also says `message_count`), but the website
+  JS ([`website/static/js/analyze.js`](https://github.com/NormB/sipnab/blob/main/website/static/js/analyze.js), `analyze.html`) consumes that shape —
   unifying it needs coordinated website-bundle changes and is deferred
   (requires moving the model out of the native-gated `output/` to a leaf
   module first). The `CallReportModel`/text-renderer half is likewise a
@@ -387,7 +387,7 @@ line occurs at 10 non-test sites — each duplicating lock-ordering decisions.
 
 ### WS3 — TDD / acceptance
 
-- Failing test first: extend `tests/json_schema_test.rs` with a cross-surface
+- Failing test first: extend [`tests/json_schema_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/json_schema_test.rs) with a cross-surface
   consistency test — the same fixture rendered via CLI JSON, API, MCP, and
   TUI save must produce identical field names/values for the shared core.
   It fails today (red); goes green with the unification.
@@ -424,7 +424,7 @@ mode, seconds), baselines recorded in the PR description.
 
 ### WS4.1 SIP header parse: ~3 allocations/header → ~0–1  *(HIGH)*
 
-`src/sip/parser.rs` per header line: `:253` owned unfold buffer even when no
+[`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) per header line: `:253` owned unfold buffer even when no
 folding occurs (folding is rare); `:328` `value.trim().to_string()`; `:343-353`
 `Cow::Owned` for every *long-form* header name (`Via`, `From`, `Call-ID` —
 i.e. the common case; only compact single-char forms borrow); `:199`
@@ -504,7 +504,7 @@ existing 261 headless TUI state tests + 49 snapshots green.
 
 ### Problem
 
-- `App` (`src/tui/mod.rs:811`): 74 fields — 6 independent scroll offsets,
+- `App` ([`src/tui/mod.rs:811`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L811)): 74 fields — 6 independent scroll offsets,
   full save-dialog state (6 fields), file-open state (7 fields), name-popup
   state, render caches. No compiler help against stale cross-popup state.
 - `src/tui/events.rs`: 3,709 lines, 372 `KeyCode::` arms in 21 `handle_*`
@@ -546,7 +546,7 @@ existing 261 headless TUI state tests + 49 snapshots green.
   updates) after each split.
 - New unit tests for the `KeyAction` mapping layer (red-green for at least
   one remapped key before the layer lands).
-- No file in `src/tui/` > 1,200 lines; no function > 150 lines; `App` direct
+- No file in [`src/tui/`](https://github.com/NormB/sipnab/tree/main/src/tui) > 1,200 lines; no function > 150 lines; `App` direct
   scalar fields < 30; zero state writes inside `render_app` (grep for
   `app.` assignments in render fns).
 
@@ -558,7 +558,7 @@ existing 261 headless TUI state tests + 49 snapshots green.
 
 ### WS6.1 Typed errors for the re-exported parse/capture surface
 
-`src/error.rs` has a good `#[non_exhaustive]` thiserror enum — but it covers
+[`src/error.rs`](https://github.com/NormB/sipnab/blob/main/src/error.rs) has a good `#[non_exhaustive]` thiserror enum — but it covers
 only config/CLI/validation. Everything actually re-exported at the crate root
 (`parse_sip`, `parse_sip_bytes`, `parse_packet`, `parse_rtp_header`,
 `parse_sdp`, `PcapReader`, SRTP/HEP/decrypt) returns `anyhow::Result`, with
@@ -591,7 +591,7 @@ message text.
   (`dialog_store.rs:61`) — keep the existing hand-written key-redacting
   `Debug` pattern (`srtp.rs:38`, `rsa_key.rs:21`) for anything holding
   secrets.
-- Naming: `get_`-prefixed getters in `src/wasm.rs:109-324`; `SipMessage::
+- Naming: `get_`-prefixed getters in [`src/wasm.rs:109-324`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs#L109-L324); `SipMessage::
   to_user/to_host/to_tag/to_display` read as expensive `to_` conversions but
   are cheap "To:"-header accessors — rename toward `to_header_user()` or
   document loudly; `SipMethod::as_str(&self)` vs `TransportProto::as_str(self)`
@@ -633,7 +633,7 @@ Ordered by risk closed per unit effort:
    reader (`pcap_reader.rs`/`pcapng_meta.rs` — a hostile `.pcapng` handed to
    `sipnab -I` is a primary workflow), DTLS (`capture/dtls.rs`), TCP
    reassembly (`capture/reassembly.rs`), SIPREC XML if hand-parsed. Seed from
-   `tests/pcap-samples/`.
+   [`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples).
 3. **Property-based testing.** proptest as dev-dep; start with three
    properties: SIP build→parse→field round-trip (generator skeleton =
    `test_utils::build_sip_message`), SDP round-trip, filter-DSL parse/eval
@@ -643,7 +643,7 @@ Ordered by risk closed per unit effort:
    add one `dtolnay/rust-toolchain@stable` job running
    `cargo test --all-features` (clippy on stable may be `continue-on-error`
    to absorb new-lint churn).
-5. **wasm runtime tests.** `src/wasm.rs` (415 ln) is check-only in CI with
+5. **wasm runtime tests.** [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) (415 ln) is check-only in CI with
    one source-text-level test; the pre-commit hook itself names "WASM module
    out of sync" as a historical bug class. Add `wasm-bindgen-test` +
    `wasm-pack test --node` CI step.
@@ -659,7 +659,7 @@ Ordered by risk closed per unit effort:
    the job summary, or move to a scheduled workflow that opens an issue on
    failure — a soft-forever gate is close to no gate.
 9. **Deterministic clocks:** inject a clock into the token-TTL path
-   (`tests/mcp_token_rotation_test.rs:339` sleeps > 3 s real time); convert
+   ([`tests/mcp_token_rotation_test.rs:339`](https://github.com/NormB/sipnab/blob/main/tests/mcp_token_rotation_test.rs#L339) sleeps > 3 s real time); convert
    `parse_path_test.rs:140,147` fixed sleeps to the existing poll-until
    helper.
 10. **One-shot calibration:** run `cargo mutants` locally on `sip/parser.rs`,

@@ -189,7 +189,7 @@ if (handle->linktype == DLT_EN10MB) {
 ```
 
 **The clamp only applies to `DLT_EN10MB` — real Ethernet.** sipnab's default
-capture device on Linux is `any` (`src/capture/device.rs:38-40`, chosen because
+capture device on Linux is `any` ([`src/capture/device.rs:38-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L38-L40), chosen because
 SIP servers often listen on loopback), and `any` is `DLT_LINUX_SLL2`, not
 `DLT_EN10MB`. So on the default configuration **no clamp runs at all** and the
 slot stays at the full snaplen:
@@ -263,7 +263,7 @@ if (!handle->opt.immediate) {
 
 So immediate mode reads like a latency preference and is really a ring-format
 choice. sipnab answers it by asking who consumes the packets
-(`immediate_mode_for()` in `src/app/bootstrap.rs`):
+(`immediate_mode_for()` in [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)):
 
 | Run mode | Immediate | Ring | Why |
 |---|---|---|---|
@@ -275,7 +275,7 @@ inheriting it: libpcap copies the read timeout into `req.tp_retire_blk_tov` and
 then polls with `-1`, so the timeout becomes **added delivery latency** rather
 than a poll bound. The interactive 100 ms would have meant up to 100 ms before a
 block retires. The batched path therefore uses its own
-`BATCHED_READ_TIMEOUT_MS = 5` (`src/capture/live.rs`). Shutdown responsiveness
+`BATCHED_READ_TIMEOUT_MS = 5` ([`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)). Shutdown responsiveness
 (`--duration`, Ctrl-C) never depended on either: the handle is non-blocking, an
 empty ring returns `TimeoutExpired`, and the wait is sipnab's own bounded
 `wait_readable()`.
@@ -298,7 +298,7 @@ the two checks that would settle it.
 
 That default is deliberate, and it is a **correctness** choice, not a
 performance one. `find_default_device()` returns `"any"` on Linux
-(`src/capture/device.rs:35-40`), for the reason written beside it:
+([`src/capture/device.rs:35-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L35-L40)), for the reason written beside it:
 
 ```text
 // On Linux, "any" captures all interfaces — this is what sngrep does.
@@ -329,7 +329,7 @@ link type, not the offloads. At the 64 MiB default that is ~1,000 slots against
 ~41,000 for a named Ethernet interface with offloads off. Before the default
 buffer still defaulted to 2 MiB, the same arithmetic gave `any` just **31 slots**.
 
-**2. It cannot go promiscuous.** `capture_live()` in `src/capture/live.rs`
+**2. It cannot go promiscuous.** `capture_live()` in [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)
 computes `let use_promisc = config.promisc && device != "any"` — the
 pseudo-device does not support promiscuous mode, so sipnab does not ask for it. Promisc is on by default for a named
 device and `--no-promisc` turns it off. On `any` there is nothing to turn off.
@@ -341,7 +341,7 @@ correctness cost, and it points the opposite way from the loopback argument —
 
 **3. It runs one capture thread.** Naming devices unlocks `--multi-device`,
 which spawns **one capture thread per interface** (`start_multi_capture()` and
-`spawn_live_device()` in `src/capture/native.rs`), each with its own ring and
+`spawn_live_device()` in [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)), each with its own ring and
 its own drain loop. `any` is one device, so it is one thread and one ring no
 matter how many interfaces the traffic actually arrives on.
 

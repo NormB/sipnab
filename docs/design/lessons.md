@@ -6,7 +6,7 @@
 thing they claimed to check. Each was green, and each was green *because* of the
 substitution:
 
-- `docs_drift_test` gated the feature table on `README.md` alone. `docs/install.md`
+- `docs_drift_test` gated the feature table on [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) alone. [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md)
   omitted the `metrics` feature and mis-stated the default set for several releases
   with CI green throughout — and README was correct, which is why nothing showed.
 - `index_task_cards_point_at_existing_pages` required a quote immediately after the
@@ -76,19 +76,19 @@ exit status of `tail`, not of `cmd`.
 
 - `config.md` `visible_columns` listed 4 invalid column names — users copying the example would get configs that match nothing.
 - `cli.md` + `troubleshooting.md` jq recipes used `.status` instead of `.status_code` — silently emitted nulls.
-- `docs/install.md` and `CLAUDE.md` feature-flag tables were stale (default = `[]`, listed phantom `tls-wolfssl`/`tls-openssl`/`grpc`, missed `mcp`/`mcp-http`/`audio`/`native`).
+- [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md) and `CLAUDE.md` feature-flag tables were stale (default = `[]`, listed phantom `tls-wolfssl`/`tls-openssl`/`grpc`, missed `mcp`/`mcp-http`/`audio`/`native`).
 - `api.md` listed phantom Prometheus metric names (`sipnab_rtp_mos_histogram` etc.) that never existed.
 - `mcp.md` referenced a nonexistent `--cli-print` flag.
 - `filter-dsl.md` claimed 24 fields when source had 30; missing all 5 Phase 8.7 asymmetry aliases (`codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media`).
-- `CHANGELOG.md` `[Unreleased]` was missing 12+ user-visible commits; release dates were wrong (0.3.1 dated *before* 0.3.0).
-- `CLAUDE.md` module layout omitted entire directories (`src/mcp/`, audio modules under `rtp/`, `src/crypto.rs`, `src/privilege.rs`, `src/process_isolation.rs`, `src/signals.rs`, `src/wasm.rs`) and named one (`src/sip/correlation.rs`) that doesn't exist.
+- [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) `[Unreleased]` was missing 12+ user-visible commits; release dates were wrong (0.3.1 dated *before* 0.3.0).
+- `CLAUDE.md` module layout omitted entire directories ([`src/mcp/`](https://github.com/NormB/sipnab/tree/main/src/mcp), audio modules under `rtp/`, [`src/crypto.rs`](https://github.com/NormB/sipnab/blob/main/src/crypto.rs), [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs), [`src/process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs), [`src/signals.rs`](https://github.com/NormB/sipnab/blob/main/src/signals.rs), [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs)) and named one (`src/sip/correlation.rs`) that doesn't exist.
 - `../docs/design/implementation-plan-v6.md` D14 still described a multi-backend crypto plan that was silently dropped (only `ring`/`rustls` ever shipped).
 
 These drifted because each individual change was small enough not to think "should I update the docs?" — but the cumulative drift was substantial.
 
 **Rule:** Run a structured doc audit on a cadence (every release boundary, or every ~10 user-visible commits). The recipe that worked:
 
-1. Dispatch parallel agents per doc surface (website docs / repo dev docs / planning docs) — each gets the source-of-truth files (`Cargo.toml`, `src/cli.rs`, `src/mcp/server.rs`, `src/output/prometheus.rs`, `src/sip/dsl.rs`, recent `git log`) and a structured-findings output format.
+1. Dispatch parallel agents per doc surface (website docs / repo dev docs / planning docs) — each gets the source-of-truth files ([`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml), [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs), [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs), [`src/output/prometheus.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs), [`src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs), recent `git log`) and a structured-findings output format.
 2. Spot-check the high-impact claims before mass-editing (the agents are not infallible — one of them invented a non-existent rate-limit-claim issue this round; another miscounted DSL fields).
 3. Triage by severity: BLOCKING (user follows doc → wrong outcome) → MAJOR (wrong feature listed) → MINOR (count drift, internal inconsistency) and fix in that order.
 

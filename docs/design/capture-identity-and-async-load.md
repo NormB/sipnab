@@ -129,7 +129,7 @@ handler simply never yields.
 The TUI has solved this once already: opening a capture interactively spawns a
 `pcap-load` worker that writes through the shared stores while the event loop
 keeps running ([`src/tui/controllers/file_open.rs`](../../src/tui/controllers/file_open.rs)).
-`src/mcp/load.rs` is that design with a different poller.
+[`src/mcp/load.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/load.rs) is that design with a different poller.
 
 ```
 open_capture                          mcp-pcap-load thread

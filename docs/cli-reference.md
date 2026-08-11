@@ -294,7 +294,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > So sipnab sorts by each file's **first packet timestamp**. Neither
 > lexicographic nor natural-numeric filename order reconstructs that capture,
 > and replaying it out of order corrupts every timing derivation — post-dial
-> delay, setup time, retransmission detection, and the RFC 3261 Timer B/C/H
+> delay, setup time, retransmission detection, and the [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer B/C/H
 > bounds all assume timestamps only move forward.
 >
 > sipnab recognises a capture by **opening it**, not by its extension —
@@ -366,7 +366,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > in `--report`, and as `sipnab_capture_undecodable_frames_total{reason}` plus
 > `sipnab_capture_undecoded_fraction` on `/metrics`.
 >
-> `docs/troubleshooting.md` tables what each reason means and what to do about
+> [`docs/troubleshooting.md`](https://github.com/NormB/sipnab/blob/main/docs/troubleshooting.md) tables what each reason means and what to do about
 > it.
 
 **Examples**
@@ -410,7 +410,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 
 **Read this before using `--dtmf-cleartext`.** DTMF digits keyed after answer are
 PINs, calling-card numbers, account numbers and credit-card numbers with their
-CVVs, and RFC 4733 carries them in the clear no matter how well the signalling
+CVVs, and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) carries them in the clear no matter how well the signalling
 layer protected the call. So `-t` alone logs everything you diagnose with — that an event
 arrived, its duration, its SSRC, its timestamp — with the digit value replaced by
 `x`:
@@ -722,7 +722,7 @@ interface, and a copy reaches Homer.
 
 RTCP travels as HEP protocol type 5, which is what lets a remote collector
 report media quality — loss, jitter, MOS — rather than only whether calls
-connect. **RTP is never forwarded.** RTCP is a control channel that RFC 3550
+connect. **RTP is never forwarded.** RTCP is a control channel that [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550)
 §6.2 holds to a small fraction of session bandwidth, so it carries the quality
 summary at a rate a WAN link and a UDP feed can absorb. The media itself is the
 opposite on both counts, and forwarding it would make this a call recorder
@@ -792,8 +792,8 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `-k`, `--tls-key` | `<FILE>` | -- | RSA private key (PEM) for TLS 1.2 RSA-key-exchange decryption. Non-PFS RSA only; ECDHE/DHE handshakes need `--keylog`. Feature: `tls` |
 | `--keylog` | `<FILE>` | -- | TLS key log file (NSS `SSLKEYLOGFILE` format). Feature: `tls` |
 | `--keylog-watch` | -- | off | Watch key log file for new entries (live decryption). Feature: `tls` |
-| `--dtls-keylog` | `<FILE>` | -- | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes (RFC 5764 exporter, AES-CM profiles). Feature: `tls` |
-| `--srtp-keys` | `<FILE>` | -- | SRTP master-keys file for media decryption (AES-CM, RFC 3711); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
+| `--dtls-keylog` | `<FILE>` | -- | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter, AES-CM profiles). Feature: `tls` |
+| `--srtp-keys` | `<FILE>` | -- | SRTP master-keys file for media decryption (AES-CM, [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711)); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
 | `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic: `decrypted` (plaintext payloads, no DSB), `raw` (original encrypted bytes, no DSB), `encrypted+dsb` (original encrypted bytes + Decryption Secrets Block so Wireshark can decrypt) |
 | `--allow-coredump` | -- | off | Allow core dumps (do not call `prctl` to disable them) |
 

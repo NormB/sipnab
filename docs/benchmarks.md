@@ -30,7 +30,7 @@ nobody can rebuild.
 
 - **Host:** NVIDIA Jetson Thor devboard (aarch64), 14 cores, PREEMPT_RT
   kernel, idle. (A 4-vCPU VM is not used for throughput numbers.)
-- **Corpus:** `bench/carrier.py` — N concurrent calls, each
+- **Corpus:** [`bench/carrier.py`](https://github.com/NormB/sipnab/blob/main/bench/carrier.py) — N concurrent calls, each
   `INVITE → 100 → 180 → 200 → ACK → [bidirectional RTP] → BYE → 200`,
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
@@ -114,7 +114,7 @@ sipnab hashes every frame when only a *retained* pointer needs a digest — a di
 diagnostic build with the digest removed entirely measures 2.05M at two cores
 against 0.5.83's 2.33M, so roughly 12% of the original regression is *not* the
 digest at all and remains unidentified. Both are PERF1 in
-`docs/design/backlog.md`, together with the two obvious fixes and the tests
+[`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md), together with the two obvious fixes and the tests
 that already reject each.
 
 **Scope.** This A/B spans 0.5.47 → 0.5.91, measured on 2026-08-10, and says
@@ -122,15 +122,15 @@ nothing about anything released after. Re-run it rather than restating it with a
 higher version number.
 
 **CI measures throughput nightly, rather than per push.** The
-`Throughput` workflow now runs `bench/regression-gate.sh` at 03:29 UTC daily
-against the figure committed in `bench/baseline.json`, and fails below a stated
+`Throughput` workflow now runs [`bench/regression-gate.sh`](https://github.com/NormB/sipnab/blob/main/bench/regression-gate.sh) at 03:29 UTC daily
+against the figure committed in [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json), and fails below a stated
 floor.
 
 It is nightly on purpose: the reference host is one self-hosted runner that also
 serves CI, so two jobs on it measure their own contention rather than the tool,
 and a per-push wall-clock gate would be flaky in the direction that gets a gate
 muted. It does not catch slow erosion — a drift inside the floor passes.
-That is a deliberate trade, argued in `bench/baseline.json`.
+That is a deliberate trade, argued in [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json).
 
 The same A/B settles what the pre-0.5.47 tables mean. 0.5.18 measured 1.06M
 single-core against the 1.20M this page once published for it — same binary,

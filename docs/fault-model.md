@@ -29,12 +29,12 @@ Date: 2026-06-12.
 Two harnesses exercise every parser reachable from packet or file bytes
 layers:
 
-- **Coverage-guided fuzzing**: `fuzz/fuzz_targets/` (cargo-fuzz /
+- **Coverage-guided fuzzing**: [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets) (cargo-fuzz /
   libFuzzer) — 15 targets: sip, sdp, rtp, rtcp, hep, websocket,
   filter-dsl, stir-shaken, tls-records, srtp-keys, keylog-line,
   pcap-reader, dtls, tcp-reassembly, siprec. Run weekly (and on demand)
-  via `.github/workflows/fuzz.yml`; crash reproducers upload as artifacts.
-- **Always-on smoke fuzz**: `tests/smoke_fuzz_test.rs` runs in
+  via [`.github/workflows/fuzz.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/fuzz.yml); crash reproducers upload as artifacts.
+- **Always-on smoke fuzz**: [`tests/smoke_fuzz_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/smoke_fuzz_test.rs) runs in
   `cargo test` (no nightly needed) — ~40k random + structurally mutated
   inputs per entry point under `catch_unwind`, covering the same parser
   set **plus** the full link-layer decap chain (`parse_packet` across
@@ -44,7 +44,7 @@ layers:
 The smoke layer is the regression floor. It found the keylog panic in §5
 that nobody had ever run the committed fuzz target against.
 
-- **Property tests**: `tests/property_test.rs` (proptest) asserts the
+- **Property tests**: [`tests/property_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/property_test.rs) (proptest) asserts the
   *semantic* invariants the fuzzers cannot — a SIP message built from
   generated fields parses back to those fields, SDP survives a
   build→parse→rebuild round trip, and the filter DSL is a total function
@@ -72,7 +72,7 @@ The #1 memory-DoS surface: an attacker invents unlimited unique Call-IDs
 
 | Store | Cap | Policy | Bound proven by |
 |-------|-----|--------|-----------------|
-| `DialogStore` | `--limit` | LRU evict oldest at cap (default); `--no-rotate` → drop-new at cap | `tests/resource_bounds_test.rs` (50k unique Call-IDs, both modes, `len() ≤ cap` at every step) |
+| `DialogStore` | `--limit` | LRU evict oldest at cap (default); `--no-rotate` → drop-new at cap | [`tests/resource_bounds_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/resource_bounds_test.rs) (50k unique Call-IDs, both modes, `len() ≤ cap` at every step) |
 | `StreamStore` | `--max-streams` | always evict oldest | same test (50k unique SSRCs) |
 | per-dialog messages | 500 | drop past cap | `dialog_store.rs` unit tests |
 | per-stream audio frames | 1500 | ring buffer | `stream_store.rs` |
@@ -114,7 +114,7 @@ Audited, found sound (true-positive findings: none):
 
 ## 5. Fixed this pass
 
-- **`decode_hex` UTF-8 char-boundary panic** (`src/capture/tls.rs`):
+- **`decode_hex` UTF-8 char-boundary panic** ([`src/capture/tls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/tls.rs)):
   the TLS keylog hex decoder checked **byte**-length parity, then sliced
   `&hex[i..i+2]` as a `str`. A multi-byte UTF-8 char (e.g. `€`, 3 bytes)
   split by the 2-char window panicked with "byte index is not a char
@@ -122,8 +122,8 @@ Audited, found sound (true-positive findings: none):
   decoding on raw bytes with explicit nibble validation; any non-ASCII /
   non-hex byte is now a clean parse error. Regression:
   `decode_hex_multibyte_utf8_does_not_panic` + corpus seeds in
-  `fuzz/corpus/keylog_line/`. Found by the smoke-fuzz harness.
-- **Stale fuzz target** (`fuzz/fuzz_targets/sip_parser.rs`): passed a
+  [`fuzz/corpus/keylog_line/`](https://github.com/NormB/sipnab/tree/main/fuzz/corpus/keylog_line). Found by the smoke-fuzz harness.
+- **Stale fuzz target** ([`fuzz/fuzz_targets/sip_parser.rs`](https://github.com/NormB/sipnab/blob/main/fuzz/fuzz_targets/sip_parser.rs)): passed a
   `&str` transport arg where the current `parse_sip` takes
   `TransportProto`, so the fuzz suite no longer compiled. Updated; the
   smoke harness now also compile-checks every fuzz entry-point signature

@@ -40,12 +40,12 @@ compiles, which is exactly why CI has a feature matrix.
 | `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
 | `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website. |
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
-| `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via `scripts/build-wiki.py`. |
+| `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
 | `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the thor-02 self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
-| `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in `bench/baseline.json`, failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
+| `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
 
 ### ThreadSanitizer
 
@@ -74,12 +74,12 @@ API and its token path, HEP, MCP stdio, and the CLI behaviour tests. Nothing
 finds a race in a path outside that list. Add the suite rather than assuming
 coverage.
 
-`ops/tsan/suppressions.txt` silences libpcap, libasound and the dynamic loader,
+[`ops/tsan/suppressions.txt`](../../ops/tsan/suppressions.txt) silences libpcap, libasound and the dynamic loader,
 which TSan cannot instrument. Each entry carries the reason it is not a real
 race. An unexplained suppression turns a race detector into a race ignorer.
 
 **The sanitizer build drops mimalloc.** `RUSTFLAGS` carries
-`--cfg sipnab_tsan`, and `src/main.rs` skips its `#[global_allocator]` under that
+`--cfg sipnab_tsan`, and [`src/main.rs`](../../src/main.rs) skips its `#[global_allocator]` under that
 cfg. mimalloc is C compiled by the `cc` crate, so `-Zsanitizer=thread`
 does not instrument it, and TSan sees neither its alloc/free (no shadow reset on
 a recycled block) nor its internal cross-thread synchronisation: every block
@@ -113,8 +113,8 @@ A missing `__tsan_init` in the built binary fails the job outright, since a
 build that quietly lost its instrumentation would otherwise report a clean run
 forever.
 
-All of that lives in `ops/tsan/verdict.sh`, not inline in the workflow, with
-`ops/tsan/test-verdict.sh` beside it and a `tsan-verdict` job in `ci.yml`
+All of that lives in [`ops/tsan/verdict.sh`](../../ops/tsan/verdict.sh), not inline in the workflow, with
+[`ops/tsan/test-verdict.sh`](../../ops/tsan/test-verdict.sh) beside it and a `tsan-verdict` job in `ci.yml`
 running it on every push. The inline version had to move because it was
 wrong in the direction nobody checks: `run:` blocks execute under
 `bash -e -o pipefail`, so its bare `grep … | while read` warning loop exited 1
@@ -127,7 +127,7 @@ argument for it being a script.
 
 ### The prose gates
 
-`quality.yml`'s `Docs` job runs three tools over `docs/`, `website/content/` and
+`quality.yml`'s `Docs` job runs three tools over `docs/`, [`website/content/`](../../website/content/) and
 `README.md`: Vale with the Google style package, codespell, and lychee twice —
 once over the Markdown, once over the site Zola builds from it. The built-site
 pass matters because it is the only place the generated pages get checked, and it
@@ -173,8 +173,8 @@ before committing.
 
 **Every Dependabot pull request fails the same way, and it is almost never a
 code break.** A script generates `THIRD-PARTY-NOTICES.md` from the dependency
-graph, and the `third_party_notices_are_current` gate in `tests/docs_drift_test.rs`
-re-runs `scripts/build-third-party-notices.py` and fails when the committed file
+graph, and the `third_party_notices_are_current` gate in [`tests/docs_drift_test.rs`](../../tests/docs_drift_test.rs)
+re-runs [`scripts/build-third-party-notices.py`](../../scripts/build-third-party-notices.py) and fails when the committed file
 differs. Dependabot moves `Cargo.lock` and never regenerates what derives from
 it.
 
@@ -207,7 +207,7 @@ rather than racing a manual rebase against your own pushes.
 **`install-sh` and `deb-package` are not in that list.** They run on every push
 — the installer test suite plus shellcheck, and the `.deb` build for both the
 full and `noaudio` variants — but a failure in either does **not** block a
-merge. If you touch `website/static/install.sh` or `packaging/deb/`, read their
+merge. If you touch [`website/static/install.sh`](../../website/static/install.sh) or [`packaging/deb/`](../../packaging/deb/), read their
 logs yourself. Nothing else makes you.
 
 ## Hooks
@@ -225,7 +225,7 @@ the separator; periods would make nine sentences out of one enumeration. -->
 full test suite; no `unwrap()`/`expect()` in production code; WASM exports in
 sync with the site's JS; the homepage test count matching the run it just did —
 plus the site and man-page version strings matching `Cargo.toml`; no TODO
-stubs; a refusal to commit a staged `src/wasm.rs` without a rebuilt bundle
+stubs; a refusal to commit a staged [`src/wasm.rs`](../../src/wasm.rs) without a rebuilt bundle
 beside it; and an
 <!-- vale Google.Semicolons = YES -->
 
@@ -274,7 +274,7 @@ directory.
 
 That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
-a test obliges you to update `website/templates/index.html` in the same commit.
+a test obliges you to update [`website/templates/index.html`](../../website/templates/index.html) in the same commit.
 
 Three checks stay out of the hook on purpose: the eleven-combination feature
 matrix, Vale prose linting, and rustdoc. The hook already costs minutes and
@@ -442,7 +442,7 @@ The build, not the run, is what makes this gate feel slow. `lto = true` and
 library changes. `target/profiling` persists between pushes, so a second push
 that touches no source pays 87 s rather than 413. Building those binaries under
 the `profiling` profile while working moves the wait off the push entirely. The
-gate's own comment in `.githooks/pre-push` carries the exact build-only command.
+gate's own comment in [`.githooks/pre-push`](../../.githooks/pre-push) carries the exact build-only command.
 
 **How to bypass.** `SKIP_CORPUS_HOOK=1 git push` drops this gate and leaves the
 other five standing. That is a second variable rather than a reuse of
@@ -470,8 +470,8 @@ locally:
 | Location | Form |
 |---|---|
 | `ci.yml` (3 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.97.1` |
-| `Cargo.toml`, `crates/sipnab-audio/Cargo.toml` | `rust-version = "1.97"` (MSRV) |
-| `Dockerfile`, `harness/sipnab/Dockerfile` | `FROM rust:1.97-slim-trixie@sha256:<digest>` |
+| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](../../crates/sipnab-audio/Cargo.toml) | `rust-version = "1.97"` (MSRV) |
+| `Dockerfile`, [`harness/sipnab/Dockerfile`](../../harness/sipnab/Dockerfile) | `FROM rust:1.97-slim-trixie@sha256:<digest>` |
 
 A commit SHA pins the action, so the **version lives in the trailing
 comment** — which makes that comment load-bearing rather than decorative.
@@ -490,7 +490,7 @@ above in the same change.
 ## Releases
 
 **The site advertises the last PUBLISHED release, not the crate version.**
-`website/config.toml` carries both: `version`, which the Pages step overwrites
+[`website/config.toml`](../../website/config.toml) carries both: `version`, which the Pages step overwrites
 from `Cargo.toml` on every build, and `published_version`, which every download
 link and version badge draws from. They are different facts, and conflating
 them broke the download page in production — the release *commit* bumped the
@@ -563,7 +563,7 @@ and 10.12 for `x86_64-apple-darwin`, a real constraint that no file in the
 repository named. `/download` filled the gap with "macOS 12+" for both, which was
 wrong for each and concealed that they differ. `release.yml` now pins the target
 per build, at those same two values so no binary changed, and
-`published_macos_floors_match_the_toolchain` holds `website/config.toml` to what
+`published_macos_floors_match_the_toolchain` holds [`website/config.toml`](../../website/config.toml) to what
 the workflow pins. That gate also refuses a floor pinned *below* the compiler's
 own default: the config and the workflow would agree, and the published number
 would still be an OS the binary cannot run on. To move real support, change the
@@ -613,8 +613,8 @@ sequenceDiagram
     Note over GHCR: image + sigstore provenance
 ```
 
-Version strings live in `Cargo.toml`, `website/config.toml`, `man/sipnab.1`,
-`fuzz/Cargo.lock` and several docs, and committing with any of them out of step
+Version strings live in `Cargo.toml`, [`website/config.toml`](../../website/config.toml), [`man/sipnab.1`](../../man/sipnab.1),
+[`fuzz/Cargo.lock`](../../fuzz/Cargo.lock) and several docs, and committing with any of them out of step
 fails — so bumping a version is one edit plus the ones the gates point you at.
 
 That enforcement lives in **one** place: `docs_current_version_markers_match_cargo`
@@ -630,7 +630,7 @@ something was **measured** on — the benchmarks pages — must not track the cr
 version. A marker forcing them to is what kept a stale benchmark claim looking
 freshly checked for twenty-nine releases.
 
-The same mechanism gates the test count in `website/templates/index.html`, by
+The same mechanism gates the test count in [`website/templates/index.html`](../../website/templates/index.html), by
 `ci.yml` against the real suite total. That check is Linux-only: platform-gated
 tests mean the macOS leg runs a handful fewer, so one advertised number cannot
 be true of both, and the figure describes the Linux run.
@@ -660,7 +660,7 @@ and a full CI run, because the sibling gate searches for the heading naming the
 
 Nothing gates the changelog's contents, which is deliberate — prose would satisfy
 a gate on prose. What *is* gated is the release date: it must match
-`website/config.toml`, asserted by `site_release_date_matches_changelog`.
+[`website/config.toml`](../../website/config.toml), asserted by `site_release_date_matches_changelog`.
 
 ### Re-measuring the benchmarks
 

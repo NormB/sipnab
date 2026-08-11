@@ -10,7 +10,7 @@ This file tracks the code as it exists.
 `sipnab` is a single binary (plus the `sipnab-audio` dlopen'd plugin crate).
 It runs either as a **TUI** (interactive, ratatui) or in **batch/CLI mode**
 (parse → print/JSON/report → exit). Both modes share one library
-(`src/lib.rs`). The binary (`src/main.rs`) wires CLI flags to library calls.
+([`src/lib.rs`](https://github.com/NormB/sipnab/blob/main/src/lib.rs)). The binary ([`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs)) wires CLI flags to library calls.
 The core is synchronous, and async (tokio) exists only at the edges, for the
 optional API/MCP servers.
 
@@ -33,7 +33,7 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
 
 Parsing always happens **outside** the store locks. Each store is
 write-locked once per packet, briefly. Payloads are `bytes::Bytes` slices of
-the captured frame end to end (see `docs/internals/zero-copy-payloads.md`).
+the captured frame end to end (see [`docs/internals/zero-copy-payloads.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/zero-copy-payloads.md)).
 
 > All four packet paths — live, batch, TUI file-open and the `--cores`
 > sharded path (`parallel.rs`) — classify through the one
@@ -124,7 +124,7 @@ harness/                  # docker-compose e2e (opensips + rtpengine + sipp)
 
 ## Threading model
 
-See `docs/internals/threading.md` for the full topology and lock discipline.
+See [`docs/internals/threading.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md) for the full topology and lock discipline.
 Short version: capture threads → bounded channel → one processing thread
 that owns all store writes. TUI, API and MCP are readers. Batch `--cores N` shards
 packets by host pair to worker threads with thread-local stores, merged at
@@ -140,29 +140,29 @@ EOF.
   Header parsing allocates lazily (canonical-name table + `Cow` unfold,
   WS4.1) — 3→1 allocations per header on the hot path.
 - **D10 — Feature gates keep the binary small.** `native`, `tui`, `tls`,
-  `hep`, `api`, `mcp`, `mcp-http`, `audio`, `wasm`. Check `Cargo.toml`
+  `hep`, `api`, `mcp`, `mcp-http`, `audio`, `wasm`. Check [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml)
   before assuming a build includes a module.
 - **D11 — Key material is toxic waste.** `zeroize` on key types, redacting
   `Debug` impls, `--tls-key`/keylog material never logged.
 - **D13 — RTP is first-class.** sipnab discovers streams heuristically even
   without SIP/SDP; `rtp/` never depends on a dialog existing.
 - **D15 — Privilege drop.** sipnab drops root right after socket open, then
-  sets `PR_SET_NO_NEW_PRIVS` and disables core dumps (`src/privilege.rs`);
+  sets `PR_SET_NO_NEW_PRIVS` and disables core dumps ([`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs));
   `--chroot` is available for daemon deployments.
 - **D16 — Process isolation: specified, not shipped.** D16
-  (`docs/design/implementation-plan-v6.md:564`) called for scanner-kill and the
+  ([`docs/design/implementation-plan-v6.md:564`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L564)) called for scanner-kill and the
   REST API to run in forked children behind a Unix socket pair. **Neither
   does.** Scanner-kill runs in the `scanner-kill` *thread*
-  (`src/process_isolation.rs`) and the REST/MCP servers run as tasks on a shared
-  runtime thread (`src/app/servers.rs`), all in one address space alongside the
+  ([`src/process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)) and the REST/MCP servers run as tasks on a shared
+  runtime thread ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)), all in one address space alongside the
   parsers, the stores, TLS key material and bearer tokens. Treat the API bind
   address and key accordingly — and note that `panic = "abort"`
-  (`Cargo.toml:262`) means a panic on any thread ends the whole process, so
+  ([`Cargo.toml:262`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L262)) means a panic on any thread ends the whole process, so
   threads buy no fault containment either. The analysis of whether to close this
   gap, and why most of it should stay open, is in
-  `docs/design/process-isolation-and-hot-path-cost.md`.
+  [`docs/design/process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md).
 - **D17 — Warn and continue.** Malformed input must never crash the
-  process; parsers set `parse_error` and keep going (`docs/fault-model.md`).
+  process; parsers set `parse_error` and keep going ([`docs/fault-model.md`](https://github.com/NormB/sipnab/blob/main/docs/fault-model.md)).
 
 ## Where to add things
 

@@ -117,7 +117,7 @@ designing:
   it fails `a_frame_ref_needs_both_halves_or_it_is_not_offered`, and it does not
   help anyway because `parse_packet` calls it for every packet.
 - `frame_digest` must stay FNV-1a with its published spec vectors, per
-  `tests/frame_provenance_test.rs`, so stored pointers still verify.
+  [`tests/frame_provenance_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/frame_provenance_test.rs), so stored pointers still verify.
 - Threading the `Packet` down to the retention sites is not viable:
   `process_rtp` alone has 78 call sites.
 - The two retention sites take their frame from *different* types
@@ -126,7 +126,7 @@ designing:
   cheap in principle.
 
 Expected: removes ~93% of the per-packet `Arc` refcount traffic and the
-associated digest work. Verify with `bench/regression-gate.sh` and by
+associated digest work. Verify with [`bench/regression-gate.sh`](https://github.com/NormB/sipnab/blob/main/bench/regression-gate.sh) and by
 re-profiling — the `parse_packet` share of `ldadd8_relax` should collapse.
 
 **The blocker, found 2026-08-09 while scoping it.** There are exactly two
@@ -146,7 +146,7 @@ there is the per-packet clone we are trying to remove.
 
 Skipping non-SIP packets does not work either: `stream.first_frame` is
 deliberate, the code says *"a stream with no provenance must say so"*, and
-`tests/provenance_surfaces_test.rs` asserts it.
+[`tests/provenance_surfaces_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/provenance_surfaces_test.rs) asserts it.
 
 Three ways out, none of them a small edit — pick one and spec it before coding:
 
@@ -192,7 +192,7 @@ So the consumers need something `Copy` that identifies the source, not an
 test first: a two-file set must give each packet the source of *its own* file,
 which the index does by construction and a per-worker single `Arc` would not.
 `resolver_orders_a_set_by_first_packet_time` and the two-file fixtures in
-`tests/frame_provenance_test.rs` already cover the ordering; the new assertion
+[`tests/frame_provenance_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/frame_provenance_test.rs) already cover the ordering; the new assertion
 is that a pointer from file B names file B.
 
 **The 28 sites are all `frame: None` — there are zero `frame: Some(...)`.**
@@ -242,7 +242,7 @@ current. That is what a single per-worker `Arc` would have got silently wrong.
 
 Implementation order, with the multi-file assertion written first:
 
-1. `tests/frame_provenance_test.rs` — a two-file set where a pointer from the
+1. [`tests/frame_provenance_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/frame_provenance_test.rs) — a two-file set where a pointer from the
    second file must name the second file. It should pass today and keep passing;
    if it ever fails, this design is wrong and the number is not worth it.
 2. Reader interns the source once per file and stamps `Packet` with it.
@@ -320,7 +320,7 @@ happen on the same thread:
    `bytes::Bytes`; anything that retains a packet beyond its batch pins that
    buffer, so recycling must happen where the batch is known finished.
 
-**Verify** with `bench/regression-gate.sh` and by re-profiling: `mi_free`,
+**Verify** with [`bench/regression-gate.sh`](https://github.com/NormB/sipnab/blob/main/bench/regression-gate.sh) and by re-profiling: `mi_free`,
 `mi_free_try_collect_mt`, `mi_abandoned_page_try_reclaim` and
 `_mi_page_malloc_zero` should all collapse. If they do not, the buffers are
 still crossing threads and the pool is not doing its job.
@@ -349,5 +349,5 @@ the stamp entirely and kept everything else. Reaching 2.30M needs P2 as well —
 the allocator work predates the provenance commit and is not a regression at
 all, just a cost nobody had measured.
 
-Do not update `bench/baseline.json` upward until a change is merged and
+Do not update [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json) upward until a change is merged and
 measured; the baseline records what ships, not what is hoped for.

@@ -2,9 +2,9 @@
 
 **Status:** DESIGN. Nothing here is implemented — `grep -rin 'icid' src/` exits
 1, and the only three matches for `charging` in `src/` are unrelated prose
-(a GTP charging-protocol note in [`tunnel/udp.rs:129`](../../src/capture/tunnel/udp.rs),
-a rate-limiter comment in [`api.rs:560`](../../src/output/api.rs), a VXLAN
-accounting comment in [`parse.rs:1329`](../../src/capture/parse.rs)). The gap
+(a GTP charging-protocol note in [`tunnel/udp.rs:129`](https://github.com/NormB/sipnab/blob/main/src/capture/tunnel/udp.rs#L129),
+a rate-limiter comment in [`api.rs:560`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L560), a VXLAN
+accounting comment in [`parse.rs:1329`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1329)). The gap
 is genuine.
 **Verified against:** `748134f`, working tree.
 **Recommendation:** section 9 — **adopt with caveats**, in a shape that is not
@@ -25,21 +25,21 @@ capture was verifiable here, and none of it is asserted.
 
 sipnab already correlates legs **five** ways, not four.
 [`CorrelationReason`](../../src/sip/dialog_store.rs) at
-[`dialog_store.rs:43`](../../src/sip/dialog_store.rs) enumerates them, and
+[`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43) enumerates them, and
 [`find_correlated_scored`](../../src/sip/dialog_store.rs) at
-[`:935`](../../src/sip/dialog_store.rs) evaluates them in a fixed order,
+[`:935`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L935) evaluates them in a fixed order,
 first match wins:
 
 | Strategy | Score | Code | Reported `identifier_match` |
 |---|---|---|---|
-| `session_id` — RFC 7989 `Session-ID` | 100 | [`:993`](../../src/sip/dialog_store.rs) | `true` |
-| `x_call_id` — a configured header, `X-Call-ID` by default | 100 | [`:1017`](../../src/sip/dialog_store.rs) | `true` |
-| `sdp_origin` — the RFC 8866 origin tuple | 90 | [`:1034`](../../src/sip/dialog_store.rs) | `true` |
-| `via_branch` — a shared INVITE branch | 80 | [`:1058`](../../src/sip/dialog_store.rs) | `true` |
-| `timing_heuristic` — endpoint overlap plus a 2 s window | 50 | [`:1080`](../../src/sip/dialog_store.rs) | `false` |
+| `session_id` — [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` | 100 | [`:993`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L993) | `true` |
+| `x_call_id` — a configured header, `X-Call-ID` by default | 100 | [`:1017`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1017) | `true` |
+| `sdp_origin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) origin tuple | 90 | [`:1034`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1034) | `true` |
+| `via_branch` — a shared INVITE branch | 80 | [`:1058`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1058) | `true` |
+| `timing_heuristic` — endpoint overlap plus a 2 s window | 50 | [`:1080`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1080) | `false` |
 
 The `identifier_match` column is assigned in one place, the exhaustive match at
-[`server.rs:4501`](../../src/mcp/server.rs), which carries a comment saying the
+[`server.rs:4501`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4501), which carries a comment saying the
 absence of a catch-all is deliberate so that *"a new strategy is a COMPILE ERROR
 here rather than something that quietly reports as 'unknown, not an identifier'"*.
 That is the single most useful fact for this proposal: adding a sixth reason
@@ -56,7 +56,7 @@ about what a match does and does not prove.
 **The argument for `icid-value` is deployment cost, not correlation strength.**
 `Session-ID` is the durable fix and this page does not dispute that; it is a
 Proposed Standard whose entire purpose is to survive intermediaries, as
-[`session_id.rs:1-67`](../../src/sip/session_id.rs) already sets out at length.
+[`session_id.rs:1-67`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs#L1-L67) already sets out at length.
 Its cost is that somebody has to configure the SBC. In an IMS or carrier
 network, `P-Charging-Vector` is generated and carried by the operator's own
 equipment already, so a strategy that reads it costs the operator nothing.
@@ -65,7 +65,7 @@ narrower than the pitch.
 
 ## 2. Which RFC defines it, and which one is current
 
-**Cite RFC 7315, not RFC 3455.** RFC 3455 (Informational, 2003) is marked on
+**Cite [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315), not [RFC 3455](https://www.rfc-editor.org/rfc/rfc3455).** RFC 3455 (Informational, 2003) is marked on
 its own info page as *"This RFC is now obsolete, see RFC 7315"*. RFC 7315,
 *"Private Header (P-Header) Extensions to the Session Initiation Protocol (SIP)
 for the 3GPP"* (Informational, July 2014), obsoletes it.
@@ -75,8 +75,8 @@ obsoletes and errata applies to all of them:
 
 | RFC | Relationship | Touches `P-Charging-Vector`? |
 |---|---|---|
-| RFC 7913 | Updates 7315 | No — P-Access-Network-Info ABNF only |
-| RFC 7976 | Updates 7315 | Obsoleted by RFC 9878; superseded, do not cite |
+| [RFC 7913](https://www.rfc-editor.org/rfc/rfc7913) | Updates 7315 | No — P-Access-Network-Info ABNF only |
+| [RFC 7976](https://www.rfc-editor.org/rfc/rfc7976) | Updates 7315 | Obsoleted by [RFC 9878](https://www.rfc-editor.org/rfc/rfc9878); superseded, do not cite |
 | RFC 9878 | Updates 7315, obsoletes 7976 | Yes — where the header may appear |
 
 RFC 9878's change is about **placement, not semantics**. It replaces RFC 7315
@@ -101,7 +101,7 @@ defect for which **no erratum has been filed**, and it is flagged there as this
 page's own reading rather than as an accepted correction.
 
 sipnab's published header table already knows the mapping:
-[`sip-header-fields.md:119`](../sip-header-fields.md) lists `P-Charging-Vector`
+[`sip-header-fields.md:119`](https://github.com/NormB/sipnab/blob/main/docs/sip-header-fields.md#L119) lists `P-Charging-Vector`
 against RFC 7315. So the header name is in the shipped reference data while no
 line of `src/` looks at it — a documentation surface ahead of the code, which
 is the ordinary way a gap like this stays invisible.
@@ -110,7 +110,7 @@ is the ordinary way a gap like this stays invisible.
 
 ### 3.1 What it is, and who puts it there
 
-The ABNF, RFC 7315 §5.6, verbatim:
+The ABNF, [RFC 7315 §5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6), verbatim:
 
 ```text
 P-Charging-Vector  = "P-Charging-Vector" HCOLON icid-value
@@ -138,7 +138,7 @@ request without the header *"MAY insert"* one.
 
 ### 3.2 Uniqueness is a MUST, and it is the strongest thing on this page
 
-RFC 7315 §4.6, verbatim:
+[RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6), verbatim:
 
 > ICID is a charging value that identifies a dialog or a transaction outside a
 > dialog.  It is used to correlate charging records.  ICID MUST be a globally
@@ -186,7 +186,7 @@ The consequence for a naive design is severe and worth stating plainly:
 
 | Hop | What plain `icid-value` equality means |
 |---|---|
-| Transparent proxy, Call-ID preserved | Nothing new — the two observations already share a Call-ID and sipnab merges them into one dialog, so `find_correlated_scored` skips the candidate at [`:989`](../../src/sip/dialog_store.rs) before any strategy runs |
+| Transparent proxy, Call-ID preserved | Nothing new — the two observations already share a Call-ID and sipnab merges them into one dialog, so `find_correlated_scored` skips the candidate at [`:989`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L989) before any strategy runs |
 | B2BUA, conformant | **No match** — two dialogs, so two ICIDs; the link, if any, is in `related-icid` |
 | B2BUA that copies the header verbatim onto the new leg | A match, but it is an observation about that vendor's implementation, not a property the RFC grants |
 | Call-ID-rewriting proxy that forwards the header | A match, and a useful one |
@@ -250,11 +250,11 @@ possible readings follow and sipnab cannot choose between them:
 
 Either way the operational answer is the same and it is the one the spec has to
 carry: **whether `P-Charging-Vector` survives a given boundary is local policy,
-not something an RFC decides.** A Trust Domain is defined in RFC 3324 §2.3 as
+not something an RFC decides.** A Trust Domain is defined in [RFC 3324 §2.3](https://www.rfc-editor.org/rfc/rfc3324#section-2.3) as
 *"a set of SIP nodes (UAC, UAS, proxies or other network intermediaries) that
 are trusted to exchange Network Asserted Identity information"*, and §2.4 makes
 the governing document Spec(T) — a per-deployment agreement, not an IETF
-document. RFC 3325's normative stripping rules ("proxies MUST remove all the
+document. [RFC 3325](https://www.rfc-editor.org/rfc/rfc3325)'s normative stripping rules ("proxies MUST remove all the
 P-Asserted-Identity header fields") bind `P-Asserted-Identity` and say nothing
 about the charging vector.
 
@@ -279,8 +279,8 @@ settled before anyone writes code, which is section 9's condition.
 ## 4. Ranking, and whether it is `identifier_match: true`
 
 **Yes, `identifier_match: true`, for both proposed reasons.** The field's
-meaning is documented at [`server.rs:4501`](../../src/mcp/server.rs) and in
-[`mcp.md:1268`](../mcp.md) as *identifiers were compared* versus *this was a
+meaning is documented at [`server.rs:4501`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4501) and in
+[`mcp.md:1268`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L1268) as *identifiers were compared* versus *this was a
 guess*. An icid comparison compares an opaque value that RFC 7315 requires to be
 globally unique. It is not a guess from timing or endpoint overlap, and
 reporting it as `false` would put it in a bucket whose defining property —
@@ -305,12 +305,12 @@ the other leg" — a match is near-certain by construction. `related-icid` is
 standardised, which beats a vendor convention, but it is optional, one-way, and
 lives in a header the next hop is explicitly permitted to modify. A distinct
 score keeps it distinguishable in the sort at
-[`:1100`](../../src/sip/dialog_store.rs) without claiming parity.
+[`:1100`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1100) without claiming parity.
 
 **85, between `sdp_origin` (90) and `via_branch` (80), for plain icid.** Below
 `sdp_origin` because the SDP origin tuple is an identifier whose uniqueness is
 structural — the whole tuple, which
-[`dialog_store.rs:43`](../../src/sip/dialog_store.rs) already records as *"a
+[`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43) already records as *"a
 real identifier that the RFC defines as globally unique"* — and whose failure
 mode (an SBC re-originating SDP) is a *silence*, not a false match.
 Plain icid equality is a value the next hop MAY rewrite, whose semantic scope
@@ -320,8 +320,8 @@ because a branch match is a transaction coincidence with no uniqueness
 requirement behind it, whereas icid at least carries a MUST.
 
 **Order of evaluation follows score**, so both new checks sit between the
-`sdp_origin` block at [`:1034`](../../src/sip/dialog_store.rs) and the
-`via_branch` block at [`:1058`](../../src/sip/dialog_store.rs), with
+`sdp_origin` block at [`:1034`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1034) and the
+`via_branch` block at [`:1058`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1058), with
 `related-icid` first. The existing `continue`-on-first-match structure is
 preserved; nothing about the other five strategies changes.
 
@@ -347,7 +347,7 @@ router name in disguise.
 
 **The good news is that the existing surface already does the right thing and
 needs no new discipline.** `find_correlated`'s response
-([`server.rs:4479`](../../src/mcp/server.rs)) returns, per leg, `call_id`,
+([`server.rs:4479`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4479)) returns, per leg, `call_id`,
 `score`, `strategy`, `identifier_match` and `observed_gap_ms` — and never the
 matched identifier. `session_id` matches today without the `Session-ID` value
 ever reaching a client. **A sixth strategy that reports only its name inherits
@@ -358,13 +358,13 @@ added to any response, hint, finding, log line or rendered ladder.
 Three concrete follow-ons:
 
 - **This document contains no captured value.** The only icid literal anywhere
-  near it is RFC 7315 §4.6.2.3's own example, and it is not reproduced here
+  near it is [RFC 7315 §4.6.2.3](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.3)'s own example, and it is not reproduced here
   because it is not needed. Fixtures in section 7 must use synthetic values, and
-  any address in a fixture or a doc must come from RFC 5737's documentation
+  any address in a fixture or a doc must come from [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)'s documentation
   ranges. (RFC 7315's own example uses `192.0.6.8`, which is **not** a
   documentation address — do not copy it.)
 - **[`backlog.md`](backlog.md) PA5's redaction inventory
-  ([`:1163`](backlog.md)) does not list `P-Charging-Vector`.** It lists
+  ([`:1163`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md#L1163)) does not list `P-Charging-Vector`.** It lists
   `Call-ID` and SDP `o=` as *"internal hostnames and IPs"*, which is the same
   category. Adding this strategy without adding the header to that inventory
   would leave a redaction mode that redacts the two lesser sources of the same
@@ -372,7 +372,7 @@ Three concrete follow-ons:
   shipping, not a follow-up.
 - **A conformance lint is not proposed.** `Session-ID` earned one because
   malformedness there explains a *failed* correlation
-  ([`session_id.rs:52-66`](../../src/sip/session_id.rs)). An icid has no
+  ([`session_id.rs:52-66`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs#L52-L66)). An icid has no
   well-formedness to check beyond `gen-value`, so a lint would have nothing to
   say that was not either trivially true or a guess about a vendor.
 
@@ -380,29 +380,29 @@ Three concrete follow-ons:
 
 No parser change is required, and that is worth stating because it is the part
 people assume is expensive. [`SipMessage.headers`](../../src/sip/message.rs) at
-[`message.rs:48`](../../src/sip/message.rs) holds *"All headers in message order,
+[`message.rs:48`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L48) holds *"All headers in message order,
 with compact forms expanded"*, and [`header()`](../../src/sip/message.rs) at
-[`:175`](../../src/sip/message.rs) is a case-insensitive lookup over that vector.
+[`:175`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L175) is a case-insensitive lookup over that vector.
 `msg.header("P-Charging-Vector")` works today and returns the raw value.
 
 The shape, by file:
 
 | File | Change |
 |---|---|
-| `src/sip/charging_vector.rs` (new) | Parse the header value into its parameters. Sibling of [`session_id.rs`](../../src/sip/session_id.rs) and of [`SdpOriginKey`](../../src/sip/sdp.rs) at [`sdp.rs:133`](../../src/sip/sdp.rs), both of which model an identifier as a small owned struct with a `parse` returning `Option` |
-| [`dialog_store.rs:43`](../../src/sip/dialog_store.rs) | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
-| [`dialog_store.rs:1034-1058`](../../src/sip/dialog_store.rs) | Two new candidate blocks between `sdp_origin` and `via_branch`, following the established pattern: hoist the source dialog's values into a `HashSet` once before the candidate loop (as `src_origins` does at [`:964`](../../src/sip/dialog_store.rs)), parse the candidate side lazily inside the loop |
-| [`server.rs:4501`](../../src/mcp/server.rs) | Two new arms. **This is a compile error until written**, by design |
-| [`mcp.md:1264`](../mcp.md), [`mcp-walkthrough.md:824`](../mcp-walkthrough.md), [`domain-primer.md:202`](../internals/domain-primer.md) | Strategy tables and the "correlates legs five ways" sentence |
+| [`src/sip/charging_vector.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/charging_vector.rs) (new) | Parse the header value into its parameters. Sibling of [`session_id.rs`](../../src/sip/session_id.rs) and of [`SdpOriginKey`](../../src/sip/sdp.rs) at [`sdp.rs:133`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L133), both of which model an identifier as a small owned struct with a `parse` returning `Option` |
+| [`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43) | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
+| [`dialog_store.rs:1034-1058`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1034-L1058) | Two new candidate blocks between `sdp_origin` and `via_branch`, following the established pattern: hoist the source dialog's values into a `HashSet` once before the candidate loop (as `src_origins` does at [`:964`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L964)), parse the candidate side lazily inside the loop |
+| [`server.rs:4501`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4501) | Two new arms. **This is a compile error until written**, by design |
+| [`mcp.md:1264`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L1264), [`mcp-walkthrough.md:824`](https://github.com/NormB/sipnab/blob/main/docs/mcp-walkthrough.md#L824), [`domain-primer.md:202`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L202) | Strategy tables and the "correlates legs five ways" sentence |
 
 Three code-level facts that a naive implementation would get wrong:
 
 **The existing `xcid_headers` knob cannot be repurposed for this.** It is
-tempting: [`config.rs:246`](../../src/config.rs) exposes `[sip] xcid_headers` and
+tempting: [`config.rs:246`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L246) exposes `[sip] xcid_headers` and
 [`with_xcid_headers`](../../src/sip/dialog_store.rs) at
-[`:391`](../../src/sip/dialog_store.rs) accepts any header name, so
+[`:391`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L391) accepts any header name, so
 `xcid_headers = ["P-Charging-Vector"]` looks like a zero-code answer. It is not.
-The strategy at [`:1017`](../../src/sip/dialog_store.rs) compares the header's
+The strategy at [`:1017`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1017) compares the header's
 **value** against the candidate's **Call-ID**. A `P-Charging-Vector` value is
 `icid-value=…;icid-generated-at=…`, which is never equal to a Call-ID, so the
 configuration would be accepted, would never match, and would look like "we
@@ -411,16 +411,16 @@ value of writing the section.
 
 **Message retention is not a hazard here, which is not obvious.** The header is
 usually on the initial INVITE, and sipnab drops messages in two places. The
-per-dialog cap at [`:625`](../../src/sip/dialog_store.rs) drops the *newest*
+per-dialog cap at [`:625`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L625) drops the *newest*
 message when full, never the first. `compact_idle`'s
 [`retained_indices`](../../src/sip/dialog_store.rs) at
-[`:268`](../../src/sip/dialog_store.rs) treats the opening request as an anchor
+[`:268`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L268) treats the opening request as an anchor
 that takes budget first. So the INVITE — and its charging vector — survives both.
 
 **Two doc comments in the file are already stale and this work has to fix
-them.** `find_correlated_scored`'s doc at [`:919`](../../src/sip/dialog_store.rs)
+them.** `find_correlated_scored`'s doc at [`:919`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L919)
 says *"Checks three correlation strategies"* and lists X-Call-ID, Via branch and
-timing; `find_correlated`'s at [`:1107`](../../src/sip/dialog_store.rs) says
+timing; `find_correlated`'s at [`:1107`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1107) says
 *"All three correlation strategies emit a score of at least 50"*. Both predate
 `session_id` and `sdp_origin` and describe a three-strategy function that has
 not existed for some time. A sixth strategy that leaves them saying "three" adds
@@ -438,7 +438,7 @@ a fixture with a charging vector passes whether or not the icid code exists,
 because `timing_heuristic` fires on any two INVITEs sharing an endpoint IP
 within 2000 ms — which two hand-built fixture legs almost always do. The guard
 is the one the existing suite already uses: **assert the reason, not the
-count.** [`session_id_lint_test.rs:194`](../../tests/session_id_lint_test.rs)
+count.** [`session_id_lint_test.rs:194`](https://github.com/NormB/sipnab/blob/main/tests/session_id_lint_test.rs#L194)
 asserts `r.reason != CorrelationReason::SessionId` rather than "nothing
 correlated", precisely so the other strategies cannot answer for it.
 
@@ -495,7 +495,7 @@ the capture with every other. Nothing in the ABNF (`gen-value`) lets sipnab
 detect that from one value. The proposed guard is a **cardinality limit**: if a
 single `icid-value` appears in more than a small number of distinct dialogs,
 stop treating it as an identifier and emit nothing rather than a combinatorial
-fan-out. [`dialog-tracking-modes.md:18`](dialog-tracking-modes.md) documents the
+fan-out. [`dialog-tracking-modes.md:18`](https://github.com/NormB/sipnab/blob/main/docs/design/dialog-tracking-modes.md#L18) documents the
 analogous Call-ID case —
 `sipp-branch-scenario.pcapng`, *"8,989 packets in which one Call-ID is reused
 across many transactions"* — so a fixture with a reused icid is buildable from
@@ -529,9 +529,9 @@ answerable only with access this page did not have.
 
 3. **Whether 3GPP TS 24.229 requires an IBCF or equivalent to remove
    `P-Charging-Vector` at a network boundary.** **UNCHECKED** — TS 24.229 was not
-   fetched or read. RFC 7315 §4.6.1 says only that the header *"is not included
+   fetched or read. [RFC 7315 §4.6.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.1) says only that the header *"is not included
    in a SIP message sent to another network if there is no trust relationship"*,
-   which is an applicability statement without an RFC 2119 keyword. If TS 24.229
+   which is an applicability statement without an [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) keyword. If TS 24.229
    does impose a strip, the boundary behaviour is stricter than section 3.4
    concludes, and section 3.5's last row becomes a firm "no" rather than an
    "unknown".
@@ -555,7 +555,7 @@ answerable only with access this page did not have.
    preserves information about which leg came first. Not decided.
 8. **Whether an icid match should ever be allowed to correlate dialogs whose
    Call-IDs are equal.** Today the candidate loop skips same-Call-ID dialogs at
-   [`:989`](../../src/sip/dialog_store.rs) and the store merges them anyway, so
+   [`:989`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L989) and the store merges them anyway, so
    the question is theoretical until capture provenance exists —
    [`multi-capture-comparison.md`](multi-capture-comparison.md) §3.
 9. **Whether the two reasons should be one.** This page argues two because they
@@ -564,7 +564,7 @@ answerable only with access this page did not have.
    reason plus a sub-field. The argument against is the same one that keeps
    `session_id` and `x_call_id` separate at equal scores: *"a reader deciding how
    much to trust a call tree needs to know which they have"*
-   ([`dialog_store.rs:43`](../../src/sip/dialog_store.rs)).
+   ([`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43)).
 
 **Not verified, and not asserted anywhere above:** any claim about performance,
 about how common the header is in the wild, about which vendors implement it,

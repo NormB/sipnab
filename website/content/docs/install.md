@@ -118,7 +118,7 @@ The two macOS floors differ because they are the pinned compiler's own defaults,
 one per target. `release.yml` now pins `MACOSX_DEPLOYMENT_TARGET` to exactly
 those two values, so a toolchain bump cannot move a published floor without
 someone deciding to, and `published_macos_floors_match_the_toolchain` holds
-`website/config.toml` to what the workflow pins — refusing a floor below the
+[`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) to what the workflow pins — refusing a floor below the
 compiler's own default, which would agree on paper and still name an OS the
 binary cannot run on. Read them from the toolchain rather than trusting a copy:
 
@@ -499,7 +499,7 @@ Target binary size (musl, stripped): <= 12 MB. Enforced against the real artifac
 
 ## Cross-compilation
 
-sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. `Cross.toml` lists the supported targets.
+sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. [`Cross.toml`](https://github.com/NormB/sipnab/blob/main/Cross.toml) lists the supported targets.
 
 `cross` is a separate binary, so install it first:
 

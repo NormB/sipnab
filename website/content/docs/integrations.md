@@ -67,7 +67,7 @@ log reads as "nothing attacked me".
 sipnab -N -d eth0 --kill-scanner --reg-flood --fail2ban >> /var/log/sipnab-fail2ban.log
 ```
 
-The two line shapes, from `src/output/fail2ban.rs`:
+The two line shapes, from [`src/output/fail2ban.rs`](https://github.com/NormB/sipnab/blob/main/src/output/fail2ban.rs):
 
 ```text
 2026-05-05 12:34:56 sipnab[12345]: scanner_detected src=203.0.113.42 ua="friendly-scanner" method="OPTIONS"

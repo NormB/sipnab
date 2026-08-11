@@ -80,7 +80,7 @@ $PERF record --call-graph dwarf -F 999 -o p.data -- \
 **Sample count is the thing to check first.** A 0.3-second run at 499 Hz yields
 about 390 samples, which is enough to see a 40% effect and not enough to trust a
 2% one. For anything finer, profile `sweep-20000.pcap` (2.14M packets, ~4×
-longer) or loop the run. `bench/carrier.py` regenerates both corpora — see
+longer) or loop the run. [`bench/carrier.py`](https://github.com/NormB/sipnab/blob/main/bench/carrier.py) regenerates both corpora — see
 [`../../bench/README.md`](https://github.com/NormB/sipnab/blob/main/bench/README.md).
 
 ### Reporting
@@ -168,7 +168,7 @@ bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
 ```
 
 Two rules learned the hard way, both recorded in
-[`build-ci-release.md`](@/docs/internals/build-ci-release.md) and `bench/baseline.json`:
+[`build-ci-release.md`](@/docs/internals/build-ci-release.md) and [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json):
 
 - **Interleave the arms.** Measure A, B, A, B — never all of A then all of B.
   Host state drifts, and a drift that lines up with your change is

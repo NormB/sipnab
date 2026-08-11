@@ -54,11 +54,11 @@ reading the wrong one as current is the main trap here.
 | Document | What it is |
 |---|---|
 | [`../architecture.md`](../architecture.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
-| [`../design/maintainability-perf-spec.md`](../design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why one pipeline replaced four, why `main.rs` broke up into `src/app/`. Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
+| [`../design/maintainability-perf-spec.md`](../design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why one pipeline replaced four, why `main.rs` broke up into [`src/app/`](../../src/app/). Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
 | [`docs/design/backlog.md`](../design/backlog.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
 | [`../design/lessons.md`](../design/lessons.md) | Four defects that reached a release, each with the rule derived from it: TUI state no renderer read, feature flags gating nothing, config parsed and never used, and the 2026-05-05 audit that found four blocking and ~17 major doc drifts accumulated since 0.3.1. Its cheap-regression greps still hold. **Corrected 2026-08-05:** this column used to say they "have themselves rotted — the field-count one calls 30 current, and `dsl.rs` now has 31", which had it backwards. `FIELD_NAMES` in [`../../src/sip/dsl.rs`](../../src/sip/dsl.rs) has 30 entries and `parse_field` has 30 arms, so `lessons.md`'s "current is 30" is right; the pages claiming 31 had drifted, and this pass corrected them. |
 | [`../research/codex-analysis.md`](../research/codex-analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
-| [`../research/capture-performance.md`](../research/capture-performance.md) | The packet-capture throughput roadmap: four phases ordered cheapest-first, each after the first carrying an explicit trigger condition so the complexity is only paid once the previous phase proves insufficient. Research, not committed work — one item carries a done mark, the auto-grow capture channel. Its baseline section still cites `file:line` positions that have moved: `src/main.rs:428` names a file that is now 171 lines long. |
+| [`../research/capture-performance.md`](../research/capture-performance.md) | The packet-capture throughput roadmap: four phases ordered cheapest-first, each after the first carrying an explicit trigger condition so the complexity is only paid once the previous phase proves insufficient. Research, not committed work — one item carries a done mark, the auto-grow capture channel. Its baseline section still cites `file:line` positions that have moved: [`src/main.rs:428`](../../src/main.rs) names a file that is now 171 lines long. |
 
 **Archaeological** — kept for the determination record, superseded in places:
 
@@ -66,7 +66,7 @@ reading the wrong one as current is the main trap here.
 |---|---|---|
 | [`../design/implementation-plan-v6.md`](../design/implementation-plan-v6.md) | The design-decision catalog D1–D21 and the original phase plan. | Its feature tables. The `tls-wolfssl`, `tls-openssl` and `grpc` features described there were never implemented and are not in `Cargo.toml`. D14's pluggable crypto backend never happened: one backend ships (`ring` + `rustls`). |
 | [`../design/implementation-plan-phases-8-10.md`](../design/implementation-plan-phases-8-10.md) | The MCP, HEP and observability designs, and the "Resolved Decisions" section that formally retires parts of v6. | Its D-numbering. It defines its own D20 (infrastructure-optional integration) and D21 (capture vs enrichment sources), which collide with v6's D20 and D21. Always say which document a D-number comes from. |
-| [`../design/compact-headers-spec.md`](../design/compact-headers-spec.md) | Why sipnab accepts all 19 RFC 3261 / IANA compact header forms, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — the code implements it and tests pin it. |
+| [`../design/compact-headers-spec.md`](../design/compact-headers-spec.md) | Why sipnab accepts all 19 [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) / IANA compact header forms, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — the code implements it and tests pin it. |
 | [`../design/kill-target-spoofing-spec.md`](../design/kill-target-spoofing-spec.md) | The scope and ethics of sending a scanner-kill response from the victim's `ip:port` rather than an ephemeral one. | Nothing — but read `--kill-scanner`'s guard rails in [`cli.rs`](../../src/cli.rs) alongside it. |
 | [`../design/dialog-tracking-modes.md`](../design/dialog-tracking-modes.md) | Why `--dialog-track` keys on Call-ID or on Call-ID plus top-Via branch, what the branch view costs everything downstream of the store, and the rejected alternatives. | Nothing outstanding. Its status line read "spec, not yet implemented" for six releases after the flag shipped in 0.5.54 — recorded here and left — and now reads IMPLEMENTED. `an_unimplemented_design_doc_does_not_name_a_shipped_flag` fails if a design doc calls itself unimplemented while naming a flag `Cli` accepts, so this column no longer has to carry that job. |
 
@@ -185,12 +185,12 @@ process, so the floor is not optional.
 - **These pages publish twice, and this tree is the source of both.**
   [`build-wiki.py`](../../scripts/build-wiki.py) renders them into the GitHub
   wiki; [`build-site-internals.py`](../../scripts/build-site-internals.py)
-  renders them into `website/content/docs/internals/`, which the repo commits so
+  renders them into [`website/content/docs/internals/`](../../website/content/docs/internals/), which the repo commits so
   the site builds with Zola alone. Never edit either mirror — regenerate it.
   `dev_docs_drift_test` re-runs the site generator and fails if the committed
   output is stale. The same arrangement covers the operator
   pages: [`build-site-pages.py`](../../scripts/build-site-pages.py) renders
-  each entry in its `PAGES` registry from `docs/` into `website/content/docs/`,
+  each entry in its `PAGES` registry from `docs/` into [`website/content/docs/`](../../website/content/docs/),
   gated by `site_pages_mirror_is_current`. The first thirteen registered pages
   got there the same way — hand-maintained on both sides until they diverged.
   (`PAGES` has grown to 21 since; read the registry, not this sentence.) The

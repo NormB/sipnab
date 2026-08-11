@@ -6,7 +6,7 @@ it, and that pointer should be resolvable — you can follow it and get the fram
 ## The problem
 
 sipnab tells you a call failed because the far end never answered, that a stream
-lost 4% of its packets, that a message violates RFC 3261 §20. Each of those is a
+lost 4% of its packets, that a message violates [RFC 3261 §20](https://www.rfc-editor.org/rfc/rfc3261#section-20). Each of those is a
 conclusion drawn from specific bytes in a specific capture, and none of them says
 which bytes.
 

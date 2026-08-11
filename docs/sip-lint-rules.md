@@ -33,7 +33,7 @@ capture held, what the section calls for, and why the difference matters.
 
 The RFC number and the section are data, not prose inside a sentence. That
 choice caught a mistake while this module was still new: three sources place
-the angle-bracket rule for a `Contact` URI in RFC 3261 §20.10, and the sentence
+the angle-bracket rule for a `Contact` URI in [RFC 3261 §20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10), and the sentence
 actually sits in the preamble of Section 20, above §20.1. A citation nothing
 can read is a citation nothing can check.
 
@@ -171,7 +171,7 @@ These read one message on its own.
 | `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 §9](https://www.rfc-editor.org/rfc/rfc4028#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. |
 | `SIP-7989-5-SESSION-ID-MALFORMED` | error | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` half is not 32 characters of `[0-9a-f]`, so it is not a `sess-uuid` at all. Correlation drops the half, and across a B2BUA there may be nothing well formed left to match one leg to the other. |
 | `SIP-7989-5-SESSION-ID-UPPERCASE` | warning | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` UUID arrives in uppercase hexadecimal. sipnab compares case-insensitively and still correlates on it; any peer, SBC or log pipeline comparing the header byte for byte sees two identifiers for one session. |
-| `SIP-7989-11-SESSION-ID-LEGACY-FORM` | notice | interop | [RFC 7989 §11](https://www.rfc-editor.org/rfc/rfc7989#section-11) | A `Session-ID` carries no `remote` parameter, the obsoleted RFC 7329 single-UUID form. §5 makes `remote` a MUST with a §11 exception for interworking with that older form, which one message cannot confirm — so this names the peer as an interop observation rather than asserting a violation. Correlation then works in one direction only. |
+| `SIP-7989-11-SESSION-ID-LEGACY-FORM` | notice | interop | [RFC 7989 §11](https://www.rfc-editor.org/rfc/rfc7989#section-11) | A `Session-ID` carries no `remote` parameter, the obsoleted [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329) single-UUID form. §5 makes `remote` a MUST with a §11 exception for interworking with that older form, which one message cannot confirm — so this names the peer as an interop observation rather than asserting a violation. Correlation then works in one direction only. |
 
 ### What the corpus can and cannot vouch for
 
@@ -221,7 +221,7 @@ proposing rather than answering, and §9 puts the obligation on the answer.
 
 ### Why the bracket rules split in two
 
-RFC 3261 §20 gives one sentence for three characters, and the three do not
+[RFC 3261 §20](https://www.rfc-editor.org/rfc/rfc3261#section-20) gives one sentence for three characters, and the three do not
 behave alike.
 
 A comma or a question mark in a bare URI breaks the MUST outright: the receiver
@@ -269,7 +269,7 @@ drops, which is worth knowing and is not a broken MUST.
 ### Hold by blanking the address
 
 sipnab has always found hold through `a=sendonly` and `a=inactive`. RFC 3264
-§8.4 describes a third mechanism that RFC 2543 defined and §8.4 discourages:
+§8.4 describes a third mechanism that [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) defined and §8.4 discourages:
 setting the connection address to `0.0.0.0`. Until this rule, a call held that
 way looked to sipnab like a call that simply stopped.
 
@@ -299,7 +299,7 @@ the transaction took the count to zero.
 ## Validating a rule against real traffic
 
 A rule that fires on nearly every dialog is a bug in the rule, not a discovery
-about the traffic. `tests/corpus_lint_test.rs` runs the whole catalogue over a
+about the traffic. [`tests/corpus_lint_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/corpus_lint_test.rs) runs the whole catalogue over a
 directory of captures named by `SIPNAB_CORPUS`, prints a hit count per rule,
 and fails when any rule trips more than 95% of dialogs.
 
@@ -329,6 +329,6 @@ let linter = Linter::new(config);
 `ObservedMedia::from_streams` projects the RTP the stream store attributed to
 the dialog. RTCP arrives separately through `with_rtcp`, because the stream
 store folds reception reports into the stream they describe and keeps no record
-of which port they landed on — which is the question RFC 5761 §5.1.1 asks.
+of which port they landed on — which is the question [RFC 5761 §5.1.1](https://www.rfc-editor.org/rfc/rfc5761#section-5.1.1) asks.
 
 See [Library API](library.md) for the wider crate surface.

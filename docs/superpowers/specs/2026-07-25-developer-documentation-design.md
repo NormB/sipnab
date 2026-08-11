@@ -21,7 +21,7 @@ The last question is the steepest wall. Nearly every P1 entry in
 `tasks/todo.md` is a domain-semantics bug rather than a Rust bug — RTCP jitter
 left in RTP-timestamp units, 24-bit signed `cumulative_lost` zero-extended,
 unsigned wrapping subtraction spiking jitter on reorder, TCP sequence
-comparison without RFC 1982 serial arithmetic, `answered_at` matching a
+comparison without [RFC 1982](https://www.rfc-editor.org/rfc/rfc1982) serial arithmetic, `answered_at` matching a
 re-INVITE's 200, delayed-offer misclassification. A contributor without the
 domain model will reintroduce exactly these.
 
@@ -151,8 +151,8 @@ SDP offer/answer including delayed offer and re-INVITE hold/resume/T.38; the
 INVITE 3-way handshake vs non-INVITE transactions; why 401/407 is auth-pending
 rather than failure. Then RTP: SSRC as stream identity and why streams exist
 without dialogs; 16-bit sequence wraparound; RTP timestamps vs wall-clock and
-the clock-rate divisor; RFC 3550 signed transit-delta jitter; MOS/E-model;
-burst-gap loss; payload types and ptime; RFC 4733 telephone-event DTMF and its
+the clock-rate divisor; [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) signed transit-delta jitter; MOS/E-model;
+burst-gap loss; payload types and ptime; [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) telephone-event DTMF and its
 clock-rate dependence; symmetric RTP, NAT mismatch, one-way audio.
 
 Each concept names the file that encodes it, so the primer doubles as an index.

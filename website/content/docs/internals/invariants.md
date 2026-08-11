@@ -475,7 +475,7 @@ No test enforces them, which is precisely why this page writes them down.
 recommendation it implements. The
 [pull-request template](https://github.com/NormB/sipnab/blob/main/.github/PULL_REQUEST_TEMPLATE.md) asks for it
 directly: *"Any new analysis claim is honest and backed by the implementation
-(cite the RFC/ITU standard where relevant)."* Jitter is RFC 3550 §6.4.1 signed
+(cite the RFC/ITU standard where relevant)."* Jitter is [RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) signed
 transit deltas, not a variance. MOS is an E-model estimate, not a measurement.
 Saying which one you implemented is the difference between a tool an engineer
 can trust and one they have to re-derive.

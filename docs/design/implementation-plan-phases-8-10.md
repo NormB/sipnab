@@ -34,7 +34,7 @@
 >
 > The live queues are [`backlog.md`](backlog.md) and, for capture work,
 > [`capture-tuning-tasks.md`](capture-tuning-tasks.md). The authoritative
-> statements of what exists are `Cargo.toml`, `src/cli.rs` and
+> statements of what exists are [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml), [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) and
 > [`../internals/`](../internals/).
 >
 > The same applies with more force to
@@ -78,7 +78,7 @@ All other items (Phase 11 build, waveform display, impairment detection beyond c
 These were decided during planning review and supersede earlier v6 plan items.
 
 - **gRPC is dropped from the roadmap.** The `grpc` feature flag listed in v6's README and feature matrix is removed. The structured-RPC slot it filled is split: REST + OpenAPI for humans/scripts/integrations (Phase 9), MCP for AI agents (Phase 8). gRPC adds tonic + prost + a `protoc` build dependency, complicates cross-builds, undermines the WASM browser story, and duplicates the REST surface. No concrete user has requested it. Revisit only if a specific gRPC use case emerges that REST and MCP cannot serve.
-- **Pluggable crypto backend (v6 D14) was dropped — single backend ships.** The original v6 plan called for a `CryptoBackend` trait with `tls`/`tls-wolfssl`/`tls-openssl` feature variants. Only `tls` (`ring` + `rustls`, pure Rust) was ever implemented. wolfSSL and OpenSSL backends were never written. There is no FIPS 140-3 path today; FIPS-bound deployments either need to add a backend (substantial work) or accept the pure-Rust posture. The phantom feature flags (`tls-wolfssl`, `tls-openssl`) remain in v6 prose and dependency tables but are not in `Cargo.toml`.
+- **Pluggable crypto backend (v6 D14) was dropped — single backend ships.** The original v6 plan called for a `CryptoBackend` trait with `tls`/`tls-wolfssl`/`tls-openssl` feature variants. Only `tls` (`ring` + `rustls`, pure Rust) was ever implemented. wolfSSL and OpenSSL backends were never written. There is no FIPS 140-3 path today; FIPS-bound deployments either need to add a backend (substantial work) or accept the pure-Rust posture. The phantom feature flags (`tls-wolfssl`, `tls-openssl`) remain in v6 prose and dependency tables but are not in [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml).
 - **QUIC / HTTP/3 is not implemented inside sipnab.** nginx in front of sipnab handles HTTP/3 to the world; sipnab speaks HTTP/1.1 to nginx over loopback. sipnab's bottlenecks are CPU-bound (capture, parse), not network transport — switching to HTTP/3 changes nothing user-visible at sipnab's request rates. Revisit only if HEP-over-QUIC becomes a standard worth implementing (which is a Homer-project decision, not a sipnab one).
 - **WebSocket and SSE are added to Phase 8.4** alongside MCP notifications, sharing the same broadcast-channel substrate. The cost of adding both once the substrate exists is trivial (~50 lines of axum each); the value of giving non-AI clients (curl, Grafana, custom scripts) access to the same live event stream is high.
 - **Cap'n Proto / FlatBuffers are not added.** sipnab does not emit millions of events per second; protobuf-style binary serialization solves a problem sipnab does not have.
@@ -164,7 +164,7 @@ Documentation is not a post-hoc addition to a release — it's part of the deliv
 
 **Requirements:**
 
-1. **Docs land in the same PR as code.** A PR that adds a CLI flag without documenting it in `docs/cli-reference.md` and (if applicable) in the relevant tutorial / how-to / concept page does not get merged. Reviewers enforce this; CI catches the mechanical cases (every flag in `cli.rs` must appear in `cli-reference.md` — see Phase 12.7 quality tooling).
+1. **Docs land in the same PR as code.** A PR that adds a CLI flag without documenting it in [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) and (if applicable) in the relevant tutorial / how-to / concept page does not get merged. Reviewers enforce this; CI catches the mechanical cases (every flag in `cli.rs` must appear in `cli-reference.md` — see Phase 12.7 quality tooling).
 2. **Phases ship with their docs complete.** Each sub-phase in this plan has explicit docs deliverables. A phase is not "done" until those exist, not just the code.
 3. **Information architecture is owned (Diátaxis framework — Phase 12.2).** Each new doc has a defined slot: tutorial, how-to, reference, or explanation. No new doc is added without classifying it; no doc straddles two categories.
 4. **Versioned docs match released versions.** Each released version of sipnab has a corresponding pinned version of the docs site. Users on v0.3 see v0.3 docs by default; users on `main` see unreleased docs. Phase 12.1 sets up the versioning infrastructure (mike or equivalent).
@@ -172,7 +172,7 @@ Documentation is not a post-hoc addition to a release — it's part of the deliv
 
 **Why this is a load-bearing rule:** without it, new docs accumulate in a flat, no-IA structure that doesn't scale, and the gap between "code shipped" and "users can use it" widens with every release. With D23, each phase's doc work is sized into the phase from the start, and the documentation system Phase 12 built (the Zola/Diátaxis site, now live) catches new content as it lands rather than retrofitting later.
 
-**Specifically excluded from this rule:** internal design documents under `docs/design/` and `tasks/`, implementation plans (this document), and CHANGELOG entries — these are project-internal artifacts, not user-facing documentation, and follow different conventions.
+**Specifically excluded from this rule:** internal design documents under [`docs/design/`](https://github.com/NormB/sipnab/tree/main/docs/design) and `tasks/`, implementation plans (this document), and CHANGELOG entries — these are project-internal artifacts, not user-facing documentation, and follow different conventions.
 
 ### D24 — Tests Gate Phase Completion
 
@@ -183,7 +183,7 @@ A sub-phase is not "done" until its tests exist as committed code and pass on CI
 1. **Tests are part of the same PR as the code they exercise.** A PR that adds or modifies behavior without adding or updating tests does not merge. Reviewers enforce relevance; CI enforces presence (the `tests/` test count never decreases between releases without an explicit "tests removed because feature removed" CHANGELOG entry).
 2. **Every new behavior has at least one test that fails when the behavior breaks.** Coverage is per-behavior, not per-line. A function with three branches gets at least three assertions.
 3. **Test types per code shape:**
-   - **Pure functions / parsers** — unit tests in the same module's `#[cfg(test)] mod tests`, plus a fuzz target under `fuzz/fuzz_targets/` for any function consuming external bytes (SIP, RTP, HEP, MCP wire format, etc.).
+   - **Pure functions / parsers** — unit tests in the same module's `#[cfg(test)] mod tests`, plus a fuzz target under [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets) for any function consuming external bytes (SIP, RTP, HEP, MCP wire format, etc.).
    - **Stateful code** (dialog/stream stores, alert engine, event bus) — property tests using `proptest` or table-driven cases plus a Loom test where concurrency is involved. The 8.4a substrate is the canonical example.
    - **CLI / MCP / REST surfaces** — end-to-end tests in `tests/e2e/` using the actual binary (spawned via `assert_cmd` or `expectrl`) or the actual MCP client (`mcp-inspector` or a thin rmcp test harness). No mocking the wire protocol.
    - **Diagnostic checks** — unit tests with hand-crafted `SipDialog` + `RtpStream` fixtures covering positive cases, the negative ("not detected") case, and edge cases (single-leg call, zero packets, codec mismatch under each direction).
@@ -202,7 +202,7 @@ A sub-phase is not "done" until its tests exist as committed code and pass on CI
 
 Add an `--mcp` mode to sipnab that exposes the existing read-only analysis surface (dialogs, streams, diagnostics, security findings, call reports) as **Model Context Protocol** tools, so a local AI agent (Claude Code, Claude Desktop, or any MCP-capable client) can drive sipnab as a debugging instrument against a live capture or a pcap file on a remote server.
 
-MCP is treated as a **fourth output mode** alongside the existing TUI, `-N` CLI, and `--json` modes — not a new analysis subsystem. Tool handlers are thin wrappers over functions that already exist in `src/output/`, `src/sip/dialog_store.rs`, and `src/rtp/`. The capture pipeline, privilege model, and security guarantees are unchanged.
+MCP is treated as a **fourth output mode** alongside the existing TUI, `-N` CLI, and `--json` modes — not a new analysis subsystem. Tool handlers are thin wrappers over functions that already exist in [`src/output/`](https://github.com/NormB/sipnab/tree/main/src/output), [`src/sip/dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs), and [`src/rtp/`](https://github.com/NormB/sipnab/tree/main/src/rtp). The capture pipeline, privilege model, and security guarantees are unchanged.
 
 ### Out of scope for Phase 8
 
@@ -251,7 +251,7 @@ Two cleanups land before any MCP work because every subsequent sub-phase builds 
 
 **8.0a — Parse-path consolidation** (~1.5 days)
 
-- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` (`src/main.rs:1257`) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` (`:1296`) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
+- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/main.rs:1257`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L1257)) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` (`:1296`) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
 - [ ] **Refactor batch mode to share stores from the start**, mirroring the TUI mode pattern (which already passes `Arc<RwLock<...>>` between the processing thread and `start_api_server`). After the refactor: one parse per packet, regardless of how many output sinks are attached. The EventBus from 8.4a will subscribe off this single parse path.
 - [ ] **Gate:** `cargo bench parser_bench` shows no regression in batch-without-API throughput, and shows the previous batch-with-API throughput approximately double (because the second parse is gone). An end-to-end test confirms `cargo run -- -I <pcap> --api :0 --json` produces JSON output identical to the pre-refactor output.
 
@@ -260,7 +260,7 @@ Two cleanups land before any MCP work because every subsequent sub-phase builds 
 - [ ] **Add `tracing = "0.1"`** as an unconditional dep (lightweight facade). Add `tracing-log = "0.2"` for compatibility during the migration window.
 - [ ] **Replace `log::error!`/`warn!`/`info!`/`debug!`/`trace!` with the `tracing::` equivalents** across all `.rs` files. The macros are drop-in compatible. No spans, no `#[instrument]`, no attributes added in 8.0 — the goal is purely "every log site is now a tracing site." Phase 9.2 layers on the actual span hierarchy.
 - [ ] **Replace `env_logger::init()` with a `tracing-subscriber` initializer.** Default subscriber writes to stderr (preserving stdio MCP's "stdout is the JSON-RPC wire" invariant from gotcha #1). WASM build retains its existing `console_log` path; the WASM-specific subscriber is gated under `cfg(target_arch = "wasm32")`.
-- [ ] **Gate:** `cargo build --features full` succeeds with no `log::*` macro calls in the codebase (`grep -rn '\blog::\(error\|warn\|info\|debug\|trace\)!' src/` returns zero hits, with allowance for the `log` re-export in `Cargo.toml` if any third-party dep uses it transitively). All existing test suites pass without modification.
+- [ ] **Gate:** `cargo build --features full` succeeds with no `log::*` macro calls in the codebase (`grep -rn '\blog::\(error\|warn\|info\|debug\|trace\)!' src/` returns zero hits, with allowance for the `log` re-export in [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) if any third-party dep uses it transitively). All existing test suites pass without modification.
 - [ ] **Gate:** `cargo build --target wasm32-unknown-unknown --no-default-features` succeeds — the WASM build was the failure mode that previously made this migration scary; it is verified before 8.1 starts.
 
 **Why 8.0 first:** every line of new MCP code in 8.1+ is written tracing-native; the parse path that 8.4a's EventBus subscribes to is single-pass; Phase 9.2 inherits a tracing-instrumented codebase and only needs to add spans + the OTLP exporter. Without 8.0, every later phase carries migration debt.
@@ -297,8 +297,8 @@ Land the feature flags, module skeleton, and stdio MCP server with the three hig
   full     = ["native", "tui", "tls", "hep", "api", "audio", "mcp-http"]
   ```
   `mcp` does **not** depend on `audio`. Phase 8.7's `one_sided_silence` asymmetry check requires decoded PCM samples; when `audio` is not compiled in, the check is omitted at runtime and the response carries `silence_unavailable: true` alongside the other five asymmetry signals. This preserves the D20 "compile-time opt-out" principle and keeps `--features mcp --no-default-features` viable for size-sensitive deployments. `mcp-http` deliberately depends on `api` so the axum stack is shared. `default` is unchanged (`["native", "tui", "audio"]`).
-- [ ] **Update `deny.toml`:** verify rmcp's transitive dependencies (jsonwebtoken, oauth2, hyper, sse-stream, etc.) license under the existing allowlist; add `licenses.clarify` entries if needed.
-- [ ] **Module skeleton at `src/mcp/`:**
+- [ ] **Update [`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml):** verify rmcp's transitive dependencies (jsonwebtoken, oauth2, hyper, sse-stream, etc.) license under the existing allowlist; add `licenses.clarify` entries if needed.
+- [ ] **Module skeleton at [`src/mcp/`](https://github.com/NormB/sipnab/tree/main/src/mcp):**
   ```text
   src/mcp/
   ├── mod.rs        # cfg(feature = "mcp"), re-exports
@@ -307,8 +307,8 @@ Land the feature flags, module skeleton, and stdio MCP server with the three hig
   ├── shape.rs      # Result-shaping helpers (size caps, pagination cursors)
   └── transport.rs  # serve_stdio(); serve_http() gated on mcp-http
   ```
-- [ ] **Wire `pub mod mcp;` in `src/lib.rs`** under `#[cfg(feature = "mcp")]`, paralleling the existing `#[cfg(feature = "api")] pub mod api;` pattern in `src/output/`.
-- [ ] **Add CLI flags to `src/cli.rs` (under a new `// ── MCP ─────` section):**
+- [ ] **Wire `pub mod mcp;` in [`src/lib.rs`](https://github.com/NormB/sipnab/blob/main/src/lib.rs)** under `#[cfg(feature = "mcp")]`, paralleling the existing `#[cfg(feature = "api")] pub mod api;` pattern in [`src/output/`](https://github.com/NormB/sipnab/tree/main/src/output).
+- [ ] **Add CLI flags to [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) (under a new `// ── MCP ─────` section):**
   - `--mcp` (bool) — run as MCP server instead of TUI/CLI
   - `--mcp-transport <stdio|http>` (default `stdio`, requires `--mcp`)
   - `--mcp-bind <ADDR>` (default `127.0.0.1:8731`, requires `--mcp` and `--mcp-transport http`)
@@ -320,9 +320,9 @@ Land the feature flags, module skeleton, and stdio MCP server with the three hig
   - Reject `--mcp` combined with `--api` on the same `--mcp-bind` (port conflict)
   - Require `--mcp-token` or `--mcp-token-file` when `--mcp-bind` is non-loopback
 - [ ] **`Cli::warn_unimplemented_flags`:** add a one-line warning if `--mcp-redact-sip` is set without TLS keys present (redaction is best-effort, not security)
-- [ ] **MCP tool description audit + CI lint** — write each `#[tool]` doc string to a description-only style: state what the tool returns, never instruct the LLM to "trust", "act on", "verify", or "ensure" anything about returned content (D22 prompt-injection rule). Add a CI lint pattern (`scripts/check-tool-descriptions.sh`) that greps `src/mcp/server.rs` for those imperative verbs inside `#[tool]` doc strings and fails the build on a hit. Document the convention in `docs/mcp-overview.md` so contributors know the rule before they add a tool.
+- [ ] **MCP tool description audit + CI lint** — write each `#[tool]` doc string to a description-only style: state what the tool returns, never instruct the LLM to "trust", "act on", "verify", or "ensure" anything about returned content (D22 prompt-injection rule). Add a CI lint pattern (`scripts/check-tool-descriptions.sh`) that greps [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) for those imperative verbs inside `#[tool]` doc strings and fails the build on a hit. Document the convention in `docs/mcp-overview.md` so contributors know the rule before they add a tool.
 - [ ] **Feature-combination CI matrix** — `.github/workflows/feature-matrix.yml` builds at minimum: each named feature individually (`mcp`, `mcp-http`, `api`, `tui`, `audio`, `tls`, `hep`, `wasm`), `--no-default-features` baseline, `full`, and the documented mutually-exclusive pairs as must-fail builds (`mcp + wasm`, `mcp-http + wasm`). Catches feature-graph drift introduced by any later phase.
-- [ ] **Dispatch in `src/main.rs`** *after* CLI validation, after capture readiness, after privilege drop (matching the existing `--api` server start at line 2080):
+- [ ] **Dispatch in [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs)** *after* CLI validation, after capture readiness, after privilege drop (matching the existing `--api` server start at line 2080):
   ```rust
   #[cfg(feature = "mcp")]
   if cli.mcp {
@@ -338,7 +338,7 @@ Land the feature flags, module skeleton, and stdio MCP server with the three hig
       return;
   }
   ```
-- [ ] **Three v0.4.0 tools wired in `src/mcp/server.rs`:**
+- [ ] **Three v0.4.0 tools wired in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs):**
   - `list_dialogs(filter?, since?, until?, limit=50)` — wraps `DialogStore::iter()` + optional `FilterExpr::parse(filter).matches_dialog(...)`. Filter strings accept the existing DSL plus the named aliases (`problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`) via `crate::sip::dsl::expand_alias`.
   - `get_dialog_report(call_id, format="json"|"markdown"|"text")` — wraps `crate::output::generate_call_report` with the same `ReportFormat` enum that `--call-report` uses. JSON output is identical to `GET /v1/dialogs/:call_id/report`.
   - `find_problems(kinds?=["problems"], limit=50)` — convenience wrapper that runs `list_dialogs` with each named alias OR'd together. `kinds` defaults to `["problems"]` (the union alias). At 8.1 ship, supported `kinds` are the existing aliases (`problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`); the six asymmetry aliases (`codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media`, `silent-leg`) activate automatically when 8.7 lands because the wiring goes through `expand_alias` — no Phase 8.1/8.3 code change required.
@@ -352,7 +352,7 @@ Land the feature flags, module skeleton, and stdio MCP server with the three hig
   }
   ```
 - [ ] **Stdio logger discipline (gotcha #1):**
-  Before calling `serve_stdio`, re-init `env_logger` with `Builder::new().target(env_logger::Target::Stderr)` regardless of `RUST_LOG` config, and audit `src/capture/parse.rs` and `src/sip/parser.rs` for any `println!`/`eprintln!` (use `log::warn!` only).
+  Before calling `serve_stdio`, re-init `env_logger` with `Builder::new().target(env_logger::Target::Stderr)` regardless of `RUST_LOG` config, and audit [`src/capture/parse.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs) and [`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) for any `println!`/`eprintln!` (use `log::warn!` only).
 - [ ] **Tool handlers MUST follow the lock pattern from `src/output/api.rs:370–402`:**
   ```rust
   // CORRECT
@@ -379,17 +379,17 @@ Land the feature flags, module skeleton, and stdio MCP server with the three hig
 **Tests — 8.1 deliverables (D24):**
 - [ ] `tests/mcp/stdio_protocol.rs` — JSON-RPC stdio integrity: spawns `sipnab --mcp -I <pcap>` with `RUST_LOG=trace`, sends 100 tool calls over stdio, asserts every line on stdout parses as valid JSON-RPC (Gotcha #1 regression guard)
 - [ ] `tests/mcp/tools_dispatch.rs` — invokes each of the three v0.4 tools with valid + invalid params, asserts response shape matches the documented schema, asserts unknown Call-ID returns a structured `McpError` (not a panic)
-- [ ] `tests/mcp/tool_descriptions_lint.rs` — runs the imperative-verb regex from the description-audit subtask against `src/mcp/server.rs` doc strings; fails if any `#[tool]` doc contains "trust", "act on", "verify", or "ensure" (D22 prompt-injection rule, encoded as test)
+- [ ] `tests/mcp/tool_descriptions_lint.rs` — runs the imperative-verb regex from the description-audit subtask against [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) doc strings; fails if any `#[tool]` doc contains "trust", "act on", "verify", or "ensure" (D22 prompt-injection rule, encoded as test)
 - [ ] `tests/mcp/feature_matrix_smoke.rs` (a CI-driven manifest, not a single .rs file) — `.github/workflows/feature-matrix.yml` exercises each feature combo from D24's matrix and is itself the test artifact
 - [ ] `cargo clippy --features mcp -- -D clippy::await_holding_lock` is run as a CI step (the gate already lists this; D24 names it as the test-equivalent for the lint-as-test pattern)
-- [ ] `tests/mcp/inspector_e2e.rs` (or a CI shell job invoking the upstream `mcp-inspector` binary) — lists the three tools, calls each, validates schema. Output captured under `tests/snapshots/` via `insta`
+- [ ] `tests/mcp/inspector_e2e.rs` (or a CI shell job invoking the upstream `mcp-inspector` binary) — lists the three tools, calls each, validates schema. Output captured under [`tests/snapshots/`](https://github.com/NormB/sipnab/tree/main/tests/snapshots) via `insta`
 
 **Docs — 8.1 deliverables:**
 - [ ] Rustdoc on `src/mcp/{mod,server,tools,transport}.rs`
 - [ ] `docs/mcp-overview.md` — what MCP is, why sipnab supports it, security model, transport choices
 - [ ] `docs/mcp-tools.md` — tool reference for `list_dialogs`, `get_dialog_report`, `find_problems`: parameters, return shape, examples
-- [ ] Update `docs/cli-reference.md` with the new `--mcp*` flags
-- [ ] Update `README.md` Features section: "MCP server mode — drive sipnab from an AI agent"
+- [ ] Update [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) with the new `--mcp*` flags
+- [ ] Update [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) Features section: "MCP server mode — drive sipnab from an AI agent"
 
 ---
 
@@ -471,9 +471,9 @@ Add the remaining read-only tools that round out the agent's debugging vocabular
 - [ ] **`render_ladder(call_id, format="markdown"|"text")`** — call flow ladder. v0.4 implementation: delegate to `generate_call_report` with `ReportFormat::Markdown` or `Text` (already produces ladder-shaped output). Rich SVG/HTML ladder is deferred to v0.5.
 - [ ] **`rtp_stats(call_id)`** — RTP quality across all streams associated with the dialog. Wraps `StreamStore::iter().filter(associated_dialog == call_id)` and `crate::output::json::stream_to_json`. Returns codec, MOS, jitter, loss%, packet count, ssrc list, plus `crate::rtp::diagnosis::diagnose_media` results.
 - [ ] **`search_messages(query, since=null, until=null, limit=50)`** — substring match over SIP method, status, From, To, User-Agent, and body across all dialogs. Returns `(call_id, message_index, snippet)` triples. Wraps the same iteration the `--filter` CLI path uses.
-- [ ] **`tail_dialogs(cursor=null, limit=50)`** — incremental fetch of dialogs updated since a cursor. Cursor is an opaque RFC 3339 timestamp string (the `updated_at` of the last dialog returned). Lets a polling agent track changes without re-reading everything.
+- [ ] **`tail_dialogs(cursor=null, limit=50)`** — incremental fetch of dialogs updated since a cursor. Cursor is an opaque [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) timestamp string (the `updated_at` of the last dialog returned). Lets a polling agent track changes without re-reading everything.
 - [ ] **`tail_dialogs` post-EOF semantics:** when the capture source is a finished pcap (`-I` mode), the response envelope carries `source_exhausted: true` once all events have been delivered, and a one-shot `sipnab/source_exhausted` MCP notification fires the first time the source ends. Subsequent `tail_dialogs` calls continue to return `source_exhausted: true` with empty `dialogs` arrays. Prevents an agent from polling a finished source forever.
-- [ ] **`security_findings(kinds?=["scanner","reg_flood","digest_leak","fraud","stir_shaken"], since=null, limit=50)`** — recent findings from the existing security detectors. **Prerequisite:** `AlertEngine` (`src/security/alerting.rs:118`) currently retains *only* the per-(IP, rule) cooldown map (`:122`); there is no findings history. Phase 8.3 must add a `FindingsHistory` ring buffer to `AlertEngine` as a discrete sub-task — see new task immediately below.
+- [ ] **`security_findings(kinds?=["scanner","reg_flood","digest_leak","fraud","stir_shaken"], since=null, limit=50)`** — recent findings from the existing security detectors. **Prerequisite:** `AlertEngine` ([`src/security/alerting.rs:118`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L118)) currently retains *only* the per-(IP, rule) cooldown map (`:122`); there is no findings history. Phase 8.3 must add a `FindingsHistory` ring buffer to `AlertEngine` as a discrete sub-task — see new task immediately below.
 - [ ] **`AlertEngine::FindingsHistory` (new sub-task — prerequisite for `security_findings`):**
   - `Finding` struct: `{rule_name: String, src_ip: IpAddr, detail: String, timestamp: DateTime<Utc>, call_id: Option<String>}`. Captured in `AlertEngine::fire` *after* the cooldown check passes (so deduplicated findings aren't double-counted)
   - Bounded `VecDeque<Finding>`, default capacity 1000, configurable via `--mcp-findings-retain <N>` (Open Question #3). Oldest-evicted-first
@@ -485,7 +485,7 @@ Add the remaining read-only tools that round out the agent's debugging vocabular
 - [ ] **`snapshot_pcap(filter?, call_id?, output_path)`** — write a filtered subset of captured packets to `output_path` on the *server* filesystem, return the path and packet count. Reuses `crate::capture::PcapWriter`. Path is restricted to a configurable allowlist directory (`--mcp-snapshot-dir`, default `/var/lib/sipnab/snapshots`), and refuses paths containing `..` or absolute paths outside the allowlist.
 - [ ] **`snapshot_pcap` resource limits:** new flags `--mcp-snapshot-max-bytes <N>` (default 100 MB) caps the size of a single snapshot output file — writing stops at the cap with a structured error and the partial file is unlinked. `--mcp-snapshot-rate-per-min <N>` (default 6) rate-limits snapshot calls per token using the same token-bucket pattern as the API rate limiter. Without these, a misbehaving agent can fill the snapshot directory in seconds.
 - [ ] **`stats()`** — single-shot aggregate counters: dialog count, stream count, orphaned stream count, alert counts by kind. Equivalent to `GET /v1/stats` from the REST API.
-- [ ] **Result-bounding helpers in `src/mcp/shape.rs`:**
+- [ ] **Result-bounding helpers in [`src/mcp/shape.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/shape.rs):**
   - `truncate_string(s, max_chars)` — for SIP body and snippet returns
   - `cap_messages(msgs, limit)` — with a `truncated: true, total: N` envelope
   - `redact_user_part(uri)` — applied when `--mcp-redact-sip` is set, masking the user-part of a `sip:` URI
@@ -693,11 +693,11 @@ Wrap-up tasks tying Phase 8 into the v0.4.0 release. Two ★ priority items adde
   - `demos/mcp/one-way-audio/` — pcap exhibiting one-way audio, example agent transcript showing diagnosis via MCP tools
   - `demos/mcp/scanner-attack/` — pcap with friendly-scanner traffic, agent detection workflow
   - `demos/mcp/customer-complaint/` — pcap with a degraded call, agent root-cause analysis
-- [ ] **Update `CHANGELOG.md`** for v0.4.0 with the MCP feature, quality timeline upgrade, and `.sipnab` format
-- [ ] **Update `README.md`** Quick Start with an MCP example
-- [ ] **Update `man/sipnab.1`** with the `--mcp*` flag set, `--open`, `--save-project`, `--rtp-interval-ms`
+- [ ] **Update [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md)** for v0.4.0 with the MCP feature, quality timeline upgrade, and `.sipnab` format
+- [ ] **Update [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md)** Quick Start with an MCP example
+- [ ] **Update [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1)** with the `--mcp*` flag set, `--open`, `--save-project`, `--rtp-interval-ms`
 - [ ] **CI:**
-  - Add `cargo build --features mcp --no-default-features` and `cargo build --features mcp-http --no-default-features` to `.github/workflows/`
+  - Add `cargo build --features mcp --no-default-features` and `cargo build --features mcp-http --no-default-features` to [`.github/workflows/`](https://github.com/NormB/sipnab/tree/main/.github/workflows)
   - Add an end-to-end test job that spawns `sipnab --mcp -I <pcap>` and runs the official `mcp-inspector` against it
   - Add a clippy job with `-D clippy::await_holding_lock` on the `mcp` feature
   - Add a round-trip test: `sipnab -I foo.pcap --save-project foo.sipnab` then `sipnab --open foo.sipnab --json` produces output identical to the direct `-I foo.pcap --json` run
@@ -743,7 +743,7 @@ Six new diagnostic checks comparing the two RTP legs of a SIP call to flag asymm
 
 **Why priority:** highest ROI in the entire roadmap. Each check is roughly half a day of code. They light up the existing diagnostic alias system (`--problems` becomes meaningfully better), feed JSON output and TUI badges automatically, and become MCP tool inputs for Phase 8.3's `find_problems` for free.
 
-**Module placement:** `src/rtp/diagnosis.rs` already exists with `MediaDiagnosis` (which currently produces `one_way_audio`, `nat_mismatch`, `no_media`). Extend it with a new `CallAsymmetry` struct and a `diagnose_asymmetry(dialog, streams)` function that returns the six new findings. No new module.
+**Module placement:** [`src/rtp/diagnosis.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs) already exists with `MediaDiagnosis` (which currently produces `one_way_audio`, `nat_mismatch`, `no_media`). Extend it with a new `CallAsymmetry` struct and a `diagnose_asymmetry(dialog, streams)` function that returns the six new findings. No new module.
 
 **The six checks:**
 
@@ -759,7 +759,7 @@ Six new diagnostic checks comparing the two RTP legs of a SIP call to flag asymm
 - [ ] Add `CallAsymmetry` to `MediaDiagnosis` (extend the struct) so existing JSON output picks it up via the `diagnosis` field — backwards compatible additive change.
 - [ ] Add the six new diagnostic aliases in `src/sip/dsl.rs::expand_alias`: `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media`, `silent-leg`. Each expands to the corresponding DSL expression so `--filter codec-asym` works at the CLI.
 - [ ] Update the `--problems` alias to include the new checks in the OR'd union (preserves backwards compatibility — `--problems` still flags everything, just more thoroughly now).
-- [ ] **TUI: add a new `Flags` column to `src/tui/call_list.rs` for asymmetry badges.** No badge column exists today — `SortColumn` enum at `:28` lists ten columns: `Index, Method, From, To, Source, Destination, State, Messages, Date, Pdd`. Adding a new column requires:
+- [ ] **TUI: add a new `Flags` column to [`src/tui/call_list.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_list.rs) for asymmetry badges.** No badge column exists today — `SortColumn` enum at `:28` lists ten columns: `Index, Method, From, To, Source, Destination, State, Messages, Date, Pdd`. Adding a new column requires:
   - New `SortColumn::Flags` variant + entry in `ALL_COLUMNS` (`:52`)
   - Width allocation in `compute_column_widths` (`:589`) — fixed 6-character width
   - Visibility integration with `apply_visible_columns` (`:270`) and `toggle_column_visibility` (`:244`)
@@ -775,7 +775,7 @@ Six new diagnostic checks comparing the two RTP legs of a SIP call to flag asymm
 
 **Gate — 8.7 is done when:**
 - [ ] All six checks have unit tests with a hand-crafted dialog + streams that exhibit each asymmetry, plus a negative case
-- [ ] Test pcaps in `tests/pcap-samples/` exercise each of the six (sourced from real captures or synthesized; some likely already exist for `one-way` and could be adapted)
+- [ ] Test pcaps in [`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples) exercise each of the six (sourced from real captures or synthesized; some likely already exist for `one-way` and could be adapted)
 - [ ] `--filter codec-asym` against a test pcap returns exactly the expected dialogs
 - [ ] JSON output: `diagnosis.codec_asymmetry`, `.ptime_asymmetry`, `.payload_asymmetry`, `.duration_asymmetry`, `.late_media`, `.one_sided_silence` are present (or null for "not detected") on every dialog
 - [ ] TUI: the badges render correctly without disrupting existing column widths
@@ -799,7 +799,7 @@ Six new diagnostic checks comparing the two RTP legs of a SIP call to flag asymm
 
 **Docs — 8.7 deliverables:**
 - [ ] `docs/diagnostic-aliases.md` — extend with the six new aliases, threshold meanings, when each is triggered, common root causes (e.g., codec asymmetry usually means a transcoding B2BUA on the path)
-- [ ] Update `docs/filter-dsl.md` with the new field names (`codec_asymmetry`, `ptime_asymmetry`, etc.) for direct DSL use
+- [ ] Update [`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md) with the new field names (`codec_asymmetry`, `ptime_asymmetry`, etc.) for direct DSL use
 - [ ] Update `docs/mcp-tools.md` `find_problems` entry to list the new `kinds` values
 - [ ] Add an `examples/diagnostic-recipes.md` cookbook entry: "diagnose a customer complaint about choppy audio" → walkthrough using the new checks plus existing RTP quality data
 
@@ -839,11 +839,11 @@ The current REST API (Phase 6) is documented only in markdown. SDK consumers are
   openapi = ["api", "dep:utoipa", "dep:utoipa-swagger-ui"]
   ```
   `openapi` builds on `api` since the spec describes the existing REST surface.
-- [ ] **Annotate every axum handler in `src/output/api.rs` with `#[utoipa::path(...)]`:**
+- [ ] **Annotate every axum handler in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) with `#[utoipa::path(...)]`:**
   - HTTP method, path, request parameters, response types, status codes
   - One annotation per handler (`list_dialogs`, `get_dialog`, `get_dialog_report`, `list_streams`, `get_stream`, `get_stats`, `health_check`, `get_metrics`)
   - Group with OpenAPI tags: `dialogs`, `streams`, `stats`, `health`, `metrics`
-- [ ] **Derive `ToSchema` on every JSON struct in `src/output/json.rs` and `src/output/api.rs`:**
+- [ ] **Derive `ToSchema` on every JSON struct in [`src/output/json.rs`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs) and [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs):**
   - `DialogJson`, `StreamJson`, `MessageJson`, `TimingJson`, `SdpExchangeJson`, `DiagnosisJson`, `QualityIntervalJson`, `DialogListParams`, `StreamListParams`
   - Document each field with `///` comments — utoipa lifts these into the spec descriptions
 - [ ] **Build the `OpenApi` aggregator struct:**
@@ -858,7 +858,7 @@ The current REST API (Phase 6) is documented only in markdown. SDK consumers are
   struct ApiDoc;
   ```
 - [ ] **Mount Swagger UI at `/docs`** and serve `openapi.json` at `/openapi.json` on the existing axum Router. Reuse the existing bearer-token auth (skip auth on `/docs` and `/openapi.json` only when an explicit `--openapi-public` flag is set; default to requiring auth even for the docs).
-- [ ] **Generate `openapi.json` at build time** via a `build.rs` extension or a `cargo xtask openapi` command. Output to `target/openapi.json` and publish as a GitHub Releases asset.
+- [ ] **Generate `openapi.json` at build time** via a [`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs) extension or a `cargo xtask openapi` command. Output to `target/openapi.json` and publish as a GitHub Releases asset.
 - [ ] **Add CI client-generation jobs:**
   - Python: `openapi-generator-cli generate -i openapi.json -g python -o gen/python && cd gen/python && pip install . && python -c "import sipnab_client"`
   - TypeScript: `openapi-generator-cli generate -i openapi.json -g typescript-axios -o gen/ts && cd gen/ts && npm install && npm run build`
@@ -926,7 +926,7 @@ The "read" half of OTel does not apply: sipnab exports traces and metrics, it do
 - [ ] **Instrument the right granularity, not the hot path** — there is no `capture::parse::parse_packet` to wrap. The parse fan-out is split across `tui_process_packet` (`main.rs:870`), `mirror_to_shared_stores` (`:2142`), and `processor.process_packet` from the batch loop, each calling `sip::is_sip_message` / `sip::parse_sip` / `parse_rtp_header`. Per-packet spans on a 10K pkt/s capture would breach the 5% perf gate even at TRACE-filtered levels. Instrument at these levels only:
   - **Capture session (root span):** `capture::start_capture` and `capture::start_multi_capture` — one span per session, lives for the duration of the run
   - **Dialog state transitions:** `sip::dialog_store::DialogStore::process_message` (`:99`) (attributes: `call_id`, `method`, `state_before`, `state_after`) — one span per message; this is already medium-frequency, not hot-path
-  - **HTTP/MCP request boundary:** every axum handler in `output::api` (attributes from OTel HTTP semantic conventions, plus `endpoint`); every `#[tool]` method in `src/mcp/server.rs` (attributes: `tool_name`, `success`, `error_code`)
+  - **HTTP/MCP request boundary:** every axum handler in `output::api` (attributes from OTel HTTP semantic conventions, plus `endpoint`); every `#[tool]` method in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) (attributes: `tool_name`, `success`, `error_code`)
 - [ ] **Use `tracing::event!`, not spans, for parse errors:**
   - `sip::parse_sip` returning `Err` emits a TRACE event with the failure kind — no span construction on the per-packet hot path
   - `parse_rtp_header` failures: same pattern
@@ -976,9 +976,9 @@ The "read" half of OTel does not apply: sipnab exports traces and metrics, it do
 **Docs — 9.2 deliverables:**
 - [ ] `docs/observability.md` — full OTel guide: endpoint config, sampling, metric reference, span attribute reference
 - [ ] `docs/grafana-setup.md` — example Tempo + Prometheus + Loki dashboard JSON for sipnab
-- [ ] `contrib/grafana/sipnab-dashboard.json` — extend the existing dashboard with sipnab-internal metrics from Phase 9.2 (parse_errors, dropped_events, mcp_tool_calls, api_request_duration, dialog_pdd histogram, active_dialogs/streams gauges)
+- [ ] [`contrib/grafana/sipnab-dashboard.json`](https://github.com/NormB/sipnab/blob/main/contrib/grafana/sipnab-dashboard.json) — extend the existing dashboard with sipnab-internal metrics from Phase 9.2 (parse_errors, dropped_events, mcp_tool_calls, api_request_duration, dialog_pdd histogram, active_dialogs/streams gauges)
 - [ ] `contrib/otel-collector.yaml` — example OTel Collector config that sipnab traces flow through
-- [ ] Update `docs/cli-reference.md` with the `--otel-*` flags
+- [ ] Update [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) with the `--otel-*` flags
 - [ ] Update `docs/security-model.md` with OTel-specific notes (no key material in spans, sampling implications for sensitive captures)
 
 ---
@@ -1142,8 +1142,8 @@ Add a perceptual quality score derived from decoded audio, complementary to the 
 
 **Exit criteria — Phase 12 is done when:**
 - [ ] Docs site is live with versioning (v0.3, v0.4, v0.5+, "main"/dev)
-- [ ] Every CLI flag in `cli.rs` appears in `docs/cli-reference.md` (CI-enforced)
-- [ ] Every MCP tool registered in `src/mcp/server.rs` has a documentation page (CI-enforced)
+- [ ] Every CLI flag in `cli.rs` appears in [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) (CI-enforced)
+- [ ] Every MCP tool registered in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) has a documentation page (CI-enforced)
 - [ ] Every REST endpoint has an OpenAPI spec entry (gated by Phase 9.1 — interlocks with this phase)
 - [ ] At least three tutorials exist, each completable end-to-end in under 15 minutes by someone new to sipnab
 - [ ] Glossary covers SIP/RTP/SDP terminology that appears in the docs (PDD, MOS, SBC, B2BUA, etc.)
@@ -1178,8 +1178,8 @@ Stand up the documentation system. Must complete before Phase 8 doc deliverables
 - [ ] **OpenAPI spec hosting:** Phase 9.1's `openapi.json` published to `sipnab.com/api/openapi.json` and rendered via Swagger UI at `sipnab.com/api/` — this interlocks with Phase 9.1 (Phase 12.1 sets up the hosting; Phase 9.1 produces the content)
 - [ ] **Rustdoc hosting:** `cargo doc --no-deps` output published to `sipnab.com/api/rust/` per release
 - [ ] **★ CI quality gates land with 12.1, not 12.4.** Every Phase 8/9 PR after 12.1 ships gets these gates, so docs gaps don't accumulate during the long content-writing tail of Phase 12. The gates are mechanical (no content judgment), so they can land before any Diátaxis classification or content rewrite. Specifically:
-  - **CLI flag coverage check** — script that parses `cli.rs` for `#[arg(long = "...")]` and verifies each appears in `docs/cli-reference.md` (or its eventual `docs/reference/cli-reference.md` location). Fails CI when a flag is added without docs.
-  - **MCP tool coverage check** — script that parses `src/mcp/server.rs` for `#[tool]` annotations and verifies each has an entry in the MCP tool reference. Fails CI on mismatch.
+  - **CLI flag coverage check** — script that parses `cli.rs` for `#[arg(long = "...")]` and verifies each appears in [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) (or its eventual `docs/reference/cli-reference.md` location). Fails CI when a flag is added without docs.
+  - **MCP tool coverage check** — script that parses [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) for `#[tool]` annotations and verifies each has an entry in the MCP tool reference. Fails CI on mismatch.
   - **MCP tool description lint** (already specified in 8.1) — runs the same imperative-verb regex from 8.1 in the docs CI workflow as a defense-in-depth check.
   - **Link checker** — `lychee` or `markdown-link-check` against all docs and the rendered site; broken internal/external links fail the PR.
   - **Spell checker** — `cspell` with a project dictionary (`SIP`, `RTP`, `OpenSIPS`, etc. allowlisted); fails on unknown words.
@@ -1314,7 +1314,7 @@ Three audience-targeted tutorials, each completable in under 15 minutes by someo
 - [ ] Tutorial pages link forward to the next logical step
 
 **Docs — 12.3 deliverables:**
-- [ ] `docs/getting-started/install.md` (renamed/restructured from existing `docs/install.md`)
+- [ ] `docs/getting-started/install.md` (renamed/restructured from existing [`docs/install.md`](https://github.com/NormB/sipnab/blob/main/docs/install.md))
 - [ ] `docs/getting-started/your-first-capture.md`
 - [ ] `docs/getting-started/analyze-a-pcap.md`
 - [ ] `docs/getting-started/mcp-quickstart.md`
@@ -1326,14 +1326,14 @@ Three audience-targeted tutorials, each completable in under 15 minutes by someo
 
 Make every flag, every tool, every config option, every endpoint reference-documented. **The CI coverage gates that enforce 100% coverage land with 12.1**, not here — 12.4 is the content-completion sub-phase that the gates already in place will accept. By the time 12.4 starts, the gates are red on every gap; 12.4's job is to fill the gaps and turn the gates green.
 
-- [ ] **CLI reference content** — current `docs/cli-reference.md` is 218 lines, well-structured, but missing the new flags from Phases 8–11. Audit-and-fill: every flag in `cli.rs` must appear in the reference. (The CLI-flag-coverage CI gate already enforces this from 12.1 onward; 12.4 closes the existing gap.)
+- [ ] **CLI reference content** — current [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) is 218 lines, well-structured, but missing the new flags from Phases 8–11. Audit-and-fill: every flag in `cli.rs` must appear in the reference. (The CLI-flag-coverage CI gate already enforces this from 12.1 onward; 12.4 closes the existing gap.)
 - [ ] **MCP tool reference content** — `docs/reference/mcp-tools.md` (consolidated from Phase 8's `docs/mcp-tools.md`): one section per tool with parameters, return shape, examples, errors. (The MCP-tool-coverage CI gate from 12.1 enforces presence; 12.4 fills in the per-tool detail.)
 - [ ] **REST API reference** — `docs/reference/rest-api.md` is now Swagger UI rendered from Phase 9.1's `openapi.json`. Static page links to the live Swagger UI with a "for offline reference, see openapi.json" link.
-- [ ] **Config reference** — current `docs/config-reference.md` extended with new `[limits.asymmetry]` section from Phase 8.7, snapshot resource limits from 8.3, etc. (NATS config dropped — Phase 10 deferred.)
-- [ ] **Filter DSL reference** — current `docs/filter-dsl.md` extended with the six new asymmetry fields from Phase 8.7
+- [ ] **Config reference** — current [`docs/config-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md) extended with new `[limits.asymmetry]` section from Phase 8.7, snapshot resource limits from 8.3, etc. (NATS config dropped — Phase 10 deferred.)
+- [ ] **Filter DSL reference** — current [`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md) extended with the six new asymmetry fields from Phase 8.7
 - [ ] **Diagnostic aliases reference** — new `docs/reference/diagnostic-aliases.md` consolidating the `--problems`/`--slow-setup`/`--one-way`/etc. plus the six new aliases from Phase 8.7
-- [ ] **Glossary** — new `docs/reference/glossary.md` covering SIP terminology (Call-ID, dialog, transaction, branch, tag, B2BUA, SBC, registrar, proxy, redirect, UAS, UAC), RTP terminology (SSRC, payload type, ptime, jitter, MOS, R-factor, codec, ptime, DTMF, DTX, CN, RFC 4733), SDP terminology (offer/answer, m-line, c-line, a=rtpmap, a=ptime), security terminology (digest, nonce, STIR/SHAKEN, attestation, PASSporT, fraud, IRSF, scanner). Cross-linked from every doc that uses these terms.
-- [ ] **Keybindings** — current `docs/keybindings.md` audited against actual TUI keybindings; CI script extracts keybindings from TUI source and validates
+- [ ] **Glossary** — new `docs/reference/glossary.md` covering SIP terminology (Call-ID, dialog, transaction, branch, tag, B2BUA, SBC, registrar, proxy, redirect, UAS, UAC), RTP terminology (SSRC, payload type, ptime, jitter, MOS, R-factor, codec, ptime, DTMF, DTX, CN, [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733)), SDP terminology (offer/answer, m-line, c-line, a=rtpmap, a=ptime), security terminology (digest, nonce, STIR/SHAKEN, attestation, PASSporT, fraud, IRSF, scanner). Cross-linked from every doc that uses these terms.
+- [ ] **Keybindings** — current [`docs/keybindings.md`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md) audited against actual TUI keybindings; CI script extracts keybindings from TUI source and validates
 - [ ] **Configuration cookbook** — `docs/reference/config-examples.md` with annotated example configs for common deployments
 
 **Gate — 12.4 is done when:**
@@ -1448,7 +1448,7 @@ These are spread across phases above but consolidated here as a checklist for co
 
 **Mitigations:**
 - `serve_stdio` re-initializes `env_logger` with `Target::Stderr` regardless of `RUST_LOG` config
-- Audit `src/sip/parser.rs`, `src/capture/parse.rs`, and `src/capture/reassembly.rs` for stray `println!`/`eprintln!` (none should exist; the codebase already uses `log::*`, but verify)
+- Audit [`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs), [`src/capture/parse.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs), and [`src/capture/reassembly.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/reassembly.rs) for stray `println!`/`eprintln!` (none should exist; the codebase already uses `log::*`, but verify)
 - Add a CI test that runs `sipnab --mcp -I <large.pcap>` with `RUST_LOG=trace` and asserts every line on stdout parses as JSON-RPC
 - Document in `src/mcp/transport.rs::serve_stdio` rustdoc
 
@@ -1469,9 +1469,9 @@ These are spread across phases above but consolidated here as a checklist for co
 
 **Mitigations:**
 - The existing `output::api` handlers (`list_dialogs` at `api.rs:349`, `get_dialog` at `api.rs:406`, etc.) already follow the correct pattern: `read()` → snapshot/clone → explicit `drop(ds)` → `.await` happens after the drop. MCP handlers must mirror this.
-- Add `#![deny(clippy::await_holding_lock)]` to `src/mcp/server.rs` and `src/mcp/transport.rs`
+- Add `#![deny(clippy::await_holding_lock)]` to [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) and [`src/mcp/transport.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs)
 - Code review checklist item for any `parking_lot::RwLockReadGuard` / `RwLockWriteGuard` lifetime that crosses an `await` point in the MCP module
-- Document in `src/mcp/server.rs` module-level rustdoc, with a worked correct/incorrect example
+- Document in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) module-level rustdoc, with a worked correct/incorrect example
 - Stress test in 8.3 gate: 100 concurrent tool calls during active capture for 60 seconds, no deadlock detected
 - **Phase 9.2 extension:** the same rule applies to any function newly decorated with `#[tracing::instrument]` if the function holds a parking_lot guard and awaits inside the span. Audit OTel instrumentation in 9.2 against the same clippy lint.
 
@@ -1485,7 +1485,7 @@ These are spread across phases above but consolidated here as a checklist for co
 - Use `Level::INFO` only for low-frequency operations (capture session start, dialog terminal state, MCP tool entry/exit)
 - Spans below the active filter level are zero-cost in `tracing` 0.1+ — they compile down to a single comparison
 - Performance gate in 9.2 requires throughput regression ≤ 5% with `otel` feature compiled in but no exporter active
-- Document the level-per-path convention in `src/mcp/server.rs` and `docs/observability.md`
+- Document the level-per-path convention in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) and `docs/observability.md`
 
 ---
 
@@ -1600,7 +1600,7 @@ Each item lists the trigger condition (what would have to be true for this to be
 **SIPREC SRS mode (`--siprec-srs <bind>`)**
 - *Trigger:* a deployment site uses SBC SIPREC recording as the primary method to deliver SIP+RTP to monitoring, with no SPAN port available.
 - *Scope:* substantial — sipnab becomes a stateful SIP role (SRS), terminating SIPREC INVITEs, accepting the RTP streams, parsing the multipart metadata, then feeding packets into the parse pipeline. Roughly Phase-1-sized work, with new test infrastructure needed for SBC interop testing. Not a small addition.
-- *Why deferred:* large surface area, narrow user base. The existing `src/sip/siprec.rs` parses SIPREC metadata when present in captured INVITEs; that covers most analytical needs without requiring sipnab to be the SRS itself.
+- *Why deferred:* large surface area, narrow user base. The existing [`src/sip/siprec.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/siprec.rs) parses SIPREC metadata when present in captured INVITEs; that covers most analytical needs without requiring sipnab to be the SRS itself.
 
 ### Push sink candidates (deferred)
 
@@ -1671,32 +1671,32 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` (`src/sip/dialog_store.rs:194`) + `FilterExpr::matches_dialog` (`src/sip/dsl.rs:217`) + `expand_alias` (`src/sip/dsl.rs:138`) |
-| `get_dialog` | `DialogStore::get` (`src/sip/dialog_store.rs:184`) + iterate `dialog.messages` + `output::json::message_to_json` |
-| `get_dialog_report` | `output::generate_call_report` (`src/output/call_report.rs:34`) with `ReportFormat::Json/Markdown/Text` |
-| `get_message` | `output::json::message_to_json` (`src/output/json.rs:150`) |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:194`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L194)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:217`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L217)) + `expand_alias` ([`src/sip/dsl.rs:138`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L138)) |
+| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:184`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L184)) + iterate `dialog.messages` + `output::json::message_to_json` |
+| `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:34`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L34)) with `ReportFormat::Json/Markdown/Text` |
+| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:150`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L150)) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
-| `rtp_stats` | `StreamStore::iter` (`src/rtp/stream_store.rs:207`) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
+| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:207`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L207)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
 | `search_messages` | Same iteration the `--filter` CLI path uses; `FilterExpr` covers most of it |
 | `find_problems` | `list_dialogs` with each `expand_alias` result OR'd |
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` (`src/output/api.rs:538`) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:538`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L538)) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` (`src/output/api.rs:171`) |
-| Bearer auth | `output::api::check_auth` + `constant_time_eq` (`src/output/api.rs:279`, `:309`) |
-| Rate limiting | `output::api::RateLimiter` (`src/output/api.rs:72`) |
-| Shared store mirroring | `mirror_to_shared_stores` (`src/main.rs:2142`) |
-| Server thread + tokio runtime | `start_api_server` pattern (`src/main.rs:2080`) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:171`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L171)) |
+| Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:279`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L279), `:309`) |
+| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:72`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L72)) |
+| Shared store mirroring | `mirror_to_shared_stores` ([`src/main.rs:2142`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L2142)) |
+| Server thread + tokio runtime | `start_api_server` pattern ([`src/main.rs:2080`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L2080)) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` (`src/output/api.rs:150`) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:150`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L150)) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|
-| `ExecSink` | Existing `EventExecEngine::fire_dialog_event` / `fire_quality_event` (`src/output/event_exec.rs:88`, `:131`) — refactored to be one of N sinks rather than the only one |
+| `ExecSink` | Existing `EventExecEngine::fire_dialog_event` / `fire_quality_event` ([`src/output/event_exec.rs:88`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L88), `:131`) — refactored to be one of N sinks rather than the only one |
 | `McpSink` | New, publishes to MCP via rmcp `notifications/resources/updated` and custom `sipnab/dialog_event` |
 | `WsSink` | New, broadcasts NDJSON over `axum::extract::ws::WebSocketUpgrade` |
 | `SseSink` | New, broadcasts SSE frames over `axum::response::sse::Sse` |
@@ -1705,13 +1705,13 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 |---|---|
 | OpenAPI spec | `utoipa` annotations on existing `output::api` handlers — no new endpoints, only documentation |
 | Swagger UI mount | New `/docs` route on the existing axum Router |
-| OTel span on capture | `#[tracing::instrument]` on `capture::start_capture` (`src/capture/mod.rs`) |
-| OTel span on parse | `#[tracing::instrument]` on `sip::parser::parse_sip` (`src/sip/parser.rs`) |
-| OTel span on dialog state | `#[tracing::instrument]` on `DialogStore::process_message` (`src/sip/dialog_store.rs:99`) |
-| OTel span on API handler | `#[tracing::instrument]` on each axum handler in `src/output/api.rs` |
-| OTel span on MCP tool | `#[tracing::instrument]` on each `#[tool]` method in `src/mcp/server.rs` |
-| OTel metrics export | New layer on existing Prometheus endpoint (`src/output/prometheus_server.rs`) plus OTLP exporter |
-| `traceparent` header on incoming SIP | New parse step in `src/sip/parser.rs` to extract W3C trace context if header present |
+| OTel span on capture | `#[tracing::instrument]` on `capture::start_capture` ([`src/capture/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs)) |
+| OTel span on parse | `#[tracing::instrument]` on `sip::parser::parse_sip` ([`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs)) |
+| OTel span on dialog state | `#[tracing::instrument]` on `DialogStore::process_message` ([`src/sip/dialog_store.rs:99`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L99)) |
+| OTel span on API handler | `#[tracing::instrument]` on each axum handler in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
+| OTel span on MCP tool | `#[tracing::instrument]` on each `#[tool]` method in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) |
+| OTel metrics export | New layer on existing Prometheus endpoint ([`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs)) plus OTLP exporter |
+| `traceparent` header on incoming SIP | New parse step in [`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) to extract W3C trace context if header present |
 
 | Phase 10 surface (deferred — preserved for un-deferral) | Wraps |
 |---|---|
@@ -1722,23 +1722,23 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | Phase 8.6 expansion (★) | Wraps |
 |---|---|
-| Quality timeline 680ms intervals | Existing `QualityInterval` in `src/rtp/stream.rs:37` — bump interval, add `status` field |
-| OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` (`src/rtp/quality.rs:52`) |
+| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:37`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L37) — bump interval, add `status` field |
+| OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` ([`src/rtp/quality.rs:52`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L52)) |
 | `.sipnab` project file | New module `src/project.rs`; reuses existing `output::json::dialog_to_json` for report content and `audio_export` for WAV files |
 | `--open <foo.sipnab>` | New CLI dispatch path that bypasses the capture pipeline and rehydrates `DialogStore`/`StreamStore` from `report.json` |
-| `--save-project <foo.sipnab>` | Wraps existing JSON output + `audio_export::extract_audio` (`src/rtp/audio_export.rs`) into a directory layout |
+| `--save-project <foo.sipnab>` | Wraps existing JSON output + `audio_export::extract_audio` ([`src/rtp/audio_export.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/audio_export.rs)) into a directory layout |
 
 | Phase 8.7 surface (★) | Wraps |
 |---|---|
 | `codec_asymmetry` | Compares `RtpStream::codec` (`src/rtp/stream.rs:309 codec_from_pt`) across the two streams of a dialog |
-| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` (`src/rtp/stream.rs:166`) or SDP `a=ptime:` parsed in `src/sip/sdp.rs` |
+| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:166`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L166)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
 | `payload_asymmetry` | Compares payload types across streams; data already in `RtpStream` |
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |
 | `one_sided_silence` | New analysis on decoded PCM samples from `audio_export`; energy threshold computation |
-| All six tags | Extend existing `MediaDiagnosis` struct in `src/rtp/diagnosis.rs:14` (additive — backwards compatible JSON) |
-| Six new diagnostic aliases | Extend `expand_alias` in `src/sip/dsl.rs:138` |
-| TUI badges | Extend existing badge column in `src/tui/call_list.rs` |
+| All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:14`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L14) (additive — backwards compatible JSON) |
+| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:138`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L138) |
+| TUI badges | Extend existing badge column in [`src/tui/call_list.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_list.rs) |
 | MCP `find_problems` integration | No code change — it consumes `expand_alias` already (Phase 8.3) |
 
 | Phase 11 surface | Wraps / Extends |
@@ -1752,6 +1752,6 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `RtpStream.perceptual_mos` field | Add to `src/rtp/stream.rs:65 RtpStream` (additive); compute lazily in stream finalization |
 | `mos_divergence` diagnosis tag | Extend `MediaDiagnosis` struct (additive) |
 | Model download (`--download-nisqa-model`) | New CLI subcommand, downloads to XDG path, SHA256 verifies |
-| `--no-perceptual-mos` opt-out | New flag in `src/cli.rs` under a new `// ── Perceptual MOS ──` section |
+| `--no-perceptual-mos` opt-out | New flag in [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) under a new `// ── Perceptual MOS ──` section |
 
 The pattern is: **add nothing, wrap everything, bound the output.**

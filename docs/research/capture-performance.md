@@ -8,19 +8,19 @@ the complexity when the previous phase proves insufficient.
 ## Current state (baseline)
 
 sipnab captures via **libpcap** (the `pcap` crate). Live loop in
-`capture_live()` (`src/capture/live.rs`). Symbols rather than line numbers
+`capture_live()` ([`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)). Symbols rather than line numbers
 throughout this page: the ranges it used to cite had all rotted by the time the
 work below landed, and a citation that silently points at the wrong code is
 worse than none.
 
 - `immediate_mode` is **run-mode-dependent** (`immediate_mode_for()` in
-  `src/app/bootstrap.rs`): on for the TUI, off for every headless run, which is
+  [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)): on for the TUI, off for every headless run, which is
   what decides TPACKET_V2 versus V3. It was unconditionally `true` when this
   page was written.
 - A kernel **BPF filter** is applied when provided (`capture_live()` in
-  `src/capture/live.rs`) — the only in-kernel optimization currently in use.
+  [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)) — the only in-kernel optimization currently in use.
 - Default kernel buffer **64 MiB** (`DEFAULT_BUFFER_MB` in
-  `src/capture/native.rs`, `-B`/`--buffer`), with a halving fallback ladder to a
+  [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs), `-B`/`--buffer`), with a halving fallback ladder to a
   2 MiB floor. It was 2 MiB when this page was written.
 - `poll(2)` on the **ring-empty path only**. It used to run before every packet,
   including when the mmap'd ring already had data.
@@ -31,7 +31,7 @@ worse than none.
    `crossbeam_channel::bounded(10_000)`. When processing (TUI render, RTP
    analysis, audio export) lagged, the queue filled and `tx.send` stalled the
    capture thread → kernel drops; ~10k RTP pps filled it in ~1 s, bursts far
-   faster. Now an auto-grow capped queue (`src/capture/channel.rs`) — see the
+   faster. Now an auto-grow capped queue ([`src/capture/channel.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs)) — see the
    Phase 1 entry below for what replaced it.
 2. **Per-packet allocation:** every packet does `pkt.data.to_vec()`
    (in `capture_live()`, into `Packet::new`) — heap alloc + memcpy per packet.
@@ -54,16 +54,16 @@ Low risk, no backend change, helps every platform. Expected ~20–30% throughput
 and a large cut in pipeline-induced drops.
 
 - [x] **Done:** default kernel buffer raised 2 MiB → 64 MiB
-      (`DEFAULT_BUFFER_MB` in `src/capture/native.rs`). The open walks a ladder
+      (`DEFAULT_BUFFER_MB` in [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)). The open walks a ladder
       that halves to a 2 MiB floor, so a host that cannot give 64 MiB still
       captures rather than failing to start, and says which size it got.
       `-B/--buffer` is a MiB multiplier on saturating arithmetic clamped to
       `MAX_BUFFER_MB` (2047, the last whole MiB that fits a positive C `int`);
       it was decimal-megabyte arithmetic that handed libpcap a negative size
       above 2047. `pcap_stats` drops are polled on a timer and surfaced.
-      See `docs/tuning-capture.md` for the gigabit-media sizing guidance.
+      See [`docs/tuning-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tuning-capture.md) for the gigabit-media sizing guidance.
 - [x] **Done:** the capture→processing channel is now an auto-grow, capped queue
-      (`src/capture/channel.rs`) — unbounded storage (frees segments when idle) +
+      ([`src/capture/channel.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs)) — unbounded storage (frees segments when idle) +
       a `bounded(capacity)` semaphore for backpressure. Capacity derives from
       `[capture] buffer_budget_mb` / `--buffer-budget` (default 64 MiB);
       `sipnab_capture_queue_depth_packets` / `_backpressure_blocks_total` exported.
@@ -73,7 +73,7 @@ and a large cut in pipeline-induced drops.
       `--api` route's `get_metrics` fills no `CaptureMeter`, so a headless run
       scraping `--api` reads both series as a hard `0` regardless of what the
       queue is doing; neither may be quoted as a reading from that route. See
-      `bench/README.md` for the line numbers this page deliberately omits.
+      [`bench/README.md`](https://github.com/NormB/sipnab/blob/main/bench/README.md) for the line numbers this page deliberately omits.
 - [ ] Buffer pool to eliminate per-packet `to_vec()` (in `capture_live()`) —
       recycle fixed buffers instead of allocating per packet.
 - [ ] Stronger default auto-BPF filter when none supplied (push more drops into
@@ -81,8 +81,8 @@ and a large cut in pipeline-induced drops.
 - [ ] Investigate whether the `pcap` crate v2 exposes **TPACKET_V3**
       (`pcap_set_protocol`); if so add `--capture-mode auto|tpacket_v3|tpacket_v2`.
 - [ ] Benchmark harness — **the harness exists; nothing has been measured with
-      it.** `bench/live-capture.sh` replays a synthetic sustained-RTP corpus
-      (generated by `bench/carrier.py`; the script accepts no capture path at
+      it.** [`bench/live-capture.sh`](https://github.com/NormB/sipnab/blob/main/bench/live-capture.sh) replays a synthetic sustained-RTP corpus
+      (generated by [`bench/carrier.py`](https://github.com/NormB/sipnab/blob/main/bench/carrier.py); the script accepts no capture path at
       all, so a real capture cannot be fed to it) through a `veth` pair in a
       private `sipnab-bench` network namespace, and reads sipnab's own
       `sipnab_capture_packets_total`, `_kernel_dropped_packets_total`,
@@ -90,7 +90,7 @@ and a large cut in pipeline-induced drops.
       `_quality_degraded` off the `--api` route, alongside per-process CPU and
       peak RSS for sipnab and for the replayer separately. The box stays
       unticked until a run produces a clean row. **Everything on this page and
-      in `docs/design/capture-tuning-tasks.md` is still reasoned, not
+      in [`docs/design/capture-tuning-tasks.md`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md) is still reasoned, not
       measured.**
       - **Correction to the original acceptance criterion.** It said to measure
         `ethtool -S <iface> | grep rx_dropped`. That is unsatisfiable on the

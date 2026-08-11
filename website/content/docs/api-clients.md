@@ -674,7 +674,7 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-> **Tip:** The metrics endpoint is lightweight and suitable for 5-15 second scrape intervals. The repo ships a sample Grafana dashboard JSON, included in the repository at `contrib/grafana/sipnab-dashboard.json`.
+> **Tip:** The metrics endpoint is lightweight and suitable for 5-15 second scrape intervals. The repo ships a sample Grafana dashboard JSON, included in the repository at [`contrib/grafana/sipnab-dashboard.json`](https://github.com/NormB/sipnab/blob/main/contrib/grafana/sipnab-dashboard.json).
 
 ### Paginate through all dialogs (Python)
 

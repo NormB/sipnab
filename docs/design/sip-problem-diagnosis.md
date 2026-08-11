@@ -38,7 +38,7 @@ also the order to build them.
 ### 1. Final failure with cause
 
 A dialog that ended on a `4xx`/`5xx`/`6xx` final response. Records the code, the
-reason phrase, and — where present — `Reason:` (RFC 3326) and
+reason phrase, and — where present — `Reason:` ([RFC 3326](https://www.rfc-editor.org/rfc/rfc3326)) and
 `Warning:`, which frequently carry the real cause when the status code is
 generic.
 
@@ -61,7 +61,7 @@ without a `2xx` is the signal.
 
 ### 3. Retransmission storm / no-response transaction
 
-A request retransmitted per RFC 3261 §17 timers with no response — the classic
+A request retransmitted per [RFC 3261 §17](https://www.rfc-editor.org/rfc/rfc3261#section-17) timers with no response — the classic
 signature of a one-way network path or a dead peer. Detected by CSeq plus
 identical branch on repeated requests.
 
@@ -79,7 +79,7 @@ fired on healthy traffic:
 
 - **The observation window must exceed Timer H.** A `2xx` at the end of a
   capture has an `ACK` nobody recorded, not a missing one.
-- **A `BYE` after the answer suppresses it entirely.** RFC 3261 §15 has a UA
+- **A `BYE` after the answer suppresses it entirely.** [RFC 3261 §15](https://www.rfc-editor.org/rfc/rfc3261#section-15) has a UA
   not sending `BYE` on a confirmed dialog until it has the `ACK` for its `2xx`,
   so a hangup proves the `ACK` arrived. Without this, an ordinary
   `INVITE`/`180`/`200`/`BYE` capture that happened to miss one packet reported
@@ -115,7 +115,7 @@ message indicating call disposition (`ALERTING`), which is `INVITE` to first
 International rather than local (6.0 s) or toll (8.0 s) because a capture does
 not say which kind of call it holds, so the most permissive target is the only
 one whose finding holds regardless. `100 Trying` is excluded: it is hop-by-hop
-(RFC 3261 §8.2.6), inaudible to the caller, and counting it measures the first
+([RFC 3261 §8.2.6](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6)), inaudible to the caller, and counting it measures the first
 proxy's reflexes rather than the call's.
 
 Worth recording: this spec said to ground the figure "the way
@@ -133,7 +133,7 @@ fail?".
 
 **No "too short" constant, deliberately.** The spec asked for an expiry "so
 short the endpoint will re-register immediately", and any number answering that
-literally would be chosen for looking reasonable. RFC 3261 §10.2.1.1 already
+literally would be chosen for looking reasonable. [RFC 3261 §10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1) already
 supplies a non-arbitrary comparison: the endpoint states what it wants and the
 registrar states what it granted, so "shorter than requested" is a fact about
 the exchange rather than a judgement imposed on it. Both numbers are reported
@@ -180,7 +180,7 @@ detected-as-absent.
 | Call report | **Done** — a Signalling section in both text and Markdown, each detection with its evidence labelled by message rather than by index |
 | TUI call list | **Done** — a `⚠` in the State cell. Note the spec said "in the style of the existing media badge"; there was no existing media badge, though the module documentation claimed one |
 | TUI call flow | **Done** — a `[FAILURE]`/`[AUTH]`/`[NO-RSP]`/`[NO-ACK]`/`[CANCELLED]`/`[NO-FINAL]`/`[SLOW-PDD]`/`[REG]` tag on the arrow of each cited message. On the arrow, not in the annotation zone right of the ladder, which clips to roughly one column at 80 wide. `CANCELLED` and `NO-FINAL` are separate tags on purpose: one is a thing that happened, the other a thing that was not recorded |
-| JSON schema | **Done** — `signaling_diagnosis` is declared in `tests/schemas/call_report.schema.json`, which it had never been. An absent detection serializes as explicit `null` rather than being omitted, which is the module's way of saying "checked, not found", so the schema accepts null for each |
+| JSON schema | **Done** — `signaling_diagnosis` is declared in [`tests/schemas/call_report.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/call_report.schema.json), which it had never been. An absent detection serializes as explicit `null` rather than being omitted, which is the module's way of saying "checked, not found", so the schema accepts null for each |
 
 ## What this must not do
 

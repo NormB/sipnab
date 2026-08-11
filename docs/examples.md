@@ -302,7 +302,7 @@ Run it as a daemon. UDP :9060 receives HEP, TCP :9100 serves REST + Prometheus.
 sipnab -N --hep-listen 0.0.0.0:9060 --api 0.0.0.0:9100 --no-priv-drop --syslog
 ```
 
-A ready-to-deploy systemd unit lives at `contrib/observability/sipnab-hep.service` — see [Remote-sipnab deployment](install.md) in the install guide.
+A ready-to-deploy systemd unit lives at [`contrib/observability/sipnab-hep.service`](https://github.com/NormB/sipnab/blob/main/contrib/observability/sipnab-hep.service) — see [Remote-sipnab deployment](install.md) in the install guide.
 
 ### 6b. Configure the SIP server to mirror
 
@@ -576,7 +576,7 @@ The `tools/list` response is a standard JSON-RPC envelope with a `result.tools` 
 
 Every registered tool appears, grouped here by what they do. The table in
 [`docs/mcp.md`](mcp.md) is the authoritative list, and
-`mcp_tool_table_lists_every_registered_tool` in `tests/docs_drift_test.rs`
+`mcp_tool_table_lists_every_registered_tool` in [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
 asserts it against the registry — the grouping below is a reading aid, not a
 second source of truth. (This list said "all 25 tools" and enumerated 25 until
 2026-08-05, by which point the registry held 31. The six it had never gained
@@ -616,7 +616,7 @@ cp .env.example .env
 
 If sipnab runs on a different host, point the stack at it before starting: `echo 'SIPNAB_HOST=192.0.2.10' >> .env`, or the hostname (`capture.example.com`) if that is how it resolves.
 
-Start the stack from `contrib/observability` — `docker compose` reads its compose file out of the working directory, so a fresh shell needs the `cd` above first:
+Start the stack from [`contrib/observability`](https://github.com/NormB/sipnab/tree/main/contrib/observability) — `docker compose` reads its compose file out of the working directory, so a fresh shell needs the `cd` above first:
 
 ```bash
 docker compose up -d
@@ -728,7 +728,7 @@ A source that has completed a registration or a call — a `2xx` to its REGISTER
 
 Two consequences follow for anyone reading a file rather than watching an interface. A capture of one direction holds no responses, so sipnab stands the unanswered test down entirely and leaves only the signature and refusal rules. And a capture taken upstream of whatever generates your `404`s — between two proxies, say — never shows the refusals either.
 
-Sample log line shape (from `src/output/fail2ban.rs`):
+Sample log line shape (from [`src/output/fail2ban.rs`](https://github.com/NormB/sipnab/blob/main/src/output/fail2ban.rs)):
 
 ```text
 2026-05-05 12:34:56 sipnab[12345]: scanner_detected src=203.0.113.42 ua="friendly-scanner" method="OPTIONS"

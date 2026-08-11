@@ -340,9 +340,15 @@ fn linked_code_targets_exist() {
     // Raised 300 -> 301 by the non-Linux pre-push gate: internals/build-ci-release.md
     // now cites `scripts/check-non-linux.sh`, which is where the four rejected
     // alternatives and the evidence against each are written down. One link, one page.
+    // Raised 301 -> 340 by the doc-link pass: every tracked repo path in these
+    // pages became a link rather than text to retype, and the line citations
+    // gained the `#L` fragment their labels had always promised. The links here
+    // stay RELATIVE — build-wiki.py rewrites them, and an absolute blob URL
+    // pins a branch and goes stale silently, which is what the sibling gate
+    // `linked_code_uses_relative_paths` exists to catch.
     assert_eq!(
-        seen, 301,
-        "code-link extraction found {seen} links, expected 301. More links is \
+        seen, 340,
+        "code-link extraction found {seen} links, expected 340. More links is \
          fine — bump this. FEWER means the extractor stopped matching, and \
          every assertion below it silently narrowed."
     );

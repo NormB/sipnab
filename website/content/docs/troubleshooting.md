@@ -212,7 +212,7 @@ sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
 
 The call report shows the full SIP message timeline plus per-stream RTP stats (including first/last packet timestamps). Match the signature:
 
-- **BYE at a round interval after answer** (exactly 15 min, 30 min, 1 h -- e.g. 200 OK at `14:00:02`, BYE at `14:30:02`): RFC 4028 **session-timer expiry**. One side never sent (or never received) the session refresh re-INVITE/UPDATE and tore the call down when `Session-Expires` ran out.
+- **BYE at a round interval after answer** (exactly 15 min, 30 min, 1 h -- e.g. 200 OK at `14:00:02`, BYE at `14:30:02`): [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) **session-timer expiry**. One side never sent (or never received) the session refresh re-INVITE/UPDATE and tore the call down when `Session-Expires` ran out.
 - **RTP last packet well before the BYE** (stream `last_seen` minutes earlier than the BYE): a NAT/firewall **idle timeout silently dropped the media path**; the endpoint's RTP-timeout watchdog eventually hung up.
 - **BYE from the carrier side, accompanied by SIP retransmits**: trunk-side reset or an upstream element recycling the session.
 
@@ -224,7 +224,7 @@ The call report shows the full SIP message timeline plus per-stream RTP stats (i
 
 ---
 
-<!-- "488 Not Acceptable Here" is the SIP reason phrase verbatim (RFC 3261).
+<!-- "488 Not Acceptable Here" is the SIP reason phrase verbatim ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)).
 Sentence-casing it would name a response that does not exist. -->
 <!-- vale sipnab.Headings = NO -->
 
@@ -298,7 +298,7 @@ ICMP: 27 error(s) quoting non-SIP traffic, 27 of them media, across 6 flow(s). A
   ICMP port unreachable: RTP (payload type 0) from 192.0.2.5:42180 to 198.51.100.9:21750 could not be delivered (11 times), reported by 198.51.100.9. This is one of the media streams in this capture (1 call(s) affected). Audio sent that way is discarded before it arrives, which is heard as one-way or missing audio. The host answered, so it is reachable -- nothing was listening on that port. Check the service and the address it binds, not the network.
 ```
 
-A media ICMP error has no `Call-ID` to file itself under, so sipnab matches the quoted datagram's own 5-tuple against the streams it tracked, then the SSRC inside the quote, then either socket against a tracked stream endpoint, then against an SDP-advertised media address (or the RTCP port one above it, per RFC 3550 Section 11). Each line says which rule matched, because they are not equally strong.
+A media ICMP error has no `Call-ID` to file itself under, so sipnab matches the quoted datagram's own 5-tuple against the streams it tracked, then the SSRC inside the quote, then either socket against a tracked stream endpoint, then against an SDP-advertised media address (or the RTCP port one above it, per [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) Section 11). Each line says which rule matched, because they are not equally strong.
 
 A quote that matches nothing is still counted and still printed -- the endpoint it names is real whether or not this capture holds the stream, and "matched nothing this capture holds" is a prompt to widen the capture, not a reason to hide the evidence.
 
@@ -360,7 +360,7 @@ In the TUI, navigate to a call's flow view and press `Enter` on an RTP bar (or p
 
 - **MOS and jitter sparklines** -- visual trend graphs across the stream's lifetime, making it easy to spot the exact moment quality degraded.
 - **Quality intervals** -- per-interval breakdown of MOS, jitter, and loss so you can correlate degradation with specific time windows.
-- **Burst/gap analysis** (RFC 3611) -- distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow; gap loss points to a consistently lossy link.
+- **Burst/gap analysis** ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)) -- distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow; gap loss points to a consistently lossy link.
 - **Silence detection** -- identifies periods where no RTP was flowing, which can indicate hold events, codec DTX, or network black holes.
 
 This same data is available in the browser analyzer at [sipnab.com/analyze/](https://sipnab.com/analyze/) under the **Streams** tab.

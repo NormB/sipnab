@@ -30,7 +30,7 @@ order*.
 - [x] **B1 — Rebase the branch onto current `main`.** Done. The merge base was
   already `6465c61`, so only `b63f122` ("Wait for the hook to finish instead of
   sleeping and hoping") had to be replayed under. It touches the `fire_n` test
-  helper in `src/output/event_exec.rs`, which LK1 did not, so the rebase took
+  helper in [`src/output/event_exec.rs`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs), which LK1 did not, so the rebase took
   no conflict.
 - [x] **B2 — Fix the known-failing gate.** Done, and it was four pins rather
   than one: tracked-markdown 121 → 125 and tables 437 → 443 in
@@ -64,7 +64,7 @@ order*.
   single `degraded` flag named for the direction there is evidence for. `G1`
   shipped folded into it as planned.
 - [x] **CT7 — TPACKET_V3 selection.** Shipped. `immediate_mode_for()` in
-  `src/app/bootstrap.rs` answers it by run mode: on for the TUI, off for every
+  [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) answers it by run mode: on for the TUI, off for every
   headless run. The V3 timeout trap was handled rather than inherited —
   `BATCHED_READ_TIMEOUT_MS = 5` replaces the interactive 100 ms on the batched
   path, because libpcap copies the read timeout into `tp_retire_blk_tov` and
@@ -102,8 +102,8 @@ order*.
   measured**; the *parity* claim is measured, below.
   - **Output parity settled, and the one outlier explained.** A pre-LK1 and a
     post-LK1 release binary, differing in exactly three files
-    (`src/app/batch.rs`, `src/output/event_exec.rs`,
-    `src/security/alerting.rs`) and nothing else, agree byte for byte over the
+    ([`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs), [`src/output/event_exec.rs`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs),
+    [`src/security/alerting.rs`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs)) and nothing else, agree byte for byte over the
     whole reference corpus once the two fields that cannot match across
     processes — the fail2ban jail line's `Local::now()` and
     `std::process::id()` — are normalized away. The one file that mismatched
@@ -130,7 +130,7 @@ order*.
   crate exposes `AsRawFd for Capture<Active>`, so it is one `setsockopt` on a
   normal libpcap handle — **no libpcap fork**. `PACKET_FANOUT_HASH` uses
   `__skb_get_hash_symmetric()`, so bidirectional RTP affinity is already free.
-  Unblocked: `src/capture/live.rs` was the CT7 agent's and CT7 has landed.
+  Unblocked: [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs) was the CT7 agent's and CT7 has landed.
 - [ ] **CT11 — Call-aware fanout steering via `PACKET_FANOUT_CBPF`.** Only
   after CT4, and only if cross-worker SIP/media correlation is *measured* to
   cost something. Hand-written cBPF returning a worker index; no `CAP_BPF`, no

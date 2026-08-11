@@ -192,7 +192,7 @@ form does for you.
 
 `final_status_code` is the response that decided the outcome, with auth
 challenges excluded: a call challenged and then answered reports 200, not the
-401. `final_status_reason` is the phrase from the wire, which RFC 3261 §7.2
+401. `final_status_reason` is the phrase from the wire, which [RFC 3261 §7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2)
 leaves as free text — `500 Service Unavailable` is legal and common, so match on
 the code.
 
@@ -220,7 +220,7 @@ messages it drew on as indices into the dialog's own message list:
 
 | Field | Meaning |
 |---|---|
-| `final_failure` | The dialog ended on a `4xx`/`5xx`/`6xx`. Carries `code`, `reason_phrase`, and the `Reason:` (RFC 3326) and `Warning:` headers when present, which frequently hold the real cause behind a generic status code. |
+| `final_failure` | The dialog ended on a `4xx`/`5xx`/`6xx`. Carries `code`, `reason_phrase`, and the `Reason:` ([RFC 3326](https://www.rfc-editor.org/rfc/rfc3326)) and `Warning:` headers when present, which frequently hold the real cause behind a generic status code. |
 | `auth_loop` | Three or more `401`/`407` challenges with no `2xx`. `kind` is `credential_failure` when the client answers each challenge and is re-challenged, or `silent_drop` when it never sends `Authorization` at all — different faults with different fixes. |
 | `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `method`, `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. `icmp_cause` is present only when the capture also held an ICMP error for the dialog, and carries the network's own words for the silence — see below. |
 | `ack_missing` | A `2xx` answer to an `INVITE` that no `ACK` followed, once the observation window passed RFC 3261 Timer H (32 s). Carries `waited_sec` and `answer_transmissions` — a UAS retransmits its answer until Timer H, so a count above one is the peer agreeing the `ACK` never arrived. |
@@ -252,7 +252,7 @@ far end is not reachable. Two fields repay attention:
   device that noticed and said so, usually a working router in the path.
   Sending an engineer to the reporter wastes the finding.
 
-`truncated` is `true` in the ordinary case: RFC 792 guarantees only 8 bytes past
+`truncated` is `true` in the ordinary case: [RFC 792](https://www.rfc-editor.org/rfc/rfc792) guarantees only 8 bytes past
 the quoted IP header, so most quotes are a prefix. The field exists so a reader
 knows the quote was partial rather than assuming the fields came from a whole
 datagram.

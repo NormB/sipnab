@@ -29,7 +29,7 @@ A **transaction** is one request plus its responses. A **dialog** is the
 longer-lived relationship a successful INVITE establishes — it spans many
 transactions (INVITE, re-INVITE, BYE) and is what a human means by "a call".
 
-RFC 3261 identifies a dialog by the triple Call-ID + From-tag + To-tag.
+[RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) identifies a dialog by the triple Call-ID + From-tag + To-tag.
 sipnab's [`DialogStore`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs) keys its map on
 **Call-ID alone** and keeps `from_tag`/`to_tag` as fields on
 [`SipDialog`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs). That is a deliberate simplification for
@@ -125,7 +125,7 @@ seconds of silence.
 ### Offer/answer, and the delayed-offer inversion
 
 Normally the request carries the SDP **offer** and the response carries the
-**answer**. RFC 3261 §13.2.1 allows an offerless INVITE, and then the roles
+**answer**. [RFC 3261 §13.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.1) allows an offerless INVITE, and then the roles
 invert: the 200 OK carries the offer and the ACK carries the answer.
 
 [`determine_offer_answer()`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp_timeline.rs) encodes exactly
@@ -151,7 +151,7 @@ sequenceDiagram
 
 A re-INVITE with `a=sendonly` puts the far end on hold, and `a=sendrecv` resumes.
 [`sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) parses `sendonly`/`recvonly`/`inactive` into a
-direction on the media description. The older RFC 2543 convention of holding by
+direction on the media description. The older [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) convention of holding by
 setting the connection address to `c=0.0.0.0` is **not** recognized as hold
 here — such a call reads as media simply stopping.
 Media stopping mid-call is therefore not automatically a fault — check the SDP
@@ -212,10 +212,10 @@ each with a confidence score and each reported under its own reason:
 
 | Reason | Score | Survives a B2BUA? |
 |---|---|---|
-| `SessionId` — RFC 7989 `Session-ID` | 100 | **Yes, by design** |
+| `SessionId` — [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` | 100 | **Yes, by design** |
 | `XCallId` — a configured header, `X-Call-ID` by default | 100 | Only if the SBC inserts it |
-| `ChargingVectorRelatedIcid` — RFC 7315 `related-icid` names the other leg's `icid-value` | 95 | Yes, when the B2BUA chose to emit it (`MAY`) |
-| `SdpOrigin` — the RFC 8866 SDP origin tuple | 90 | Only if the SBC forwards SDP untouched |
+| `ChargingVectorRelatedIcid` — [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `related-icid` names the other leg's `icid-value` | 95 | Yes, when the B2BUA chose to emit it (`MAY`) |
+| `SdpOrigin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) SDP origin tuple | 90 | Only if the SBC forwards SDP untouched |
 | `ChargingVectorIcid` — both legs carry the same RFC 7315 `icid-value` | 85 | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `ViaBranch` — a shared branch parameter | 80 | No: a new transaction gets a new branch |
 | `TimingHeuristic` — endpoint overlap plus timing | 50 | Not an identifier at all |
@@ -274,13 +274,13 @@ a time value. Converting it needs
 [`clock_rate_from_pt()`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs) for static payload types or
 the `a=rtpmap` clock rate for dynamic ones.
 
-G.722 is the trap worth knowing: RFC 3551 assigns it a **8000 Hz RTP clock
+G.722 is the trap worth knowing: [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551) assigns it a **8000 Hz RTP clock
 despite 16 kHz audio**, so the obvious "clock rate = sample rate" assumption
 halves or doubles every derived duration.
 
 ### Jitter is a signed transit delta, not a variance
 
-RFC 3550 §6.4.1 defines interarrival jitter as a smoothed mean of the
+[RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) defines interarrival jitter as a smoothed mean of the
 *difference in transit time* between consecutive packets:
 `J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16`. `stream.rs` computes the transit
 delta as a **signed** `i32` before taking the absolute value — with unsigned
@@ -328,7 +328,7 @@ the loss map view renders it in sequence space.
 
 ### DTMF travels out of band, and depends on the clock
 
-RFC 4733 telephone-events carry digits as their own payload type, negotiated
+[RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) telephone-events carry digits as their own payload type, negotiated
 in SDP. [`extract_dtmf_with_clock()`](https://github.com/NormB/sipnab/blob/main/src/rtp/dtmf.rs) needs both the
 negotiated PT and its **rtpmap clock rate** — event duration arrives in
 clock ticks, so decoding a 16 kHz telephone-event with an assumed 8 kHz clock

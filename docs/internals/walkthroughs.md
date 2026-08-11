@@ -95,7 +95,7 @@ places.
 7. Add snapshot coverage in
    [`tui_snapshot_test`](../../tests/tui_snapshot_test.rs) — at minimum the
    populated case and the empty/degenerate case.
-8. Mirror the keybinding into `website/content/docs/keybindings.md`.
+8. Mirror the keybinding into [`website/content/docs/keybindings.md`](../../website/content/docs/keybindings.md).
    **(unenforced for a new key — the mirroring obligation is a convention; see
    CONTRIBUTING.)**
 
@@ -173,7 +173,7 @@ sequenceDiagram
    no detector. **(unenforced — nothing requires a new detector to have a
    test.)**
 
-Verified: a new `src/security/` module holding an uncapped `HashMap<IpAddr, u64>`,
+Verified: a new [`src/security/`](../../src/security/) module holding an uncapped `HashMap<IpAddr, u64>`,
 exported from `mod.rs`, left `resource_bounds_test` at 3/3 and `security_test`
 at 38/38. Both steps above are real obligations with no gate behind them —
 which is exactly why this page writes them down.
@@ -204,7 +204,7 @@ which is exactly why this page writes them down.
    — it is two tests about `--json-pretty` and `--call-report` exit codes.)**
 
 History, and the reason step 3 now reads that way: a deliberately malformed
-`zzz_gate_probe.schema.json` dropped into `tests/schemas/` once left
+`zzz_gate_probe.schema.json` dropped into [`tests/schemas/`](../../tests/schemas/) once left
 `json_schema_test` at 6 passed, 0 failed — the test walked a hardcoded list of
 four filenames and never opened the file. That experiment is what motivated
 the switch to directory enumeration, and the test's own doc comment records
@@ -217,7 +217,7 @@ it. Steps 1, 2, and 4 are still convention with no gate behind them.
 
 1. Add `fuzz/fuzz_targets/<name>.rs` calling one parser entry point on
    `&[u8]`.
-2. Register the `[[bin]]` in `fuzz/Cargo.toml`. **(unenforced, and this is the
+2. Register the `[[bin]]` in [`fuzz/Cargo.toml`](../../fuzz/Cargo.toml). **(unenforced, and this is the
    trap: an unregistered file under `fuzz_targets/` is not a broken build, it
    is an invisible one. Cargo never compiles it, so `fuzz-check` and the
    pre-push `cd fuzz && cargo check` both pass and your target silently never
@@ -225,7 +225,7 @@ it. Steps 1, 2, and 4 are still convention with no gate behind them.
 3. Seed [`fuzz/corpus/`](../../fuzz/corpus) with at least one real input.
    **(unenforced — despite the name,
    [`fuzz_corpus_replay`](../../tests/fuzz_corpus_replay.rs) never opens
-   `fuzz/corpus/`. It has no filesystem access at all: it drives the parsers
+   [`fuzz/corpus/`](../../fuzz/corpus/). It has no filesystem access at all: it drives the parsers
    with an adversarial seed set and a mutation sweep defined in the file
    itself.)**
 4. Add the same entry point to

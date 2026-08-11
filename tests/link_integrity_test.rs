@@ -549,7 +549,9 @@ fn wiki_intra_docs_links_resolve() {
     // Lowered 345 -> 344 by folding `stats` into `capture_status`: its row in
     // the tool reference was one of the 32 links added above, and the section
     // it pointed at is gone with the tool.
-    const EXPECTED_WIKI_LINKS: usize = 344;
+    // Raised 344 -> 345 by the doc-link pass: one more tracked repo path in a
+    // wiki-published page became a link instead of text a reader must retype.
+    const EXPECTED_WIKI_LINKS: usize = 345;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \

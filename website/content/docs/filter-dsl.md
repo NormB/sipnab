@@ -321,7 +321,7 @@ case.
 sipnab -N -I capture.pcap --filter "rtp.jitter > 50.0 OR rtp.loss > 1.0" --json
 ```
 
-Jitter arrives in milliseconds (RFC 3550 interarrival jitter algorithm), and high values indicate network congestion. Loss is a percentage (0.0-100.0) whose acceptable thresholds are codec-dependent.
+Jitter arrives in milliseconds ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) interarrival jitter algorithm), and high values indicate network congestion. Loss is a percentage (0.0-100.0) whose acceptable thresholds are codec-dependent.
 
 ### Failed international calls
 
@@ -409,7 +409,7 @@ sipnab -N -I capture.pcap --filter "rtp.ssrc == '0x12345678'" --json
 ### RTCP extended reports
 
 When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
-(RFC 3611 Section 4.7) and keeps it beside the stream the block names:
+([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611) Section 4.7) and keeps it beside the stream the block names:
 
 - Round-trip delay and end-system delay
 - Signal level, noise level and residual echo return loss
