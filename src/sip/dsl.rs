@@ -1250,7 +1250,7 @@ fn eval_compare(
         Field::RtpMos => {
             // Use worst (lowest) MOS across streams for filtering
             // MOS is approximated from jitter and loss using E-model R-factor
-            let mos = streams.iter().map(|s| approximate_mos(s)).reduce(f64::min);
+            let mos = streams.iter().map(|s| stream_mos(s)).reduce(f64::min);
             compare_num(mos.unwrap_or(0.0), op, value)
         }
         Field::RtpJitter => {
@@ -1403,24 +1403,14 @@ fn state_to_str(state: &DialogState) -> &'static str {
 ///
 /// The approximate MOS, floored at 1.0 (worst) with a practical ceiling
 /// near 4.4 for a clean stream.
-fn approximate_mos(stream: &RtpStream) -> f64 {
+pub fn stream_mos(stream: &RtpStream) -> f64 {
     let total = stream.packet_count + stream.lost_packets;
     let loss_pct = if total > 0 {
         (stream.lost_packets as f64 / total as f64) * 100.0
     } else {
         0.0
     };
-
-    let jitter_penalty = stream.jitter.min(100.0);
-    let loss_penalty = 2.5 * loss_pct;
-
-    let r = (93.2 - jitter_penalty - loss_penalty).clamp(0.0, 100.0);
-
-    if r < 1.0 {
-        1.0
-    } else {
-        1.0 + 0.035 * r + r * (r - 60.0) * (100.0 - r) * 7e-6
-    }
+    crate::rtp::quality::estimate_mos(stream.jitter, loss_pct, stream.codec.as_deref())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -2517,7 +2507,7 @@ mod tests {
     fn approximate_mos_clean_stream_is_high() {
         // No loss, no jitter => R near 93 => MOS in the ~4.4 range.
         let stream = make_rtp_stream(false);
-        let mos = approximate_mos(&stream);
+        let mos = stream_mos(&stream);
         assert!(mos > 4.0 && mos <= 4.5, "got {mos}");
     }
 
@@ -2529,8 +2519,8 @@ mod tests {
         stream.jitter = 80.0;
         stream.lost_packets = 50;
         // packet_count is 1 from construction; make loss heavy.
-        let degraded = approximate_mos(&stream);
-        let clean = approximate_mos(&make_rtp_stream(false));
+        let degraded = stream_mos(&stream);
+        let clean = stream_mos(&make_rtp_stream(false));
         assert!(degraded < clean, "degraded {degraded} < clean {clean}");
         assert!(degraded >= 1.0, "MOS floor is 1.0, got {degraded}");
     }
@@ -2541,7 +2531,7 @@ mod tests {
         let mut stream = make_rtp_stream(false);
         stream.jitter = 100.0;
         stream.lost_packets = 1_000_000;
-        let mos = approximate_mos(&stream);
+        let mos = stream_mos(&stream);
         assert!((mos - 1.0).abs() < 1e-9, "expected floor 1.0, got {mos}");
     }
 
@@ -2553,7 +2543,7 @@ mod tests {
         let mut stream = make_rtp_stream(false);
         stream.packet_count = 0;
         stream.lost_packets = 0;
-        let mos = approximate_mos(&stream);
+        let mos = stream_mos(&stream);
         assert!(mos > 4.0, "got {mos}");
     }
 
