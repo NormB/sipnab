@@ -863,6 +863,11 @@ fn limit_probes() -> Vec<LimitProbe> {
             observe: probe_dialog_limit,
         },
         LimitProbe {
+            key: "mcp_max_rows",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_max_rows,
+        },
+        LimitProbe {
             key: "max_streams",
             enabled: true,
             observe: probe_max_streams,
@@ -938,6 +943,97 @@ fn probe_dialog_limit() -> (String, String) {
         "[limits]\ndialog_limit = 3\n",
         &["--json-dialogs"],
         |out| format!("dialogs={}", dialog_count(out)),
+    )
+}
+
+/// `mcp_max_rows`: eight dialogs asked for at once, against a cap of two.
+///
+/// This probe drives the MCP stdio server rather than stdout, because the key
+/// is observable on no other surface. That is the point of the gate it
+/// satisfies: a limit that only exists in a resolver is not wired, and this
+/// tree already carries six thresholds accepted as parameters that no
+/// production caller supplies.
+fn probe_mcp_max_rows() -> (String, String) {
+    fn rows_with(cfg: Option<&std::path::Path>, pcap: &std::path::Path) -> usize {
+        use std::io::{BufRead, BufReader, Write};
+        let mut args: Vec<String> = vec![
+            "--mcp".into(),
+            "-N".into(),
+            "-I".into(),
+            pcap.to_str().unwrap().into(),
+            "--quiet".into(),
+        ];
+        match cfg {
+            Some(c) => {
+                args.push("--config".into());
+                args.push(c.to_str().unwrap().into());
+            }
+            None => args.push("--no-config".into()),
+        }
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn mcp server");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+
+        let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| {
+            writeln!(w, "{v}").expect("write");
+            w.flush().expect("flush");
+        };
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                      "clientInfo":{"name":"probe","version":"0"}}}),
+        );
+        let mut line = String::new();
+        out.read_line(&mut line).expect("initialize reply");
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","method":"notifications/initialized"}),
+        );
+        // Ask for far more than either cap allows, so the cap is what bounds it.
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"list_dialogs","arguments":{"limit":500}}}),
+        );
+
+        let mut rows = 0usize;
+        for _ in 0..40 {
+            line.clear();
+            if out.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if v["id"] != serde_json::json!(2) {
+                continue;
+            }
+            let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            rows = parsed["dialogs"].as_array().map(Vec::len).unwrap_or(0);
+            break;
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        rows
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 8);
+    let cfg = write_config(&dir, "[limits]\nmcp_max_rows = 2\n");
+    (
+        format!("rows={}", rows_with(None, &pcap)),
+        format!("rows={}", rows_with(Some(&cfg), &pcap)),
     )
 }
 

@@ -1133,6 +1133,26 @@ pub struct Cli {
     )]
     pub mcp_max_concurrent: u32,
 
+    /// Maximum rows in one list-style MCP response.
+    ///
+    /// Deliberately has NO clap `default_value`: that is what made
+    /// `[display] color` and `[security] kill_response` unreachable from
+    /// config — clap fills the field whether or not the operator typed the
+    /// flag, so "not given" and "given the default" become indistinguishable
+    /// and the config key has nothing to override. The default lives in
+    /// [`Self::DEFAULT_MCP_MAX_ROWS`] and is applied by
+    /// [`Self::mcp_row_cap`].
+    ///
+    /// The right ceiling belongs to the CONSUMER, not to sipnab: an agent with
+    /// a small context window wants far fewer than 1000 rows and a batch
+    /// consumer piping to a file wants far more.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-max-rows",
+        value_name = "N"
+    )]
+    pub mcp_max_rows: Option<u64>,
+
     /// Maximum MCP tool calls one peer may make per second (`0` = unlimited).
     ///
     /// The other half of `--mcp-max-concurrent`, and a different question:
@@ -1579,6 +1599,8 @@ impl Cli {
     pub const DEFAULT_MAX_STREAMS: u64 = 50_000;
     /// Default TCP reassembly session cap — see [`Self::DEFAULT_DIALOG_LIMIT`].
     pub const DEFAULT_MAX_REASSEMBLY: u64 = 10_000;
+    /// Default MCP response row ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].
+    pub const DEFAULT_MCP_MAX_ROWS: u64 = 1_000;
     /// Default HEP global ingest ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].
     pub const DEFAULT_HEP_RATE_LIMIT: u64 = 50_000;
 
@@ -1593,6 +1615,20 @@ impl Cli {
         self.limit
             .or(config.limits.dialog_limit)
             .unwrap_or(Self::DEFAULT_DIALOG_LIMIT) as usize
+    }
+
+    /// MCP response ceiling: `--mcp-max-rows`, else `[limits] mcp_max_rows`,
+    /// else the default. See [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// Bounds rows in ONE list-style MCP response. Unrelated to
+    /// [`Self::dialog_limit`], which bounds dialogs tracked over the whole run
+    /// and defaults 100x higher -- the two are confused often enough that the
+    /// difference is worth stating here.
+    #[must_use]
+    pub fn mcp_row_cap(&self, config: &crate::config::Config) -> usize {
+        self.mcp_max_rows
+            .or(config.limits.mcp_max_rows)
+            .unwrap_or(Self::DEFAULT_MCP_MAX_ROWS) as usize
     }
 
     /// RTP stream cap: `--max-streams`, else `[limits] max_streams`, else the

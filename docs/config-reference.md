@@ -154,6 +154,7 @@ Resource limits to prevent unbounded memory growth.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `dialog_limit` | integer | `100000` | Maximum tracked dialogs |
+| `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key |
 | `max_streams` | integer | `50000` | Maximum RTP streams |
 | `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second |

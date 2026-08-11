@@ -23,6 +23,13 @@ use crate::sip::dialog_store::DialogStore;
 /// simply not started, so callers need no feature gates.
 #[derive(Debug, Clone, Copy)]
 pub struct Selection {
+    /// Ceiling on rows in one list-style MCP response.
+    ///
+    /// Resolved by the caller with `cli.mcp_row_cap(config)`, because config is
+    /// in scope there and not here. Carried on Selection rather than added as a
+    /// parameter for the same reason the flags above are: this struct is where
+    /// per-run decisions about the servers already live.
+    pub mcp_row_cap: usize,
     /// Start the REST API server when `--api` is configured.
     pub api: bool,
     /// Start the MCP server when `--mcp` is configured.
@@ -297,7 +304,8 @@ pub fn start_servers(
                 .with_capture_context(capture_ctx.clone())
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_max_concurrent as usize)
-                .with_rate_limit_per_peer(cli.mcp_rate_limit_per_peer);
+                .with_rate_limit_per_peer(cli.mcp_rate_limit_per_peer)
+                .with_row_cap(selection.mcp_row_cap);
             let s = match cli.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
                 None => s,

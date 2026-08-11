@@ -92,6 +92,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_headers_per_message",
             "max_messages_per_dialog",
             "max_audio_frames",
+            "mcp_max_rows",
         ]
         .as_slice(),
     );
@@ -379,6 +380,8 @@ pub struct SecurityConfig {
 pub struct LimitsConfig {
     /// Maximum tracked dialogs.
     pub dialog_limit: Option<u64>,
+    /// Maximum rows in one list-style MCP response (default: 1000).
+    pub mcp_max_rows: Option<u64>,
     /// Maximum RTP streams.
     pub max_streams: Option<u64>,
     /// Maximum TCP reassembly sessions.
@@ -408,6 +411,13 @@ impl LimitsConfig {
         if let Some(0) = self.dialog_limit {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] dialog_limit must be > 0".into(),
+            ));
+        }
+        // Rejected rather than read as "unlimited" or "default": both would
+        // turn a typo into silent behaviour the operator did not ask for.
+        if let Some(0) = self.mcp_max_rows {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] mcp_max_rows must be > 0".into(),
             ));
         }
         if let Some(0) = self.max_streams {
@@ -1625,6 +1635,30 @@ column_selector = "F10"
     }
 
     /// A fully populated set of sane limit values passes validation.
+    /// The key parses, is registered, and 0 is refused by name.
+    ///
+    /// Registration is not a formality: an unregistered key still parses and
+    /// still works, but warns "Unknown config key" at every start, and this
+    /// tree's own note says a spurious warning on valid config "trains users
+    /// to ignore the warning entirely".
+    #[test]
+    fn mcp_max_rows_parses_is_registered_and_rejects_zero() {
+        let cfg: Config = toml::from_str("[limits]\nmcp_max_rows = 250\n").expect("valid");
+        assert_eq!(cfg.limits.mcp_max_rows, Some(250));
+        assert!(
+            Config::unknown_keys("[limits]\nmcp_max_rows = 250\n")
+                .expect("scan")
+                .is_empty(),
+            "mcp_max_rows must be registered, or every user of it is warned at"
+        );
+        let zero: Config = toml::from_str("[limits]\nmcp_max_rows = 0\n").expect("parses");
+        let err = zero.limits.validate().expect_err("0 must be rejected");
+        assert!(
+            err.to_string().contains("mcp_max_rows"),
+            "error must name the key"
+        );
+    }
+
     #[test]
     fn limits_valid_values() {
         let limits = LimitsConfig {
@@ -1636,6 +1670,7 @@ column_selector = "F10"
             max_headers_per_message: Some(200),
             max_messages_per_dialog: Some(500),
             max_audio_frames: Some(1500),
+            mcp_max_rows: Some(1000),
         };
         assert!(limits.validate().is_ok());
     }

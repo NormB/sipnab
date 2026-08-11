@@ -1864,6 +1864,7 @@ impl BatchRunner {
             &stream_store,
             Some(&engines.alerts),
             crate::app::servers::Selection {
+                mcp_row_cap: cli.mcp_row_cap(config),
                 api: true,
                 mcp: true,
                 // The whole point of #159: headless is where --metrics is

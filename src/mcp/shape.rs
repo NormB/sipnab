@@ -193,7 +193,13 @@ pub fn fenced_dialog_summary(
 /// Default `limit` parameter for list-style tools.
 pub const DEFAULT_LIMIT: usize = 50;
 
-/// Maximum `limit` value a tool will accept; requests above this are clamped.
+/// DEFAULT maximum `limit` a tool accepts, when the operator sets none.
+///
+/// This is a default, not a law. The right ceiling is a property of the
+/// CONSUMER rather than of sipnab: an agent with a small context window wants
+/// far fewer than 1000 rows and a batch consumer piping to a file wants far
+/// more, so no single number serves both. Override with `--mcp-max-rows` or
+/// `[limits] mcp_max_rows`; see [`crate::cli::Cli::mcp_row_cap`].
 pub const HARD_LIMIT: usize = 1000;
 
 /// Maximum SIP body / snippet bytes returned in a single response.
@@ -226,10 +232,26 @@ pub fn truncate_string(s: &str, max_bytes: usize) -> String {
 
 /// Clamp a caller-supplied `limit` to `[1, HARD_LIMIT]`. A `None` or zero
 /// resolves to `DEFAULT_LIMIT`.
+///
+/// Kept for callers with no configured ceiling; [`resolve_limit_with_cap`] is
+/// the one the server uses.
 pub fn resolve_limit(requested: Option<u32>) -> usize {
+    resolve_limit_with_cap(requested, HARD_LIMIT)
+}
+
+/// Clamp a caller-supplied `limit` to `[1, cap]`, where `cap` is the operator's
+/// ceiling rather than a build-time constant.
+///
+/// `DEFAULT_LIMIT` is itself bounded by `cap`. Without that, an operator who
+/// sets a cap of 10 to protect a small context window would still receive 50
+/// rows whenever a caller omitted `limit` -- the setting would appear to work
+/// and silently not, which is the failure mode that makes a knob worse than no
+/// knob.
+pub fn resolve_limit_with_cap(requested: Option<u32>, cap: usize) -> usize {
+    let cap = cap.max(1);
     match requested {
-        None | Some(0) => DEFAULT_LIMIT,
-        Some(n) => (n as usize).min(HARD_LIMIT),
+        None | Some(0) => DEFAULT_LIMIT.min(cap),
+        Some(n) => (n as usize).min(cap),
     }
 }
 

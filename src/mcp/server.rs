@@ -39,7 +39,7 @@ use crate::security::alerting::AlertEngine;
 use crate::sip::dialog_store::DialogStore;
 use crate::sip::dsl::{FilterExpr, expand_alias};
 
-use super::shape::{HARD_LIMIT, resolve_limit};
+use super::shape::{HARD_LIMIT, resolve_limit_with_cap};
 
 /// Holds the shared analysis state and the rmcp tool router.
 #[derive(Clone)]
@@ -56,6 +56,14 @@ pub struct SipnabMcp {
     /// `source_exhausted` so pollers know no more updates will come. When
     /// None (no capture owner attached), it reads as not exhausted.
     source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Ceiling on rows in one list-style response, from `--mcp-max-rows` or
+    /// `[limits] mcp_max_rows`. Defaults to [`HARD_LIMIT`].
+    ///
+    /// Carried on the server rather than read from a constant at each call
+    /// site, because a value that exists only in a signature is not a setting:
+    /// six detectors in this tree accept a threshold no production caller ever
+    /// supplies, and this must not become the seventh.
+    row_cap: usize,
     /// Directory the file tools are confined to. `None` disables them.
     file_root: Option<std::path::PathBuf>,
     /// Capture files and directories this server is reading, which the file
@@ -203,6 +211,7 @@ impl SipnabMcp {
             stream_store,
             alert_engine: None,
             source_exhausted: None,
+            row_cap: HARD_LIMIT,
             file_root: None,
             protected_inputs: Default::default(),
             allow_shutdown: false,
@@ -223,6 +232,17 @@ impl SipnabMcp {
     /// immediately is refused, not queued. See the `call_limiter` field.
     pub fn with_max_concurrent(mut self, max: usize) -> Self {
         self.call_limiter = (max > 0).then(|| Arc::new(tokio::sync::Semaphore::new(max)));
+        self
+    }
+
+    /// Cap the rows any list-style tool returns in one response.
+    ///
+    /// `0` is treated as the default rather than as "unlimited": an unbounded
+    /// response is not a thing an operator can want by accident, and the
+    /// config layer already rejects 0 by name.
+    #[must_use]
+    pub fn with_row_cap(mut self, rows: usize) -> Self {
+        self.row_cap = if rows == 0 { HARD_LIMIT } else { rows };
         self
     }
 
@@ -2149,7 +2169,7 @@ impl SipnabMcp {
         &self,
         params: &RtpStatsParams,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let limit = resolve_limit(params.limit);
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
@@ -2260,7 +2280,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ListDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let limit = resolve_limit(params.limit);
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = Self::compile_filter(params.filter.as_deref())?;
         let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams, capture| {
             filter
@@ -2384,7 +2404,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<FindProblemsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let limit = resolve_limit(params.limit);
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let kinds = params.kinds.unwrap_or_else(|| vec!["problems".to_string()]);
 
         // Compile each kind individually so a bad alias is reported by name.
@@ -2445,7 +2465,7 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let max = match params.max_messages {
             None | Some(0) => 100usize,
-            Some(n) => (n as usize).min(HARD_LIMIT),
+            Some(n) => (n as usize).min(self.row_cap),
         };
         let cursor = params.cursor.unwrap_or(0) as usize;
 
@@ -2703,7 +2723,7 @@ impl SipnabMcp {
                 None,
             ));
         }
-        let limit = resolve_limit(params.limit);
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         // Lower-case the needle ONCE (ASCII-fold, matching the TUI search
         // paths in `tui::msg_raw` / `tui::stream_list`). Each message is then
         // scanned field-by-field with a zero-allocation case-insensitive
@@ -2788,7 +2808,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<TailDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let limit = resolve_limit(params.limit);
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         // The cursor is `<RFC 3339>` (legacy) or `<RFC 3339>|<Call-ID>`
         // (compound, what next_cursor emits) — parsed by the shared helper in
         // `shape`, which the paged list tools use too. One implementation of
@@ -2880,7 +2900,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<SecurityFindingsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let limit = resolve_limit(params.limit);
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let since: Option<chrono::DateTime<chrono::Utc>> = match params.since {
             Some(s) => match chrono::DateTime::parse_from_rfc3339(&s) {
                 Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
@@ -3275,7 +3295,7 @@ impl SipnabMcp {
                 None,
             ));
         }
-        let limit = crate::mcp::shape::resolve_limit(params.limit);
+        let limit = crate::mcp::shape::resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = Self::compile_filter(params.filter.as_deref())?;
 
         let payload = {
@@ -4414,7 +4434,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<FindCorrelatedParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let limit = resolve_limit(params.limit);
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
 
         // Lock discipline: capture first, then the stores, copy out, drop.
         let payload = {
@@ -6072,6 +6092,36 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&text_of(&result)).expect("valid JSON response");
         assert_eq!(json["source_exhausted"], false);
+    }
+
+    /// The configured cap REACHES a real response, not just the helper.
+    ///
+    /// This is the test that separates a setting from a signature. Six
+    /// thresholds in this tree are accepted as parameters, documented as
+    /// tunable, and supplied by no production caller — `RegFloodDetector::new(0)`,
+    /// `FraudDetector::new(None)`, every `AsymmetryThresholds::default()`. Each
+    /// would pass a unit test of its resolver and change nothing a user sees.
+    /// So: drive `list_dialogs` on a server built with a small cap and count
+    /// the rows that come back.
+    #[tokio::test]
+    async fn the_row_cap_bounds_an_actual_list_response() {
+        let server =
+            server_with_simultaneous_dialogs(&["a@h", "b@h", "c@h", "d@h", "e@h"]).with_row_cap(2);
+        // Ask for far more than the cap allows.
+        let v = page(&server, 100, None).await;
+        let rows = v["dialogs"].as_array().expect("dialogs array").len();
+        assert_eq!(
+            rows, 2,
+            "with_row_cap(2) must bound the response; got {rows} rows, so the \
+             cap is a field nothing reads"
+        );
+
+        // And a cap ABOVE the old constant must be honoured, or the setting can
+        // only ever tighten — half a knob.
+        let wide =
+            server_with_simultaneous_dialogs(&["a@h", "b@h", "c@h", "d@h", "e@h"]).with_row_cap(4);
+        let v = page(&wide, 100, None).await;
+        assert_eq!(v["dialogs"].as_array().unwrap().len(), 4);
     }
 
     /// An empty store yields an empty JSON array, not an error.

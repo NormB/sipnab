@@ -318,7 +318,13 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 ## Tool reference
 
 The v0.5 sipnab MCP tool surface. No tool edits the analysis in place, and
-every response carries a default ceiling (HARD_LIMIT = 1000). One tool replaces
+every response carries a ceiling. That ceiling defaults to 1000 rows and is an
+operator setting, not a build-time fact: `--mcp-max-rows N`, or `[limits]
+mcp_max_rows` in the config file, with the flag winning. The right value
+belongs to the consumer — a model with a small context window wants far fewer,
+a batch client piping to a file wants far more. Note this is a DIFFERENT limit
+from `dialog_limit`, which bounds dialogs tracked over the whole run and
+defaults 100x higher. One tool replaces
 the analysis outright — `open_capture`, off unless you enable it — and it mints
 a new capture identity so the replacement cannot reach a consumer as an
 ordinary update.
