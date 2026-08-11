@@ -46,18 +46,28 @@ retry_wait_time = 3
 # 429 is rate limiting, not a dead link -- GitHub and crates.io both do it under
 # CI concurrency. 206 is partial content, which some CDNs answer HEAD with.
 #
-# 503 joins them, and the reason is the same one 429 is here for. On 2026-08-11
-# a run checked 5,914 links, 5,785 passed, and the single failure was
-# github.com answering 503 for one of ITS OWN blob URLs. The link was valid
-# then and is valid now. lychee's retry does not rescue it: `max_retries`
-# governs transport-level failures, while a status in neither `accept` nor the
-# retryable set is a verdict, and only 429 is retried among rejected codes.
+# 502, 503 and 504 join them, and the reason is the same one 429 is here for.
+# On 2026-08-11 a run checked 5,914 links, 5,785 passed, and the single failure
+# was github.com answering 503 for one of ITS OWN blob URLs. Later the SAME DAY,
+# on the 0.5.93 release commit, github.com answered 504 Gateway Timeout for two
+# more of its own blob URLs (src/error.rs, with and without a #L fragment) and
+# turned main red again — after 503 had been handled. Every one of those links
+# was valid before, during and after. lychee's retry does not rescue them:
+# `max_retries` governs transport-level failures, while a status in neither
+# `accept` nor the retryable set is a verdict, and only 429 is retried among
+# rejected codes.
 #
-# The risk of accepting it is small and worth naming: a permanently 503-ing
-# host would pass. That is a service being down, not a link being wrong, and
-# this gate exists to catch the second. A dead link answers 404, which is still
-# rejected.
-accept = [200, 206, 429, 503]
+# 502 is listed with them though it has not been observed here. All three are
+# one condition — an intermediary could not get an answer from the origin —
+# and admitting them one funeral at a time means each new variant costs another
+# red main and another release held up. The class is what is being accepted,
+# not three separate incidents.
+#
+# The risk is small and worth naming: a permanently 5xx-ing host would pass.
+# That is a service being down, not a link being wrong, and this gate exists to
+# catch the second. A dead link answers 404, which is still rejected, as is 500
+# — an origin that answered and failed is not a gateway that never reached it.
+accept = [200, 206, 429, 502, 503, 504]
 
 exclude = [
   # Zola internal links -- see above. Matched on the resolved path because
