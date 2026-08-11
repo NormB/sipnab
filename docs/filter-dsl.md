@@ -70,16 +70,26 @@ All 30 addressable fields, organized by type.
 | `pdd` | Post-dial delay (time to first ringing/response) | seconds (float) |
 | `setup_time` | Call setup time (INVITE to 200 OK) | seconds (float) |
 | `retransmits` | Total retransmit count in dialog | count |
-| `rtp.mos` | Mean Opinion Score (worst across streams, E-model R-factor approximation) | 1.0 - 5.0, **0.0 with no RTP** |
-| `rtp.jitter` | Jitter (worst/highest across streams) | milliseconds |
-| `rtp.loss` | Packet loss (worst/highest across streams) | percentage (0-100) |
-| `rtp.packets` | Total RTP packets (sum across all streams) | count |
+| `rtp.mos` | Mean Opinion Score (worst across streams, E-model R-factor approximation) | 1.0 - 5.0, unknown with no RTP |
+| `rtp.jitter` | Jitter (worst/highest across streams) | milliseconds, unknown with no RTP |
+| `rtp.loss` | Packet loss (worst/highest across streams) | percentage (0-100), unknown with no RTP |
+| `rtp.packets` | Total RTP packets (sum across all streams) | count (`0` is a real count, never unknown) |
 
-> **A dialog with no RTP reads as zero, not as "unknown".** Every `rtp.*` field
-> falls back to `0` when the dialog has no stream, and a scored stream
-> never goes below `1.0` — so `rtp.mos < 3.0` selects every call that carries no
-> media at all, which on a signalling-heavy capture is nearly all of them
-> (2292 of 2311 dialogs on one real trunk capture; 2 with `AND rtp.packets > 0`).
+> **An unmeasured value matches no comparison.** `pdd`, `setup_time`,
+> `rtp.mos`, `rtp.jitter` and `rtp.loss` are unknown when the capture holds
+> nothing to measure them from — no RTP for the media fields, no captured
+> INVITE or 200 OK for the timing ones. An unknown matches no numeric operator,
+> including `!=`: it is not "different from 3.0", it is unknown. This is the
+> rule SQL uses for `NULL`, for the same reason.
+>
+> Until 0.5.94 these read as `0`, and because `0` sits below every threshold
+> anyone would type, `rtp.mos < 3.0` selected every call carrying no media at
+> all — 2292 of 2311 dialogs on one real trunk capture, against 2 genuine ones
+> with `AND rtp.packets > 0`. If you have a saved filter that leans on that,
+> the `AND rtp.packets > 0` guard is now redundant rather than wrong.
+>
+> To select the calls that carry no media, ask for that directly: `rtp.packets
+> == 0` is a real count of zero, and `no_media` is the diagnosis itself.
 > **Pair any `rtp.*` threshold with `rtp.packets > 0`** to ask about calls that
 > actually had media.
 

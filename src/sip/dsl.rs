@@ -1231,32 +1231,24 @@ fn eval_compare(
         Field::MsgCount => compare_num(dialog.messages.len() as f64, op, value),
         Field::Pdd => {
             // PDD in seconds (convert from milliseconds)
-            let pdd = dialog
-                .timing
-                .pdd_ms()
-                .map(|ms| ms as f64 / 1000.0)
-                .unwrap_or(0.0);
-            compare_num(pdd, op, value)
+            let pdd = dialog.timing.pdd_ms().map(|ms| ms as f64 / 1000.0);
+            compare_opt_num(pdd, op, value)
         }
         Field::SetupTime => {
-            let setup = dialog
-                .timing
-                .setup_ms()
-                .map(|ms| ms as f64 / 1000.0)
-                .unwrap_or(0.0);
-            compare_num(setup, op, value)
+            let setup = dialog.timing.setup_ms().map(|ms| ms as f64 / 1000.0);
+            compare_opt_num(setup, op, value)
         }
         Field::Retransmits => compare_num(f64::from(dialog.timing.total_retransmits()), op, value),
         Field::RtpMos => {
             // Use worst (lowest) MOS across streams for filtering
             // MOS is approximated from jitter and loss using E-model R-factor
             let mos = streams.iter().map(|s| stream_mos(s)).reduce(f64::min);
-            compare_num(mos.unwrap_or(0.0), op, value)
+            compare_opt_num(mos, op, value)
         }
         Field::RtpJitter => {
             // Worst (highest) jitter across streams
             let jitter = streams.iter().map(|s| s.jitter).reduce(f64::max);
-            compare_num(jitter.unwrap_or(0.0), op, value)
+            compare_opt_num(jitter, op, value)
         }
         Field::RtpLoss => {
             // Worst (highest) loss percentage across streams
@@ -1271,7 +1263,7 @@ fn eval_compare(
                     }
                 })
                 .reduce(f64::max);
-            compare_num(loss.unwrap_or(0.0), op, value)
+            compare_opt_num(loss, op, value)
         }
         Field::RtpPackets => {
             let total: u64 = streams.iter().map(|s| s.packet_count).sum();
@@ -1349,6 +1341,28 @@ fn compare_num(field_val: f64, op: &Operator, value: &Value) -> bool {
         Operator::Le => field_val <= rhs,
         Operator::Ge => field_val >= rhs,
         Operator::Regex => false, // regex not applicable to numbers
+    }
+}
+
+/// Compare an OPTIONAL numeric field: an unknown matches NO comparison.
+///
+/// The alternative — substituting 0.0 for "never measured" — is what made
+/// `rtp.mos < 3.0` select every dialog carrying no RTP at all, because 0.0 is
+/// below every threshold anyone would type. A REGISTER capture with zero
+/// streams was reported as the worst audio in the file.
+///
+/// `!=` returns false too, and that is the half worth stating: an unknown is
+/// not "different from 3.0", it is unknown. Admitting it to `!=` would just
+/// move the wrong answer to the operator who writes the negation. This is the
+/// rule SQL uses for NULL, for the same reason.
+///
+/// Selecting the unmeasured is still possible, and with fields that mean it:
+/// `rtp.packets == 0` is a real count rather than an absence, and `no_media`
+/// is the diagnosis itself.
+fn compare_opt_num(field_val: Option<f64>, op: &Operator, value: &Value) -> bool {
+    match field_val {
+        Some(v) => compare_num(v, op, value),
+        None => false,
     }
 }
 
@@ -1510,6 +1524,126 @@ mod tests {
     }
 
     // ── Basic field matching ────────────────────────────────────────
+
+    // ── Unknown values (#90) ────────────────────────────────────────
+
+    /// A dialog carrying no RTP does not match a MOS threshold.
+    ///
+    /// The reported symptom, in the operator's words: the TUI's F7 filter told
+    /// them every call had bad audio. `rtp.mos < 3.0` substituted 0.0 for
+    /// "never measured", and 0.0 is below every threshold anyone would type,
+    /// so REGISTERs, OPTIONS and failed INVITEs — none of which carry audio to
+    /// judge — were returned as the worst-sounding calls in the capture.
+    ///
+    /// Reproduced against a real file before this test existed:
+    /// `sipnab -N -I tests/pcap-samples/sip-register.pcap --json-dialogs
+    /// --filter 'rtp.mos < 3.0'` returned the one dialog in a capture with
+    /// zero RTP streams.
+    #[test]
+    fn a_dialog_with_no_rtp_does_not_match_a_mos_threshold() {
+        let dialog = make_dialog("1001", "2002", "REGISTER");
+        let filter = FilterExpr::parse("rtp.mos < 3.0").expect("should parse");
+        assert!(
+            !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+            "a dialog with no RTP has no MOS; it is not a bad-audio call"
+        );
+    }
+
+    /// The same unknown does not match `!=` either.
+    ///
+    /// The half a partial fix gets wrong. An unknown is not "different from
+    /// 3.0", it is unknown — admitting it here would move the same wrong
+    /// answer to whoever writes the negation, which is where a triage filter
+    /// usually ends up. SQL's NULL rule, for SQL's reason.
+    #[test]
+    fn an_unknown_mos_is_not_unequal_either() {
+        let dialog = make_dialog("1001", "2002", "REGISTER");
+        for expr in ["rtp.mos != 3.0", "rtp.mos > 3.0", "rtp.mos == 0.0"] {
+            let filter = FilterExpr::parse(expr).expect("should parse");
+            assert!(
+                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+                "`{expr}` must not match a dialog whose MOS was never measured"
+            );
+        }
+    }
+
+    /// Jitter and loss are unknown for the same dialog, and behave the same.
+    ///
+    /// Fixing `rtp.mos` alone would leave the identical trap in the two fields
+    /// beside it, which is why the rule lives in one comparison helper.
+    #[test]
+    fn unknown_jitter_and_loss_match_no_threshold() {
+        let dialog = make_dialog("1001", "2002", "REGISTER");
+        for expr in ["rtp.jitter < 30", "rtp.loss < 5", "rtp.jitter != 1"] {
+            let filter = FilterExpr::parse(expr).expect("should parse");
+            assert!(
+                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+                "`{expr}` must not match a dialog with no RTP"
+            );
+        }
+    }
+
+    /// A dialog that HAS RTP still matches on its measured values.
+    ///
+    /// Anti-vacuity. A helper that returned false for everything would satisfy
+    /// every assertion above.
+    #[test]
+    fn a_dialog_with_rtp_still_matches_on_its_measured_values() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+        let stream = make_rtp_stream(false);
+        let streams = [&stream];
+        let filter = FilterExpr::parse("rtp.mos > 0").expect("should parse");
+        assert!(
+            filter.matches_dialog(&dialog, &streams, CaptureMedia::Absent),
+            "a measured MOS must still compare; the rule is about unknowns only"
+        );
+        let filter = FilterExpr::parse("rtp.jitter >= 0").expect("should parse");
+        assert!(
+            filter.matches_dialog(&dialog, &streams, CaptureMedia::Absent),
+            "a measured jitter must still compare"
+        );
+    }
+
+    /// An untimed call does not match a setup-time or PDD threshold.
+    ///
+    /// Same defect, on the fields #88 just made honest: a capture that opened
+    /// mid-call now correctly reports an unknown setup time, and `setup_time
+    /// < 1` must not then select it as the fastest call in the file. Anyone
+    /// computing a p95 from that filter is averaging in calls that were never
+    /// timed.
+    #[test]
+    fn an_untimed_call_matches_no_setup_or_pdd_threshold() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+        for expr in ["setup_time < 1", "pdd < 1", "setup_time != 9"] {
+            let filter = FilterExpr::parse(expr).expect("should parse");
+            assert!(
+                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+                "`{expr}` must not match a dialog that was never timed"
+            );
+        }
+    }
+
+    /// A timed call still matches on its measured timing.
+    ///
+    /// The anti-vacuity partner of the test above.
+    #[test]
+    fn a_timed_call_still_matches_on_its_measured_timing() {
+        let dialog = make_dialog_with_timing(1500);
+        let filter = FilterExpr::parse("pdd < 2").expect("should parse");
+        assert!(
+            filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+            "a measured 1.5 s post-dial delay must still match `pdd < 2`"
+        );
+
+        let mut answered = make_dialog("1001", "2002", "INVITE");
+        answered.timing.invite_sent = Some(base_ts());
+        answered.timing.answered_at = Some(base_ts() + TimeDelta::milliseconds(2500));
+        let filter = FilterExpr::parse("setup_time > 2").expect("should parse");
+        assert!(
+            filter.matches_dialog(&answered, &[], CaptureMedia::Absent),
+            "a measured 2.5 s setup must still match `setup_time > 2`"
+        );
+    }
 
     /// `from.user ==` matches a dialog with that exact From user.
     #[test]

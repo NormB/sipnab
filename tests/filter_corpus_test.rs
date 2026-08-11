@@ -270,12 +270,26 @@ const CASES: &[Case] = &[
                 .is_some_and(|s| s.iter().any(|s| s["codec"] == "PCMU"))
         },
     },
-    // `rtp.mos` is the worst MOS across the dialog's streams, and
-    // `approximate_mos` floors a real stream at 1.0 — so anything BELOW 1.0 is
-    // not a measurement, it is the `unwrap_or(0.0)` default for a dialog with
-    // no RTP at all. Documented as a 1.0-5.0 field; this pins the gap.
+    // `rtp.mos` is the worst MOS across the dialog's streams, and a scored
+    // stream is floored at 1.0 — so nothing can sit below 1.0. A dialog with no
+    // RTP has no MOS at all, and an unknown matches no comparison, so this
+    // selects NOTHING on any capture.
+    //
+    // This case used to expect the opposite: every dialog with no streams,
+    // because `unwrap_or(0.0)` substituted 0.0 for "never measured" and 0.0 is
+    // below 1.0. Its comment called that "the gap" and pinned it rather than
+    // fixing it, which is how `rtp.mos < 3.0` came to report that every call in
+    // a capture had bad audio. Pinning a defect keeps it.
     Case {
         expr: "rtp.mos < 1.0",
+        want: |_| false,
+    },
+    // The replacement idiom, pinned on real traffic: asking for the calls that
+    // carry no media is a question about PACKETS, and 0 there is a real count
+    // rather than an absence. This is what a filter that used to lean on
+    // `rtp.mos < 1.0` should say instead.
+    Case {
+        expr: "rtp.packets == 0",
         want: |d| d["streams"].as_array().is_some_and(|s| s.is_empty()),
     },
 ];

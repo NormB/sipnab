@@ -12,6 +12,29 @@ entry that carries them.
 
 ### Fixed
 
+- **`rtp.mos < 3.0` reported that every call had bad audio.** A dialog with no
+  RTP has no MOS, but the filter substituted `0.0` for "never measured" — and
+  `0.0` is below every threshold anyone would type. REGISTERs, OPTIONS and
+  failed INVITEs, none of which carry audio to judge, came back as the
+  worst-sounding calls in the capture: 2292 of 2311 dialogs on one real trunk
+  capture, against 2 genuine ones.
+
+  Five fields did this — `pdd`, `setup_time`, `rtp.mos`, `rtp.jitter` and
+  `rtp.loss`. An unknown now matches no numeric comparison, `!=` included: it
+  is not "different from 3.0", it is unknown, which is the rule SQL uses for
+  `NULL`. Fixing only `rtp.mos` would have left the identical trap in four
+  fields beside it, so the rule lives in one comparison helper.
+
+  Nothing is lost by it. To select the calls carrying no media, ask for that
+  directly — `rtp.packets == 0` is a real count of zero, and `no_media` is the
+  diagnosis itself. A saved filter carrying `AND rtp.packets > 0` as a guard is
+  now redundant rather than wrong.
+
+  This was one line of code behind three reports: the TUI's F7 filter, the same
+  filter in the browser analyzer, and a `setup_time` p95 quietly padded with
+  calls that were never timed. The browser build corrects on its next CI build,
+  which now happens every push.
+
 - **A call report showed `Setup: -27.98s`.** A negative duration is not a
   measurement. The capture had opened after the call was already up, so the
   dialog's first message was the 200 OK of an INVITE transaction that had
