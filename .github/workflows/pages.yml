@@ -22,6 +22,15 @@ on:
       # ops/cloudflare/refresh_csp_hashes.py: the csp job runs it against the
       # deployed artifact, so a change to the checker must re-run the check.
       - 'ops/cloudflare/**'
+      # src/ and Cargo.lock: this workflow now BUILDS the browser analyzer from
+      # them. Without these the analysis code could change without the site
+      # rebuilding — which is exactly what happened: the published WASM sat at
+      # 0.5.80 for eleven releases while dialog_store.rs alone gained 918 lines.
+      - 'src/**'
+      - 'Cargo.lock'
+      # scripts/check-wasm-exports.py: the analyzer build below runs it, so a
+      # change to the check must re-run the check.
+      - 'scripts/check-wasm-exports.py'
   workflow_dispatch:
 
 # Allow the GITHUB_TOKEN to deploy to Pages and verify the deployment origin;
@@ -41,10 +50,15 @@ jobs:
   build:
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Observed: 0.2 min, but it holds the non-superseding `pages` group.
-    timeout-minutes: 20
+    # Raised 20 -> 30: this job now compiles the crate for wasm32 on a cold
+    # cache. A warm cache is ~1 minute; the ceiling is for the cold case.
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     env:
       ZOLA_VERSION: '0.19.2'
+      # Pinned like ZOLA_VERSION. Installed with `cargo install --locked`, so
+      # the version plus Cargo.lock fixes what gets built.
+      WASM_PACK_VERSION: '0.15.0'
       # A version tag names a release; it does not fix the bytes behind it, and a
       # release asset can be replaced after publication. Every action in this repo
       # is pinned by commit SHA for that reason, so the two binaries fetched by
@@ -78,6 +92,51 @@ jobs:
           sed -i -E "s/^version = \".*\"/version = \"$V\"/" website/config.toml
           echo "Site version set to $V"
           grep -E '^version = ' website/config.toml
+
+      # THE COMMITTED BUNDLE IS NO LONGER WHAT SHIPS.
+      #
+      # `zola build` copies static/ verbatim, so before this step the published
+      # analyzer was whatever binary happened to be committed. It was last
+      # rebuilt for 0.5.80 and served eleven releases of stale analysis while
+      # the page badge — synced from Cargo.toml two steps above — read current.
+      #
+      # The two pre-commit guards could not catch it. One refuses a commit that
+      # stages src/wasm.rs without a rebuilt bundle; the other checks the JS
+      # exports. Both stayed green because src/wasm.rs had no commits and the
+      # export list never changed: the interface held still while the
+      # implementation behind it moved. Building here removes the class of bug
+      # rather than the instance — a build product that is generated cannot go
+      # stale.
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/wasm-pack
+            target
+          key: pages-wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: pages-wasm-${{ runner.os }}-
+      - name: Install wasm-pack
+        run: |
+          set -euo pipefail
+          # Pinned and installed from source rather than curl|sh: the version
+          # is reproducible and there is no unpinned script to trust.
+          if [ "$(wasm-pack --version 2>/dev/null || true)" != "wasm-pack ${WASM_PACK_VERSION}" ]; then
+            cargo install wasm-pack --locked --version "${WASM_PACK_VERSION}"
+          fi
+          wasm-pack --version
+      - name: Build the browser analyzer
+        run: |
+          set -euo pipefail
+          wasm-pack build --target web --out-dir website/static/wasm \
+            --no-typescript -- --no-default-features --features wasm
+          # The exports the site calls must still exist; the same check the
+          # pre-commit hook runs, applied to the artifact actually deployed.
+          python3 scripts/check-wasm-exports.py
+          ls -l website/static/wasm/sipnab_bg.wasm
 
       - name: Build site
         working-directory: website
