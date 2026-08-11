@@ -176,7 +176,7 @@ ring / teardown milliseconds, retransmit counts), `sdp_timeline`,
 `streams` with jitter and loss, and the `diagnosis` flags (`one_way_audio`,
 `nat_mismatch`, `no_media`) plus `hints` — is one shape produced by a single
 serializer. One place documents it, with a full worked example, under
-[`GET /v1/dialogs/{call_id}` in the REST API reference](@/docs/api.md#get-v1-dialogs-1).
+[`GET /v1/dialogs/{call_id}` in the REST API reference](@/docs/api.md#get-v1-dialogs-call-id).
 
 ### One object per dialog
 

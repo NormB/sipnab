@@ -149,6 +149,79 @@ fn anchor_candidates(rel: impl AsRef<Path>) -> BTreeSet<String> {
     out
 }
 
+/// No page may contain two headings that slugify to the same anchor.
+///
+/// A duplicate does not fail to render — both GitHub and Zola quietly append
+/// `-1`, `-2` in DOCUMENT ORDER — which is worse than a dangling link. The
+/// anchor resolves, so nothing complains, and it points at whichever heading
+/// happens to be second today. Insert a heading above and every saved bookmark
+/// silently lands somewhere else.
+///
+/// Found on the REST API page: `### GET /v1/dialogs/{call_id}` collided with
+/// `### GET /v1/dialogs`, because Zola treats a TRAILING `{...}` as a
+/// heading-attribute block and strips it before slugifying. Two unrelated
+/// endpoints shared `get-v1-dialogs`, the second became `get-v1-dialogs-1`,
+/// and docs/output-formats.md linked straight at it.
+///
+/// Checked under every slug rule this file models, because a collision under
+/// ANY renderer is a broken bookmark for the readers using it.
+#[test]
+fn no_page_mints_a_positional_anchor() {
+    let mut clashes = Vec::new();
+    let mut pages = 0usize;
+
+    for rel in md_files_recursive("docs")
+        .into_iter()
+        .chain(md_files_recursive("website/content/docs"))
+    {
+        let hs = headings(&rel);
+        if hs.is_empty() {
+            continue;
+        }
+        pages += 1;
+        for (name, slugger) in [
+            ("github", slug_github as fn(&str) -> String),
+            ("spec", slug_spec),
+            ("zola", slug_zola),
+        ] {
+            let mut seen: BTreeMap<String, String> = BTreeMap::new();
+            for h in &hs {
+                let slug = slugger(h);
+                if slug.is_empty() {
+                    continue;
+                }
+                if let Some(first) = seen.get(&slug) {
+                    clashes.push(format!(
+                        "{}: under {name} slugs, \"{h}\" collides with \"{first}\" \
+                         (both -> #{slug}), so the second gets a document-order \
+                         -N suffix",
+                        rel.display()
+                    ));
+                } else {
+                    seen.insert(slug, h.clone());
+                }
+            }
+        }
+    }
+
+    // A walk that found no headings would report perfect uniqueness.
+    assert!(
+        pages >= 10,
+        "only {pages} pages had headings — the walk or the heading regex broke, \
+         so this gate checked almost nothing"
+    );
+
+    assert!(
+        clashes.is_empty(),
+        "headings that slugify to the same anchor:\n  {}\n\n\
+         Rename one so each is unique. Avoid ending a heading with `{{param}}`: \
+         Zola strips a trailing brace block as a heading attribute, which is how \
+         two endpoints came to share one anchor. `:param` slugifies normally on \
+         every renderer.",
+        clashes.join("\n  ")
+    );
+}
+
 /// Record a problem if `anchor` matches no anchor any renderer would emit
 /// for `target_rel`.
 ///
@@ -797,7 +870,7 @@ fn no_references_to_merged_away_mcp_pages() {
 // diverges from GitHub/Zola behavior fails loudly, not silently).
 // ---------------------------------------------------------------------------
 
-/// The three slug styles reproduce anchors verified against real GitHub/Zola output, including -1 dedup suffixes.
+/// The three slug styles reproduce anchors verified against real GitHub/Zola output.
 #[test]
 fn slugify_matches_known_rendered_anchors() {
     // Backticked code heading -> backticks stripped, underscore kept.
@@ -816,15 +889,30 @@ fn slugify_matches_known_rendered_anchors() {
         "get-v1-dialogs-call-id-report"
     );
     assert_eq!(slug_zola("GET /v1/dialogs"), "get-v1-dialogs");
-    // Duplicate headings get -1 suffixes.
+    // The rule above is why brace params used to collide: under Zola,
+    // `GET /v1/dialogs/{call_id}` rendered as #get-v1-dialogs -- the same
+    // anchor as plain `GET /v1/dialogs` -- so the second got a document-order
+    // -1 suffix that moved whenever an endpoint was inserted above it.
+    //
+    // api.md now writes path params as `:call_id`, so each endpoint owns a
+    // distinct anchor that survives reordering. Collisions are caught
+    // repo-wide by no_page_mints_a_positional_anchor; this pins the three
+    // endpoints an operator is most likely to bookmark, and the absence of
+    // the specific suffix that used to appear.
     let anchors = anchor_candidates(Path::new("website/content/docs/api.md"));
+    for expected in [
+        "get-v1-dialogs",
+        "get-v1-dialogs-call-id",
+        "get-v1-dialogs-call-id-report",
+    ] {
+        assert!(
+            anchors.contains(expected),
+            "api.md no longer anchors {expected}: {anchors:?}"
+        );
+    }
     assert!(
-        anchors.contains("get-v1-dialogs"),
-        "api.md anchors: {anchors:?}"
-    );
-    assert!(
-        anchors.contains("get-v1-dialogs-1"),
-        "dedup -1 suffix missing: {anchors:?}"
+        !anchors.contains("get-v1-dialogs-1"),
+        "api.md is minting a positional dedup anchor again: {anchors:?}"
     );
 }
 

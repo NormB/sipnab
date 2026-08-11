@@ -208,7 +208,7 @@ map's file list honest (it already has the machinery).
 
 ## 3. WS1 — Single per-packet pipeline  *(architecture, HIGHEST leverage)*
 
-### Problem
+### WS1 — Problem
 
 The routing sequence "WebSocket unwrap → SIP parse → dialog-store write →
 SDP-to-stream link → RTCP check → RTP parse → RTP heuristic" exists in four
@@ -227,7 +227,7 @@ pipeline mirrors"). The TUI copy has already drifted: private
 SDP-link 4-tuple, no `PipelineOptions`. Every protocol change is a 3–4-site
 coordinated edit; this is the single largest maintenance liability found.
 
-### Design
+### WS1 — Design
 
 Make `pipeline::process_packet` the only protocol router. Model the mode
 differences as injected hooks, not copies:
@@ -254,7 +254,7 @@ pub trait PipelineHooks {
   `process_packet` parses SDP once and passes `Option<&SdpSession>` into
   `process_message`/`track_sdp`.
 
-### TDD / migration order
+### WS1 — TDD / migration order
 
 1. Characterization first: a golden test that runs the *same* pcap fixture
    through batch mode and through `pipeline::process_packet` in a loop and
@@ -267,7 +267,7 @@ pub trait PipelineHooks {
    duplicated SDP-link block.
 4. Port `parallel.rs` workers.
 
-### Acceptance
+### WS1 — Acceptance
 
 - `grep -n "is_sip_message\|parse_sip_bytes\|link_to_dialog" src/main.rs src/tui/events.rs`
   → no protocol-routing hits outside `pipeline.rs`.
@@ -282,7 +282,7 @@ test and the existing 755 integration tests.
 
 ## 4. WS2 — Decompose `main.rs` into `src/app/`  *(architecture)*
 
-### Problem
+### WS2 — Problem
 
 `main.rs` is 3,343 lines: `run_batch_mode` 724 ln (`:1173`), `main` 641 ln
 (`:107`), `run_tui_mode` 264 ln (`:905`), plus token minting, three server
@@ -293,7 +293,7 @@ codebase's 167 `#[cfg(feature)]` sites live in this one file. The numbered
 step comments run `// 1.`–`// 18.` *across two functions* — one giant script
 cut in half, not decomposed. All of it is untestable except through the CLI.
 
-### Design
+### WS2 — Design
 
 Create `src/app/` in the library (unit-testable, unlike `main.rs`):
 
@@ -327,7 +327,7 @@ Same facade treatment for the other two cfg hotspots:
 Target: total inline `#[cfg(feature` sites ≤ 60 (from 167), with `main.rs`/
 `app/` at ~0.
 
-### TDD / acceptance
+### WS2 — TDD / acceptance
 
 - Bootstrap decisions get direct unit tests (arg/config matrix → `RunPlan`),
   replacing CLI-only coverage; trycmd goldens stay green unchanged.
@@ -343,7 +343,7 @@ behavior.
 
 ## 5. WS3 — One projection layer for dialog/stream summaries  *(architecture + shipped-drift fix)*
 
-### Problem
+### WS3 — Problem
 
 Five implementations of "dialog summary", already divergent on the wire:
 
@@ -361,7 +361,7 @@ The "gather dialog → filter streams by `associated_dialog` → `diagnose_media
 sites, and the `.filter(|s| s.associated_dialog.as_deref() == Some(...))`
 line occurs at 10 non-test sites — each duplicating lock-ordering decisions.
 
-### Design
+### WS3 — Design
 
 - New `src/report/` (or a `output/model.rs`): canonical
   `DialogSummary::from(&SipDialog)`, `StreamSummary::from(&RtpStream)`,
@@ -385,7 +385,7 @@ line occurs at 10 non-test sites — each duplicating lock-ordering decisions.
   `as_str()` everywhere (the `{:?}` Debug form on the MCP wire is a bug in
   all but name).
 
-### TDD / acceptance
+### WS3 — TDD / acceptance
 
 - Failing test first: extend `tests/json_schema_test.rs` with a cross-surface
   consistency test — the same fixture rendered via CLI JSON, API, MCP, and

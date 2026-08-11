@@ -183,7 +183,7 @@ if first_cid != cur_cid {
 }
 ```
 
-### What goes wrong if someone builds it anyway
+### What goes wrong if someone builds multi-session comparison anyway
 
 Two failure modes, in order of how quickly they bite.
 
@@ -204,7 +204,7 @@ sitting on top of that would render one row and report the *merged* verdict as
 if it were both captures agreeing. The disagreement it was built to find is the
 thing the store destroyed before the view ran.
 
-### Decision, and what would change it
+### Decision on multi-session comparison, and what would change it
 
 **Re-scoped, not built as specified. The underlying want — "these two captures should be
 telling the same story and they are not" — is real and is not addressed by
@@ -394,7 +394,7 @@ confined to `--mcp-file-root` by `resolve_in_root`
 second call, only having named the discard — a process stop. That is a
 qualitative gap, not a matter of degree.
 
-### What goes wrong if someone builds it anyway
+### What goes wrong if someone builds write-back anyway
 
 The plausible requests here are the mild-sounding ones: tag a dialog,
 acknowledge a finding, name a host, set a filter. Each is individually harmless
@@ -428,7 +428,7 @@ read tool, or as a CLI flag at startup. The mutation buys convenience and
 spends the one property that makes an agent-driven surface safe to point at
 production.
 
-### Decision, and what would change it
+### Decision on write-back, and what would change it
 
 **Approved to move forward, 2026-08-02.** Write-back tools are accepted for
 managing the MCP server. The concern is not withdrawn — the failure to design
@@ -612,7 +612,7 @@ wrong in exactly the case they are investigating. A ledger with known blind
 spots is worse than no ledger, because it converts an obvious absence of
 information into a confident false statement.
 
-### Decision, and what would change it
+### Decision on the mitigation ledger, and what would change it
 
 **The concrete fixes are shipped and this half is closed. The ledger is deferred
 behind two prerequisites, in this order:**
@@ -756,7 +756,7 @@ long-lived HTTP service, over a corpus too large or too heterogeneous to union,
 and who is willing to pay for a ported `pcap-load` design. That operator may
 exist. Nobody has asked to be them.
 
-### What goes wrong if someone builds it anyway
+### What goes wrong if someone builds `open_capture` anyway
 
 The obvious implementation — clear both stores, read the new file synchronously
 inside the handler — produces a server that stops answering anything for however
@@ -772,7 +772,7 @@ observations about an unnamed sequence of files. Every tool response would need 
 capture identity for that transcript to be reconstructable — and that identity
 does not exist, at any layer, for the same reason §1 is blocked.
 
-### Decision, and what would change it
+### Decision on `open_capture`, and what would change it
 
 **Approved to move forward, 2026-08-02.** The argument above rested on the
 benefit being near zero outside persistent HTTP, on the grounds that the cheapest

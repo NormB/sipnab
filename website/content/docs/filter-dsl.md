@@ -246,7 +246,7 @@ these are catalogs to pick a line from, not blocks to copy whole.
 - `rtp.jitter > 50.0`
 - `rtp.packets > 10000`
 
-### Boolean fields
+### Matching boolean fields
 
 - `one_way == true`
 - `nat_mismatch == true`

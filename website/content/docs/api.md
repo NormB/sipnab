@@ -428,7 +428,7 @@ client that walks the list and then fetches a dialog has to read both spellings.
 
 ---
 
-### GET /v1/dialogs/{call_id}
+### GET /v1/dialogs/:call_id
 
 Get full details for a single dialog by Call-ID, including associated RTP streams and media diagnosis.
 
@@ -622,7 +622,7 @@ Returns `404` if the Call-ID is not found.
 
 ---
 
-### GET /v1/dialogs/{call_id}/report
+### GET /v1/dialogs/:call_id/report
 
 Get a structured call diagnosis report for a dialog in JSON format. Includes transaction timing, media quality, one-way audio detection, NAT mismatch analysis, and SDP timeline.
 
@@ -824,7 +824,7 @@ streams.forEach(s =>
 
 ---
 
-### GET /v1/streams/{id}
+### GET /v1/streams/:id
 
 Get a single RTP stream by SSRC hex string (e.g., `0x1a2b3c4d` or `1a2b3c4d`).
 
