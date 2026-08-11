@@ -23,6 +23,12 @@ pub struct StreamDetailDisplay<'a> {
     pub resolver: &'a crate::names::NameResolver,
     /// How endpoint names are displayed (off / name only / name+address).
     pub name_mode: crate::names::NameMode,
+    /// One-way path delay the operator declared, if any.
+    ///
+    /// `None` means they declared nothing, which is NOT the same as declaring
+    /// the default: the resolver then falls back to what the far end reported
+    /// and, failing that, says the figure was assumed.
+    pub declared_one_way_delay_ms: Option<f64>,
 }
 
 /// Render a full-screen scrollable detail view for a single RTP stream.
@@ -54,6 +60,7 @@ pub fn render_stream_detail(
         theme,
         resolver,
         name_mode,
+        declared_one_way_delay_ms,
     } = *display;
     let stream = match store.get(key) {
         Some(s) => s,
@@ -108,7 +115,38 @@ pub fn render_stream_detail(
 
     // ── Quality Metrics ─────────────────────────────────────────────
     let loss_pct = stream.loss_percent();
-    let mos = estimate_mos(stream.jitter, loss_pct, stream.codec.as_deref());
+    // MOS rests on a one-way delay sipnab cannot measure. Take the operator's
+    // figure first, then the far end's reported round trip, then say it was
+    // assumed — and show WHICH, because the remedy differs: a wrong declared
+    // value is the operator's to fix, a wrong reported one means suspecting
+    // the endpoint, and an assumed one means the delay was never known.
+    let (one_way, delay_src) = crate::rtp::quality::resolve_one_way_delay(
+        declared_one_way_delay_ms,
+        store
+            .remote_voip_metrics(key)
+            .map(|xr| xr.metrics.round_trip_delay),
+    );
+    let mos = crate::rtp::quality::estimate_mos_with_delay(
+        stream.jitter,
+        loss_pct,
+        stream.codec.as_deref(),
+        one_way,
+    );
+
+    // Say where the delay came from. An operator seeing a bad MOS needs to
+    // know whether to check their own declared figure, suspect the far end, or
+    // recognise that nothing measured it at all — the three remedies differ.
+    let delay_note = match delay_src {
+        crate::rtp::quality::DelaySource::Declared => {
+            format!("delay {one_way:.0}ms declared")
+        }
+        crate::rtp::quality::DelaySource::ReportedByEndpoint => {
+            format!("delay {one_way:.0}ms per far end")
+        }
+        crate::rtp::quality::DelaySource::Assumed => {
+            format!("delay {one_way:.0}ms assumed")
+        }
+    };
 
     let mos_band = MosBand::of(mos);
     let mos_style = Style::default()
@@ -128,6 +166,8 @@ pub fn render_stream_detail(
         ),
         Span::raw("    Loss: "),
         Span::styled(format!("{loss_pct:.2}%"), loss_style(loss_pct, theme)),
+        Span::raw("    "),
+        Span::styled(format!("({delay_note})"), Style::default().fg(theme.muted)),
     ]));
 
     let duration_secs = stream
@@ -823,6 +863,7 @@ mod tests {
                     store,
                     0,
                     &StreamDetailDisplay {
+                        declared_one_way_delay_ms: None,
                         theme: &theme,
                         resolver: &crate::names::NameResolver::new(),
                         name_mode: crate::names::NameMode::Off,
@@ -866,6 +907,7 @@ mod tests {
                     &store,
                     0,
                     &StreamDetailDisplay {
+                        declared_one_way_delay_ms: None,
                         theme: &theme,
                         resolver: &crate::names::NameResolver::new(),
                         name_mode: crate::names::NameMode::Off,
@@ -1080,9 +1122,29 @@ mod tests {
             .find(|l| l.contains("  MOS: "))
             .expect("estimated MOS line survives");
 
-        assert_eq!(
-            estimated, still,
-            "an endpoint asserting MOS 1.5 must not move the MOS sipnab estimated"
+        // The invariant this test was written for still holds, and is now
+        // stated precisely. An endpoint's ASSERTED MOS (1.5 here) must never
+        // become the number sipnab shows — that is MosProvenance's whole
+        // point. What the far end reports about the PATH is different: with no
+        // operator-declared delay, its round trip is better evidence than a
+        // build-time guess, so the estimate is recomputed and the line says
+        // where the delay came from.
+        assert!(
+            !still.contains("1.5"),
+            "the endpoint's asserted MOS must not become the displayed \
+             estimate; got: {still}"
+        );
+        assert!(
+            still.contains("per far end"),
+            "when the estimate moves because the far end reported a round \
+             trip, the line must say so — an operator cannot otherwise tell \
+             a number resting on their own figure from one resting on a \
+             remote claim; got: {still}"
+        );
+        assert!(
+            estimated.contains("assumed"),
+            "before any report arrives the delay is assumed, and saying so is \
+             the difference between an estimate and a measurement; got: {estimated}"
         );
         assert!(
             after.contains("MOS-LQ: 1.5"),
@@ -1133,6 +1195,7 @@ mod tests {
                     &store,
                     0,
                     &StreamDetailDisplay {
+                        declared_one_way_delay_ms: None,
                         theme: &theme,
                         resolver: &crate::names::NameResolver::new(),
                         name_mode: crate::names::NameMode::Off,

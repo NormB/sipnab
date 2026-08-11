@@ -475,6 +475,10 @@ pub fn run_tui_mode(
             visible_columns: config.display.visible_columns.clone(),
             name_setup,
             from_to_mode,
+            // Resolved here because this is where cli and config are both in
+            // scope. `None` propagates as "undeclared", which the MOS resolver
+            // distinguishes from "declared the default".
+            declared_one_way_delay_ms: cli.declared_one_way_delay_ms(&config),
             // The save dialog writes wherever the analyst types, and the
             // capture on screen is the obvious name to reach for.
             protected_inputs: crate::capture::output_guard::ProtectedInputs::new(

@@ -147,6 +147,15 @@ alert = ["syslog", "json"]
 alert_exec = "/usr/local/bin/sipnab-alert.sh"
 ```
 
+## `[media]`
+
+Properties of the observed media path that a passive tap cannot measure for
+itself.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; with neither, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured |
+
 ### [limits]
 
 Resource limits to prevent unbounded memory growth.

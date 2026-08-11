@@ -218,6 +218,10 @@ pub struct App {
     header_form: header_form::HeaderFormMode,
     /// Name-resolution display mode (Off / Names / Dns).
     name_mode: NameMode,
+    /// One-way path delay the operator declared, if any — see
+    /// [`crate::rtp::quality::resolve_one_way_delay`]. `None` means they said
+    /// nothing, not that they chose the default.
+    pub(crate) declared_one_way_delay_ms: Option<f64>,
     /// Shared IP -> name resolver (manual mappings, hosts, reverse DNS).
     resolver: Arc<NameResolver>,
     /// Path the manual mappings persist to (set from config/CLI).
@@ -337,6 +341,7 @@ impl App {
             async_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             mouse_capture_enabled: true,
             name_mode: NameMode::default(),
+            declared_one_way_delay_ms: None,
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
             names_config_path: None,

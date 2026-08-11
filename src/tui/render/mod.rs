@@ -175,6 +175,7 @@ pub(in crate::tui) fn render_app(
                         theme: &app.theme,
                         resolver: app.resolver.as_ref(),
                         name_mode: app.name_mode,
+                        declared_one_way_delay_ms: app.declared_one_way_delay_ms,
                     },
                 );
                 // Report the clamped scroll back: over-scrolling past the

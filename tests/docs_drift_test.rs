@@ -2433,8 +2433,11 @@ fn no_documentation_table_repeats_a_row() {
     // Attributed per file before this number was touched, because "fewer" is
     // exactly the alarm this gate exists to raise.
     assert_eq!(
-        tables, 494,
-        "walked {tables} tables, expected 494. More is fine — bump this. FEWER \
+        // Raised 494 -> 496 by the new [media] config section: one table in
+        // docs/config-reference.md and one in its site mirror.
+        tables,
+        496,
+        "walked {tables} tables, expected 496. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

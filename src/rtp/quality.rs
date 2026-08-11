@@ -71,6 +71,49 @@ pub struct BurstGapAnalysis {
 /// assert!((1.0..=4.5).contains(&degraded));
 /// ```
 pub fn estimate_mos(jitter_ms: f64, loss_pct: f64, codec: Option<&str>) -> f64 {
+    estimate_mos_with_delay(jitter_ms, loss_pct, codec, DEFAULT_ONE_WAY_DELAY_MS)
+}
+
+/// One-way path delay assumed when nothing measured it, in milliseconds.
+///
+/// An ASSUMPTION, not a measurement, and the only unmeasured input to
+/// [`estimate_mos`] that is not already described by [`MosGrounding`] or
+/// [`MosProvenance`]. Those two say whether G.113 publishes an impairment
+/// factor for the codec, and whether sipnab scored the stream or an endpoint
+/// asserted it. Neither can say that the delay term was guessed.
+///
+/// 100 ms is a reasonable domestic figure and wrong by a wide margin on an
+/// intercontinental or satellite leg, where one-way delay runs 150-400 ms.
+/// G.107's `Id` has a knee at 177.3 ms, above which the penalty grows with a
+/// square-root term — so the assumption does not merely shift the score, it
+/// keeps the calculation on the wrong side of that knee, and the MOS comes out
+/// more than a full point high for exactly the deployments whose audio is
+/// worst.
+///
+/// Pass the real figure to [`estimate_mos_with_delay`] whenever it is known.
+/// RTCP carries it: the XR VoIP-metrics block reports `round_trip_delay`
+/// directly, and an RR's LSR/DLSR pair yields the same round trip, of which
+/// one-way is conventionally half.
+pub const DEFAULT_ONE_WAY_DELAY_MS: f64 = 100.0;
+
+/// [`estimate_mos`], with the one-way path delay supplied rather than assumed.
+///
+/// `one_way_delay_ms` is the network path delay in one direction, EXCLUDING
+/// jitter — jitter is added on top here, because a jittery path is worse than
+/// a smooth one of the same length and the receiver's de-jitter buffer pays
+/// for both.
+///
+/// A delay outside a plausible range is clamped rather than propagated: the
+/// result of this function is displayed to an operator as a measurement, and
+/// laundering a bad input into a confident-looking 7.3 or a NaN is worse than
+/// bounding it.
+#[must_use]
+pub fn estimate_mos_with_delay(
+    jitter_ms: f64,
+    loss_pct: f64,
+    codec: Option<&str>,
+    one_way_delay_ms: f64,
+) -> f64 {
     // Codec-specific equipment impairment factor (Ie)
     let ie = match codec {
         Some("PCMU") | Some("PCMA") => 0.0,   // G.711 baseline
@@ -111,8 +154,23 @@ pub fn estimate_mos(jitter_ms: f64, loss_pct: f64, codec: Option<&str>) -> f64 {
     // Simplified with BurstR=1, Bpl=10 for random loss
     let ie_eff = ie + (95.0 - ie) * loss_pct / (loss_pct + 10.0);
 
-    // Delay impairment (Id) — assume 100ms baseline + jitter contribution
-    let delay_ms = 100.0 + jitter_ms;
+    // Delay impairment (Id). The path delay is an INPUT now; jitter is added
+    // on top of it. A non-finite or negative caller value is treated as the
+    // default rather than trusted, and the total is bounded so an absurd input
+    // cannot leave the MOS scale.
+    let path = if one_way_delay_ms.is_finite() && one_way_delay_ms >= 0.0 {
+        one_way_delay_ms
+    } else {
+        DEFAULT_ONE_WAY_DELAY_MS
+    };
+    let jitter = if jitter_ms.is_finite() && jitter_ms >= 0.0 {
+        jitter_ms
+    } else {
+        0.0
+    };
+    // 3000 ms is far past the point where the E-model says "unusable"; the cap
+    // exists so the sqrt term cannot overflow into a nonsense R-factor.
+    let delay_ms = (path + jitter).min(3000.0);
     let id = if delay_ms > 177.3 {
         0.024 * delay_ms + 0.11 * (delay_ms - 177.3) * (delay_ms - 177.3).sqrt()
     } else {
@@ -125,6 +183,70 @@ pub fn estimate_mos(jitter_ms: f64, loss_pct: f64, codec: Option<&str>) -> f64 {
 
     // R-factor to MOS conversion (ITU-T G.107 Annex B)
     r_to_mos(r)
+}
+
+/// One-way delay for a stream, from RTCP when the far end reported it.
+///
+/// RFC 3611 Section 4.7's VoIP-metrics block carries `round_trip_delay`
+/// directly. One-way is conventionally half of it — an approximation, because
+/// paths are not always symmetric, but a measured round trip halved beats a
+/// constant guessed at build time by a wide margin on exactly the long-haul
+/// legs where the guess is worst.
+///
+/// Returns `None` when nothing measured it, so the caller can say so rather
+/// than substitute a number and present it as a measurement. A zero RTT is
+/// treated as absent: RFC 3611 uses 0 for "not available", and a genuinely
+/// zero round trip does not occur on a path with two endpoints.
+#[must_use]
+pub fn one_way_delay_from_rtt_ms(round_trip_delay_ms: u16) -> Option<f64> {
+    (round_trip_delay_ms > 0).then(|| f64::from(round_trip_delay_ms) / 2.0)
+}
+
+/// Where the one-way delay behind a MOS came from.
+///
+/// A sibling of [`MosProvenance`], and it exists for the same reason: the
+/// remedy differs by source. A score that looks wrong under
+/// [`Declared`](Self::Declared) means checking the number the operator set; under
+/// [`ReportedByEndpoint`](Self::ReportedByEndpoint) it means suspecting the far
+/// end, or whoever forged its datagram; under [`Assumed`](Self::Assumed) it
+/// means the delay was never known at all and the score is only as good as a
+/// domestic guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DelaySource {
+    /// The operator declared it for this deployment. Trusted first, because it
+    /// is the only source that cannot be influenced by a packet on the wire.
+    Declared,
+    /// Halved from an RTCP round trip the far end reported.
+    ///
+    /// Better than a guess and NOT a measurement sipnab made: RFC 3550 carries
+    /// no authentication, so a broken or hostile endpoint can move this. Used
+    /// only when the operator declared nothing, and always recorded, so a MOS
+    /// resting on a remote claim can be told apart from one resting on the
+    /// operator's own figure.
+    ReportedByEndpoint,
+    /// Nothing said. [`DEFAULT_ONE_WAY_DELAY_MS`] stood in.
+    Assumed,
+}
+
+/// Resolve the one-way delay for a stream, and say where it came from.
+///
+/// Order: what the operator declared, then what the far end reported, then the
+/// assumption. The operator wins because theirs is the only figure that cannot
+/// be changed by an unauthenticated packet — and because they are the one who
+/// knows the trunk is satellite.
+#[must_use]
+pub fn resolve_one_way_delay(
+    declared_ms: Option<f64>,
+    reported_rtt_ms: Option<u16>,
+) -> (f64, DelaySource) {
+    if let Some(d) = declared_ms.filter(|d| d.is_finite() && *d >= 0.0) {
+        return (d, DelaySource::Declared);
+    }
+    if let Some(one_way) = reported_rtt_ms.and_then(one_way_delay_from_rtt_ms) {
+        return (one_way, DelaySource::ReportedByEndpoint);
+    }
+    (DEFAULT_ONE_WAY_DELAY_MS, DelaySource::Assumed)
 }
 
 /// Convert an R-factor to MOS using the standard formula.

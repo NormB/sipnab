@@ -243,6 +243,10 @@ pub struct TuiOptions {
     pub name_setup: NameSetup,
     /// Initial From/To column display mode.
     pub from_to_mode: FromToMode,
+    /// One-way path delay the operator declared, from `--one-way-delay` or
+    /// `[media] one_way_delay_ms`. `None` means undeclared, which the MOS
+    /// resolver treats differently from "declared the default".
+    pub declared_one_way_delay_ms: Option<f64>,
     /// Capture files this session reads, which the save dialog must never
     /// write over (see [`crate::capture::output_guard`]).
     pub protected_inputs: crate::capture::output_guard::ProtectedInputs,
@@ -306,6 +310,7 @@ impl TuiOptions {
             app.call_list.apply_visible_columns(cols);
         }
         app.set_from_to_mode(self.from_to_mode);
+        app.declared_one_way_delay_ms = self.declared_one_way_delay_ms;
         app.set_protected_inputs(self.protected_inputs);
         app.set_bpf_filter(self.bpf_filter);
         app.set_resolver(self.name_setup.resolver);

@@ -1133,6 +1133,15 @@ pub struct Cli {
     )]
     pub mcp_max_concurrent: u32,
 
+    /// One-way network delay of the observed path, in milliseconds.
+    ///
+    /// The one MOS input a passive tap cannot measure. Declaring it beats an
+    /// RTCP-reported round trip, which an unauthenticated packet can move; see
+    /// [`crate::rtp::quality::DelaySource`]. No clap `default_value`, for the
+    /// reason given on `--mcp-max-rows`.
+    #[arg(help_heading = "Analysis", long = "one-way-delay", value_name = "MS")]
+    pub one_way_delay_ms: Option<f64>,
+
     /// Maximum rows in one list-style MCP response.
     ///
     /// Deliberately has NO clap `default_value`: that is what made
@@ -1615,6 +1624,16 @@ impl Cli {
         self.limit
             .or(config.limits.dialog_limit)
             .unwrap_or(Self::DEFAULT_DIALOG_LIMIT) as usize
+    }
+
+    /// Declared one-way delay: `--one-way-delay`, else `[media] one_way_delay_ms`.
+    ///
+    /// `None` means the operator declared nothing, which is DIFFERENT from
+    /// declaring the default — the resolver then falls back to what the far
+    /// end reported, and only then to the assumption.
+    #[must_use]
+    pub fn declared_one_way_delay_ms(&self, config: &crate::config::Config) -> Option<f64> {
+        self.one_way_delay_ms.or(config.media.one_way_delay_ms)
     }
 
     /// MCP response ceiling: `--mcp-max-rows`, else `[limits] mcp_max_rows`,

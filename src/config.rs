@@ -36,9 +36,14 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "keybindings",
             "names",
             "crash",
+            "media",
         ]
         .as_slice(),
     );
+    // [media] describes the PATH being observed, which is neither a capture
+    // setting nor a display one. Today it holds the one figure a passive tap
+    // cannot measure for itself.
+    m.insert("media", ["one_way_delay_ms"].as_slice());
     m.insert(
         "crash",
         ["reports", "backtrace", "report_dir", "core"].as_slice(),
@@ -217,6 +222,10 @@ pub struct Config {
     /// Security detection settings.
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Properties of the observed media path — see [`MediaConfig`].
+    #[serde(default)]
+    pub media: MediaConfig,
+
     /// Resource limits.
     #[serde(default)]
     pub limits: LimitsConfig,
@@ -372,6 +381,19 @@ pub struct SecurityConfig {
     pub alert: Option<Vec<String>>,
     /// Command to execute on alert.
     pub alert_exec: Option<String>,
+}
+
+/// Properties of the observed media path that sipnab cannot measure itself.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct MediaConfig {
+    /// One-way network delay, in milliseconds, for the path this capture sees.
+    ///
+    /// The single input to MOS that a passive observer cannot obtain: it is
+    /// known to the endpoints or to you, and nobody else. Declaring it here
+    /// beats an RTCP-reported round trip, because a config file cannot be
+    /// changed by a packet on the wire.
+    pub one_way_delay_ms: Option<f64>,
 }
 
 /// Resource limits.
