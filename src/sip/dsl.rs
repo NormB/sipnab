@@ -1387,22 +1387,24 @@ fn state_to_str(state: &DialogState) -> &'static str {
     }
 }
 
-/// Approximate MOS score from jitter and loss using the E-model R-factor.
+/// MOS for a stream, scored by [`crate::rtp::quality::estimate_mos`].
 ///
-/// This is a simplified ITU-T G.107 approximation for narrowband codecs:
-/// - R = 93.2 - jitter_penalty - loss_penalty
-/// - jitter_penalty = jitter_ms (capped contribution)
-/// - loss_penalty = 2.5 * loss_pct
-/// - MOS = 1 + 0.035*R + R*(R-60)*(100-R)*7e-6 (for R > 0)
+/// Deliberately a thin wrapper and nothing more. This function once carried
+/// its own formula — `R = 93.2 - min(jitter,100) - 2.5*loss_pct`, with no
+/// codec term and no delay term — so `--filter "rtp.mos < 3.0"` selected a
+/// different set of streams than the ones the detail view showed below 3.0,
+/// diverging by as much as 1.7 MOS at 60 ms and 5% loss.
+///
+/// The only thing it computes now is loss percentage, because
+/// `estimate_mos` takes a percentage and a stream carries counts.
 ///
 /// # Arguments
 ///
-/// * `stream` — The RTP stream whose jitter and loss feed the estimate.
+/// * `stream` — the RTP stream whose jitter, loss and codec feed the estimate.
 ///
 /// # Returns
 ///
-/// The approximate MOS, floored at 1.0 (worst) with a practical ceiling
-/// near 4.4 for a clean stream.
+/// The MOS, on the same scale and from the same code as every other surface.
 pub fn stream_mos(stream: &RtpStream) -> f64 {
     let total = stream.packet_count + stream.lost_packets;
     let loss_pct = if total > 0 {

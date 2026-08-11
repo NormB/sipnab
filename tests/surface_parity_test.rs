@@ -170,3 +170,73 @@ fn metrics_the_apis_report_are_reachable_in_the_tui() {
          and an HTTP client both can."
     );
 }
+
+/// Only ONE piece of code turns network conditions into a MOS.
+///
+/// `rtp.mos` in the filter DSL once carried its own scorer — `R = 93.2 -
+/// min(jitter,100) - 2.5*loss_pct`, no codec term, no delay term — while the
+/// detail view used the G.107 E-model. Identical streams scored up to 1.7 MOS
+/// apart, so `--filter "rtp.mos < 3.0"` selected calls the detail view showed
+/// as fine. Behavioural tests now pin the two together, but nothing stopped a
+/// THIRD scorer appearing beside them, which is how the second one arrived.
+///
+/// So this reads the source rather than the behaviour: the E-model's R0
+/// anchor may appear only where the model itself lives.
+#[test]
+fn only_one_place_in_the_tree_scores_a_mos() {
+    // src/rtp/quality.rs        — the narrowband E-model, the one scorer.
+    // src/rtp/emodel_wb.rs      — G.107.1 wideband. A DIFFERENT model on a
+    //                             different scale (anchored at 129, not 93.2),
+    //                             for codecs G.113 publishes Ie,WB for. It
+    //                             mentions 93.2 only to say it is not that.
+    const HOMES: [&str; 2] = ["src/rtp/quality.rs", "src/rtp/emodel_wb.rs"];
+
+    let mut strays = Vec::new();
+    let mut anchors_seen = 0usize;
+    let mut stack = vec![repo().join("src")];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("read_dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(repo())
+                .expect("under repo")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = std::fs::read_to_string(&p).expect("read");
+            for (i, line) in text.lines().enumerate() {
+                // Comments may DISCUSS the constant — the fix for this very
+                // defect explains the old formula in prose, and a gate that
+                // forbade saying "93.2" would forbid explaining the bug.
+                let code = line.trim_start();
+                if code.starts_with("//") || !code.contains("93.2") {
+                    continue;
+                }
+                anchors_seen += 1;
+                if !HOMES.contains(&rel.as_str()) {
+                    strays.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        anchors_seen >= 1,
+        "the E-model's R0 anchor was found nowhere in src/ — the scan broke, \
+         so this gate is checking nothing"
+    );
+    assert!(
+        strays.is_empty(),
+        "a second MOS scorer has appeared outside {HOMES:?}:\n  {}\n\n\
+         Call crate::rtp::quality::estimate_mos instead. Two scorers means two \
+         answers for one stream, and the operator meets them as a filter that \
+         disagrees with the display.",
+        strays.join("\n  ")
+    );
+}
