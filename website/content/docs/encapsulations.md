@@ -191,7 +191,7 @@ handles those.
 sipnab drops nothing on this page silently. An encapsulation sipnab does not
 decode still increments a counter keyed by the number it did not recognise, and
 that count reaches the run summary, `--report`, `--json`, `/v1/stats`, MCP
-`stats`, and the Prometheus capture family. A capture producing no SIP *and* no
+`capture_status`, and the Prometheus capture family. A capture producing no SIP *and* no
 undecodable frames is a finding. One producing no SIP and a pile of undecodable
 frames says something else entirely, and sipnab says it differently.
 

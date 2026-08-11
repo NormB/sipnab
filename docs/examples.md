@@ -583,10 +583,10 @@ second source of truth. (This list said "all 25 tools" and enumerated 25 until
 were `capture_health`, `explain_rule`, `find_correlated`, `lint_dialog`,
 `save_findings` and `validate_message`.)
 
-- **Browse and quote the capture** — `list_dialogs`, `get_dialog`, `get_dialog_report`, `get_message`, `search_messages`, `search_by_time`, `tail_dialogs`, `render_ladder`, `compare_dialogs`, `find_correlated`
+- **Browse and quote the capture** — `list_dialogs`, `get_dialog`, `get_dialog_report`, `get_message`, `search_messages`, `search_by_time`, `tail_dialogs`, `render_ladder`, `compare_dialogs`, `find_correlated`, `show_evidence`
 - **Diagnose** — `find_problems`, `triage_call`, `diagnose_registration`, `check_codec_negotiation`, `explain_response_code`, `get_sdp_timeline`, `rtp_stats`, `security_findings`, `capture_health`
 - **Check a message or dialog against the RFCs** — `lint_dialog`, `validate_message`, `explain_rule`
-- **Ask about the session itself** — `stats`, `capture_status`, `server_capabilities`, `list_captures`
+- **Ask about the session itself** — `capture_status`, `server_capabilities`, `list_captures`
 - **Write a file or a note, swap the capture, or end the run** — `export_capture`, `export_audio`, `save_findings`, `open_capture`, `shutdown_server`
 
 Only that last group reaches past the query surface, and each member needs a flag you passed at startup: the two exports write only under `--mcp-file-root`, `save_findings` records only under `--mcp-allow-save-findings`, `open_capture` acts only under `--mcp-allow-open-capture`, and `shutdown_server` only under `--mcp-allow-shutdown`. All five still appear in `tools/list` when you omit those flags, because sipnab registers the tools unconditionally and refuses the call instead. Seeing `shutdown_server` listed does not mean an agent can stop your capture.

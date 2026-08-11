@@ -76,7 +76,7 @@ Tiers:
   capture_test` 16/16. **Done (the surfacing half, tracked as CT1b in
   `capture-tuning-tasks.md`):** the counts now reach the batch summary
   ([`src/app/batch.rs:938`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L938), through `kernel_drop_counts()`), `/v1/stats`
-  ([`src/output/api.rs:984`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L984), `kernel_dropped_packets`), the MCP `stats` tool
+  ([`src/output/api.rs:984`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L984), `kernel_dropped_packets`), the MCP `capture_status` tool
   ([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)) and Prometheus ([`src/output/prometheus.rs:499`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L499),
   `sipnab_capture_kernel_dropped_packets_total`, asserted in
   [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs)). `INVALID_PCAP_TIMESTAMPS` was closed in the same pass
@@ -435,7 +435,7 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `stats` tool carries the field ([`src/mcp/server.rs:1330`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1330),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:1330`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1330),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -1105,7 +1105,7 @@ output path.
   - **Prompts:** `triage-outage`, `carrier-escalation`, `codec-interop-audit`,
     `post-change-verification`. These encode the ordering that currently lives
     in prose on a docs page the agent never reads —
-    `capture_status` → `stats` (check `unanalysed_sip_messages`) →
+    `capture_status` (check `unanalysed_sip_messages`) →
     `find_problems` → `triage_call`.
 
 - [ ] **PA4 — Complete the linter rule corpus.** The engine and the
@@ -1416,7 +1416,7 @@ implementation.
 | SIPp XML | **IN THE TREE** — `save_to_sipp_path` at [`src/tui/save.rs:804`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L804), with three tests. This row said "not in the tree" until 2026-08-05, which scheduled a rewrite of code that already exists | `export_sipp_scenario(call_id, filename)` is an EXTRACTION of the existing TUI writer to a callable path, not a build. Same wrapper shape as the rest of bucket 1 |
 | Mermaid ladder | [`src/tui/call_flow/export.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_flow/export.rs) renders mermaid; `render_ladder` offers markdown/text only | add `format: "mermaid"` — agents render it inline, which is the point of a ladder |
 | Multi-leg / B2BUA | TUI `x` stitches correlated legs | `render_ladder(call_id, extended: true)` + `get_correlated_legs`. Duplicate of PA10; keep PA10 as the entry |
-| Capture-wide report | `--report` incl. Orphaned Streams | `get_capture_report(format?)`. `stats` gives counters, not the report |
+| Capture-wide report | `--report` incl. Orphaned Streams | `get_capture_report(format?)`. `capture_status` gives counters, not the report |
 | Orphaned streams | emitted per stream, `RtpStatsParams` has `min_mos`/`max_mos` and no orphan filter | add `orphaned: bool?` to the sweep |
 | WASM plugin findings | `plugin_findings` exists in `--json-dialogs` | `plugin_findings(call_id?)`, and list loaded plugins in `server_capabilities` |
 | Name resolution | `--resolve` / `--names` exist | honour in MCP output or add `resolve_address(ip)`. Agents reason over bare IPs today |

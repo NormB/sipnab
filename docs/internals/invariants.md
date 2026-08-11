@@ -491,8 +491,8 @@ Writing it somewhere else is not disclosure, and it reads as one.
 **Why.** Four defects in a single week shared this shape and nothing else:
 
 - `--portrange` dropped a third of the SIP in a capture. The fix printed the
-  loss beside the CLI summary, so a human saw it. `stats` and `capture_status`
-  returned a byte-identical key set whether the run dropped a third of it or
+  loss beside the CLI summary, so a human saw it. the capture-status tools (then `stats` and
+  `capture_status`, since folded into one) returned a byte-identical key set whether the run dropped a third of it or
   none of it — so a model driving the MCP tools answered from two thirds of the
   capture with full confidence, and had no way to learn otherwise.
 - `export_capture` re-synthesises a frame per SIP message rather than writing

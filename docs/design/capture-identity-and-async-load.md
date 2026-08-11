@@ -82,7 +82,7 @@ an answer holds all three guards across the read.
 
 ### Who consumes it, and who is expected to
 
-Today: `capture_status`, `stats`, `list_dialogs`, `find_problems`,
+Today: `capture_status`, `list_dialogs`, `find_problems`,
 `search_by_time`, `tail_dialogs`, and the capture-wide `rtp_stats` sweep. The
 rule for adding one is *every response whose meaning depends on the whole
 store* — a page with a cursor, or an aggregate count. A response keyed on a

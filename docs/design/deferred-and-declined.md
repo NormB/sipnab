@@ -461,7 +461,7 @@ a stated invariant the code has quietly stopped honouring.
 
 | Requirement | Built as |
 |---|---|
-| 1. Wire-visible store identity | [`src/provenance.rs`](../../src/provenance.rs): a `CaptureEtag` carrying a capture-instance id plus both store generations, stamped on `capture_status`, `stats` and every paged whole-store response. §4 consumes the same primitive, as planned — it was built once |
+| 1. Wire-visible store identity | [`src/provenance.rs`](../../src/provenance.rs): a `CaptureEtag` carrying a capture-instance id plus both store generations, stamped on `capture_status` and every paged whole-store response. §4 consumes the same primitive, as planned — it was built once |
 | 2. Write-back state separate from the analysis | [`src/mcp/findings.rs`](../../src/mcp/findings.rs), reached by `save_findings` behind `--mcp-allow-save-findings` (off by default: `allow_save_findings` at [`server.rs:74`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L74), `false` in `new()` at `:161`, set only by `with_save_findings()` at `:233`) |
 | Invariant 7 amended in the same change | [`invariants.md`](../internals/invariants.md) §7 is retitled and now names `save_findings` explicitly, so nobody has to discover the write by reading the tool list |
 
@@ -817,7 +817,7 @@ builder and first-statement refusal
 | Requirement | Built as |
 |---|---|
 | 1. Shared `CaptureContext` | `CaptureState` behind one `Arc<RwLock<..>>` on `SipnabMcp`, holding the identity, the description and the in-flight load together, with the lock order written down |
-| 2. Wire-visible identity | [`src/provenance.rs`](../../src/provenance.rs): a capture-instance id plus both store generations, stamped on `capture_status`, `stats` and every paged whole-store response. §2's write-back tools consume the same `CaptureEtag` |
+| 2. Wire-visible identity | [`src/provenance.rs`](../../src/provenance.rs): a capture-instance id plus both store generations, stamped on `capture_status` and every paged whole-store response. §2's write-back tools consume the same `CaptureEtag` |
 | 3. Non-blocking load | [`src/mcp/load.rs`](../../src/mcp/load.rs): an `mcp-pcap-load` thread the runtime never waits on, polled through `capture_status.load` |
 
 The REST half of requirement 2 is still open: `/v1/dialogs` carries no etag, for
