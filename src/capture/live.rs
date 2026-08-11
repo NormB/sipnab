@@ -325,6 +325,32 @@ fn probe_fanout(device: &str, config: &CaptureConfig, group: u16) -> Result<()> 
     }
 }
 
+/// Whether a capture-open failure is really "you lack the privilege".
+///
+/// One function, called from here and from the bootstrap, because the two used
+/// to carry separate copies of this test and had already drifted: the
+/// bootstrap checked `socket:` and this one did not.
+///
+/// `CAP_NET_RAW` is the case that matters and the one that was missing. Linux
+/// libpcap reports an unprivileged live open as
+///
+/// ```text
+/// Attempt to create packet socket failed - CAP_NET_RAW may be required
+/// ```
+///
+/// which contains no form of "permission", no `EPERM`, and no `socket:`. So a
+/// normal user on Linux -- the single most common way to meet this error --
+/// fell through to the generic branch and was shown the device list instead of
+/// the `--setup-caps` hint that exists precisely for them. The remedy was
+/// already written; it was unreachable.
+pub(crate) fn is_permission_error(msg: &str) -> bool {
+    msg.contains("ermission")
+        || msg.contains("EPERM")
+        || msg.contains("Operation not permitted")
+        || msg.contains("socket:")
+        || msg.contains("CAP_NET_RAW")
+}
+
 /// The single-socket capture loop, optionally joined to a fanout group.
 fn capture_live_group(
     device: &str,
@@ -414,9 +440,7 @@ fn capture_live_group(
             // auto-detect path already does). Permission failures keep their
             // own dedicated hint in the bootstrap, so skip the list there.
             let mut msg = format!("{e:#}");
-            let is_permission = msg.contains("ermission")
-                || msg.contains("EPERM")
-                || msg.contains("Operation not permitted");
+            let is_permission = is_permission_error(&msg);
             if !is_permission {
                 let devices = crate::capture::device::list_devices();
                 if !devices.is_empty() {
@@ -949,6 +973,45 @@ mod tests {
             assert!(
                 err.contains("Available devices:"),
                 "must list the real devices so the typo is correctable: {err}"
+            );
+        }
+    }
+
+    /// The exact strings libpcap emits must classify as permission failures,
+    /// so the caller reaches the `--setup-caps` hint rather than the device
+    /// list.
+    ///
+    /// The first case is a real report from a CentOS 9 host: it named
+    /// CAP_NET_RAW and still missed every clause of the old predicate.
+    #[test]
+    fn libpcap_privilege_messages_are_recognised_as_permission_failures() {
+        for msg in [
+            "Attempt to create packet socket failed - CAP_NET_RAW may be required",
+            "socket: Operation not permitted",
+            "You don't have permission to capture on that device",
+            "(socket: Operation not permitted)",
+        ] {
+            assert!(
+                is_permission_error(msg),
+                "libpcap privilege failure not recognised, so the user is shown \
+                 the device list instead of how to grant CAP_NET_RAW: {msg:?}"
+            );
+        }
+    }
+
+    /// A genuine typo must NOT be swallowed by the permission branch, or the
+    /// device list that makes it correctable never prints.
+    #[test]
+    fn a_missing_device_is_not_mistaken_for_a_permission_failure() {
+        for msg in [
+            "No such device exists",
+            "Failed to open device 'eth42'",
+            "SIOCETHTOOL(ETHTOOL_GET_TS_INFO) ioctl failed: No such device",
+        ] {
+            assert!(
+                !is_permission_error(msg),
+                "a missing device was classified as a permission failure, which \
+                 suppresses the device list: {msg:?}"
             );
         }
     }

@@ -708,10 +708,7 @@ pub fn launch(
             tracing::debug!("Capture source opened successfully");
         }
         Ok(Err(e)) => {
-            let is_permission = e.contains("ermission")
-                || e.contains("EPERM")
-                || e.contains("Operation not permitted")
-                || e.contains("socket:");
+            let is_permission = crate::capture::live::is_permission_error(&e);
             if is_permission {
                 let dev_name = match &handle.source {
                     CaptureSource::Live { device } => device.as_str(),
