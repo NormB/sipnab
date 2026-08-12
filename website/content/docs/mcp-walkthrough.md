@@ -345,11 +345,11 @@ One extra server step: live capture needs the packet-capture capability, once:
 sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 ```
 
-> **Do not pass both `-I` and `-d`.** `-I` silently wins. sipnab reads the file
-> and never touches the interface — no warning, no error, and the output looks
-> exactly like a successful run. An agent then answers questions about a stale
-> capture with complete confidence. If you are adapting the pcap command
-> above, **delete the `-I` line**; do not just add `-d` beside it.
+> **Do not pass both `-I` and `-d`.** `-I` wins: sipnab reads the file and never
+> touches the interface. It warns on stderr, but the run still succeeds and the
+> output looks exactly like a live capture — so an agent reading stdout answers
+> questions about a stale file with complete confidence. If you are adapting the
+> pcap command above, **delete the `-I` line**; do not just add `-d` beside it.
 
 Each agent session spawns a fresh sipnab, so capture starts when the session
 starts and stops when it ends. That is right for a post-mortem and wrong for
@@ -1572,13 +1572,14 @@ problem is one-way audio, and the hint names the direction that is missing.
 }
 ```
 
-`result` distinguishes four outcomes, and they lead different places:
+`result` distinguishes five outcomes, and they lead different places:
 
 | `result` | What it means |
 |---|---|
 | `ok` | Both sides agreed a codec. The 488 came from something else |
 | `no_common_codec` | A genuine mismatch — compare the two lists |
 | `no_answer` | The offer was never answered with SDP |
+| `sdp_present_but_no_codecs` | Both sides exchanged SDP, but neither listed a codec |
 | `no_sdp_in_capture` | No SDP at all; nothing to negotiate |
 
 Here it is `no_answer`: the far end rejected the call without returning SDP, so
@@ -1762,8 +1763,12 @@ A live capture does not replay. Once the process ends, only what sipnab wrote
 to disk survives. Write it out first:
 
 ```json
-{"name": "export_capture", "arguments": {"path": "incident-4471.pcap"}}
+{"name": "export_capture", "arguments": {"filename": "incident-4471.pcap"}}
 ```
+
+The argument is `filename`, a **bare name** inside `--mcp-file-root` — never a
+path. Sending `path` instead fails the call outright with a missing-field error,
+and the response to a good call names the resolved path the bytes went to.
 
 Then stop the server. `shutdown_server` needs `--mcp-allow-shutdown` on the
 server, which is **off by default**, and its first call is always a dry run:
@@ -1774,9 +1779,9 @@ server, which is **off by default**, and its first call is always a dry run:
 
 It reports what would happen and changes nothing. Stopping takes a second,
 explicit call with `dry_run: false`, and it refuses to discard unsaved live
-data unless you either name a `save_to` target or pass `discard: true`. An
-agent that misreads "we can stop looking at this now" as an instruction should
-not be able to end an afternoon of capture.
+data unless you either name a `save_to` target or pass `discard_unsaved: true`.
+An agent that misreads "we can stop looking at this now" as an instruction
+should not be able to end an afternoon of capture.
 
 ## Understand the load on a busy server
 

@@ -96,6 +96,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_header_line",
             "max_headers_per_message",
             "max_messages_per_dialog",
+            "idle_compact_after_secs",
+            "keep_messages_per_idle_dialog",
             "max_audio_frames",
             "mcp_max_rows",
         ]
@@ -436,6 +438,16 @@ pub struct LimitsConfig {
     pub max_headers_per_message: Option<u64>,
     /// Maximum stored messages per dialog (default: 500).
     pub max_messages_per_dialog: Option<u64>,
+    /// Seconds a dialog must be silent before its messages are compacted
+    /// (default: 600).
+    ///
+    /// Compaction discards messages sipnab already captured, so this is the
+    /// knob for a capture where the ladder matters more than the footprint:
+    /// a call parked on hold, or a paused capture, goes quiet for longer than
+    /// ten minutes while still being the thing under investigation.
+    pub idle_compact_after_secs: Option<u64>,
+    /// Messages an idle dialog keeps after compaction (default: 20).
+    pub keep_messages_per_idle_dialog: Option<u64>,
     /// Maximum audio frames retained per RTP stream for WAV export (default: 1500).
     pub max_audio_frames: Option<u64>,
 }
@@ -492,6 +504,23 @@ impl LimitsConfig {
         if let Some(0) = self.max_audio_frames {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] max_audio_frames must be > 0".into(),
+            ));
+        }
+        if let Some(0) = self.idle_compact_after_secs {
+            // Zero would compact every dialog on every sweep, including the
+            // one still being written to. Refused rather than read as
+            // "disable compaction", which is what an operator reaching for 0
+            // is likely to mean and the exact opposite of what it would do.
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] idle_compact_after_secs must be > 0 (0 would compact \
+                 dialogs that are still active; to keep more of the ladder, \
+                 raise this or raise keep_messages_per_idle_dialog)"
+                    .into(),
+            ));
+        }
+        if let Some(0) = self.keep_messages_per_idle_dialog {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] keep_messages_per_idle_dialog must be > 0".into(),
             ));
         }
         Ok(())
@@ -1711,6 +1740,8 @@ column_selector = "F10"
             max_header_line: Some(8192),
             max_headers_per_message: Some(200),
             max_messages_per_dialog: Some(500),
+            idle_compact_after_secs: Some(600),
+            keep_messages_per_idle_dialog: Some(20),
             max_audio_frames: Some(1500),
             mcp_max_rows: Some(1000),
         };

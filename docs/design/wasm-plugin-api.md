@@ -1,8 +1,24 @@
 # WASM plugin API
 
-**Status:** specced 2026-07-30. Supersedes the one-line backlog entry "WASM
-plugin API (design decision D7 rules out Lua; WASM is the path if plugins are
-ever needed)".
+**Status:** SHIPPED — commit `65a597b`, 2026-07-30, released in 0.5.69. That one
+commit carried this document *and* the working host: [`src/plugin/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs),
+the non-default `plugins` feature, the repeatable `--plugin` flag in
+[`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs), the worked example under
+[`crates/sipnab-plugin-example`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-plugin-example), and the round-trip test
+[`tests/plugin_example_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/plugin_example_test.rs). Every step in **Build order** landed,
+step 5 included — the start-to-finish guide below is that step.
+
+Still supersedes the one-line backlog entry "WASM plugin API (design decision D7
+rules out Lua; WASM is the path if plugins are ever needed)". **Not done yet**,
+at the foot of the page, also still holds on both counts: no published plugins
+page exists, and only `--json-dialogs` carries plugin findings.
+
+**Check:** `grep '^plugins = ' Cargo.toml` prints `plugins = ["native", "dep:wasmi"]`.
+The feature exists, so the host ships.
+
+"Specced" outlasted its own truth by the length of one commit. A spec whose
+author implements it in the same push drifts on the hour rather than the
+quarter, so a gate now reads this line instead of a reminder.
 
 **Relates to:** [D7](./implementation-plan-v6.md) — *Filter DSL replaces embedded
 scripting*, which this document has to answer to before proposing anything.

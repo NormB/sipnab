@@ -1,0 +1,210 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! One set of quality bands, for every view that colours a number.
+//!
+//! Four views banded jitter, loss and MOS independently, and disagreed:
+//!
+//! | value | stream list | dashboard | loss map | stream detail |
+//! |-------|-------------|-----------|----------|---------------|
+//! | 25 ms jitter | Good (< 30) | **Warning** (>= 20) | — | — |
+//! | 0.8 % loss | Good (< 1.0) | — | **Warning** (>= 0.5) | — |
+//!
+//! So one stream rendered green in the list and yellow in the detail view of
+//! that same stream, in the same session. The colour column is the TUI's
+//! primary triage signal, which makes this worse than a tuning disagreement:
+//! an operator scanning for yellow finds a different set of calls depending on
+//! which pane they happen to be looking at.
+//!
+//! `loss_map.rs` even documented the agreement it did not have — "the same
+//! bands the dashboard and stream-detail views use" — above numbers that
+//! matched neither. A comment asserting consistency is not consistency, and it
+//! is how four copies stayed unnoticed.
+//!
+//! The bands live here rather than in `tui/` because they are a judgement about
+//! MEDIA, not about rendering: the same question a report, an alert or an
+//! export answers when it calls a stream bad. `tui/` decides the colour.
+
+/// Where "good" becomes "warning", and "warning" becomes "bad".
+///
+/// One value per boundary, named for the thing it bounds. Defaults are the
+/// values the stream list shipped with, because that is the view an operator
+/// triages from and the one whose numbers the others should have matched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QualityBands {
+    /// Jitter at or above this is a warning (milliseconds).
+    pub jitter_warn_ms: f64,
+    /// Jitter at or above this is bad (milliseconds).
+    pub jitter_bad_ms: f64,
+    /// Loss at or above this is a warning (percent).
+    pub loss_warn_pct: f64,
+    /// Loss at or above this is bad (percent).
+    pub loss_bad_pct: f64,
+    /// MOS below this is a warning.
+    pub mos_warn: f64,
+    /// MOS below this is bad.
+    pub mos_bad: f64,
+}
+
+impl Default for QualityBands {
+    fn default() -> Self {
+        Self {
+            jitter_warn_ms: 30.0,
+            jitter_bad_ms: 50.0,
+            loss_warn_pct: 1.0,
+            loss_bad_pct: 5.0,
+            mos_warn: 4.0,
+            mos_bad: 3.0,
+        }
+    }
+}
+
+/// A verdict about one measured value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Band {
+    /// Inside every threshold.
+    Good,
+    /// Past the warning boundary, short of the bad one.
+    Warning,
+    /// At or past the bad boundary.
+    Bad,
+}
+
+impl QualityBands {
+    /// Band a jitter measurement.
+    #[must_use]
+    pub fn jitter(&self, ms: f64) -> Band {
+        if ms >= self.jitter_bad_ms {
+            Band::Bad
+        } else if ms >= self.jitter_warn_ms {
+            Band::Warning
+        } else {
+            Band::Good
+        }
+    }
+
+    /// Band a loss percentage.
+    #[must_use]
+    pub fn loss(&self, pct: f64) -> Band {
+        if pct >= self.loss_bad_pct {
+            Band::Bad
+        } else if pct >= self.loss_warn_pct {
+            Band::Warning
+        } else {
+            Band::Good
+        }
+    }
+
+    /// Band a MOS score. Lower is worse, so the comparison inverts.
+    #[must_use]
+    pub fn mos(&self, mos: f64) -> Band {
+        if mos < self.mos_bad {
+            Band::Bad
+        } else if mos < self.mos_warn {
+            Band::Warning
+        } else {
+            Band::Good
+        }
+    }
+
+    /// Reject a band set that cannot be honoured.
+    ///
+    /// A warn boundary above its bad boundary is not a stricter setting, it is
+    /// an unreachable middle: nothing would ever render as a warning, and the
+    /// operator who wrote it would see green until the value was already bad.
+    /// Refused at startup rather than silently reordered.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.jitter_warn_ms > self.jitter_bad_ms {
+            return Err(format!(
+                "jitter_warn_ms ({}) is above jitter_bad_ms ({}), so no jitter \
+                 could ever be a warning",
+                self.jitter_warn_ms, self.jitter_bad_ms
+            ));
+        }
+        if self.loss_warn_pct > self.loss_bad_pct {
+            return Err(format!(
+                "loss_warn_pct ({}) is above loss_bad_pct ({}), so no loss could \
+                 ever be a warning",
+                self.loss_warn_pct, self.loss_bad_pct
+            ));
+        }
+        if self.mos_warn < self.mos_bad {
+            return Err(format!(
+                "mos_warn ({}) is below mos_bad ({}); MOS bands run downward, so \
+                 no score could ever be a warning",
+                self.mos_warn, self.mos_bad
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The values that used to disagree now get ONE answer.
+    ///
+    /// 25 ms was Good in the stream list and Warning on the dashboard; 0.8%
+    /// was Good in the stream list and Warning in the loss map. Whatever the
+    /// bands are, every view must now say the same thing about them.
+    #[test]
+    fn the_values_that_used_to_disagree_get_one_answer() {
+        let b = QualityBands::default();
+        assert_eq!(
+            b.jitter(25.0),
+            Band::Good,
+            "25 ms sat across two views' boundaries"
+        );
+        assert_eq!(
+            b.loss(0.8),
+            Band::Good,
+            "0.8% sat across two views' boundaries"
+        );
+    }
+
+    /// Each boundary is inclusive at the bad end, so a value exactly ON a
+    /// threshold is the worse verdict. An operator who sets 50 means "50 is
+    /// bad", not "50 is fine and 50.1 is bad".
+    #[test]
+    fn a_value_exactly_on_a_boundary_takes_the_worse_band() {
+        let b = QualityBands::default();
+        assert_eq!(b.jitter(30.0), Band::Warning);
+        assert_eq!(b.jitter(50.0), Band::Bad);
+        assert_eq!(b.loss(1.0), Band::Warning);
+        assert_eq!(b.loss(5.0), Band::Bad);
+        // MOS runs the other way: the boundary itself is the BETTER band.
+        assert_eq!(b.mos(4.0), Band::Good);
+        assert_eq!(b.mos(3.0), Band::Warning);
+    }
+
+    /// Anti-vacuity: the bands still separate genuinely different inputs.
+    #[test]
+    fn the_bands_still_separate_good_from_bad() {
+        let b = QualityBands::default();
+        assert_eq!(b.jitter(1.0), Band::Good);
+        assert_eq!(b.jitter(40.0), Band::Warning);
+        assert_eq!(b.jitter(120.0), Band::Bad);
+        assert_eq!(b.mos(4.4), Band::Good);
+        assert_eq!(b.mos(2.0), Band::Bad);
+    }
+
+    /// An inverted band set is refused rather than quietly reordered.
+    #[test]
+    fn an_unreachable_middle_is_refused() {
+        let bad = QualityBands {
+            jitter_warn_ms: 80.0,
+            jitter_bad_ms: 50.0,
+            ..Default::default()
+        };
+        let err = bad.validate().expect_err("warn above bad must be refused");
+        assert!(
+            err.contains("jitter_warn_ms"),
+            "the error must name the key: {err}"
+        );
+
+        assert!(
+            QualityBands::default().validate().is_ok(),
+            "the shipped defaults must be a valid band set"
+        );
+    }
+}

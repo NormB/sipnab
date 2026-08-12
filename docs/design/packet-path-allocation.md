@@ -1,6 +1,31 @@
 # Performance spec: what the packet path actually spends its time on
 
-**Status:** analysis complete, implementation not started.
+**Status:** P1 and P2 both SHIPPED in 0.5.91, 2026-08-10. P1 landed as
+`ddde6b4` — `ParsedPacket` carries a `Copy` locator, and only the two sites
+that retain a pointer materialise a `FrameRef`. P2 landed as `ac75f2f` — the
+reader cuts frames from a shared 64 KiB block instead of allocating one per
+packet. P3 is still open: nothing in the tree installs or runs `coz`.
+**Check:** `grep -n 'pub frame' src/capture/parse.rs` returns
+`Option<crate::capture::packet::FrameLocator>` — the `Copy` locator P1
+specified, where the same field read `Option<FrameRef>` before `ddde6b4`. And
+`grep -n 'const BLOCK' src/parallel.rs` finds P2's 64 KiB block.
+
+**Every ceiling in this file sized the work; none of them reports it.** The
+`P1`, `P2` and `P1 + P2` columns come from diagnostic builds that delete the
+work rather than implement it — the P2 diagnostic leaks a 512 MB arena — so
+quoting them as sipnab's throughput cites a number no shipped binary ever
+produced. What shipped lives in the 0.5.91 entry of
+[`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md), and
+the block allocator in fact beat the ceiling predicted for it. Read the
+`0.5.89, current` row under *Targets* the same way: current on 2026-08-09.
+
+Everything else here stands — the profile, the three findings, why the bisect
+misdiagnosed the cost, and the harness bug that nearly killed P2 on a false
+negative. Only the top line drifted, and the P2 section below had already
+overtaken it, writing "P1 (shipped)" while this line still said nothing
+started: a spec records what its author understood the day they wrote it, which
+here was the day before they implemented it.
+
 **Measured:** 2026-08-09, reference host, `--profile profiling`, `perf 6.8.12`.
 
 This supersedes PERF1's original diagnosis in

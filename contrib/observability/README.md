@@ -36,8 +36,18 @@ docker compose up -d
 Then run sipnab locally with metrics exposed:
 
 ```bash
-sipnab -N -L 0.0.0.0:9060 --metrics 0.0.0.0:9100
+# Run all of these, in order.
+printf 'prometheus:%s\n' "$(openssl rand -hex 16)" > /etc/sipnab/metrics-auth
+chmod 0600 /etc/sipnab/metrics-auth
+sipnab -N -L 0.0.0.0:9060 --metrics 0.0.0.0:9100 \
+    --metrics-auth-file /etc/sipnab/metrics-auth
 ```
+
+A non-loopback `--metrics` bind without credentials is refused at startup, so
+the command above will not run without `--metrics-auth-file`. Put the same
+`user:pass` in Prometheus's `basic_auth` block. Basic credentials are
+base64-encoded rather than encrypted — terminate TLS upstream if the scrape
+crosses an untrusted network.
 
 Open <http://localhost:3000> (admin/admin), navigate to the *sipnab*
 folder, open the *sipnab Overview* dashboard.
@@ -93,9 +103,18 @@ preserves history across restarts.
 For a topology where sipnab runs on a separate capture host fed by HEP
 mirrors from upstream SIP/RTP services:
 
-1. Run `sipnab --hep-listen 0.0.0.0:9060 --api 0.0.0.0:9100 -N` on the
-   capture host (the included `sipnab-hep.service` is a sample systemd
-   unit — adjust user, paths, and capability set for your environment).
+1. Run this on the capture host (the included `sipnab-hep.service` is a sample
+   systemd unit — adjust user, paths, and capability set for your environment):
+
+   ```bash
+   sipnab -N \
+       --hep-listen 0.0.0.0:9060 --hep-allow 10.0.0.0/8 \
+       --api 0.0.0.0:9100 --api-signing-key-file /etc/sipnab/api-key
+   ```
+
+   Both binds are refused at startup without those companions: a non-loopback
+   HEP listener needs `--hep-allow` or `--hep-auth`, and a non-loopback REST API
+   needs a key. Replace `10.0.0.0/8` with the actual mirror sources.
 2. Run this compose stack on a separate host with `SIPNAB_HOST=<capture-host>`
    in `.env`.
 3. Configure your SIP server to mirror HEP v3 to `<capture-host>:9060`

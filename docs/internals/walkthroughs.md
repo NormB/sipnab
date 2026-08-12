@@ -24,7 +24,7 @@ nothing enforces a new thing until you have watched it fail.
 1. Add the `#[arg]` field to `Cli` in [`cli.rs`](../../src/cli.rs), with a
    `help_heading` matching its group.
    → [`cli_help_test`](../../tests/cli_help_test.rs) checks the grouping of the
-   ~140-flag help output.
+   ~160-flag help output.
 2. Wire it wherever it takes effect — usually
    [`plan()`](../../src/app/bootstrap.rs), so the flag becomes part of
    `RunPlan` rather than at the point of use.

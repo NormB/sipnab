@@ -7,7 +7,7 @@
 //! timestamps. Offline those two clocks are unrelated: a capture recorded in
 //! 2023 and read in 2026 is three years "idle" the instant it is loaded, so
 //! every sweep that happened to fire truncated every dialog to
-//! `KEEP_MESSAGES_PER_IDLE_DIALOG` and flagged every unassociated stream as
+//! `keep_messages_per_idle_dialog` and flagged every unassociated stream as
 //! orphaned. How many sweeps fired was decided by how long the *read* took —
 //! a debug build and a release build over the same bytes printed different
 //! reports, and so did the same build on a loaded machine.
@@ -59,11 +59,11 @@ const SSRC_BITS: u32 = 0x1122_3344;
 const SSRC_2_BITS: u32 = 0x5566_7788;
 
 /// Messages in the long dialog: comfortably over
-/// `KEEP_MESSAGES_PER_IDLE_DIALOG` (20), so a wrongly-fired compaction is
+/// `keep_messages_per_idle_dialog` (20), so a wrongly-fired compaction is
 /// unmistakable in the report's `Msgs` column.
 const DIALOG_MESSAGES: usize = 44;
 
-/// Messages an idle dialog keeps, `KEEP_MESSAGES_PER_IDLE_DIALOG`.
+/// Messages an idle dialog keeps, `keep_messages_per_idle_dialog`.
 const KEPT_WHEN_IDLE: usize = 20;
 
 /// Caller-side address of the synthetic capture.
@@ -385,7 +385,7 @@ fn offline_compaction_follows_capture_time() {
         dialog_msg_count(&out, CALL_ID),
         KEPT_WHEN_IDLE,
         "a dialog idle for five minutes of capture time was not compacted to \
-         KEEP_MESSAGES_PER_IDLE_DIALOG:\n{out}"
+         keep_messages_per_idle_dialog():\n{out}"
     );
     let orphans = out
         .split_once("Orphaned Streams:")

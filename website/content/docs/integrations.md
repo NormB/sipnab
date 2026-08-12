@@ -12,11 +12,13 @@ sipnab supports HEP v2/v3 (Homer Encapsulation Protocol) for integration with Ho
 
 ### Receiving HEP
 
+A routable bind needs a guard — sipnab refuses `-L 0.0.0.0:9060` unless a source allowlist or a shared secret constrains it:
+
 ```bash
-sipnab -L 0.0.0.0:9060 -E
+sipnab -L 0.0.0.0:9060 -E --hep-allow 192.0.2.0/24
 ```
 
-Restrict sources with `--hep-allow` and rate-limit with `--hep-rate-limit`:
+Cap the accepted packet rate as well, with `--hep-rate-limit`:
 
 ```bash
 sipnab -L 0.0.0.0:9060 -E --hep-allow 192.0.2.0/24 --hep-rate-limit 25000

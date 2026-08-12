@@ -64,11 +64,11 @@ SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 
 ## Feature flags
 
-sipnab uses Cargo feature flags to control optional capability. The default build includes `native`, `tui`, and `audio`.
+sipnab uses Cargo feature flags to control optional capability. The default build includes `native`, `tui`, `audio`, and `metrics`.
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
-| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required by every other feature except `wasm`.** Included by default. | `pcap`, `clap`, `crossbeam-channel`, `libc`, `pcap-file`, `tracing-subscriber` |
+| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, and `plugins`; not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `crossbeam-channel`, `libc`, `pcap-file`, `tracing-subscriber` |
 | `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. | `native`, `ratatui`, `crossterm`, `unicode-width` |
 | `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `aes`, `cbc`, `zeroize` |
@@ -76,7 +76,9 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `api` | REST API + Prometheus metrics endpoint. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` | all |
+| `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64` |
+| `plugins` | WASM plugin host (`--plugin`): sandboxed third-party dialog detections | `native`, `wasmi` |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | wasm-bindgen toolchain |
 
 Build with specific features. The TUI and TLS decryption only — no audio plugin,
@@ -101,7 +103,7 @@ cargo build --release --features full
 
 ### What features do you need?
 
-- **Most users (interactive analysis):** `cargo build --release` -- default features (`native` + `tui` + `audio`) give you interactive TUI, CLI mode, and audio playback of captured RTP.
+- **Most users (interactive analysis):** `cargo build --release` -- default features (`native` + `tui` + `audio` + `metrics`) give you interactive TUI, CLI mode, audio playback of captured RTP, and the standalone Prometheus endpoint.
 - **CI/scripting only (no TUI):** `cargo build --release --no-default-features --features native` -- headless binary for automation pipelines.
 - **MCP / AI-agent server:** add `mcp` (stdio) or `mcp,mcp-http` (HTTP). See [MCP Server](@/docs/mcp.md) for the runtime configuration.
 - **Headless capture host with HEP + Prometheus + MCP:** `cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http` -- the typical "fleet capture server" feature set, leaves out the TUI and audio playback you don't need on a server.

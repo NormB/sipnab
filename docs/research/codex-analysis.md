@@ -4,6 +4,16 @@
 **Review date:** 2026-07-22  
 **Scope:** Rust application and workspace crate, runtime configuration, network listeners, file outputs, helper scripts, and dependency manifest/lockfile. Generated website assets, demo captures, and the prebuilt release binary were not reverse engineered.
 
+> **About the line numbers below.** They are as-of the reviewed revision
+> `698585e`, which is not an object in this repository — it predates a history
+> rewrite, so `git show` on it fails and a `#L` anchor against `main` lands on
+> unrelated code. The links therefore point at the FILE, and the ranges are
+> quoted in the text as a record of what was reviewed rather than as a place to
+> click. Repointing them at `main` would falsify the audit: the vulnerable code
+> no longer exists in that shape, and several of those lines now hold the FIX
+> — `prometheus_server.rs:28` is the connection cap that resolved SN-02.
+
+
 ## Executive summary
 
 The strongest practical attack chain is the trust mismatch at the HEP boundary. A HEP UDP sender is allowed to assert arbitrary original source and destination addresses, but sipnab does not authenticate incoming HEP packets. Those asserted addresses subsequently become authoritative packet metadata. In passive analysis this permits capture poisoning; when scanner-kill is enabled it can make sipnab transmit a SIP response to an attacker-selected unicast address. The CIDR allowlist limits who may submit packets but is optional and is based only on the outer UDP source, so it does not validate the inner asserted endpoints.

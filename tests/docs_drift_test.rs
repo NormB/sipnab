@@ -2435,9 +2435,13 @@ fn no_documentation_table_repeats_a_row() {
     assert_eq!(
         // Raised 494 -> 496 by the new [media] config section: one table in
         // docs/config-reference.md and one in its site mirror.
+        // Raised 496 -> 498: docs/auth.md gained two tables in the scoped-token
+        // rewrite, and docs/mcp.md one. Attributed per file before the number
+        // moved — every changed page was diffed against HEAD and each delta is
+        // a table that was written, not a boundary that stopped being detected.
         tables,
-        496,
-        "walked {tables} tables, expected 496. More is fine — bump this. FEWER \
+        498,
+        "walked {tables} tables, expected 498. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
@@ -2841,9 +2845,8 @@ fn the_published_amr_wb_tables_match_the_model() {
 /// `expand_alias` returns.
 ///
 /// `problems` is the one alias documented verbatim, in `docs/examples.md` and
-/// its site mirror `website/content/docs/cookbook.md`, precisely because a
-/// reader is told not to conflate it with the narrower `--problems` flag. That
-/// makes the quoted expansion load-bearing, and it had drifted: both files
+/// its site mirror `website/content/docs/cookbook.md`. That makes the quoted
+/// expansion load-bearing, and it had drifted: both files
 /// listed `OR rtp.orphaned == true`, a field withdrawn from the DSL, so the
 /// docs promised a broader sweep than the code performs AND named a field that
 /// `--filter` now refuses outright.

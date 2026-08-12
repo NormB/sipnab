@@ -1,6 +1,36 @@
 # MCP tools: shutdown, and what else is missing
 
-**Status:** analysis and proposal, 2026-07-31. Nothing implemented.
+**Status:** SHIPPED, 2026-07-31 — the same morning this page proposed it. Every
+tool proposed here exists, in the order the *Sequencing* section asked for:
+`capture_status` and `server_capabilities` (`2951373`, 08:51), then
+`explain_response_code`, `compare_dialogs`, `get_sdp_timeline` and
+`search_by_time` (`e074834`, 09:31), then `list_captures`, `export_capture`,
+`export_audio` and `shutdown_server` (`ebcbf58`, 09:59). `shutdown_server`
+landed last and behind `--mcp-allow-shutdown`, in the same commit that made the
+save path it depends on real. `open_capture`, the remaining Tier 3 item,
+followed in `01bc541` on 2026-08-02.
+**Check:** `grep -c '#\[tool(' src/mcp/server.rs` returns 31, where this
+document counted eleven.
+
+**The refusals held too, which is the other half of the record.** Running
+`grep -cE 'name = "(set_filter|apply_filter|run_command|delete_capture)"' src/mcp/server.rs`
+prints `0`: nobody quietly added the tools the *Not proposed* section declined,
+so the sequencing this page recommended describes what the surface actually
+did.
+
+**Eleven was the right count on 2026-07-31**, so read that number as history
+rather than as an error. One of the eleven, `stats`, folded into
+`capture_status` in 0.5.92; the surface reached 31 by growing, not by renaming.
+
+**One claim below no longer holds.** *"Every one of the eleven current tools is
+a read-only query"* described the surface accurately then. Five tools now carry
+`read_only_hint = false` — `export_audio`, `export_capture`, `open_capture`,
+`save_findings` and `shutdown_server` — each inert unless an operator arms it.
+The argument on this page is why: it asked for the guard, not for the absence
+of the tool.
+
+A design page records what its author understood when they wrote it, and here
+that was fifteen minutes before the first implementation commit.
 
 Two questions prompted this: *"how do I shut down the remote sipnab from my
 laptop?"* and *"what other tools should the MCP server have?"*

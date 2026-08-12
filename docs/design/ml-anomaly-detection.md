@@ -2,6 +2,7 @@
 
 **Status:** research and spec only, 2026-07-30. Nothing implemented, and the
 recommendation is **not to implement the obvious version**.
+**Check:** `grep -rniE 'chi.square|baseliner' src/` exits 1 — no baseliner exists to anomaly-detect against.
 
 Supersedes the one-line backlog entry "Machine-learning anomaly detection over
 SIP/RTP patterns", which named a technique rather than a problem.

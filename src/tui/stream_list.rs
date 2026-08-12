@@ -19,14 +19,10 @@ use crate::sip::dsl::FilterExpr;
 
 // ── Quality thresholds ──────────────────────────────────────────────
 
-/// Jitter threshold for "warning" status (milliseconds).
-const JITTER_WARN_MS: f64 = 30.0;
-/// Jitter threshold for "bad" status (milliseconds).
-const JITTER_BAD_MS: f64 = 50.0;
-/// Packet loss threshold for "warning" status (percentage).
-const LOSS_WARN_PCT: f64 = 1.0;
-/// Packet loss threshold for "bad" status (percentage).
-const LOSS_BAD_PCT: f64 = 5.0;
+// The bands moved to [`crate::rtp::bands::QualityBands`]. Four views banded
+// these numbers independently and disagreed — 25 ms jitter rendered Good here
+// and Warning on the dashboard, for the same stream in the same session — so
+// the boundaries now live in one place that every view reads.
 
 // ── Stream health ───────────────────────────────────────────────────
 
@@ -60,13 +56,14 @@ pub fn classify_stream(stream: &RtpStream) -> StreamHealth {
         return StreamHealth::Orphaned;
     }
     let loss_pct = stream.loss_percent();
-
-    if stream.jitter >= JITTER_BAD_MS || loss_pct >= LOSS_BAD_PCT {
-        StreamHealth::Bad
-    } else if stream.jitter >= JITTER_WARN_MS || loss_pct >= LOSS_WARN_PCT {
-        StreamHealth::Warning
-    } else {
-        StreamHealth::Good
+    let bands = crate::rtp::bands::QualityBands::default();
+    // Worst of the two dimensions wins: a stream with clean jitter and 6% loss
+    // is not a healthy stream.
+    use crate::rtp::bands::Band;
+    match (bands.jitter(stream.jitter), bands.loss(loss_pct)) {
+        (Band::Bad, _) | (_, Band::Bad) => StreamHealth::Bad,
+        (Band::Warning, _) | (_, Band::Warning) => StreamHealth::Warning,
+        _ => StreamHealth::Good,
     }
 }
 

@@ -551,7 +551,15 @@ fn wiki_intra_docs_links_resolve() {
     // it pointed at is gone with the tool.
     // Raised 344 -> 345 by the doc-link pass: one more tracked repo path in a
     // wiki-published page became a link instead of text a reader must retype.
-    const EXPECTED_WIKI_LINKS: usize = 345;
+    // Raised 345 -> 347 by the scoped-token rewrite in docs/auth.md: the
+    // scrape-job recipe now points at the MCP page's tool table and at the
+    // REST reference, because the credential it hands out is only safe if the
+    // reader can see what that scope actually reaches. Attributed with this
+    // gate's OWN rule — relative targets that are same-page anchors or end in
+    // `.md` — after a first pass counted every relative link and reported a
+    // net zero, which would have sent me looking for a regression that did not
+    // exist. auth.md is the only changed file, +2, nothing lost elsewhere.
+    const EXPECTED_WIKI_LINKS: usize = 347;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \

@@ -1807,10 +1807,26 @@ impl SctpReassembler {
         // Middle or ending fragment: requires a started, TSN-contiguous stream.
         // Taking it out first means every fail-closed exit already drops it.
         let mut partial = self.streams.shift_remove(&key)?;
-        if frag.tsn != partial.next_tsn
-            || partial.buf.len().saturating_add(frag.data.len()) > MAX_SCTP_REASSEMBLY
-        {
+        let over_cap = partial.buf.len().saturating_add(frag.data.len()) > MAX_SCTP_REASSEMBLY;
+        if frag.tsn != partial.next_tsn || over_cap {
             // Gap / reorder / overflow — drop the partial, emit nothing.
+            //
+            // A gap is the protocol's business; an overflow is ours. RFC 4960
+            // sets no reassembly ceiling, so a SIP-over-SCTP message (RFC 4168)
+            // with a large body is dropped ENTIRELY here — not truncated, not
+            // malformed, absent. The call simply does not appear. Warned once
+            // so that absence has a stated cause.
+            if over_cap {
+                static SCTP_OVER_CAP_WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !SCTP_OVER_CAP_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "an SCTP message exceeded the {MAX_SCTP_REASSEMBLY}-byte reassembly \
+                         cap and was dropped entirely, so the messages it carried will not \
+                         appear at all. RFC 4960 sets no such limit; this is sipnab's."
+                    );
+                }
+            }
             return None;
         }
         partial.buf.extend_from_slice(&frag.data);

@@ -1,8 +1,12 @@
 # seccomp and Landlock
 
-**Status:** DESIGN. Nothing here is implemented —
-`grep -rn 'seccomp\|landlock\|unshare' src/` still matches nothing, which is
-G5's own opening evidence and is still true.
+**Status:** DESIGN. Nothing here is implemented, which is G5's own opening
+evidence and is still true.
+**Check:** `grep -rniE 'seccomp|landlock|\bunshare\(' src/` exits 1.
+The original wording of this check was `grep -rn 'seccomp\|landlock\|unshare'`,
+which matched one hit — the prose "(unshared)" in the TUI, added months before
+this document. The verdict was right and the evidence was too broad, so the
+command narrowed and the conclusion stands.
 **Verified against:** `3267b08`, working tree.
 **Backlog:** [`backlog.md`](backlog.md) **G5** (`:1516`).
 **Upstream argument:**

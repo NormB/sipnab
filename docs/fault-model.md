@@ -78,9 +78,9 @@ The #1 memory-DoS surface: an attacker invents unlimited unique Call-IDs
 | per-stream audio frames | 1500 | ring buffer | `stream_store.rs` |
 | IP/TCP reassembly | 10k entries / 30 s TTL | evict | `reassembly.rs` |
 
-Both eviction policies are memory-safe. `rotate=false` (default) trades
-availability (new calls dropped under a flood) for never evicting a
-tracked dialog. `rotate=true` is LRU.
+Both eviction policies are memory-safe. `rotate=true` is the default and is
+LRU. `rotate=false`, which `--no-rotate` selects, trades availability (new
+calls dropped under a flood) for never evicting a tracked dialog.
 
 ## 4. Capture, sink, concurrency (classes 4–6)
 

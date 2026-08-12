@@ -251,15 +251,17 @@ fn axis_line(width: usize, left: &str, mid: &str, right: &str) -> String {
     cells.into_iter().collect()
 }
 
-/// Style for a packet-loss percentage: < 0.5% good, 0.5–2.0% warning,
-/// >= 2.0% bad — the same bands the dashboard and stream-detail views use.
+/// Style for a packet-loss percentage, using the shared bands.
+///
+/// This used 0.5/2.0 while the stream list used 1.0/5.0, and its own doc
+/// comment claimed "the same bands the dashboard and stream-detail views use"
+/// — which was true of neither. A comment asserting consistency is not
+/// consistency; the boundaries now come from one place.
 fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
-    if loss_pct < 0.5 {
-        Style::default().fg(theme.good)
-    } else if loss_pct < 2.0 {
-        Style::default().fg(theme.warning)
-    } else {
-        Style::default().fg(theme.bad)
+    match crate::rtp::bands::QualityBands::default().loss(loss_pct) {
+        crate::rtp::bands::Band::Good => Style::default().fg(theme.good),
+        crate::rtp::bands::Band::Warning => Style::default().fg(theme.warning),
+        crate::rtp::bands::Band::Bad => Style::default().fg(theme.bad),
     }
 }
 

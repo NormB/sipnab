@@ -1285,6 +1285,12 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     if let Some(v) = loaded.config.limits.max_messages_per_dialog {
         crate::sip::dialog_store::set_max_messages_per_dialog(v as usize);
     }
+    if let Some(v) = loaded.config.limits.idle_compact_after_secs {
+        crate::sip::dialog_store::set_idle_compact_after_secs(v as i64);
+    }
+    if let Some(v) = loaded.config.limits.keep_messages_per_idle_dialog {
+        crate::sip::dialog_store::set_keep_messages_per_idle_dialog(v as usize);
+    }
 
     Ok(loaded)
 }

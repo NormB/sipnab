@@ -14,7 +14,7 @@ End-to-end examples in five languages. Each one covers: bearer-token auth, listi
 
 > **Status codes:** the REST API returns **503 Service Unavailable** when the rate limiter turns a request away or the connection cap (not 429). 401 on bad/missing token, 404 on unknown call_id.
 
-> **Per-call response code / per-message data is not on REST.** The REST API aggregates each dialog into a summary (`call_id`, `state`, `from`, `to`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`) — individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`. To work with per-message data programmatically, use either: (a) the CLI `sipnab -N --json ...` mode, which emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc. (field reference: [Output Formats](@/docs/output-formats.md); see also [cookbook Recipe 3](@/docs/cookbook.md#3-find-every-failed-call-grouped-by-response-code)), or (b) the MCP `get_dialog` tool, which returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).
+> **Per-call response code / per-message data is not on REST.** The REST API aggregates each dialog into a summary (`call_id`, `state`, `from_user`, `to_user`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`) — individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`. To work with per-message data programmatically, use either: (a) the CLI `sipnab -N --json ...` mode, which emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc. (field reference: [Output Formats](@/docs/output-formats.md); see also [cookbook Recipe 3](@/docs/cookbook.md#3-find-every-failed-call-grouped-by-response-code)), or (b) the MCP `get_dialog` tool, which returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).
 
 ### curl + jq one-liners
 
@@ -236,7 +236,7 @@ async def tail_dialogs(poll_interval: float = 2.0) -> None:
                     if d["state"] in ("Completed", "Failed", "Cancelled"):
                         print(f"{datetime.now(timezone.utc).isoformat()}  "
                               f"{d['state']:10s}  {d['call_id']}  "
-                              f"{d.get('from')} → {d.get('to')}")
+                              f"{d.get('from_user')} → {d.get('to_user')}")
             except httpx.HTTPError as e:
                 print(f"warning: {e}")
             await asyncio.sleep(poll_interval)
@@ -260,8 +260,8 @@ interface DialogSummary {
   call_id: string;
   state: string;
   method: string;
-  from: string;
-  to: string;
+  from_user: string | null;
+  to_user: string | null;
   duration_sec: number;
   msg_count: number;
 }
@@ -356,8 +356,8 @@ use std::env;
 struct DialogSummary {
     call_id: String,
     state: String,
-    from: String,
-    to: String,
+    from_user: Option<String>,
+    to_user: Option<String>,
     duration_sec: f64,
     msg_count: u32,
 }
@@ -470,8 +470,8 @@ import (
 type DialogSummary struct {
     CallID      string  `json:"call_id"`
     State       string  `json:"state"`
-    From        string  `json:"from"`
-    To          string  `json:"to"`
+    FromUser    *string `json:"from_user"`
+    ToUser      *string `json:"to_user"`
     DurationSec float64 `json:"duration_sec"`
     MsgCount    int     `json:"msg_count"`
 }
@@ -642,7 +642,7 @@ while True:
         cid = d["call_id"]
         if cid not in seen:
             seen.add(cid)
-            print(f"FAILED: {cid} from={d.get('from')} to={d.get('to')}")
+            print(f"FAILED: {cid} from={d.get('from_user')} to={d.get('to_user')}")
     time.sleep(5)
 ```
 
@@ -651,7 +651,7 @@ while True:
 ```bash
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   "http://127.0.0.1:8080/v1/dialogs?limit=1000" | \
-  jq -r '.dialogs[] | [.call_id, .method, .state, .from, .to, .duration_sec] | @csv'
+  jq -r '.dialogs[] | [.call_id, .method, .state, .from_user, .to_user, .duration_sec] | @csv'
 ```
 
 ### Alert on poor MOS (bash)

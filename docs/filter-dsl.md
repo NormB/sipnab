@@ -157,7 +157,7 @@ Notes:
 - Regex (`=~`) is not applicable to numeric or boolean fields.
 - Numeric equality uses epsilon comparison for floating-point precision. For computed values (`duration`, `pdd`, `rtp.mos`) prefer range operators (`>=`, `<`) over `==` — an exact match on a derived float rarely hits.
 
-> **Note:** String comparisons are case-sensitive. `state` values must exactly match one of the 12 values listed under [String Fields](#string-fields) above (`'Failed'`, not `'failed'`). Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.
+> **Note:** String comparisons are case-sensitive. `state` values must exactly match one of the 13 values listed under [String Fields](#string-fields) above (`'Failed'`, not `'failed'`). Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.
 
 ## Values
 

@@ -5,6 +5,7 @@
 **Backlog:** [`backlog.md`](backlog.md) **PR1**, the defect content at `:539-586`.
 **Pinned by:** `a_capture_beginning_mid_dialog_reports_trying_a_known_defect`
 ([`arrival_order_parity_test.rs:389`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L389)).
+**Check:** `grep -n 'SipMethod::Bye =>' src/sip/dialog.rs` exits 1 — BYE still falls through the catch-all.
 
 **Read `15b6337`'s commit message before this page.** Its closing sentence is the
 constraint everything below is written under:

@@ -4821,3 +4821,245 @@ fn walkdir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+/// A design doc that says something is unbuilt must say HOW TO CHECK that, and
+/// the check must still hold.
+///
+/// `an_unimplemented_design_doc_does_not_name_a_shipped_flag` above was written
+/// for this defect class in 0.5.61 and missed five instances of it, for a
+/// reason worth stating rather than patching around: it reads only the long
+/// flags named in a doc's H1. That narrowing was deliberate and correct — an
+/// earlier draft scanned every flag a doc mentioned and produced three findings
+/// where one was real, and a gate that also cries about `--limit` teaches
+/// people to skim it. But a doc whose subject is not a flag is invisible to it.
+/// `icid-correlation.md` is titled "Correlating on `P-Charging-Vector`'s
+/// `icid-value`". No flag, nothing checked, and the claim "Nothing here is
+/// implemented" outlived the implementation by four days.
+///
+/// So this takes the other route, and it is the one those docs already invented:
+/// make the claim falsifiable and then falsify it. Two docs cited a runnable
+/// grep in their Status block. Checking those two found a real error in one and
+/// an imprecise command in the other — a 100% hit rate among the claims that
+/// could be checked at all, against eight that could not.
+///
+/// Why the timing makes this necessary rather than merely tidy: a design doc is
+/// written when its author understands the problem, which is often minutes
+/// before they solve it. `wasm-plugin-api.md` shipped its implementation IN THE
+/// SAME COMMIT as the doc. `task-first-docs.md` was overtaken 18 minutes later,
+/// `icid-correlation.md` 36 minutes later. Nobody was careless; the claim is
+/// simply born with a short half-life and nothing re-reads it. A person cannot
+/// be relied on to, which is what a gate is for.
+#[test]
+fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
+    /// Ways this repo's docs say "this does not exist yet".
+    const UNBUILT: &[&str] = &[
+        "not implemented",
+        "not yet implemented",
+        "nothing implemented",
+        "nothing here is implemented",
+        "nothing rewritten",
+        "implementation not started",
+    ];
+
+    let dir = repo().join("docs/design");
+    let mut checked = 0;
+    let mut problems = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).expect("read docs/design/") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let text = std::fs::read_to_string(&path).expect("read design doc");
+
+        // The Status BLOCK: the line plus its continuation, since the evidence
+        // is usually a clause or two below the verdict.
+        let Some(start) = text.find("**Status:**") else {
+            continue;
+        };
+        let block: String = text[start..]
+            .lines()
+            .take_while(|l| !l.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let lower = block.to_ascii_lowercase();
+        if !UNBUILT.iter().any(|p| lower.contains(p)) {
+            continue;
+        }
+        checked += 1;
+
+        // The evidence: a backticked grep. Restricted to `grep` with no shell
+        // metacharacters — this executes what a document says, so the surface
+        // it can name is deliberately tiny.
+        // The `**Check:**` LINE specifically, not any grep in the block. A
+        // Status block may discuss a command in prose — one doc names a
+        // `grep -cE` that prints 0 and exits 1, correct as prose and wrong as
+        // evidence — and picking the first backtick would run that instead.
+        let cmd = block.split("**Check:**").nth(1).and_then(check_command);
+        let Some(cmd) = cmd else {
+            problems.push(format!(
+                "{name}: claims something is unbuilt and names no way to check it. \
+                 Add a backticked `grep ...` to the Status block, with what it \
+                 should return — that is the difference between a claim a reader \
+                 can verify and one they can only believe."
+            ));
+            continue;
+        };
+        if has_shell_syntax(&cmd) {
+            problems.push(format!(
+                "{name}: evidence command is not a plain grep: `{cmd}`"
+            ));
+            continue;
+        }
+
+        // What the doc says the command returns. "exits 1" and "matches
+        // nothing" both mean: no hits.
+        let expect_none = lower.contains("exits 1")
+            || lower.contains("matches nothing")
+            || lower.contains("returns nothing");
+        if !expect_none && !lower.contains("exits 0") {
+            problems.push(format!(
+                "{name}: cites `{cmd}` but never says what it should return, so \
+                 nothing can be compared against it"
+            ));
+            continue;
+        }
+
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .current_dir(repo())
+            .output()
+            .expect("run the doc's own evidence command");
+        let found = out.status.success();
+        let hits = String::from_utf8_lossy(&out.stdout).lines().count();
+
+        if expect_none && found {
+            problems.push(format!(
+                "{name}: says `{cmd}` finds nothing, but it returns {hits} match(es). \
+                 Either the thing shipped and the Status line is now false, or the \
+                 command is too broad and is matching prose."
+            ));
+        } else if !expect_none && !found {
+            problems.push(format!("{name}: says `{cmd}` matches, and it does not"));
+        }
+    }
+
+    assert!(
+        checked >= 5,
+        "only {checked} design docs claim something is unbuilt — the phrase list \
+         stopped matching and this gate is checking almost nothing"
+    );
+    problems.sort();
+    assert!(
+        problems.is_empty(),
+        "a design doc's claim about what is unbuilt cannot be checked, or no \
+         longer holds:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// True when a command carries shell syntax OUTSIDE single quotes.
+///
+/// The first version rejected these characters anywhere, and refused two honest
+/// commands for it: `grep -c '#\[tool(' src/mcp/server.rs` and
+/// `grep -n 'SipMethod::Bye =>' src/sip/dialog.rs`. Both hold their parenthesis
+/// or angle bracket inside single quotes, where the shell treats them as
+/// literal text. A gate that rejects correct input teaches people to work
+/// around it, so it checks what actually matters: unquoted metacharacters.
+fn has_shell_syntax(cmd: &str) -> bool {
+    let mut in_quote = false;
+    for c in cmd.chars() {
+        if c == '\'' {
+            in_quote = !in_quote;
+        } else if !in_quote && matches!(c, '&' | ';' | '>' | '<' | '$' | '(' | '`' | '|') {
+            return true;
+        }
+    }
+    false
+}
+
+/// The `grep` a Status block offers as evidence, if any.
+fn check_command(block: &str) -> Option<String> {
+    regex::Regex::new(r"`(grep [^`]+)`")
+        .unwrap()
+        .captures(block)
+        .map(|c| c[1].to_string())
+}
+
+/// Every `**Check:**` line in a design doc still returns what it claims.
+///
+/// The gate above only inspects docs claiming something is UNBUILT. A doc that
+/// flips to IMPLEMENTED keeps its evidence line and nothing runs it again —
+/// the same rot in the other direction, and the direction `icid-correlation.md`
+/// is now in. A claim is worth checking whichever way it points.
+#[test]
+fn every_check_line_in_a_design_doc_still_holds() {
+    let dir = repo().join("docs/design");
+    let mut ran = 0;
+    let mut problems = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).expect("read docs/design/") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let text = std::fs::read_to_string(&path).expect("read design doc");
+
+        for line in text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("**Check:**"))
+        {
+            let Some(cmd) = check_command(line) else {
+                problems.push(format!("{name}: a **Check:** line names no `grep`"));
+                continue;
+            };
+            if has_shell_syntax(&cmd) {
+                problems.push(format!("{name}: check is not a plain grep: `{cmd}`"));
+                continue;
+            }
+            let lower = line.to_ascii_lowercase();
+            let expect_none = lower.contains("exits 1")
+                || lower.contains("matches nothing")
+                || lower.contains("returns nothing");
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .current_dir(repo())
+                .output()
+                .expect("run the doc's own check");
+            ran += 1;
+            let found = out.status.success();
+            if expect_none && found {
+                problems.push(format!(
+                    "{name}: `{cmd}` should find nothing and returns {} match(es)",
+                    String::from_utf8_lossy(&out.stdout).lines().count()
+                ));
+            } else if !expect_none && !found {
+                problems.push(format!("{name}: `{cmd}` should match, and finds nothing"));
+            }
+        }
+    }
+
+    assert!(
+        ran >= 6,
+        "only {ran} **Check:** lines ran — they are being dropped from the docs \
+         rather than kept true, and this gate is checking almost nothing"
+    );
+    problems.sort();
+    assert!(
+        problems.is_empty(),
+        "a design doc's own evidence no longer returns what it claims:\n  {}",
+        problems.join("\n  ")
+    );
+}

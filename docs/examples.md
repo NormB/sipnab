@@ -74,7 +74,7 @@ The same sweep in JSON, for piping into another tool:
 sipnab -N -I capture.pcap --problems --json
 ```
 
-The wider net: the `problems` DSL alias also covers one-way audio, loss/jitter, NAT mismatch, asymmetry, and late media.
+The same sweep spelled the long way. `--problems` expands to the `problems` DSL alias, so this selects exactly the same calls.
 
 ```bash
 sipnab -N -I capture.pcap --filter problems
@@ -90,7 +90,7 @@ INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060  Failed  408 Req
 
 **What to look for:**
 
-- The `--problems` **flag** matches `retransmits > 0 OR state == 'Failed'` — a deliberately narrow sweep. The same-named **DSL alias**, reached with `--filter problems`, is much broader: `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`. Don't conflate the two. If both come back empty, the capture is probably clean.
+- The `--problems` **flag** and the **DSL alias** reached with `--filter problems` expand to one and the same expression: `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`. Either spelling flags the same calls, so an empty answer means the capture is probably clean.
 - The end-of-capture summary distinguishes RTP packets from RTP streams: `852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams`. A capture with media but no SIP usually means the SIP signaling happened off-pcap (different VLAN, different host, different port).
 
 **Pitfalls:**
@@ -296,10 +296,10 @@ cargo build --release --no-default-features \
     --features native,hep,api,mcp,mcp-http
 ```
 
-Run it as a daemon. UDP :9060 receives HEP, TCP :9100 serves REST + Prometheus.
+Run it as a daemon. UDP :9060 receives HEP, TCP :9100 serves REST + Prometheus. sipnab refuses a routable bind that nothing guards, so the command carries a HEP source allowlist and an API signing key:
 
 ```bash
-sipnab -N --hep-listen 0.0.0.0:9060 --api 0.0.0.0:9100 --no-priv-drop --syslog
+sipnab -N --hep-listen 0.0.0.0:9060 --hep-allow 192.0.2.0/24 --api 0.0.0.0:9100 --api-signing-key-file /etc/sipnab/signing.key --no-priv-drop --syslog
 ```
 
 A ready-to-deploy systemd unit lives at [`contrib/observability/sipnab-hep.service`](https://github.com/NormB/sipnab/blob/main/contrib/observability/sipnab-hep.service) — see [Remote-sipnab deployment](install.md) in the install guide.
@@ -379,7 +379,7 @@ watch -n 1 'curl -s http://localhost:9100/v1/dialogs?limit=5 | jq ".dialogs[] | 
 **Pitfalls:**
 
 - HEP is UDP — silently drops if the listener can't keep up. The `--hep-rate-limit 50000` default lets you tune.
-- The default HEP listener accepts from any source. Add `--hep-allow 192.0.2.0/24` (repeatable) to lock it down to your SIP-server subnet.
+- A routable HEP listener needs a guard: sipnab refuses a non-loopback `--hep-listen` bind unless you pass `--hep-allow 192.0.2.0/24` (repeatable) or `--hep-auth`/`--hep-auth-file`. A loopback bind needs neither.
 - If your central host is reachable by hostname only, set `--mcp-allowed-host` for the MCP transport too (see Recipe 8).
 
 ---
@@ -516,7 +516,7 @@ sipnab -N --mcp --mcp-transport http \
        --mcp-bind 0.0.0.0:8731 \
        --mcp-token-file /etc/sipnab/mcp-token \
        --mcp-allowed-host capture.example.com \
-       --hep-listen 0.0.0.0:9060 --quiet
+       --hep-listen 0.0.0.0:9060 --hep-allow 192.0.2.0/24 --quiet
 ```
 
 The agent connects to `http://capture.example.com:8731/mcp` with `Authorization: Bearer <token>`.
@@ -644,16 +644,18 @@ This boots Prometheus (`:9090`), Grafana (`:3000`, admin/admin), an OTel Collect
 
 ### 9b. Run sipnab so Prometheus can scrape it
 
-A standalone metrics endpoint:
+Both listeners below bind a routable address, and sipnab refuses either one without a credential — so each command supplies one, and the scrape job has to send the matching half.
+
+A standalone metrics endpoint, which takes HTTP Basic:
 
 ```bash
-sipnab -N -d eth0 --metrics 0.0.0.0:9100 --json
+sipnab -N -d eth0 --metrics 0.0.0.0:9100 --metrics-auth-file /etc/sipnab/metrics.cred --json
 ```
 
-Or serve the metrics from the REST API, so one port carries both:
+Or serve the metrics from the REST API, so one port carries both. That side takes the same Bearer token as every other REST route:
 
 ```bash
-sipnab -N -d eth0 --api 0.0.0.0:9100
+sipnab -N -d eth0 --api 0.0.0.0:9100 --api-signing-key-file /etc/sipnab/signing.key
 ```
 
 ### 9c. Verify the scrape
@@ -848,7 +850,7 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 The asymmetry signals (Phase 8.7) live on sipnab's internal `MediaDiagnosis` struct and surface through the filter DSL — not the dialog JSON output's `diagnosis` block. `--filter` accepts the alias name directly (`codec-asym`) and falls back to the raw DSL expression if it isn't an alias. Both forms are equivalent.
 
-All five asymmetry checks at once, via the `problems` DSL alias — not the `--problems` flag, which only covers retransmits and Failed:
+All five asymmetry checks at once, via the `problems` DSL alias — the `--problems` flag expands to the same expression, so either spelling works:
 
 ```bash
 sipnab -N -I capture.pcap --filter problems --json
@@ -992,7 +994,7 @@ you want and just need the invocation. Every flag used here appears in
 ### Triage a capture fast
 
 - `sudo sipnab -d eth0` — watch SIP interactively on an interface (TUI)
-- `sipnab -N -I capture.pcap --problems` — show only problem calls from a pcap. The `--problems` flag is a narrow sweep: retransmits, or a Failed dialog. For the broad diagnostic set (one-way audio, loss/jitter, NAT, asymmetry, late media) use the same-named DSL alias instead: `sipnab -N -I capture.pcap --filter problems`
+- `sipnab -N -I capture.pcap --problems` — show only problem calls from a pcap. The flag expands to the `problems` DSL alias, so it covers the whole diagnostic set (Failed state, one-way audio, loss/jitter, NAT mismatch, retransmits, PDD, asymmetry, late media) and `sipnab -N -I capture.pcap --filter problems` returns the same calls
 - `sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1'` — deep-dive one call: ladder, timing, SDP, RTP quality, diagnosis
 - `sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --markdown > call.md` — the same as a Markdown report for a ticket
 - `sipnab -N -I capture.pcap --report --no-cli-print` — post-capture aggregate summary only, no per-message noise
@@ -1054,7 +1056,7 @@ SRTP needs media keys instead:
 
 ### Exchange HEP with Kamailio, OpenSIPS or Homer
 
-- `sipnab -N -L 0.0.0.0:9060` — receive HEP from Kamailio/OpenSIPS/Asterisk and analyze live. `-L`/`--hep-listen` decodes HEP on its own; `--hep-parse` is only for unwrapping HEP that arrives inside ordinary UDP capture
+- `sipnab -N -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24` — receive HEP from Kamailio/OpenSIPS/Asterisk and analyze live. A routable bind needs the allowlist (or `--hep-auth`), or sipnab refuses to start. `-L`/`--hep-listen` decodes HEP on its own; `--hep-parse` is only for unwrapping HEP that arrives inside ordinary UDP capture
 - `sudo sipnab -N -d eth0 -H homer.example.net:9060` — mirror captured traffic to Homer
 
 ---

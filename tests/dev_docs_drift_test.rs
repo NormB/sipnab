@@ -346,8 +346,16 @@ fn linked_code_targets_exist() {
     // stay RELATIVE — build-wiki.py rewrites them, and an absolute blob URL
     // pins a branch and goes stale silently, which is what the sibling gate
     // `linked_code_uses_relative_paths` exists to catch.
+    // LOWERED 340 -> 339, the only time this pin has moved down, and the
+    // attribution is the whole justification: internals/README.md dropped ONE
+    // link, `[src/main.rs:428](../../src/main.rs)`. The citation was stale —
+    // main.rs is 171 lines long, so the label promised a line that cannot
+    // exist — and the annotation now names the symbols instead. A link removed
+    // because it pointed at nothing is not the extraction narrowing, which is
+    // what this pin guards; the per-file diff was checked before this number
+    // moved, and no other page changed.
     assert_eq!(
-        seen, 340,
+        seen, 339,
         "code-link extraction found {seen} links, expected 340. More links is \
          fine — bump this. FEWER means the extractor stopped matching, and \
          every assertion below it silently narrowed."

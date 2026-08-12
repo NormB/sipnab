@@ -632,7 +632,12 @@ capture's per-message dump ahead of the report, and the tool never does.
 ## Media Streams
 
 | SSRC | Codec | Source | Destination | Packets | Jitter | Loss |
+|------|-------|--------|-------------|---------|--------|------|
+| 0x343da99b | PCMU | 10.0.2.15:27942 | 10.0.2.20:6000 | 425 | 0ms | 0.0% |
 
+## Issues
+
+- RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected.
 ```
 
 ### `rtp_stats`
@@ -659,6 +664,27 @@ NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
 // rtp_stats { call_id }
 {
   "call_id": "1-1966@10.0.2.20",
+  "streams": [
+    {
+      "associated_dialog": "1-1966@10.0.2.20",
+      "codec": "PCMU",
+      "src": "10.0.2.15:27942",
+      "dst": "10.0.2.20:6000",
+      "ssrc": "0x343da99b",
+      "payload_type": 0,
+      "packets": 425,
+      "octets": 68000,
+      "loss_pct": 0.0,
+      "jitter_ms": 0.0054046519599899685,
+      "mos": 4.358100599599484,
+      "mos_grounded": true,
+      "orphaned": false,
+      "first_seen": "2016-11-26T14:52:59.689083+00:00",
+      "last_seen": "2016-11-26T14:53:08.169060+00:00",
+      "quality_intervals": [],
+      "schema_version": 1
+    }
+  ],
   "diagnosis": {
     "actual_media": null,
     "hints": [
@@ -667,7 +693,7 @@ NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
     "nat_mismatch": false,
     "no_media": false,
     "one_way_audio": true,
-    "sdp_media": null
+    "sdp_media": "10.0.2.20"
   }
 }
 ```
@@ -909,13 +935,14 @@ codec it accepts.
 }
 ```
 
-`result` has four values, and the distinction matters:
+`result` has five values, and the distinction matters:
 
 | Result | Meaning | What to do |
 |---|---|---|
 | `ok` | The two sides agreed | Codecs are not your problem |
 | `no_common_codec` | Both offered codecs, none shared | A codec policy problem — compare the lists |
 | `no_answer` | An offer went out, nothing came back | The call did not get far enough to negotiate |
+| `sdp_present_but_no_codecs` | Both sides exchanged SDP, but neither listed a codec | Look at the SDP itself — a malformed or media-less `m=` line |
 | `no_sdp_in_capture` | No SDP at all | Not a codec problem. Hold with inactive media, or a reject before any offer |
 
 `no_answer` and `no_sdp_in_capture` are deliberately separate: reporting the
@@ -1264,7 +1291,9 @@ Finds the other legs of one call — the far side of a B2BUA, SBC or PBX hop.
   ],
   "total_matched": 1,
   "heuristic_only": false,
-  "capture_identity": { "instance": "…", "dialog_generation": 41, "stream_generation": 6 }
+  "capture_identity": { "node": "sbc-edge-1", "instance": "…",
+                        "dialog_generation": 41, "stream_generation": 6 },
+  "timing_clock": null              // present only when a timing_heuristic leg is returned
 }
 ```
 
@@ -1530,6 +1559,7 @@ prefer that.
   "filename": "outage-0722.pcap",
   "path": "/var/spool/sipnab-captures/outage-0722.pcap",
   "capture_identity": {
+    "node": "capture01",
     "instance": "1f4a17c8e2b91d40-2",
     "dialog_generation": 1,
     "stream_generation": 1
@@ -1583,7 +1613,8 @@ holds.
   "remaining": 999,
   "readable_over_mcp": false,
   "delivered_to": "sipnab log (tracing/journald/stderr)",
-  "capture_identity": { "instance": "…", "dialog_generation": 41, "stream_generation": 6 }
+  "capture_identity": { "node": "capture01", "instance": "…",
+                        "dialog_generation": 41, "stream_generation": 6 }
 }
 ```
 
@@ -1620,20 +1651,33 @@ No parameters. Returns:
 
 ```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 2,           // 2 absorbed the counters the old stats tool returned
   "source": "live",              // "live" | "file" | "unknown"
   "name": "eth0",                // interface, or file path
   "uptime_sec": 3612,
   "dialog_count": 128,
   "stream_count": 64,
+  "orphaned_stream_count": 3,    // streams no dialog claims
+  "active_dialog_count": 12,     // any non-terminal state
+  "active_call_count": 9,        // InCall only — narrower, hence the version bump
+  "capture_quality": {
+    "kernel_dropped_packets": 0,
+    "interface_dropped_packets": 0,
+    "invalid_timestamps": 0,
+    "undecodable_frames": 0,
+    "degraded": false
+  },
   "source_exhausted": false,     // true once a file is read to the end
   "writing_to": null,            // path packets are being saved to, if any
   "unsaved": true,               // stopping now would lose packets
   "capture_identity": {
+    "node": "capture01",
     "instance": "1f4a17c8e2b91d40-1",
     "dialog_generation": 412,
     "stream_generation": 96
   },
+  "unanalysed_sip_messages": 0,  // SIP that --portrange excluded
+  "unanalysed_busiest_ports": [],
   "load": null                   // an open_capture load in flight, if any
 }
 ```
@@ -1650,9 +1694,10 @@ an admission of ignorance.
 changed. Compare it across calls: a higher generation on the same instance means
 the capture grew, and a different instance means `open_capture` loaded a
 different file and every cursor you hold is void. The same object appears on
-`capture_status`, `list_dialogs`, `find_problems`, `search_by_time`, `tail_dialogs` and
-the capture-wide `rtp_stats` sweep — every response whose meaning depends on the
-whole store.
+`capture_status`, `list_dialogs`, `find_problems`, `tail_dialogs`, `find_correlated`,
+`save_findings`, `open_capture` and the capture-wide `rtp_stats` sweep. `node` names
+the box that answered, which decides whose capture a fact came from once an agent
+holds several servers at once.
 
 `load` is null except while an `open_capture` read runs. During one:
 
@@ -1690,7 +1735,8 @@ No parameters. Returns:
   "runtime": {
     "mcp_file_root": "/var/spool/sipnab-captures",  // null when unset
     "mcp_allow_shutdown": false,
-    "mcp_allow_open_capture": true
+    "mcp_allow_open_capture": true,
+    "mcp_allow_save_findings": false
   }
 }
 ```
@@ -1765,7 +1811,13 @@ Returns:
   ],
   "undecodable_reasons_dropped": 0,
   "dialogs_tracked": 2411,
-  "streams_tracked": 4802
+  "streams_tracked": 4802,
+  "clock": {
+    "synchronised": true,
+    "max_error_us": 238000,
+    "est_error_us": 0,
+    "available": true
+  }
 }
 ```
 
@@ -1775,9 +1827,9 @@ Returns:
 > device, names no interface, and writes no file, so no path leads from an MCP
 > call to a capture that transmits or records anything.
 
-> **Every value in this response is a number.** The response type holds
-> integers, codes and two proportions, and it has no string field anywhere in
-> it or in anything nested inside it. A type that cannot represent packet
+> **No value in this response is a string.** The response type holds integers,
+> codes, two proportions and the clock's booleans, and it has no string field
+> anywhere in it or in anything nested inside it. A type that cannot represent packet
 > content cannot leak packet content, which is why the reasons below travel as
 > codes and their labels live on this page instead of on the wire. The test
 > `a_populated_capture_health_response_carries_no_string_value_anywhere`
@@ -2247,7 +2299,7 @@ The `find_problems` response (formatted for readability). Every sipnab
 tool wraps its payload in the standard MCP envelope: the JSON result is
 **serialized as a string** inside `result.content[0].text` (a `"text"`
 content block), so clients parse `content[0].text` a second time to get
-the actual array:
+the page object:
 
 ```json
 {
@@ -2257,7 +2309,7 @@ the actual array:
     "content": [
       {
         "type": "text",
-        "text": "[{\"call_id\":\"abc123@host\",\"state\":\"InCall\",\"method\":\"INVITE\",\"from_user\":\"1001\",\"to_user\":\"1002\",\"msg_count\":5,\"duration_sec\":12.4,\"created_at\":\"2026-06-12T14:03:21+00:00\",\"updated_at\":\"2026-06-12T14:03:33+00:00\",\"timing\":{\"pdd_ms\":180,\"setup_ms\":2134,\"retransmits\":0,\"duration_ms\":null}}]"
+        "text": "{\"schema_version\":1,\"dialogs\":[{\"call_id\":\"abc123@host\",\"state\":\"InCall\",\"method\":\"INVITE\",\"from_user\":\"1001\",\"to_user\":\"1002\",\"msg_count\":5,\"duration_sec\":12.4,\"created_at\":\"2026-06-12T14:03:21+00:00\",\"updated_at\":\"2026-06-12T14:03:33+00:00\",\"timing\":{\"pdd_ms\":180,\"setup_ms\":2134,\"retransmits\":0,\"duration_ms\":null},\"frame\":\"capture.pcap#0@a57665bcdb62f03a\"}],\"returned\":1,\"total_matched\":1,\"truncated\":false,\"next_cursor\":null,\"capture_identity\":{\"node\":\"capture01\",\"instance\":\"1f4a17c8e2b91d40-1\",\"dialog_generation\":412,\"stream_generation\":96}}"
       }
     ],
     "isError": false
@@ -2265,9 +2317,11 @@ the actual array:
 }
 ```
 
-Each array element is a dialog summary (`call_id`, `state`, `method`,
-`from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
-`updated_at`, `timing`) — the compact projection. The full aggregated
+**That inner text parses to an object, not to a bare array.** The rows live
+under `dialogs`, so a client indexes `parsed.dialogs[0]` and reads
+`total_matched` beside it. Each row is a dialog summary (`call_id`, `state`,
+`method`, `from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
+`updated_at`, `timing`, `frame`) — the compact projection. The full aggregated
 dialog document is what `get_dialog_report` returns (the
 [REST API](@/docs/api.md) returns the same shape).
 

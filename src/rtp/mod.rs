@@ -21,6 +21,7 @@
 //! - `diagnosis` — Media path issue detection (one-way audio, NAT, no media)
 
 pub mod audio_export;
+pub mod bands;
 pub mod diagnosis;
 pub mod dtmf;
 pub mod emodel_wb;

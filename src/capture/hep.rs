@@ -524,6 +524,29 @@ fn hmac_auth_ok(
             ) {
                 Ok(()) => true,
                 Err(e) => {
+                    // A skew rejection drops EVERY packet from that sender and
+                    // presents as "the collector receives nothing", which is
+                    // the hardest symptom to attribute — the operator suspects
+                    // routing, the firewall, the sender's config, and only then
+                    // a clock. It logged at debug, so nothing said so at the
+                    // default level.
+                    //
+                    // Warned once per process rather than per packet: a drifted
+                    // sender produces this on every datagram, and a line per
+                    // packet is its own outage.
+                    if e == HmacAuthError::TimestampOutOfWindow {
+                        static SKEW_WARNED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !SKEW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            tracing::warn!(
+                                "HEP HMAC auth is rejecting packets because the \
+                                 sender's timestamp is outside the {HMAC_WINDOW_SECS}s \
+                                 acceptance window — check NTP on the sender. Every \
+                                 packet from a clock-drifted peer is dropped, so this \
+                                 looks like a collector that receives nothing."
+                            );
+                        }
+                    }
                     tracing::debug!("HEP HMAC auth rejected: {e:?}");
                     false
                 }
@@ -1209,10 +1232,33 @@ impl HepRateLimiter {
         };
         let dropped = self.inner.refused_total();
         match refusal {
-            Refusal::TrackingFull => tracing::debug!(
-                "HEP per-peer tracking full ({} peers); dropping new peer {peer} (total dropped: {dropped})",
-                crate::rate_limit::MAX_TRACKED_PEERS
-            ),
+            // TrackingFull refuses a LEGITIMATE peer — one inside every rate
+            // budget, turned away because the tracking table is full. It is not
+            // the same event as exceeding a limit you set, and `--hep-rate-limit`
+            // cannot relieve it, because that bounds rate and this bounds
+            // capacity. A collector fronting a large fleet hits it and sees
+            // nothing at the default log level.
+            //
+            // Warned once: the condition persists for the whole window and a
+            // line per refused packet would bury the one that matters.
+            Refusal::TrackingFull => {
+                static FULL_WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !FULL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "HEP peer tracking is full at {} distinct peers in one second, \
+                         so packets from NEW peers are being dropped even though they \
+                         are inside every rate limit. --hep-rate-limit does not help: \
+                         it bounds rate, this bounds how many peers can be tracked at \
+                         once. First refused peer: {peer}.",
+                        crate::rate_limit::MAX_TRACKED_PEERS
+                    );
+                }
+                tracing::debug!(
+                    "HEP per-peer tracking full ({} peers); dropping new peer {peer} (total dropped: {dropped})",
+                    crate::rate_limit::MAX_TRACKED_PEERS
+                );
+            }
             Refusal::PerPeer => tracing::debug!(
                 "HEP per-peer rate limit exceeded ({}/s) for {peer}, dropping (total dropped: {dropped})",
                 self.inner.per_peer_max()

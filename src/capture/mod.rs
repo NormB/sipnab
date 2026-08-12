@@ -679,12 +679,9 @@ impl PacketProcessor {
         Self {
             fragment_reassembler: FragmentReassembler::with_limits(
                 max_sessions,
-                std::time::Duration::from_secs(30),
+                reassembly::DEFAULT_TTL,
             ),
-            tcp_reassembler: TcpReassembler::with_limits(
-                max_sessions,
-                std::time::Duration::from_secs(30),
-            ),
+            tcp_reassembler: TcpReassembler::with_limits(max_sessions, reassembly::DEFAULT_TTL),
             tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions,
             sctp_reassembler: parse::SctpReassembler::with_max_streams(max_sessions),

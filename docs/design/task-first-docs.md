@@ -1,7 +1,23 @@
 # Task-first titling for walkthroughs and the cookbook
 
-**Status:** analysis and spec, 2026-07-31. Nothing rewritten yet — this document
-is the plan, and the rewrite is deliberately a separate piece of work.
+**Status:** DONE — commit `ebd896d`, 2026-07-31, released in 0.5.70. The rewrite
+did stay a separate piece of work, exactly as this document intended; it simply
+followed 18 minutes later, 08:02 against this document's 07:44. Step 1 renamed
+every heading in the MCP walkthrough and re-keyed its index on "I want to…", and
+step 4 rode along with it as the `how_to_headings_stay_task_first` per-page
+ratchet. Step 3, the cookbook, followed in `2a3acfa` at 08:29. Step 2 needed
+nothing: no page links into the walkthrough by anchor, so no anchor went stale.
+Not one heading in the walkthrough still reads "Scenario", which makes the
+trigger quoted below and the "Now" column of **The rewrite** a record of what
+those headings used to say.
+
+**Check:** `grep 'fn how_to_headings_stay_task_first' tests/docs_drift_test.rs`
+prints `fn how_to_headings_stay_task_first() {`. The gate step 4 asked for runs
+on every test run.
+
+"Nothing rewritten yet" held for 18 minutes. A plan whose author executes it the
+same morning goes stale by the hour rather than the quarter, so a gate now reads
+this line instead of a reminder.
 
 **Trigger.** A user looking for "run sipnab on a remote server, drive it from
 Claude Code on my laptop" could not find the instructions. They exist, in

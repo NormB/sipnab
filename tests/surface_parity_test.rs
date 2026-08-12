@@ -240,3 +240,170 @@ fn only_one_place_in_the_tree_scores_a_mos() {
         strays.join("\n  ")
     );
 }
+
+/// No view may band jitter, loss or MOS with its own numbers.
+///
+/// Four views did, and disagreed: 25 ms jitter was Good in the stream list and
+/// Warning on the dashboard; 0.8% loss was Good in the list and Warning in the
+/// loss map. The colour column is the TUI's primary triage signal, so an
+/// operator scanning for yellow found a different set of calls depending on
+/// which pane they were looking at.
+///
+/// Two of those files documented an agreement they did not have —
+/// "the same bands the dashboard and stream-detail views use" and "loss color
+/// bands mirror the stream-detail view" — above numbers that matched neither.
+/// Both were written by people who believed it. Neither checked, and a comment
+/// cannot check itself, which is what this test is for.
+#[test]
+fn no_view_carries_its_own_quality_bands() {
+    // The literals that used to be band boundaries, and the views that held
+    // them. A number here is only a finding when it sits in a comparison.
+    const SUSPECT: &[&str] = &["20.0", "30.0", "50.0", "0.5", "1.0", "2.0", "5.0", "3.5"];
+    let views = [
+        "src/tui/stream_list.rs",
+        "src/tui/stream_detail.rs",
+        "src/tui/dashboard.rs",
+        "src/tui/loss_map.rs",
+    ];
+
+    let mut problems = Vec::new();
+    for view in views {
+        let text = std::fs::read_to_string(view).unwrap_or_else(|e| panic!("read {view}: {e}"));
+        // Everything from `#[cfg(test)]` on is assertions ABOUT the bands, not
+        // bands. Its first run reported two `assert!(loss_pct > 30.0)` lines,
+        // and a gate that cries about its own tests gets skimmed.
+        let text = text.split("#[cfg(test)]").next().unwrap_or(&text);
+        for (i, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            // A comparison DERIVED from the shared bands is the fix, not the
+            // defect — `(bands.mos_warn + bands.mos_bad) / 2.0` is the detail
+            // view splitting the shared middle, which it is allowed to do.
+            if code.contains("bands.") || code.contains("QualityBands") {
+                continue;
+            }
+            // A band is a comparison against a bare float on a quality value.
+            let compares = code.contains(" >= ") || code.contains(" < ") || code.contains(" > ");
+            if !compares {
+                continue;
+            }
+            let about_quality = ["jitter", "loss", "mos"]
+                .iter()
+                .any(|k| code.to_ascii_lowercase().contains(k));
+            if !about_quality {
+                continue;
+            }
+            if let Some(lit) = SUSPECT.iter().find(|l| code.contains(**l)) {
+                problems.push(format!("{view}:{}: bands on a bare {lit}", i + 1));
+            }
+        }
+    }
+
+    problems.sort();
+    assert!(
+        problems.is_empty(),
+        "a view is banding quality with its own numbers again. Use \
+         `crate::rtp::bands::QualityBands` so every pane agrees about the same \
+         stream:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// A limit that refuses legitimate work must say so at a level an operator sees.
+///
+/// Three fail-closed limits refused real traffic and logged it at `debug!`,
+/// which is invisible by default:
+///
+///   - HMAC skew: every packet from a clock-drifted sender dropped. Presents as
+///     "the collector receives nothing" — the hardest symptom to attribute,
+///     because the operator suspects routing, the firewall and the sender's
+///     config long before a clock.
+///   - Peer tracking full: NEW peers refused while inside every rate budget,
+///     and `--hep-rate-limit` cannot relieve it because that bounds rate.
+///   - TLS handshake eviction: a CLIENT_RANDOM discarded before its ServerHello,
+///     so those sessions never decrypt. This one logged NOTHING at all, and
+///     reads as a bad keylog.
+///
+/// The common shape is that the failure is invisible where it happens and
+/// indistinguishable from a misconfiguration elsewhere. A `warn!` at the point
+/// of refusal is what makes it attributable, so this pins that each site still
+/// has one — a future edit that quietly drops back to `debug!` restores a
+/// silent failure, which is the defect rather than a style change.
+#[test]
+fn a_limit_that_refuses_real_work_warns_where_it_refuses() {
+    struct Site {
+        file: &'static str,
+        marker: &'static str,
+        what: &'static str,
+    }
+    let sites = [
+        Site {
+            file: "src/capture/hep.rs",
+            // A phrase unique to the WARNING. An earlier version matched
+            // "acceptance window", which is also the wording of the constant's
+            // doc comment 250 lines above — so the gate found prose about the
+            // limit instead of the diagnostic for it, and reported a fault that
+            // was its own.
+            marker: "check NTP on the sender",
+            what: "HMAC clock skew dropping every packet from a sender",
+        },
+        Site {
+            file: "src/capture/hep.rs",
+            marker: "peer tracking is full",
+            what: "new peers refused while inside every rate limit",
+        },
+        Site {
+            file: "src/capture/decrypt.rs",
+            marker: "waiting for a ServerHello",
+            what: "handshakes evicted before pairing, so those sessions never decrypt",
+        },
+        // The three below refuse data ALREADY CAPTURED rather than refusing to
+        // take more in, which is the worse half of the same defect: the packet
+        // reached sipnab and sipnab discarded it. Each was a debug! line.
+        Site {
+            file: "src/sip/dialog_store.rs",
+            marker: "Ladders for those calls are now incomplete",
+            what: "idle compaction dropping messages that were successfully captured",
+        },
+        Site {
+            file: "src/capture/reassembly.rs",
+            marker: "flushed mid-message",
+            what: "a SIP/TCP message over 64 KiB cut in half, so it parses as malformed",
+        },
+        Site {
+            // Markers must sit on ONE source line: this gate greps the file,
+            // and a Rust string split over a `\` continuation does not contain
+            // its own rendered text. The first marker tried here was
+            // "will not appear at all", which straddles a continuation and so
+            // matched nothing while the warning was present and correct.
+            file: "src/capture/parse.rs",
+            marker: "RFC 4960 sets no such limit",
+            what: "an over-cap SCTP message dropped whole, so its calls never surface",
+        },
+    ];
+
+    let mut missing = Vec::new();
+    for s in &sites {
+        let text =
+            std::fs::read_to_string(s.file).unwrap_or_else(|e| panic!("read {}: {e}", s.file));
+        // The message must exist AND be reachable from a warn!, not a debug!.
+        let Some(at) = text.find(s.marker) else {
+            missing.push(format!("{}: no diagnostic for {}", s.file, s.what));
+            continue;
+        };
+        let before = &text[at.saturating_sub(600)..at];
+        if !before.contains("tracing::warn!") {
+            missing.push(format!(
+                "{}: the diagnostic for {} is no longer reached from a warn!",
+                s.file, s.what
+            ));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "a fail-closed limit went quiet again. An operator cannot act on a \
+         refusal they cannot see, and each of these presents as a fault \
+         somewhere else entirely:\n  {}",
+        missing.join("\n  ")
+    );
+}

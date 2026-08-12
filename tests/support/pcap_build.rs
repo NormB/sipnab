@@ -172,6 +172,27 @@ pub fn write_pcap(path: &Path, frames: &[Vec<u8>]) {
 /// Timestamps advance 1 ms per frame so dialog durations and ordering are
 /// well-defined rather than all-zero.
 pub fn write_pcap_with_linktype(path: &Path, frames: &[Vec<u8>], network: u32) {
+    let timed: Vec<_> = frames
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.clone(), i as u64 * 1_000))
+        .collect();
+    write_pcap_at(path, &timed, network);
+}
+
+/// Write frames at explicit microsecond offsets from the capture's start.
+///
+/// The fixed 1 ms cadence above cannot express a capture that goes QUIET, and
+/// silence is the whole input to some behaviour: idle-dialog compaction fires
+/// on the gap between a dialog's last message and the capture's final
+/// timestamp, so a fixture whose frames are 1 ms apart can never be idle under
+/// any window an operator would set. This is the writer for those; the cadence
+/// version delegates here so both derive from one header layout.
+///
+/// Offsets are added to a fixed base second, so a fixture's absolute times are
+/// reproducible across runs.
+pub fn write_pcap_at(path: &Path, frames: &[(Vec<u8>, u64)], network: u32) {
+    const BASE_SECS: u64 = 1_700_000_000;
     let mut out = Vec::new();
     // magic, version 2.4, thiszone, sigfigs, snaplen, network
     out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
@@ -182,9 +203,10 @@ pub fn write_pcap_with_linktype(path: &Path, frames: &[Vec<u8>], network: u32) {
     out.extend_from_slice(&65535u32.to_le_bytes());
     out.extend_from_slice(&network.to_le_bytes());
 
-    for (i, f) in frames.iter().enumerate() {
-        let usec = (i as u32) * 1_000;
-        out.extend_from_slice(&1_700_000_000u32.to_le_bytes());
+    for (f, offset_usec) in frames {
+        let secs = BASE_SECS + offset_usec / 1_000_000;
+        let usec = (offset_usec % 1_000_000) as u32;
+        out.extend_from_slice(&(secs as u32).to_le_bytes());
         out.extend_from_slice(&usec.to_le_bytes());
         out.extend_from_slice(&(f.len() as u32).to_le_bytes());
         out.extend_from_slice(&(f.len() as u32).to_le_bytes());

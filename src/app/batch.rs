@@ -56,7 +56,7 @@ pub(crate) const ORPHAN_AFTER: std::time::Duration = std::time::Duration::from_s
 ///   `Utc::now()`. A capture recorded in 2023 and read in 2026 is three years
 ///   "idle" the moment it is loaded, so every sweep that fired compacted every
 ///   dialog down to
-///   [`KEEP_MESSAGES_PER_IDLE_DIALOG`](crate::sip::dialog_store::KEEP_MESSAGES_PER_IDLE_DIALOG)
+///   [`keep_messages_per_idle_dialog`](crate::sip::dialog_store::keep_messages_per_idle_dialog)
 ///   and flagged every unassociated stream as orphaned. Worse, *how many*
 ///   sweeps fired was decided by how long the read took: a debug build lost
 ///   messages a release build kept, over the same bytes and the same commit.

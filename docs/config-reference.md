@@ -170,6 +170,8 @@ Resource limits to prevent unbounded memory growth.
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
 | `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
 | `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
+| `idle_compact_after_secs` | integer | `600` | Seconds of silence before sipnab compacts a dialog's stored messages. `0` fails validation and names the key |
+| `keep_messages_per_idle_dialog` | integer | `20` | Messages an idle dialog keeps after compaction |
 | `max_audio_frames` | integer | `1500` | Maximum RTP payload frames stored per stream for WAV export (~30s at G.711 50pps) |
 
 ```toml
@@ -181,7 +183,24 @@ hep_rate_limit = 25000
 max_header_line = 8192
 max_headers_per_message = 200
 max_messages_per_dialog = 500
+idle_compact_after_secs = 600
+keep_messages_per_idle_dialog = 20
 max_audio_frames = 1500
+```
+
+The last two are the only limits that discard data sipnab already captured.
+Every other key here refuses to take something in. Compaction shortens a ladder
+already in memory, so a call that went quiet shows fewer messages than crossed
+the wire. sipnab warns once per run when this first happens.
+
+Raise both when the ladder matters more than the footprint — a call parked on
+hold, a dialog waiting on a slow PSTN leg, or a capture you paused all go quiet
+for longer than ten minutes while still being the thing under investigation:
+
+```toml
+[limits]
+idle_compact_after_secs = 3600
+keep_messages_per_idle_dialog = 500
 ```
 
 ### [privilege]

@@ -150,7 +150,7 @@ EOF.
   sets `PR_SET_NO_NEW_PRIVS` and disables core dumps ([`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs));
   `--chroot` is available for daemon deployments.
 - **D16 — Process isolation: specified, not shipped.** D16
-  ([`docs/design/implementation-plan-v6.md:564`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L564)) called for scanner-kill and the
+  ([`docs/design/implementation-plan-v6.md:624`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L624)) called for scanner-kill and the
   REST API to run in forked children behind a Unix socket pair. **Neither
   does.** Scanner-kill runs in the `scanner-kill` *thread*
   ([`src/process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)) and the REST/MCP servers run as tasks on a shared

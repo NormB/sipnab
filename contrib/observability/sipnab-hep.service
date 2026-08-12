@@ -22,12 +22,19 @@ Type=simple
 #   [Service]
 #   ExecStart=
 #   ExecStart=/usr/local/bin/sipnab \
-#       -N --hep-listen 0.0.0.0:9060 --api 0.0.0.0:9100 \
+#       -N --hep-listen 0.0.0.0:9060 --hep-allow 10.0.0.0/8 \
+#       --api 0.0.0.0:9100 --api-signing-key-file /etc/sipnab/api-key \
 #       --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 \
 #       --mcp-token-file /etc/sipnab/mcp-token \
 #       --no-priv-drop --syslog
 #   EOF
 #   systemctl daemon-reload && systemctl restart sipnab-hep
+#
+# The non-loopback binds below are NOT optional-auth. sipnab refuses to start
+# when --hep-listen or --api is given a routable address with no companion
+# credential, so a unit that drops --hep-allow or --api-signing-key-file will
+# fail at ExecStart rather than come up unauthenticated. Narrow the CIDR to
+# the actual mirror sources.
 #
 # Note: `--json` is intentionally absent. sipnab refuses `--mcp` together
 # with stdout-writing flags (the validation doesn't currently distinguish
@@ -36,7 +43,9 @@ Type=simple
 ExecStart=/usr/local/bin/sipnab \
     -N \
     --hep-listen 0.0.0.0:9060 \
+    --hep-allow 10.0.0.0/8 \
     --api 0.0.0.0:9100 \
+    --api-signing-key-file /etc/sipnab/api-key \
     --mcp \
     --mcp-transport http \
     --mcp-bind 127.0.0.1:8731 \

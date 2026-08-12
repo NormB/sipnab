@@ -531,6 +531,47 @@ fn write_multi_call_pcap(dir: &tempfile::TempDir, calls: usize) -> PathBuf {
     path
 }
 
+/// A long dialog that then goes quiet, which is what idle compaction needs.
+///
+/// Two conditions have to hold at once before compaction touches anything, and
+/// no existing fixture satisfies either: the dialog must hold MORE messages
+/// than the keep-limit, and it must have been silent longer than the idle
+/// window when the final sweep runs. `sip_call.pcap` is seven messages spanning
+/// milliseconds, so a probe built on it observes no compaction under any
+/// setting and would report "this key changes nothing" for a key that works.
+///
+/// So: `exchanges` complete calls sharing one Call-ID, differing by transaction
+/// branch (the re-INVITE shape `sip_call_frames` already supports), followed by
+/// one unrelated call `quiet_secs` later. That trailing call is what moves the
+/// capture's final timestamp forward — the sweep measures idleness against the
+/// last packet READ, so without it the long dialog is the newest thing in the
+/// capture and is never idle.
+fn write_idle_dialog_pcap(
+    dir: &tempfile::TempDir,
+    exchanges: usize,
+    quiet_secs: u64,
+) -> (PathBuf, usize) {
+    let path = dir.path().join("idle.pcap");
+    let mut timed: Vec<(Vec<u8>, u64)> = Vec::new();
+    let mut usec = 0u64;
+    for i in 0..exchanges {
+        for f in
+            pcap_build::sip_call_frames("idle-dialog@10.1.0.1", &format!("br{i}"), "alice", "bob")
+        {
+            timed.push((f, usec));
+            usec += 1_000;
+        }
+    }
+    let messages = timed.len();
+
+    let later = usec + quiet_secs * 1_000_000;
+    for f in pcap_build::sip_call_frames("late-call@10.1.0.1", "late", "carol", "dave") {
+        timed.push((f, later));
+    }
+    pcap_build::write_pcap_at(&path, &timed, 1);
+    (path, messages)
+}
+
 /// The four-stream RTP fixture the `max_streams` probes bound.
 fn rtp_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -898,6 +939,16 @@ fn limit_probes() -> Vec<LimitProbe> {
             observe: probe_max_messages_per_dialog,
         },
         LimitProbe {
+            key: "idle_compact_after_secs",
+            enabled: true,
+            observe: probe_idle_compact_after_secs,
+        },
+        LimitProbe {
+            key: "keep_messages_per_idle_dialog",
+            enabled: true,
+            observe: probe_keep_messages_per_idle_dialog,
+        },
+        LimitProbe {
             key: "max_audio_frames",
             enabled: true,
             observe: probe_max_audio_frames,
@@ -1131,6 +1182,56 @@ fn probe_max_messages_per_dialog() -> (String, String) {
             let dialog: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
             format!("msg_count={}", dialog["msg_count"])
         },
+    )
+}
+
+/// The stored-message count of the long dialog in [`write_idle_dialog_pcap`].
+///
+/// Named rather than positional: the fixture holds a second, late call, and a
+/// probe that read `dialogs[0]` would be measuring whichever one the store
+/// happened to emit first.
+fn idle_dialog_msg_count(out: &str) -> String {
+    let dialog = out
+        .lines()
+        .filter(|l| l.starts_with('{'))
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|d| d["call_id"] == "idle-dialog@10.1.0.1")
+        .expect("the long dialog must appear in --json-dialogs output");
+    format!("msg_count={}", dialog["msg_count"])
+}
+
+/// `keep_messages_per_idle_dialog`: how much of a quiet ladder survives.
+///
+/// The uncapped run already compacts — the fixture is idle by 700s against the
+/// 600s default window — so this measures the KEEP limit alone, not the
+/// difference between compacting and not. The window probe below is the one
+/// that measures whether compaction runs at all.
+fn probe_keep_messages_per_idle_dialog() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let (pcap, _) = write_idle_dialog_pcap(&dir, 5, 700);
+    observe_stdout(
+        &pcap,
+        "[limits]\nkeep_messages_per_idle_dialog = 2\n",
+        &["--json-dialogs"],
+        idle_dialog_msg_count,
+    )
+}
+
+/// `idle_compact_after_secs`: whether a 700-second silence counts as idle.
+///
+/// Under the 600s default it does, and the ladder is cut to the keep-limit.
+/// Widened to an hour it does not, and every captured message survives. Same
+/// capture, same sweep, opposite outcome — which is the operator-facing point
+/// of the key: a call parked on hold outlives the default window while still
+/// being the thing under investigation.
+fn probe_idle_compact_after_secs() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let (pcap, _) = write_idle_dialog_pcap(&dir, 5, 700);
+    observe_stdout(
+        &pcap,
+        "[limits]\nidle_compact_after_secs = 3600\n",
+        &["--json-dialogs"],
+        idle_dialog_msg_count,
     )
 }
 

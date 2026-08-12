@@ -142,8 +142,8 @@ volume. Measured at `--cores 4`:
 
 **Honest read:** throughput is flat from 2k calls up — reconstruction cost is
 per-packet, not per-dialog, and 40k concurrent streams do not degrade it.
-Memory grows close to linearly with tracked state, about 22 KiB per call
-(dialog + two RTP streams + jitter/loss accounting), reaching 448 MiB at 20k
+Memory grows close to linearly with tracked state, about 23 KiB per call
+(dialog + two RTP streams + jitter/loss accounting), reaching 461 MiB at 20k
 calls. That linearity is the useful property: it is predictable, so capacity
 planning is arithmetic rather than guesswork.
 

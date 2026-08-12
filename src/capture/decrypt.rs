@@ -698,6 +698,26 @@ impl TlsDecryptor {
                     if !self.pending_client_randoms.contains_key(&conn)
                         && self.pending_client_randoms.len() >= MAX_PENDING_HANDSHAKE_CONNS
                     {
+                        // Evicting here means a CLIENT_RANDOM is discarded
+                        // before its ServerHello arrives, so that session never
+                        // decrypts. Nothing said so: decryption simply stopped
+                        // working for some sessions and not others, which reads
+                        // as a bad keylog or a broken tap rather than a cap.
+                        //
+                        // Warned once per process; the condition persists while
+                        // the tap is busy and a line per handshake would be its
+                        // own flood.
+                        static EVICT_WARNED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !EVICT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            tracing::warn!(
+                                "TLS: {MAX_PENDING_HANDSHAKE_CONNS} handshakes are already \
+                                 waiting for a ServerHello, so the oldest is being dropped \
+                                 before it can be paired. Sessions evicted this way never \
+                                 decrypt, and the keylog is not at fault — the tap is seeing \
+                                 more concurrent handshakes than sipnab tracks."
+                            );
+                        }
                         self.pending_client_randoms.shift_remove_index(0);
                     }
                     let queue = self.pending_client_randoms.entry(conn).or_default();

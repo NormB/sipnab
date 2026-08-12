@@ -16,6 +16,7 @@ use crate::rtp::quality::estimate_mos;
 // through the store's iterator. The test module imports it for its own
 // fixtures — deliberately there rather than as a `#[cfg(test)]` import beside
 // this line, which would gate a use without gating its binding.
+use crate::rtp::bands::{Band, QualityBands};
 use crate::rtp::stream::StreamKey;
 use crate::rtp::stream_store::StreamStore;
 use crate::tui::App;
@@ -189,6 +190,8 @@ fn loss_to_block(loss_pct: f64) -> char {
 ///
 /// Draws widgets into `frame` only.
 pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
+    // One band set for the whole render, shared with every other view.
+    let bands = QualityBands::default();
     use crate::tui::stream_detail::{jitter_to_block, mos_to_block};
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
@@ -207,25 +210,19 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
         return;
     };
 
-    let mos_style = |m: f64| {
-        if m >= 4.0 {
-            Style::default().fg(theme.good)
-        } else if m >= 3.0 {
-            Style::default().fg(theme.warning)
-        } else {
-            Style::default().fg(theme.bad)
-        }
+    let mos_style = |m: f64| match bands.mos(m) {
+        Band::Good => Style::default().fg(theme.good),
+        Band::Warning => Style::default().fg(theme.warning),
+        Band::Bad => Style::default().fg(theme.bad),
     };
-    // Loss color bands mirror the stream-detail view: <0.5% good,
-    // <2% warning, otherwise bad.
-    let loss_color = |l: f64| {
-        if l < 0.5 {
-            theme.good
-        } else if l < 2.0 {
-            theme.warning
-        } else {
-            theme.bad
-        }
+    // This said the loss bands "mirror the stream-detail view: <0.5% good,
+    // <2% warning" — and the stream LIST used 1.0/5.0, so a stream at 0.8%
+    // loss drew yellow here and green there. Both comments claiming agreement
+    // were written by people who believed it; neither checked.
+    let loss_color = |l: f64| match bands.loss(l) {
+        Band::Good => theme.good,
+        Band::Warning => theme.warning,
+        Band::Bad => theme.bad,
     };
 
     // ── summary strip ───────────────────────────────────────────────
@@ -315,12 +312,12 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
                 String::from(mos_to_block(p.mos)),
                 mos_style(p.mos),
             ));
-            let jcolor = if p.jitter_ms < 20.0 {
-                theme.good
-            } else if p.jitter_ms < 50.0 {
-                theme.warning
-            } else {
-                theme.bad
+            // Was 20/50 here while the stream list used 30/50, so a 25 ms
+            // stream drew yellow on this pane and green on that one.
+            let jcolor = match bands.jitter(p.jitter_ms) {
+                Band::Good => theme.good,
+                Band::Warning => theme.warning,
+                Band::Bad => theme.bad,
             };
             jit_spans.push(Span::styled(
                 String::from(jitter_to_block(p.jitter_ms)),

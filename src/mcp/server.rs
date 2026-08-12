@@ -3472,7 +3472,7 @@ impl SipnabMcp {
                 .cloned()
                 .collect();
 
-            // Four outcomes, not three. "no SDP at all" is a different
+            // Five outcomes, not three. "no SDP at all" is a different
             // finding from "the far end did not answer", and reporting the
             // second for the first sends an operator hunting a reply that was
             // never expected — during an outage that is time spent on a

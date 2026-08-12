@@ -543,8 +543,10 @@ fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(),
 ///
 /// # Errors
 ///
-/// `429` when over the rate budget, `401` when the credential is missing,
-/// malformed, unverifiable, or scoped too narrowly for this route.
+/// `503` when over the rate budget — NOT `429`, and the difference matters to
+/// a caller: the limiter runs BEFORE auth, so a `503` says nothing about the
+/// credential because nothing has looked at it yet. `401` when the credential
+/// is missing, malformed, unverifiable, or scoped too narrowly for this route.
 ///
 /// # Side effects
 ///

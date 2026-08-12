@@ -225,7 +225,7 @@ pub struct DialogStore {
     xcid_headers: Vec<String>,
 }
 
-/// A dialog idle longer than this has its stored messages compacted.
+/// Default idle window before a dialog's stored messages are compacted.
 ///
 /// Per-dialog message Vecs are capped in *count* but never shrank: a
 /// weeks-long capture accumulates idle dialogs each pinning up to
@@ -234,12 +234,69 @@ pub struct DialogStore {
 /// message tail is enough context. (Dialog *count* is separately bounded by
 /// the store capacity, which evicts the oldest dialog when `rotate` is on —
 /// the default since SNB-0004.)
-pub const IDLE_COMPACT_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
+///
+/// Ten minutes is a memory policy, not a protocol fact, and the two diverge
+/// on real captures: a call parked on hold, a dialog waiting on a slow PSTN
+/// leg, or a capture the operator paused all exceed it while still being the
+/// thing under investigation. Override with `[limits] idle_compact_after_secs`
+/// when the ladder matters more than the footprint.
+pub const DEFAULT_IDLE_COMPACT_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 
-/// How many messages an idle dialog keeps. A hard cap: compaction never
-/// leaves more than this, whatever the retention rule decides is worth
-/// keeping.
-pub const KEEP_MESSAGES_PER_IDLE_DIALOG: usize = 20;
+/// Default number of messages an idle dialog keeps.
+///
+/// A hard cap: compaction never leaves more than this, whatever the retention
+/// rule decides is worth keeping. Raise it with
+/// `[limits] keep_messages_per_idle_dialog`.
+pub const DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG: usize = 20;
+
+/// Runtime-configurable idle window, in seconds (set once at startup).
+static IDLE_COMPACT_AFTER_SECS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(DEFAULT_IDLE_COMPACT_AFTER.num_seconds());
+
+/// Runtime-configurable idle retention (set once at startup).
+static KEEP_MESSAGES_PER_IDLE_DIALOG: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG);
+
+/// How long a dialog must be silent before compaction touches it.
+#[must_use]
+pub fn idle_compact_after() -> chrono::TimeDelta {
+    chrono::TimeDelta::seconds(IDLE_COMPACT_AFTER_SECS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// How many messages compaction leaves on an idle dialog.
+#[must_use]
+pub fn keep_messages_per_idle_dialog() -> usize {
+    KEEP_MESSAGES_PER_IDLE_DIALOG.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Set the idle-compaction window from configuration. Call once at startup.
+///
+/// # Arguments
+///
+/// * `secs` — seconds of silence before a dialog is eligible for compaction.
+///
+/// # Side effects
+///
+/// Stores `secs` into a process-wide atomic (relaxed ordering), affecting
+/// every `DialogStore` in the process from the next sweep onward.
+pub fn set_idle_compact_after_secs(secs: i64) {
+    IDLE_COMPACT_AFTER_SECS.store(secs, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Set the idle-dialog message retention from configuration. Call once at
+/// startup.
+///
+/// # Arguments
+///
+/// * `keep` — messages an idle dialog retains after compaction.
+///
+/// # Side effects
+///
+/// Stores `keep` into a process-wide atomic (relaxed ordering), affecting
+/// every `DialogStore` in the process from the next sweep onward.
+pub fn set_keep_messages_per_idle_dialog(keep: usize) {
+    KEEP_MESSAGES_PER_IDLE_DIALOG.store(keep, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Whether a message states something about the dialog that its POSITION in
 /// the ladder does not.
@@ -294,7 +351,7 @@ fn carries_dialog_outcome(msg: &SipMessage, dialog_method: &SipMethod) -> bool {
 ///
 /// * `messages` — the dialog's stored messages, in capture order.
 /// * `dialog_method` — the method the dialog was opened with.
-/// * `budget` — the hard maximum to keep ([`KEEP_MESSAGES_PER_IDLE_DIALOG`]).
+/// * `budget` — the hard maximum to keep ([`keep_messages_per_idle_dialog`]).
 ///
 /// # Returns
 ///
@@ -352,7 +409,7 @@ fn retained_indices(
     // a memory guarantee, so it wins: the earliest anchors and the last one
     // survive, which keeps both ends of the exchange.
     //
-    // `budget == 0` is not reachable from `KEEP_MESSAGES_PER_IDLE_DIALOG`, but
+    // `budget == 0` is not reachable from `keep_messages_per_idle_dialog`, but
     // it is reachable from the signature, and `budget - 1` on it would panic
     // in debug and wrap in release — the shape of bug this module exists to
     // stop shipping.
@@ -440,8 +497,8 @@ impl DialogStore {
     }
 
     /// Compact dialogs that have been idle longer than
-    /// [`IDLE_COMPACT_AFTER`] down to at most
-    /// [`KEEP_MESSAGES_PER_IDLE_DIALOG`] messages each, keeping the ones that
+    /// [`idle_compact_after`] down to at most
+    /// [`keep_messages_per_idle_dialog`] messages each, keeping the ones that
     /// say what the dialog DID and compacting the middle. Bounds long-run
     /// memory: an idle dialog can otherwise pin hundreds of full SIP messages
     /// forever.
@@ -460,7 +517,7 @@ impl DialogStore {
     /// # Arguments
     ///
     /// * `now` — Current time; dialogs whose `updated_at` is more than
-    ///   `IDLE_COMPACT_AFTER` before `now` are considered idle.
+    ///   `idle_compact_after` before `now` are considered idle.
     ///
     /// # Returns
     ///
@@ -477,13 +534,13 @@ impl DialogStore {
         self.generation += 1;
         let mut stats = CompactStats::default();
         for dialog in self.dialogs.values_mut() {
-            if now - dialog.updated_at <= IDLE_COMPACT_AFTER {
+            if now - dialog.updated_at <= idle_compact_after() {
                 continue;
             }
             let Some(keep) = retained_indices(
                 &dialog.messages,
                 &dialog.method,
-                KEEP_MESSAGES_PER_IDLE_DIALOG,
+                keep_messages_per_idle_dialog(),
             ) else {
                 continue;
             };
@@ -510,6 +567,31 @@ impl DialogStore {
             stats.messages_evicted += evicted;
         }
         self.idle_messages_evicted += stats.messages_evicted as u64;
+        // Compaction discards messages sipnab successfully captured. Every
+        // other limit in the store refuses to take something IN; this is the
+        // only one that throws away something already held, so it is the only
+        // one an operator can be surprised by after the fact — the ladder they
+        // are looking at is short and nothing on screen says why.
+        //
+        // It logged at debug, which the default level hides. Warned once per
+        // process rather than per sweep: a long live capture compacts on every
+        // sweep forever, and a line each time is its own noise problem.
+        if stats.messages_evicted > 0 {
+            static COMPACT_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !COMPACT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "dropped {} captured messages from {} dialogs idle longer than {}s, \
+                     keeping {} each. Ladders for those calls are now incomplete. \
+                     Raise [limits] idle_compact_after_secs or \
+                     keep_messages_per_idle_dialog to keep more.",
+                    stats.messages_evicted,
+                    stats.dialogs_compacted,
+                    idle_compact_after().num_seconds(),
+                    keep_messages_per_idle_dialog(),
+                );
+            }
+        }
         stats
     }
 
@@ -928,10 +1010,56 @@ impl DialogStore {
     /// traffic reports a non-zero value here. For the number an operator
     /// graphs and alerts on, use [`DialogStore::active_call_count`].
     pub fn active_dialog_count(&self) -> usize {
+        self.active_dialog_count_at(self.capture_now())
+    }
+
+    /// The clock this store measures idleness against: the newest message it
+    /// has seen, falling back to the wall clock when it has seen none.
+    ///
+    /// NOT `Utc::now()`. A capture read from a file is dated by its packets —
+    /// a 2024 trace opened today is not two years idle, it is a recording — and
+    /// anchoring to the wall clock ages every offline dialog out at once. On a
+    /// live capture the newest message IS approximately now, so one rule serves
+    /// both without a mode flag.
+    fn capture_now(&self) -> chrono::DateTime<chrono::Utc> {
         self.dialogs
             .values()
-            .filter(|d| Self::is_active_dialog_state(d.state()))
+            .map(|d| d.updated_at)
+            .max()
+            .unwrap_or_else(chrono::Utc::now)
+    }
+
+    /// [`Self::active_dialog_count`] as of `now`, so it can be tested.
+    pub fn active_dialog_count_at(&self, now: chrono::DateTime<chrono::Utc>) -> usize {
+        self.dialogs
+            .values()
+            .filter(|d| Self::is_active_dialog_state(d.state()) && Self::recently_seen(d, now))
             .count()
+    }
+
+    /// How long a dialog may go untouched and still count as active.
+    ///
+    /// Twice RFC 4028's default `Session-Expires` of 1800 s. A call using
+    /// session timers refreshes at half its interval, so a healthy one is seen
+    /// again inside 900 s and never approaches this; a call that is genuinely up
+    /// but silent for a full hour is indistinguishable, from signalling alone,
+    /// from one whose BYE was lost.
+    ///
+    /// Both errors are possible and they are not symmetric. Counting a dead
+    /// dialog forever makes the number grow with UPTIME and useless for the
+    /// alert it exists for — measured at 38,509 "active calls" against 100 RTP
+    /// streams on a five-day capture. Dropping a silent-for-an-hour call
+    /// under-reports one call until it speaks again. The second is recoverable;
+    /// the first is not, because nothing ever brings the figure back down.
+    pub const ACTIVE_IDLE_WINDOW: chrono::TimeDelta = chrono::TimeDelta::seconds(3600);
+
+    /// Whether a dialog has been touched inside [`Self::ACTIVE_IDLE_WINDOW`].
+    ///
+    /// A capture read from a file is dated by its packets, so `now` must be the
+    /// caller's clock rather than the wall clock, or every offline dialog ages
+    /// out at once.
+    fn recently_seen(dialog: &SipDialog, now: chrono::DateTime<chrono::Utc>) -> bool {
+        now.signed_duration_since(dialog.updated_at) <= Self::ACTIVE_IDLE_WINDOW
     }
 
     /// Count calls that are up: dialogs in `InCall`, and nothing else.
@@ -943,9 +1071,23 @@ impl DialogStore {
     /// than [`DialogStore::active_dialog_count`], which also counts calls
     /// still being set up and subscriptions that are not calls at all.
     pub fn active_call_count(&self) -> usize {
+        self.active_call_count_at(self.capture_now())
+    }
+
+    /// [`Self::active_call_count`] as of `now`.
+    ///
+    /// A dialog enters `InCall` on the 200 OK and leaves on the BYE — and a BYE
+    /// is not guaranteed to arrive. UDP loss, a capture started mid-call or
+    /// restarted, a tap that sees one direction, a caller that vanishes: each
+    /// leaves a dialog `InCall` forever. Counting those made the figure track
+    /// uptime rather than concurrency, so it is bounded by
+    /// [`Self::ACTIVE_IDLE_WINDOW`] and the window is stated wherever the number
+    /// is published, because a concurrency figure nobody can interpret is not
+    /// better than none.
+    pub fn active_call_count_at(&self, now: chrono::DateTime<chrono::Utc>) -> usize {
         self.dialogs
             .values()
-            .filter(|d| *d.state() == DialogState::InCall)
+            .filter(|d| *d.state() == DialogState::InCall && Self::recently_seen(d, now))
             .count()
     }
 
@@ -2018,11 +2160,11 @@ mod tests {
     /// A timestamp just past the idle-compaction window after `base_ts`,
     /// so any dialog last updated at `base_ts` counts as idle.
     fn idle_now() -> DateTime<Utc> {
-        base_ts() + IDLE_COMPACT_AFTER + TimeDelta::seconds(1)
+        base_ts() + idle_compact_after() + TimeDelta::seconds(1)
     }
 
     /// An idle dialog over the keep limit is compacted to
-    /// `KEEP_MESSAGES_PER_IDLE_DIALOG` messages.
+    /// `keep_messages_per_idle_dialog` messages.
     ///
     /// The fixture is 30 `INVITE`s and nothing else, so exactly one of them —
     /// the first, which opened the dialog — is load-bearing. It survives at
@@ -2032,7 +2174,7 @@ mod tests {
     /// the contract that cost answered calls their `200 OK`.
     #[test]
     fn compact_idle_truncates_idle_dialog_to_keep_limit() {
-        let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
+        let n = keep_messages_per_idle_dialog() + 10;
         let mut store = store_with_messages("idle-1", n);
         assert_eq!(store.get("idle-1").unwrap().messages.len(), n);
 
@@ -2041,7 +2183,7 @@ mod tests {
         assert_eq!(stats.messages_evicted, 10);
 
         let d = store.get("idle-1").unwrap();
-        assert_eq!(d.messages.len(), KEEP_MESSAGES_PER_IDLE_DIALOG);
+        assert_eq!(d.messages.len(), keep_messages_per_idle_dialog());
         assert_eq!(
             d.messages[0].cseq().map(|(seq, _)| seq),
             Some(1),
@@ -2061,7 +2203,7 @@ mod tests {
     /// A dialog updated within the idle window is not compacted at all.
     #[test]
     fn compact_idle_leaves_active_dialogs_alone() {
-        let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
+        let n = keep_messages_per_idle_dialog() + 10;
         let mut store = store_with_messages("active-1", n);
         // "now" is within the idle window — dialog is still active.
         let stats = store.compact_idle(base_ts() + TimeDelta::seconds(30));
@@ -2074,7 +2216,7 @@ mod tests {
     /// no-op (stats stay zero).
     #[test]
     fn compact_idle_is_idempotent() {
-        let mut store = store_with_messages("idle-2", KEEP_MESSAGES_PER_IDLE_DIALOG + 5);
+        let mut store = store_with_messages("idle-2", keep_messages_per_idle_dialog() + 5);
         let first = store.compact_idle(idle_now());
         assert_eq!(first.messages_evicted, 5);
         let second = store.compact_idle(idle_now());
@@ -2102,7 +2244,7 @@ mod tests {
     /// a per-dialog seen-CSeq set, independent of message retention.
     #[test]
     fn retransmission_detected_after_compaction() {
-        let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
+        let n = keep_messages_per_idle_dialog() + 10;
         let mut store = store_with_messages("retx-c", n);
         store.compact_idle(idle_now());
         // CSeq 1 (the initial INVITE) was compacted away; retransmit it.
@@ -2132,7 +2274,7 @@ mod tests {
 
         // Retransmit the initial INVITE at the idle cutoff; at the cap
         // the message itself is dropped, but it is still traffic.
-        let retx_ts = base_ts() + IDLE_COMPACT_AFTER;
+        let retx_ts = base_ts() + idle_compact_after();
         store.process_message(make_invite_msg("retx-cap", retx_ts));
         let d = store.get("retx-cap").unwrap();
         assert_eq!(d.messages.len(), cap, "capped retransmission is not stored");
@@ -2155,7 +2297,7 @@ mod tests {
     /// `total_idle_messages_evicted` counter.
     #[test]
     fn compact_idle_accumulates_lifetime_counter() {
-        let mut store = store_with_messages("idle-3", KEEP_MESSAGES_PER_IDLE_DIALOG + 4);
+        let mut store = store_with_messages("idle-3", keep_messages_per_idle_dialog() + 4);
         assert_eq!(store.total_idle_messages_evicted(), 0);
         store.compact_idle(idle_now());
         assert_eq!(store.total_idle_messages_evicted(), 4);
@@ -2169,7 +2311,7 @@ mod tests {
     /// silently fail to make a spread-out fixture idle at all.
     fn idle_after(store: &DialogStore, call_id: &str) -> DateTime<Utc> {
         store.get(call_id).expect("dialog exists").updated_at
-            + IDLE_COMPACT_AFTER
+            + idle_compact_after()
             + TimeDelta::seconds(1)
     }
 
@@ -2406,14 +2548,14 @@ mod tests {
     }
 
     /// Compaction is a memory bound, so retention must not exceed it: the
-    /// surviving set is still capped at `KEEP_MESSAGES_PER_IDLE_DIALOG`.
+    /// surviving set is still capped at `keep_messages_per_idle_dialog`.
     #[test]
     fn compact_idle_still_bounds_the_message_count() {
         let mut store = store_with_answered_call("answered-4", 200);
         let now = idle_after(&store, "answered-4");
         store.compact_idle(now);
         assert!(
-            store.get("answered-4").unwrap().messages.len() <= KEEP_MESSAGES_PER_IDLE_DIALOG,
+            store.get("answered-4").unwrap().messages.len() <= keep_messages_per_idle_dialog(),
             "compaction must still bound memory"
         );
     }
@@ -2449,7 +2591,7 @@ mod tests {
 
     /// A budget smaller than the anchor set is still a hard bound, and a
     /// budget of zero does not panic. Neither is reachable from
-    /// `KEEP_MESSAGES_PER_IDLE_DIALOG`, but both are reachable from the
+    /// `keep_messages_per_idle_dialog`, but both are reachable from the
     /// function signature.
     #[test]
     fn retained_indices_honours_a_budget_below_the_anchor_count() {
@@ -3013,6 +3155,79 @@ mod tests {
     /// SUBSCRIBE that is active and is not a call at all. A fixture where the
     /// two happen to be equal would pass against a build that computed one of
     /// them twice, which is the obvious way to get this wrong.
+    /// A call whose BYE was never seen stops being counted as up.
+    ///
+    /// Measured on a five-day harness: dialog_count 84351, stream_count 100,
+    /// active_call_count 38509, with zero drops and zero undecodable frames.
+    /// Nothing aged an InCall dialog out, so every call whose BYE went missing
+    /// stayed "up" forever — and BYEs go missing routinely: UDP loss, a capture
+    /// started mid-call, a restart, a tap that sees one direction, a caller that
+    /// simply vanishes. The figure grew with UPTIME rather than tracking
+    /// concurrency, which makes it useless for the alert its own docstring
+    /// promises: "channels in use, a carrier's simultaneous-call limit".
+    #[test]
+    fn a_call_whose_bye_was_never_seen_stops_counting_as_up() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // Answered long ago and never torn down — the accumulating case.
+        store.process_message(make_invite_msg("stale@test", t0));
+        store.process_message(make_200_ok("stale@test", t0 + TimeDelta::seconds(1)));
+        // Answered just now.
+        let recent = t0 + TimeDelta::hours(9);
+        store.process_message(make_invite_msg("fresh@test", recent));
+        store.process_message(make_200_ok("fresh@test", recent + TimeDelta::seconds(1)));
+
+        let now = recent + TimeDelta::seconds(2);
+        assert_eq!(
+            store.active_call_count_at(now),
+            1,
+            "only the recently-active call is up; the nine-hour-silent one is \
+             an unobserved BYE, not a channel in use"
+        );
+    }
+
+    /// The window is generous enough that a real call is not dropped early.
+    ///
+    /// Under-counting a long quiet call would be its own defect, so the cutoff
+    /// is twice RFC 4028's default `Session-Expires` — any call using session
+    /// timers refreshes well inside it.
+    #[test]
+    fn a_call_inside_the_idle_window_is_still_counted() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg("quiet@test", t0));
+        store.process_message(make_200_ok("quiet@test", t0 + TimeDelta::seconds(1)));
+
+        let just_inside = t0 + DialogStore::ACTIVE_IDLE_WINDOW - TimeDelta::seconds(60);
+        assert_eq!(
+            store.active_call_count_at(just_inside),
+            1,
+            "a call silent for less than the window is still up"
+        );
+        let just_outside = t0 + DialogStore::ACTIVE_IDLE_WINDOW + TimeDelta::seconds(60);
+        assert_eq!(
+            store.active_call_count_at(just_outside),
+            0,
+            "past the window it is no longer evidence of a channel in use"
+        );
+    }
+
+    /// `active_dialog_count` has the identical flaw and the identical fix.
+    #[test]
+    fn active_dialog_count_also_ages_out() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg("stale@test", t0));
+        store.process_message(make_200_ok("stale@test", t0 + TimeDelta::seconds(1)));
+        let now = t0 + DialogStore::ACTIVE_IDLE_WINDOW + TimeDelta::hours(1);
+        assert_eq!(
+            store.active_dialog_count_at(now),
+            0,
+            "a dialog nobody has touched in hours is not an active dialog"
+        );
+    }
+
     #[test]
     fn active_call_count_excludes_setup_and_subscriptions() {
         let mut store = DialogStore::new(100, false);

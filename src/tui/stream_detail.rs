@@ -544,12 +544,19 @@ enum MosBand {
 
 impl MosBand {
     /// Classify a MOS score into its band (closed lower bounds).
+    ///
+    /// Four labels where the colour views use three, and that is deliberate: a
+    /// detail pane can afford to separate Fair from Poor where a colour column
+    /// cannot. Only the OUTER boundaries are shared, so this stays finer
+    /// without being able to disagree — a score this view calls Good can never
+    /// be one the dashboard colours yellow.
     fn of(mos: f64) -> Self {
-        if mos >= 4.0 {
+        let bands = crate::rtp::bands::QualityBands::default();
+        if mos >= bands.mos_warn {
             Self::Good
-        } else if mos >= 3.5 {
+        } else if mos >= (bands.mos_warn + bands.mos_bad) / 2.0 {
             Self::Fair
-        } else if mos >= 3.0 {
+        } else if mos >= bands.mos_bad {
             Self::Poor
         } else {
             Self::Bad
@@ -595,24 +602,24 @@ fn section_header<'a>(title: &'a str, theme: &Theme) -> Line<'a> {
 /// Style for a jitter value: < 20ms good, 20–50ms warning, >= 50ms bad.
 /// Pure.
 fn jitter_style(jitter_ms: f64, theme: &Theme) -> Style {
-    if jitter_ms < 20.0 {
-        Style::default().fg(theme.good)
-    } else if jitter_ms < 50.0 {
-        Style::default().fg(theme.warning)
-    } else {
-        Style::default().fg(theme.bad)
+    // Was 20/50 here against the stream list's 30/50, which is the pair that
+    // made one stream green in the list and yellow in its own detail view.
+    match crate::rtp::bands::QualityBands::default().jitter(jitter_ms) {
+        crate::rtp::bands::Band::Good => Style::default().fg(theme.good),
+        crate::rtp::bands::Band::Warning => Style::default().fg(theme.warning),
+        crate::rtp::bands::Band::Bad => Style::default().fg(theme.bad),
     }
 }
 
-/// Style for a packet-loss percentage: < 0.5% good, 0.5–2.0% warning,
-/// >= 2.0% bad. Pure.
+/// Style for a packet-loss percentage, using the shared bands. Pure.
+///
+/// The sixth and last copy: 0.5/2.0 here against the stream list's 1.0/5.0.
+/// The gate that found it is `no_view_carries_its_own_quality_bands`.
 fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
-    if loss_pct < 0.5 {
-        Style::default().fg(theme.good)
-    } else if loss_pct < 2.0 {
-        Style::default().fg(theme.warning)
-    } else {
-        Style::default().fg(theme.bad)
+    match crate::rtp::bands::QualityBands::default().loss(loss_pct) {
+        crate::rtp::bands::Band::Good => Style::default().fg(theme.good),
+        crate::rtp::bands::Band::Warning => Style::default().fg(theme.warning),
+        crate::rtp::bands::Band::Bad => Style::default().fg(theme.bad),
     }
 }
 
@@ -702,34 +709,76 @@ mod tests {
 
     use ratatui::style::Color;
 
-    /// `jitter_style` picks good/warning/bad at the 20ms and 50ms bounds.
+    /// `jitter_style` colours at the SHARED boundaries, not its own.
+    ///
+    /// This asserted 20/50 while the stream list used 30/50, and passed —
+    /// which is how a stream stayed green in the list and yellow in its own
+    /// detail view for as long as it did. Both tests were correct about the
+    /// code and silent about the contradiction, so they now read the
+    /// boundaries from the shared band set rather than restating numbers.
     #[test]
-    fn jitter_style_thresholds() {
+    fn jitter_style_follows_the_shared_bands() {
         let theme = Theme::default();
-        // < 20ms → good
+        let b = crate::rtp::bands::QualityBands::default();
         assert_eq!(jitter_style(0.0, &theme).fg, Some(theme.good));
-        assert_eq!(jitter_style(19.9, &theme).fg, Some(theme.good));
-        // 20..50ms → warning
-        assert_eq!(jitter_style(20.0, &theme).fg, Some(theme.warning));
-        assert_eq!(jitter_style(49.9, &theme).fg, Some(theme.warning));
-        // >= 50ms → bad
-        assert_eq!(jitter_style(50.0, &theme).fg, Some(theme.bad));
-        assert_eq!(jitter_style(120.0, &theme).fg, Some(theme.bad));
+        assert_eq!(
+            jitter_style(b.jitter_warn_ms - 0.1, &theme).fg,
+            Some(theme.good)
+        );
+        assert_eq!(
+            jitter_style(b.jitter_warn_ms, &theme).fg,
+            Some(theme.warning)
+        );
+        assert_eq!(
+            jitter_style(b.jitter_bad_ms - 0.1, &theme).fg,
+            Some(theme.warning)
+        );
+        assert_eq!(jitter_style(b.jitter_bad_ms, &theme).fg, Some(theme.bad));
+        assert_eq!(
+            jitter_style(b.jitter_bad_ms * 3.0, &theme).fg,
+            Some(theme.bad)
+        );
     }
 
-    /// `loss_style` picks good/warning/bad at the 0.5% and 2.0% bounds.
+    /// The same stream gets the same verdict here as in the stream list.
+    ///
+    /// The contradiction this pins is the reported one: a value that one pane
+    /// called healthy and another called a warning, in the same session.
     #[test]
-    fn loss_style_thresholds() {
+    fn this_view_agrees_with_the_stream_list() {
         let theme = Theme::default();
-        // < 0.5% → good
+        let b = crate::rtp::bands::QualityBands::default();
+        for jitter in [0.0, 25.0, 29.9, 30.0, 49.9, 50.0, 100.0] {
+            let detail_good = jitter_style(jitter, &theme).fg == Some(theme.good);
+            let list_good = b.jitter(jitter) == crate::rtp::bands::Band::Good;
+            assert_eq!(
+                detail_good, list_good,
+                "{jitter} ms: detail view and stream list disagree again"
+            );
+        }
+        for loss in [0.0, 0.4, 0.8, 1.0, 4.9, 5.0, 90.0] {
+            let detail_good = loss_style(loss, &theme).fg == Some(theme.good);
+            let list_good = b.loss(loss) == crate::rtp::bands::Band::Good;
+            assert_eq!(
+                detail_good, list_good,
+                "{loss}% loss: detail view and stream list disagree again"
+            );
+        }
+    }
+
+    /// `loss_style` colours at the SHARED boundaries.
+    #[test]
+    fn loss_style_follows_the_shared_bands() {
+        let theme = Theme::default();
+        let b = crate::rtp::bands::QualityBands::default();
         assert_eq!(loss_style(0.0, &theme).fg, Some(theme.good));
-        assert_eq!(loss_style(0.49, &theme).fg, Some(theme.good));
-        // 0.5..2.0% → warning
-        assert_eq!(loss_style(0.5, &theme).fg, Some(theme.warning));
-        assert_eq!(loss_style(1.99, &theme).fg, Some(theme.warning));
-        // >= 2.0% → bad
-        assert_eq!(loss_style(2.0, &theme).fg, Some(theme.bad));
-        assert_eq!(loss_style(75.0, &theme).fg, Some(theme.bad));
+        assert_eq!(
+            loss_style(b.loss_warn_pct - 0.01, &theme).fg,
+            Some(theme.good)
+        );
+        assert_eq!(loss_style(b.loss_warn_pct, &theme).fg, Some(theme.warning));
+        assert_eq!(loss_style(b.loss_bad_pct, &theme).fg, Some(theme.bad));
+        assert_eq!(loss_style(90.0, &theme).fg, Some(theme.bad));
     }
 
     /// A section header carries the bold accented title span followed by

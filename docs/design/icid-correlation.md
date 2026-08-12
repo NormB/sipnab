@@ -1,12 +1,21 @@
 # Correlating on `P-Charging-Vector`'s `icid-value`
 
-**Status:** DESIGN. Nothing here is implemented — `grep -rin 'icid' src/` exits
-1, and the only three matches for `charging` in `src/` are unrelated prose
-(a GTP charging-protocol note in [`tunnel/udp.rs:129`](https://github.com/NormB/sipnab/blob/main/src/capture/tunnel/udp.rs#L129),
-a rate-limiter comment in [`api.rs:560`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L560), a VXLAN
-accounting comment in [`parse.rs:1329`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1329)). The gap
-is genuine.
-**Verified against:** `748134f`, working tree.
+**Status:** IMPLEMENTED (`315d8d3`, 2026-08-08). Both strategies proposed here
+shipped, at the scores this document proposed for them:
+[`ChargingVectorRelatedIcid`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs) (95) and
+`ChargingVectorIcid` (85), parsed by
+[`charging_vector.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/charging_vector.rs), scored in
+[`dialog_store.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs), and reported on the MCP
+surface as `charging_vector_related_icid` / `charging_vector_icid`.
+**Check:** `grep -rin 'icid' src/` exits 0. It exited 1 when this was written,
+which is what the original Status line said.
+
+This document was accurate for thirty-six minutes. It cites `748134f` (10:00)
+and was committed at 10:40; the implementation landed at 11:15 the same
+morning. Nobody ignored it — a design doc is written when its author
+understands the problem, which is often shortly before they solve it. It is
+kept for the reasoning behind the scores, which the implementation adopted
+unchanged, and not as a description of what is missing.
 **Recommendation:** section 9 — **adopt with caveats**, in a shape that is not
 the obvious one, and behind one measurement that has not been taken.
 **Upstream argument:** [`multi-capture-comparison.md`](multi-capture-comparison.md)
@@ -23,26 +32,34 @@ capture was verifiable here, and none of it is asserted.
 
 ## 1. The gap, and the deployment it comes from
 
-sipnab already correlates legs **five** ways, not four.
+sipnab correlates legs **seven** ways. It was five when this was written, and
+the two added since are the ones proposed below.
 [`CorrelationReason`](../../src/sip/dialog_store.rs) at
 [`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43) enumerates them, and
 [`find_correlated_scored`](../../src/sip/dialog_store.rs) at
-[`:935`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L935) evaluates them in a fixed order,
+[`:981`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L981) evaluates them in a fixed order,
 first match wins:
 
 | Strategy | Score | Code | Reported `identifier_match` |
 |---|---|---|---|
-| `session_id` — [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` | 100 | [`:993`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L993) | `true` |
-| `x_call_id` — a configured header, `X-Call-ID` by default | 100 | [`:1017`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1017) | `true` |
-| `sdp_origin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) origin tuple | 90 | [`:1034`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1034) | `true` |
-| `via_branch` — a shared INVITE branch | 80 | [`:1058`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1058) | `true` |
-| `timing_heuristic` — endpoint overlap plus a 2 s window | 50 | [`:1080`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1080) | `false` |
+| `session_id` — [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` | 100 | [`:1078`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1078) | `true` |
+| `x_call_id` — a configured header, `X-Call-ID` by default | 100 | [`:1096`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1096) | `true` |
+| `charging_vector_related_icid` — [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `related-icid` | 95 | [`:1129`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1129) | `true` |
+| `sdp_origin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) origin tuple | 90 | [`:1153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1153) | `true` |
+| `charging_vector_icid` — a shared [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `icid-value` | 85 | [`:1174`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1174) | `true` |
+| `via_branch` — a shared INVITE branch | 80 | [`:1196`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1196) | `true` |
+| `timing_heuristic` — endpoint overlap plus a 2 s window | 50 | [`:1214`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1214) | `false` |
+
+The middle two rows are what this document proposed, and they are here because
+it was adopted. Evaluation order follows score, so `related-icid` sits ABOVE
+`sdp_origin` rather than below it as §4 sketched — the one divergence from the
+plan, and it is the plan's own scoring that produced it.
 
 The `identifier_match` column is assigned in one place, the exhaustive match at
-[`server.rs:4501`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4501), which carries a comment saying the
+[`server.rs:4475`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4475), which carries a comment saying the
 absence of a catch-all is deliberate so that *"a new strategy is a COMPILE ERROR
 here rather than something that quietly reports as 'unknown, not an identifier'"*.
-That is the single most useful fact for this proposal: adding a sixth reason
+That is the single most useful fact for this proposal: adding an eighth reason
 cannot skip the decision this page exists to make.
 
 **The motivating deployment is an SBC, a proxy and a PBX where the SBC and/or

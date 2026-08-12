@@ -47,9 +47,22 @@ const MAX_REASSEMBLED_SIZE: usize = 65535;
 const DEFAULT_MAX_ENTRIES: usize = 10_000;
 
 /// Default time-to-live for incomplete entries before eviction.
-const DEFAULT_TTL: Duration = Duration::from_secs(30);
+///
+/// `pub(crate)` because the only production constructor for a reassembler,
+/// `PacketProcessor::with_max_sessions`, sits in `capture::mod` and used to
+/// pass its own inline `Duration::from_secs(30)`. Two spellings of one policy
+/// that happened to agree — changing this constant would have moved the
+/// default everywhere EXCEPT the path every live capture actually takes.
+pub(crate) const DEFAULT_TTL: Duration = Duration::from_secs(30);
 
 /// Maximum TCP stream buffer size before forced flush (64 KB).
+///
+/// This is policy wearing a protocol's clothes. TCP imposes no such ceiling and
+/// neither does RFC 3261: a SIP/TCP message carrying a large multipart body —
+/// ISUP encapsulation, a long `Record-Route` set, a fat SDP offer — legitimately
+/// exceeds it. When it does, the buffer is flushed MID-MESSAGE and the fragment
+/// parses as garbage, so the failure surfaces as a malformed message rather than
+/// as a limit that was reached.
 const MAX_TCP_BUFFER: usize = 65536;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -500,6 +513,24 @@ impl TcpReassembler {
         if stream.buffered_bytes > MAX_TCP_BUFFER {
             let flushed = self.drain_in_order(&key);
             if !flushed.is_empty() {
+                // Warned, not just debugged: this cuts a message in half, and
+                // the halves parse as malformed SIP. An operator reading the
+                // output sees a broken message from a peer that sent a
+                // perfectly good one, and nothing connects that to a buffer
+                // ceiling. Once per process — a peer that exceeds it once
+                // usually exceeds it on every call.
+                static OVERFLOW_WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !OVERFLOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "a SIP/TCP message from {} to {} exceeded the {MAX_TCP_BUFFER}-byte \
+                         reassembly buffer and was flushed mid-message, so it will parse as \
+                         malformed. TCP sets no such limit; this is sipnab's ceiling. Large \
+                         multipart bodies (ISUP, long Record-Route sets) hit it legitimately.",
+                        key.src,
+                        key.dst,
+                    );
+                }
                 tracing::debug!(
                     "TCP buffer overflow flush: {} -> {} ({} bytes)",
                     key.src,

@@ -12,6 +12,7 @@ it. It answers the question §1 left open — *what is this feature, exactly, if
 provenance prerequisite ever lands* — and it spends most of its length on the
 part §1 identified but did not specify: correlation. The layout is the easy half
 and gets one section.
+**Check:** `grep -n 'long = "compare"' src/cli.rs` exits 1 — no comparison flag exists.
 
 ## 1. The two questions an operator is actually asking
 

@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use sipnab::capture::pcap_reader::{PcapReader, decompress_capture};
 use sipnab::capture::{Packet, parse::parse_packet};
 use sipnab::sip::diagnosis::diagnose_signaling;
-use sipnab::sip::dialog_store::{DialogStore, KEEP_MESSAGES_PER_IDLE_DIALOG};
+use sipnab::sip::dialog_store::{DialogStore, keep_messages_per_idle_dialog};
 use sipnab::sip::{is_sip_message, parser::parse_sip};
 
 /// Files larger than this are skipped: the corpus root holds a multi-gigabyte
@@ -284,7 +284,7 @@ fn corpus_compaction_preserves_the_final_status_code() {
         };
         if !before
             .iter()
-            .any(|(_, code, len)| code.is_some() && *len > KEEP_MESSAGES_PER_IDLE_DIALOG)
+            .any(|(_, code, len)| code.is_some() && *len > keep_messages_per_idle_dialog())
         {
             continue;
         }
@@ -297,7 +297,7 @@ fn corpus_compaction_preserves_the_final_status_code() {
             let Some(dialog) = store.get(call_id) else {
                 continue;
             };
-            if len <= &KEEP_MESSAGES_PER_IDLE_DIALOG {
+            if len <= &keep_messages_per_idle_dialog() {
                 continue;
             }
             checked += 1;
@@ -314,8 +314,9 @@ fn corpus_compaction_preserves_the_final_status_code() {
     );
     assert!(
         checked > 0,
-        "the corpus at SIPNAB_CORPUS holds no dialog longer than {KEEP_MESSAGES_PER_IDLE_DIALOG} \
-         messages with a final response, so compaction was never exercised"
+        "the corpus at SIPNAB_CORPUS holds no dialog longer than {} \
+         messages with a final response, so compaction was never exercised",
+        keep_messages_per_idle_dialog()
     );
 }
 

@@ -42,7 +42,7 @@ use sipnab::capture::resolve::{parse_pointer, resolve};
 use sipnab::output::json::stream_to_json;
 use sipnab::output::model::{DialogSummary, StreamSummary};
 use sipnab::rtp::stream_store::StreamStore;
-use sipnab::sip::dialog_store::{DialogStore, IDLE_COMPACT_AFTER, KEEP_MESSAGES_PER_IDLE_DIALOG};
+use sipnab::sip::dialog_store::{DialogStore, idle_compact_after, keep_messages_per_idle_dialog};
 
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
@@ -300,19 +300,20 @@ fn the_real_compaction_path_leaves_the_opening_frame_alone() {
         // has. Content does not matter here; length does, because that is what
         // makes `retained_indices` return Some and eviction actually run.
         let seed: Vec<_> = d.messages.clone();
-        while d.messages.len() <= KEEP_MESSAGES_PER_IDLE_DIALOG * 2 {
+        while d.messages.len() <= keep_messages_per_idle_dialog() * 2 {
             d.messages.extend(seed.iter().cloned());
         }
         (opened_in, d.messages.len())
     };
 
-    let future = chrono::Utc::now() + IDLE_COMPACT_AFTER + chrono::TimeDelta::minutes(1);
+    let future = chrono::Utc::now() + idle_compact_after() + chrono::TimeDelta::minutes(1);
     let stats = store.compact_idle(future);
     assert!(
         stats.messages_evicted > 0,
         "compaction evicted nothing from a {grown_to}-message dialog against a \
-         keep-limit of {KEEP_MESSAGES_PER_IDLE_DIALOG}; this test would prove \
-         nothing about compaction"
+         keep-limit of {}; this test would prove \
+         nothing about compaction",
+        keep_messages_per_idle_dialog()
     );
 
     let d = store.iter().find(|d| d.call_id == call_id).expect("dialog");

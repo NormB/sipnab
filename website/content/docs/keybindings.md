@@ -380,10 +380,10 @@ briefly in the status line):
 3. **DNS** -- additionally resolves via reverse DNS (PTR), looked up on a
    background worker and cached (so the UI never blocks)
 
-Names come from three sources, highest priority first: operator-entered
-mappings, then `/etc/hosts` (or a `--names` / `[names] hosts_file`), then
-reverse DNS. Substitution touches only the IP; the `:port` stays
-(`sbc-edge:5060`).
+Names come from four sources, highest priority first: operator-entered
+mappings, then `/etc/hosts` (or a `--names` / `[names] hosts_file`), then any
+Name Resolution Block in the capture you opened, then reverse DNS.
+Substitution touches only the IP; the `:port` stays (`sbc-edge:5060`).
 
 To name an address **in context**, select a call-list row, stream row, or
 call-flow message and press **`N`**. A popup opens pre-filled with that IP;

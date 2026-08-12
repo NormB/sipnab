@@ -24,14 +24,20 @@ s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 ```
 
 - `payload` is compact JSON
-  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>"}`.
+  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>","scope":"<metrics|read>"}`.
 - The signature is `HMAC-SHA256(signing_key, "s2." + base64url(payload))`.
 - base64url is URL-safe, no padding.
 
+`scope` appears **only when it narrows something**. A `full` token — the
+default — omits the claim, so its payload is the three-field
+`{"id":...,"exp":...,"aud":...}` form, and a payload carrying no `scope`
+means `full`. Seeing `scope` in a decoded payload therefore always means
+"restricted". See [*Scope*](#scope-what-a-token-may-reach) below.
+
 Verification is **stateless**: the server recomputes the HMAC, compares it in
 constant time against every configured signing key, then checks the audience,
-`exp > now`, and that `id` is not revoked. A malformed token loses
-(fail-closed).
+`exp > now`, the scope the route demands, and that `id` is not revoked. A
+malformed token loses (fail-closed).
 
 ## Audience binding
 
@@ -102,14 +108,81 @@ sipnab --mint-token --mcp-signing-key "$KEY" --mcp-token-ttl 86400 --token-id ci
 `--token-id` sets the `jti` (defaults to a generated id). Distribute the printed
 token to clients.
 
+### Scope: what a token may reach
+
+`--token-scope` narrows a token to part of its surface. It takes `full` (the
+default), `metrics`, or `read`:
+
+| Scope | Surface | What it reaches |
+|---|---|---|
+| `full` | either | Everything on the token's audience. |
+| `metrics` | REST API | `GET /metrics`, and nothing else. Every `/v1/` route answers `401`. |
+| `read` | MCP | Only the tools `tools/list` marks read-only. Calling any other tool gets a JSON-RPC error refusal, not a `401`. |
+
+Why bother: sipnab decrypts TLS, so `/v1/dialogs` and `/v1/streams` hand back
+message bodies — the call content itself. A metrics scrape needs one counter,
+not that. The same argument covers `read` on the MCP side, where a `full`
+token can also stop the server, export files, and aim the capture elsewhere.
+
+Each narrow scope names something that lives on exactly one surface, so sipnab
+refuses a cross-surface mint rather than printing a token that could never
+authorize what its scope names. `--token-scope metrics` with
+`--mcp-signing-key` fails at mint time, and so does `--token-scope read` with
+`--api-signing-key`.
+
+Mint a scrape-only token for the REST API:
+
+```bash
+TOKEN="$(sipnab --mint-token --token-scope metrics --api-signing-key "$KEY")"
+```
+
+Then **confirm the scope took effect**. A token that quietly stayed `full`
+looks identical from the outside, and the payload is the only record of what
+you minted:
+
+```bash
+python3 - "$TOKEN" <<'PY'
+import base64, sys
+p = sys.argv[1].split(".")[1]
+print(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)).decode())
+PY
+```
+
+```json
+{"id":"tok-1770000000000000","exp":1770003600,"aud":"api","scope":"metrics"}
+```
+
+`"scope":"metrics"` is the claim doing the work. A decoded payload with **no**
+`scope` field is a `full` credential — one that reads dialogs and the message
+bodies underneath — so mint it again rather than shipping it.
+
+The signature covers the claim, so a holder cannot widen a token by editing or
+stripping `scope` — the signature stops matching. Static `--api-key` /
+`--mcp-token` secrets carry no claims at all and are therefore always `full`.
+Scoping needs a signed token.
+
 ## 3. Use a token
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
 ```
 
-A valid, unexpired, non-revoked token returns `200`. Anything else returns
-`401`.
+That returns `200` when the token is valid, unexpired, non-revoked, and wide
+enough for the route — *and* the request asks for something that exists. A
+failure is not automatically a `401`:
+
+| Status | What happened |
+|---|---|
+| `503` | The client is over its per-IP rate budget (100 requests/second) or the in-flight cap (`--api-max-conn`). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md). |
+| `401` | Missing, non-Bearer, malformed, expired, revoked, wrong-audience, or wrong-key credential — **or a good credential scoped too narrowly for the route**. A `metrics` token verifies fine and still gets `401` on `/v1/dialogs`, because that route demands `full`. |
+| `404` | The credential passed, but nothing matches: no dialog carries that Call-ID on `/v1/dialogs/{call_id}`, or no stream carries that SSRC on `/v1/streams/{id}`. |
+| `400` | The credential passed, but the request does not parse: `/v1/streams/{id}` got an id that is not hexadecimal. |
+| `408` | The handler exceeded the request timeout. |
+
+Reading a `401` as "bad token" is safe. Reading a `503` that way is not — a
+`503` says nothing about the credential, because nothing looked at it yet.
+
+`/health` needs no credential and skips the rate limiter entirely.
 
 ## 4. Expiry
 

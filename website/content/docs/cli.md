@@ -696,7 +696,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--syslog` | -- | off | Send alerts to syslog |
 | `--mint-token` | -- | off | Mint a signed bearer token from the first configured signing key (API or MCP), print it to stdout, and exit (no capture/servers). See [`auth.md`](https://github.com/NormB/sipnab/blob/main/docs/auth.md). |
 | `--token-id` | `<ID>` | -- | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
-| `--token-scope` | `<full\|metrics>` | `full` | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. REST API only; the MCP surface has no `/metrics`. |
+| `--token-scope` | `<full\|metrics\|read>` | `full` | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the read-only tools and refuses the five that write. A cross-surface mint fails at mint time, so `metrics` with MCP and `read` with the REST API are both refused rather than issued and then rejected. |
 
 **Examples**
 
