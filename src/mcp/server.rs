@@ -415,16 +415,34 @@ impl SipnabMcp {
                 None,
             ));
         }
-        let target = resolved;
+        Ok(resolved)
+    }
 
-        // Refuse before the caller opens anything: every file tool writes with
-        // truncation, so a check made after the open has already destroyed the
-        // capture. This is the same precondition `-O` enforces, applied at the
-        // one place all file tools resolve their path.
+    /// [`Self::resolve_in_root`] for a tool that WRITES.
+    ///
+    /// Adds the overwrite guard: refuse before the caller opens anything,
+    /// because a writing tool truncates, so a check made after the open has
+    /// already destroyed the capture. Same precondition `-O` enforces.
+    ///
+    /// # Why this is separate rather than folded into the resolver
+    ///
+    /// It used to be folded in, under a comment asserting "every file tool
+    /// writes with truncation". That was false of three of the six callers, and
+    /// it broke the one that matters most: `show_evidence` exists to follow a
+    /// `frame_ref` back to the captured bytes, those pointers name THE CAPTURE
+    /// BEING ANALYSED, and the guard refused exactly that — telling the
+    /// operator to "choose a different output path" for a call that has no
+    /// output path. The same pointer worked whenever the server happened to be
+    /// reading some other file, which is why no test caught it.
+    ///
+    /// A guard justified by "we are about to truncate this" belongs only on the
+    /// calls that truncate. Splitting it makes each call site state which it is,
+    /// so the next reader cannot inherit the wrong premise.
+    fn resolve_in_root_for_write(&self, name: &str) -> Result<std::path::PathBuf, rmcp::ErrorData> {
+        let target = self.resolve_in_root(name)?;
         self.protected_inputs
             .check(&target, "the requested filename", false)
             .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
-
         Ok(target)
     }
 }
@@ -4201,7 +4219,8 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ExportCaptureParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let path = self.resolve_in_root(&params.filename)?;
+        // WRITES a pcap: the overwrite guard belongs here.
+        let path = self.resolve_in_root_for_write(&params.filename)?;
         let messages: Vec<crate::sip::SipMessage> = {
             let ds = self.dialog_store.read();
             ds.iter().flat_map(|d| d.messages.iter().cloned()).collect()
@@ -4248,7 +4267,8 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ExportAudioParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let path = self.resolve_in_root(&params.filename)?;
+        // WRITES a WAV file: the overwrite guard belongs here.
+        let path = self.resolve_in_root_for_write(&params.filename)?;
         let summary = {
             let ds = self.dialog_store.read();
             ds.get(&params.call_id).ok_or_else(|| {
@@ -4743,7 +4763,8 @@ impl SipnabMcp {
 
         let mut saved_to = None;
         if let Some(name) = &params.save_to {
-            let path = self.resolve_in_root(name)?;
+            // WRITES the saved capture before stopping.
+            let path = self.resolve_in_root_for_write(name)?;
             if !dry_run {
                 let messages: Vec<crate::sip::SipMessage> = {
                     let ds = self.dialog_store.read();
@@ -5787,6 +5808,75 @@ mod tests {
     /// at that path. Resolving the pointer's own `source` would make
     /// `show_evidence` an arbitrary-file-read primitive wearing a
     /// `readOnlyHint`. The tool takes the final component and pushes it through
+    /// An agent can follow a `frame_ref` back into the capture it is analysing.
+    ///
+    /// This is the evidence chain the whole pointer mechanism exists for:
+    /// `lint_dialog` and `find_problems` hand back a `frame_ref` INTO THE
+    /// CAPTURE BEING READ, and an agent asks `show_evidence` for the bytes.
+    ///
+    /// It was refused. `resolve_in_root` ends with an overwrite guard whose own
+    /// comment justifies itself with "every file tool writes with truncation" —
+    /// a premise that is false for this tool, which only reads. So the primary
+    /// path failed with a message telling the operator to "choose a different
+    /// output path" for a call that has no output path, while the SAME pointer
+    /// resolved perfectly whenever the server happened to be reading some other
+    /// capture.
+    ///
+    /// Every existing test missed it by pointing somewhere else: the escape
+    /// test above deliberately names a file OUTSIDE the root, and the write
+    /// tools genuinely do truncate. Nothing exercised the one path an agent
+    /// actually takes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn show_evidence_follows_a_pointer_into_the_capture_being_read() {
+        let base =
+            std::env::temp_dir().join(format!("sipnab-show-evidence-self-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("mkdir root");
+        let capture = base.join("under-analysis.pcap");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/pcap-samples/sip-register.pcap"
+            ),
+            &capture,
+        )
+        .expect("seed the capture under analysis");
+
+        // The server is READING this capture — so it is a protected input,
+        // exactly as it would be in production.
+        let protected = crate::capture::output_guard::ProtectedInputs::new(
+            &[capture.display().to_string()],
+            &[],
+            false,
+        );
+        let srv = server_with_dialog("self@test")
+            .with_file_root(&base)
+            .with_protected_inputs(protected);
+
+        let result = srv
+            .show_evidence(Parameters(ShowEvidenceParams {
+                refs: vec![format!("{}#0", capture.display())],
+                max_bytes: None,
+            }))
+            .await
+            .expect("the call succeeds");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert_eq!(
+            v["resolved"], 1,
+            "a pointer into the capture under analysis is the PRIMARY case for \
+             this tool and must resolve; reading cannot overwrite anything: {v}"
+        );
+        // Assert on real bytes, not on a status: the frame has to come back.
+        let hex = v["frames"][0]["hex"].as_str().unwrap_or_default();
+        assert!(
+            !hex.is_empty() && hex.split_whitespace().count() >= 8,
+            "the frame bytes must be returned, not just a success flag: {v}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// `resolve_in_root`, so a crafted pointer can at worst name a file the
     /// operator already exposed.
     ///

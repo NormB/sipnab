@@ -993,7 +993,7 @@ output path.
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:969`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L969)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:987`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L987)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -1139,7 +1139,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:444`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L444)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:462`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L462)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -1455,7 +1455,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:5061`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5061), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:5082`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5082), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
