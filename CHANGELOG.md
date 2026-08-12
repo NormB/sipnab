@@ -8,7 +8,9 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.94] - 2026-08-12
+
+What sipnab claims about itself is now checked against what it does.
 
 ### Changed
 
