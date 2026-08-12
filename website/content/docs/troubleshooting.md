@@ -513,7 +513,8 @@ A failure count per response code, written to the terminal rather than a file:
 
 ```bash
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-  | jq -r '.status_code' | sort | uniq -c | sort -rn
+  | jq -r 'select(.is_request == false) | .status_code' \
+  | sort | uniq -c | sort -rn
 ```
 
 ---

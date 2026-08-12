@@ -529,17 +529,33 @@ Each probe below sends the bearer token, so read it into the shell first. The th
 TOKEN=$(cat /etc/sipnab/mcp-token)
 ```
 
-Initialize, pretending to be an MCP client:
+Initialize, pretending to be an MCP client. Keep the session id the server
+returns: every later request must carry it in `Mcp-Session-Id`. The transport
+rejects one that does not, answering HTTP 422 `Unexpected message, expect
+initialize request`:
 
 ```bash
-curl -sS http://capture.example.com:8731/mcp \
+SID=$(curl -sS -D - -o /dev/null http://capture.example.com:8731/mcp \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
      -H "Authorization: Bearer $TOKEN" \
      -d '{"jsonrpc":"2.0","id":1,"method":"initialize",
           "params":{"protocolVersion":"2025-06-18",
                     "capabilities":{},
-                    "clientInfo":{"name":"curl","version":"0"}}}'
+                    "clientInfo":{"name":"curl","version":"0"}}}' \
+     | awk 'tolower($1) == "mcp-session-id:" { print $2 }' | tr -d '\r')
+```
+
+Send the `initialized` notification the protocol requires before any tool call.
+It answers `202 Accepted` with no body:
+
+```bash
+curl -sS http://capture.example.com:8731/mcp \
+     -H "Content-Type: application/json" \
+     -H "Accept: application/json, text/event-stream" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Mcp-Session-Id: $SID" \
+     -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 ```
 
 List every registered tool:
@@ -549,6 +565,7 @@ curl -sS http://capture.example.com:8731/mcp \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
      -H "Authorization: Bearer $TOKEN" \
+     -H "Mcp-Session-Id: $SID" \
      -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 ```
 
@@ -559,6 +576,7 @@ curl -sS http://capture.example.com:8731/mcp \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
      -H "Authorization: Bearer $TOKEN" \
+     -H "Mcp-Session-Id: $SID" \
      -d '{"jsonrpc":"2.0","id":3,"method":"tools/call",
           "params":{"name":"find_problems",
                     "arguments":{"kinds":["one-way","nat-issues"]}}}'

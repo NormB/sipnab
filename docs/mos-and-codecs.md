@@ -221,7 +221,10 @@ use sipnab::rtp::emodel_wb::{amr_wb_mos, amr_wb_kbps_from_fmtp, ListeningContext
 // Mode pinned by the SDP, no loss.
 let kbps = amr_wb_kbps_from_fmtp("octet-align=1; mode-set=2").unwrap(); // 12.65
 let mos = amr_wb_mos(kbps, ListeningContext::Monotic, 0.0);
-assert_eq!(mos, Some(4.337096));
+// A computed MOS is a float: compare with a tolerance, never `==`.
+// This is the crate's own `close()` bound from emodel_wb.rs — half a
+// thousandth of a MOS point. The exact value here is 4.33709615132886.
+assert!((mos.unwrap() - 4.3371).abs() < 5e-4);
 
 // Same mode, monotic, with loss: not computable, and it says so.
 assert_eq!(amr_wb_mos(kbps, ListeningContext::Monotic, 1.0), None);

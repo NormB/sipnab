@@ -2204,14 +2204,30 @@ TOKEN=$(cat /etc/sipnab/mcp.token)
 URL="http://capture.example.com:8731/mcp"
 ```
 
-Initialize the session:
+Initialize the session, keeping the session id the server hands back. Every
+later request must carry it in `Mcp-Session-Id`. The transport rejects a
+`tools/call` without one, answering HTTP 422 `Unexpected message, expect
+initialize request`, because it has no session to attach the call to:
+
+```bash
+SID=$(curl -sS -D - -o /dev/null "$URL" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+  | awk 'tolower($1) == "mcp-session-id:" { print $2 }' | tr -d '\r')
+```
+
+Then send the `initialized` notification the protocol requires before any tool
+call. It answers `202 Accepted` with no body:
 
 ```bash
 curl -sS "$URL" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+  -H "Mcp-Session-Id: $SID" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 ```
 
 Call `find_problems` with several diagnostic aliases at once:
@@ -2221,6 +2237,7 @@ curl -sS "$URL" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "Mcp-Session-Id: $SID" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
        "params":{"name":"find_problems",
                  "arguments":{"kinds":["one-way","late-media","codec-asym"]}}}'
@@ -2261,6 +2278,7 @@ curl -sS "$URL" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "Mcp-Session-Id: $SID" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call",
        "params":{"name":"get_dialog",
                  "arguments":{"call_id":"abc123@host","cursor":0,"max_messages":50}}}'
@@ -2273,6 +2291,7 @@ curl -sS "$URL" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "Mcp-Session-Id: $SID" \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/call",
        "params":{"name":"security_findings",
                  "arguments":{"kinds":["scanner","reg_flood"],"limit":20}}}'

@@ -127,7 +127,7 @@ Or print a tshark-compatible filter string, when the next step is a shell
 pipeline rather than the Wireshark GUI.
 
 ```bash
-sipnab -I capture.pcap --tshark-filter "from.user == '1001'"
+sipnab -I capture.pcap --tshark-filter 'sip.from.user == "1001"'
 ```
 
 ### Export call audio as WAV
@@ -140,14 +140,15 @@ Count failures by response code, so the dominant one is obvious.
 
 ```bash
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-  | jq -r '.status_code' | sort | uniq -c | sort -rn
+  | jq -r 'select(.is_request == false) | .status_code' \
+  | sort | uniq -c | sort -rn
 ```
 
 List every distinct User-Agent the capture saw, to find the odd endpoint out.
 
 ```bash
 sipnab -N -I capture.pcap --json \
-  | jq -r '.user_agent // empty' | sort -u
+  | jq -r '.ua // empty' | sort -u
 ```
 
 ### Bound, split, and multi-interface captures
@@ -572,7 +573,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -d eth0 -N --match OPTIONS --after 5 --show-empty --proto-number --payload-limit 256` — inspect OPTIONS keepalives with 5 messages of trailing context, empty bodies shown, and display capped at 256 payload bytes
 - `sudo sipnab -d eth0 --from-to-mode host-port --wireshark` — watch the live TUI with host:port From/To columns and hand the capture to Wireshark with a matching display filter
 - `sipnab -I capture.pcap --from-to-mode user-host-port` — browse an existing capture in the TUI with full user@host:port From/To columns
-- `sipnab -N -I capture.pcap --tshark-filter "method=INVITE"` — print a tshark-compatible display filter for the INVITE traffic in a capture
+- `sipnab -N -I capture.pcap --tshark-filter 'sip.Method == "INVITE"'` — print a tshark-compatible display filter for the INVITE traffic in a capture. sipnab hands the expression to tshark's `-Y` verbatim, so it takes WIRESHARK display-filter syntax rather than sipnab's `--filter` DSL: `sip.Method`, not `method`. Quote the whole expression in single quotes so the inner double quotes survive the shell
 
 
 ## Dialog

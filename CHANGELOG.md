@@ -12,6 +12,38 @@ entry that carries them.
 
 ### Fixed
 
+- **Six documented commands failed when a reader pasted them.** Each was run
+  before and after, not read:
+
+  - The flagship capture-tuning recipe passed both `-N` and `--no-tui`. They
+    are the same flag, so clap refused the repeat and the recipe exited 2.
+  - `--tshark-filter` was shown sipnab's own filter DSL. The expression is
+    handed to tshark's `-Y` verbatim, so it needs WIRESHARK syntax: tshark
+    answered `'1001' is too long to be a valid character constant` and
+    `"=" was unexpected in this context`. The emitted command was also
+    mis-quoted, collapsing `-Y 'from.user == '1001''` in the shell.
+  - Five `curl` examples posted `tools/call` with no `Mcp-Session-Id`. The
+    Streamable HTTP transport answers `422 Unexpected message, expect
+    initialize request`. The walkthroughs now capture the session id the
+    server returns and send the `initialized` notification first.
+  - A MOS example asserted exact float equality against a computed value. The
+    real result is 4.33709615132886; the crate's own test uses a 5e-4
+    tolerance, and the example now does too.
+
+  Two failed SILENTLY, which is worse than failing:
+
+  - `jq -r '.user_agent // empty'` for "distinct User-Agents". The field is
+    `ua`, so the pipeline matched nothing and `// empty` swallowed the miss —
+    a reader got zero lines and concluded the capture had no User-Agents.
+  - `jq -r '.status_code'` counted `null` as a status code, because requests
+    have none. It now selects responses first.
+
+  A new gate makes the silent class impossible to reintroduce: every field the
+  docs tell a reader to `jq` must exist in the output that same block produces,
+  checked against real captures. It found a seventh case on its first run —
+  which turned out to be the gate's own blind spot rather than a doc error, and
+  the fixture set was widened rather than the documentation "corrected".
+
 - **Two documented config keys were silently ignored.** `[display] color` and
   `[security] kill_response` were parsed, validated and documented, and
   changed nothing. Both flags carried a clap `default_value`, which fills the

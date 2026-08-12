@@ -476,7 +476,6 @@ that changed.
 sudo sipnab -N -d eth0 \
   -B 256 \
   --snaplen 1600 \
-  --no-tui \
   "port 5060 or port 5061 or (udp portrange 10000-20000)" \
   --report
 ```
