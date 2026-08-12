@@ -522,28 +522,238 @@ function captureKind(b) {
   // gzip: the analyzer decompresses transparently, and what is inside is the
   // parser's business to accept or reject.
   if (b[0] === 0x1f && b[1] === 0x8b) return "gzip";
+  // zip: how shared captures actually arrive. Conference and incident-response
+  // material is published as a .zip far more often than as a bare pcap, and
+  // refusing it sent people away to find a shell — on the one page whose whole
+  // point is that no install is needed.
+  if (is(0x50, 0x4b, 0x03, 0x04)) return "zip";
+  // Empty and spanned archives are still zips, and saying "not a capture" for
+  // them would be a lie about what the file is.
+  if (is(0x50, 0x4b, 0x05, 0x06) || is(0x50, 0x4b, 0x07, 0x08)) return "zip";
+  // tar carries its magic at offset 257, not at the start.
+  if (
+    b.length >= 262 &&
+    b[257] === 0x75 && b[258] === 0x73 && b[259] === 0x74 && b[260] === 0x61 && b[261] === 0x72
+  ) {
+    return "tar";
+  }
   return null;
 }
 
+// ── Container extraction ────────────────────────────────────────────────
+//
+// A capture inside an archive is still a capture. Everything here runs in the
+// page: no upload, no dependency, no external decoder. `DecompressionStream`
+// is a browser built-in, which also matters because the site's CSP forbids
+// loading a third-party zip library.
+
+/// Read a little-endian unsigned integer of `len` bytes at `off`.
+function leNum(b, off, len) {
+  var n = 0;
+  for (var i = len - 1; i >= 0; i--) n = n * 256 + b[off + i];
+  return n;
+}
+
+/// Inflate a raw DEFLATE stream (zip method 8) using the browser's decoder.
+async function inflateRaw(bytes) {
+  if (typeof DecompressionStream !== "function") {
+    throw new Error(
+      "this browser cannot decompress zip members (no DecompressionStream); " +
+        "extract the capture and drop the file inside"
+    );
+  }
+  var ds = new DecompressionStream("deflate-raw");
+  var stream = new Blob([bytes]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/// Locate the members of a zip via its central directory.
+///
+/// The central directory is authoritative: local headers may carry zeroed
+/// sizes with a trailing data descriptor, so reading sizes from them gives 0
+/// for exactly the streamed archives most likely to be shared.
+function zipEntries(buf) {
+  var eocd = -1;
+  var floor = Math.max(0, buf.length - 66000); // 64 KiB comment + the record
+  for (var i = buf.length - 22; i >= floor; i--) {
+    if (buf[i] === 0x50 && buf[i + 1] === 0x4b && buf[i + 2] === 0x05 && buf[i + 3] === 0x06) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("zip has no end-of-central-directory record (truncated?)");
+  var count = leNum(buf, eocd + 10, 2);
+  var off = leNum(buf, eocd + 16, 4);
+  var out = [];
+  for (var n = 0; n < count && off + 46 <= buf.length; n++) {
+    if (!(buf[off] === 0x50 && buf[off + 1] === 0x4b && buf[off + 2] === 0x01 && buf[off + 3] === 0x02)) break;
+    var nameLen = leNum(buf, off + 28, 2);
+    var extraLen = leNum(buf, off + 30, 2);
+    var cmtLen = leNum(buf, off + 32, 2);
+    var name = "";
+    for (var c = 0; c < nameLen; c++) name += String.fromCharCode(buf[off + 46 + c]);
+    out.push({
+      name: name,
+      method: leNum(buf, off + 10, 2),
+      compressedSize: leNum(buf, off + 20, 4),
+      size: leNum(buf, off + 24, 4),
+      localOffset: leNum(buf, off + 42, 4),
+    });
+    off += 46 + nameLen + extraLen + cmtLen;
+  }
+  return out;
+}
+
+/// Bytes of one zip member, resolved through its LOCAL header.
+async function zipMemberBytes(buf, entry) {
+  var lo = entry.localOffset;
+  if (!(buf[lo] === 0x50 && buf[lo + 1] === 0x4b && buf[lo + 2] === 0x03 && buf[lo + 3] === 0x04)) {
+    throw new Error("zip entry \u201c" + entry.name + "\u201d has no local header");
+  }
+  var start = lo + 30 + leNum(buf, lo + 26, 2) + leNum(buf, lo + 28, 2);
+  var raw = buf.subarray(start, start + entry.compressedSize);
+  if (entry.method === 0) return raw;
+  if (entry.method === 8) return inflateRaw(raw);
+  throw new Error(
+    "zip entry \u201c" + entry.name + "\u201d uses compression method " + entry.method +
+      ", which the browser cannot decode; extract it and drop the file inside"
+  );
+}
+
+/// Members of a tar, walked block by block.
+function tarEntries(buf) {
+  var out = [];
+  for (var off = 0; off + 512 <= buf.length; ) {
+    if (buf[off] === 0) break; // end-of-archive padding
+    var name = "";
+    for (var i = 0; i < 100 && buf[off + i] !== 0; i++) name += String.fromCharCode(buf[off + i]);
+    var sizeStr = "";
+    for (var j = 124; j < 136 && buf[off + j] !== 0 && buf[off + j] !== 0x20; j++) {
+      sizeStr += String.fromCharCode(buf[off + j]);
+    }
+    var size = parseInt(sizeStr, 8) || 0;
+    var typeflag = buf[off + 156];
+    var dataAt = off + 512;
+    if (typeflag === 0x30 || typeflag === 0) {
+      out.push({ name: name, size: size, start: dataAt });
+    }
+    off = dataAt + Math.ceil(size / 512) * 512;
+  }
+  return out;
+}
+
+/// Pick the member that is a capture, preferring content over name.
+function pickCapture(members, peek) {
+  for (var i = 0; i < members.length; i++) {
+    var head = peek(members[i]);
+    if (head && captureKind(head)) return members[i];
+  }
+  return null;
+}
+
+/// The browser decodes the whole capture in memory; past this it freezes.
+var MAX_ANALYZE_BYTES = 250 * 1024 * 1024;
+
+/// Say no to a capture that is too big, measuring what will actually be held.
+///
+/// `file.size` is the size ON DISK. For anything compressed that is the wrong
+/// number, and wrong in the dangerous direction: a 200 MB gzip expanding to
+/// 2 GB passed a guard whose entire purpose was to stop the tab freezing. The
+/// uncompressed size is knowable without decompressing — gzip stores it in the
+/// ISIZE trailer, zip in its central directory — so measure that.
+function tooBig(bytes, name) {
+  if (bytes <= MAX_ANALYZE_BYTES) return false;
+  showError(
+    "This capture holds " + Math.round(bytes / 1048576) + " MB once decompressed \u2014 too " +
+      "large to analyze in the browser. Use the desktop sipnab: sipnab -I " + name
+  );
+  return true;
+}
+
 async function handleFile(file) {
-  var head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
-  if (!captureKind(head)) {
+  // 512 bytes, not 4: tar carries its magic at offset 257.
+  var head = new Uint8Array(await file.slice(0, 512).arrayBuffer());
+  var kind = captureKind(head);
+  if (!kind) {
     var hex = Array.prototype.map
-      .call(head, function (x) {
+      .call(head.subarray(0, 4), function (x) {
         return ("0" + x.toString(16)).slice(-2);
       })
       .join(" ");
     showError(
       "\u201c" + file.name + "\u201d does not look like a capture file. It starts with " +
         (hex || "no bytes") +
-        ", and sipnab expects pcap, pcapng, or a gzip of either. The name does not " +
-        "matter \u2014 tg.pcap0, or a file with no extension at all, is fine."
+        ", and sipnab expects pcap, pcapng, a gzip of either, or a zip or tar " +
+        "containing one. The name does not matter \u2014 tg.pcap0, or a file with " +
+        "no extension at all, is fine."
     );
     return;
   }
-  // The whole file is decoded in browser memory; past ~250 MB the tab freezes.
-  if (file.size > 250 * 1024 * 1024) {
-    showError("This capture is " + Math.round(file.size / 1048576) + " MB — too large to analyze in the browser. Use the desktop sipnab: sipnab -I " + file.name);
+
+  // An archive is unwrapped here so the WASM parser only ever sees a capture.
+  // gzip is NOT unwrapped: the loader already streams it, and doing it twice
+  // would double the peak memory this guard exists to bound.
+  var innerName = file.name;
+  var containerNote = null;
+  var override = null;
+  if (kind === "zip" || kind === "tar") {
+    if (file.size > MAX_ANALYZE_BYTES) {
+      showError(
+        "This archive is " + Math.round(file.size / 1048576) + " MB \u2014 too large to " +
+          "open in the browser. Use the desktop sipnab: sipnab -I " + file.name
+      );
+      return;
+    }
+    var whole = new Uint8Array(await file.arrayBuffer());
+    try {
+      var members, chosen, peek;
+      if (kind === "zip") {
+        members = zipEntries(whole).filter(function (e) {
+          return e.size > 0 && !/\/$/.test(e.name);
+        });
+        // Peek needs the decoded head, which for a deflated member means
+        // decoding it; prefer the cheap name check first and fall back to
+        // trying each member in order.
+        chosen = members.filter(function (e) {
+          return /\.(pcap|pcapng|cap|pcap\d+)$/i.test(e.name);
+        })[0] || members[0];
+        if (!chosen) throw new Error("the zip holds no files");
+        if (tooBig(chosen.size, chosen.name)) return;
+        override = await zipMemberBytes(whole, chosen);
+        innerName = chosen.name;
+      } else {
+        members = tarEntries(whole).filter(function (e) { return e.size > 0; });
+        peek = function (e) { return whole.subarray(e.start, e.start + 512); };
+        chosen = pickCapture(members, peek) || members[0];
+        if (!chosen) throw new Error("the tar holds no files");
+        if (tooBig(chosen.size, chosen.name)) return;
+        override = whole.subarray(chosen.start, chosen.start + chosen.size);
+        innerName = chosen.name;
+      }
+      if (!captureKind(override.subarray(0, 512))) {
+        showError(
+          "\u201c" + file.name + "\u201d is a " + kind + ", but \u201c" + innerName +
+            "\u201d inside it is not a capture. If the archive holds several files, " +
+            "extract the capture and drop that in."
+        );
+        return;
+      }
+      containerNote =
+        "Opened \u201c" + innerName + "\u201d from " + kind + " \u201c" + file.name +
+        "\u201d (" + members.length + (members.length === 1 ? " file" : " files") + " inside)";
+    } catch (err) {
+      showError(
+        "Could not read the " + kind + " \u201c" + file.name + "\u201d: " +
+          (err.message || err) + ". Extract the capture and drop the file inside."
+      );
+      return;
+    }
+  } else if (kind === "gzip") {
+    // gzip's ISIZE trailer is the uncompressed length modulo 4 GiB. That is
+    // exact for everything this page can open, since the cap is far below 4 GiB.
+    var tail = new Uint8Array(await file.slice(Math.max(0, file.size - 4)).arrayBuffer());
+    if (tail.length === 4 && tooBig(leNum(tail, 0, 4), file.name)) return;
+  } else if (tooBig(file.size, file.name)) {
     return;
   }
   var errCard = $("#dropzone-error");
@@ -551,8 +761,7 @@ async function handleFile(file) {
 
   showLoading(file.name);
 
-  var buffer = await file.arrayBuffer();
-  var data = new Uint8Array(buffer);
+  var data = override || new Uint8Array(await file.arrayBuffer());
 
   // Small delay so the loading overlay renders
   await new Promise(function(r) { setTimeout(r, 50); });
@@ -594,9 +803,22 @@ async function handleFile(file) {
     if (result.gzip) {
       showNotice("Compressed capture detected — decompressed “" + file.name + "” (" +
         fmtBytes(result.gzip.compressed_bytes) + " → " + fmtBytes(result.gzip.decompressed_bytes) + ")");
+    } else if (containerNote) {
+      showNotice(containerNote);
     }
   } catch (err) {
-    showError("Could not parse “" + file.name + "”: " + (err.message || err) + ". If this is a valid capture, please open a GitHub issue with the file details.");
+    // Only invite a bug report when the file really did look like a capture.
+    // The old text ended EVERY failure with "please open a GitHub issue",
+    // including truncated downloads and files that were never captures — which
+    // blames the tool for the input and sends noise to the tracker.
+    var looked = captureKind(data.subarray(0, 512));
+    showError(
+      "Could not parse “" + innerName + "”: " + (err.message || err) +
+        (looked
+          ? ". The header says " + looked + ", so sipnab should have read it — " +
+            "please open a GitHub issue with the file details."
+          : ". Check the file is a complete capture and not truncated.")
+    );
   } finally {
     hideLoading();
   }

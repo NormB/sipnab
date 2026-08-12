@@ -10,7 +10,40 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The browser analyzer opens a capture inside a zip or tar.** Dropping a
+  `.zip` produced "does not look like a capture file" — and zipped is how
+  shared captures actually arrive: conference material, incident-response
+  bundles, vendor escalations. The page turned away the common case and sent
+  the reader off to find a shell, on the one page whose promise is that no
+  install is needed.
+
+  zip (stored and deflated) and tar are now unwrapped in the page, and the
+  capture inside is analyzed. Nothing leaves the browser and nothing is added
+  to the bundle: `DecompressionStream` is a browser built-in, which also
+  matters because the site's CSP forbids loading a third-party zip library.
+  Verified byte-identical extraction from a deflated zip, a stored zip and a
+  tar built from a real sample.
+
+  Members are located through the zip central directory rather than local
+  headers, which may carry zeroed sizes with a trailing data descriptor — the
+  shape a streamed archive has, and so the shape most likely to be shared.
+
 ### Fixed
+
+- **The browser size guard measured the wrong number.** `file.size` is the size
+  ON DISK, so a 200 MB gzip expanding to 2 GB passed the guard whose entire
+  purpose was to stop the tab freezing — wrong in the dangerous direction. The
+  uncompressed length is knowable without decompressing: gzip stores it in the
+  ISIZE trailer and zip in its central directory. Checked against a real
+  fixture, ISIZE reports 198831 bytes for a file that is exactly 198831 bytes.
+
+- **A failed analysis asked every user to file a bug.** The catch-all ended
+  every parse failure with "please open a GitHub issue", including truncated
+  downloads and files that were never captures — blaming the tool for the input
+  and sending noise to the tracker. It now invites a report only when the bytes
+  really did look like a capture, and otherwise says what to check.
 
 - **A refused `--metrics` endpoint let the run report success.** sipnab
   correctly refuses an unauthenticated non-loopback metrics bind, then logged

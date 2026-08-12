@@ -4570,3 +4570,106 @@ fn the_csp_refresher_rewrites_the_reference_headers_file_with_hashes_not_unsafe_
         out_lines[changed[0]]
     );
 }
+
+/// The analyze page opens a capture inside a zip or tar.
+///
+/// Reported against a real file: dropping
+/// `FIRST-2015_Hands-on_Network_Forensics_PCAP.zip` produced "does not look
+/// like a capture file". Conference material, incident-response bundles and
+/// vendor escalations arrive zipped far more often than as a bare pcap, so the
+/// page turned away the common case and told the reader to go find a shell —
+/// on the one page whose entire promise is that no install is needed.
+#[test]
+fn the_analyze_page_opens_captures_inside_archives() {
+    let js = read("website/static/js/analyze.js");
+
+    assert!(
+        js.contains("return \"zip\"") && js.contains("return \"tar\""),
+        "analyze.js no longer recognises zip/tar containers"
+    );
+    for helper in [
+        "function zipEntries",
+        "function zipMemberBytes",
+        "function tarEntries",
+    ] {
+        assert!(
+            js.contains(helper),
+            "{helper} is gone — archives cannot be unwrapped"
+        );
+    }
+    assert!(
+        js.contains("DecompressionStream"),
+        "the deflate decoder is gone; a deflated zip member cannot be read"
+    );
+    // The central directory is authoritative. Local headers may carry zeroed
+    // sizes with a trailing data descriptor, which is exactly the shape a
+    // streamed archive has, so reading sizes from them yields 0 for the
+    // archives most likely to be shared.
+    assert!(
+        js.contains("end-of-central-directory"),
+        "zip parsing no longer goes through the central directory"
+    );
+}
+
+/// The browser size guard measures what will be held in memory.
+///
+/// `file.size` is the size ON DISK, and for anything compressed that is the
+/// wrong number in the dangerous direction: a 200 MB gzip expanding to 2 GB
+/// passed a guard whose whole purpose was to stop the tab freezing. The
+/// uncompressed length is knowable without decompressing — gzip's ISIZE
+/// trailer, zip's central directory — and verified against real fixtures:
+/// ISIZE reported 198831 for a file that is exactly 198831 bytes.
+#[test]
+fn the_analyze_size_guard_measures_the_decompressed_size() {
+    let js = read("website/static/js/analyze.js");
+
+    assert!(
+        js.contains("MAX_ANALYZE_BYTES") && js.contains("function tooBig"),
+        "the size guard was inlined again; it must be one named rule"
+    );
+    assert!(
+        js.contains("ISIZE"),
+        "the gzip uncompressed-size trailer is no longer consulted, so a \
+         compressed capture is measured by its size on disk"
+    );
+    assert!(
+        !js.contains("file.size > 250 * 1024 * 1024"),
+        "the guard compares file.size against the cap directly again — that is \
+         the compressed size for gzip/zip input, which is the case the cap exists for"
+    );
+}
+
+/// A failure that is not sipnab's fault must not ask for a bug report.
+///
+/// The catch-all ended EVERY parse failure with "please open a GitHub issue",
+/// including truncated downloads and files that were never captures. That
+/// blames the tool for the input and sends noise to the tracker.
+#[test]
+fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() {
+    // Comment lines are stripped first. The fix's own comment quotes the old
+    // wording, and scanning the raw file matched THAT — a gate reading prose
+    // about the code instead of the code, which is how a gate passes or fails
+    // for reasons unrelated to behaviour.
+    let js: String = read("website/static/js/analyze.js")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let issue_at = js
+        .find("please open a GitHub issue")
+        .expect("the bug-report invitation is gone entirely");
+    // The invitation must sit inside a branch that first checked the bytes.
+    let window_start = issue_at.saturating_sub(400);
+    let context = &js[window_start..issue_at];
+    // `captureKind`, not merely the name of the variable holding its result.
+    // An earlier version of this gate accepted either, and a mutation that
+    // replaced the call with `var looked = true` sailed through it: the
+    // variable name survived, so the gate saw what it was looking for while
+    // the check it stood for was gone.
+    assert!(
+        context.contains("captureKind("),
+        "the GitHub-issue invitation is no longer guarded by an actual content \
+         check, so every unreadable file asks the reader to file a bug"
+    );
+}
