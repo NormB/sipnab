@@ -8,6 +8,63 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.95] - 2026-08-12
+
+sipnab no longer discards captured data without a knob or a word.
+
+### Fixed
+
+- **`active_call_count` grew with uptime, not concurrency.** Nothing aged an
+  `InCall` dialog out, so a call whose `BYE` was never captured — a lost
+  teardown, a truncated capture, a leg that simply stopped — counted as up
+  forever. A soak harness read **38,509 active calls against 100 RTP streams**.
+  Dialogs now leave the count after an idle window of 3600s, twice RFC 4028's
+  default `Session-Expires`, so a session-timer refresh keeps a live call
+  counted. The window is measured from the newest message in the store rather
+  than the wall clock: an offline capture would otherwise age every dialog out
+  at once.
+
+- **A SIP/TCP message over 64 KiB was cut in half in silence.** It is flushed
+  mid-message and parses as malformed, so an operator sees a broken message
+  from a peer that sent a good one. An over-cap SCTP message is worse — dropped
+  whole, so the calls it carried never appear at all. Neither ceiling comes
+  from TCP or from RFC 4960; both are sipnab's, and both now say so on stderr.
+
+- **The same stream was `Good` in the call list and `Warning` in its own detail
+  view.** Four views banded jitter, loss and MOS independently and disagreed:
+  25 ms jitter was good under one set of thresholds and a warning under
+  another. `loss_map.rs` even documented an agreement it did not have. One
+  `QualityBands` now answers for every view.
+
+- `PacketProcessor::with_max_sessions` passed an inline `Duration::from_secs(30)`
+  instead of `reassembly::DEFAULT_TTL` — two spellings of one policy that
+  happened to agree, so changing the constant would have moved the default
+  everywhere except the path every live capture takes.
+
+### Added
+
+- **`[limits] idle_compact_after_secs` and `keep_messages_per_idle_dialog`.**
+  Idle compaction is the only limit that discards data sipnab already captured
+  — every other one refuses to take something in — and it was the only one an
+  operator could not reach. Raise them when the ladder matters more than the
+  footprint: a call parked on hold, or a paused capture, goes quiet for longer
+  than ten minutes while still being the thing under investigation. Compaction
+  also warns once per run when it first drops messages, naming both keys.
+
+### Documentation
+
+- Nine cross-page contradictions resolved, each checked against source rather
+  than against another page: recipes that bound `--api` and `--hep-listen` to
+  `0.0.0.0` without credentials (those commands exit non-zero at startup), the
+  `--problems` flag versus the `problems` filter alias, `--rotate`'s default,
+  `/v1/dialogs` field names, the default Cargo feature set, and memory per call.
+- Five design docs claimed unbuilt work that had already shipped — one of them
+  was overtaken 36 minutes after it was written.
+- `check_codec_negotiation` returns **five** results, not four;
+  `sdp_present_but_no_codecs` is documented for the first time.
+- The `contrib/observability` systemd unit and README shipped commands that
+  refuse to start. Both now carry the credential flags that make them run.
+
 ## [0.5.94] - 2026-08-12
 
 What sipnab claims about itself is now checked against what it does.
