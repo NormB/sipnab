@@ -12,7 +12,13 @@ it. It answers the question §1 left open — *what is this feature, exactly, if
 provenance prerequisite ever lands* — and it spends most of its length on the
 part §1 identified but did not specify: correlation. The layout is the easy half
 and gets one section.
-**Check:** `grep -n 'long = "compare"' src/cli.rs` exits 1 — no comparison flag exists.
+**Check:** `grep -rn 'capture_id' src/sip/dialog.rs` exits 1 — a dialog still carries no
+record of WHICH capture it came from, which is the prerequisite §3 names and the
+reason the comparison column would have no field to read. This replaces a check on
+[`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs), which proved only that no FLAG exists: a built-but-unwired comparison
+would have passed it while the claim above was false. (`compare` alone is no good
+either — `compare_dialogs` is a real MCP tool, and it compares two dialogs in ONE
+capture, which is a different feature.)
 
 ## 1. The two questions an operator is actually asking
 

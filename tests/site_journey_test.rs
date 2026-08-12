@@ -4930,6 +4930,30 @@ fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
             continue;
         }
 
+        // The evidence has to be able to FALSIFY the claim above it, and a
+        // grep confined to the CLI cannot. `live-fanout.md` said "Nothing here
+        // is implemented" over `grep -rn 'fanout' src/cli.rs` exits 1, and it
+        // passed this gate for as long as it existed — truthfully, because the
+        // command tests REACHABILITY, while the sentence claimed EXISTENCE.
+        // 221 lines of `src/capture/fanout.rs` and a tested
+        // `capture_live_fanout` sat outside everything the check could see.
+        //
+        // So a claim that nothing is built must be evidenced against the tree
+        // that would hold it. A narrower command is not weaker evidence, it is
+        // evidence for a different proposition, and that is worse: it reads as
+        // verified.
+        if expect_none && cmd.contains("src/cli.rs") && !cmd.contains("src/ ") {
+            problems.push(format!(
+                "{name}: claims something is unbuilt, but checks only \
+                 `src/cli.rs`. That proves no FLAG reaches it, not that it does \
+                 not exist — a built-but-unwired module passes this check while \
+                 the sentence above it is false. Grep the tree that would hold \
+                 the implementation, or state the claim as \"nothing reaches \
+                 it\" rather than \"nothing is implemented\"."
+            ));
+            continue;
+        }
+
         let out = std::process::Command::new("sh")
             .arg("-c")
             .arg(&cmd)

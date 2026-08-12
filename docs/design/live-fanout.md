@@ -1,10 +1,21 @@
 # Making `PACKET_FANOUT` reachable
 
-**Status:** DESIGN. Nothing here is implemented. Section 7 recommends
-**measuring before wiring**, and names the result that would mean "do not ship".
+**Status:** DESIGN, on a mechanism that is already BUILT and deliberately not
+wired. [`src/capture/fanout.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs) (221 lines) and
+[`capture_live_fanout`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L224) are written and tested; no
+caller and no flag reach them. That is the decision in section 7 — **measure
+before wiring** — not an oversight, and section 7 names the result that would
+mean "do not ship".
 **Verified against:** `3267b08`, working tree.
 **Backlog:** [`backlog.md`](backlog.md) **CT4** (`:473`) and **CT11** (`:496`).
-**Check:** `grep -rn 'fanout' src/cli.rs` exits 1 — the mechanism exists and no flag reaches it.
+**Check:** `grep -rn 'fanout' src/cli.rs` exits 1 — no flag reaches the mechanism.
+
+That check is about REACHABILITY, and this Status line used to read "Nothing
+here is implemented" above it. The check passed the whole time, because it was
+never testing that claim: a grep of `cli.rs` cannot see 221 lines of built
+mechanism in `capture/`. Evidence that verifies a narrower proposition than the
+sentence it sits under is how a false claim survives a gate designed to catch
+false claims.
 
 **No number in this document is measured.** The repo's standing caveat applies
 in full — [`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22): *"Nothing on
