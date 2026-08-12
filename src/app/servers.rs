@@ -194,20 +194,27 @@ pub fn start_servers(
             tracing::error!("metrics auth: {e}");
             None
         });
-        match crate::output::prometheus_server::start_metrics_server(
+        // Propagated, not logged. `--metrics` is an explicit request for a
+        // scrape endpoint, and a run that cannot provide one has not done what
+        // it was asked. Logging it and continuing meant
+        // `sipnab --metrics 0.0.0.0:9109 && echo up` printed `up` with nothing
+        // listening: monitoring never arrives, and the exit status says it did.
+        //
+        // `--api` already fails the run on the SAME policy — measured, exit 2
+        // against 0 — so this is consistency with its sibling rather than a new
+        // opinion about how strict startup should be.
+        //
+        // The handle is dropped deliberately: the server lives for the rest of
+        // the process and nothing joins it. The bound address is already logged
+        // by the server, which matters for `--metrics 127.0.0.1:0`.
+        let (_bound, _handle) = crate::output::prometheus_server::start_metrics_server(
             bind_addr,
             Arc::clone(dialog_store),
             Arc::clone(stream_store),
             auth,
             capture_meter,
-        ) {
-            // The handle is dropped deliberately: the server lives for the
-            // rest of the process and nothing joins it. The bound address
-            // is already logged by the server, which matters for
-            // `--metrics 127.0.0.1:0`.
-            Ok((_bound, _handle)) => {}
-            Err(e) => tracing::error!("Failed to start metrics server: {e}"),
-        }
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to start metrics server: {e}"))?;
     }
 
     // `Prepared` is empty (uninstantiable) when neither server feature is

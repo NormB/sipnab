@@ -403,3 +403,74 @@ fn mcp_verifier_token_precedence_and_trim() {
     let cfg = servers::resolve_mcp_verifier_config(&cli);
     assert!(cfg.static_keys.is_empty());
 }
+
+/// An unauthenticated non-loopback `--metrics` is a startup ERROR, not a log
+/// line the run continues past.
+///
+/// The refusal itself was already right and is not what this pins. What was
+/// wrong is what happened next: `start_servers` matched on the result and did
+/// `Err(e) => tracing::error!(...)`, so the process carried on and exited 0
+/// with nothing listening. `sipnab --metrics 0.0.0.0:9109 && echo up` printed
+/// `up`, and a monitoring pipeline that checks exit status believed the
+/// scrape endpoint was live. It never arrives, and nothing downstream says so.
+///
+/// `--api` refuses the same bind and propagates, exiting 2. Two flags with the
+/// same policy and opposite exit codes is the part an operator cannot be
+/// expected to know.
+#[cfg(feature = "metrics")]
+#[test]
+fn metrics_non_loopback_without_auth_is_a_startup_error() {
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.metrics = Some("192.0.2.1:0".into()); // TEST-NET-1; policy fires before any bind
+    let (ds, ss, alerts) = stores();
+    let err = servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
+            api: false,
+            mcp: false,
+            metrics: true,
+        },
+        None,
+    )
+    .err()
+    .expect("unauthenticated non-loopback --metrics must be a startup error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("non-loopback"),
+        "error must explain the auth policy: {msg}"
+    );
+}
+
+/// A loopback `--metrics` on an ephemeral port still starts.
+///
+/// The anti-vacuity partner: a `start_servers` that failed on every `--metrics`
+/// would satisfy the test above.
+#[cfg(feature = "metrics")]
+#[test]
+fn metrics_on_loopback_ephemeral_port_starts() {
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.metrics = Some("127.0.0.1:0".into());
+    let (ds, ss, alerts) = stores();
+    let out = servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
+            api: false,
+            mcp: false,
+            metrics: true,
+        },
+        None,
+    );
+    assert!(
+        out.is_ok(),
+        "a loopback metrics bind must still start: {:?}",
+        out.err().map(|e| format!("{e:#}"))
+    );
+}

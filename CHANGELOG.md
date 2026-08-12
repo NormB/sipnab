@@ -12,6 +12,17 @@ entry that carries them.
 
 ### Fixed
 
+- **A refused `--metrics` endpoint let the run report success.** sipnab
+  correctly refuses an unauthenticated non-loopback metrics bind, then logged
+  the refusal and carried on, exiting 0. `sipnab --metrics 0.0.0.0:9109 && echo
+  up` printed `up` with nothing listening: the scrape endpoint never arrives,
+  and the exit status says it did.
+
+  `--api` enforces the same policy on the same kind of bind and fails the run,
+  exiting 2. Two flags, one policy, opposite exit codes — measured, not
+  inferred. The metrics startup error now propagates like its sibling's, so
+  both exit 2 and a loopback bind still starts.
+
 - **Six documented commands failed when a reader pasted them.** Each was run
   before and after, not read:
 
