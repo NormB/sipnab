@@ -354,11 +354,17 @@ fn linked_code_targets_exist() {
     // because it pointed at nothing is not the extraction narrowing, which is
     // what this pin guards; the per-file diff was checked before this number
     // moved, and no other page changed.
+    // Interpolated, never typed twice. `link_integrity_test` records the same
+    // trap: a previous bump there moved the number and not the sentence, so
+    // the gate asserted one figure while its message named another and sent
+    // the next reader hunting a discrepancy that did not exist. Lowering this
+    // pin to 339 reproduced it immediately — the message still said 340.
+    const EXPECTED_CODE_LINKS: usize = 339;
     assert_eq!(
-        seen, 339,
-        "code-link extraction found {seen} links, expected 340. More links is \
-         fine — bump this. FEWER means the extractor stopped matching, and \
-         every assertion below it silently narrowed."
+        seen, EXPECTED_CODE_LINKS,
+        "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
+         More links is fine — bump this. FEWER means the extractor stopped \
+         matching, and every assertion below it silently narrowed."
     );
     assert!(
         missing.is_empty(),
@@ -1721,5 +1727,67 @@ fn docs_to_site_map_is_complete() {
         problems.is_empty(),
         "DOCS_TO_SITE disagrees with what is on disk:\n  {}",
         problems.join("\n  ")
+    );
+}
+
+/// A line citation still points at the code its sentence names.
+///
+/// The two sibling gates check weaker things and both pass while a citation is
+/// wrong. `linked_code_targets_exist` proves the FILE exists;
+/// `cited_line_numbers_link_to_the_line` proves the link carries an `#L`
+/// fragment so the click lands somewhere specific. Neither reads the line. So
+/// `maintainability-perf-spec.md` could cite `src/main.rs:1996` in a file 172
+/// lines long, and `icid-correlation.md` could send a reader to
+/// `find_correlated_scored` at :935 when it sat at :981 — a precise, confident
+/// link to unrelated code, which is worse than no link at all. The reader has
+/// no reason to doubt it.
+///
+/// # Why this shells out instead of reimplementing the rule
+///
+/// `scripts/check-line-drift.py` is the single implementation, and it is also
+/// the fixer (`--apply`). Writing the check again in Rust would create two
+/// statements of one rule that agree today, which is exactly the divergence
+/// found between `repo_paths_in_docs_are_clickable` and
+/// `scripts/link-repo-paths.py`: the fixer there would have produced 33 links
+/// the gate never asked for, because each had its own idea of the rule. A gate
+/// and its fixer must derive from one rule; the cheapest way to guarantee that
+/// is for there to be only one.
+#[test]
+fn line_citations_point_at_the_code_they_name() {
+    let out = std::process::Command::new("python3")
+        .arg("scripts/check-line-drift.py")
+        .current_dir(repo())
+        .output()
+        .expect("run scripts/check-line-drift.py");
+    let report = String::from_utf8_lossy(&out.stdout);
+
+    // Anti-vacuity. The checker only examines citations whose prose names a
+    // symbol DEFINED in the cited file, and that filter is deliberately narrow
+    // — an earlier version matched any nearby word and reported `src`, `cli`
+    // and `to_vec` as drifted symbols. Narrow can become empty, and an empty
+    // checker exits 0 forever, so the count is pinned rather than trusted.
+    let checked: usize = report
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("checked ")?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+        .expect("the checker must report how many citations it checked");
+    assert!(
+        checked >= 40,
+        "the drift checker examined only {checked} citations, so it is proving \
+         almost nothing. Its symbol-extraction narrowed — fix that rather than \
+         lowering this floor.\n{report}"
+    );
+
+    assert!(
+        out.status.success(),
+        "a documented line citation no longer points at the code it names.\n{report}\n\
+         Run `python3 scripts/check-line-drift.py --apply` to re-point the ones \
+         with a single unambiguous definition; the rest name a symbol that has \
+         moved, been deleted, or has two definitions, and need a person."
     );
 }

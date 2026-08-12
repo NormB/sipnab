@@ -669,7 +669,7 @@ typed struct or a literal that a new field slots into:
   species of "we could not keep up" counter. Note this needs the field populated
   in **both** [`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) (`collect_metrics`) and
   [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) (`get_metrics`), which build the struct independently.
-- TUI: the counts string at [`src/tui/render/status.rs:80`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L80), with the width
+- TUI: the counts string at [`src/tui/render/status.rs:34`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L34), with the width
   accounting in `line1_used_cols` at `:34` updated to match — that helper sizes
   the status background from the rendered text, so added text that skips it
   under-fills the bar. The honest-truncation idiom already exists here too —

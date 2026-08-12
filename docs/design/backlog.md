@@ -327,7 +327,7 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:2840`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2840)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:2899`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2899)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -435,7 +435,7 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:1330`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1330),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:2950`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2950),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -460,7 +460,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:1933`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1933),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:1953`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1953),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -989,11 +989,11 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:171`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L171)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:3852`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3852), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:3945`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3945), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:870`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L870)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:969`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L969)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -1139,7 +1139,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:360`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L360)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:444`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L444)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -1455,7 +1455,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:4798`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4798)), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:5006`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5006), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -1974,7 +1974,7 @@ authoritative; the PB text above adds only what they do not already say.
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
   `SctpReassembler` ([`src/capture/parse.rs:1730`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1730)), constructed on every
-  `PacketProcessor` ([`src/capture/mod.rs:625`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L625), `:651`, `:686`). The P2 entry
+  `PacketProcessor` ([`src/capture/mod.rs:609`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L609), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to
   notice, because each one reads as authoritative on its own.

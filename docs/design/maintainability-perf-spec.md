@@ -91,7 +91,7 @@ Each item below is self-contained and can land as its own PR.
 
 ### WS0.1 Delete the batch-path `SipMessage` clone  *(perf, HIGH impact/trivial)*
 
-- [`src/main.rs:1996`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L1996) — `dialog_store.process_message(sip_msg.clone());`
+- [`src/app/batch.rs:2806`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2806) — `dialog_store.process_message(sip_msg.clone());`
 - [`src/parallel.rs:134`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L134) — `ds.process_message(msg.clone());`
 
 `pipeline.rs:150-169` already shows the fix: extract `call_id.to_string()`,
@@ -216,8 +216,8 @@ bodies:
 
 | Copy | Location | Size | Consumer |
 |---|---|---|---|
-| Canonical | [`src/pipeline.rs:108`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L108) `process_packet` | 142 ln | TUI live |
-| Batch | [`src/main.rs:1905`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L1905) `process_parsed_packet` | 402 ln | batch mode |
+| Canonical | [`src/pipeline.rs:1879`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1879) `process_packet` | 142 ln | TUI live |
+| Batch | [`src/app/batch.rs:2717`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2717) `process_parsed_packet` | 402 ln | batch mode |
 | TUI file-open | `src/tui/events.rs:1536` `load_pcap_file` | 194 ln | F3 open |
 | Sharded | [`src/parallel.rs`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) + worker loops | ~200 ln | `--jobs N` |
 
@@ -349,7 +349,7 @@ Five implementations of "dialog summary", already divergent on the wire:
 
 | Surface | Site | Drift |
 |---|---|---|
-| CLI/NDJSON | [`src/output/json.rs:148`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L148) `DialogJson` | `msg_count`, `schema_version: 1` |
+| CLI/NDJSON | [`src/output/json.rs:333`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L333) `DialogJson` | `msg_count`, `schema_version: 1` |
 | REST API | [`src/output/api.rs:715`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L715) ad-hoc `json!` | `msg_count`, `method.as_str()` |
 | MCP | [`src/mcp/server.rs:247`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L247) `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
 | TUI save | [`src/tui/save.rs:212`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L212) hand-built `json!` | third field set, no `schema_version` |
@@ -504,7 +504,7 @@ existing 261 headless TUI state tests + 49 snapshots green.
 
 ### Problem
 
-- `App` ([`src/tui/mod.rs:811`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L811)): 74 fields — 6 independent scroll offsets,
+- `App` ([`src/tui/mod.rs:75`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L75)): 74 fields — 6 independent scroll offsets,
   full save-dialog state (6 fields), file-open state (7 fields), name-popup
   state, render caches. No compiler help against stale cross-popup state.
 - `src/tui/events.rs`: 3,709 lines, 372 `KeyCode::` arms in 21 `handle_*`
@@ -658,8 +658,10 @@ Ordered by risk closed per unit effort:
 8. **TUI e2e visibility:** keep `continue-on-error` but write the result to
    the job summary, or move to a scheduled workflow that opens an issue on
    failure — a soft-forever gate is close to no gate.
-9. **Deterministic clocks:** inject a clock into the token-TTL path
-   ([`tests/mcp_token_rotation_test.rs:339`](https://github.com/NormB/sipnab/blob/main/tests/mcp_token_rotation_test.rs#L339) sleeps > 3 s real time); convert
+9. **Deterministic clocks:** ~~inject a clock into the token-TTL path~~ **done** —
+   [`tests/mcp_token_rotation_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/mcp_token_rotation_test.rs) no longer
+   sleeps for a fixed multi-second span; it polls until the TTL elapses, for the
+   reason its own comment gives. Still open: convert
    `parse_path_test.rs:140,147` fixed sleeps to the existing poll-until
    helper.
 10. **One-shot calibration:** run `cargo mutants` locally on `sip/parser.rs`,
