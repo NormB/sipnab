@@ -197,3 +197,78 @@ fn the_cited_description_gate_actually_exists() {
         }
     }
 }
+
+/// Every tool the server registers has BOTH a call example and a response
+/// example in `docs/mcp.md`.
+///
+/// A response example alone is half a specification. `capture_health` showed
+/// what comes back and never showed a call — and it takes a REQUIRED
+/// `sample_seconds`, so a reader could not discover the one thing they had to
+/// supply. `list_captures` and `render_ladder` had the same shape: the reader
+/// learns what the answer looks like and has to guess the question.
+///
+/// The tool list comes from the SOURCE, not from the documentation, so adding
+/// a `#[tool]` without documenting it fails here rather than going unnoticed —
+/// which is the direction the drift actually runs.
+#[test]
+fn every_mcp_tool_documents_a_call_and_a_response() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp/server.rs"),
+    )
+    .expect("read src/mcp/server.rs");
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/mcp.md"),
+    )
+    .expect("read docs/mcp.md");
+
+    const FENCE: &str = "```";
+    let tools = tool_descriptions(&src);
+    assert!(
+        tools.len() >= 25,
+        "only {} tools were extracted from the source, so this gate is checking \
+         almost nothing — the `#[tool]` attribute shape changed",
+        tools.len()
+    );
+
+    let mut problems = Vec::new();
+    for (name, _) in &tools {
+        let heading = format!("### `{name}`");
+        let Some(start) = doc.find(&heading) else {
+            problems.push(format!("{name}: no `{heading}` section in docs/mcp.md"));
+            continue;
+        };
+        let after = &doc[start + heading.len()..];
+        let section = match after.find("\n### ") {
+            Some(end) => &after[..end],
+            None => after,
+        };
+
+        // A CALL is shown as `tool_name { ... }`, or the section states the
+        // tool takes none — which is a complete specification for a nullary
+        // tool, not an omission.
+        let shows_call = section.contains(&format!("{name} {{"))
+            || section.contains(&format!("\"name\": \"{name}\""))
+            || section.to_lowercase().contains("no parameters");
+        // A RESPONSE is any fenced json/jsonc/text block in the section.
+        let shows_response = ["json", "jsonc", "text"]
+            .iter()
+            .any(|k| section.contains(&format!("{FENCE}{k}")));
+
+        if !shows_call {
+            problems.push(format!(
+                "{name}: documents a response but never shows how to CALL it. \
+                 A reader cannot discover a required parameter from an answer"
+            ));
+        }
+        if !shows_response {
+            problems.push(format!("{name}: shows a call but no response shape"));
+        }
+    }
+
+    problems.sort();
+    assert!(
+        problems.is_empty(),
+        "every MCP tool needs a complete example — a call AND a response:\n  {}",
+        problems.join("\n  ")
+    );
+}

@@ -588,6 +588,10 @@ Out-of-range indexes return invalid_params (-32602).
 
 Call-flow ladder for one Call-ID.
 
+```jsonc
+render_ladder { "call_id": "test-call-1@10.0.0.1" }
+```
+
 | Name | Type | Description |
 |---|---|---|
 | `call_id` | string | Required. |
@@ -1465,7 +1469,20 @@ a boundary described that way ought to be.
 ### `list_captures`
 
 Capture files in the configured root, with sizes. It skips anything that is
-not a capture.
+not a capture. **No parameters:**
+
+```jsonc
+list_captures {}
+```
+
+Without `--mcp-file-root` the whole file-tool group is off, and this answers
+with a refusal rather than an empty list — "no directory configured" and "the
+directory is empty" are different facts:
+
+```jsonc
+{ "code": -32602,
+  "message": "file tools are disabled: start sipnab with --mcp-file-root <DIR>" }
+```
 
 ```jsonc
 { "captures": [ { "filename": "outage-0722.pcap", "bytes": 184320 } ] }
@@ -1746,6 +1763,13 @@ allowed to use that way.
 Reads the capture counters, waits, and reads them again. The response carries
 the run totals **and** the change across that window, which turns a pile of
 monotonic counters into a rate.
+
+`sample_seconds` is **required** — this tool has no default window, because a
+rate without a stated interval is not a rate. The call blocks for that long:
+
+```jsonc
+capture_health { "sample_seconds": 1 }
+```
 
 `capture_status` tells you what the counters say right now. `capture_health` tells you
 what they did over a window you chose, which is the difference between "this
