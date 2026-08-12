@@ -1305,7 +1305,7 @@ three of the four are wiring rather than sipnab:
 |---|---|---|
 | `401` | Wrong or missing bearer token | Check the token file is non-empty |
 | `403` | `Host:` not in the allowlist | `--mcp-allowed-host <what the client sends>` |
-| `404` | Path is not exactly `/mcp` | Strip the trailing slash, check any proxy rewrite |
+| `404` | The request never reached sipnab's MCP route | Check for a proxy rewrite. **Not** a trailing slash: `/mcp` and `/mcp/` both answer `200` |
 | `406` | `Accept` missing a type | Offer `application/json, text/event-stream` |
 | `422` | Session id not echoed | Send `Mcp-Session-Id` on every post after `initialize` |
 
@@ -1860,7 +1860,7 @@ Work outward from the server. Each layer has a definitive test.
 | Client | `claude mcp list` | ✓ connected |
 
 HTTP status decoder: `401` wrong/missing bearer token · `403` `Host:` not
-in the allowlist (`--mcp-allowed-host`) · `404` path isn't exactly `/mcp` ·
+in the allowlist (`--mcp-allowed-host`) · `404` the request never reached the MCP route (a proxy rewrite, not a trailing slash) ·
 `406` missing `Accept: application/json, text/event-stream`. More in
 [mcp.md § Troubleshooting](mcp.md#troubleshooting). The
 [raw HTTP test](mcp.md#raw-http-test) there is a working curl carrying every
