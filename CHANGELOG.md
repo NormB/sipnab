@@ -10,7 +10,61 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **The site and README stated things that were not true.** Every number here
+  was checked against the source it describes, not against the previous copy:
+
+  - The homepage advertised **24** MCP tools in prose and **31** in the tile
+    beside it, and README said **25**. There are 31 — confirmed by asking a
+    running server for `tools/list` and by counting the registrations.
+  - "none of them alters the analysis" was wrong: 5 tools carry
+    `read_only_hint = false`, and `open_capture` swaps the capture being read.
+    The page now says which 5 and that each stays off until enabled.
+  - The filter DSL has **30** fields, not 31.
+  - HEP **sending** is v3 only; v2 appears on the receive path.
+  - The recommended static musl build omits `plugins` as well as `audio`, so
+    `--plugin` does not exist in it — the download page said audio alone, and a
+    reader would go looking for a flag that was compiled out.
+  - The download page's asset arithmetic named 19 files and claimed 23. The
+    real release has 23: it never mentioned the 6 `.sha256` sidecars and
+    counted 2 source archives GitHub synthesizes rather than publishes.
+  - The homepage said "one dependency" where the download page said "zero";
+    both were true of different builds, and neither said which.
+
+  The throughput tile is the interesting one. It was authored `2.32` and
+  rendered `2.3`, because the count-up animation ended in `toFixed(1)` — so
+  only readers with `prefers-reduced-motion` ever saw the measured value. The
+  authored number is correct and a test pins it, so the ANIMATION was fixed to
+  take its precision from the attribute rather than the authored value being
+  rounded to match the bug.
+
+- **The MCP server told every agent something no longer exact.** Its
+  instructions said "No tool alters the analysis", which stopped being true
+  when `open_capture` gained the ability to swap captures — the second time
+  that sentence drifted. It now states the invariant that actually holds and
+  that `docs/internals/invariants.md` argues for: a swap is allowed, gated, and
+  impossible to hide, because every response names the capture it answered
+  from.
+
 ### Added
+
+- **A gate for the invariant two other gates silently depend on.** The homepage
+  advertises one automated-test count, and two gates pin it to a measurement:
+  the pre-commit hook counts `cargo test --features full`, CI counts `cargo
+  test --all-features`. One number, two suites. They agree only because those
+  feature sets differ by exactly `wasm` and nothing is tested behind it — a
+  coincidence with nothing holding it. One `#[cfg(feature = "wasm")] #[test]`
+  would make the number unsatisfiable by construction: the hook demands N, CI
+  demands N+1, and the fix for one gate breaks the other.
+
+  The commands cannot simply be merged — CI needs `--all-features` for
+  `plugins`, whose test builds for `wasm32-unknown-unknown`, a target CI
+  installs and a contributor may not have. Both are right; what has to hold is
+  the relationship between them, so that is now a test. It derives the feature
+  gap from `Cargo.toml` rather than hard-coding `wasm`, catches both ways a
+  test can be gated, and names the offending file and line. Both gates now
+  carry a comment pointing at it.
 
 - **The browser analyzer opens a capture inside a zip or tar.** Dropping a
   `.zip` produced "does not look like a capture file" — and zipped is how

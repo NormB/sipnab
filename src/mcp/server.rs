@@ -5297,13 +5297,21 @@ impl ServerHandler for SipnabMcp {
         // Every client reads this string, so it is a promise on the wire rather
         // than documentation. It used to say "read-only access", which stopped
         // being exactly true once file exports and an opt-in shutdown existed.
-        // The invariant that does hold is narrower and worth stating precisely:
-        // no tool changes the analysis being read.
+        // It then said "no tool alters the analysis", which stopped being exact
+        // once `open_capture` could swap the capture being read — the same
+        // drift a second time, and the reason docs/internals/invariants.md
+        // rejects "absence of a mutating verb" as the test. What actually
+        // protects the operator is the IDENTITY on the wire: a swap is allowed,
+        // gated, and impossible to hide, because every response names the
+        // capture it answered from.
         info.instructions = Some(
             "sipnab MCP server — queries captured SIP dialogs, RTP streams, \
-             diagnostics and security findings. No tool alters the analysis. \
-             File exports write only under the configured file root, and \
-             stopping the server requires an explicit server-side opt-in."
+             diagnostics and security findings. No tool edits a capture's \
+             contents. `open_capture` can change WHICH capture is loaded and \
+             stays off unless enabled server-side; every response carries \
+             `capture_identity`, so a swap is visible rather than silent. File \
+             exports write only under the configured file root, and stopping \
+             the server requires an explicit server-side opt-in."
                 .to_string(),
         );
         info

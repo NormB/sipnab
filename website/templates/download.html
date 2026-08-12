@@ -178,7 +178,7 @@
   <!-- Linux (static + glibc) -->
   <div class="dl-panel" data-os="linux" id="dl-panel-linux" role="tabpanel" aria-labelledby="dl-tab-linux">
     <div class="dl-method-head"><h2>Static binary</h2><span class="dl-rec dl-rec--blue">zero dependencies</span></div>
-    <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, any glibc version, Alpine included. Download, extract, run. This is the safe choice when you&rsquo;re not sure (the only thing it lacks is TUI audio playback).</p>
+    <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, any glibc version, Alpine included. Download, extract, run. This is the safe choice when you&rsquo;re not sure &mdash; the two things it leaves out are TUI audio playback and WASM plugin loading, so this binary has no <code>--plugin</code> flag at all.</p>
     <div class="dl-direct">
       <div class="dl-tiles">
         <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz">
@@ -194,7 +194,7 @@
       </div>
     </div>
     <div class="dl-direct">
-      <span class="dl-direct-label">glibc build (adds audio playback &mdash; needs glibc &ge; {{ config.extra.glibc_floor }} ({{ config.extra.glibc_floor_distros }}) and libpcap)</span>
+      <span class="dl-direct-label">glibc build (adds audio playback and WASM plugins &mdash; needs glibc &ge; {{ config.extra.glibc_floor }} ({{ config.extra.glibc_floor_distros }}) and libpcap)</span>
       <div class="dl-tiles">
         <a class="dl-tile dl-tile--sm" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz">
           <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">glibc &middot; tar.gz</span></span>
@@ -303,7 +303,7 @@
      keeps the concrete per-platform links above, which are the how-to. #}
   <section class="dl-allfiles" id="all-files">
     <div class="dl-method-head"><h2>Every file in a release</h2><span class="dl-rec dl-rec--dim">for the seasoned</span></div>
-    <p class="dl-lead">Four <code>.deb</code> and four <code>.rpm</code> packages, six tarballs, two CycloneDX SBOMs, <code>SHA256SUMS.txt</code>, and the tagged source archives &mdash; 23 files in all. The <a href="{{ get_url(path='@/docs/install.md') }}#release-artifacts">artifact reference</a> describes what each one is, which CPU it targets, and what it needs to run.</p>
+    <p class="dl-lead">Four <code>.deb</code> and four <code>.rpm</code> packages, six tarballs each with its own <code>.sha256</code> sidecar, two CycloneDX SBOMs, and <code>SHA256SUMS.txt</code> &mdash; 23 files in all, plus the two source archives GitHub generates from the tag itself. The <a href="{{ get_url(path='@/docs/install.md') }}#release-artifacts">artifact reference</a> describes what each one is, which CPU it targets, and what it needs to run.</p>
     <div class="dl-allfiles-links">
       <a class="dl-tile dl-tile--sm" href="{{ get_url(path='@/docs/install.md') }}#release-artifacts">
         <span class="dl-tile-txt"><span class="dl-tile-name">Artifact reference</span><span class="dl-tile-sub">every file, and what it is for</span></span>

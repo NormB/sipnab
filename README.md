@@ -29,7 +29,7 @@ security analysis.
 - **TLS/SRTP decryption** -- SSLKEYLOGFILE (TLS 1.2/1.3), RSA private key (`--tls-key`, TLS 1.2 RSA-kx only — not ECDHE/PFS), SRTP media (`--srtp-keys` + SDES `a=crypto`, AES-CM), and DTLS-SRTP key extraction (`--dtls-keylog`, RFC 5764)
 - **Privilege separation** -- drop to unprivileged user after capture device open
 - **pcap I/O** -- read/write pcap and pcapng, file rotation and splitting
-- **MCP server mode** -- expose analysis (dialogs, streams, RTP, security findings) as 25 Model Context Protocol tools an AI agent can call. No tool edits the analysis in place; file export, capture swapping and shutdown stay off unless you enable them. Stdio + HTTP transports. See [`docs/mcp.md`](./docs/mcp.md).
+- **MCP server mode** -- expose analysis (dialogs, streams, RTP, security findings) as 31 Model Context Protocol tools an AI agent can call. No tool edits the analysis in place; file export, capture swapping and shutdown stay off unless you enable them. Stdio + HTTP transports. See [`docs/mcp.md`](./docs/mcp.md).
 
 ## Prerequisites
 
@@ -143,8 +143,9 @@ RTP as they happen:
 
 - **Call list** with sortable columns, multi-select, inline search, filter DSL
 - **Call flow ladder** with color-coded arrows, SDP codec display, PDD annotation
-- **Three timestamp modes** -- absolute (`HH:MM:SS.mmm`), delta from previous
-  message (color-coded by latency), delta from first message
+- **Four timestamp modes** -- absolute (`HH:MM:SS.mmm`), delta from previous
+  message (color-coded by latency), delta from first message, and scaled, which
+  stretches the ladder with time-proportional spacer rows
 - **Split view** -- raw SIP detail panel alongside the ladder diagram, resizable
   with `9`/`0` or `+`/`-`
 - **Message diff** -- select two messages with Space to compare side-by-side
@@ -157,7 +158,7 @@ sipnab honours every sngrep keybinding. Press `F1` for the full shortcut referen
 
 | Flag       | Description                                                          | Default |
 |------------|----------------------------------------------------------------------|---------|
-| `native`   | Live capture, file capture, output writers, signal handling, CLI. Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, and `mcp-http`; NOT required by `tls`, `audio`, or `wasm` | yes     |
+| `native`   | Live capture, file capture, output writers, signal handling, CLI. Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, and `plugins`; NOT required by `tls`, `audio`, or `wasm` | yes     |
 | `tui`      | Interactive terminal UI (ratatui + crossterm)                        | yes     |
 | `audio`    | RTP audio playback in TUI via the lazily loaded `sipnab-audio` plugin + WAV export | yes     |
 | `tls`      | TLS/DTLS decryption + SRTP key extraction (ring, zeroize, rustls)    | no      |
@@ -168,7 +169,7 @@ sipnab honours every sngrep keybinding. Press `F1` for the full shortcut referen
 | `metrics`  | Standalone Prometheus metrics server (raw TCP, no tokio)             | yes     |
 | `wasm`     | WebAssembly target for in-browser pcap analysis                      | no      |
 | `plugins`  | WASM plugin host (`--plugin`): sandboxed third-party dialog detections  | no      |
-| `full`     | `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` | no      |
+| `full`     | `native` + `tui` + `tls` + `hep` + `api` + `audio` + `mcp` + `mcp-http` + `metrics` + `plugins` | no      |
 
 Build with specific features. Adding TLS decryption and HEP to the default set:
 

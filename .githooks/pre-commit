@@ -308,6 +308,14 @@ else
 fi
 
 # ── 5. Homepage test count matches actual ──────────────────────────
+# NOTE: this counts `cargo test --features full` (step 2), while ci.yml counts
+# `cargo test --all-features` — two suites, one published number. They can only
+# both be right while nothing is tested behind a feature outside `full`, which
+# `no_test_hides_behind_a_feature_outside_full` in tests/site_journey_test.rs
+# enforces. The commands differ on purpose: CI needs `--all-features` for
+# `plugins`, whose test builds for wasm32-unknown-unknown, a target CI installs
+# and a contributor may not have.
+#
 # Two independent places on the homepage carry the test count: the stat card
 # (data-count, anchored here to its "Automated tests" label rather than to
 # position so adding another stat can't silently mis-target it) and the prose

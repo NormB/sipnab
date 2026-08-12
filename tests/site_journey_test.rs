@@ -2862,7 +2862,7 @@ fn inline_script_edits_require_csp_hash_refresh() {
             // artifact, so Cloudflare gets the rendered hash. This pin is only
             // an acknowledgement gate for template edits.
             "index.html",
-            "sha256-du3YYx2OY3UxQaGAjCIEIChqOcWygleJKR+ySMRn/WA=",
+            "sha256-AkpDtXHMdSTftlt8nnI3WVOxg8v9pAfQN/aJ2dj71FA=",
         ),
         (
             "page.html",
@@ -3642,9 +3642,14 @@ fn packaging_scripts_reference_existing_paths() {
     // scripts/check-wasm-exports.py as the post-build check. Attributed rather
     // than bumped: this gate exists to notice references it has stopped
     // checking, so a number that moves without a reason is the failure.
+    // Raised 64 -> 66 by the cross-references added to .githooks/pre-commit and
+    // .github/workflows/ci.yml, each naming tests/site_journey_test.rs as the
+    // home of the invariant their shared test count depends on. Attributed per
+    // file before moving: HEAD has 0 in each, the working tree has 1 in each,
+    // and the path they name exists — which is exactly what this gate checks.
     assert_eq!(
-        checked, 64,
-        "packaging path scan saw {checked} references, expected 64. More is \
+        checked, 66,
+        "packaging path scan saw {checked} references, expected 66. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );
@@ -4672,4 +4677,147 @@ fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() {
         "the GitHub-issue invitation is no longer guarded by an actual content \
          check, so every unreadable file asks the reader to file a bug"
     );
+}
+
+/// No test may hide behind a feature that `--features full` does not enable.
+///
+/// The homepage advertises one automated-test count, and TWO gates pin it to a
+/// measurement — `.githooks/pre-commit` step 5 against its `cargo test
+/// --features full` run, and `ci.yml`'s "Enforce the published test count"
+/// against `cargo test --all-features`. One number, two suites.
+///
+/// They agree today only because `full` and `all-features` differ by exactly
+/// one feature, `wasm`, and nothing is tested behind it. That is a coincidence
+/// with no guard on it. Add one `#[cfg(feature = "wasm")] #[test]` and the
+/// number becomes unsatisfiable BY CONSTRUCTION: the hook demands N, CI
+/// demands N+1, and no value of the homepage figure passes both. The fixer for
+/// one gate is guaranteed to break the other.
+///
+/// The two gates cannot simply be merged. CI runs `--all-features` because it
+/// includes `plugins`, whose test builds `crates/sipnab-plugin-example` for
+/// `wasm32-unknown-unknown`; CI installs that target and a contributor's
+/// machine may not have it, so the hook cannot run the same command. Both
+/// commands are therefore correct, and what has to hold is the invariant
+/// BETWEEN them — which is what this pins.
+#[test]
+fn no_test_hides_behind_a_feature_outside_full() {
+    let toml = read("Cargo.toml");
+
+    // Derive the gap from Cargo.toml rather than hard-coding "wasm", so a new
+    // non-`full` feature is covered the day it is added.
+    let feature_line = |name: &str| -> Option<String> {
+        toml.lines()
+            .find(|l| l.trim_start().starts_with(&format!("{name} = [")))
+            .map(|l| l.to_string())
+    };
+    let members = |line: &str| -> Vec<String> {
+        regex::Regex::new(r#""([a-z0-9-]+)""#)
+            .unwrap()
+            .captures_iter(line)
+            .map(|c| c[1].to_string())
+            .filter(|s| !s.starts_with("dep:"))
+            .collect()
+    };
+
+    let full_line = feature_line("full").expect("Cargo.toml has no `full` feature");
+    let mut in_full: Vec<String> = members(&full_line);
+    // One level of expansion is enough: `full` names leaf features directly.
+    for f in in_full.clone() {
+        if let Some(l) = feature_line(&f) {
+            in_full.extend(members(&l));
+        }
+    }
+
+    let declared: Vec<String> = toml
+        .lines()
+        .skip_while(|l| !l.starts_with("[features]"))
+        .skip(1)
+        .take_while(|l| !l.starts_with('['))
+        .filter_map(|l| l.split('=').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && !s.starts_with('#'))
+        .collect();
+
+    let outside: Vec<String> = declared
+        .into_iter()
+        .filter(|f| f != "default" && f != "full" && !in_full.contains(f))
+        .collect();
+    assert!(
+        !outside.is_empty(),
+        "no feature sits outside `full` any more, so this gate has nothing to \
+         check — if that is deliberate, delete it and the comments in \
+         pre-commit and ci.yml that point at it"
+    );
+
+    // The two ways a test becomes feature-gated: a crate-level attribute on an
+    // integration test file, and an attribute on a `#[test]` or `mod tests`.
+    let mut found = Vec::new();
+    for feat in &outside {
+        let crate_gate = format!("#![cfg(feature = \"{feat}\")]");
+        let item_gate = format!("#[cfg(feature = \"{feat}\")]");
+
+        for dir in ["tests", "src"] {
+            let walk = walkdir(std::path::Path::new(dir));
+            for path in walk {
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                if dir == "tests" && text.contains(&crate_gate) {
+                    found.push(format!("{} is gated on `{feat}` in full", path.display()));
+                }
+                let lines: Vec<&str> = text.lines().collect();
+                for (i, line) in lines.iter().enumerate() {
+                    if !line.trim().starts_with(&item_gate) {
+                        continue;
+                    }
+                    // Look ahead past other attributes for a test item.
+                    for next in lines.iter().skip(i + 1).take(4) {
+                        let t = next.trim();
+                        if t.starts_with("#[test]") || t.starts_with("mod tests") {
+                            found.push(format!(
+                                "{}:{} gates a test on `{feat}`",
+                                path.display(),
+                                i + 1
+                            ));
+                            break;
+                        }
+                        if !t.starts_with('#') && !t.is_empty() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "a test is reachable under `--all-features` but not `--features full`, \
+         so the hook and CI now count DIFFERENT suites against one homepage \
+         number and no value satisfies both:\n  {}\n\nEither move the test \
+         behind a feature `full` enables, or change both gates together so \
+         they count the same command.",
+        found.join("\n  ")
+    );
+}
+
+/// Directory walk, files only.
+fn walkdir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
