@@ -460,7 +460,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:1971`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1971),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2051`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2051),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and

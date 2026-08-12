@@ -539,6 +539,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         }
     };
 
+    // Whether a detector will exist at all is a property of the MODE, so it
+    // cannot be answered with the warnings above, which run before the mode is
+    // decided. Kept beside the refusal further up for the same reason that one
+    // is here: an operator who believes their scanner defence is armed has to
+    // be told before the capture starts, not left to read an empty finding
+    // list as quiet.
+    if let Some(msg) = security_detection_ignored_warning(cli, config, &mode) {
+        tracing::warn!("{msg}");
+    }
+
     // Immediate mode picks the kernel ring format, so it can only be answered
     // once the consumer is known — which is here, and not in
     // `build_capture_config`, which runs before the mode is decided.
@@ -1954,6 +1964,76 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
     ))
 }
 
+/// Detection flags on a run whose mode builds no detector.
+///
+/// The scanner, fraud, digest-leak and REGISTER-flood detectors are
+/// constructed in exactly one place, `batch::run`. The TUI drives its own
+/// processing thread (`app::tui_mode`) and the parallel offline reader drives
+/// its own workers (`parallel::run_offline_parallel_file`); neither mentions a
+/// detector, so neither can arm one.
+///
+/// The TUI is the DEFAULT mode, and that is what makes this worth a line at
+/// startup. Unlike the output flags, no detection flag requires `-N`, so
+/// `sudo sipnab -d eth0 --kill-scanner` parses, captures, fills its panes and
+/// detects nothing — and a run that detects nothing is indistinguishable from
+/// a quiet network. It is the failure `--fail2ban` already warns about one
+/// layer up: an empty finding list reads as "nothing attacked me" when it
+/// means "nothing was looking".
+///
+/// Warned rather than refused, on the same reasoning as
+/// [`cores_ignored_warning`]: the capture, the panes and `-O` are all correct
+/// and worth having on their own, and refusing the combination would break
+/// invocations that only ever wanted to watch.
+///
+/// Returns the message rather than logging it, so it can be asserted on,
+/// matching [`cores_ignored_warning`].
+fn security_detection_ignored_warning(
+    cli: &Cli,
+    config: &Config,
+    mode: &RunMode,
+) -> Option<String> {
+    // Named for what the operator typed, not for the detector struct: the
+    // remedy has to be reachable from the command line they are looking at.
+    let (path, remedy) = match mode {
+        // The one path that builds them.
+        RunMode::Batch => return None,
+        RunMode::Tui => ("the interactive TUI", "add -N/--no-tui"),
+        RunMode::CoresFile => (
+            "the --cores parallel offline reader",
+            "drop --cores (the single-core headless read detects)",
+        ),
+    };
+    // The same conditions `batch::run` arms each detector on, so this cannot
+    // report a flag as ignored that the headless run would have ignored too.
+    let asked: Vec<&str> = [
+        (
+            cli.kill_scanner || config.security.kill_scanner.unwrap_or(false),
+            "--kill-scanner",
+        ),
+        (!cli.kill_target.is_empty(), "-K/--kill-target"),
+        (
+            cli.fraud_detect || config.security.fraud_detect.unwrap_or(false),
+            "--fraud-detect",
+        ),
+        (cli.digest_leak, "--digest-leak"),
+        (cli.reg_flood, "--reg-flood"),
+    ]
+    .iter()
+    .filter(|(asked_for, _)| *asked_for)
+    .map(|(_, name)| *name)
+    .collect();
+    if asked.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{flags} accepted and ignored: security detection is built only by the \
+         headless single-capture path, and this run is {path}. Nothing will be \
+         detected and no finding will be reported, so an empty result here is \
+         not an all-clear. To detect, {remedy}.",
+        flags = asked.join(", "),
+    ))
+}
+
 /// A truncating `--snaplen` on a live capture that also writes `-O`.
 ///
 /// `--snaplen N` tells the kernel to copy only the first N bytes of each frame;
@@ -2604,6 +2684,150 @@ mod tests {
             metrics_ignored_on_cores_warning(&live).is_none(),
             "a live run falls back to one core and starts the metrics server"
         );
+    }
+
+    // ── detection flags on a mode that builds no detector ──────────────
+
+    /// The defect: `--kill-scanner` is silently inert in the DEFAULT mode.
+    ///
+    /// The detectors are constructed in one place, `batch::run`. The TUI runs
+    /// its own processing thread and never mentions one, and no detection flag
+    /// requires `-N` the way the output flags do — so `sudo sipnab -d eth0
+    /// --kill-scanner --fraud-detect --reg-flood` parses all three, arms none,
+    /// and fills its panes normally while the scanner it was pointed at goes
+    /// unread. There is no symptom: a run that detects nothing looks exactly
+    /// like a quiet network, which is the failure mode `--fail2ban` already
+    /// warns about one layer up ("an empty jail log means 'nothing was
+    /// detected', not 'nothing happened'").
+    #[test]
+    fn detection_flags_warn_when_the_tui_will_not_run_them() {
+        let mut cli = base_cli();
+        cli.no_tui = false;
+        cli.device = Some("eth0".to_string());
+        cli.kill_scanner = true;
+        cli.fraud_detect = true;
+        cli.reg_flood = true;
+        let msg = security_detection_ignored_warning(&cli, &Config::default(), &RunMode::Tui)
+            .expect("detection flags the TUI cannot honour must be reported");
+        for flag in ["--kill-scanner", "--fraud-detect", "--reg-flood"] {
+            assert!(
+                msg.contains(flag),
+                "the warning must name every flag it is ignoring, or the \
+                 operator cannot tell which defence is not armed: {msg}"
+            );
+        }
+        assert!(
+            msg.contains("-N") || msg.contains("--no-tui"),
+            "the warning must name the mode that DOES detect, or it reports a \
+             dead end: {msg}"
+        );
+    }
+
+    /// The parallel offline reader is the same hole, reached a different way.
+    ///
+    /// `run_cores_file` hands the files to `parallel::run_offline_parallel_file`
+    /// and never builds a detector either, so adding `--cores 8` to a headless
+    /// invocation for speed silently turns detection off — the same shape as
+    /// the `--cores`/`--metrics` combination beside it, with a security answer
+    /// instead of a dashboard.
+    #[test]
+    fn detection_flags_warn_on_the_parallel_offline_reader_too() {
+        let mut cli = base_cli();
+        cli.cores = 8;
+        cli.input = vec!["capture.pcap".to_string()];
+        cli.kill_scanner = true;
+        let msg = security_detection_ignored_warning(&cli, &Config::default(), &RunMode::CoresFile)
+            .expect("detection flags on the parallel path must be reported");
+        assert!(
+            msg.contains("--kill-scanner") && msg.contains("--cores"),
+            "the warning must name the flag and the reason it is inert: {msg}"
+        );
+    }
+
+    /// Silent wherever the detectors actually run, and wherever none was asked
+    /// for.
+    ///
+    /// The complement carries the weight: a warning that fires on the headless
+    /// run which then detects normally teaches operators to ignore it, and an
+    /// ignored security warning is worse than none.
+    #[test]
+    fn detection_warning_is_silent_where_the_detectors_actually_run() {
+        let mut headless = base_cli();
+        headless.device = Some("eth0".to_string());
+        headless.kill_scanner = true;
+        headless.fraud_detect = true;
+        headless.reg_flood = true;
+        headless.digest_leak = true;
+        assert!(
+            security_detection_ignored_warning(&headless, &Config::default(), &RunMode::Batch)
+                .is_none(),
+            "batch::run builds every one of these; warning here would be false"
+        );
+
+        let mut watching = base_cli();
+        watching.no_tui = false;
+        watching.device = Some("eth0".to_string());
+        assert!(
+            security_detection_ignored_warning(&watching, &Config::default(), &RunMode::Tui)
+                .is_none(),
+            "nothing was asked for, so nothing is being ignored"
+        );
+    }
+
+    /// A detector armed from the CONFIG FILE is ignored just as silently.
+    ///
+    /// `[security] kill_scanner = true` arms the same detector `--kill-scanner`
+    /// does (`batch.rs` ORs the two), and it is the likelier of the pair to be
+    /// forgotten: it is set once and never retyped, so the operator has no flag
+    /// in front of them to reconsider when the run mode changes.
+    #[test]
+    fn detection_warning_reads_the_config_file_too() {
+        let mut config = Config::default();
+        config.security.kill_scanner = Some(true);
+        let mut cli = base_cli();
+        cli.no_tui = false;
+        cli.device = Some("eth0".to_string());
+        let msg = security_detection_ignored_warning(&cli, &config, &RunMode::Tui)
+            .expect("a config-armed detector must be reported like a flag-armed one");
+        assert!(msg.contains("--kill-scanner"), "{msg}");
+    }
+
+    /// The warning must stop being true before it stops being printed.
+    ///
+    /// It claims two modes build no detector. That claim is only checkable
+    /// where the modes are written, so it is checked there: wire a detector
+    /// into the TUI thread or the parallel reader and this fails, which is the
+    /// moment the warning turns into a lie and has to go.
+    #[test]
+    fn the_modes_this_warns_about_still_build_no_detector() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for rel in ["src/app/tui_mode.rs", "src/parallel.rs"] {
+            let full = std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            // Code only. A file is allowed to EXPLAIN that it builds no
+            // detector, and a gate that reads prose reports whatever the prose
+            // says — which is how the sibling band gate came to be silenced by
+            // a comment about itself.
+            let text: String = full
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for detector in [
+                "ScannerDetector",
+                "FraudDetector",
+                "RegFloodDetector",
+                "DigestLeakDetector",
+            ] {
+                assert!(
+                    !text.contains(detector),
+                    "{rel} now builds a {detector}, so \
+                     `security_detection_ignored_warning` is telling operators \
+                     their detection is off while it runs. Delete that mode \
+                     from the warning."
+                );
+            }
+        }
     }
 
     // ── truncating --snaplen feeding -O (CT3) ──────────────────────────

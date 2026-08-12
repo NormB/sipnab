@@ -303,13 +303,12 @@ pub fn render_stream_detail(
         let jitter_start = jitter_values.len().saturating_sub(spark_budget);
         for &j in &jitter_values[jitter_start..] {
             let ch = jitter_to_block(j);
-            let color = if j < 20.0 {
-                theme.good
-            } else if j < 50.0 {
-                theme.warning
-            } else {
-                theme.bad
-            };
+            // The shared bands, same as `jitter_style` below. This loop carried
+            // its own 20/50 — not a `*_style` function, so the gate that
+            // consolidated the other six copies read straight past it, and this
+            // pane called a 25 ms interval a warning in its trend row and good
+            // in the table three lines under it.
+            let color = band_color(crate::rtp::bands::QualityBands::default().jitter(j), theme);
             jitter_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
         jitter_spans.push(Span::styled(
@@ -623,16 +622,27 @@ fn section_header<'a>(title: &'a str, theme: &Theme) -> Line<'a> {
     ])
 }
 
-/// Style for a jitter value: < 20ms good, 20–50ms warning, >= 50ms bad.
-/// Pure.
+/// Theme colour for a shared-band verdict. Pure.
+///
+/// One mapping for the whole view, so a pane that asks the shared bands for a
+/// verdict cannot also invent what that verdict looks like. Every caller here
+/// — the styles below and the sparkline loops above — paints through this.
+fn band_color(band: crate::rtp::bands::Band, theme: &Theme) -> ratatui::style::Color {
+    match band {
+        crate::rtp::bands::Band::Good => theme.good,
+        crate::rtp::bands::Band::Warning => theme.warning,
+        crate::rtp::bands::Band::Bad => theme.bad,
+    }
+}
+
+/// Style for a jitter value, using the shared bands. Pure.
 fn jitter_style(jitter_ms: f64, theme: &Theme) -> Style {
     // Was 20/50 here against the stream list's 30/50, which is the pair that
     // made one stream green in the list and yellow in its own detail view.
-    match crate::rtp::bands::QualityBands::default().jitter(jitter_ms) {
-        crate::rtp::bands::Band::Good => Style::default().fg(theme.good),
-        crate::rtp::bands::Band::Warning => Style::default().fg(theme.warning),
-        crate::rtp::bands::Band::Bad => Style::default().fg(theme.bad),
-    }
+    Style::default().fg(band_color(
+        crate::rtp::bands::QualityBands::default().jitter(jitter_ms),
+        theme,
+    ))
 }
 
 /// Style for a round-trip figure, using the shared bands. Pure.
@@ -641,11 +651,10 @@ fn jitter_style(jitter_ms: f64, theme: &Theme) -> Style {
 /// that is not a quality verdict — the caller renders it as `n/a` in the muted
 /// colour, which is neither green nor red on purpose.
 fn rtt_style(rtt_ms: f64, theme: &Theme) -> Style {
-    match crate::rtp::bands::QualityBands::default().rtt(rtt_ms) {
-        crate::rtp::bands::Band::Good => Style::default().fg(theme.good),
-        crate::rtp::bands::Band::Warning => Style::default().fg(theme.warning),
-        crate::rtp::bands::Band::Bad => Style::default().fg(theme.bad),
-    }
+    Style::default().fg(band_color(
+        crate::rtp::bands::QualityBands::default().rtt(rtt_ms),
+        theme,
+    ))
 }
 
 /// Style for a packet-loss percentage, using the shared bands. Pure.
@@ -653,11 +662,10 @@ fn rtt_style(rtt_ms: f64, theme: &Theme) -> Style {
 /// The sixth and last copy: 0.5/2.0 here against the stream list's 1.0/5.0.
 /// The gate that found it is `no_view_carries_its_own_quality_bands`.
 fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
-    match crate::rtp::bands::QualityBands::default().loss(loss_pct) {
-        crate::rtp::bands::Band::Good => Style::default().fg(theme.good),
-        crate::rtp::bands::Band::Warning => Style::default().fg(theme.warning),
-        crate::rtp::bands::Band::Bad => Style::default().fg(theme.bad),
-    }
+    Style::default().fg(band_color(
+        crate::rtp::bands::QualityBands::default().loss(loss_pct),
+        theme,
+    ))
 }
 
 /// Map a MOS value (1.0–4.5) to a Unicode block character.
@@ -1321,5 +1329,110 @@ mod tests {
         let jitter_row = find_row(&|l| l.contains("avg:") && l.contains("ms)"))
             .expect("jitter trend average pushed off-pane by an unbounded sparkline");
         assert!(jitter_row.contains("avg:"));
+    }
+
+    /// The jitter sparkline gives a sample the same colour the numbers do.
+    ///
+    /// The sparkline banded `if j < 20.0 { good } else if j < 50.0 { warning }`
+    /// inline, three hundred lines above the `jitter_style` that reads the
+    /// shared 30/50 — so ONE pane painted a 25 ms interval yellow in its trend
+    /// row and green in the table underneath it. Nothing said which to believe.
+    ///
+    /// Asserted on the rendered cells rather than on a helper, because the
+    /// defect was never in a helper: it was a loop that never called one.
+    #[test]
+    fn the_jitter_sparkline_colours_a_sample_the_way_the_summary_does() {
+        use crate::rtp::stream::{QualityInterval, RtpStream};
+
+        let bands = crate::rtp::bands::QualityBands::default();
+        // Inside the shared good band, above the copy's 20 ms warn boundary:
+        // the exact interval the two halves of this view disagreed about.
+        let sample_ms = bands.jitter_warn_ms - 5.0;
+        assert_eq!(
+            bands.jitter(sample_ms),
+            crate::rtp::bands::Band::Good,
+            "{sample_ms} ms must sit inside the shared good band, or this test \
+             is asserting agreement about nothing"
+        );
+
+        let ssrc = 0x5555_5555u32;
+        let key = StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 0), t0);
+        for i in 0..6u32 {
+            stream.quality_intervals.push(QualityInterval {
+                timestamp: t0 + TimeDelta::seconds(5 * i64::from(i)),
+                jitter_ms: sample_ms,
+                loss_pct: 0.0,
+                packets: 250,
+            });
+        }
+        let mut store = StreamStore::new(16);
+        store.insert_for_test(stream);
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_stream_detail(
+                    frame,
+                    area,
+                    &key,
+                    &store,
+                    0,
+                    &StreamDetailDisplay {
+                        declared_one_way_delay_ms: None,
+                        theme: &theme,
+                        resolver: &crate::names::NameResolver::new(),
+                        name_mode: crate::names::NameMode::Off,
+                    },
+                );
+            })
+            .unwrap();
+
+        // The jitter trend row is the one labelled "Jitter:" whose average is
+        // reported in ms; the MOS row above it carries block glyphs too.
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let mut glyph_colors = Vec::new();
+        let glyph = jitter_to_block(sample_ms);
+        for y in 0..area.height {
+            let mut row = String::new();
+            for x in 0..area.width {
+                row.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            if !(row.contains("Jitter:") && row.contains("ms)")) {
+                continue;
+            }
+            for x in 0..area.width {
+                let cell = buf.cell((x, y)).unwrap();
+                if cell.symbol() == glyph.to_string() {
+                    glyph_colors.push(cell.fg);
+                }
+            }
+        }
+
+        assert!(
+            !glyph_colors.is_empty(),
+            "no {glyph:?} sparkline glyph was rendered for a {sample_ms} ms \
+             history — the row moved and this test now proves nothing"
+        );
+        let expected = jitter_style(sample_ms, &theme)
+            .fg
+            .expect("jitter_style always sets a foreground");
+        for (i, got) in glyph_colors.iter().enumerate() {
+            assert_eq!(
+                *got, expected,
+                "sparkline glyph {i} paints {sample_ms} ms as {got:?} while the \
+                 same value beside it is {expected:?}: the trend row is banding \
+                 on its own numbers again"
+            );
+        }
     }
 }

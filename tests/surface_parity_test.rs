@@ -313,49 +313,134 @@ fn only_one_place_in_the_tree_scores_a_mos() {
 /// bands mirror the stream-detail view" — above numbers that matched neither.
 /// Both were written by people who believed it. Neither checked, and a comment
 /// cannot check itself, which is what this test is for.
+///
+/// WHY IT READS EVERY LINE OF `src/tui/`, NOT THE `*_style` FUNCTIONS. Its
+/// first version required the word `jitter`, `loss` or `mos` on the comparison
+/// itself, which is true of a named style function and false of the loop that
+/// paints a sparkline: the stream-detail jitter sparkline banded `if j < 20.0`
+/// over a one-letter binding, three hundred lines above the `jitter_style`
+/// that called the same 25 ms sample Good. The gate passed, in the same file,
+/// while one pane contradicted another. So the second question is not what the
+/// comparison is NAMED but what its branch PRODUCES: a band ends in a severity
+/// colour, and a scale — `jitter_to_block`, `mos_to_block` — ends in a glyph.
+/// Only the colour is a triage verdict an operator can find disagreeing with
+/// itself, and only the colour is caught here.
 #[test]
 fn no_view_carries_its_own_quality_bands() {
-    // The literals that used to be band boundaries, and the views that held
-    // them. A number here is only a finding when it sits in a comparison.
+    // The literals that used to be band boundaries. A number here is only a
+    // finding when it sits in a comparison.
     const SUSPECT: &[&str] = &["20.0", "30.0", "50.0", "0.5", "1.0", "2.0", "5.0", "3.5"];
-    let views = [
-        "src/tui/stream_list.rs",
-        "src/tui/stream_detail.rs",
-        "src/tui/dashboard.rs",
-        "src/tui/loss_map.rs",
-    ];
+    // What a band branch produces. `jitter_to_block` compares against 30.0 and
+    // 20.0 four lines apart and is not a band, because it yields '▇' — nothing
+    // an operator can catch two panes disagreeing about.
+    const SEVERITY: &[&str] = &["theme.good", "theme.warning", "theme.bad"];
+    // Lines from the comparison in which its branch may land. `if j < 20.0 {`
+    // and the `theme.good` it guards are two lines apart after rustfmt; four
+    // covers a three-arm `if/else if/else` without reaching the next statement.
+    const BRANCH_LINES: usize = 4;
+
+    let mut views: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![repo().join("src/tui")];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("read_dir src/tui").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+                views.push(p);
+            }
+        }
+    }
+    views.sort();
 
     let mut problems = Vec::new();
-    for view in views {
-        let text = std::fs::read_to_string(view).unwrap_or_else(|e| panic!("read {view}: {e}"));
+    let mut comparisons_seen = 0usize;
+    let mut severity_seen = 0usize;
+    for view in &views {
+        let rel = view
+            .strip_prefix(repo())
+            .expect("under repo")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = std::fs::read_to_string(view).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        let all: Vec<&str> = text.lines().collect();
+        let bare = |l: &str| l.split("//").next().unwrap_or("").to_string();
         // Everything from `#[cfg(test)]` on is assertions ABOUT the bands, not
         // bands. Its first run reported two `assert!(loss_pct > 30.0)` lines,
         // and a gate that cries about its own tests gets skimmed.
-        let text = text.split("#[cfg(test)]").next().unwrap_or(&text);
-        for (i, line) in text.lines().enumerate() {
-            let code = line.split("//").next().unwrap_or("");
+        //
+        // Cut at the ATTRIBUTE, not at the text. Splitting the raw file on
+        // `#[cfg(test)]` cut `dashboard.rs` at line 17, where a COMMENT says
+        // the words — so the gate read seventeen lines of that view and passed
+        // on the 350 it never opened, one of which bands jitter. A scanner
+        // silenced by prose about itself reports clean for the same reason it
+        // reports nothing.
+        let end = all
+            .iter()
+            .position(|l| bare(l).trim_start().starts_with("#[cfg(test)]"))
+            .unwrap_or(all.len());
+        let lines = &all[..end];
+        severity_seen += lines
+            .iter()
+            .filter(|l| SEVERITY.iter().any(|s| bare(l).contains(s)))
+            .count();
+        for (i, line) in lines.iter().enumerate() {
+            let code = bare(line);
             // A comparison DERIVED from the shared bands is the fix, not the
             // defect — `(bands.mos_warn + bands.mos_bad) / 2.0` is the detail
             // view splitting the shared middle, which it is allowed to do.
             if code.contains("bands.") || code.contains("QualityBands") {
                 continue;
             }
-            // A band is a comparison against a bare float on a quality value.
-            let compares = code.contains(" >= ") || code.contains(" < ") || code.contains(" > ");
+            // A band is a comparison against a bare float.
+            let compares = code.contains(" >= ")
+                || code.contains(" <= ")
+                || code.contains(" < ")
+                || code.contains(" > ");
             if !compares {
                 continue;
             }
+            let Some(lit) = SUSPECT.iter().find(|l| code.contains(**l)) else {
+                continue;
+            };
+            comparisons_seen += 1;
+            // Either tell is enough. The name catches a style function whose
+            // branch is a `Style` rather than a bare colour; the branch catches
+            // the sparkline loops, where the value is called `j` or `m` and the
+            // name says nothing at all.
             let about_quality = ["jitter", "loss", "mos"]
                 .iter()
                 .any(|k| code.to_ascii_lowercase().contains(k));
-            if !about_quality {
-                continue;
-            }
-            if let Some(lit) = SUSPECT.iter().find(|l| code.contains(**l)) {
-                problems.push(format!("{view}:{}: bands on a bare {lit}", i + 1));
+            let end = (i + 1 + BRANCH_LINES).min(lines.len());
+            let paints_severity = lines[i..end]
+                .iter()
+                .any(|l| SEVERITY.iter().any(|s| bare(l).contains(s)));
+            if about_quality || paints_severity {
+                problems.push(format!("{rel}:{}: bands on a bare {lit}", i + 1));
             }
         }
     }
+
+    // Anti-vacuity, both halves. A walk that found no files, a SUSPECT list
+    // that matches nothing, or a `theme.good` renamed out from under SEVERITY
+    // each leave a gate that reports nothing because it is looking at nothing.
+    assert!(
+        views.len() >= 4,
+        "the src/tui walk found {} files — the scan broke, so this gate is \
+         checking nothing",
+        views.len()
+    );
+    assert!(
+        comparisons_seen >= 1,
+        "no comparison against any band-boundary literal was found anywhere in \
+         src/tui/ — the literal scan is checking nothing"
+    );
+    assert!(
+        severity_seen >= 1,
+        "no severity colour ({SEVERITY:?}) appears anywhere in src/tui/ — the \
+         theme fields were renamed and the branch half of this gate now finds \
+         nothing"
+    );
 
     problems.sort();
     assert!(

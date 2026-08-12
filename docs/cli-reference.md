@@ -87,6 +87,13 @@ Detect SIP scanning and append it in fail2ban's format to the log its jail
 reads. `--kill-scanner` is what detects — `--fail2ban` only chooses the format,
 so leaving it out leaves the log empty.
 
+Every example below passes `-N`, and that is not a style choice. Only the
+headless single-capture path builds the detectors: the interactive TUI (the
+default when you leave `-N` off) and the `--cores N` parallel reader both run
+without them. Ask for detection on either and sipnab warns at startup that it
+accepts the flag and ignores it, because an empty finding list otherwise reads
+as an all-clear.
+
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
 ```
