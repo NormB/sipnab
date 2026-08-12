@@ -30,6 +30,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "filter",
             "sip",
             "security",
+            "diagnosis",
             "limits",
             "privilege",
             "theme",
@@ -83,6 +84,32 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "fraud_detect",
             "alert",
             "alert_exec",
+            "reg_flood_threshold",
+            "kill_rate_limit",
+            "business_hours",
+            "fraud_short_call_secs",
+            "fraud_wangiri_calls",
+            "fraud_sequential_calls",
+            "fraud_volume_multiplier",
+            "fraud_volume_min_calls",
+            "findings_history",
+        ]
+        .as_slice(),
+    );
+    // [diagnosis] holds the numbers the DIAGNOSERS compare against, which is
+    // not the same question as [security]'s "is this traffic hostile" or
+    // [limits]'s "how much may this run hold". A threshold here decides
+    // whether a healthy-looking call is reported as faulty, so it belongs to
+    // the network being watched rather than to the machine watching it.
+    m.insert(
+        "diagnosis",
+        [
+            "post_dial_delay_secs",
+            "ack_timeout_secs",
+            "no_final_response_secs",
+            "duration_asymmetry_pct",
+            "duration_asymmetry_secs",
+            "late_media_ms",
         ]
         .as_slice(),
     );
@@ -100,6 +127,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "keep_messages_per_idle_dialog",
             "max_audio_frames",
             "mcp_max_rows",
+            "lint_max_per_rule",
         ]
         .as_slice(),
     );
@@ -224,6 +252,9 @@ pub struct Config {
     /// Security detection settings.
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Thresholds the signalling and media diagnosers compare against.
+    #[serde(default)]
+    pub diagnosis: DiagnosisConfig,
     /// Properties of the observed media path — see [`MediaConfig`].
     #[serde(default)]
     pub media: MediaConfig,
@@ -383,6 +414,42 @@ pub struct SecurityConfig {
     pub alert: Option<Vec<String>>,
     /// Command to execute on alert.
     pub alert_exec: Option<String>,
+    /// REGISTER requests per second from one source before a registration
+    /// flood is reported (default: 50).
+    ///
+    /// The default is a carrier-registrar figure. It is invisible to the
+    /// ten-a-second brute force a small PBX actually sees, and it is noise on
+    /// a registrar riding out a re-REGISTER storm, so the right value belongs
+    /// to the registrar being watched rather than to sipnab.
+    pub reg_flood_threshold: Option<u32>,
+    /// Scanner-kill responses per second sipnab may put on the wire
+    /// (default: 10).
+    pub kill_rate_limit: Option<u32>,
+    /// Business hours as `"START-END"` in whole UTC hours, e.g. `"8-18"`.
+    ///
+    /// Unset disables off-hours fraud detection entirely, which is what
+    /// shipped: the detector existed and no run could reach it.
+    pub business_hours: Option<String>,
+    /// Seconds below which a completed call counts as "short" for wangiri
+    /// detection (default: 3).
+    pub fraud_short_call_secs: Option<u64>,
+    /// Short calls to one destination prefix before wangiri is reported
+    /// (default: 3).
+    pub fraud_wangiri_calls: Option<u32>,
+    /// Consecutive refused numbers before sequential scanning is reported
+    /// (default: 3).
+    pub fraud_sequential_calls: Option<u64>,
+    /// Multiple of a source's own baseline call rate that counts as a volume
+    /// spike (default: 5).
+    pub fraud_volume_multiplier: Option<u32>,
+    /// Calls a source must place inside the window before a volume spike can
+    /// be reported at all (default: 6).
+    pub fraud_volume_min_calls: Option<u32>,
+    /// Security findings kept in memory for later retrieval (default: 1000).
+    ///
+    /// `0` keeps none, which is a real setting rather than a mistake: an
+    /// operator who does not want detections held in memory can say so.
+    pub findings_history: Option<u64>,
 }
 
 impl SecurityConfig {
@@ -393,12 +460,169 @@ impl SecurityConfig {
     /// The value is emitted onto the wire as a SIP status line, so a `9999`
     /// accepted from the file would put a malformed response on the network
     /// that the same value typed as a flag is refused for.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the offending key, when
+    /// `kill_response` is outside 100-699, when a detection threshold is `0`,
+    /// or when `business_hours` is not two whole hours in `0..=23`.
     pub fn validate(&self) -> Result<(), crate::Error> {
         if let Some(code) = self.kill_response
             && !(100..=699).contains(&code)
         {
             return Err(crate::Error::ConfigInvalid(format!(
                 "[security] kill_response must be 100-699, got {code}"
+            )));
+        }
+        // A zero threshold is refused for every detector below rather than
+        // read as "default" or "off". Both readings are silent behaviour the
+        // operator did not ask for, and for a detector the wrong one is a run
+        // that believes it is watching.
+        if let Some(0) = self.reg_flood_threshold {
+            return Err(crate::Error::ConfigInvalid(
+                "[security] reg_flood_threshold must be > 0 (0 would report every \
+                 REGISTER as a flood; to switch the detector off, drop --reg-flood)"
+                    .into(),
+            ));
+        }
+        // This one bounds packets sipnab TRANSMITS, so it is the most
+        // conservative of the set: 0 is refused rather than read as
+        // "unlimited". The kill path answers packets whose source address an
+        // attacker chose, so an accidental `0` is an unbounded reflector
+        // pointed at a victim of their choosing, not merely a noisy run.
+        // There is deliberately no "unlimited" value at all — an operator who
+        // wants a bigger blast radius has to name the number they want.
+        if let Some(0) = self.kill_rate_limit {
+            return Err(crate::Error::ConfigInvalid(
+                "[security] kill_rate_limit must be > 0 (it bounds responses sipnab \
+                 puts on the wire, so there is no unlimited setting; to send none, \
+                 drop --kill-scanner and -K)"
+                    .into(),
+            ));
+        }
+        if let Some(spec) = self.business_hours.as_deref() {
+            parse_business_hours(spec)?;
+        }
+        for (key, value) in [
+            ("fraud_short_call_secs", self.fraud_short_call_secs),
+            ("fraud_sequential_calls", self.fraud_sequential_calls),
+        ] {
+            if let Some(0) = value {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[security] {key} must be > 0"
+                )));
+            }
+        }
+        for (key, value) in [
+            ("fraud_wangiri_calls", self.fraud_wangiri_calls),
+            ("fraud_volume_multiplier", self.fraud_volume_multiplier),
+            ("fraud_volume_min_calls", self.fraud_volume_min_calls),
+        ] {
+            if let Some(0) = value {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[security] {key} must be > 0"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Parse a `"START-END"` business-hours spec into whole UTC hours.
+///
+/// A wrapping range (`"22-6"`) is legal and means the overnight window, which
+/// is what a night-shift operation has. Both ends are hours, never times: the
+/// detector compares `timestamp.hour()`, so a `"08:30"` accepted here would
+/// silently become 08:00 and the operator would never learn that.
+///
+/// # Errors
+/// `crate::Error::ConfigInvalid`, naming the key, for anything that is not two
+/// integers in `0..=23` separated by `-`.
+pub fn parse_business_hours(spec: &str) -> Result<(u8, u8), crate::Error> {
+    let invalid = || {
+        crate::Error::ConfigInvalid(format!(
+            "[security] business_hours must be \"START-END\" in whole hours 0-23, \
+             e.g. \"8-18\" (or \"22-6\" for an overnight window); got {spec:?}"
+        ))
+    };
+    let (start, end) = spec.trim().split_once('-').ok_or_else(invalid)?;
+    let start: u8 = start.trim().parse().map_err(|_| invalid())?;
+    let end: u8 = end.trim().parse().map_err(|_| invalid())?;
+    if start > 23 || end > 23 {
+        return Err(invalid());
+    }
+    Ok((start, end))
+}
+
+/// Thresholds the signalling and media diagnosers compare against.
+///
+/// Separate from `[security]`, which decides whether traffic is hostile, and
+/// from `[limits]`, which bounds what one run may hold: a number here decides
+/// whether a call that is working is REPORTED as broken. The defaults are
+/// standards figures (E.721, RFC 3261 timers) and are justified where they are
+/// defined; a network that knows its own numbers beats a recommendation
+/// written for the general case.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct DiagnosisConfig {
+    /// Post-dial delay over which a call is flagged, in seconds
+    /// (default: 11.0, ITU-T E.721 Table 2 international 95th percentile).
+    pub post_dial_delay_secs: Option<f64>,
+    /// How long a `2xx` may go unacknowledged before the missing `ACK` counts
+    /// as a fault, in seconds (default: 32.0, RFC 3261 Timer H).
+    pub ack_timeout_secs: Option<f64>,
+    /// How long an `INVITE` may sit without a final response before the
+    /// silence is reported, in seconds (default: 180.0, RFC 3261 Timer C).
+    pub no_final_response_secs: Option<f64>,
+    /// Percentage difference between the two legs' durations that counts as
+    /// asymmetric (default: 5.0).
+    pub duration_asymmetry_pct: Option<f64>,
+    /// Absolute difference between the two legs' durations that counts as
+    /// asymmetric, in seconds (default: 2.0).
+    pub duration_asymmetry_secs: Option<f64>,
+    /// Milliseconds after the `200 OK` that media may start before it is
+    /// reported as late (default: 500).
+    pub late_media_ms: Option<i64>,
+}
+
+impl DiagnosisConfig {
+    /// Reject diagnosis thresholds a run cannot honour.
+    ///
+    /// Every value is a duration or a percentage, so `0`, a negative, and a
+    /// non-finite float are all refused, naming the key. A zero threshold
+    /// would report every call in the capture, which reads as a broken network
+    /// rather than as a broken setting.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the offending key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        for (key, value) in [
+            ("post_dial_delay_secs", self.post_dial_delay_secs),
+            ("ack_timeout_secs", self.ack_timeout_secs),
+            ("no_final_response_secs", self.no_final_response_secs),
+            ("duration_asymmetry_pct", self.duration_asymmetry_pct),
+            ("duration_asymmetry_secs", self.duration_asymmetry_secs),
+        ] {
+            if let Some(v) = value
+                && !(v.is_finite() && v > 0.0)
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[diagnosis] {key} must be a finite number > 0, got {v}"
+                )));
+            }
+        }
+        if let Some(pct) = self.duration_asymmetry_pct
+            && pct > 100.0
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[diagnosis] duration_asymmetry_pct is a percentage and must be \
+                 <= 100, got {pct}"
+            )));
+        }
+        if let Some(ms) = self.late_media_ms
+            && ms <= 0
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[diagnosis] late_media_ms must be > 0, got {ms}"
             )));
         }
         Ok(())
@@ -450,6 +674,12 @@ pub struct LimitsConfig {
     pub keep_messages_per_idle_dialog: Option<u64>,
     /// Maximum audio frames retained per RTP stream for WAV export (default: 1500).
     pub max_audio_frames: Option<u64>,
+    /// Findings one lint rule may raise for one dialog (default: 25).
+    ///
+    /// A dialog retransmitting an `INVITE` eleven times trips a message rule
+    /// eleven times and every one of them is true, so this is the knob that
+    /// decides whether the other rules are still readable underneath.
+    pub lint_max_per_rule: Option<u64>,
 }
 
 impl LimitsConfig {
@@ -504,6 +734,16 @@ impl LimitsConfig {
         if let Some(0) = self.max_audio_frames {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] max_audio_frames must be > 0".into(),
+            ));
+        }
+        // `LintConfig` reads 0 as "uncapped", which is the permissive
+        // direction and therefore the wrong thing for a typo to reach — the
+        // same judgement `mcp_max_rows` above records.
+        if let Some(0) = self.lint_max_per_rule {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] lint_max_per_rule must be > 0 (0 would print every repeat \
+                 of one rule and bury the others)"
+                    .into(),
             ));
         }
         if let Some(0) = self.idle_compact_after_secs {
@@ -1744,6 +1984,7 @@ column_selector = "F10"
             keep_messages_per_idle_dialog: Some(20),
             max_audio_frames: Some(1500),
             mcp_max_rows: Some(1000),
+            lint_max_per_rule: Some(25),
         };
         assert!(limits.validate().is_ok());
     }

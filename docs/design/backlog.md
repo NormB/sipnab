@@ -292,7 +292,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:1875`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1875)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:1905`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1905)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -327,7 +327,7 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:2899`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2899)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:2954`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2954)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -435,7 +435,7 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:2950`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2950),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3005`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3005),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -460,7 +460,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:1953`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1953),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:1971`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1971),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -989,7 +989,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:171`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L171)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:3945`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3945), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:4000`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4000), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -1455,7 +1455,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:5006`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5006), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:5061`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5061), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the

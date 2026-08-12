@@ -367,6 +367,12 @@ impl SipnabSession {
                     .num_milliseconds() as f64
                     / 1000.0;
 
+                // Latency, the third of the three numbers that decide whether
+                // a call was acceptable. `null` rather than 0 when nobody
+                // reported one: JSON here feeds a browser table, and a 0 in
+                // the RTT column would read as the best possible network on a
+                // path nothing measured.
+                let rtt = self.stream_store.round_trip_for(s);
                 serde_json::json!({
                     "ssrc": s.key.ssrc,
                     "codec": s.codec.as_deref().unwrap_or("?"),
@@ -378,6 +384,11 @@ impl SipnabSession {
                     "loss_pct": (loss_pct * 100.0).round() / 100.0,
                     "lost_packets": s.lost_packets,
                     "mos": (mos * 100.0).round() / 100.0,
+                    "round_trip_ms": rtt.map(|(ms, _)| (ms * 100.0).round() / 100.0),
+                    "round_trip_source": rtt.map(|(_, src)| match src {
+                        crate::rtp::rtcp::RttSource::XrVoipMetrics => "xr_voip_metrics",
+                        crate::rtp::rtcp::RttSource::SenderReportEcho => "sender_report_echo",
+                    }),
                     "duration_secs": (duration_secs * 100.0).round() / 100.0,
                     "associated_dialog": s.associated_dialog,
                     "orphaned": s.orphaned,

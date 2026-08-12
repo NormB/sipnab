@@ -1234,7 +1234,7 @@ fn rtcp_is_recorded_beside_the_measurement() {
     rr_data.extend_from_slice(&0u32.to_be_bytes()); // delay since SR
 
     let rtcp_packets = parse_rtcp(&rr_data);
-    store.process_rtcp(&rtcp_packets);
+    store.process_rtcp(&rtcp_packets, chrono::Utc::now());
 
     let key = StreamKey {
         ssrc: 0xFFFF,
@@ -1292,7 +1292,7 @@ fn negative_cumulative_lost_survives_as_negative() {
     rr.extend_from_slice(&0u32.to_be_bytes());
     rr.extend_from_slice(&0u32.to_be_bytes());
     rr.extend_from_slice(&0u32.to_be_bytes());
-    store.process_rtcp(&parse_rtcp(&rr));
+    store.process_rtcp(&parse_rtcp(&rr), chrono::Utc::now());
 
     let key = StreamKey {
         ssrc: 0xFFFE,

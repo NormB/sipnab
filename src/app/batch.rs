@@ -601,6 +601,80 @@ fn parallel_config(
     }
 }
 
+/// Spawn the scanner-kill worker with this run's transmit ceiling.
+///
+/// A function rather than an inline `match` so the ceiling is provably applied:
+/// the worker reads `None` as "use your own default", so the wiring is
+/// invisible from the call site and the unit test below drives this instead.
+///
+/// # Side effects
+///
+/// Starts a thread that TRANSMITS UDP. Requires a `TransmitPermit`, which only
+/// a live source can produce.
+fn spawn_kill_worker(
+    cli: &Cli,
+    config: &Config,
+    raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
+    permit: crate::security::transmit_guard::TransmitPermit,
+) -> Option<ScannerKillHandle> {
+    let rate = cli.kill_rate_limit(config);
+    match process_isolation::spawn_scanner_kill_worker(Some(rate), raw_kill_sock, permit) {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            tracing::error!("Failed to spawn scanner-kill worker: {e}");
+            None
+        }
+    }
+}
+
+/// Build the fraud detector this run will use, if it asked for one.
+///
+/// Both operator inputs the detector takes arrive here: the declared business
+/// hours, without which the off-hours detection has no "outside" to test
+/// against and cannot fire at all, and the four trigger points. The detector
+/// used to be constructed as `FraudDetector::new(None)`, so it shipped with
+/// its own constants and one whole detection unreachable.
+fn build_fraud_detector(cli: &Cli, config: &Config) -> Option<FraudDetector> {
+    if !(cli.fraud_detect || config.security.fraud_detect.unwrap_or(false)) {
+        return None;
+    }
+    // Already refused by `Cli::validate` and `SecurityConfig::validate`, so
+    // reaching the error arm means a caller skipped both. Say so rather than
+    // running a detector that is quietly missing a detection.
+    let business_hours = cli.business_hours(config).unwrap_or_else(|e| {
+        tracing::error!("{e}; off-hours fraud detection is OFF for this run");
+        None
+    });
+    Some(FraudDetector::with_thresholds(
+        business_hours,
+        cli.fraud_thresholds(config),
+    ))
+}
+
+/// Build the alert engine with every operator-set budget applied.
+///
+/// A function rather than four statements inline, so the budgets are testable
+/// as a unit: both of them are `set_*` calls on an engine that works perfectly
+/// well without them, which is precisely the shape that goes missing.
+fn build_alert_engine(
+    cli: &Cli,
+    config: &Config,
+    rules: Vec<AlertRule>,
+    exec_cmd: Option<String>,
+) -> AlertEngine {
+    let mut engine = AlertEngine::new(rules, exec_cmd);
+    // Without this the global budget sits at its default and --exec-rate-limit
+    // is silently inert on the alert path -- the same shape as #35, #55, #63
+    // and #83, where a flag parsed, validated, and did nothing.
+    engine.set_exec_rate_limit(cli.exec_rate_limit);
+    // Same shape: the ring buffer sat at its compiled-in depth and
+    // `set_findings_capacity` was reachable only from the module's own tests,
+    // so an operator polling `security_findings` on a busy registrar silently
+    // lost the oldest detections at 1000 with no way to ask for more.
+    engine.set_findings_capacity(cli.findings_history(config));
+    engine
+}
+
 /// Run the conformance linter over every dialog and print the findings.
 ///
 /// # Returns
@@ -615,7 +689,7 @@ fn parallel_config(
 /// reported different findings under `--cores` would be the same defect with a
 /// worse blast radius, because the whole point of the gate is that its verdict
 /// is trustworthy.
-fn run_lint_stage(cli: &Cli, ds: &crate::sip::dialog_store::DialogStore) -> bool {
+fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::DialogStore) -> bool {
     if !cli.lint {
         return false;
     }
@@ -623,7 +697,9 @@ fn run_lint_stage(cli: &Cli, ds: &crate::sip::dialog_store::DialogStore) -> bool
         .lint_fail_on
         .as_deref()
         .and_then(crate::sip::lint::Severity::from_name);
-    let linter = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new());
+    let linter = crate::sip::lint::Linter::new(
+        crate::sip::lint::LintConfig::new().with_max_per_rule(cli.lint_max_per_rule(config)),
+    );
     let mut total = 0usize;
     let mut tripped = false;
     for dialog in ds.iter() {
@@ -730,7 +806,7 @@ pub fn run_cores_file(
             // worse than no gate: a pipeline adding `--cores 8` for speed would
             // stop failing on non-conformant captures and nothing would say so
             // (#147).
-            let lint_tripped = run_lint_stage(cli, &r.dialog_store);
+            let lint_tripped = run_lint_stage(cli, config, &r.dialog_store);
             if !reports_ok {
                 std::process::exit(1);
             }
@@ -1607,25 +1683,12 @@ impl BatchRunner {
         // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
         let scanner_kill_handle: Option<ScannerKillHandle> =
             match (kill_worker_active, transmit_permit) {
-                (true, Some(permit)) => {
-                    match process_isolation::spawn_scanner_kill_worker(None, raw_kill_sock, permit)
-                    {
-                        Ok(handle) => Some(handle),
-                        Err(e) => {
-                            tracing::error!("Failed to spawn scanner-kill worker: {e}");
-                            None
-                        }
-                    }
-                }
+                (true, Some(permit)) => spawn_kill_worker(&cli, config, raw_kill_sock, permit),
                 _ => None,
             };
         let kill_response_code = cli.kill_response_code(config);
 
-        let fraud_detector = if cli.fraud_detect || config.security.fraud_detect.unwrap_or(false) {
-            Some(FraudDetector::new(None))
-        } else {
-            None
-        };
+        let fraud_detector = build_fraud_detector(&cli, config);
 
         let digest_detector = if cli.digest_leak {
             Some(DigestLeakDetector::new())
@@ -1634,7 +1697,7 @@ impl BatchRunner {
         };
 
         let reg_flood_detector = if cli.reg_flood {
-            Some(RegFloodDetector::new(0))
+            Some(RegFloodDetector::new(cli.reg_flood_threshold(config)))
         } else {
             None
         };
@@ -1692,11 +1755,7 @@ impl BatchRunner {
             .alert_exec
             .clone()
             .or(config.security.alert_exec.clone());
-        let mut alert_engine = AlertEngine::new(alert_rules, effective_alert_exec);
-        // Without this the global budget sits at its default and --exec-rate-limit
-        // is silently inert on the alert path -- the same shape as #35, #55, #63
-        // and #83, where a flag parsed, validated, and did nothing.
-        alert_engine.set_exec_rate_limit(cli.exec_rate_limit);
+        let mut alert_engine = build_alert_engine(&cli, config, alert_rules, effective_alert_exec);
         if cli.syslog || alert_channel_syslog {
             alert_engine.set_syslog(true);
         }
@@ -2460,7 +2519,7 @@ impl BatchRunner {
         // The linter shipped reachable only over MCP, which put the project's
         // most distinctive capability out of reach of the place it matters
         // most: a pipeline gating a proxy config change.
-        let lint_gate_tripped = run_lint_stage(&cli, &dialog_store.read());
+        let lint_gate_tripped = run_lint_stage(&cli, &config, &dialog_store.read());
 
         // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
         if cli.wireshark {
@@ -3051,7 +3110,7 @@ fn process_parsed_packet(
             *prev_timestamp = Some(sip_msg.timestamp);
         }
         crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
-            stream_store.process_rtcp(&rtcp_packets);
+            stream_store.process_rtcp(&rtcp_packets, pp.timestamp);
         }
         crate::pipeline::PacketAction::Rtp {
             hdr: rtp_hdr,
@@ -5555,6 +5614,132 @@ mod tests {
             chrono::Utc::now().signed_duration_since(now.get()) < chrono::TimeDelta::seconds(5),
             "a live sweep's now must be wall time, got {:?}",
             now.get()
+        );
+    }
+
+    // ── Operator-set thresholds reach the things that enforce them ───────
+
+    /// `--kill-rate-limit` bounds the responses the worker actually sends.
+    ///
+    /// The observation is the worker's own ledger of what went on the wire,
+    /// not the number handed to the constructor: the worker reads `None` as
+    /// "use your own default", so a wiring that forgot the ceiling would still
+    /// produce a worker, still rate-limit at 10/s, and pass any test that only
+    /// looked at the resolver.
+    ///
+    /// Each request goes to a DIFFERENT loopback destination, because a
+    /// per-destination cap of 3/minute sits underneath the global one and
+    /// would otherwise be what bounds the run. Every packet is addressed to
+    /// `127.0.0.0/8`, so nothing leaves the machine.
+    #[test]
+    fn the_configured_kill_rate_limit_bounds_what_the_worker_sends() {
+        use crate::security::transmit_guard::TransmitPermit;
+
+        /// Send `n` kill responses to `n` distinct loopback destinations
+        /// through a worker built from `args`, and return what it did.
+        fn sent_under(args: &[&str], n: u8) -> crate::process_isolation::KillCounts {
+            let cli = Cli::parse_from_args(args.iter().copied());
+            let config = Config::default();
+            let permit = TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
+                device: "lo".to_string(),
+            })
+            .expect("a live source yields a permit");
+            let mut handle = spawn_kill_worker(&cli, &config, None, permit)
+                .expect("the worker thread must spawn");
+            for i in 0..n {
+                let dst = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2 + i));
+                let _ = handle.send_kill(KillRequest::SendResponse {
+                    dst_addr: dst,
+                    dst_port: 9,
+                    src_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                    src_port: 5060,
+                    response_bytes: b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                });
+            }
+            handle.shutdown();
+            handle.counts()
+        }
+
+        let tight = sent_under(&["sipnab", "--kill-rate-limit", "1"], 20);
+        assert_eq!(
+            tight.outcomes(),
+            20,
+            "every request must reach an outcome, or the counts below mean nothing"
+        );
+        assert_eq!(
+            tight.sent, 1,
+            "--kill-rate-limit 1 must let exactly one response onto the wire in \
+             the first second; the worker sent {}",
+            tight.sent
+        );
+        assert!(
+            tight.rate_limited >= 19,
+            "the other 19 must be suppressed, not sent; got {} suppressed",
+            tight.rate_limited
+        );
+
+        // And a ceiling ABOVE the built-in 10 is honoured, or the setting can
+        // only ever tighten — half a knob.
+        let wide = sent_under(&["sipnab", "--kill-rate-limit", "100"], 20);
+        assert_eq!(
+            wide.rate_limited, 0,
+            "--kill-rate-limit 100 must not suppress 20 responses; got {} suppressed",
+            wide.rate_limited
+        );
+    }
+
+    /// `--findings-history` bounds what the findings buffer actually retains.
+    ///
+    /// Built through the same helper the run uses, so deleting the
+    /// `set_findings_capacity` line leaves the engine at its compiled-in 1000
+    /// and this fails. The observation is what `iter_findings` returns — the
+    /// surface an agent reads — not the field the setter wrote.
+    #[test]
+    fn the_configured_findings_history_bounds_what_is_retained() {
+        fn retained(args: &[&str], config: &Config, fired: u32) -> usize {
+            let mut engine = build_alert_engine(
+                &Cli::parse_from_args(args.iter().copied()),
+                config,
+                Vec::new(),
+                None,
+            );
+            let at = chrono::Utc::now();
+            for n in 0..fired {
+                engine.fire(
+                    "scanner",
+                    IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + n)),
+                    "detection=behavioral",
+                    at,
+                );
+            }
+            engine.iter_findings(&[], None, 10_000).len()
+        }
+
+        assert_eq!(
+            retained(
+                &["sipnab", "--findings-history", "3"],
+                &Config::default(),
+                10
+            ),
+            3,
+            "--findings-history 3 must bound the buffer to three findings"
+        );
+        let mut config = Config::default();
+        config.security.findings_history = Some(4);
+        assert_eq!(
+            retained(&["sipnab"], &config, 10),
+            4,
+            "[security] findings_history must reach the engine"
+        );
+        assert_eq!(
+            retained(&["sipnab", "--findings-history", "2"], &config, 10),
+            2,
+            "--findings-history must beat [security] findings_history"
+        );
+        assert_eq!(
+            retained(&["sipnab"], &Config::default(), 10),
+            10,
+            "with nothing declared, ten findings must all be kept"
         );
     }
 }

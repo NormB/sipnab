@@ -548,11 +548,28 @@ console.log(`State: ${dialog.state}`);
       "associated_dialog": "12013223@203.0.113.195",
       "first_seen": "2026-04-13T10:30:02Z",
       "last_seen": "2026-04-13T10:30:47Z",
+      "round_trip_ms": 96.0,
+      "round_trip_source": "xr_voip_metrics",
       "quality_intervals": []
     }
   ]
 }
 ```
+
+`round_trip_ms` is the third of the three numbers that decide whether a call was
+acceptable, and the only one sipnab cannot measure for itself: a passive tap
+sees one point on the path, and a round trip is about two. Every figure here is
+an endpoint's, and `round_trip_source` says which kind:
+
+| `round_trip_source` | What it is |
+|---|---|
+| `xr_voip_metrics` | The reporting endpoint's own round trip between the two RTP interfaces, from an [RFC 3611](https://www.rfc-editor.org/rfc/rfc3611) XR block. This is the quantity [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) sets its guidance against. Accurate, and rare — most stacks never emit an XR |
+| `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 §6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1), anchored on when sipnab saw the report. The full round trip when the capture point sits with the sender of the SR, and a **lower bound** otherwise, because the leg beyond the tap is not in it. Available on almost every call |
+
+**Both keys are absent when nobody reported a round trip**, and that is not the
+same as zero. A stream with clean jitter, no loss and no `round_trip_ms` is a
+stream with one unanswered question, not a healthy one — a call can be unusable
+on delay alone.
 
 **Fields drop out rather than reading `null`.** The example above is a healthy,
 answered call, so it shows the fields such a call has. Anything sipnab did not

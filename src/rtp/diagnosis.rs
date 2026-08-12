@@ -98,7 +98,7 @@ pub struct MediaDiagnosis {
 /// Threshold knobs for the asymmetry detectors. Values are chosen to match
 /// industry-standard triage signals without being so tight they false-positive
 /// on healthy calls.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AsymmetryThresholds {
     /// Minimum percentage delta between leg durations to flag (default 5%).
     pub duration_pct_delta: f64,
@@ -108,15 +108,58 @@ pub struct AsymmetryThresholds {
     pub late_media_threshold_ms: i64,
 }
 
+impl AsymmetryThresholds {
+    /// The built-in thresholds: 5% / 2.0 s duration delta, 500 ms late media.
+    ///
+    /// These are what sipnab compares against when the operator has declared
+    /// nothing. Kept as a named constant so [`Default::default`] can answer
+    /// with the DECLARED values while this stays reachable as the shipped
+    /// figure — a test asserting the default moved needs both.
+    pub const BUILT_IN: Self = Self {
+        duration_pct_delta: 5.0,
+        duration_min_delta_sec: 2.0,
+        late_media_threshold_ms: 500,
+    };
+}
+
+/// The thresholds `[diagnosis]` declared, once the run has read its config.
+///
+/// Process-global and written once at startup, the same shape as
+/// [`crate::provenance::set_node_name`] and
+/// [`crate::sip::dialog_store::set_idle_compact_after_secs`], and for the same
+/// reason: the value is a property of the run, and the alternative is
+/// threading it through every caller.
+static CONFIGURED: std::sync::OnceLock<AsymmetryThresholds> = std::sync::OnceLock::new();
+
+/// Declare the asymmetry thresholds for this process. Call once, at startup.
+///
+/// # Side effects
+///
+/// Writes a process-global `OnceLock`; the first writer wins, so a later call
+/// is ignored rather than moving the thresholds mid-run.
+pub fn set_asymmetry_thresholds(thresholds: AsymmetryThresholds) {
+    let _ = CONFIGURED.set(thresholds);
+}
+
 impl Default for AsymmetryThresholds {
-    /// The industry-standard default thresholds (5% / 2.0 s duration delta,
-    /// 500 ms late-media trigger).
+    /// What the operator declared, else [`Self::BUILT_IN`].
+    ///
+    /// # Why this reads a process-global rather than taking a parameter
+    ///
+    /// Nine production sites ask for "the thresholds" — two in the batch
+    /// runner, one in the filter DSL, four in the MCP server and two in the
+    /// REST layer — and every one of them wrote `::default()`. Threading a
+    /// parameter to all nine leaves nine chances for one to keep its own
+    /// answer, which is the defect this type already had in a different form:
+    /// the struct was public and tunable and no caller ever supplied a value,
+    /// so `[diagnosis] late_media_ms` would have been honoured on some
+    /// surfaces and ignored on others.
+    ///
+    /// `default()` means "what sipnab uses when nobody said otherwise", and an
+    /// operator writing it in the config file IS somebody saying otherwise.
+    /// The shipped figures remain reachable as [`Self::BUILT_IN`].
     fn default() -> Self {
-        Self {
-            duration_pct_delta: 5.0,
-            duration_min_delta_sec: 2.0,
-            late_media_threshold_ms: 500,
-        }
+        CONFIGURED.get().copied().unwrap_or(Self::BUILT_IN)
     }
 }
 

@@ -205,6 +205,116 @@ pub struct ReceptionReport {
     pub delay_since_sr: u32,
 }
 
+/// Where a round-trip figure came from, because the two are not the same
+/// measurement and an operator acting on one must know which they have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RttSource {
+    /// RFC 3611 XR VoIP Metrics: the reporting ENDPOINT's own round-trip
+    /// figure, between the two RTP interfaces. This is the number G.114 talks
+    /// about, and the only one that describes the call rather than a path
+    /// segment. Rare on real traffic — most stacks never emit an XR.
+    XrVoipMetrics,
+    /// Derived here from an RR's `last_sr`/`delay_since_sr` per RFC 3550
+    /// §6.4.1, anchored on when SIPNAB SAW the report. See
+    /// [`rtt_from_sender_report_echo`] for what that does and does not measure.
+    /// Available on almost every call, because plain RRs are mandatory.
+    SenderReportEcho,
+}
+
+/// Seconds between the NTP epoch (1900-01-01) and the Unix epoch (1970-01-01).
+const NTP_UNIX_EPOCH_DELTA_SECS: u64 = 2_208_988_800;
+
+/// Convert a capture timestamp to RFC 3550's compact NTP form: the middle 32
+/// bits of a 64-bit NTP timestamp, which is simply the time in units of
+/// 1/65536 second, truncated to 32 bits.
+fn compact_ntp(at: chrono::DateTime<chrono::Utc>) -> u32 {
+    let secs = at.timestamp();
+    if secs < 0 {
+        return 0;
+    }
+    let ntp_secs = (secs as u64).wrapping_add(NTP_UNIX_EPOCH_DELTA_SECS);
+    let frac = (u64::from(at.timestamp_subsec_nanos()) << 16) / 1_000_000_000;
+    (((ntp_secs & 0xFFFF) << 16) | (frac & 0xFFFF)) as u32
+}
+
+/// [`compact_ntp`] for tests in sibling modules, which need to build the `LSR`
+/// an endpoint WOULD have stamped in order to state a round trip and read it
+/// back. Hand-computing 1/65536ths in each test would be a second, unverified
+/// implementation of the conversion under test.
+#[doc(hidden)]
+#[must_use]
+pub fn compact_ntp_for_test(at: chrono::DateTime<chrono::Utc>) -> u32 {
+    compact_ntp(at)
+}
+
+/// Round-trip time derived from an RR's SR echo, per RFC 3550 §6.4.1.
+///
+/// # What this measures, and what it does not
+///
+/// RFC 3550 defines the computation for the SR's SENDER: on receiving an RR it
+/// computes `A - LSR - DLSR`, where `A` is the arrival time on ITS clock, and
+/// gets a true round trip between the two endpoints.
+///
+/// sipnab is not that sender. It is a passive tap, so `A` here is when the
+/// capture point saw the RR. What comes out is the time from the SR leaving
+/// the sender to the RR reaching SIPNAB, minus the reporter's own delay — one
+/// full leg plus one partial leg, not a clean round trip. Two consequences an
+/// operator has to know:
+///
+/// - **It mixes two clocks.** `LSR` is stamped on the SR sender's clock; `A` is
+///   the capture host's. Skew between them lands directly in the result. On a
+///   tap co-located with the SR sender the two are the same clock and the
+///   figure is the real round trip; the further the tap sits from that sender,
+///   the more of the path it silently omits.
+/// - **It is a lower bound on the endpoint-to-endpoint RTT** for any tap
+///   between the two parties, because the leg from the capture point onward is
+///   not in it.
+///
+/// Both are why the result is labelled [`RttSource::SenderReportEcho`] rather
+/// than reported as "the" RTT, and why an XR figure wins when one exists.
+///
+/// # Returns
+///
+/// `None` when no round trip can be derived — which is a different fact from
+/// zero and must stay different all the way to the operator:
+///
+/// - `last_sr == 0`: the reporter has received no SR yet, so there is nothing
+///   to measure against. RFC 3550 §6.4.1 makes this explicit.
+/// - The subtraction runs backwards, or exceeds [`MAX_PLAUSIBLE_RTT_MS`]. Both
+///   mean the two clocks disagree by more than the quantity being measured, so
+///   the arithmetic produced a number rather than a measurement.
+#[must_use]
+pub fn rtt_from_sender_report_echo(
+    observed_at: chrono::DateTime<chrono::Utc>,
+    last_sr: u32,
+    delay_since_sr: u32,
+) -> Option<f64> {
+    if last_sr == 0 {
+        return None;
+    }
+    // Wrapping is correct, not a shortcut: the compact form is the low 32 bits
+    // of a counter that rolls over every 65536 seconds (~18 hours), and a
+    // measurement spanning a rollover is still a valid small difference.
+    let elapsed = compact_ntp(observed_at)
+        .wrapping_sub(last_sr)
+        .wrapping_sub(delay_since_sr);
+    // `elapsed` is unsigned, so a "negative" round trip — an SR stamped in the
+    // future, which means the two clocks disagree — does not appear as a
+    // negative here. It wraps to an enormous value and is caught by the
+    // plausibility bound below. That is the ONLY thing rejecting it, which is
+    // why the bound is not optional tidiness.
+    let ms = f64::from(elapsed) * 1000.0 / 65536.0;
+    (ms <= MAX_PLAUSIBLE_RTT_MS).then_some(ms)
+}
+
+/// Above this, the figure is clock disagreement rather than network delay.
+///
+/// Ten seconds is far beyond any interactive call anyone would still be on —
+/// G.114 calls 400 ms unacceptable — while staying well clear of the ~18-hour
+/// wrap, so a genuinely awful satellite or congested path is still reported
+/// rather than silently discarded.
+pub const MAX_PLAUSIBLE_RTT_MS: f64 = 10_000.0;
+
 /// RTCP BYE packet (RFC 3550 Section 6.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtcpBye {
@@ -1343,6 +1453,88 @@ mod tests {
                 || packets
                     .iter()
                     .all(|p| !matches!(p, RtcpPacket::ExtendedReport(_)))
+        );
+    }
+
+    /// Build the compact-NTP stamp an endpoint would put in an SR sent
+    /// `ago_ms` before `now`, so a test can state a round trip and read it
+    /// back rather than hand-computing 1/65536ths.
+    fn lsr_sent_ago(now: chrono::DateTime<chrono::Utc>, ago_ms: i64) -> u32 {
+        super::compact_ntp(now - chrono::TimeDelta::milliseconds(ago_ms))
+    }
+
+    /// A stated round trip comes back out, within the wire format's own
+    /// resolution.
+    ///
+    /// The arithmetic is the whole feature, so it is asserted against numbers
+    /// chosen for what they mean: 180 ms is past G.114's 150 ms guidance for
+    /// interactive speech, and 20 ms of it is the reporter sitting on the SR
+    /// before answering — which RFC 3550 subtracts out and so must we.
+    #[test]
+    fn a_stated_round_trip_survives_the_wire_format() {
+        let now = chrono::Utc::now();
+        let dlsr = (20.0 * 65536.0 / 1000.0) as u32;
+        let rtt = rtt_from_sender_report_echo(now, lsr_sent_ago(now, 200), dlsr)
+            .expect("a normal report yields a round trip");
+        assert!(
+            (rtt - 180.0).abs() < 1.0,
+            "expected ~180 ms (200 ms elapsed less 20 ms of reporter delay), got {rtt}"
+        );
+    }
+
+    /// No SR seen by the reporter is NOT a round trip of zero.
+    ///
+    /// RFC 3550 §6.4.1 says `last_sr` is zero when no SR has arrived. Reporting
+    /// that as 0 ms would make the worst case — a reporter that has heard
+    /// nothing — read as the best possible network.
+    #[test]
+    fn a_reporter_that_has_seen_no_sr_yields_no_measurement() {
+        let now = chrono::Utc::now();
+        assert_eq!(rtt_from_sender_report_echo(now, 0, 0), None);
+        // Anti-vacuity: the same call with a real LSR does measure something.
+        assert!(rtt_from_sender_report_echo(now, lsr_sent_ago(now, 50), 0).is_some());
+    }
+
+    /// Clock disagreement is refused, not rounded into a plausible number.
+    #[test]
+    fn a_figure_that_can_only_be_clock_skew_is_refused() {
+        let now = chrono::Utc::now();
+        // An SR stamped in the future: the subtraction runs backwards.
+        assert_eq!(
+            rtt_from_sender_report_echo(now, lsr_sent_ago(now, -5_000), 0),
+            None,
+            "an SR from the future is skew, not a negative round trip"
+        );
+        // Beyond MAX_PLAUSIBLE_RTT_MS.
+        assert_eq!(
+            rtt_from_sender_report_echo(now, lsr_sent_ago(now, 30_000), 0),
+            None,
+            "30 s is two clocks disagreeing, not a call"
+        );
+        // A genuinely bad path is still REPORTED — the guard must not swallow
+        // the satellite case it exists to sit above.
+        let bad = rtt_from_sender_report_echo(now, lsr_sent_ago(now, 900), 0)
+            .expect("900 ms is terrible and real");
+        assert!((bad - 900.0).abs() < 2.0, "got {bad}");
+    }
+
+    /// The reporter's own delay is subtracted, or every busy endpoint looks
+    /// like a slow network.
+    #[test]
+    fn the_reporters_own_delay_does_not_count_as_network_time() {
+        let now = chrono::Utc::now();
+        let elapsed_ms = 500;
+        let no_delay =
+            rtt_from_sender_report_echo(now, lsr_sent_ago(now, elapsed_ms), 0).expect("some rtt");
+        let with_delay = rtt_from_sender_report_echo(
+            now,
+            lsr_sent_ago(now, elapsed_ms),
+            (400.0 * 65536.0 / 1000.0) as u32,
+        )
+        .expect("some rtt");
+        assert!(
+            (no_delay - 500.0).abs() < 2.0 && (with_delay - 100.0).abs() < 2.0,
+            "400 ms of reporter delay must come off: {no_delay} vs {with_delay}"
         );
     }
 }

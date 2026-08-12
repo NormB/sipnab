@@ -953,6 +953,11 @@ fn limit_probes() -> Vec<LimitProbe> {
             enabled: true,
             observe: probe_max_audio_frames,
         },
+        LimitProbe {
+            key: "lint_max_per_rule",
+            enabled: true,
+            observe: probe_lint_max_per_rule,
+        },
     ]
 }
 
@@ -1085,6 +1090,33 @@ fn probe_mcp_max_rows() -> (String, String) {
     (
         format!("rows={}", rows_with(None, &pcap)),
         format!("rows={}", rows_with(Some(&cfg), &pcap)),
+    )
+}
+
+/// `lint_max_per_rule`: forty repeats of one rule against a cap of five.
+///
+/// One dialog, forty `INVITE`s, none with a `Max-Forwards` header, so exactly
+/// one rule fires forty times. The cap is per rule per DIALOG, which is why
+/// the repeats share a Call-ID and differ only by `CSeq`.
+fn probe_lint_max_per_rule() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let frames: Vec<Vec<u8>> = (0..40u32)
+        .map(|i| pcap_build::invite_without_max_forwards("lint-probe", &format!("l{i}"), i + 1))
+        .collect();
+    let pcap = dir.path().join("lint.pcap");
+    pcap_build::write_pcap(&pcap, &frames);
+    observe_stdout(
+        &pcap,
+        "[limits]\nlint_max_per_rule = 5\n",
+        &["--lint"],
+        |out| {
+            format!(
+                "findings={}",
+                out.lines()
+                    .filter(|l| l.contains("MAX-FORWARDS-MISSING"))
+                    .count()
+            )
+        },
     )
 }
 

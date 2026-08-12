@@ -158,6 +158,14 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         crate::provenance::set_node_name(candidate);
     }
 
+    // Same shape, same reason: both diagnosers are reached from the TUI, the
+    // reports, `--json-dialogs`, the REST layer and the MCP tools, and every
+    // one of those sites asked for "the default thresholds". Declared once
+    // here, before any of them runs, so a `[diagnosis]` key cannot be honoured
+    // on one surface and ignored on another.
+    crate::sip::diagnosis::set_signaling_thresholds(cli.signaling_thresholds(config));
+    crate::rtp::diagnosis::set_asymmetry_thresholds(cli.asymmetry_thresholds(config));
+
     // Capture source precedence: -I file > -d device > config device >
     // --hep-listen > auto-detect (deferred to launch()).
     // manual_map: without the `hep` feature the --hep-listen arm cfg-shrinks
@@ -1259,6 +1267,16 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // [security] is validated for the same reason [limits] is: a key that
     // reaches the wire must not be accepted here and refused as a flag.
     if let Err(e) = loaded.config.security.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
+    // [diagnosis] decides whether a working call is REPORTED as broken, so a
+    // nonsense threshold has to fail the run rather than quietly report every
+    // dialog in the capture.
+    if let Err(e) = loaded.config.diagnosis.validate() {
         return Err(PlanError {
             exit_code: 1,
             message: e.to_string(),

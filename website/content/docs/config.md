@@ -142,14 +142,56 @@ Security detection defaults.
 | `fraud_detect` | boolean | `false` | Enable fraud detection heuristics |
 | `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"` |
 | `alert_exec` | string | -- | Command to execute on alert |
+| `reg_flood_threshold` | integer | `50` | REGISTER requests per second from one source before `--reg-flood` reports a flood. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets, and it fires all through a re-REGISTER storm on a registrar that just restarted. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
+| `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that transmits, and whoever forged the source address chose where each response goes, so there is no unlimited setting and `0` fails validation. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
+| `business_hours` | string | -- | Business hours as `"START-END"` in whole UTC hours, for example `"8-18"`. A wrapping range such as `"22-6"` is the overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. `--business-hours` overrides it |
+| `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers, which reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
+| `fraud_wangiri_calls` | integer | `3` | Short calls to one destination prefix before `--fraud-detect` reports wangiri. `--fraud-wangiri-calls` overrides it |
+| `fraud_sequential_calls` | integer | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. `--fraud-sequential-calls` overrides it |
+| `fraud_volume_multiplier` | integer | `5` | Multiple of a source's own baseline call rate that `--fraud-detect` reports as a volume spike. `--fraud-volume-multiplier` overrides it |
+| `fraud_volume_min_calls` | integer | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. `--fraud-volume-min-calls` overrides it |
+| `findings_history` | integer | `1000` | Security findings kept in memory for later retrieval. `0` keeps none, which is a real setting rather than a mistake. `--findings-history` overrides it |
 
 ```toml
 [security]
 kill_scanner = true
 kill_response = 403
+kill_rate_limit = 10
 fraud_detect = true
+business_hours = "8-18"
+fraud_short_call_secs = 2
+reg_flood_threshold = 10
+findings_history = 5000
 alert = ["syslog", "json"]
 alert_exec = "/usr/local/bin/sipnab-alert.sh"
+```
+
+### [diagnosis]
+
+Thresholds the signalling and media checks compare against. A number here
+decides whether a call that is working gets reported as broken, so the defaults
+are standards figures and a network that knows its own numbers beats a
+recommendation written for the general case. Every value must be a finite
+number greater than zero, and a value that is not fails validation and names
+the key.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `post_dial_delay_secs` | float | `11.0` | Post-dial delay over which sipnab reports a call as slow, in seconds. The default is the ITU-T E.721 Table 2 target that 95 percent of international connections must meet, because a capture does not say which kind of call it holds. Tighten it to 8.0 for toll or 6.0 for local traffic. `--pdd-threshold` overrides it |
+| `ack_timeout_secs` | float | `32.0` | Seconds a `2xx` may go unacknowledged before the missing `ACK` counts as a fault rather than as a capture that stopped early. The default is [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer H. `--ack-timeout` overrides it |
+| `no_final_response_secs` | float | `180.0` | Seconds an `INVITE` may sit without a final response before the silence gets reported. The default is RFC 3261 Timer C. Below it, every call still ringing when the capture stopped gets reported. `--no-final-response-timeout` overrides it |
+| `duration_asymmetry_pct` | float | `5.0` | Percentage difference between the two legs' durations that counts as asymmetric. Must be 100 or less. `--duration-asymmetry-pct` overrides it |
+| `duration_asymmetry_secs` | float | `2.0` | Absolute difference between the two legs' durations that counts as asymmetric, in seconds. A call has to clear both this and the percentage, so raising either one alone quiets the detection. `--duration-asymmetry-secs` overrides it |
+| `late_media_ms` | integer | `500` | Milliseconds after the `200 OK` that media may start before it gets reported as late. `--late-media-ms` overrides it |
+
+```toml
+[diagnosis]
+post_dial_delay_secs = 6.0
+ack_timeout_secs = 32.0
+no_final_response_secs = 180.0
+duration_asymmetry_pct = 5.0
+duration_asymmetry_secs = 2.0
+late_media_ms = 500
 ```
 
 ## `[media]`
@@ -178,6 +220,7 @@ Resource limits to prevent unbounded memory growth.
 | `idle_compact_after_secs` | integer | `600` | Seconds of silence before sipnab compacts a dialog's stored messages. `0` fails validation and names the key |
 | `keep_messages_per_idle_dialog` | integer | `20` | Messages an idle dialog keeps after compaction |
 | `max_audio_frames` | integer | `1500` | Maximum RTP payload frames stored per stream for WAV export (~30s at G.711 50pps) |
+| `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
 
 ```toml
 [limits]
@@ -389,6 +432,15 @@ kill_response = 403                # Reply to scanners with 403
 fraud_detect = true                # Heuristic fraud detection
 alert = ["syslog", "json"]        # Send alerts to syslog and JSON log
 alert_exec = "/usr/local/bin/sipnab-alert.sh"  # Custom alert handler
+reg_flood_threshold = 10           # REGISTER/sec from one source that is a flood
+kill_rate_limit = 10               # Kill responses/sec sipnab may transmit
+business_hours = "8-18"            # Enables off-hours fraud detection (UTC hours)
+
+# -- Diagnosis thresholds --
+[diagnosis]
+post_dial_delay_secs = 8.0         # Toll-call target; the default 11.0 is international
+ack_timeout_secs = 32.0            # RFC 3261 Timer H
+late_media_ms = 500                # Media allowed to start this late after the 200 OK
 
 # -- Resource limits --
 [limits]
@@ -396,6 +448,7 @@ dialog_limit = 50000               # Max tracked dialogs (tune for RAM)
 max_streams = 25000                # Max RTP streams
 max_reassembly = 5000              # Max TCP reassembly sessions
 hep_rate_limit = 25000             # Max HEP packets/sec
+lint_max_per_rule = 25             # Repeats of one lint finding per dialog
 
 # -- Privilege separation (Linux) --
 [privilege]

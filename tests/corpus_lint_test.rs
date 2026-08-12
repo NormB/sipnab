@@ -136,7 +136,7 @@ fn ingest(path: &Path) -> Option<Ingested> {
                 }
             }
             PacketAction::Rtcp(packets) => {
-                out.streams.process_rtcp(&packets);
+                out.streams.process_rtcp(&packets, parsed.timestamp);
                 let key = (
                     SocketAddr::new(parsed.src_addr, parsed.src_port),
                     SocketAddr::new(parsed.dst_addr, parsed.dst_port),

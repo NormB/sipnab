@@ -159,6 +159,58 @@ pub struct StreamSummary {
     /// which would read as a real pointer to frame 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame: Option<String>,
+    /// Round-trip time in milliseconds, when anything reported one.
+    ///
+    /// The third of the three numbers that decide whether a call was
+    /// acceptable — ITU-T G.114 puts the guidance for interactive speech at
+    /// about 150 ms one way — and the only one sipnab cannot measure itself: a
+    /// passive tap sees one point on the path and a round trip is about two.
+    /// So this is always somebody else's figure, and
+    /// [`Self::round_trip_source`] says whose.
+    ///
+    /// **Absent means not measured, and never zero.** Like [`Self::frame`],
+    /// the key is omitted rather than serialised as `null` or `0`. A stream
+    /// with clean jitter, no loss and no round-trip figure is not a healthy
+    /// stream; it is a stream with one unanswered question, and writing 0 ms
+    /// there turns the question into a pass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub round_trip_ms: Option<f64>,
+    /// Where [`Self::round_trip_ms`] came from: `xr_voip_metrics` (the
+    /// reporting endpoint's own round trip between the two RTP interfaces, the
+    /// quantity G.114 is about) or `sender_report_echo` (derived from an RR's
+    /// SR echo and anchored on the capture point, so the full round trip only
+    /// when the tap sits with the SR sender, and a lower bound otherwise).
+    ///
+    /// Carried beside the number rather than folded away because an operator
+    /// escalating on 200 ms needs to know whether that describes the call or a
+    /// path segment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub round_trip_source: Option<String>,
+}
+
+impl StreamSummary {
+    /// Attach a round-trip figure resolved from the store's provenance table.
+    ///
+    /// Separate from `From<&RtpStream>` because it has to be: the conversion
+    /// sees a stream, and this number lives in the store's side-table, filed
+    /// beside the stream's own measurements rather than into them. That
+    /// separation is deliberate and load-bearing — see
+    /// [`StreamStore::process_rtcp`](crate::rtp::stream_store::StreamStore::process_rtcp)
+    /// for the bug that came of merging a remote claim into a local one.
+    #[must_use]
+    pub fn with_round_trip(mut self, rtt: Option<(f64, crate::rtp::rtcp::RttSource)>) -> Self {
+        if let Some((ms, source)) = rtt {
+            self.round_trip_ms = Some(ms);
+            self.round_trip_source = Some(
+                match source {
+                    crate::rtp::rtcp::RttSource::XrVoipMetrics => "xr_voip_metrics",
+                    crate::rtp::rtcp::RttSource::SenderReportEcho => "sender_report_echo",
+                }
+                .to_string(),
+            );
+        }
+        self
+    }
 }
 
 impl From<&RtpStream> for StreamSummary {
@@ -188,6 +240,14 @@ impl From<&RtpStream> for StreamSummary {
             // second source to derive it from: unlike a dialog, a stream
             // retains no packets at all.
             frame: s.first_frame.as_ref().map(ToString::to_string),
+            // Not derivable from a stream alone: a round trip is somebody
+            // else's measurement, filed in the store's provenance table.
+            // `with_round_trip` fills these in for callers that hold the
+            // store, and leaving them None here is the honest default —
+            // "nobody reported one", which is exactly what a bare stream
+            // knows.
+            round_trip_ms: None,
+            round_trip_source: None,
         }
     }
 }

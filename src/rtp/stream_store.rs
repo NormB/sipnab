@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 use chrono::{DateTime, Utc};
 
 use super::parser::RtpHeader;
-use super::rtcp::{ExtendedReport, ReceptionReport, RtcpPacket, VoipMetrics, XrBlock};
+use super::rtcp::{ExtendedReport, ReceptionReport, RtcpPacket, RttSource, VoipMetrics, XrBlock};
 use super::stream::{RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
 use crate::sip::sdp::SdpMedia;
@@ -133,6 +133,17 @@ pub struct RemoteReceptionReport {
     /// is [`ClockGrounding::Assumed`] — the conversion needs a clock rate, and
     /// a guessed one produces a number that only looks like milliseconds.
     pub jitter_ms: Option<f64>,
+    /// Round trip derived from this block's SR echo
+    /// ([`rtt_from_sender_report_echo`](crate::rtp::rtcp::rtt_from_sender_report_echo)),
+    /// or `None` when none can be — the reporter had seen no SR, or the two
+    /// clocks disagree by more than the quantity being measured.
+    ///
+    /// `None` is not zero and must not become zero on the way to an operator:
+    /// latency is the third of the three numbers that decide whether a call was
+    /// acceptable, and a call with clean jitter and no loss can still be
+    /// unusable on delay alone. Reporting "no measurement" as 0 ms turns the
+    /// one unanswered question into a passing grade.
+    pub round_trip_ms: Option<f64>,
     /// How many report blocks about this stream have been folded in. The other
     /// fields hold the most recent; this says whether that is one sample or a
     /// long-running exchange.
@@ -528,7 +539,7 @@ impl StreamStore {
     /// index, readable via [`Self::remote_voip_metrics`]. Other RTCP packet
     /// types and unknown SSRCs are ignored. Does not bump the generation — no
     /// stream's identity, dialog or codec changes.
-    pub fn process_rtcp(&mut self, packets: &[RtcpPacket]) {
+    pub fn process_rtcp(&mut self, packets: &[RtcpPacket], observed_at: DateTime<Utc>) {
         for pkt in packets {
             if let RtcpPacket::ExtendedReport(xr) = pkt {
                 self.record_extended_report(xr);
@@ -566,6 +577,16 @@ impl StreamStore {
                         .then(|| f64::from(report.jitter) * 1000.0 / f64::from(stream.clock_rate));
                     let entry = self.provenance.entry(key.clone()).or_default();
                     let reports_seen = entry.remote.map_or(0, |r| r.reports_seen).saturating_add(1);
+                    // Anchored on when sipnab SAW this report, which is what a
+                    // passive tap has. `rtt_from_sender_report_echo` documents
+                    // what that anchor costs; the short version is that it is
+                    // the real round trip when the tap sits with the SR sender
+                    // and a lower bound otherwise.
+                    let round_trip_ms = crate::rtp::rtcp::rtt_from_sender_report_echo(
+                        observed_at,
+                        report.last_sr,
+                        report.delay_since_sr,
+                    );
                     entry.remote = Some(RemoteReceptionReport {
                         reporter_ssrc,
                         fraction_lost: report.fraction_lost,
@@ -573,6 +594,7 @@ impl StreamStore {
                         highest_seq: report.highest_seq,
                         jitter_timestamp_units: report.jitter,
                         jitter_ms,
+                        round_trip_ms,
                         reports_seen,
                     });
                 }
@@ -638,6 +660,81 @@ impl StreamStore {
         self.provenance
             .get(key)
             .and_then(|p| p.voip_metrics.as_ref())
+    }
+
+    /// The best round-trip figure available for this stream, and where it came
+    /// from — or `None` when nothing reported one.
+    ///
+    /// # Why this needs a resolver at all
+    ///
+    /// Latency is the third of the three numbers that decide whether a call was
+    /// acceptable, and it is the one sipnab cannot measure for itself: a
+    /// passive tap sees one point on the path, and a round trip is by
+    /// definition about two. So every figure here is somebody else's, and the
+    /// two possible somebodies disagree in kind:
+    ///
+    /// - An XR VoIP Metrics block carries the reporting endpoint's OWN round
+    ///   trip between the two RTP interfaces. That is the quantity ITU-T G.114
+    ///   sets its ~150 ms guidance against, and it describes the call.
+    /// - An RR's SR echo yields a figure anchored on the capture point, which
+    ///   is the whole round trip only when the tap sits with the SR sender.
+    ///
+    /// XR therefore wins whenever one exists, and the source is returned beside
+    /// the number rather than folded away, because an operator escalating on
+    /// 200 ms needs to know whether that is the call or a path segment.
+    ///
+    /// XR is also rare — most stacks never emit one — which is why the echo
+    /// path exists at all. Before it, `round_trip_delay` was parsed out of the
+    /// XR block and dropped, so the answer to "was this call acceptable?" was
+    /// unavailable on essentially every capture.
+    ///
+    /// # The cost of preferring evidence quality over recency
+    ///
+    /// This ranks by KIND, not by age, and that has a failure mode worth
+    /// naming: an endpoint that sends one XR early and then only RRs leaves
+    /// this reporting the opening figure for the rest of the call, while
+    /// fresher echo-derived numbers go unused. On a path that degrades
+    /// mid-call, the reported round trip is then the one from before it
+    /// degraded.
+    ///
+    /// It is still the right ranking — the echo figure is anchored on the
+    /// capture point and is a lower bound on most topologies, so a fresh weak
+    /// measurement is not obviously better than a stale strong one — but the
+    /// choice is a judgement, not a fact, and neither entry currently records
+    /// WHEN it was filed, so nothing here could compare ages even if it wanted
+    /// to. Fixing that means timestamping the provenance entries.
+    ///
+    /// # Returns
+    ///
+    /// `None` means NOT MEASURED, and callers must keep that distinct from a
+    /// measured zero all the way to their own output. A stream with clean
+    /// jitter, no loss and an unknown round trip is not a healthy stream; it is
+    /// a stream with one unanswered question.
+    pub fn round_trip(&self, key: &StreamKey) -> Option<(f64, RttSource)> {
+        let p = self.provenance.get(key)?;
+        // An XR that reports 0 ms is reported as 0 ms: that is the endpoint's
+        // measurement, and second-guessing it here would be sipnab overwriting
+        // a remote figure, which is the thing this whole side-table exists to
+        // avoid.
+        if let Some(xr) = p.voip_metrics.as_ref() {
+            return Some((
+                f64::from(xr.metrics.round_trip_delay),
+                RttSource::XrVoipMetrics,
+            ));
+        }
+        p.remote
+            .as_ref()
+            .and_then(|r| r.round_trip_ms)
+            .map(|ms| (ms, RttSource::SenderReportEcho))
+    }
+
+    /// [`Self::round_trip`] for a stream you already hold.
+    ///
+    /// Every surface iterates `&RtpStream` rather than keys, and a stream
+    /// carries its own key, so this saves each of them reaching into the key to
+    /// ask a question about the stream in front of them.
+    pub fn round_trip_for(&self, stream: &RtpStream) -> Option<(f64, RttSource)> {
+        self.round_trip(&stream.key)
     }
 
     /// How a stream's RTP clock rate came to be known, or `None` if the stream
@@ -2077,18 +2174,21 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(measured_lost, 0, "the fixture stream has no sequence gaps");
 
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
-        store.process_rtcp(&[RtcpPacket::ReceiverReport(ReceiverReport {
-            ssrc: 0x1111,
-            reports: vec![ReceptionReport {
-                ssrc: 0xFFFF, // matches our stream
-                fraction_lost: 25,
-                cumulative_lost: 10,
-                highest_seq: 500,
-                jitter: 42,
-                last_sr: 0,
-                delay_since_sr: 0,
-            }],
-        })]);
+        store.process_rtcp(
+            &[RtcpPacket::ReceiverReport(ReceiverReport {
+                ssrc: 0x1111,
+                reports: vec![ReceptionReport {
+                    ssrc: 0xFFFF, // matches our stream
+                    fraction_lost: 25,
+                    cumulative_lost: 10,
+                    highest_seq: 500,
+                    jitter: 42,
+                    last_sr: 0,
+                    delay_since_sr: 0,
+                }],
+            })],
+            chrono::Utc::now(),
+        );
 
         let stream = store.get(&key).expect("stream should exist");
         assert_eq!(
@@ -2163,10 +2263,13 @@ a=rtpmap:96 H264/90000\r\n";
         let mut store = StreamStore::new(100);
         let key = xr_fixture(&mut store, 0xABCD);
 
-        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
-            ssrc: 0x2222,
-            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xABCD))],
-        })]);
+        store.process_rtcp(
+            &[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x2222,
+                blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xABCD))],
+            })],
+            chrono::Utc::now(),
+        );
 
         let xr = store
             .remote_voip_metrics(&key)
@@ -2204,10 +2307,13 @@ a=rtpmap:96 H264/90000\r\n";
         let measured_mos = mos_of(&store);
         assert_eq!(measured_lost, 0, "the fixture stream has no sequence gaps");
 
-        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
-            ssrc: 0x2222,
-            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xBEEF))],
-        })]);
+        store.process_rtcp(
+            &[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x2222,
+                blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0xBEEF))],
+            })],
+            chrono::Utc::now(),
+        );
 
         let stream = store.get(&key).expect("stream should exist");
         assert_eq!(
@@ -2234,10 +2340,13 @@ a=rtpmap:96 H264/90000\r\n";
         for r in [40u8, 80u8] {
             let mut m = hostile_metrics(0xC0DE);
             m.r_factor = r;
-            store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
-                ssrc: 0x2222,
-                blocks: vec![XrBlock::VoipMetrics(m)],
-            })]);
+            store.process_rtcp(
+                &[RtcpPacket::ExtendedReport(ExtendedReport {
+                    ssrc: 0x2222,
+                    blocks: vec![XrBlock::VoipMetrics(m)],
+                })],
+                chrono::Utc::now(),
+            );
         }
 
         let xr = store.remote_voip_metrics(&key).expect("XR recorded");
@@ -2252,10 +2361,13 @@ a=rtpmap:96 H264/90000\r\n";
         let mut store = StreamStore::new(100);
         let key = xr_fixture(&mut store, 0x1234);
 
-        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
-            ssrc: 0x2222,
-            blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0x9999))],
-        })]);
+        store.process_rtcp(
+            &[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x2222,
+                blocks: vec![XrBlock::VoipMetrics(hostile_metrics(0x9999))],
+            })],
+            chrono::Utc::now(),
+        );
 
         assert!(
             store.remote_voip_metrics(&key).is_none(),
@@ -2270,13 +2382,16 @@ a=rtpmap:96 H264/90000\r\n";
         let mut store = StreamStore::new(100);
         let key = xr_fixture(&mut store, 0x4321);
 
-        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
-            ssrc: 0x2222,
-            blocks: vec![
-                XrBlock::ReceiverReferenceTime { ntp_timestamp: 7 },
-                XrBlock::Unknown { block_type: 6 },
-            ],
-        })]);
+        store.process_rtcp(
+            &[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x2222,
+                blocks: vec![
+                    XrBlock::ReceiverReferenceTime { ntp_timestamp: 7 },
+                    XrBlock::Unknown { block_type: 6 },
+                ],
+            })],
+            chrono::Utc::now(),
+        );
 
         assert!(store.remote_voip_metrics(&key).is_none());
     }
@@ -2310,18 +2425,21 @@ a=rtpmap:96 H264/90000\r\n";
         assert!(before > 4.0, "clean fixture stream scores well: {before}");
 
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
-        store.process_rtcp(&[RtcpPacket::ReceiverReport(ReceiverReport {
-            ssrc: 0xDEAD,
-            reports: vec![ReceptionReport {
-                ssrc: 0x5EED,
-                fraction_lost: 255,
-                cumulative_lost: 100_000, // "since the beginning of reception"
-                highest_seq: 100_000,
-                jitter: 800_000,
-                last_sr: 0,
-                delay_since_sr: 0,
-            }],
-        })]);
+        store.process_rtcp(
+            &[RtcpPacket::ReceiverReport(ReceiverReport {
+                ssrc: 0xDEAD,
+                reports: vec![ReceptionReport {
+                    ssrc: 0x5EED,
+                    fraction_lost: 255,
+                    cumulative_lost: 100_000, // "since the beginning of reception"
+                    highest_seq: 100_000,
+                    jitter: 800_000,
+                    last_sr: 0,
+                    delay_since_sr: 0,
+                }],
+            })],
+            chrono::Utc::now(),
+        );
 
         assert_eq!(
             mos_of(&store),
@@ -2346,7 +2464,7 @@ a=rtpmap:96 H264/90000\r\n";
         store.process_rtp(&p1, &rtp, ts(0));
         store.process_rtp(&p2, &rtp, ts(1));
 
-        store.process_rtcp(&rr_for(0xCAFE, 77));
+        store.process_rtcp(&rr_for(0xCAFE, 77), chrono::Utc::now());
 
         let first = StreamKey {
             ssrc: 0xCAFE,
@@ -2388,8 +2506,8 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        store.process_rtcp(&rr_for(0xCAFE, 8));
-        store.process_rtcp(&rr_for(0xCAFE, 16));
+        store.process_rtcp(&rr_for(0xCAFE, 8), chrono::Utc::now());
+        store.process_rtcp(&rr_for(0xCAFE, 16), chrono::Utc::now());
         let r = store.remote_report(&key).expect("recorded");
         assert_eq!(r.jitter_timestamp_units, 16, "latest report wins");
         assert_eq!(r.reports_seen, 2);
@@ -2414,7 +2532,7 @@ a=rtpmap:96 H264/90000\r\n";
             Some(ClockGrounding::Assumed),
             "a dynamic PT with no rtpmap has no knowable clock rate"
         );
-        store.process_rtcp(&rr_for(0xB0B0, 77));
+        store.process_rtcp(&rr_for(0xB0B0, 77), chrono::Utc::now());
         let r = store.remote_report(&key).expect("recorded");
         assert_eq!(r.jitter_timestamp_units, 77, "the wire value is kept");
         assert_eq!(
@@ -2430,7 +2548,7 @@ a=rtpmap:96 H264/90000\r\n";
         let mut store = StreamStore::new(2);
         let p1 = make_parsed(20000, 30000, 160);
         store.process_rtp(&p1, &make_rtp_header(0xCAFE, 1), ts(0));
-        store.process_rtcp(&rr_for(0xCAFE, 77));
+        store.process_rtcp(&rr_for(0xCAFE, 77), chrono::Utc::now());
         let key = StreamKey {
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -2660,7 +2778,7 @@ a=rtpmap:96 H264/90000\r\n";
         store.process_rtp(&p3, &make_rtp_header(0xBEEF, 1), ts(2));
         assert_eq!(store.len(), 2);
 
-        store.process_rtcp(&rr_for(0xCAFE, 55));
+        store.process_rtcp(&rr_for(0xCAFE, 55), chrono::Utc::now());
 
         let survivor = StreamKey {
             ssrc: 0xCAFE,
@@ -2682,7 +2800,7 @@ a=rtpmap:96 H264/90000\r\n";
         let p = make_parsed(20000, 30000, 160);
         store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
         store.clear();
-        store.process_rtcp(&rr_for(0xCAFE, 11)); // must not panic
+        store.process_rtcp(&rr_for(0xCAFE, 11), chrono::Utc::now()); // must not panic
         assert!(store.is_empty());
     }
 
@@ -2693,7 +2811,7 @@ a=rtpmap:96 H264/90000\r\n";
         let mut store = StreamStore::new(100);
         let p = make_parsed(20000, 30000, 160);
         store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
-        store.process_rtcp(&rr_for(0xD00D, 99));
+        store.process_rtcp(&rr_for(0xD00D, 99), chrono::Utc::now());
         let key = StreamKey {
             ssrc: 0xCAFE,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -2918,5 +3036,131 @@ a=rtpmap:96 H264/90000\r\n";
             Some(1),
         );
         assert_eq!(att, MediaAttribution::default());
+    }
+
+    /// An RR carrying an SR echo yields a round trip on the stream.
+    ///
+    /// Latency is the third of the three numbers that decide whether a call was
+    /// acceptable, and before this it was parsed out of RTCP and dropped: an
+    /// operator asking "was this call acceptable?" could not answer it from
+    /// sipnab at all without reading RTCP by hand.
+    ///
+    /// The observation time is the CAPTURE clock, not the wall clock. That is
+    /// what makes the figure right on an offline pcap, where every LSR was
+    /// stamped whenever the capture was taken — anchoring on `Utc::now()` would
+    /// compute the age of the capture instead of the round trip.
+    #[test]
+    fn an_sr_echo_yields_a_round_trip_on_the_stream() {
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
+
+        let mut store = StreamStore::new(10);
+        let key = xr_fixture(&mut store, 0xCAFE);
+
+        // The SR went out 250 ms before we saw this RR, and the reporter sat on
+        // it for 50 ms: a 200 ms round trip, which is past G.114's guidance and
+        // exactly the case an operator needs to see.
+        let seen_at = ts(10);
+        let sr_sent_at = seen_at - chrono::TimeDelta::milliseconds(250);
+        store.process_rtcp(
+            &[RtcpPacket::ReceiverReport(ReceiverReport {
+                ssrc: 0x9999,
+                reports: vec![ReceptionReport {
+                    ssrc: 0xCAFE,
+                    fraction_lost: 0,
+                    cumulative_lost: 0,
+                    highest_seq: 100,
+                    jitter: 10,
+                    last_sr: crate::rtp::rtcp::compact_ntp_for_test(sr_sent_at),
+                    delay_since_sr: (50.0 * 65536.0 / 1000.0) as u32,
+                }],
+            })],
+            seen_at,
+        );
+
+        let (ms, source) = store.round_trip(&key).expect("an SR echo is a round trip");
+        assert!(
+            (ms - 200.0).abs() < 2.0,
+            "expected ~200 ms (250 ms elapsed less 50 ms of reporter delay), got {ms}"
+        );
+        assert_eq!(source, RttSource::SenderReportEcho);
+    }
+
+    /// No report is NOT a round trip of zero.
+    ///
+    /// A stream with clean jitter, no loss and no latency figure is a stream
+    /// with one unanswered question, not a healthy one. Reporting the unknown
+    /// as 0 ms is how a call that is unusable on delay alone reads as fine.
+    #[test]
+    fn a_stream_nobody_reported_on_has_no_round_trip_rather_than_zero() {
+        let mut store = StreamStore::new(10);
+        let key = xr_fixture(&mut store, 0xCAFE);
+
+        assert_eq!(store.round_trip(&key), None, "no RTCP means no measurement");
+
+        // An RR whose reporter has seen no SR (last_sr = 0, the RFC 3550
+        // sentinel) is still no measurement — it is the most common shape on
+        // the wire and the easiest one to accidentally read as 0 ms.
+        store.process_rtcp(&rr_for(0xCAFE, 77), ts(5));
+        assert_eq!(
+            store.round_trip(&key),
+            None,
+            "last_sr = 0 means the reporter had heard no SR, not a 0 ms path"
+        );
+        // Anti-vacuity: the report DID land, so this is about the round trip
+        // and not about the report being dropped.
+        assert!(store.remote_report(&key).is_some());
+    }
+
+    /// An endpoint's own XR figure beats one derived here.
+    ///
+    /// The XR number is the round trip between the two RTP interfaces — what
+    /// G.114 is about. The echo derivation is anchored on the capture point and
+    /// is the whole round trip only when the tap sits with the SR sender, so it
+    /// loses whenever a real measurement exists.
+    #[test]
+    fn an_endpoints_own_xr_figure_beats_one_derived_here() {
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
+
+        let mut store = StreamStore::new(10);
+        let key = xr_fixture(&mut store, 0xCAFE);
+
+        let seen_at = ts(10);
+        store.process_rtcp(
+            &[RtcpPacket::ReceiverReport(ReceiverReport {
+                ssrc: 0x9999,
+                reports: vec![ReceptionReport {
+                    ssrc: 0xCAFE,
+                    fraction_lost: 0,
+                    cumulative_lost: 0,
+                    highest_seq: 100,
+                    jitter: 10,
+                    last_sr: crate::rtp::rtcp::compact_ntp_for_test(
+                        seen_at - chrono::TimeDelta::milliseconds(600),
+                    ),
+                    delay_since_sr: 0,
+                }],
+            })],
+            seen_at,
+        );
+        let (echo_ms, echo_src) = store.round_trip(&key).expect("echo present");
+        assert_eq!(echo_src, RttSource::SenderReportEcho);
+        assert!((echo_ms - 600.0).abs() < 2.0, "got {echo_ms}");
+
+        let mut metrics = hostile_metrics(0xCAFE);
+        metrics.round_trip_delay = 90;
+        store.process_rtcp(
+            &[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x7777,
+                blocks: vec![XrBlock::VoipMetrics(metrics)],
+            })],
+            seen_at,
+        );
+
+        let (ms, source) = store.round_trip(&key).expect("xr present");
+        assert_eq!(source, RttSource::XrVoipMetrics);
+        assert!(
+            (ms - 90.0).abs() < f64::EPSILON,
+            "the endpoint's own 90 ms must win over the derived 600 ms, got {ms}"
+        );
     }
 }

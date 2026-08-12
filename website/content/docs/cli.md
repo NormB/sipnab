@@ -624,6 +624,33 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000` — batch-analyse RTP streams with a raised stream cap. Again `--rtp-interval 2` changes nothing; the statistics arrive once, when the capture ends
 
 
+## Diagnosis thresholds
+
+The numbers the signalling and media checks compare against. Each decides
+whether a call that is working gets reported as broken, so the defaults are
+standards figures for the general case and your own network beats them. Every
+flag has a config key under `[diagnosis]`, and the flag wins.
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--pdd-threshold` | `<SECS>` | `11.0` | Post-dial delay over which sipnab reports a call as slow. The default is the ITU-T E.721 Table 2 target that 95 percent of international connections must meet, because a capture does not say which kind of call it holds. Tighten it to 8.0 for toll or 6.0 for local traffic. Config: `[diagnosis] post_dial_delay_secs` |
+| `--ack-timeout` | `<SECS>` | `32.0` | Seconds a `2xx` may go unacknowledged before the missing `ACK` counts as a fault rather than as a capture that stopped early. The default is RFC 3261 Timer H. Config: `[diagnosis] ack_timeout_secs` |
+| `--no-final-response-timeout` | `<SECS>` | `180.0` | Seconds an `INVITE` may sit without a final response before the silence gets reported. The default is RFC 3261 Timer C. Below it, every call still ringing when the capture stopped gets reported. Config: `[diagnosis] no_final_response_secs` |
+| `--duration-asymmetry-pct` | `<PCT>` | `5.0` | Percentage difference between the two legs' durations that counts as asymmetric. Config: `[diagnosis] duration_asymmetry_pct` |
+| `--duration-asymmetry-secs` | `<SECS>` | `2.0` | Absolute difference between the two legs' durations that counts as asymmetric. A call has to clear both this and the percentage, so raising either one alone quiets the detection. Config: `[diagnosis] duration_asymmetry_secs` |
+| `--late-media-ms` | `<MS>` | `500` | Milliseconds after the `200 OK` that media may start before it gets reported as late. Config: `[diagnosis] late_media_ms` |
+
+**Examples**
+
+- `sipnab -N -I calls.pcap --json-dialogs --pdd-threshold 6 --no-cli-print` — judge a capture you know is local traffic against E.721's local target rather than the international one the default assumes
+- `sipnab -N -I trunk.pcap --json-dialogs --late-media-ms 150 --duration-asymmetry-secs 0.5 --no-cli-print` — a tight media audit for a trunk where a 150 ms media gap is already a clipped first syllable
+- `sipnab -N -I sat-trunk.pcap --json-dialogs --pdd-threshold 15 --late-media-ms 900 --no-cli-print` — the other direction, for a satellite path where the shipped figures report every healthy call as slow
+- `sipnab -N -I proxy.pcap --json-dialogs --ack-timeout 8 --no-final-response-timeout 30 --no-cli-print` — a proxy tap where the interesting window is far shorter than the RFC 3261 timers, so a stalled transaction shows up while the capture is still running
+- `sipnab -N -I trunk.pcap --json-dialogs --ack-timeout 64 --no-final-response-timeout 300 --no-cli-print` — a lossy trunk where the RFC timers themselves fire too early, so only a genuinely dead transaction gets reported
+- `sipnab -N -I b2bua.pcap --json-dialogs --duration-asymmetry-pct 25 --duration-asymmetry-secs 5 --no-cli-print` — a B2BUA capture where the legs never tear down together, so only a large gap is worth a line
+- `sipnab -N -I b2bua.pcap --json-dialogs --duration-asymmetry-pct 1 --duration-asymmetry-secs 0.2 --no-cli-print` — the strict form of the same audit, for hunting a leg that drops media a fraction early
+
+
 ## Security
 
 | Flag | Value | Default | Description |
@@ -633,9 +660,18 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699) |
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill (sipgrep `-K`): send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
+| `--kill-rate-limit` | `<N>` | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that transmits, and the sender of each packet sipnab answers chose the address that answer goes to, so there is no unlimited setting and sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics |
+| `--business-hours` | `<START-END>` | -- | Business hours in whole UTC hours, for example `8-18`, or `22-6` for an overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. Needs `--fraud-detect`. Config: `[security] business_hours` |
+| `--fraud-short-call` | `<SECS>` | `3` | Measured duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers. Config: `[security] fraud_short_call_secs` |
+| `--fraud-wangiri-calls` | `<N>` | `3` | Short calls to one destination prefix before `--fraud-detect` reports wangiri. Config: `[security] fraud_wangiri_calls` |
+| `--fraud-sequential-calls` | `<N>` | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. Config: `[security] fraud_sequential_calls` |
+| `--fraud-volume-multiplier` | `<N>` | `5` | Multiple of a source's own baseline call rate that `--fraud-detect` reports as a volume spike. Config: `[security] fraud_volume_multiplier` |
+| `--fraud-volume-min-calls` | `<N>` | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. Config: `[security] fraud_volume_min_calls` |
 | `--reg-flood` | -- | off | Detect registration flood attacks |
+| `--reg-flood-threshold` | `<N>` | `50` | REGISTER requests per second from one source before `--reg-flood` reports a flood. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets, and it fires all through a re-REGISTER storm on a registrar that just restarted. Config: `[security] reg_flood_threshold` |
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |
+| `--findings-history` | `<N>` | `1000` | Security findings kept in memory for later retrieval. `0` keeps none. Config: `[security] findings_history` |
 | `--alert` | `<CHANNEL>` | -- | Alert channels (repeatable): `syslog`, `json`, `exec` |
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires |
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line) |
@@ -656,6 +692,13 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -d eth0 --kill-target 198.51.100.77:5060 --kill-spoof ephemeral` — kill requests from one more source port using a non-spoofed ephemeral reply
 - `sudo sipnab -N -d eth0 --reg-flood --digest-leak --fraud-detect --stir-shaken --alert json --alert-json --alert-exec '/usr/local/bin/notify.sh'` — live security monitoring: registration floods, digest leaks, fraud, STIR/SHAKEN, with JSON alerts and an exec hook
 - `sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json` — offline audit of a pcap for digest leaks and STIR/SHAKEN attestation claims (as the originator presented them — sipnab checks no signature), emitting structured JSON alerts
+- `sudo sipnab -N -d eth0 --reg-flood --reg-flood-threshold 10 --fraud-detect --business-hours 8-18 --fraud-short-call 1` — tune the detectors to a small PBX: ten REGISTERs a second is a brute force here, calls outside office hours are worth a line, and a one-second call is the only one short enough to be a lure
+- `sudo sipnab -N -d eth0 --reg-flood --reg-flood-threshold 400 --fraud-detect --business-hours 22-6` — the carrier-registrar shape instead: only a genuine flood clears 400 REGISTERs a second, and the quiet window is overnight
+- `sipnab -N -I trunk.pcap --fraud-detect --fraud-short-call 6 --fraud-wangiri-calls 5 --fraud-sequential-calls 6` — audit a wholesale trunk where short calls are ordinary, so a lure needs five of them and a dial-plan walk needs six consecutive dead numbers
+- `sipnab -N -I pbx.pcap --fraud-detect --fraud-wangiri-calls 2 --fraud-sequential-calls 2 --fraud-volume-multiplier 3 --fraud-volume-min-calls 4` — the sensitive form for a small PBX, where two short calls to one prefix and four calls in a minute are already unusual
+- `sipnab -N -I trunk.pcap --fraud-detect --fraud-volume-multiplier 20 --fraud-volume-min-calls 200` — a busy carrier trunk, where a spike has to be twenty times its own baseline and 200 calls a minute before it means anything
+- `sudo sipnab -N -d eth0 --kill-scanner --kill-rate-limit 2 --findings-history 20000` — answer scanners at a deliberately small two responses a second while keeping a long detection history for an agent to read back
+- `sudo sipnab -N -d eth0 --kill-target 192.0.2.66 --kill-rate-limit 50 --findings-history 0` — a targeted response with a wider transmit budget and no findings retained in memory
 
 
 ## Event execution
@@ -851,12 +894,15 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions |
+| `--lint-max-per-rule` | `<N>` | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. Needs `--lint`. Config: `[limits] lint_max_per_rule` |
 | `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`) |
 
 **Examples**
 
 - `sudo sipnab -d eth0 --max-reassembly 50000` — live capture on a busy TCP/TLS trunk with a raised reassembly-session ceiling
 - `sipnab -N -I capture.pcap --cores 4 --max-reassembly 2000` — offline reconstruction sharded across 4 cores, with a tight reassembly bound for an untrusted capture
+- `sipnab -N -I calls.pcap --lint --lint-max-per-rule 3 --no-cli-print` — keep the lint output to three repeats of any one rule, so a capture full of retransmissions still shows what else it trips
+- `sipnab -N -I calls.pcap --lint --lint-max-per-rule 500 --no-cli-print` — the opposite: every repeat, for counting how often one rule actually fires
 
 
 ## Config

@@ -821,7 +821,7 @@ async fn list_streams(
         .iter()
         .skip(offset)
         .take(limit)
-        .map(|&s| stream_summary(s))
+        .map(|&s| stream_summary(s, &ss))
         .collect();
     drop(ss);
 
@@ -1121,9 +1121,14 @@ fn dialog_summary(d: &crate::sip::dialog::SipDialog) -> Value {
 /// Build a JSON summary of an RTP stream via the canonical
 /// `crate::output::model::StreamSummary` projection. Returns an
 /// `{"error": ...}` object if serialization fails.
-fn stream_summary(s: &crate::rtp::stream::RtpStream) -> Value {
-    serde_json::to_value(crate::output::model::StreamSummary::from(s))
-        .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
+fn stream_summary(
+    s: &crate::rtp::stream::RtpStream,
+    store: &crate::rtp::stream_store::StreamStore,
+) -> Value {
+    serde_json::to_value(
+        crate::output::model::StreamSummary::from(s).with_round_trip(store.round_trip_for(s)),
+    )
+    .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
 }
 
 /// Approximate MOS score from jitter and loss using the canonical E-model.
@@ -2390,6 +2395,78 @@ mod tests {
         assert!(summary["created_at"].is_string());
     }
 
+    /// The REST stream row CARRIES a round trip when the store has one, and
+    /// omits the key when it does not.
+    ///
+    /// Behavioural on purpose. The parity gate in `tests/surface_parity_test.rs`
+    /// scans source text, and once its REST scope had to include
+    /// `src/output/model.rs` — which is where the field is DECLARED — it could
+    /// no longer tell a populated field from a declared one. Deleting
+    /// `.with_round_trip(...)` from `stream_summary` left that gate green, which
+    /// a mutation run caught and is the only reason this test exists.
+    ///
+    /// A text scan cannot express "the handler fills this in". This can.
+    #[test]
+    fn stream_summary_carries_a_round_trip_when_one_was_reported() {
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport, RtcpPacket};
+
+        let state = make_state();
+        add_stream(&state, 0x7777_7777, 29000, 39000);
+
+        let seen_at = chrono::DateTime::from_timestamp(1_700_000_100, 0).expect("ts");
+        {
+            let mut ss = state.stream_store.write();
+            ss.process_rtcp(
+                &[RtcpPacket::ReceiverReport(ReceiverReport {
+                    ssrc: 0x9999,
+                    reports: vec![ReceptionReport {
+                        ssrc: 0x7777_7777,
+                        fraction_lost: 0,
+                        cumulative_lost: 0,
+                        highest_seq: 10,
+                        jitter: 5,
+                        last_sr: crate::rtp::rtcp::compact_ntp_for_test(
+                            seen_at - chrono::TimeDelta::milliseconds(120),
+                        ),
+                        delay_since_sr: 0,
+                    }],
+                })],
+                seen_at,
+            );
+        }
+
+        let ss = state.stream_store.read();
+        let s = ss.iter().next().expect("one stream");
+        let v = stream_summary(s, &ss);
+
+        let ms = v["round_trip_ms"].as_f64().unwrap_or_else(|| {
+            panic!("the REST row must carry the round trip the store resolved: {v}")
+        });
+        assert!(
+            (ms - 120.0).abs() < 2.0,
+            "expected ~120 ms from the SR echo, got {ms}"
+        );
+        assert_eq!(v["round_trip_source"], "sender_report_echo");
+    }
+
+    /// A stream nobody reported on omits the key rather than reporting 0 ms.
+    #[test]
+    fn stream_summary_omits_the_round_trip_when_nothing_measured_one() {
+        let state = make_state();
+        add_stream(&state, 0x6666_6666, 27000, 37000);
+        let ss = state.stream_store.read();
+        let s = ss.iter().next().expect("one stream");
+        let v = stream_summary(s, &ss);
+
+        assert!(
+            v.get("round_trip_ms").is_none(),
+            "no RTCP means no latency figure, and an absent key is not 0 ms: {v}"
+        );
+        // Anti-vacuity: the row is otherwise populated, so the absence above is
+        // about the round trip and not about an empty summary.
+        assert!(v["jitter_ms"].is_number() && v["mos"].is_number());
+    }
+
     /// `stream_summary` emits `0x`-prefixed SSRC, numeric MOS, and
     /// `orphaned`.
     #[test]
@@ -2398,7 +2475,7 @@ mod tests {
         add_stream(&state, 0x8888_8888, 28000, 38000);
         let ss = state.stream_store.read();
         let s = ss.iter().next().expect("one stream");
-        let summary = stream_summary(s);
+        let summary = stream_summary(s, &ss);
         assert_eq!(summary["ssrc"], "0x88888888");
         assert!(summary["mos"].is_number());
         assert_eq!(summary["orphaned"], false);

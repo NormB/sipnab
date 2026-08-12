@@ -43,6 +43,10 @@ pub struct QualityBands {
     pub mos_warn: f64,
     /// MOS below this is bad.
     pub mos_bad: f64,
+    /// Round trip at or above this is a warning (milliseconds).
+    pub rtt_warn_ms: f64,
+    /// Round trip at or above this is bad (milliseconds).
+    pub rtt_bad_ms: f64,
 }
 
 impl Default for QualityBands {
@@ -54,6 +58,17 @@ impl Default for QualityBands {
             loss_bad_pct: 5.0,
             mos_warn: 4.0,
             mos_bad: 3.0,
+            // Grounded in ITU-T G.114, which is about ONE-WAY delay: up to
+            // 150 ms is acceptable for most applications, and above 400 ms is
+            // unacceptable for general network planning. A round trip is about
+            // twice a one-way, so those become 300 ms and 800 ms here.
+            //
+            // Doubling is an approximation and worth stating: real paths are
+            // asymmetric, so an 800 ms round trip may be 700 ms one way and
+            // 100 ms the other. It is the right approximation for a triage
+            // colour, and the wrong one to quote as a one-way figure.
+            rtt_warn_ms: 300.0,
+            rtt_bad_ms: 800.0,
         }
     }
 }
@@ -106,6 +121,22 @@ impl QualityBands {
         }
     }
 
+    /// Band a round-trip measurement.
+    ///
+    /// Only ever called with a figure somebody actually reported — a missing
+    /// round trip has no band, because "not measured" is not a quality verdict
+    /// and colouring it green would be the whole defect this was added to fix.
+    #[must_use]
+    pub fn rtt(&self, ms: f64) -> Band {
+        if ms >= self.rtt_bad_ms {
+            Band::Bad
+        } else if ms >= self.rtt_warn_ms {
+            Band::Warning
+        } else {
+            Band::Good
+        }
+    }
+
     /// Reject a band set that cannot be honoured.
     ///
     /// A warn boundary above its bad boundary is not a stricter setting, it is
@@ -125,6 +156,13 @@ impl QualityBands {
                 "loss_warn_pct ({}) is above loss_bad_pct ({}), so no loss could \
                  ever be a warning",
                 self.loss_warn_pct, self.loss_bad_pct
+            ));
+        }
+        if self.rtt_warn_ms > self.rtt_bad_ms {
+            return Err(format!(
+                "rtt_warn_ms ({}) is above rtt_bad_ms ({}), so no round trip \
+                 could ever be a warning",
+                self.rtt_warn_ms, self.rtt_bad_ms
             ));
         }
         if self.mos_warn < self.mos_bad {

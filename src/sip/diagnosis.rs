@@ -269,12 +269,46 @@ impl Default for SignalingThresholds {
     /// Timer C a proxy in the path would itself have given up, so the silence
     /// has outlived what the protocol tolerates and is worth a line.
     fn default() -> Self {
-        Self {
-            post_dial_delay_sec: 11.0,
-            ack_timeout_sec: 32.0,
-            no_final_response_sec: 180.0,
-        }
+        Self::BUILT_IN
     }
+}
+
+impl SignalingThresholds {
+    /// The standards figures documented on [`Default::default`].
+    ///
+    /// Named so a caller can still reach the shipped numbers after the run has
+    /// declared its own — [`configured`] answers with the declaration.
+    pub const BUILT_IN: Self = Self {
+        post_dial_delay_sec: 11.0,
+        ack_timeout_sec: 32.0,
+        no_final_response_sec: 180.0,
+    };
+}
+
+/// The thresholds `[diagnosis]` declared, once the run has read its config.
+///
+/// Process-global and written once at startup, the same shape as
+/// [`crate::provenance::set_node_name`]: the value is a property of the run.
+static CONFIGURED: std::sync::OnceLock<SignalingThresholds> = std::sync::OnceLock::new();
+
+/// Declare the signalling thresholds for this process. Call once, at startup.
+///
+/// # Side effects
+///
+/// Writes a process-global `OnceLock`; the first writer wins, so a later call
+/// is ignored rather than moving the thresholds mid-run.
+pub fn set_signaling_thresholds(thresholds: SignalingThresholds) {
+    let _ = CONFIGURED.set(thresholds);
+}
+
+/// The thresholds this run diagnoses against: what `[diagnosis]` declared,
+/// else [`SignalingThresholds::BUILT_IN`].
+#[must_use]
+pub fn configured() -> SignalingThresholds {
+    CONFIGURED
+        .get()
+        .copied()
+        .unwrap_or(SignalingThresholds::BUILT_IN)
 }
 
 /// The network said, in so many words, that the far end was not there.
@@ -416,16 +450,22 @@ type TransactionKey = (u32, String, String);
 /// every unit test here, and any capture without ICMP — behaves exactly as it
 /// did before detection 8 existed. Use [`diagnose_signaling_with_evidence`]
 /// when the evidence should be supplied explicitly.
+/// Reads the run's declared thresholds via [`configured`], so
+/// `[diagnosis] post_dial_delay_secs` reaches every surface — the TUI, the
+/// reports, `--json-dialogs` and the MCP tools — without any of them having to
+/// remember to ask. This entry point is the ONLY place that resolution
+/// happens, which is why the seven callers of it need no change and cannot
+/// disagree about the answer.
 pub fn diagnose_signaling(messages: &[SipMessage]) -> SignalingDiagnosis {
-    diagnose_signaling_with(messages, &SignalingThresholds::default())
+    diagnose_signaling_with(messages, &configured())
 }
 
 /// Diagnose the signalling side of one dialog against explicit thresholds.
 ///
-/// [`diagnose_signaling`] is this with [`SignalingThresholds::default`], which
-/// is what every surface calls; this exists for a caller who knows their own
-/// network's post-dial delay budget better than E.721's international figure
-/// does.
+/// [`diagnose_signaling`] is this with [`configured`], which is what every
+/// surface calls; this exists for a caller who knows their own network's
+/// post-dial delay budget better than E.721's international figure does, and
+/// for the tests that have to pin a threshold rather than inherit the run's.
 pub fn diagnose_signaling_with(
     messages: &[SipMessage],
     thresholds: &SignalingThresholds,

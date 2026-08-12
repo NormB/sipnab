@@ -745,6 +745,20 @@ pub struct Cli {
     )]
     pub lint_fail_on: Option<String>,
 
+    /// Findings one lint rule may report for one dialog.
+    ///
+    /// A dialog that retransmits an `INVITE` eleven times trips a message rule
+    /// eleven times and every one of them is true, so the cap is what decides
+    /// whether the other rules stay readable underneath. Config:
+    /// `[limits] lint_max_per_rule`.
+    #[arg(
+        help_heading = "Output",
+        long = "lint-max-per-rule",
+        value_name = "N",
+        requires = "lint"
+    )]
+    pub lint_max_per_rule: Option<u64>,
+
     /// Generate a tshark-compatible display filter string.
     #[arg(help_heading = "Output", long, value_name = "EXPR")]
     pub tshark_filter: Option<String>,
@@ -900,6 +914,116 @@ pub struct Cli {
     /// Detect registration flood attacks.
     #[arg(help_heading = "Security", long)]
     pub reg_flood: bool,
+
+    /// REGISTER requests per second from one source before `--reg-flood`
+    /// reports a flood.
+    ///
+    /// No clap `default_value`, so `[security] reg_flood_threshold` can take
+    /// effect; the default lives in [`Self::DEFAULT_REG_FLOOD_THRESHOLD`] and
+    /// is applied by [`Self::reg_flood_threshold`].
+    ///
+    /// The shipped 50/s is a carrier-registrar figure: it never sees the
+    /// ten-a-second brute force a small PBX gets, and it fires all through a
+    /// re-REGISTER storm on a registrar recovering from a restart. The right
+    /// value is a property of the registrar being watched.
+    #[arg(
+        help_heading = "Security",
+        long = "reg-flood-threshold",
+        value_name = "N"
+    )]
+    pub reg_flood_threshold: Option<u32>,
+
+    /// Scanner-kill responses per second sipnab may put on the wire.
+    ///
+    /// This is the blast radius of the one feature that TRANSMITS. The kill
+    /// path answers packets whose source address the sender chose, so every
+    /// response is aimed by somebody else; the cap is what keeps a misfiring
+    /// signature from becoming a reflector. There is no unlimited setting and
+    /// `0` is refused — see `[security] kill_rate_limit`.
+    ///
+    /// A per-destination cap of 3/minute applies underneath this and is not
+    /// tunable, so raising this widens how many DISTINCT hosts may be answered
+    /// per second, never how hard any one of them is hit.
+    ///
+    /// The `range(1..)` is what makes the sentence above true of THIS flag.
+    /// `[security] kill_rate_limit` refuses 0 in `SecurityConfig::validate`,
+    /// but that guards the config FILE; without this the flag accepted 0 while
+    /// its own doc comment said it was refused. Two spellings of one policy
+    /// that disagree, with the documentation describing whichever one the
+    /// reader is not using.
+    #[arg(
+        help_heading = "Security",
+        long = "kill-rate-limit",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub kill_rate_limit: Option<u32>,
+
+    /// Business hours as `START-END` in whole UTC hours, e.g. `8-18`.
+    ///
+    /// Turns on the off-hours fraud detection, which is otherwise unreachable:
+    /// with no window declared there is no "outside" for a call to fall in.
+    /// A wrapping range (`22-6`) is the overnight window.
+    ///
+    /// Requires `--fraud-detect`, which is what runs the detector.
+    #[arg(
+        help_heading = "Security",
+        long = "business-hours",
+        value_name = "START-END"
+    )]
+    pub business_hours: Option<String>,
+
+    /// Measured call duration, in seconds, below which `--fraud-detect` counts
+    /// a completed call as "short" for wangiri detection.
+    #[arg(
+        help_heading = "Security",
+        long = "fraud-short-call",
+        value_name = "SECS"
+    )]
+    pub fraud_short_call_secs: Option<u64>,
+
+    /// Short calls to one destination prefix before `--fraud-detect` reports
+    /// wangiri.
+    #[arg(
+        help_heading = "Security",
+        long = "fraud-wangiri-calls",
+        value_name = "N"
+    )]
+    pub fraud_wangiri_calls: Option<u32>,
+
+    /// Consecutive refused numbers before `--fraud-detect` reports sequential
+    /// scanning.
+    #[arg(
+        help_heading = "Security",
+        long = "fraud-sequential-calls",
+        value_name = "N"
+    )]
+    pub fraud_sequential_calls: Option<u64>,
+
+    /// Multiple of a source's own baseline call rate that `--fraud-detect`
+    /// reports as a volume spike.
+    #[arg(
+        help_heading = "Security",
+        long = "fraud-volume-multiplier",
+        value_name = "N"
+    )]
+    pub fraud_volume_multiplier: Option<u32>,
+
+    /// Calls a source must place inside the volume window before
+    /// `--fraud-detect` will report a spike at all.
+    #[arg(
+        help_heading = "Security",
+        long = "fraud-volume-min-calls",
+        value_name = "N"
+    )]
+    pub fraud_volume_min_calls: Option<u32>,
+
+    /// Security findings kept in memory for later retrieval.
+    ///
+    /// `0` keeps none. Findings are the deduplicated record of what fired, so
+    /// an agent polling for them sees at most this many between polls.
+    #[arg(help_heading = "Security", long = "findings-history", value_name = "N")]
+    pub findings_history: Option<u64>,
 
     /// Detect digest credential leaks in SIP messages.
     #[arg(help_heading = "Security", long)]
@@ -1152,6 +1276,59 @@ pub struct Cli {
     /// reason given on `--mcp-max-rows`.
     #[arg(help_heading = "Analysis", long = "one-way-delay", value_name = "MS")]
     pub one_way_delay_ms: Option<f64>,
+
+    /// Post-dial delay, in seconds, over which a call is reported as slow.
+    ///
+    /// The default is ITU-T E.721's 95th-percentile target for an
+    /// INTERNATIONAL connection, because a capture does not say what kind of
+    /// call it holds. A network that knows its own traffic is local or toll
+    /// wants a tighter number (6.0 and 8.0 respectively). Config:
+    /// `[diagnosis] post_dial_delay_secs`.
+    #[arg(help_heading = "Analysis", long = "pdd-threshold", value_name = "SECS")]
+    pub pdd_threshold_secs: Option<f64>,
+
+    /// Seconds a `2xx` may go unacknowledged before the missing `ACK` is
+    /// reported as a fault rather than as a capture that stopped early.
+    /// Default: RFC 3261 Timer H (32 s). Config:
+    /// `[diagnosis] ack_timeout_secs`.
+    #[arg(help_heading = "Analysis", long = "ack-timeout", value_name = "SECS")]
+    pub ack_timeout_secs: Option<f64>,
+
+    /// Seconds an `INVITE` may sit without a final response before the silence
+    /// is reported. Default: RFC 3261 Timer C (180 s). Below it, every call
+    /// still ringing when the capture stopped is reported. Config:
+    /// `[diagnosis] no_final_response_secs`.
+    #[arg(
+        help_heading = "Analysis",
+        long = "no-final-response-timeout",
+        value_name = "SECS"
+    )]
+    pub no_final_response_secs: Option<f64>,
+
+    /// Percentage difference between the two legs' durations that counts as
+    /// asymmetric. Config: `[diagnosis] duration_asymmetry_pct`.
+    #[arg(
+        help_heading = "Analysis",
+        long = "duration-asymmetry-pct",
+        value_name = "PCT"
+    )]
+    pub duration_asymmetry_pct: Option<f64>,
+
+    /// Absolute difference, in seconds, between the two legs' durations that
+    /// counts as asymmetric. Both this and the percentage must be exceeded,
+    /// so raising either one alone quiets the detection. Config:
+    /// `[diagnosis] duration_asymmetry_secs`.
+    #[arg(
+        help_heading = "Analysis",
+        long = "duration-asymmetry-secs",
+        value_name = "SECS"
+    )]
+    pub duration_asymmetry_secs: Option<f64>,
+
+    /// Milliseconds after the `200 OK` that media may start before it is
+    /// reported as late. Config: `[diagnosis] late_media_ms`.
+    #[arg(help_heading = "Analysis", long = "late-media-ms", value_name = "MS")]
+    pub late_media_ms: Option<i64>,
 
     /// Maximum rows in one list-style MCP response.
     ///
@@ -1628,6 +1805,20 @@ impl Cli {
     pub const DEFAULT_KILL_RESPONSE: u16 = 200;
     /// Default HEP global ingest ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].
     pub const DEFAULT_HEP_RATE_LIMIT: u64 = 50_000;
+    /// Default registration-flood threshold, in REGISTER/s from one source.
+    pub const DEFAULT_REG_FLOOD_THRESHOLD: u32 = 50;
+    /// Default ceiling on scanner-kill responses per second.
+    ///
+    /// Ten, and deliberately small: this bounds packets sipnab TRANSMITS in
+    /// reply to packets an attacker sent, so the failure it guards is sipnab
+    /// becoming a reflector aimed at whoever the attacker forged as the
+    /// source. The same figure as `--exec-rate-limit`, so an operator who has
+    /// tuned one has tuned their intuition for the other.
+    pub const DEFAULT_KILL_RATE_LIMIT: u32 = 10;
+    /// Default cap on findings one lint rule may report for one dialog.
+    pub const DEFAULT_LINT_MAX_PER_RULE: u64 = 25;
+    /// Default number of security findings held in memory.
+    pub const DEFAULT_FINDINGS_HISTORY: u64 = 1_000;
 
     /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
     ///
@@ -1721,6 +1912,156 @@ impl Cli {
         self.hep_rate_limit
             .or(config.limits.hep_rate_limit)
             .unwrap_or(Self::DEFAULT_HEP_RATE_LIMIT)
+    }
+
+    /// Registration-flood threshold: `--reg-flood-threshold`, else
+    /// `[security] reg_flood_threshold`, else the default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    #[must_use]
+    pub fn reg_flood_threshold(&self, config: &crate::config::Config) -> u32 {
+        self.reg_flood_threshold
+            .or(config.security.reg_flood_threshold)
+            .unwrap_or(Self::DEFAULT_REG_FLOOD_THRESHOLD)
+    }
+
+    /// Scanner-kill transmit ceiling: `--kill-rate-limit`, else
+    /// `[security] kill_rate_limit`, else the default.
+    ///
+    /// Returns the number itself rather than an `Option`, because the worker
+    /// reads `None` as "apply your own default" and a resolver that can return
+    /// `None` is a resolver a caller can silently bypass — which is exactly
+    /// how this cap came to be unreachable in the first place.
+    #[must_use]
+    pub fn kill_rate_limit(&self, config: &crate::config::Config) -> u32 {
+        self.kill_rate_limit
+            .or(config.security.kill_rate_limit)
+            .unwrap_or(Self::DEFAULT_KILL_RATE_LIMIT)
+    }
+
+    /// Declared business hours: `--business-hours`, else
+    /// `[security] business_hours`, else none.
+    ///
+    /// `None` means the operator declared nothing, which is DIFFERENT from
+    /// declaring a window: with no window there is no "outside", so the
+    /// off-hours detection stays off rather than guessing office hours.
+    ///
+    /// # Errors
+    ///
+    /// `crate::Error::ConfigInvalid` when the spec is not two whole hours in
+    /// `0..=23` separated by `-`.
+    pub fn business_hours(
+        &self,
+        config: &crate::config::Config,
+    ) -> Result<Option<(u8, u8)>, crate::Error> {
+        match self
+            .business_hours
+            .as_deref()
+            .or(config.security.business_hours.as_deref())
+        {
+            Some(spec) => crate::config::parse_business_hours(spec).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Fraud trigger points: each flag, else its `[security]` key, else the
+    /// built-in. See [`Self::dialog_limit`] for the precedence rule.
+    #[must_use]
+    pub fn fraud_thresholds(
+        &self,
+        config: &crate::config::Config,
+    ) -> crate::security::fraud_detect::FraudThresholds {
+        let built_in = crate::security::fraud_detect::FraudThresholds::BUILT_IN;
+        let sec = &config.security;
+        crate::security::fraud_detect::FraudThresholds {
+            short_call_secs: self
+                .fraud_short_call_secs
+                .or(sec.fraud_short_call_secs)
+                .unwrap_or(built_in.short_call_secs),
+            wangiri_calls: self
+                .fraud_wangiri_calls
+                .or(sec.fraud_wangiri_calls)
+                .unwrap_or(built_in.wangiri_calls),
+            sequential_calls: self
+                .fraud_sequential_calls
+                .or(sec.fraud_sequential_calls)
+                .map_or(built_in.sequential_calls, |v| v as usize),
+            volume_multiplier: self
+                .fraud_volume_multiplier
+                .or(sec.fraud_volume_multiplier)
+                .unwrap_or(built_in.volume_multiplier),
+            volume_min_calls: self
+                .fraud_volume_min_calls
+                .or(sec.fraud_volume_min_calls)
+                .unwrap_or(built_in.volume_min_calls),
+        }
+    }
+
+    /// Findings-history depth: `--findings-history`, else
+    /// `[security] findings_history`, else the default.
+    #[must_use]
+    pub fn findings_history(&self, config: &crate::config::Config) -> usize {
+        self.findings_history
+            .or(config.security.findings_history)
+            .unwrap_or(Self::DEFAULT_FINDINGS_HISTORY) as usize
+    }
+
+    /// Lint per-rule cap: `--lint-max-per-rule`, else
+    /// `[limits] lint_max_per_rule`, else the default.
+    #[must_use]
+    pub fn lint_max_per_rule(&self, config: &crate::config::Config) -> usize {
+        self.lint_max_per_rule
+            .or(config.limits.lint_max_per_rule)
+            .unwrap_or(Self::DEFAULT_LINT_MAX_PER_RULE) as usize
+    }
+
+    /// Signalling diagnosis thresholds: each flag, else its `[diagnosis]` key,
+    /// else the standards figure.
+    #[must_use]
+    pub fn signaling_thresholds(
+        &self,
+        config: &crate::config::Config,
+    ) -> crate::sip::diagnosis::SignalingThresholds {
+        let built_in = crate::sip::diagnosis::SignalingThresholds::BUILT_IN;
+        let d = &config.diagnosis;
+        crate::sip::diagnosis::SignalingThresholds {
+            post_dial_delay_sec: self
+                .pdd_threshold_secs
+                .or(d.post_dial_delay_secs)
+                .unwrap_or(built_in.post_dial_delay_sec),
+            ack_timeout_sec: self
+                .ack_timeout_secs
+                .or(d.ack_timeout_secs)
+                .unwrap_or(built_in.ack_timeout_sec),
+            no_final_response_sec: self
+                .no_final_response_secs
+                .or(d.no_final_response_secs)
+                .unwrap_or(built_in.no_final_response_sec),
+        }
+    }
+
+    /// Media asymmetry thresholds: each flag, else its `[diagnosis]` key, else
+    /// the built-in.
+    #[must_use]
+    pub fn asymmetry_thresholds(
+        &self,
+        config: &crate::config::Config,
+    ) -> crate::rtp::diagnosis::AsymmetryThresholds {
+        let built_in = crate::rtp::diagnosis::AsymmetryThresholds::BUILT_IN;
+        let d = &config.diagnosis;
+        crate::rtp::diagnosis::AsymmetryThresholds {
+            duration_pct_delta: self
+                .duration_asymmetry_pct
+                .or(d.duration_asymmetry_pct)
+                .unwrap_or(built_in.duration_pct_delta),
+            duration_min_delta_sec: self
+                .duration_asymmetry_secs
+                .or(d.duration_asymmetry_secs)
+                .unwrap_or(built_in.duration_min_delta_sec),
+            late_media_threshold_ms: self
+                .late_media_ms
+                .or(d.late_media_ms)
+                .unwrap_or(built_in.late_media_threshold_ms),
+        }
     }
 
     /// Whether any `-I` was given.
@@ -1837,6 +2178,15 @@ impl Cli {
     /// `crate::Error::CliValidation` with a user-facing message for each
     /// rejected combination. Pure — no side effects.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // Refused here rather than at the point of use, because the point of
+        // use is inside the detector setup: a bad spec accepted at startup
+        // becomes a fraud run with off-hours detection silently missing, which
+        // is the failure mode this whole change exists to remove. `[security]
+        // business_hours` is checked by `SecurityConfig::validate` for the
+        // same reason; clap cannot check a range spec by itself.
+        if let Some(spec) = self.business_hours.as_deref() {
+            crate::config::parse_business_hours(spec)?;
+        }
         // --rtp-interval parses, defaults and documents itself, and nothing
         // reads it. Saying so beats accepting a value and reporting nothing,
         // because docs/cli-reference.md used to teach "stats every 5 seconds"
@@ -2114,6 +2464,59 @@ mod tests {
             "never",
             "--color must beat the config key"
         );
+    }
+
+    /// `[security] kill_rate_limit` reaches the resolver, and
+    /// `--kill-rate-limit` beats it.
+    ///
+    /// That the resolved number actually bounds what goes on the wire is
+    /// asserted separately, against the worker's own ledger, in
+    /// `app::batch::tests::the_configured_kill_rate_limit_bounds_what_the_worker_sends`
+    /// — a resolver test alone would pass against a caller that never asked.
+    #[test]
+    fn config_kill_rate_limit_is_reachable_and_the_flag_still_wins() {
+        let mut cfg = crate::config::Config::default();
+        cfg.security.kill_rate_limit = Some(7);
+        let cli = Cli::try_parse_from(["sipnab"]).expect("parse");
+        assert_eq!(
+            cli.kill_rate_limit(&cfg),
+            7,
+            "[security] kill_rate_limit must reach the run when no flag is given"
+        );
+        let cli = Cli::try_parse_from(["sipnab", "--kill-rate-limit", "3"]).expect("parse");
+        assert_eq!(
+            cli.kill_rate_limit(&cfg),
+            3,
+            "--kill-rate-limit must beat [security] kill_rate_limit"
+        );
+        assert_eq!(
+            Cli::try_parse_from(["sipnab"])
+                .expect("parse")
+                .kill_rate_limit(&crate::config::Config::default()),
+            Cli::DEFAULT_KILL_RATE_LIMIT
+        );
+    }
+
+    /// The same, for `[security] findings_history`.
+    ///
+    /// The effect — that the resolved depth bounds what the findings buffer
+    /// retains — is asserted in
+    /// `app::batch::tests::the_configured_findings_history_bounds_what_is_retained`.
+    #[test]
+    fn config_findings_history_is_reachable_and_the_flag_still_wins() {
+        let mut cfg = crate::config::Config::default();
+        cfg.security.findings_history = Some(25);
+        let cli = Cli::try_parse_from(["sipnab"]).expect("parse");
+        assert_eq!(cli.findings_history(&cfg), 25);
+        let cli = Cli::try_parse_from(["sipnab", "--findings-history", "5"]).expect("parse");
+        assert_eq!(
+            cli.findings_history(&cfg),
+            5,
+            "--findings-history must beat [security] findings_history"
+        );
+        // Zero is a real setting — keep nothing — not "unset".
+        let cli = Cli::try_parse_from(["sipnab", "--findings-history", "0"]).expect("parse");
+        assert_eq!(cli.findings_history(&cfg), 0);
     }
 
     /// The same, for `[security] kill_response`.

@@ -1944,7 +1944,10 @@ fn build_health(
 ///
 /// Shared by the per-call and capture-wide `rtp_stats` modes so the two cannot
 /// describe the same stream differently.
-fn stream_json(s: &crate::rtp::stream::RtpStream) -> serde_json::Value {
+fn stream_json(
+    s: &crate::rtp::stream::RtpStream,
+    store: &crate::rtp::stream_store::StreamStore,
+) -> serde_json::Value {
     let line = crate::output::json::stream_to_json(s);
     let mut v: serde_json::Value = serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
     // Say whether the MOS is a real estimate or a placeholder.
@@ -1974,6 +1977,57 @@ fn stream_json(s: &crate::rtp::stream::RtpStream) -> serde_json::Value {
                         .into(),
                 ),
             );
+        }
+
+        // Latency, the third of the three numbers that decide whether a call
+        // was acceptable — and the one an agent is most likely to assume it
+        // has. Jitter and loss are always present here, so a response carrying
+        // only those two reads as complete.
+        match store.round_trip_for(s) {
+            Some((ms, source)) => {
+                if let Some(n) = serde_json::Number::from_f64(ms) {
+                    obj.insert("round_trip_ms".into(), serde_json::Value::Number(n));
+                }
+                obj.insert(
+                    "round_trip_source".into(),
+                    serde_json::Value::String(
+                        match source {
+                            crate::rtp::rtcp::RttSource::XrVoipMetrics => "xr_voip_metrics",
+                            crate::rtp::rtcp::RttSource::SenderReportEcho => "sender_report_echo",
+                        }
+                        .into(),
+                    ),
+                );
+                if matches!(source, crate::rtp::rtcp::RttSource::SenderReportEcho) {
+                    obj.insert(
+                        "round_trip_note".into(),
+                        serde_json::Value::String(
+                            "Derived from an RR's sender-report echo and anchored on the \
+                             capture point, so it is the endpoint-to-endpoint round trip \
+                             only when the tap sits with the sender of the SR; otherwise \
+                             it is a lower bound. An XR VoIP Metrics figure, when one \
+                             exists, is the endpoint's own and is preferred."
+                                .into(),
+                        ),
+                    );
+                }
+            }
+            // The key is omitted rather than set to null or 0, and the note
+            // says why. Same reasoning as `mos_note` above: an agent that
+            // reasons from an absent field is one that has to notice the
+            // absence, and 0 ms would read as a perfect network.
+            None => {
+                obj.insert(
+                    "round_trip_note".into(),
+                    serde_json::Value::String(
+                        "Not measured. No endpoint reported a round trip for this stream, \
+                         so latency is unknown rather than good — a stream with clean \
+                         jitter and no loss can still be unusable on delay alone \
+                         (ITU-T G.114)."
+                            .into(),
+                    ),
+                );
+            }
         }
     }
     v
@@ -2228,7 +2282,8 @@ impl SipnabMcp {
                 .then(|| rows.last())
                 .flatten()
                 .map(|s| super::shape::format_cursor(s.first_seen, &stream_identity(s)));
-            let streams: Vec<serde_json::Value> = rows.iter().map(|s| stream_json(s)).collect();
+            let streams: Vec<serde_json::Value> =
+                rows.iter().map(|s| stream_json(s, &ss)).collect();
             let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(ss);
             drop(ds);
@@ -2672,7 +2727,7 @@ impl SipnabMcp {
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(call_id).collect();
             let stream_jsons: Vec<serde_json::Value> =
-                dialog_streams.iter().map(|s| stream_json(s)).collect();
+                dialog_streams.iter().map(|s| stream_json(s, &ss)).collect();
             let ctx = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
             let mut diag = diagnose_media(&dialog_streams, &ctx);
             diagnose_asymmetry(
@@ -5707,7 +5762,8 @@ mod tests {
             },
         });
 
-        let with = stream_json(&stream);
+        let empty = crate::rtp::stream_store::StreamStore::new(16);
+        let with = stream_json(&stream, &empty);
         assert_eq!(
             with["frame"], "calls.pcap#41@6d1f4c0a9b2e7a53",
             "a stream with a pointer must carry it, digest and all -- without \
@@ -5716,7 +5772,7 @@ mod tests {
         );
 
         stream.first_frame = None;
-        let without = stream_json(&stream);
+        let without = stream_json(&stream, &empty);
         assert!(
             without.get("frame").is_none(),
             "a stream with NO pointer must omit the key, not emit an empty or \

@@ -165,10 +165,58 @@ pub struct FraudAlert {
 /// Maximum entries in the call patterns map.
 const MAX_PATTERN_ENTRIES: usize = 10_000;
 
+/// The trigger points of the four fraud heuristics.
+///
+/// Every field was a private constant with a comment describing when to change
+/// it and no way to. They are not universal numbers: three seconds is under a
+/// normal ring-no-answer on some carriers, so a network whose unanswered calls
+/// clear in two seconds reported every one of them as a wangiri lure, and a
+/// network whose PBX places six calls a minute at shift change reported the
+/// shift change as a volume spike.
+///
+/// Windows are deliberately NOT here. The volume window and the baseline decay
+/// are one calibration — the baseline has to be slower than the thing it
+/// baselines — so moving the window without moving the decay changes what a
+/// "spike" means rather than tuning it. The memory caps
+/// (`MAX_PATTERN_ENTRIES`, `MAX_SHORT_CALLS_PER_SOURCE`) are not here either:
+/// they bound sipnab's footprint, not the network's behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FraudThresholds {
+    /// Measured duration below which a completed call counts as "short".
+    pub short_call_secs: u64,
+    /// Short calls to one destination prefix before wangiri is reported.
+    pub wangiri_calls: u32,
+    /// Consecutive refused numbers before sequential scanning is reported.
+    pub sequential_calls: usize,
+    /// Multiple of a source's own baseline rate that counts as a spike.
+    pub volume_multiplier: u32,
+    /// Calls a source must place in the window before a spike can be reported.
+    pub volume_min_calls: u32,
+}
+
+impl FraudThresholds {
+    /// The shipped trigger points, used when the operator declares nothing.
+    pub const BUILT_IN: Self = Self {
+        short_call_secs: SHORT_CALL_SECS,
+        wangiri_calls: WANGIRI_THRESHOLD,
+        sequential_calls: SEQUENTIAL_THRESHOLD,
+        volume_multiplier: VOLUME_SPIKE_MULTIPLIER,
+        volume_min_calls: VOLUME_SPIKE_MIN_CALLS,
+    };
+}
+
+impl Default for FraudThresholds {
+    fn default() -> Self {
+        Self::BUILT_IN
+    }
+}
+
 /// Detects toll fraud patterns in SIP call traffic.
 pub struct FraudDetector {
     /// Per-source call pattern tracking.
     call_patterns: HashMap<IpAddr, CallPattern>,
+    /// The trigger points this detector applies.
+    thresholds: FraudThresholds,
     /// Configured business hours as `(start_hour, end_hour)` in 24h format.
     /// `None` disables off-hours detection.
     business_hours: Option<(u8, u8)>,
@@ -206,9 +254,21 @@ impl FraudDetector {
     ///   in 24-hour format. Calls outside this window trigger off-hours alerts.
     ///   For example, `Some((8, 18))` means 08:00-18:00.
     pub fn new(business_hours: Option<(u8, u8)>) -> Self {
+        Self::with_thresholds(business_hours, FraudThresholds::BUILT_IN)
+    }
+
+    /// Create a fraud detector with explicit trigger points.
+    ///
+    /// # Arguments
+    ///
+    /// * `business_hours` — as [`Self::new`].
+    /// * `thresholds` — see [`FraudThresholds`]; `FraudThresholds::BUILT_IN`
+    ///   reproduces [`Self::new`].
+    pub fn with_thresholds(business_hours: Option<(u8, u8)>, thresholds: FraudThresholds) -> Self {
         Self {
             call_patterns: HashMap::new(),
             business_hours,
+            thresholds,
             latest_packet: None,
             use_counter: 0,
         }
@@ -252,7 +312,7 @@ impl FraudDetector {
     /// # Returns
     ///
     /// A wangiri alert when this call completed a prefix's
-    /// [`WANGIRI_THRESHOLD`], else `None`. `None` for any message that is not
+    /// [`FraudThresholds::wangiri_calls`], else `None`. `None` for any message that is not
     /// the end of an INVITE dialog, and for a call already recorded — the
     /// `200 OK` to a `BYE` arrives after the dialog is already terminal and
     /// must not count the call twice.
@@ -276,10 +336,11 @@ impl FraudDetector {
         let call_id = dialog.call_id.as_str();
         let src = dialog.src_addr;
         let now = msg.timestamp;
+        let thresholds = self.thresholds;
 
         // The call's own span, from its first message to its last.
         let duration = dialog.updated_at.signed_duration_since(dialog.created_at);
-        if duration >= TimeDelta::seconds(SHORT_CALL_SECS as i64) {
+        if duration >= TimeDelta::seconds(thresholds.short_call_secs as i64) {
             return None;
         }
         let destination = dialog.to_user.clone().unwrap_or_default();
@@ -298,7 +359,7 @@ impl FraudDetector {
             .short_calls
             .insert(call_id.to_string(), (now, destination));
 
-        check_wangiri(src, pattern, now)
+        check_wangiri(src, pattern, now, thresholds.wangiri_calls)
     }
 
     /// Record a call the network refused, and report sequential scanning if
@@ -315,7 +376,7 @@ impl FraudDetector {
     /// # Returns
     ///
     /// A sequential-scanning alert when this refusal completed a run of
-    /// [`SEQUENTIAL_THRESHOLD`] consecutive numbers, else `None`.
+    /// [`FraudThresholds::sequential_calls`] consecutive numbers, else `None`.
     fn record_if_refused_call(
         &mut self,
         msg: &SipMessage,
@@ -328,6 +389,7 @@ impl FraudDetector {
         let call_id = dialog.call_id.as_str();
         let src = dialog.src_addr;
         let now = msg.timestamp;
+        let thresholds = self.thresholds;
         let destination = dialog.to_user.clone().unwrap_or_default();
 
         let pattern = self.pattern_for(src, now);
@@ -343,7 +405,7 @@ impl FraudDetector {
             .refused_calls
             .insert(call_id.to_string(), (now, destination));
 
-        check_sequential(src, pattern)
+        check_sequential(src, pattern, thresholds.sequential_calls)
     }
 
     /// Check a SIP message and its associated dialog for fraud indicators.
@@ -379,6 +441,7 @@ impl FraudDetector {
         let destination = msg.to_user().unwrap_or_default();
         let now = msg.timestamp;
         let business_hours = self.business_hours;
+        let thresholds = self.thresholds;
         let pattern = self.pattern_for(msg.src_addr, now);
 
         // Record the call
@@ -426,8 +489,8 @@ impl FraudDetector {
         // had worked its way up to 4.9 calls a minute against 4.
         if let Some(baseline) = pattern.baseline_rate {
             let current_count = pattern.calls.len() as u32;
-            if current_count >= VOLUME_SPIKE_MIN_CALLS
-                && f64::from(current_count) > baseline * f64::from(VOLUME_SPIKE_MULTIPLIER)
+            if current_count >= thresholds.volume_min_calls
+                && f64::from(current_count) > baseline * f64::from(thresholds.volume_multiplier)
             {
                 return Some(FraudAlert {
                     src_ip: msg.src_addr,
@@ -440,7 +503,7 @@ impl FraudDetector {
         }
 
         // Wangiri detection: short calls to same prefix
-        check_wangiri(msg.src_addr, pattern, now)
+        check_wangiri(msg.src_addr, pattern, now, thresholds.wangiri_calls)
     }
 
     /// Remove call pattern entries whose calls are older than `max_age` **in
@@ -505,8 +568,13 @@ fn wangiri_window() -> TimeDelta {
 /// prefix with the most short calls (ties broken by the prefix itself). Two
 /// prefixes over the threshold in the same window otherwise produced a
 /// different alert run to run over identical input.
-fn check_wangiri(src_ip: IpAddr, pattern: &CallPattern, now: DateTime<Utc>) -> Option<FraudAlert> {
-    if (pattern.short_calls.len() as u32) < WANGIRI_THRESHOLD {
+fn check_wangiri(
+    src_ip: IpAddr,
+    pattern: &CallPattern,
+    now: DateTime<Utc>,
+    wangiri_calls: u32,
+) -> Option<FraudAlert> {
+    if (pattern.short_calls.len() as u32) < wangiri_calls {
         return None;
     }
 
@@ -530,7 +598,7 @@ fn check_wangiri(src_ip: IpAddr, pattern: &CallPattern, now: DateTime<Utc>) -> O
     let (prefix, count) = prefix_counts
         .iter()
         .max_by_key(|(prefix, count)| (**count, std::cmp::Reverse(**prefix)))?;
-    if *count < WANGIRI_THRESHOLD {
+    if *count < wangiri_calls {
         return None;
     }
     Some(FraudAlert {
@@ -545,8 +613,12 @@ fn check_wangiri(src_ip: IpAddr, pattern: &CallPattern, now: DateTime<Utc>) -> O
 /// The run is taken over the calls the network REFUSED, not over every call in
 /// the window. A hunt group, a DID block and a dial-plan walk all produce the
 /// same consecutive numbers; only the walk's numbers are not there.
-fn check_sequential(src_ip: IpAddr, pattern: &CallPattern) -> Option<FraudAlert> {
-    if pattern.refused_calls.len() < SEQUENTIAL_THRESHOLD {
+fn check_sequential(
+    src_ip: IpAddr,
+    pattern: &CallPattern,
+    sequential_calls: usize,
+) -> Option<FraudAlert> {
+    if pattern.refused_calls.len() < sequential_calls {
         return None;
     }
 
@@ -564,7 +636,7 @@ fn check_sequential(src_ip: IpAddr, pattern: &CallPattern) -> Option<FraudAlert>
     numbers.sort_unstable();
     numbers.dedup();
 
-    if numbers.len() < SEQUENTIAL_THRESHOLD {
+    if numbers.len() < sequential_calls {
         return None;
     }
 
@@ -573,7 +645,7 @@ fn check_sequential(src_ip: IpAddr, pattern: &CallPattern) -> Option<FraudAlert>
     for window in numbers.windows(2) {
         if window[1] == window[0] + 1 {
             run_length += 1;
-            if run_length >= SEQUENTIAL_THRESHOLD {
+            if run_length >= sequential_calls {
                 return Some(FraudAlert {
                     src_ip,
                     alert_type: FraudType::SequentialScanning,

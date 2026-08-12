@@ -154,6 +154,25 @@ pub fn invite_with_padded_headers(call_id: &str, pad_headers: usize) -> Vec<u8> 
     udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 5060, 5060, msg.as_bytes())
 }
 
+/// One INVITE with no `Max-Forwards`, which trips exactly one lint rule.
+///
+/// `cseq` is threaded through so a caller can build many of them inside ONE
+/// dialog: the per-rule cap is per rule per dialog, so a fixture that spread
+/// the repeats over forty dialogs could never reach it.
+pub fn invite_without_max_forwards(call_id: &str, branch: &str, cseq: u32) -> Vec<u8> {
+    let msg = format!(
+        "INVITE sip:bob@10.2.0.1 SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bK{branch}\r\n\
+         From: <sip:alice@10.1.0.1>;tag=t1\r\n\
+         To: <sip:bob@10.2.0.1>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: {cseq} INVITE\r\n\
+         Contact: <sip:alice@10.1.0.1:5060>\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 5060, 5060, msg.as_bytes())
+}
+
 /// Write `frames` as a little-endian, Ethernet-linktype pcap.
 ///
 /// Timestamps advance 1 ms per frame so dialog durations and ordering are

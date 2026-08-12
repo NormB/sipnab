@@ -166,6 +166,30 @@ pub fn render_stream_detail(
         ),
         Span::raw("    Loss: "),
         Span::styled(format!("{loss_pct:.2}%"), loss_style(loss_pct, theme)),
+        Span::raw("    RTT: "),
+        // The third number of the triage row, beside the two it belongs with.
+        // It used to appear only inside the XR block far below, which most
+        // calls never carry — so the row an operator reads to decide "was this
+        // acceptable?" showed two of the three numbers that decide it, with
+        // nothing saying the third was missing rather than fine.
+        match store.round_trip_for(stream) {
+            Some((ms, src)) => Span::styled(
+                format!(
+                    "{ms:.0}ms{}",
+                    match src {
+                        crate::rtp::rtcp::RttSource::XrVoipMetrics => "",
+                        // Marked, because it is anchored on the capture point:
+                        // the full round trip only when the tap sits with the
+                        // SR sender, a lower bound otherwise.
+                        crate::rtp::rtcp::RttSource::SenderReportEcho => "~",
+                    }
+                ),
+                rtt_style(ms, theme),
+            ),
+            // Not "0ms", and not blank. An operator scanning this row has to
+            // be able to tell "nobody measured it" from "it is fine".
+            None => Span::styled("n/a", Style::default().fg(theme.muted)),
+        },
         Span::raw("    "),
         Span::styled(format!("({delay_note})"), Style::default().fg(theme.muted)),
     ]));
@@ -611,6 +635,19 @@ fn jitter_style(jitter_ms: f64, theme: &Theme) -> Style {
     }
 }
 
+/// Style for a round-trip figure, using the shared bands. Pure.
+///
+/// Takes a measured value only. There is no style for "not measured" because
+/// that is not a quality verdict — the caller renders it as `n/a` in the muted
+/// colour, which is neither green nor red on purpose.
+fn rtt_style(rtt_ms: f64, theme: &Theme) -> Style {
+    match crate::rtp::bands::QualityBands::default().rtt(rtt_ms) {
+        crate::rtp::bands::Band::Good => Style::default().fg(theme.good),
+        crate::rtp::bands::Band::Warning => Style::default().fg(theme.warning),
+        crate::rtp::bands::Band::Bad => Style::default().fg(theme.bad),
+    }
+}
+
 /// Style for a packet-loss percentage, using the shared bands. Pure.
 ///
 /// The sixth and last copy: 0.5/2.0 here against the stream list's 1.0/5.0.
@@ -886,7 +923,7 @@ mod tests {
                 delay_since_sr: 0,
             }],
         });
-        store.process_rtcp(&[rr]);
+        store.process_rtcp(&[rr], chrono::Utc::now());
 
         let key = StreamKey {
             ssrc,
@@ -1037,7 +1074,7 @@ mod tests {
                 delay_since_sr: 0,
             }],
         });
-        store.process_rtcp(&[rr]);
+        store.process_rtcp(&[rr], chrono::Utc::now());
         let key = StreamKey {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -1056,31 +1093,34 @@ mod tests {
     /// of them leaks into a sipnab-measured field.
     fn attach_xr(store: &mut StreamStore, ssrc: u32, mos_lq: u8, r_factor: u8) {
         use crate::rtp::rtcp::{ExtendedReport, VoipMetrics, XrBlock};
-        store.process_rtcp(&[RtcpPacket::ExtendedReport(ExtendedReport {
-            ssrc: 0x7777_7777,
-            blocks: vec![XrBlock::VoipMetrics(VoipMetrics {
-                ssrc,
-                loss_rate: 128,
-                discard_rate: 64,
-                burst_density: 200,
-                gap_density: 8,
-                burst_duration: 3_000,
-                gap_duration: 250,
-                round_trip_delay: 450,
-                end_system_delay: 90,
-                signal_level: 0xEC, // -20 dBm0
-                noise_level: 127,   // unavailable
-                rerl: 30,
-                gmin: 16,
-                r_factor,
-                ext_r_factor: 127, // unavailable
-                mos_lq,
-                mos_cq: 13,
-                jb_nominal: 40,
-                jb_maximum: 120,
-                jb_abs_max: 65_535,
+        store.process_rtcp(
+            &[RtcpPacket::ExtendedReport(ExtendedReport {
+                ssrc: 0x7777_7777,
+                blocks: vec![XrBlock::VoipMetrics(VoipMetrics {
+                    ssrc,
+                    loss_rate: 128,
+                    discard_rate: 64,
+                    burst_density: 200,
+                    gap_density: 8,
+                    burst_duration: 3_000,
+                    gap_duration: 250,
+                    round_trip_delay: 450,
+                    end_system_delay: 90,
+                    signal_level: 0xEC, // -20 dBm0
+                    noise_level: 127,   // unavailable
+                    rerl: 30,
+                    gmin: 16,
+                    r_factor,
+                    ext_r_factor: 127, // unavailable
+                    mos_lq,
+                    mos_cq: 13,
+                    jb_nominal: 40,
+                    jb_maximum: 120,
+                    jb_abs_max: 65_535,
+                })],
             })],
-        })]);
+            chrono::Utc::now(),
+        );
     }
 
     /// A stream carrying an XR VoIP Metrics block renders the far end's own

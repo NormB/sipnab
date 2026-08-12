@@ -1903,7 +1903,9 @@ pub fn process_packet(
             }
         }
         PacketAction::Rtcp(rtcp_packets) => {
-            stream_store.write().process_rtcp(&rtcp_packets);
+            stream_store
+                .write()
+                .process_rtcp(&rtcp_packets, pp.timestamp);
         }
         PacketAction::Rtp {
             hdr,

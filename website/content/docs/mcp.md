@@ -681,6 +681,7 @@ NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
       "orphaned": false,
       "first_seen": "2016-11-26T14:52:59.689083+00:00",
       "last_seen": "2016-11-26T14:53:08.169060+00:00",
+      "round_trip_note": "Not measured. No endpoint reported a round trip for this stream, so latency is unknown rather than good - a stream with clean jitter and no loss can still be unusable on delay alone (ITU-T G.114).",
       "quality_intervals": [],
       "schema_version": 1
     }

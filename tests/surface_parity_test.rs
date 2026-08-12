@@ -67,6 +67,28 @@ fn code(rel: &str) -> String {
     out
 }
 
+/// The REST API's exposed surface: its handlers PLUS the shared projection
+/// they serialise through.
+///
+/// `api.rs` deliberately names almost no field. It builds its stream and dialog
+/// responses out of `crate::output::model::{StreamSummary, DialogSummary}` —
+/// its own comment says it projects through the canonical model "so this
+/// endpoint cannot drift from the CLI/MCP surfaces". Reading `api.rs` alone
+/// therefore reports a metric as ABSENT from REST at the exact moment the
+/// shared projection is doing its job, which is the reverse of the truth.
+///
+/// This bit: adding `round_trip_ms` to `StreamSummary` put latency on REST and
+/// MCP in the same commit, and a gate scoped to `api.rs` alone called that
+/// asymmetric drift. The scan looks for a metric's name, so the scope has to be
+/// every file where the surface's shape is decided.
+fn rest_surface() -> String {
+    format!(
+        "{}\n{}",
+        code("src/output/api.rs"),
+        code("src/output/model.rs")
+    )
+}
+
 /// Does `hay` use `needle` as a whole identifier?
 fn uses(hay: &str, needle: &str) -> bool {
     hay.match_indices(needle).any(|(i, _)| {
@@ -81,35 +103,72 @@ fn uses(hay: &str, needle: &str) -> bool {
 /// that explain them. Named explicitly because this IS the domain — it is not
 /// a list of what happens to be implemented, and an entry absent everywhere is
 /// a legitimate state.
-const QUALITY_METRICS: &[&str] = &[
-    "jitter",
-    "loss_pct",
-    "mos",
-    "round_trip_delay",
-    "burst_gap",
-    "dtmf",
+const QUALITY_METRICS: &[Metric] = &[
+    Metric::named("jitter"),
+    Metric::named("loss_pct"),
+    Metric::named("mos"),
+    // Latency needs an alias list where the others do not, because it is the
+    // one metric no surface can name the same way twice. `round_trip_delay` is
+    // the XR wire field; `round_trip_ms` is the resolved figure MCP and REST
+    // serialise; `round_trip_for` is the store accessor the TUI renders
+    // through, since a terminal shows a value rather than a JSON key.
+    //
+    // Tracking one spelling made this gate wrong in both directions on the
+    // same change: watching only `round_trip_delay`, it reported perfect parity
+    // while MCP and REST gained the resolved figure; watching only
+    // `round_trip_ms`, it reported the TUI as missing a value that is on screen.
+    Metric {
+        name: "round_trip",
+        aliases: &["round_trip_delay", "round_trip_ms", "round_trip_for"],
+    },
+    Metric::named("burst_gap"),
+    Metric::named("dtmf"),
 ];
+
+/// A quality metric and every identifier that carries it.
+///
+/// Most metrics are spelled the same everywhere, so `aliases` is usually just
+/// the name. A metric is present on a surface when ANY of its spellings is.
+struct Metric {
+    name: &'static str,
+    aliases: &'static [&'static str],
+}
+
+impl Metric {
+    const fn named(name: &'static str) -> Self {
+        Self { name, aliases: &[] }
+    }
+
+    /// Is this metric carried anywhere in `hay`?
+    fn carried_by(&self, hay: &str) -> bool {
+        uses(hay, self.name) || self.aliases.iter().any(|a| uses(hay, a))
+    }
+}
 
 /// Every metric must be reachable from MCP and from the REST API, or from
 /// neither. One surface alone is drift.
 #[test]
 fn every_quality_metric_is_on_both_mcp_and_the_rest_api() {
     let mcp = code("src/mcp");
-    let api = code("src/output/api.rs");
+    let api = rest_surface();
 
     let mut asymmetric = Vec::new();
     let mut both = 0usize;
     let mut seen: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
 
     for m in QUALITY_METRICS {
-        let in_mcp = uses(&mcp, m);
-        let in_api = uses(&api, m);
-        seen.insert(m, (in_mcp, in_api));
+        let in_mcp = m.carried_by(&mcp);
+        let in_api = m.carried_by(&api);
+        seen.insert(m.name, (in_mcp, in_api));
         match (in_mcp, in_api) {
             (true, true) => both += 1,
             (false, false) => {}
-            (true, false) => asymmetric.push(format!("`{m}` is on MCP but NOT the REST API")),
-            (false, true) => asymmetric.push(format!("`{m}` is on the REST API but NOT MCP")),
+            (true, false) => {
+                asymmetric.push(format!("`{}` is on MCP but NOT the REST API", m.name))
+            }
+            (false, true) => {
+                asymmetric.push(format!("`{}` is on the REST API but NOT MCP", m.name))
+            }
         }
     }
 
@@ -144,16 +203,16 @@ fn every_quality_metric_is_on_both_mcp_and_the_rest_api() {
 #[test]
 fn metrics_the_apis_report_are_reachable_in_the_tui() {
     let mcp = code("src/mcp");
-    let api = code("src/output/api.rs");
+    let api = rest_surface();
     let tui = code("src/tui");
 
     let mut missing = Vec::new();
     let mut checked = 0usize;
     for m in QUALITY_METRICS {
-        if uses(&mcp, m) && uses(&api, m) {
+        if m.carried_by(&mcp) && m.carried_by(&api) {
             checked += 1;
-            if !uses(&tui, m) {
-                missing.push(*m);
+            if !m.carried_by(&tui) {
+                missing.push(m.name);
             }
         }
     }

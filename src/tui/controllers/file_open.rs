@@ -465,7 +465,9 @@ fn run_pcap_load(
                 }
             }
             crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
-                stream_store.write().process_rtcp(&rtcp_packets);
+                stream_store
+                    .write()
+                    .process_rtcp(&rtcp_packets, parsed.timestamp);
                 rtcp_count += rtcp_packets.len() as u64;
             }
             crate::pipeline::PacketAction::Rtp { hdr, .. } => {

@@ -2439,9 +2439,20 @@ fn no_documentation_table_repeats_a_row() {
         // rewrite, and docs/mcp.md one. Attributed per file before the number
         // moved — every changed page was diffed against HEAD and each delta is
         // a table that was written, not a boundary that stopped being detected.
+        // Raised 498 -> 502 by the threshold-wiring keys: a new `[diagnosis]`
+        // table in docs/config-reference.md and a new "Diagnosis thresholds"
+        // table in docs/cli-reference.md, each mirrored once under
+        // website/content/docs/. Two written tables, four pages, and every
+        // other page diffed against HEAD to confirm no boundary was lost.
+        // Raised 502 -> 504 by the round-trip work: docs/rest-api.md gained a
+        // table naming the two sources a latency figure can come from
+        // (`xr_voip_metrics` vs `sender_report_echo`), and its site mirror
+        // carries the same one. Attributed per file against HEAD before this
+        // number moved — six .md files changed, and exactly two of them gained
+        // a table.
         tables,
-        498,
-        "walked {tables} tables, expected 498. More is fine — bump this. FEWER \
+        504,
+        "walked {tables} tables, expected 504. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
