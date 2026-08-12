@@ -12,9 +12,10 @@ Every command here ran end to end against a real build at 0.5.20. The
 walkthrough has not been re-run since, so treat those transcripts as
 illustrative rather than freshly measured. Two sections are the exception:
 everything under [Follow one call across an SBC and its PBXes](#follow-one-call-across-an-sbc-and-its-pbxes)
-and [Drive it from a script](#drive-it-from-a-script) ran against 0.5.87 while
-writing this page, and where no run could confirm a claim, those sections say so
-outright rather than presenting it as fact.
+and [Drive it from a script](#drive-it-from-a-script) were re-run end to end
+against 0.5.95 — three sipnab processes on one box, against captures this repo
+ships — and where no run could confirm a claim, those sections say so outright
+rather than presenting it as fact.
 
 The client steps use Claude Code; the server side is identical for every
 MCP-capable agent. If you drive Codex CLI, Cursor, VS Code, Gemini CLI, or
@@ -952,7 +953,7 @@ clock, not that the clock is accurate to within the window you are matching in.
 
 #### Compare the two answers to the same question
 
-Both transcripts below are real output from sipnab 0.5.87, from the script in
+Both transcripts below are real output from sipnab 0.5.95, from the script in
 [Drive it from a script](#drive-it-from-a-script), against sipnab servers reading
 [`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples). Same command shape, opposite evidence.
 
@@ -960,8 +961,8 @@ Both transcripts below are real output from sipnab 0.5.87, from the script in
 node in — which is what proxy mode looks like, not what a lost call looks like:
 
 ```text
-[proxy] sipnab 0.5.87 node=proxy-1
-[pbx] sipnab 0.5.87 node=pbx-2
+[proxy] sipnab 0.5.95 node=proxy-1
+[pbx] sipnab 0.5.95 node=pbx-2
 [proxy] 0 leg(s) correlated to proxied-call-synth@192.0.2.101
   (nothing correlated: a call that stayed in proxy mode keeps its
    Call-ID, so ask the other nodes for the SAME id.)
@@ -972,26 +973,30 @@ node in — which is what proxy mode looks like, not what a lost call looks like
 from a 3 ms gap and a shared endpoint — no identifier crossed the box:
 
 ```text
-[sbc] sipnab 0.5.87 node=sbc-edge-1
+[sbc] sipnab 0.5.95 node=sbc-edge-1
 [sbc] 1 leg(s) correlated to b2bua-leg-synth@203.0.113.101:5060
   b2bua-caller-synth@203.0.113.1
       via timing_heuristic [GUESS] score 50, gap 3ms
   !! every leg was a timing guess, not an identifier match.
-     clock on sbc: synchronised=True max_error_us=1944000
+     clock on sbc: synchronised=True max_error_us=295000
      The window is 2s. Skew larger than that invents legs and hides legs.
 ```
 
 Read the second one carefully, because it is the case operators act on wrongly.
 A leg came back. It has a Call-ID, a score, and a plausible-looking 3 ms gap. It
-is still a guess: `identifier_match` is `false`, `heuristic_only` is `true`, and
-`max_error_us` says 1.944 s against a 2 s window — the clock on that box could
-account for the entire match on its own. Two unrelated calls through the same
-SBC inside the same two seconds produce output that looks exactly like this.
+is still a guess: `identifier_match` is `false` and `heuristic_only` is `true`.
+Two unrelated calls through the same SBC inside the same two seconds produce
+output that looks exactly like this.
 
-`max_error_us` is a live reading, not a constant, and it moves between calls:
-a second run of the identical command on the identical host reported 2.38 s —
-past the correlation window entirely, while still saying `synchronised=True`.
-Expect your own number, and read it each time rather than once.
+Now read `max_error_us`, and do not read it once. It is a live reading, not a
+constant, and on this one host it has reported **0.295 s** (the run above),
+**1.944 s** and **2.38 s** — an order of magnitude apart, all three while
+saying `synchronised=True`, and the last of them past the 2 s correlation
+window entirely. At the high end the clock could account for the entire match
+on its own; at the low end it could not. Nothing in the output tells you which
+run you are looking at except the number itself, so read yours each time. A
+figure quoted from another run — including the ones on this page — says nothing
+about your box.
 
 ### Check what federation cannot prove
 
@@ -1005,7 +1010,7 @@ own message to the far side regardless of what sipnab saw.
 
 Attribution needs one more step than you might expect. **Not every response
 carries `capture_identity`** — the whole-store answers do, the per-dialog ones do
-not. Measured against 0.5.87:
+not. Measured against 0.5.95:
 
 | Carries `capture_identity.node` | Does not |
 |---|---|
@@ -1189,14 +1194,14 @@ python3 contrib/mcp/trace-call.py \
 ```
 
 ```text
-[sbc] sipnab 0.5.87 node=sbc-edge-1
-[proxy] sipnab 0.5.87 node=proxy-1
-[pbx] sipnab 0.5.87 node=pbx-1
+[sbc] sipnab 0.5.95 node=sbc-edge-1
+[proxy] sipnab 0.5.95 node=proxy-1
+[pbx] sipnab 0.5.95 node=pbx-1
 [sbc] 1 leg(s) correlated to b2bua-leg-synth@203.0.113.101:5060
   b2bua-caller-synth@203.0.113.1
       via timing_heuristic [GUESS] score 50, gap 3ms
   !! every leg was a timing guess, not an identifier match.
-     clock on sbc: synchronised=True max_error_us=1944000
+     clock on sbc: synchronised=True max_error_us=295000
      The window is 2s. Skew larger than that invents legs and hides legs.
 ```
 
