@@ -1402,3 +1402,134 @@ fn every_documented_limits_key_changes_observable_behaviour() {
         );
     }
 }
+
+// ── Keys outside [limits] that were silently ignored ────────────────────
+
+/// `[display] color` reaches the output, and `--color` still beats it.
+///
+/// This key parsed, validated and was documented while changing nothing, for
+/// the reason named on `Cli::color`: the flag carried a clap `default_value`,
+/// so the field was already populated and the key had nothing to override.
+///
+/// Observed on real output rather than through the resolver, because the
+/// resolver is exactly what a broken wiring would still satisfy. stdout here
+/// is a pipe, so `auto` must produce no escapes and `always` must produce
+/// some — the difference IS the wiring.
+#[test]
+#[cfg(feature = "native")]
+fn display_color_reaches_the_output_and_the_flag_still_wins() {
+    fn escapes(args: &[&str]) -> usize {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(["-N", "-I", "tests/pcap-samples/sip-rtp-g711.pcap"])
+            .args(args)
+            .output()
+            .expect("run sipnab");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains('\u{1b}'))
+            .count()
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let always = dir.path().join("always.toml");
+    std::fs::write(&always, "[display]\ncolor = \"always\"\n").expect("write");
+    let always = always.to_str().expect("utf8");
+
+    assert_eq!(
+        escapes(&["--no-config"]),
+        0,
+        "piped output with no colour setting must carry no escapes"
+    );
+    assert!(
+        escapes(&["--no-config", "--color", "always"]) > 0,
+        "--color always must colour piped output, or this test cannot detect colour at all"
+    );
+    assert!(
+        escapes(&["--config", always]) > 0,
+        "[display] color must reach the output; it was parsed and ignored before"
+    );
+    assert_eq!(
+        escapes(&["--config", always, "--color", "never"]),
+        0,
+        "--color must beat the config key"
+    );
+}
+
+/// `[security] kill_response` reaches the bytes put on the wire.
+///
+/// The response is sent from a socket, so the observable end of it is the
+/// frame `build_scanner_response` produces. Asserting the resolver alone would
+/// prove the value was computed, not that it is what a scanner receives.
+#[test]
+#[cfg(feature = "native")]
+fn security_kill_response_reaches_the_wire_bytes() {
+    use clap::Parser;
+    let raw = b"OPTIONS sip:x@example.com SIP/2.0\r\n\
+                Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bKscan\r\n\
+                From: <sip:scan@example.com>;tag=s1\r\n\
+                To: <sip:x@example.com>\r\n\
+                Call-ID: kill-response-wiring@example.com\r\n\
+                CSeq: 1 OPTIONS\r\n\
+                Content-Length: 0\r\n\r\n";
+    let msg = sipnab::sip::parse_sip(
+        raw,
+        chrono::Utc::now(),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 9)),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+        5060,
+        5060,
+        sipnab::net::TransportProto::Udp,
+    )
+    .expect("parse OPTIONS");
+
+    let mut cfg = sipnab::config::Config::default();
+    cfg.security.kill_response = Some(486);
+    let cli = sipnab::cli::Cli::try_parse_from(["sipnab"]).expect("parse");
+
+    let bytes =
+        sipnab::security::scanner_kill::build_scanner_response(&msg, cli.kill_response_code(&cfg))
+            .expect("response built");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.starts_with("SIP/2.0 486"),
+        "[security] kill_response must reach the wire; got {:?}",
+        text.lines().next()
+    );
+
+    // And the flag still wins over the key.
+    let cli =
+        sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "603"]).expect("parse");
+    let bytes =
+        sipnab::security::scanner_kill::build_scanner_response(&msg, cli.kill_response_code(&cfg))
+            .expect("response built");
+    assert!(
+        String::from_utf8_lossy(&bytes).starts_with("SIP/2.0 603"),
+        "--kill-response must beat the config key on the wire"
+    );
+}
+
+/// A config `kill_response` outside 100-699 is refused, as the flag is.
+///
+/// Without this the file was the lenient way in: clap range-checks
+/// `--kill-response`, so a value it rejects must not be accepted from TOML and
+/// then written onto the network as a malformed status line.
+#[test]
+#[cfg(feature = "native")]
+fn an_out_of_range_kill_response_is_refused_from_the_config_file() {
+    let mut cfg = sipnab::config::SecurityConfig::default();
+    for bad in [0u16, 99, 700, 9999] {
+        cfg.kill_response = Some(bad);
+        let err = cfg
+            .validate()
+            .expect_err("out-of-range kill_response must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("kill_response") && msg.contains(&bad.to_string()),
+            "the error must name the key and the offending value; got {msg:?}"
+        );
+    }
+    for ok in [100u16, 200, 486, 699] {
+        cfg.kill_response = Some(ok);
+        assert!(cfg.validate().is_ok(), "{ok} is a valid SIP status");
+    }
+}

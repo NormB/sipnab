@@ -398,7 +398,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // Output options.
     let output_opts = OutputOptions {
-        color: match cli.color.as_str() {
+        color: match cli.color_mode(config).as_str() {
             "always" => ColorMode::Always,
             "never" => ColorMode::Never,
             _ => ColorMode::Auto,
@@ -1250,6 +1250,15 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     };
 
     if let Err(e) = loaded.config.limits.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
+    // [security] is validated for the same reason [limits] is: a key that
+    // reaches the wire must not be accepted here and refused as a flag.
+    if let Err(e) = loaded.config.security.validate() {
         return Err(PlanError {
             exit_code: 1,
             message: e.to_string(),

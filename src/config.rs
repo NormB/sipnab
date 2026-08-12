@@ -383,6 +383,26 @@ pub struct SecurityConfig {
     pub alert_exec: Option<String>,
 }
 
+impl SecurityConfig {
+    /// Reject security values a run cannot honour.
+    ///
+    /// `kill_response` is range-checked here because `--kill-response` is
+    /// range-checked by clap, and a config key must not be the lenient way in.
+    /// The value is emitted onto the wire as a SIP status line, so a `9999`
+    /// accepted from the file would put a malformed response on the network
+    /// that the same value typed as a flag is refused for.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(code) = self.kill_response
+            && !(100..=699).contains(&code)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[security] kill_response must be 100-699, got {code}"
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Properties of the observed media path that sipnab cannot measure itself.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]

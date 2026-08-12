@@ -1607,7 +1607,7 @@ fn kill_response_accepts_code_100() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "100"]);
     assert!(result.is_ok(), "--kill-response 100 should be accepted");
-    assert_eq!(result.unwrap().kill_response, 100);
+    assert_eq!(result.unwrap().kill_response, Some(100));
 }
 
 /// L5: --kill-response must accept valid SIP response code 200.
@@ -1617,7 +1617,7 @@ fn kill_response_accepts_code_200() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "200"]);
     assert!(result.is_ok(), "--kill-response 200 should be accepted");
-    assert_eq!(result.unwrap().kill_response, 200);
+    assert_eq!(result.unwrap().kill_response, Some(200));
 }
 
 /// L5: --kill-response must accept valid SIP response code 699.
@@ -1627,7 +1627,7 @@ fn kill_response_accepts_code_699() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "699"]);
     assert!(result.is_ok(), "--kill-response 699 should be accepted");
-    assert_eq!(result.unwrap().kill_response, 699);
+    assert_eq!(result.unwrap().kill_response, Some(699));
 }
 
 // =====================================================================

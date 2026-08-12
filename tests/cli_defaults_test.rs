@@ -370,11 +370,24 @@ fn default_line_buffer_is_false() {
     assert!(!cli.line_buffer, "line_buffer should default to false");
 }
 
-/// `color` defaults to the string `auto` (TTY-detected coloring).
+/// `color` is unset by default, and RESOLVES to `auto` (TTY-detected).
+///
+/// The field is `None` rather than a clap-filled `"auto"` on purpose: a
+/// `default_value` here is what made `[display] color` unreachable, because it
+/// left nothing for the config key to override. The default now lives in
+/// `Cli::DEFAULT_COLOR` and is applied by `Cli::color_mode`.
 #[test]
 fn default_color() {
     let cli = defaults();
-    assert_eq!(cli.color, "auto", "default color should be auto");
+    assert_eq!(
+        cli.color, None,
+        "no --color given, so the field stays empty"
+    );
+    assert_eq!(
+        cli.color_mode(&sipnab::config::Config::default()),
+        "auto",
+        "resolved default color should be auto"
+    );
 }
 
 /// `payload_limit` defaults to `None` (untruncated payloads).
@@ -524,13 +537,21 @@ fn default_kill_ua_is_none() {
     assert!(cli.kill_ua.is_none(), "kill_ua should be None by default");
 }
 
-/// `kill_response` defaults to SIP status 200.
+/// `kill_response` is unset by default, and RESOLVES to SIP status 200.
+///
+/// Same reasoning as `default_color`: the flag carries no clap default, so
+/// `[security] kill_response` has something to override.
 #[test]
 fn default_kill_response() {
     let cli = defaults();
     assert_eq!(
-        cli.kill_response, 200,
-        "default kill_response should be 200"
+        cli.kill_response, None,
+        "no flag given, so the field stays empty"
+    );
+    assert_eq!(
+        cli.kill_response_code(&sipnab::config::Config::default()),
+        200,
+        "resolved default kill_response should be 200"
     );
 }
 

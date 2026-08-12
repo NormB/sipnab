@@ -678,14 +678,20 @@ pub struct Cli {
     ///
     /// Accepts only `auto`, `always`, or `never`; any other value is rejected
     /// at parse time (rather than silently falling back to `auto` downstream).
+    ///
+    /// Deliberately has NO clap `default_value`, for the reason given on
+    /// `--mcp-max-rows`: a default fills this field whether or not the operator
+    /// typed the flag, so "not given" and "given the default" become
+    /// indistinguishable and `[display] color` has nothing to override. That is
+    /// exactly why that key was silently ignored. The default lives in
+    /// [`Self::DEFAULT_COLOR`] and is applied by [`Self::color_mode`].
     #[arg(
         help_heading = "Output",
         long,
         value_name = "WHEN",
-        default_value = "auto",
         value_parser = clap::builder::PossibleValuesParser::new(["auto", "always", "never"])
     )]
-    pub color: String,
+    pub color: Option<String>,
 
     /// Maximum payload bytes to display.
     #[arg(help_heading = "Output", long, value_name = "BYTES")]
@@ -842,8 +848,13 @@ pub struct Cli {
     pub kill_ua: Option<String>,
 
     /// SIP response code to use in scanner kill reports.
-    #[arg(help_heading = "Security", long, value_name = "CODE", default_value = "200", value_parser = clap::value_parser!(u16).range(100..=699))]
-    pub kill_response: u16,
+    ///
+    /// No clap `default_value`, for the reason given on `--color`: it made
+    /// `[security] kill_response` unreachable. The range check stays — dropping
+    /// the default must not drop the validation. Default in
+    /// [`Self::DEFAULT_KILL_RESPONSE`], applied by [`Self::kill_response_code`].
+    #[arg(help_heading = "Security", long, value_name = "CODE", value_parser = clap::value_parser!(u16).range(100..=699))]
+    pub kill_response: Option<u16>,
 
     /// Targeted scanner kill (sipgrep -K): send the kill response to any SIP
     /// request whose source matches ADDR and an optional port range, e.g.
@@ -1610,6 +1621,11 @@ impl Cli {
     pub const DEFAULT_MAX_REASSEMBLY: u64 = 10_000;
     /// Default MCP response row ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].
     pub const DEFAULT_MCP_MAX_ROWS: u64 = 1_000;
+    /// Default colour mode. `auto` means "colour when stdout is a terminal".
+    pub const DEFAULT_COLOR: &'static str = "auto";
+    /// Default scanner-kill response code. `200 OK` is the sipgrep default: it
+    /// ends the scan without telling the scanner anything about the target.
+    pub const DEFAULT_KILL_RESPONSE: u16 = 200;
     /// Default HEP global ingest ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].
     pub const DEFAULT_HEP_RATE_LIMIT: u64 = 50_000;
 
@@ -1648,6 +1664,32 @@ impl Cli {
         self.mcp_max_rows
             .or(config.limits.mcp_max_rows)
             .unwrap_or(Self::DEFAULT_MCP_MAX_ROWS) as usize
+    }
+
+    /// Colour mode: `--color`, else `[display] color`, else the default.
+    ///
+    /// Both this and [`Self::kill_response_code`] exist because the flags used
+    /// to carry a clap `default_value`, which made their config keys dead —
+    /// the field was already populated, so there was nothing left to override.
+    #[must_use]
+    pub fn color_mode(&self, config: &crate::config::Config) -> String {
+        self.color
+            .clone()
+            .or_else(|| config.display.color.clone())
+            .unwrap_or_else(|| Self::DEFAULT_COLOR.to_string())
+    }
+
+    /// Scanner-kill response code: `--kill-response`, else
+    /// `[security] kill_response`, else the default.
+    ///
+    /// A config value outside 100..=699 is refused by
+    /// [`crate::config::Config::validate`] rather than clamped here — the flag
+    /// is range-checked by clap, and the key must not be the lenient way in.
+    #[must_use]
+    pub fn kill_response_code(&self, config: &crate::config::Config) -> u16 {
+        self.kill_response
+            .or(config.security.kill_response)
+            .unwrap_or(Self::DEFAULT_KILL_RESPONSE)
     }
 
     /// RTP stream cap: `--max-streams`, else `[limits] max_streams`, else the
@@ -2032,15 +2074,74 @@ mod tests {
         for v in ["auto", "always", "never"] {
             let cli = Cli::try_parse_from(["sipnab", "--color", v])
                 .unwrap_or_else(|e| panic!("--color {v} must parse: {e}"));
-            assert_eq!(cli.color, v);
+            let cfg = crate::config::Config::default();
+            assert_eq!(cli.color_mode(&cfg), v, "an explicit --color must win");
         }
     }
 
-    /// The default `--color` value is the accepted `auto`.
+    /// With no flag and no config key, the resolved colour mode is `auto`.
+    ///
+    /// Asserts the RESOLVER, not the field. `cli.color == "auto"` was the old
+    /// assertion and it passed for the wrong reason: clap filled the field
+    /// from a `default_value`, which is precisely what made `[display] color`
+    /// unreachable. A test that reads the field cannot tell a working key from
+    /// a dead one.
     #[test]
     fn color_default_is_auto() {
         let cli = Cli::try_parse_from(["sipnab"]).unwrap();
-        assert_eq!(cli.color, "auto");
+        let cfg = crate::config::Config::default();
+        assert_eq!(cli.color, None, "no flag given, so the field stays empty");
+        assert_eq!(cli.color_mode(&cfg), "auto");
+    }
+
+    /// `[display] color` is honoured when the flag is absent, and loses to it
+    /// when present. This is the wiring the old field-assertion could not see.
+    #[test]
+    fn config_color_is_reachable_and_the_flag_still_wins() {
+        let mut cfg = crate::config::Config::default();
+        cfg.display.color = Some("always".to_string());
+
+        let cli = Cli::try_parse_from(["sipnab"]).unwrap();
+        assert_eq!(
+            cli.color_mode(&cfg),
+            "always",
+            "[display] color must reach the run when no --color is given"
+        );
+
+        let cli = Cli::try_parse_from(["sipnab", "--color", "never"]).unwrap();
+        assert_eq!(
+            cli.color_mode(&cfg),
+            "never",
+            "--color must beat the config key"
+        );
+    }
+
+    /// The same, for `[security] kill_response`.
+    #[test]
+    fn config_kill_response_is_reachable_and_the_flag_still_wins() {
+        let mut cfg = crate::config::Config::default();
+        cfg.security.kill_response = Some(486);
+
+        let cli = Cli::try_parse_from(["sipnab"]).unwrap();
+        assert_eq!(
+            cli.kill_response_code(&cfg),
+            486,
+            "[security] kill_response must reach the run when no flag is given"
+        );
+
+        let cli = Cli::try_parse_from(["sipnab", "--kill-response", "603"]).unwrap();
+        assert_eq!(
+            cli.kill_response_code(&cfg),
+            603,
+            "the flag must beat the key"
+        );
+
+        let cli = Cli::try_parse_from(["sipnab"]).unwrap();
+        assert_eq!(
+            cli.kill_response_code(&crate::config::Config::default()),
+            Cli::DEFAULT_KILL_RESPONSE,
+            "neither given: the named default, not a clap-filled field"
+        );
     }
 
     /// `--mcp-transport` rejects an unknown transport at parse time — the old
@@ -2305,7 +2406,7 @@ mod tests {
         assert_eq!(cli.max_streams_limit(&cfg), 50_000);
         assert_eq!(cli.rtp_interval, 1);
         assert!((cli.quality_threshold - 3.0).abs() < f64::EPSILON);
-        assert_eq!(cli.kill_response, 200);
+        assert_eq!(cli.kill_response_code(&cfg), 200);
         assert_eq!(cli.exec_rate_limit, 10);
         assert_eq!(cli.api_max_conn, 100);
         assert_eq!(cli.mcp_max_concurrent, 100);
@@ -2316,7 +2417,7 @@ mod tests {
         assert_eq!(cli.max_reassembly, None);
         assert_eq!(cli.max_reassembly_limit(&cfg), 10_000);
         assert_eq!(cli.cores, 1, "single-threaded by default");
-        assert_eq!(cli.color, "auto");
+        assert_eq!(cli.color_mode(&cfg), "auto");
         assert!(!cli.no_tui);
         assert!(!cli.setup_caps);
         // Dialog rotation is ON by default (SNB-0004): at --limit capacity the

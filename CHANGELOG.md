@@ -12,6 +12,29 @@ entry that carries them.
 
 ### Fixed
 
+- **Two documented config keys were silently ignored.** `[display] color` and
+  `[security] kill_response` were parsed, validated and documented, and
+  changed nothing. Both flags carried a clap `default_value`, which fills the
+  field whether or not the operator types the flag — so "not given" and "given
+  the default" were indistinguishable and the config key had nothing left to
+  override. Both now resolve as flag, then key, then a named default, the way
+  every other setting in the file already did.
+
+  Proved by measurement rather than inspection: the same capture read with
+  `[display] color = "always"` produces no ANSI escapes on the previous build
+  and coloured output on this one.
+
+  `[security] kill_response` also gained the range check its flag always had.
+  `--kill-response 9999` is refused by clap, while the config file accepted it
+  and put a malformed status line on the wire — the file must not be the
+  lenient way in. `[security]` is now validated at startup alongside
+  `[limits]`, naming the key and the offending value.
+
+  The tests that let this ship asserted `cli.color == "auto"` — the field clap
+  had just filled, which passes identically whether the key works or not. They
+  now assert the resolved value, and two new probes drive the real binary and
+  the real wire bytes.
+
 - **`rtp.mos < 3.0` reported that every call had bad audio.** A dialog with no
   RTP has no MOS, but the filter substituted `0.0` for "never measured" — and
   `0.0` is below every threshold anyone would type. REGISTERs, OPTIONS and

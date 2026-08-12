@@ -1619,7 +1619,7 @@ impl BatchRunner {
                 }
                 _ => None,
             };
-        let kill_response_code = cli.kill_response;
+        let kill_response_code = cli.kill_response_code(config);
 
         let fraud_detector = if cli.fraud_detect || config.security.fraud_detect.unwrap_or(false) {
             Some(FraudDetector::new(None))
