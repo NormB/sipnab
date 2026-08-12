@@ -8,6 +8,74 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.96] - 2026-08-12
+
+Latency became a first-class number, and a documented threshold became one you
+can actually set.
+
+### Added
+
+- **Round-trip time on every surface.** Jitter, packet loss and latency are the
+  three numbers that decide whether a call was acceptable. sipnab treated the
+  first two as first-class and lost the third: `round_trip_delay` was decoded
+  out of the RTCP XR VoIP-metrics block and carried nowhere — zero references in
+  the REST API. A call with clean jitter and no loss can still be unusable on
+  delay alone ([ITU-T G.114](https://www.itu.int/rec/T-REC-G.114)), and sipnab
+  called it healthy.
+
+  It now reaches MCP, the REST API, the TUI and the web UI, with
+  `round_trip_source` naming where it came from:
+
+  | Source | What it is |
+  |---|---|
+  | `xr_voip_metrics` | The reporting endpoint's own round trip between the two RTP interfaces. The quantity G.114 is about. Accurate, and rare — most stacks never emit an XR |
+  | `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per RFC 3550 §6.4.1. The full round trip when the capture point sits with the sender of the SR, a lower bound otherwise |
+
+  The second source is why this is useful at all: plain receiver reports are
+  mandatory, so latency is now available on almost every call rather than the
+  few carrying an XR. The figure is anchored on the CAPTURE clock, so it is
+  correct on an offline pcap.
+
+  **Absent is not zero.** Where nothing reported a round trip the key is
+  omitted, the TUI shows `n/a`, and MCP says latency is unknown rather than
+  good. A measured zero still reports as zero.
+
+- **Seventeen thresholds that were tunable in signature and fixed in practice.**
+  Each took a parameter, was documented as configurable, and had no production
+  caller that ever supplied one: the REGISTER-flood rate, the scanner-kill
+  transmit budget, five fraud constants, the off-hours window (which made a
+  documented detector unreachable), three signalling-diagnosis timers, three
+  media-asymmetry thresholds, the per-rule lint cap and the findings history.
+  All now carry a flag and a config key. Signalling and media thresholds moved
+  to a new `[diagnosis]` section — they decide whether a WORKING call gets
+  reported as broken, which is neither `[security]`'s question nor `[limits]`'.
+
+### Fixed
+
+- **`--kill-rate-limit` did not do what its own help text said.** "`0` is
+  refused" was true of the config key and false of the flag: the check lived in
+  `SecurityConfig::validate`, which guards the config file. Two spellings of one
+  policy that disagreed, with the documentation describing whichever one the
+  reader was not using. The flag now refuses it too. (Reading the limiter
+  settled what 0 would have done — it denies everything, so this was
+  fail-closed, not the reflector the wording implied.)
+
+- The multi-node MCP walkthrough's transcripts were real output from 0.5.87,
+  eight releases back, presented as current behaviour. Re-run end to end
+  against this release rather than search-and-replaced.
+
+### Documentation
+
+- A line citation now has to point at the code it names.
+  `maintainability-perf-spec.md` cited `src/main.rs:1996` in a file 172 lines
+  long. Twenty-one drifted citations corrected, and
+  `scripts/check-line-drift.py` is both the gate and the fixer, so the two
+  cannot diverge.
+- A design doc claiming something is unbuilt must evidence that against the
+  tree that would hold it. `live-fanout.md` said "Nothing here is implemented"
+  over a grep of `src/cli.rs` — which proves no FLAG reaches the feature, while
+  221 lines of `src/capture/fanout.rs` sat outside what the command could see.
+
 ## [0.5.95] - 2026-08-12
 
 sipnab no longer discards captured data without a knob or a word.

@@ -2450,9 +2450,14 @@ fn no_documentation_table_repeats_a_row() {
         // carries the same one. Attributed per file against HEAD before this
         // number moved — six .md files changed, and exactly two of them gained
         // a table.
+        // Raised 504 -> 505 by the 0.5.96 CHANGELOG entry, which carries the
+        // same round-trip source table the REST reference does — a reader
+        // deciding whether to upgrade needs to know `sender_report_echo` is a
+        // lower bound on most topologies, not just that latency "works now".
+        // One file, one table, diffed against HEAD before the number moved.
         tables,
-        504,
-        "walked {tables} tables, expected 504. More is fine — bump this. FEWER \
+        505,
+        "walked {tables} tables, expected 505. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
