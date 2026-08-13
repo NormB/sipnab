@@ -172,17 +172,17 @@ const BEHAVIORAL_WINDOW_SECS: u64 = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScannerThresholds {
     /// Probe transactions from one source in the window, above which the rate
-    /// signal reports — see [`BEHAVIORAL_THRESHOLD`].
+    /// signal reports — see the `BEHAVIORAL_THRESHOLD` constant.
     pub behavioral_probes: u32,
     /// Distinct target extensions from one source in the window, above which
-    /// the enumeration signal reports — see [`ENUMERATION_THRESHOLD`].
+    /// the enumeration signal reports — see the `ENUMERATION_THRESHOLD` constant.
     pub enumeration_targets: usize,
     /// Rejected probes in the window at which a source reads as probing rather
-    /// than operating — see [`REJECTED_PROBE_MIN`].
+    /// than operating — see the `REJECTED_PROBE_MIN` constant.
     pub rejected_probes: u32,
     /// Unanswered probes in the window at which a source reads as sweeping,
     /// provided they are also the majority of what it sent — see
-    /// [`UNANSWERED_PROBE_MIN`].
+    /// the `UNANSWERED_PROBE_MIN` constant.
     pub unanswered_probes: u32,
     /// How much capture time one behavioural window spans, in seconds.
     ///
@@ -191,10 +191,10 @@ pub struct ScannerThresholds {
     /// its spread both stay at one however low the counts are set.
     pub window_secs: u64,
     /// How much more evidence a source needs once it has completed a
-    /// registration or a call with us — see [`ESTABLISHED_EVIDENCE_FACTOR`].
+    /// registration or a call with us — see the `ESTABLISHED_EVIDENCE_FACTOR` constant.
     pub established_factor: u32,
     /// How long a probe must go without any response before it counts as
-    /// unanswered, in milliseconds — see [`PROBE_ANSWER_GRACE_MS`].
+    /// unanswered, in milliseconds — see the `PROBE_ANSWER_GRACE_MS` constant.
     pub answer_grace_ms: u64,
 }
 

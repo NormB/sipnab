@@ -8,6 +8,51 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.98] - 2026-08-13
+
+An export can no longer destroy a capture, and the last detector with
+unreachable thresholds became tunable.
+
+### Fixed
+
+- **`export_capture` and `export_audio` could destroy any file in
+  `--mcp-file-root`, and reported success.** The overwrite guard knew only the
+  captures the server had opened, so a capture staged in the root for
+  `open_capture` — the documented way to hand one over — fell to a name
+  collision the moment an agent chose that output name. An audit reproduced it
+  twice, losing a 198 KB capture and replacing a staged pcapng.
+
+  All three writers now refuse a name already in use and say which file blocked
+  them: `export_capture`, `export_audio`, and `shutdown_server`'s `save_to`.
+  sipnab checks the name without following a symlink, so a link is refused as
+  itself rather than judged by its target, and a dangling link still counts as
+  taken. An agent that means to replace a file picks another name and removes
+  the old one deliberately; one that did not mean to cannot lose a capture by
+  accident.
+
+### Added
+
+- **Seven `[security] scanner_*` keys, with flags to match.** The scanner
+  detector was the last of the three left unwired after 0.5.94 gave the fraud
+  and REGISTER-flood detectors their thresholds. Two deployments it got wrong:
+  behind an SBC every source collapses to one address, so ordinary aggregated
+  traffic tripped a rate detection, and a low-and-slow sweep at one probe every
+  ten seconds never accumulated inside the fixed five-second window.
+
+  `scanner_window_secs` is the one that matters for the second case, and it is
+  why the window is settable rather than only the counts: no count reaches a
+  sweep whose probes never share a window. Every key refuses `0` by name from
+  the flag and from the file. `scanner_answer_grace_ms` keeps
+  [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer T1 as its default,
+  and both references say so.
+
+### Changed
+
+- Every documented link points at `sipnab.com` rather than `www.sipnab.com`.
+  The apex answers directly and the `www` host redirects to it, so the old
+  links cost a redirect — including the `curl ... | sh` install one-liners,
+  where it meant an extra round trip before piping to a shell.
+
 ## [0.5.97] - 2026-08-13
 
 Thresholds became settings, and MOS stopped guessing on calls that carried the
