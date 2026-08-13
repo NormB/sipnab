@@ -63,6 +63,7 @@ Packet capture defaults.
 | `device` | string | -- | Default network interface |
 | `node_name` | string | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters |
 | `portrange` | string | `"5060-5061"` | SIP **signalling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyse at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
+| `ws_ports` | string | `"80, 443, 8080, 8443"` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `"START-END"` range in the same grammar as `portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — on such a capture the entire WebRTC signalling leg stays invisible. A range **replaces** the shipped set, exactly as `portrange` replaces the default signalling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes |
 | `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device) |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
@@ -73,6 +74,7 @@ Packet capture defaults.
 [capture]
 device = "eth0"
 portrange = "5060-5080"
+ws_ports = "8080-8090"
 snaplen = 65535
 buffer = 16
 buffer_budget_mb = 64
@@ -198,6 +200,7 @@ the key.
 | `duration_asymmetry_pct` | float | `5.0` | Percentage difference between the two legs' durations that counts as asymmetric. Must be 100 or less. `--duration-asymmetry-pct` overrides it |
 | `duration_asymmetry_secs` | float | `2.0` | Absolute difference between the two legs' durations that counts as asymmetric, in seconds. A call has to clear both this and the percentage, so raising either one alone quiets the detection. `--duration-asymmetry-secs` overrides it |
 | `late_media_ms` | integer | `500` | Milliseconds after the `200 OK` that media may start before it gets reported as late. `--late-media-ms` overrides it |
+| `cn_suppression_ratio` | float | `0.3` | Share of a call's packets, as a fraction of 1, that must be comfort noise before sipnab accepts comfort noise as the explanation for one-directional media. **The one threshold here that withholds a finding instead of raising one**, so it fails as silence: a VoLTE or mobile trunk running aggressive voice-activity detection routinely passes 30 percent comfort noise, and above the ratio sipnab never reports one-way audio on that trunk — the most-reported VoIP fault there is. Raise it toward 1 on such a trunk; lower it where a call carrying any comfort noise at all still has to be bidirectional. Must be greater than 0 and 1 or less, and a value that is not fails validation and names the key. `--cn-suppression-ratio` overrides it |
 
 ```toml
 [diagnosis]
@@ -207,6 +210,7 @@ no_final_response_secs = 180.0
 duration_asymmetry_pct = 5.0
 duration_asymmetry_secs = 2.0
 late_media_ms = 500
+cn_suppression_ratio = 0.3
 ```
 
 ## `[media]`
@@ -286,6 +290,7 @@ Resource limits to prevent unbounded memory growth.
 | `max_grouped_messages` | integer | `200000` | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory held until the capture ends. `--max-grouped-messages` overrides it |
 | `max_metadata_file_bytes` | integer | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. **A memory-exhaustion guard on untrusted input.** Raising it to N lets ONE file claim N bytes of this host's RAM — roughly 2N while `--strip-secrets` writes its copy — on nothing but a file size, before sipnab can tell the file is a capture at all. Raise it for captures you produced; leave it for captures someone sent you. `--max-metadata-file-bytes` overrides it |
 | `max_gunzip_bytes` | integer | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets read out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. libpcap inflates the packet stream of a `-I capture.pcap.gz` run and this does not bound it. **A gzip-bomb guard.** Inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for archives you compressed yourself. `--max-gunzip-bytes` overrides it |
+| `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message so both halves parse as malformed — the peer that sent a valid message is the one reported broken. Raise it on such a trunk. The floor is one SIP header line (8192); below that no message survives, and sipnab refuses the value by name. `--max-tcp-buffer` overrides it |
 
 ```toml
 [limits]

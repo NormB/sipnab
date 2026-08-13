@@ -21,6 +21,15 @@
 //!    in that range. The gate itself is what the operator asked for, so it
 //!    stays — but what it discarded is now counted and reported instead of
 //!    vanishing.
+//!
+//! 3. **The WebSocket port set.** SIP-over-WebSocket (RFC 7118) was unwrapped
+//!    only on 80, 443, 8080 and 8443, which is the browser's view of the web
+//!    and not a deployment's. Kamailio, OpenSIPS and Janus each default to WSS
+//!    outside that set, and behind a reverse proxy sipnab sees whatever port
+//!    the proxy forwards to — so a whole WebRTC signalling leg vanished. Worse
+//!    than case 2, which at least says what it skipped: there was no report of
+//!    any kind. The set is now settable (`--ws-portrange`) and what falls
+//!    outside it is counted and attributed to a port.
 #![cfg(feature = "native")]
 
 use chrono::Utc;
@@ -392,5 +401,165 @@ fn in_range_and_ungated_traffic_records_no_skips() {
         "an ungated pipeline (sip_portrange: None — live capture, where BPF \
          already filtered) reported a skip; with no range configured there is \
          nothing to skip and nothing to widen"
+    );
+}
+
+// ── 3. The WebSocket port set reports what it discarded ──────────────
+
+/// Wrap `payload` in an unmasked WebSocket text frame (RFC 6455 §5.2).
+///
+/// Server-to-client frames are unmasked and client-to-server ones are masked;
+/// the unwrap handles both, and the unmasked form is the one a test can read.
+fn ws_frame(payload: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x81u8]; // FIN + opcode 1 (text)
+    match payload.len() {
+        n if n < 126 => out.push(n as u8),
+        n => {
+            out.push(126);
+            out.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Build a TCP `ParsedPacket` carrying `payload` between the given ports.
+fn parsed_tcp(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
+    ParsedPacket {
+        transport: TransportProto::Tcp,
+        ip_protocol: 6,
+        ..parsed(payload, src_port, dst_port)
+    }
+}
+
+/// SIP-over-WebSocket on a port outside the set is still skipped — replacing
+/// the set is what `--ws-portrange` means — but it is now counted and
+/// attributed to a port instead of disappearing without a word.
+///
+/// 8081 is not a contrived number: it is where a WSS listener behind a reverse
+/// proxy commonly lands, and on such a capture every line of sipnab's output
+/// used to be consistent with "this deployment has no WebRTC".
+#[test]
+#[serial_test::serial(ws_port_skips)]
+fn websocket_skips_are_counted_not_silent() {
+    sipnab::capture::websocket::set_ws_port_range(None);
+    pipeline::reset_ws_port_skips();
+    // Ungated: this test is about the WebSocket set, and the --portrange gate
+    // would otherwise claim the same packets first.
+    let opts = PipelineOptions::default();
+
+    for i in 0..2 {
+        let pp = parsed_tcp(
+            ws_frame(&request("INVITE", &format!("ws-{i}@test"))),
+            51000,
+            8081,
+        );
+        assert!(
+            matches!(classify(&pp, &opts), PacketAction::None),
+            "the set still gates: --ws-portrange means what it says"
+        );
+    }
+    let resp = parsed_tcp(
+        ws_frame(b"SIP/2.0 200 OK\r\nCall-ID: ws-r@test\r\nCSeq: 1 INVITE\r\n\r\n"),
+        8081,
+        51000,
+    );
+    assert!(matches!(classify(&resp, &opts), PacketAction::None));
+
+    let report = pipeline::ws_port_skip_report();
+    assert_eq!(
+        report.messages, 3,
+        "every SIP-over-WebSocket message the port set declined must be counted \
+         — before this there was no report at all and the leg was invisible"
+    );
+    assert_eq!(
+        report.ports.first().map(|p| p.port),
+        Some(8081),
+        "the skip must be attributed to the service port — the destination of a \
+         request and the source of a response — so the operator is told which \
+         --ws-portrange to widen to, not an ephemeral browser port"
+    );
+    assert_eq!(report.ports[0].messages, 3);
+}
+
+/// A declared range REPLACES the shipped set: 8081 is unwrapped and 443 is
+/// then the port that gets counted.
+///
+/// Asserting both halves in one test is deliberate. A range that merely ADDED
+/// to the shipped set would pass the first half and fail the second, and
+/// "added" is the reading an operator would not discover until a port they
+/// meant to exclude turned up in their dialogs.
+#[test]
+#[serial_test::serial(ws_port_skips)]
+fn a_declared_ws_range_replaces_the_shipped_set() {
+    sipnab::capture::websocket::set_ws_port_range(Some((8081, 8081)));
+    pipeline::reset_ws_port_skips();
+    let opts = PipelineOptions::default();
+
+    let pp = parsed_tcp(ws_frame(&request("INVITE", "ws-on@test")), 51000, 8081);
+    let PacketAction::Sip { msg, .. } = classify(&pp, &opts) else {
+        panic!("--ws-portrange 8081-8081 must unwrap SIP-over-WebSocket on 8081");
+    };
+    assert_eq!(msg.call_id(), Some("ws-on@test"));
+    assert_eq!(
+        pipeline::ws_port_skip_report().messages,
+        0,
+        "traffic the declared range covers was analysed AND reported as skipped"
+    );
+
+    let shipped_port = parsed_tcp(ws_frame(&request("INVITE", "ws-443@test")), 51001, 443);
+    assert!(
+        matches!(classify(&shipped_port, &opts), PacketAction::None),
+        "a declared range replaces the shipped set, exactly as --portrange does"
+    );
+    assert_eq!(
+        pipeline::ws_port_skip_report()
+            .ports
+            .first()
+            .map(|p| p.port),
+        Some(443),
+        "and what the replacement excluded must be reported, or narrowing the \
+         set recreates the silence this whole tally exists to end"
+    );
+
+    sipnab::capture::websocket::set_ws_port_range(None);
+}
+
+/// Non-SIP WebSocket traffic outside the set is not counted as skipped SIP.
+///
+/// The same hazard `portrange_skips_count_only_sip` guards, and sharper here:
+/// ports outside the WebSocket set are where ordinary web sockets live, and a
+/// browser's chat or telemetry socket must not send an operator widening
+/// `--ws-portrange` onto their application traffic. The unwrap is attempted on
+/// every port now, so only the SIP test stands between the two.
+#[test]
+#[serial_test::serial(ws_port_skips)]
+fn websocket_skips_count_only_sip() {
+    sipnab::capture::websocket::set_ws_port_range(None);
+    pipeline::reset_ws_port_skips();
+    let opts = PipelineOptions {
+        no_rtp: true,
+        ..Default::default()
+    };
+
+    for payload in [
+        &b"{\"type\":\"chat\",\"body\":\"hello\"}"[..],
+        &b"GET /socket HTTP/1.1\r\nHost: x\r\n\r\n"[..],
+        &b"\x00\x01\x02 not text at all"[..],
+    ] {
+        let pp = parsed_tcp(ws_frame(payload), 51002, 9443);
+        assert!(matches!(classify(&pp, &opts), PacketAction::None));
+    }
+    // A TCP payload that is not a WebSocket frame at all must not be tallied
+    // either, however SIP-shaped it looks.
+    let bare = parsed_tcp(request("INVITE", "bare-tcp@test"), 51003, 9443);
+    let _ = classify(&bare, &opts);
+
+    assert_eq!(
+        pipeline::ws_port_skip_report().messages,
+        0,
+        "only SIP-over-WebSocket counts as skipped SIP-over-WebSocket — \
+         reporting a chat socket here would send an operator widening \
+         --ws-portrange onto their own application"
     );
 }

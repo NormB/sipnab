@@ -111,6 +111,185 @@ pub fn partial_tcp_sip_flows(flows: usize) -> Vec<Vec<u8>> {
     frames
 }
 
+/// Wrap `payload` in an unmasked WebSocket text frame (RFC 6455 §5.2).
+pub fn ws_frame(payload: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x81u8]; // FIN + opcode 1 (text)
+    match payload.len() {
+        n if n < 126 => out.push(n as u8),
+        n => {
+            out.push(126);
+            out.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Frames for one answered call carried as SIP-over-WebSocket (RFC 7118) over
+/// TCP on `ws_port`.
+///
+/// The whole point is `ws_port`: with a port outside sipnab's WebSocket set
+/// this capture used to produce nothing at all — no dialog, no message count
+/// and no notice — which is what a deployment terminating WSS on 8081 saw of
+/// its entire WebRTC signalling leg.
+pub fn ws_sip_call(call_id: &str, ws_port: u16) -> Vec<Vec<u8>> {
+    let a = [10, 3, 0, 1];
+    let b = [10, 3, 0, 2];
+    let client = 51_000u16;
+    let via = format!("Via: SIP/2.0/WS 10.3.0.1:{client};branch=z9hG4bKws{call_id}\r\n");
+    let from = "From: <sip:alice@10.3.0.1>;tag=w1\r\n";
+    let to = "To: <sip:bob@10.3.0.2>";
+    let cid = format!("Call-ID: {call_id}\r\n");
+    let invite = format!(
+        "INVITE sip:bob@10.3.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to}\r\n{cid}\
+         CSeq: 1 INVITE\r\nContact: <sip:alice@10.3.0.1;transport=ws>\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let ok = format!(
+        "SIP/2.0 200 OK\r\n{via}{from}{to};tag=w2\r\n{cid}CSeq: 1 INVITE\r\n\
+         Contact: <sip:bob@10.3.0.2;transport=ws>\r\nContent-Length: 0\r\n\r\n"
+    );
+    vec![
+        tcp_frame(a, b, client, ws_port, 1000, 0x02, b""),
+        tcp_frame(
+            a,
+            b,
+            client,
+            ws_port,
+            1001,
+            0x18,
+            &ws_frame(invite.as_bytes()),
+        ),
+        tcp_frame(b, a, ws_port, client, 2000, 0x18, &ws_frame(ok.as_bytes())),
+    ]
+}
+
+/// Frames for one answered call whose INVITE carries a `body` byte body over
+/// TCP, followed on the same connection by the `ACK` and the `BYE`.
+///
+/// A carrier trunk reaches this shape with an ISUP-encapsulated multipart body
+/// or a long `Record-Route` set. The segments carry no `PSH` until the last,
+/// so the reassembler has to buffer the lot — and above its ceiling it flushes
+/// mid-message, which destroys the framing for everything behind the cut. The
+/// `ACK` and the `BYE` are there to make that visible: they are short, valid,
+/// unremarkable messages that simply cease to exist, and the truncated INVITE
+/// in front of them is reported as malformed by a peer that sent it whole.
+///
+/// `push_every_segment` chooses which of sipnab's two ceilings the message
+/// meets. Without it the segments accumulate and the REASSEMBLY buffer decides;
+/// with it every segment is delivered on arrival, so the message is instead
+/// held as a partial between flushes and the LEFTOVER ceiling decides. A stack
+/// that sets `PSH` per write is ordinary, so a fix to one ceiling and not the
+/// other would work on half the trunks in the world.
+pub fn tcp_sip_call_with_body(
+    call_id: &str,
+    body: usize,
+    push_every_segment: bool,
+) -> Vec<Vec<u8>> {
+    let a = [10, 4, 0, 1];
+    let b = [10, 4, 0, 2];
+    let client = 52_000u16;
+    let via = format!("Via: SIP/2.0/TCP 10.4.0.1:{client};branch=z9hG4bKbig{call_id}\r\n");
+    let from = "From: <sip:alice@10.4.0.1>;tag=b1\r\n";
+    let to = "To: <sip:bob@10.4.0.2>;tag=b2\r\n";
+    let cid = format!("Call-ID: {call_id}\r\n");
+    let request = |method: &str, cseq: &str, extra: String| {
+        format!(
+            "{method} sip:bob@10.4.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to}{cid}\
+             CSeq: {cseq}\r\nContact: <sip:alice@10.4.0.1;transport=tcp>\r\n{extra}"
+        )
+    };
+    let invite = request(
+        "INVITE",
+        "1 INVITE",
+        format!(
+            "Content-Type: application/octet-stream\r\nContent-Length: {body}\r\n\r\n{}",
+            "X".repeat(body)
+        ),
+    );
+    let ack = request("ACK", "1 ACK", "Content-Length: 0\r\n\r\n".into());
+    let bye = request("BYE", "2 BYE", "Content-Length: 0\r\n\r\n".into());
+    let ok = format!(
+        "SIP/2.0 200 OK\r\n{via}{from}{to}{cid}CSeq: 1 INVITE\r\n\
+         Contact: <sip:bob@10.4.0.2;transport=tcp>\r\nContent-Length: 0\r\n\r\n"
+    );
+
+    // ~1400-byte segments. PSH on the last one always, and on every one when
+    // the caller asks: without a push the reassembler buffers, and with one it
+    // delivers immediately and the partial is held a layer up instead.
+    let stream = format!("{invite}{ack}{bye}");
+    let bytes = stream.as_bytes();
+    let mut frames = vec![tcp_frame(a, b, client, 5060, 1000, 0x02, b"")];
+    let mut seq = 1001u32;
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let end = (offset + 1400).min(bytes.len());
+        let last = end == bytes.len();
+        frames.push(tcp_frame(
+            a,
+            b,
+            client,
+            5060,
+            seq,
+            if last || push_every_segment {
+                0x18
+            } else {
+                0x10
+            },
+            &bytes[offset..end],
+        ));
+        seq += (end - offset) as u32;
+        offset = end;
+    }
+    frames.push(tcp_frame(b, a, 5060, client, 2000, 0x18, ok.as_bytes()));
+    frames
+}
+
+/// [`sdp_call_with_lossy_rtp`] at an explicit packetization cadence, timed.
+///
+/// The fixed 1 ms frame cadence the untimed writer applies cannot express a
+/// codec's packetization interval, and that interval is the whole input to
+/// burst and gap DURATIONS: a stream whose packets are 1 ms apart infers no
+/// plausible ptime at all. G.729 at 30 ms and a satellite trunk at 40 ms are
+/// ordinary, and this is how a fixture says so.
+pub fn sdp_call_with_lossy_rtp_at(
+    call_id: &str,
+    packets: u16,
+    losses_per_ten: u16,
+    ptime_ms: u64,
+) -> Vec<(Vec<u8>, u64)> {
+    let frames = sdp_call_with_lossy_rtp(call_id, packets, losses_per_ten);
+    // The signalling frames bracket the media: three ahead of it (INVITE, 200,
+    // ACK) and two behind (BYE, 200). Only the RTP in between carries the
+    // cadence; the rest keeps the 1 ms spacing so ordering stays well-defined.
+    let media = frames.len() - 5;
+    // Each surviving packet is timed by its own SEQUENCE NUMBER, not by its
+    // position in the list. A lost packet still occupied its slot on the wire,
+    // so closing the gap it left would compress the wall clock by the loss
+    // rate and every inference off inter-arrival would read low by exactly
+    // that factor — which is the mistake this fixture exists to expose in the
+    // code, not to make.
+    let kept: Vec<u64> = (0..packets)
+        .filter(|seq| seq % 10 >= losses_per_ten)
+        .map(u64::from)
+        .collect();
+    assert_eq!(kept.len(), media, "the loss pattern must match the frames");
+    let media_us = |n: usize| 10_000 + kept[n] * ptime_ms * 1_000;
+    let end_us = media_us(media - 1);
+    frames
+        .into_iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let us = match i {
+                i if i < 3 => i as u64 * 1_000,
+                i if i < 3 + media => media_us(i - 3),
+                i => end_us + (i - 2 - media) as u64 * 1_000,
+            };
+            (f, us)
+        })
+        .collect()
+}
+
 /// One INVITE whose `From` header line carries `pad` filler bytes.
 ///
 /// `From` is the padded header on purpose: `--json` prints it, so a header

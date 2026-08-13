@@ -106,10 +106,22 @@ pub struct AsymmetryThresholds {
     pub duration_min_delta_sec: f64,
     /// Late-media trigger threshold in milliseconds after 200 OK (default 500).
     pub late_media_threshold_ms: i64,
+    /// Share of a call's packets that must be comfort noise before comfort
+    /// noise is accepted as the explanation for a one-directional media flow
+    /// (default 0.3).
+    ///
+    /// The only figure in this struct that WITHHOLDS a finding instead of
+    /// raising one, and it therefore fails quietly. A VoLTE or mobile trunk
+    /// runs aggressive voice-activity detection and routinely sends comfort
+    /// noise on more than 30 % of packets, at which point one-way audio — the
+    /// most-reported VoIP fault there is — becomes undetectable on that trunk
+    /// and nothing in the output says why.
+    pub cn_suppression_ratio: f64,
 }
 
 impl AsymmetryThresholds {
-    /// The built-in thresholds: 5% / 2.0 s duration delta, 500 ms late media.
+    /// The built-in thresholds: 5% / 2.0 s duration delta, 500 ms late media,
+    /// 30 % comfort noise.
     ///
     /// These are what sipnab compares against when the operator has declared
     /// nothing. Kept as a named constant so [`Default::default`] can answer
@@ -119,6 +131,7 @@ impl AsymmetryThresholds {
         duration_pct_delta: 5.0,
         duration_min_delta_sec: 2.0,
         late_media_threshold_ms: 500,
+        cn_suppression_ratio: 0.3,
     };
 }
 
@@ -403,9 +416,15 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
         // Check if comfort noise explains the asymmetry before flagging one-way audio
         let total_cn: u32 = dialog_streams.iter().map(|s| s.cn_frames).sum();
         let total_packets: u64 = dialog_streams.iter().map(|s| s.packet_count).sum();
+        // `AsymmetryThresholds::default()` rather than a parameter, for the
+        // reason recorded on that impl: `diagnose_media` is called from the
+        // batch runner, the filter DSL, the REST layer and the MCP tools, and
+        // a threshold threaded to some of those is one honoured on some
+        // surfaces and ignored on others.
+        let suppression_ratio = AsymmetryThresholds::default().cn_suppression_ratio;
         let cn_suppressed = if total_cn > 0 && total_packets > 0 {
             let cn_ratio = total_cn as f64 / total_packets as f64;
-            if cn_ratio > 0.3 {
+            if cn_ratio > suppression_ratio {
                 diag.hints.push(format!(
                     "Asymmetric media may be due to comfort noise ({:.0}% CN frames).",
                     cn_ratio * 100.0
@@ -538,8 +557,8 @@ pub fn diagnose_asymmetry(
     }
 
     // ── Ptime asymmetry ────────────────────────────────────────────
-    let a_ptime = inferred_ptime_ms(a);
-    let b_ptime = inferred_ptime_ms(b);
+    let a_ptime = a.inferred_ptime_ms();
+    let b_ptime = b.inferred_ptime_ms();
     if let (Some(ap), Some(bp)) = (a_ptime, b_ptime) {
         // Allow 2 ms slack to absorb wall-clock jitter on inter-arrival
         // measurements; SDP-derived ptimes are exact.
@@ -622,42 +641,6 @@ fn pick_leg_pair<'a>(streams: &[&'a RtpStream]) -> Option<(&'a RtpStream, &'a Rt
         }
     }
     None
-}
-
-/// Infer ptime in ms from a stream's wall-clock span and packet count.
-///
-/// The wall-clock span between the first and last packet covers one
-/// packetization interval per frame that was *transmitted*, so dividing by
-/// the number of intervals yields ms/frame. Lost packets still occupy their
-/// slots on the wire, so the denominator must count them: using only the
-/// received packets would stretch each interval and inflate the inferred
-/// ptime in proportion to the loss. We therefore divide by
-/// `(received + lost − 1)` intervals. We need at least two packets to
-/// estimate.
-fn inferred_ptime_ms(s: &RtpStream) -> Option<u32> {
-    if s.packet_count < 2 {
-        return None;
-    }
-    let dur = (s.last_seen - s.first_seen).num_milliseconds() as f64;
-    if dur <= 0.0 {
-        return None;
-    }
-    // Frames spanning the observed window = received + lost; intervals is one
-    // fewer. `lost_packets` comes from RTP sequence-gap accounting on the
-    // stream, so gaps read as their true multi-frame width rather than a
-    // single long inter-arrival interval.
-    let intervals = (s.packet_count + s.lost_packets).saturating_sub(1);
-    if intervals == 0 {
-        return None;
-    }
-    let avg_ms = dur / intervals as f64;
-    if !(5.0..=200.0).contains(&avg_ms) {
-        return None;
-    }
-    // Round to the nearest 10 ms which is the standard quantization for
-    // packetization (10/20/30/40 ms are the only realistic values).
-    let rounded = ((avg_ms / 10.0).round() * 10.0) as u32;
-    Some(rounded)
 }
 
 /// Wall-clock duration of a stream in seconds.
@@ -1303,7 +1286,7 @@ mod tests {
         s.last_seen = s.first_seen + chrono::Duration::milliseconds(99 * 20);
         s.lost_packets = 50;
         // Naive span/(received − 1) = 1980/49 ≈ 40 ms; loss-aware = 20 ms.
-        assert_eq!(inferred_ptime_ms(&s), Some(20));
+        assert_eq!(s.inferred_ptime_ms(), Some(20));
     }
 
     /// With only one stream, no asymmetry fields are computed.

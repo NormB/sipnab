@@ -234,6 +234,167 @@ pub fn reset_portrange_skips() {
     *PORTRANGE_SKIPS.lock() = PortrangeSkips::new();
 }
 
+// ── What the WebSocket port set threw away ───────────────────────────
+//
+// The same defect as `--portrange` above, one layer down and worse, because
+// `--portrange` at least SAYS what it skipped. The SIP-over-WebSocket unwrap
+// only ever ran on 80, 443, 8080 and 8443 — the browser's view of the web —
+// and any deployment terminating WSS elsewhere (Kamailio, OpenSIPS and Janus
+// each default outside that set, and a reverse proxy forwards to whatever port
+// it likes) had its entire WebRTC signalling leg vanish. Not skipped loudly:
+// the frames were never recognised as SIP at all, so they reached no count, no
+// dialog and no output, and no line of the report hinted they existed.
+//
+// The tally below closes that. The unwrap is now ATTEMPTED regardless of port
+// — the frame test is two bytes, so the cost falls on TCP payloads whose first
+// byte already looks like a WebSocket data frame — and a successful unwrap
+// carrying real SIP is either analysed (the port is in the set) or counted
+// here (it is not). The silence was as much the bug as the ports were.
+
+/// What the WebSocket port set discarded during this run.
+///
+/// Empty when nothing was skipped, which is the case for any capture whose
+/// SIP-over-WebSocket all lands on the configured ports.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WsPortSkipReport {
+    /// Total SIP-over-WebSocket messages sipnab recognised, unwrapped far
+    /// enough to confirm they were SIP, and then declined because neither port
+    /// was in the configured set. These appear in no count, no dialog, and no
+    /// output format.
+    pub messages: u64,
+    /// Per-port breakdown, busiest first.
+    pub ports: Vec<SkippedPort>,
+}
+
+/// Per-port tally of skipped SIP-over-WebSocket, plus the escalation state.
+struct WsPortSkips {
+    /// Total skipped messages.
+    messages: u64,
+    /// Messages per service port, indexed by port. `None` until the first skip.
+    per_port: Option<Box<[u64]>>,
+    /// Skip count at which the next warning fires (1, then ×10 each time).
+    next_warn: u64,
+}
+
+impl WsPortSkips {
+    /// Empty tally with the first warning armed.
+    const fn new() -> Self {
+        Self {
+            messages: 0,
+            per_port: None,
+            next_warn: 1,
+        }
+    }
+}
+
+/// Process-global skip tally, global for the reason `PORTRANGE_SKIPS` is.
+static WS_PORT_SKIPS: parking_lot::Mutex<WsPortSkips> = parking_lot::Mutex::new(WsPortSkips::new());
+
+/// Record one SIP-over-WebSocket message the port set declined to unwrap.
+///
+/// # Arguments
+///
+/// * `src_port` / `dst_port` — the packet's ports, neither in the set.
+/// * `payload` — the UNWRAPPED SIP bytes, read only to tell a request from a
+///   response so the service port can be named.
+///
+/// # Side effects
+///
+/// Bumps the process-global tally and may emit a `WARN`, on the same 1-then-
+/// powers-of-ten escalation the portrange tally uses.
+fn record_ws_port_skip(src_port: u16, dst_port: u16, payload: &[u8]) {
+    // A request's service port is its destination; a response's is its source
+    // — the same rule, and the same reason, as `record_portrange_skip`.
+    let service_port = if payload.starts_with(b"SIP/2.0 ") {
+        src_port
+    } else {
+        dst_port
+    };
+
+    let warn = {
+        let mut st = WS_PORT_SKIPS.lock();
+        st.messages += 1;
+        let table = st
+            .per_port
+            .get_or_insert_with(|| vec![0u64; usize::from(u16::MAX) + 1].into_boxed_slice());
+        table[usize::from(service_port)] += 1;
+
+        if st.messages < st.next_warn {
+            None
+        } else {
+            st.next_warn = st.messages.saturating_mul(10);
+            let busiest = busiest_ws_ports(&st, 3);
+            Some((st.messages, busiest))
+        }
+    };
+
+    if let Some((messages, busiest)) = warn {
+        let ports = busiest
+            .iter()
+            .map(|p| format!("{} ({})", p.port, p.messages))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let configured = crate::capture::websocket::ws_ports_description();
+        tracing::warn!(
+            "SIP-over-WebSocket outside the WebSocket port set ({configured}) is \
+             being skipped: {messages} message(s) so far, in no count, no dialog, \
+             and no output. Busiest port(s): {ports}. Re-run with --ws-portrange \
+             covering them (e.g. --ws-portrange 1-65535) to analyse them."
+        );
+    }
+}
+
+/// The `n` busiest ports in `st`, busiest first.
+fn busiest_ws_ports(st: &WsPortSkips, n: usize) -> Vec<SkippedPort> {
+    let Some(ref table) = st.per_port else {
+        return Vec::new();
+    };
+    let mut ports: Vec<SkippedPort> = table
+        .iter()
+        .enumerate()
+        .filter(|&(_, &messages)| messages > 0)
+        .map(|(port, &messages)| SkippedPort {
+            // The table is indexed by `u16`, so every index fits.
+            port: port as u16,
+            messages,
+        })
+        .collect();
+    ports.sort_unstable_by(|a, b| b.messages.cmp(&a.messages).then(a.port.cmp(&b.port)));
+    ports.truncate(n);
+    ports
+}
+
+/// The SIP-over-WebSocket this run recognised and did not analyse because
+/// neither port was in the configured WebSocket set.
+///
+/// The counterpart of [`portrange_skip_report`] for RFC 7118 traffic, and the
+/// report that did not exist at all before: a deployment terminating WSS on
+/// 8081 was told nothing whatsoever. Report it beside any message or dialog
+/// count taken from a capture that could carry WebSocket signalling.
+///
+/// # Returns
+///
+/// A [`WsPortSkipReport`] with the running total and every port that carried
+/// skipped SIP-over-WebSocket, busiest first. All zeroes when nothing was
+/// skipped.
+#[must_use]
+pub fn ws_port_skip_report() -> WsPortSkipReport {
+    let st = WS_PORT_SKIPS.lock();
+    WsPortSkipReport {
+        messages: st.messages,
+        ports: busiest_ws_ports(&st, usize::MAX),
+    }
+}
+
+/// Clear the WebSocket skip tally and re-arm the warning escalation.
+///
+/// # Side effects
+///
+/// Resets the global counters and frees the per-port table.
+pub fn reset_ws_port_skips() {
+    *WS_PORT_SKIPS.lock() = WsPortSkips::new();
+}
+
 // ── What ICMP said ───────────────────────────────────────────────────
 //
 // An ICMP error quoting a SIP request is the one packet in a capture that
@@ -1550,35 +1711,47 @@ fn rtcp_length_frames_packet(data: &[u8]) -> bool {
     (word_len + 1) * 4 <= data.len()
 }
 
-/// Try to unwrap a WebSocket frame from a TCP packet on common WS ports.
+/// Try to unwrap a WebSocket frame from a TCP packet on a configured WS port.
 ///
-/// Returns `Some(payload)` if the packet is TCP, the destination or source
-/// port is a common WebSocket port (80, 443, 8080, 8443), and the data
-/// contains a valid WebSocket data frame wrapping SIP content.
+/// Returns `Some(payload)` if the packet is TCP, the data contains a valid
+/// WebSocket data frame wrapping SIP content, and the destination or source
+/// port is in the WebSocket port set (`--ws-portrange` / `[capture] ws_ports`,
+/// else 80, 443, 8080, 8443).
+///
+/// # Side effects
+///
+/// A frame that unwraps to real SIP on a port OUTSIDE the set is tallied by
+/// `record_ws_port_skip` before `None` is returned, so
+/// [`ws_port_skip_report`] can name what the set discarded. The port test
+/// deliberately runs LAST: it decides whether recognised SIP is analysed or
+/// counted, and running it first is what made the loss invisible.
 pub fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
     if pp.transport != TransportProto::Tcp {
         return None;
     }
 
-    // Only attempt on common WebSocket ports
-    let is_ws_port =
-        websocket::WS_PORTS.contains(&pp.dst_port) || websocket::WS_PORTS.contains(&pp.src_port);
-    if !is_ws_port {
-        return None;
-    }
-
+    // Two bytes, no allocation, and it rejects almost every TCP payload that
+    // is not a WebSocket data frame — which is what makes running the unwrap
+    // on every port affordable at all.
     if !websocket::is_websocket_frame(&pp.payload) {
         return None;
     }
 
-    match websocket::unwrap_websocket_frame(&pp.payload) {
+    let payload = match websocket::unwrap_websocket_frame(&pp.payload) {
         // `starts_sip_message`, for the same reason `classify_packet` uses it:
         // the narrower `sip::is_sip_message` would refuse to unwrap a frame
         // carrying an extension-method request, and SIP-over-WebSocket
         // (RFC 7118) is exactly where private methods turn up.
-        Ok(Some(payload)) if sip::parser::starts_sip_message(&payload) => Some(payload),
-        _ => None,
+        Ok(Some(payload)) if sip::parser::starts_sip_message(&payload) => payload,
+        _ => return None,
+    };
+
+    if !websocket::is_ws_port(pp.dst_port) && !websocket::is_ws_port(pp.src_port) {
+        record_ws_port_skip(pp.src_port, pp.dst_port, &payload);
+        return None;
     }
+
+    Some(payload)
 }
 
 /// Options controlling which protocols the pipeline tracks.

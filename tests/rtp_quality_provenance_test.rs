@@ -32,6 +32,10 @@ use sipnab::sip::dialog_store::DialogStore;
 
 #[path = "support/corpus.rs"]
 mod corpus_support;
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
+#[path = "support/run.rs"]
+mod run_support;
 
 /// Resolve the corpus in capture order, or `None` when `SIPNAB_CORPUS` is
 /// unset. A ring buffer wraps, so filename order is not capture order.
@@ -470,5 +474,249 @@ fn an_xr_datagram_is_rtcp_and_the_rtp_prefilter_cannot_tell() {
     assert_eq!(
         hdr.ssrc, 0x0400_0002,
         "the XR's first block header read as an SSRC — the phantom stream's identity"
+    );
+}
+
+// ── Burst and gap DURATIONS are measured, not assumed ────────────────
+
+/// Burst and gap durations sipnab reports for the first stream of the first
+/// dialog, off `--json-dialogs`.
+fn reported_burst_and_gap(pcap: &std::path::Path) -> (f64, f64) {
+    let (stdout, stderr, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            pcap.to_str().expect("utf-8 path"),
+            "--json-dialogs",
+            "--no-config",
+        ],
+        Some("error"),
+    );
+    assert_eq!(code, Some(0), "sipnab must exit cleanly; stderr:\n{stderr}");
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .unwrap_or_else(|| panic!("the fixture must produce one dialog; stdout:\n{stdout}"));
+    let v: serde_json::Value = serde_json::from_str(line).expect("valid dialog JSON");
+    let bg = &v["streams"][0]["burst_gap"];
+    (
+        bg["burst_duration_ms"]
+            .as_f64()
+            .expect("the linked stream must carry a burst/gap analysis"),
+        bg["gap_duration_ms"].as_f64().expect("and a gap duration"),
+    )
+}
+
+/// Burst and gap durations follow the stream's OWN packetization interval.
+///
+/// `burst_gap_analysis` charged every frame a flat 20 ms while the ptime
+/// inference one module away — already validated against 5..=200 ms for the
+/// ptime-asymmetry detector — sat unused. On G.729 at 30 ms that understates
+/// every reported burst and gap by a third, and on a satellite trunk at 40 ms
+/// by half: a three-second outage published as two.
+///
+/// Three identical captures differing only in cadence, so the assertion is a
+/// RATIO and cannot be satisfied by any fixed number that happens to match.
+#[test]
+fn burst_and_gap_durations_follow_the_streams_own_packetization() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut measured = Vec::new();
+    for ptime in [20u64, 30, 40] {
+        let pcap = dir.path().join(format!("lossy-{ptime}ms.pcap"));
+        pcap_build::write_pcap_at(
+            &pcap,
+            &pcap_build::sdp_call_with_lossy_rtp_at(&format!("ptime-{ptime}"), 400, 3, ptime),
+            1,
+        );
+        measured.push((ptime, reported_burst_and_gap(&pcap)));
+    }
+
+    let (_, (base_burst, base_gap)) = measured[0];
+    assert!(
+        base_burst > 0.0 && base_gap > 0.0,
+        "the 20 ms fixture must report a burst AND a gap, or the ratios below \
+         prove nothing"
+    );
+    for &(ptime, (burst, gap)) in &measured[1..] {
+        let want = ptime as f64 / 20.0;
+        for (label, got, base) in [("burst", burst, base_burst), ("gap", gap, base_gap)] {
+            let ratio = got / base;
+            assert!(
+                (ratio - want).abs() < 0.05,
+                "a {ptime} ms stream must report {want:.2}x the {label} duration \
+                 of the same losses at 20 ms, got {ratio:.2}x ({got} vs {base}) — \
+                 a flat 20 ms assumption reports 1.00x and understates the outage \
+                 by {:.0}%",
+                (1.0 - 20.0 / ptime as f64) * 100.0
+            );
+        }
+    }
+}
+
+/// The SDP `a=ptime` reaches the stream, in both orderings of SDP and RTP.
+///
+/// The declaration is worth nothing if it stops at a struct field nothing
+/// fills. Both orderings are asserted because the store learns an endpoint by
+/// two different routes — `link_endpoint` enriches streams that already exist,
+/// and `resolve_from_sdp` fills one created afterwards — and a value wired
+/// into only one is a setting honoured on offline replay and dropped on live
+/// capture, or the reverse.
+#[test]
+fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
+    use sipnab::capture::parse::{ParsedPacket, TransportProto};
+    use sipnab::rtp::parser::RtpHeader;
+    use sipnab::sip::sdp::{SdpDirection, SdpMedia};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    let media_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+    let far_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+    let pp = ParsedPacket {
+        frame: None,
+        timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+        src_addr: media_ip,
+        dst_addr: far_ip,
+        src_port: 20000,
+        dst_port: 30000,
+        transport: TransportProto::Udp,
+        payload: vec![0u8; 172].into(),
+        ip_id: None,
+        tcp_seq: None,
+        tcp_flags: None,
+        fragment_offset: None,
+        more_fragments: false,
+        ip_protocol: 17,
+        from_hep: false,
+    };
+    let hdr = RtpHeader {
+        version: 2,
+        padding: false,
+        extension: false,
+        csrc_count: 0,
+        marker: false,
+        payload_type: 8,
+        sequence: 1,
+        timestamp: 0,
+        ssrc: 0x5151_5151,
+        payload_offset: 12,
+    };
+    let media = SdpMedia {
+        media_type: "audio".into(),
+        port: 20000,
+        proto: "RTP/AVP".into(),
+        formats: vec!["8".into()],
+        connection: None,
+        direction: SdpDirection::SendRecv,
+        rtpmap: Vec::new(),
+        fmtp: Vec::new(),
+        ptime: Some(30),
+        crypto: Vec::new(),
+        ice_candidates: Vec::new(),
+        rtcp_mux: false,
+        rtcp_port: None,
+    };
+    let key = StreamKey {
+        ssrc: hdr.ssrc,
+        src: SocketAddr::new(media_ip, 20000),
+        dst: SocketAddr::new(far_ip, 30000),
+    };
+
+    // RTP first, SDP after — the offline-replay ordering.
+    let mut store = StreamStore::new(16);
+    store.process_rtp(&pp, &hdr, pp.timestamp);
+    assert_eq!(
+        store.get(&key).and_then(|s| s.sdp_ptime_ms),
+        None,
+        "no SDP has been seen yet, or this case proves nothing"
+    );
+    store.link_to_dialog_with_sdp(media_ip, 20000, "ptime-order-a", &media);
+    assert_eq!(
+        store.get(&key).and_then(|s| s.sdp_ptime_ms),
+        Some(30),
+        "a=ptime:30 must reach a stream that already existed when the SDP arrived"
+    );
+
+    // SDP first, RTP after — the live-capture ordering.
+    let mut store = StreamStore::new(16);
+    store.link_to_dialog_with_sdp(media_ip, 20000, "ptime-order-b", &media);
+    store.process_rtp(&pp, &hdr, pp.timestamp);
+    assert_eq!(
+        store.get(&key).and_then(|s| s.sdp_ptime_ms),
+        Some(30),
+        "a=ptime:30 must reach a stream created after its SDP"
+    );
+}
+
+/// A stream too short to measure its own cadence falls back to the SDP
+/// `a=ptime`, and only then to the shipped 20 ms.
+///
+/// The order is the claim: a measurement beats a declaration because a
+/// declaration can be stale, and a declaration beats a guess because the
+/// endpoints agreed on it. Asserted on the stream rather than through the
+/// binary because "too short to measure" means a one-packet stream, which
+/// carries no losses for a burst/gap analysis to report.
+#[test]
+fn a_stream_too_short_to_measure_uses_the_declared_ptime() {
+    use sipnab::rtp::parser::RtpHeader;
+    use sipnab::rtp::stream::RtpStream;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    let key = StreamKey {
+        ssrc: 0x4242_4242,
+        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+    };
+    let hdr = RtpHeader {
+        version: 2,
+        padding: false,
+        extension: false,
+        csrc_count: 0,
+        marker: false,
+        payload_type: 18,
+        sequence: 1,
+        timestamp: 0,
+        ssrc: key.ssrc,
+        payload_offset: 12,
+    };
+    let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
+    let mut s = RtpStream::new(key, &hdr, at);
+
+    assert_eq!(
+        s.inferred_ptime_ms(),
+        None,
+        "one packet cannot be measured, or this test proves nothing"
+    );
+    assert_eq!(
+        s.ptime_ms(),
+        20.0,
+        "with nothing measured and nothing declared, the shipped guess stands"
+    );
+
+    s.sdp_ptime_ms = Some(30);
+    assert_eq!(
+        s.ptime_ms(),
+        30.0,
+        "the SDP a=ptime the endpoints agreed on beats the shipped guess"
+    );
+
+    // Now give it a measurable 40 ms cadence: the measurement must win over
+    // the declaration, which is the half a stale `a=ptime` would otherwise
+    // silently decide.
+    for seq in 2..=11u16 {
+        let next = RtpHeader {
+            sequence: seq,
+            timestamp: u32::from(seq - 1) * 320,
+            ..hdr.clone()
+        };
+        s.update(
+            &next,
+            at + chrono::Duration::milliseconds(40 * i64::from(seq - 1)),
+            160,
+        );
+    }
+    assert_eq!(s.inferred_ptime_ms(), Some(40));
+    assert_eq!(
+        s.ptime_ms(),
+        40.0,
+        "a measurement off the wire must beat a declaration that can be stale"
     );
 }

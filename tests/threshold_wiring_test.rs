@@ -1387,6 +1387,112 @@ fn diagnosis_late_media_threshold_decides_when_media_is_late() {
     );
 }
 
+/// A 12-byte RTP header at payload type `pt`, plus a frame.
+fn rtp_packet_pt(seq: u16, timestamp: u32, ssrc: u32, pt: u8) -> Vec<u8> {
+    let mut p = rtp_packet(seq, timestamp, ssrc);
+    p[1] = pt;
+    p
+}
+
+/// One answered call with media in ONE direction, 40 % of whose packets are
+/// comfort noise.
+///
+/// That sits between the shipped 0.3 and a declared 0.5, which is the whole
+/// point: at the shipped ratio comfort noise "explains" the asymmetry and
+/// one-way audio is never reported, and 40 % CN is what a VoLTE or mobile
+/// trunk running aggressive voice-activity detection actually produces.
+fn one_way_call_with_comfort_noise(dir: &tempfile::TempDir) -> String {
+    let offer = sdp("10.1.0.1", 40_000);
+    let answer = sdp("10.2.0.1", 40_002);
+    let mut frames = vec![
+        (invite("cn-1", "c1", "bob", Some(&offer)), 0),
+        (
+            response(
+                200,
+                "OK",
+                "cn-1",
+                "c1",
+                "bob",
+                "1 INVITE",
+                Some(&answer),
+                true,
+            ),
+            100_000,
+        ),
+        (in_dialog("ACK", "cn-1", "c1", "bob", "1 ACK"), 200_000),
+    ];
+    // 100 packets from A to B and nothing back: 60 speech (PT 0) and 40
+    // comfort noise (PT 13), one SSRC, so the ratio the diagnosis computes is
+    // 0.4 of a single stream.
+    for i in 0..100u32 {
+        let pt = if i % 5 < 2 { 13 } else { 0 };
+        frames.push((
+            udp_frame(
+                A,
+                B,
+                40_000,
+                40_002,
+                &rtp_packet_pt(3000 + i as u16, i * 160, 0x3333, pt),
+            ),
+            300_000 + u64::from(i) * 20_000,
+        ));
+    }
+    frames.push((in_dialog("BYE", "cn-1", "c1", "bob", "2 BYE"), 3_000_000));
+    frames.push((
+        response(200, "OK", "cn-1", "c1", "bob", "2 BYE", None, true),
+        3_100_000,
+    ));
+    frames.sort_by_key(|(_, t)| *t);
+    arg(&write_capture(dir, "comfort-noise", &frames))
+}
+
+/// The declared comfort-noise ratio decides whether one-way audio is reported
+/// at all on a trunk with aggressive voice-activity detection.
+///
+/// This threshold fails in the QUIET direction — it withholds a finding rather
+/// than raising one — so the shipped run below is asserting the defect: 40 %
+/// comfort noise on a strictly one-directional flow is accepted as the
+/// explanation, and the single most-reported VoIP fault goes unreported with
+/// nothing in the output to say why.
+#[test]
+fn diagnosis_cn_suppression_ratio_decides_whether_one_way_audio_is_reported() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = one_way_call_with_comfort_noise(&dir);
+    let cfg = arg(&write_config(
+        &dir,
+        "[diagnosis]\ncn_suppression_ratio = 0.5\n",
+    ));
+
+    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"]);
+    assert!(
+        shipped.contains("\"one_way_audio\":false"),
+        "40 % comfort noise is over the shipped 0.3, so the finding is \
+         suppressed — this is the state the key exists to change:\n{shipped}"
+    );
+
+    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg]);
+    assert!(
+        declared.contains("\"one_way_audio\":true"),
+        "[diagnosis] cn_suppression_ratio = 0.5 must reach the diagnosis, so \
+         40 % CN no longer explains a one-directional flow:\n{declared}"
+    );
+
+    let (overridden, _) = run(&[
+        "-N",
+        "-I",
+        &pcap,
+        "--json-dialogs",
+        "--cn-suppression-ratio",
+        "0.2",
+        "--config",
+        &cfg,
+    ]);
+    assert!(
+        overridden.contains("\"one_way_audio\":false"),
+        "--cn-suppression-ratio must beat the config key:\n{overridden}"
+    );
+}
+
 // ── [limits] lint_max_per_rule ──────────────────────────────────────────
 
 /// The declared per-rule cap decides how many repeats of one finding print.

@@ -988,6 +988,11 @@ fn limit_probes() -> Vec<LimitProbe> {
             enabled: true,
             observe: probe_max_gunzip_bytes,
         },
+        LimitProbe {
+            key: "max_tcp_buffer",
+            enabled: true,
+            observe: probe_max_tcp_buffer,
+        },
     ]
 }
 
@@ -1306,6 +1311,41 @@ fn probe_max_gunzip_bytes() -> (String, String) {
         strip_gzipped_with(&["--no-config"]),
         strip_gzipped_with(&["--config", cfg.to_str().unwrap()]),
     )
+}
+
+/// `max_tcp_buffer`: a 100 KiB SIP/TCP INVITE against the shipped 64 KiB.
+///
+/// The one cap in this registry that DESTROYS data. At the shipped ceiling the
+/// reassembler flushes the INVITE in half and both halves parse as malformed,
+/// so the dialog holds only the `200 OK` that answered a request sipnab never
+/// reported; at 256 KiB the same bytes produce both messages.
+///
+/// The observation is the dialog's MESSAGE count, not the dialog count: the
+/// answer alone still opens a dialog, so counting dialogs would report `1` in
+/// both runs and this probe would pass while the INVITE was being destroyed —
+/// which is exactly the shape of failure this registry exists to catch.
+fn probe_max_tcp_buffer() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = dir.path().join("big-tcp-invite.pcap");
+    pcap_build::write_pcap(
+        &pcap,
+        &pcap_build::tcp_sip_call_with_body("big-tcp-probe", 100_000, false),
+    );
+    observe_stdout(
+        &pcap,
+        "[limits]\nmax_tcp_buffer = 262144\n",
+        &["--json-dialogs"],
+        |out| format!("messages={}", first_dialog_msg_count(out)),
+    )
+}
+
+/// Messages the first reported dialog carried, off `--json-dialogs`.
+fn first_dialog_msg_count(stdout: &str) -> i64 {
+    let Some(line) = stdout.lines().find(|l| l.starts_with('{')) else {
+        return 0;
+    };
+    let v: serde_json::Value = serde_json::from_str(line).expect("valid dialog JSON");
+    v["msg_count"].as_i64().expect("a dialog carries msg_count")
 }
 
 /// `mcp_max_body_bytes`: one `search_messages` snippet against a 64-byte
@@ -1954,4 +1994,124 @@ fn an_out_of_range_kill_response_is_refused_from_the_config_file() {
         cfg.kill_response = Some(ok);
         assert!(cfg.validate().is_ok(), "{ok} is a valid SIP status");
     }
+}
+
+/// `max_tcp_buffer` also raises the ceiling on a HELD PARTIAL, so a peer that
+/// sets `PSH` on every segment is fixed by the same key.
+///
+/// The two ceilings shipped as separate spellings of 65536 that happened to
+/// agree, and they bound the same message from opposite ends. Without a push
+/// the reassembler accumulates and its own buffer decides; with one it
+/// delivers each segment on arrival, the framer holds the incomplete message
+/// between flushes, and the leftover ceiling decides instead. Raising only the
+/// first would leave every PSH-per-write stack — which is most of them —
+/// chopped at 64 KiB anyway, and from the outside that is a setting that does
+/// nothing.
+#[test]
+#[cfg(feature = "native")]
+fn the_tcp_buffer_ceiling_also_bounds_a_message_held_across_pushes() {
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = dir.path().join("pushed-big-tcp-invite.pcap");
+    pcap_build::write_pcap(
+        &pcap,
+        &pcap_build::tcp_sip_call_with_body("pushed-probe", 100_000, true),
+    );
+    let (shipped, raised) = observe_stdout(
+        &pcap,
+        "[limits]\nmax_tcp_buffer = 262144\n",
+        &["--json-dialogs"],
+        |out| format!("messages={}", first_dialog_msg_count(out)),
+    );
+    assert_ne!(
+        shipped, raised,
+        "a message pushed segment by segment must be bounded by the same key: \
+         sipnab reported {shipped} at the shipped ceiling and {raised} at \
+         256 KiB. Equal figures mean the held-partial ceiling is still a \
+         separate 64 KiB constant, so the key fixes half the trunks it claims to"
+    );
+}
+
+/// `[capture] ws_ports` reaches the WebSocket unwrap, `--ws-portrange` beats
+/// it, and what falls outside is REPORTED instead of vanishing.
+///
+/// The capture is one answered call carried as SIP-over-WebSocket on 8081 —
+/// where a WSS listener behind a reverse proxy commonly lands, and where
+/// Kamailio, OpenSIPS and Janus all sit outside sipnab's shipped set of 80,
+/// 443, 8080 and 8443. Before this the run printed a clean, complete-looking
+/// zero: no dialog, no message count, and no notice of any kind. `--portrange`
+/// at least says what it skipped; this said nothing at all, which is why the
+/// tally is asserted here alongside the analysis it replaces.
+#[test]
+#[cfg(feature = "native")]
+fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = dir.path().join("wss-8081.pcap");
+    pcap_build::write_pcap(&pcap, &pcap_build::ws_sip_call("wss-probe", 8081));
+    let pcap = pcap.to_str().unwrap().to_string();
+    // `--portrange` is widened in every run: the WebSocket set and the
+    // signalling port range are different gates, and leaving the default
+    // 5060-5061 in place would let the second one claim the traffic the first
+    // one just unwrapped.
+    let base: Vec<String> = [
+        "-N",
+        "-I",
+        &pcap,
+        "--json-dialogs",
+        "--portrange",
+        "1-65535",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+
+    let mut shipped = base.clone();
+    shipped.push("--no-config".into());
+    let (out, err, code) = run_owned(&shipped);
+    assert_eq!(code, 0, "the run must exit cleanly:\n{err}");
+    assert_eq!(
+        dialog_count(&out),
+        0,
+        "8081 is outside the shipped WebSocket set, so the leg is not analysed \
+         — this is the state the key exists to change:\n{out}"
+    );
+    assert!(
+        err.contains("NOT ANALYSED") && err.contains("SIP-over-WebSocket") && err.contains("8081"),
+        "the run must SAY what it skipped and name the port, or the operator is \
+         told nothing whatsoever about their entire WebRTC signalling leg:\n{err}"
+    );
+
+    let cfg = write_config(&dir, "[capture]\nws_ports = \"8081-8081\"\n");
+    let mut declared = base.clone();
+    declared.push("--config".into());
+    declared.push(cfg.to_str().unwrap().into());
+    let (out, err, code) = run_owned(&declared);
+    assert_eq!(code, 0, "the run must exit cleanly:\n{err}");
+    assert_eq!(
+        dialog_count(&out),
+        1,
+        "[capture] ws_ports = \"8081-8081\" must reach the unwrap:\n{out}"
+    );
+    assert!(
+        !err.contains("SIP-over-WebSocket"),
+        "nothing was skipped, so nothing may be reported as skipped:\n{err}"
+    );
+
+    // The flag beats the key, pointed somewhere the traffic is not: the leg
+    // goes back to being skipped, and the report says so again.
+    let mut overridden = base;
+    overridden.push("--ws-portrange".into());
+    overridden.push("9443-9443".into());
+    overridden.push("--config".into());
+    overridden.push(cfg.to_str().unwrap().into());
+    let (out, err, code) = run_owned(&overridden);
+    assert_eq!(code, 0, "the run must exit cleanly:\n{err}");
+    assert_eq!(
+        dialog_count(&out),
+        0,
+        "--ws-portrange must outrank the [capture] ws_ports it shadows:\n{out}"
+    );
+    assert!(
+        err.contains("SIP-over-WebSocket") && err.contains("8081"),
+        "and the traffic the narrower range excluded must be reported:\n{err}"
+    );
 }

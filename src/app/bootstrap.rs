@@ -329,7 +329,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         .as_deref()
         .or(config.capture.portrange.as_deref())
         .unwrap_or("5060-5061");
-    let portrange = parse_portrange(portrange_str)
+    let portrange = crate::config::parse_portrange(portrange_str)
         .map_err(|e| PlanError::arg(format!("Invalid --portrange: {e}")))?;
 
     // Auto-generate a BPF filter from the portrange for live captures when
@@ -1369,6 +1369,22 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         cli.metadata_file_byte_cap(&loaded.config),
     );
     crate::capture::pcap_reader::set_max_gunzip_bytes(cli.gunzip_byte_cap(&loaded.config));
+    // Same argument again, twice. A `TcpReassembler` is built by the batch
+    // runner, the TUI and every `--cores` shard; the WebSocket unwrap runs on
+    // all of those plus the WASM entry point. Neither is threaded a config.
+    crate::capture::reassembly::set_max_tcp_buffer(cli.tcp_buffer_cap(&loaded.config));
+    // Parsed here rather than at the flush site so a malformed range fails the
+    // RUN, naming the source that carried it, instead of silently reverting to
+    // the shipped ports on every packet.
+    match cli.ws_port_range(&loaded.config) {
+        Ok(range) => crate::capture::websocket::set_ws_port_range(range),
+        Err(e) => {
+            return Err(PlanError {
+                exit_code: 1,
+                message: e.to_string(),
+            });
+        }
+    }
 
     Ok(loaded)
 }
@@ -1394,32 +1410,6 @@ pub fn dump_config(loaded: &LoadedConfig) -> i32 {
             1
         }
     }
-}
-
-// ── Portrange parsing ──────────────────────────────────────────────────
-
-/// Parse a port range string like "5060-5061" or "5060-5080" into a
-/// `(u16, u16)` tuple. Errors on a malformed shape, non-numeric or
-/// out-of-range ports, or start > end.
-fn parse_portrange(s: &str) -> Result<(u16, u16), String> {
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 2 {
-        return Err(format!(
-            "Expected format 'start-end' (e.g., '5060-5061'), got '{s}'"
-        ));
-    }
-    let start: u16 = parts[0]
-        .trim()
-        .parse()
-        .map_err(|_| format!("Invalid port number: '{}'", parts[0]))?;
-    let end: u16 = parts[1]
-        .trim()
-        .parse()
-        .map_err(|_| format!("Invalid port number: '{}'", parts[1]))?;
-    if start > end {
-        return Err(format!("Port range start ({start}) > end ({end})"));
-    }
-    Ok((start, end))
 }
 
 // ── Autostop parsing ───────────────────────────────────────────────────
@@ -2276,35 +2266,6 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.no_tui = true;
         cli
-    }
-
-    // ── parse_portrange ────────────────────────────────────────────────
-
-    /// Well-formed ranges parse, whitespace is trimmed, start==end allowed.
-    #[test]
-    fn parse_portrange_valid_and_trimmed() {
-        assert_eq!(parse_portrange("5060-5061").unwrap(), (5060, 5061));
-        // surrounding whitespace is trimmed on each side
-        assert_eq!(parse_portrange(" 100 - 200 ").unwrap(), (100, 200));
-        // single-port range (start == end) is allowed
-        assert_eq!(parse_portrange("5060-5060").unwrap(), (5060, 5060));
-    }
-
-    /// Malformed shapes, non-numeric or out-of-range ports, and start > end
-    /// all produce errors.
-    #[test]
-    fn parse_portrange_errors() {
-        // wrong number of '-' separated parts
-        assert!(parse_portrange("5060").is_err());
-        assert!(parse_portrange("5060-5061-5062").is_err());
-        // non-numeric start / end
-        assert!(parse_portrange("abc-5061").is_err());
-        assert!(parse_portrange("5060-xyz").is_err());
-        // out of u16 range
-        assert!(parse_portrange("0-70000").is_err());
-        // start > end
-        let err = parse_portrange("6000-5000").unwrap_err();
-        assert!(err.contains("start"), "got: {err}");
     }
 
     // ── parse_autostop ─────────────────────────────────────────────────

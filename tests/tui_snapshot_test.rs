@@ -294,20 +294,24 @@ mod tui_snapshots {
         {
             let mut store = ss.write();
             let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-            let mut tick = 0i64;
-            let mut at = || {
-                tick += 1;
-                t0 + TimeDelta::milliseconds(tick * 20)
-            };
+            // Arrival time follows the SEQUENCE NUMBER, not the count of
+            // packets pushed. The hundred lost packets still occupied their
+            // 20 ms slots on the wire, so a clock advanced per received packet
+            // would compress the whole burst into no time at all — and the
+            // stream would then describe 141 frames spread over 800 ms, a
+            // 5.7 ms cadence no codec emits. `burst_gap_analysis` measures
+            // that cadence, so an inconsistent fixture reports a two-second
+            // outage as one.
+            let at = |seq: u16| t0 + TimeDelta::milliseconds(i64::from(seq - 1000) * 20);
             // Clean lead-in.
             for seq in 1000..1020u16 {
-                push_rtp(&mut store, ssrc, seq, at());
+                push_rtp(&mut store, ssrc, seq, at(seq));
             }
             // One big gap: sequences 1020..1119 are lost (a burst).
-            push_rtp(&mut store, ssrc, 1120, at());
+            push_rtp(&mut store, ssrc, 1120, at(1120));
             // Clean tail.
             for seq in 1121..1141u16 {
-                push_rtp(&mut store, ssrc, seq, at());
+                push_rtp(&mut store, ssrc, seq, at(seq));
             }
         }
         App::new(

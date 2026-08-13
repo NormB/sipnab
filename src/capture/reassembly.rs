@@ -55,7 +55,7 @@ const DEFAULT_MAX_ENTRIES: usize = 10_000;
 /// default everywhere EXCEPT the path every live capture actually takes.
 pub(crate) const DEFAULT_TTL: Duration = Duration::from_secs(30);
 
-/// Maximum TCP stream buffer size before forced flush (64 KB).
+/// Shipped maximum TCP stream buffer size before forced flush (64 KB).
 ///
 /// This is policy wearing a protocol's clothes. TCP imposes no such ceiling and
 /// neither does RFC 3261: a SIP/TCP message carrying a large multipart body —
@@ -63,7 +63,61 @@ pub(crate) const DEFAULT_TTL: Duration = Duration::from_secs(30);
 /// exceeds it. When it does, the buffer is flushed MID-MESSAGE and the fragment
 /// parses as garbage, so the failure surfaces as a malformed message rather than
 /// as a limit that was reached.
-const MAX_TCP_BUFFER: usize = 65536;
+///
+/// Raise it with `--max-tcp-buffer` or `[limits] max_tcp_buffer`; see
+/// [`crate::cli::Cli::tcp_buffer_cap`].
+pub const DEFAULT_MAX_TCP_BUFFER: usize = 65536;
+
+/// Smallest ceiling that can hold one SIP header line, and therefore the
+/// smallest one any message can survive.
+///
+/// Grounded on [`crate::sip::parser::DEFAULT_MAX_HEADER_LINE_LEN`] rather than
+/// chosen: below one header line the reassembler flushes mid-message on every
+/// SIP/TCP message in the capture, so a "smaller buffer" is not a tighter
+/// setting but a switch that reports every peer as broken. Refused by
+/// `crate::config::LimitsConfig::validate` and by clap, from the same number.
+pub const MIN_TCP_BUFFER: usize = crate::sip::parser::DEFAULT_MAX_HEADER_LINE_LEN;
+
+/// The ceiling this process declared, in bytes per TCP direction.
+///
+/// Process-global and written once at startup, the same shape as
+/// [`crate::rtp::stream::set_lost_seq_log_cap`] and for the same reason: a
+/// reassembler is created by the batch runner, the TUI and every `--cores`
+/// shard, so a value threaded to some of them is a setting honoured on some
+/// surfaces and ignored on others.
+static MAX_TCP_BUFFER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_TCP_BUFFER);
+
+/// Bytes one TCP direction may buffer before the reassembler forces a flush.
+#[must_use]
+pub fn max_tcp_buffer() -> usize {
+    MAX_TCP_BUFFER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Declare the SIP/TCP reassembly ceiling for this process. Call once, at
+/// startup.
+///
+/// # Arguments
+///
+/// * `bytes` — bytes one direction may buffer. A value below
+///   [`MIN_TCP_BUFFER`] is treated as the shipped default; the operator-facing
+///   refusal happens earlier, in `crate::config::LimitsConfig::validate` and in
+///   clap, so it can name the key.
+///
+/// # Side effects
+///
+/// Stores `bytes` into a process-wide atomic (relaxed ordering), affecting
+/// every flush decision made after this call.
+pub fn set_max_tcp_buffer(bytes: usize) {
+    MAX_TCP_BUFFER.store(
+        if bytes < MIN_TCP_BUFFER {
+            DEFAULT_MAX_TCP_BUFFER
+        } else {
+            bytes
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // IP Fragment Reassembly
@@ -400,7 +454,7 @@ impl TcpReassembler {
     /// - **PSH flag:** flushes all buffered in-order data.
     /// - **FIN flag:** flushes remaining data and removes the stream.
     /// - **RST flag:** discards the stream entirely (returns empty).
-    /// - **Buffer overflow (>64 KB):** forces a flush.
+    /// - **Buffer overflow (past [`max_tcp_buffer`]):** forces a flush.
     /// - **SYN flag:** initializes or resets the stream's expected sequence.
     ///
     /// # Arguments
@@ -510,7 +564,8 @@ impl TcpReassembler {
         }
 
         // Buffer overflow: force flush
-        if stream.buffered_bytes > MAX_TCP_BUFFER {
+        let ceiling = max_tcp_buffer();
+        if stream.buffered_bytes > ceiling {
             let flushed = self.drain_in_order(&key);
             if !flushed.is_empty() {
                 // Warned, not just debugged: this cuts a message in half, and
@@ -523,10 +578,11 @@ impl TcpReassembler {
                     std::sync::atomic::AtomicBool::new(false);
                 if !OVERFLOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     tracing::warn!(
-                        "a SIP/TCP message from {} to {} exceeded the {MAX_TCP_BUFFER}-byte \
+                        "a SIP/TCP message from {} to {} exceeded the {ceiling}-byte \
                          reassembly buffer and was flushed mid-message, so it will parse as \
                          malformed. TCP sets no such limit; this is sipnab's ceiling. Large \
-                         multipart bodies (ISUP, long Record-Route sets) hit it legitimately.",
+                         multipart bodies (ISUP, long Record-Route sets) hit it legitimately. \
+                         Raise it with --max-tcp-buffer or [limits] max_tcp_buffer.",
                         key.src,
                         key.dst,
                     );

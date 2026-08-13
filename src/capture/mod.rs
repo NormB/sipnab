@@ -642,7 +642,18 @@ const DEFAULT_MAX_SESSIONS: usize = 10_000;
 /// Upper bound on a single held partial SIP message (bytes). A larger remainder
 /// is flushed rather than buffered, so a peer can't pin memory with an
 /// unterminated message.
-const MAX_TCP_LEFTOVER: usize = 65_536;
+///
+/// DERIVED from the reassembly ceiling rather than stated beside it. The two
+/// used to be separate spellings of 65 536 that happened to agree, and they
+/// bound the same message from opposite ends: a peer that sends its large
+/// message with `PSH` on every segment never fills the reassembler's buffer at
+/// all — each push flushes — so the partial is held HERE while the rest
+/// arrives. Raising only the reassembly ceiling would leave that message
+/// chopped at 64 KiB anyway, which from the outside looks exactly like a
+/// setting that does nothing.
+fn max_tcp_leftover() -> usize {
+    reassembly::max_tcp_buffer()
+}
 
 impl PacketProcessor {
     /// Create a new packet processor with default reassembly limits.
@@ -910,7 +921,7 @@ impl PacketProcessor {
         // appended to it), so copy just the tail out — before `buf` is frozen
         // into `Bytes` below. This is the same single tail copy as before.
         let held_tail =
-            (consumed < buf.len() && stream_open && buf.len() - consumed <= MAX_TCP_LEFTOVER)
+            (consumed < buf.len() && stream_open && buf.len() - consumed <= max_tcp_leftover())
                 .then(|| buf[consumed..].to_vec());
 
         // Freeze the stream buffer once: every framed message (and an

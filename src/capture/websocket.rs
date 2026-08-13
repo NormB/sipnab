@@ -19,8 +19,80 @@ const OPCODE_TEXT: u8 = 1;
 /// WebSocket binary-frame opcode (RFC 6455 section 5.2).
 const OPCODE_BINARY: u8 = 2;
 
-/// Common ports where SIP-over-WebSocket traffic is expected.
+/// Ports where SIP-over-WebSocket traffic is expected when the operator has
+/// declared nothing.
+///
+/// This is the BROWSER's view of the web, not a deployment's. Kamailio,
+/// OpenSIPS and Janus each ship WSS on ports outside it, and behind a reverse
+/// proxy the port sipnab sees is whichever one the proxy forwards to — so on
+/// those deployments the entire WebRTC signalling leg used to be invisible,
+/// with no skip report and nothing said. Replace the set with
+/// `--ws-portrange` or `[capture] ws_ports`; see
+/// [`crate::cli::Cli::ws_port_range`].
 pub const WS_PORTS: &[u16] = &[80, 443, 8080, 8443];
+
+/// The port range this process declared, packed as `lo << 16 | hi`.
+///
+/// `0` means "nothing declared", which is distinguishable from every real
+/// range because clap and the config loader both refuse port 0. Process-global
+/// and written once at startup, the same shape as
+/// [`crate::rtp::stream::set_lost_seq_log_cap`] and for the same reason:
+/// unwrapping happens on the batch path, the TUI path, every `--cores` shard
+/// and the WASM entry point, and a value threaded to some of them is a setting
+/// honoured on some surfaces and ignored on others.
+static WS_PORT_RANGE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Declare the SIP-over-WebSocket port range for this process. Call once, at
+/// startup.
+///
+/// # Arguments
+///
+/// * `range` — the inclusive `(lo, hi)` an operator asked for, or `None` to
+///   keep the shipped set.
+///
+/// # Side effects
+///
+/// Stores the packed range into a process-wide atomic (relaxed ordering).
+pub fn set_ws_port_range(range: Option<(u16, u16)>) {
+    let packed = range.map_or(0, |(lo, hi)| (u32::from(lo) << 16) | u32::from(hi));
+    WS_PORT_RANGE.store(packed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The declared range, or `None` when the shipped set is in force.
+#[must_use]
+pub fn ws_port_range() -> Option<(u16, u16)> {
+    match WS_PORT_RANGE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        packed => Some(((packed >> 16) as u16, packed as u16)),
+    }
+}
+
+/// Whether `port` is one sipnab will unwrap SIP-over-WebSocket on.
+///
+/// A declared range REPLACES the shipped set rather than adding to it, exactly
+/// as `--portrange` replaces the default signalling ports. The traffic that
+/// falls outside is not silently dropped: `crate::pipeline::try_websocket_unwrap`
+/// tallies it and `crate::pipeline::ws_port_skip_report` names the ports.
+#[must_use]
+pub fn is_ws_port(port: u16) -> bool {
+    match ws_port_range() {
+        Some((lo, hi)) => (lo..=hi).contains(&port),
+        None => WS_PORTS.contains(&port),
+    }
+}
+
+/// The port set in force, spelled the way an operator wrote it, for reports.
+#[must_use]
+pub fn ws_ports_description() -> String {
+    match ws_port_range() {
+        Some((lo, hi)) => format!("{lo}-{hi}"),
+        None => WS_PORTS
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
 
 /// Check if data looks like a WebSocket frame (heuristic).
 ///

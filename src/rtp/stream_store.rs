@@ -71,6 +71,14 @@ struct SdpEndpoint {
     call_id: String,
     /// `a=rtpmap` entries as `(payload_type, encoding, clock_rate)`.
     rtpmap: Vec<(u8, String, u32)>,
+    /// `a=ptime` in milliseconds, when the media description declared one.
+    ///
+    /// Kept beside the rtpmap because it answers the same kind of question —
+    /// what the endpoints agreed the media would look like — and reaches the
+    /// stream by the same two routes (an endpoint learned before its RTP, and
+    /// one learned after). `RtpStream::ptime_ms` prefers a measurement, and
+    /// falls back to this on the streams too short to measure.
+    ptime: Option<u32>,
 }
 
 /// How a stream's RTP clock rate — the divisor every jitter figure depends on
@@ -845,7 +853,7 @@ impl StreamStore {
             .iter()
             .map(|rm| (rm.payload_type, rm.encoding.clone(), rm.clock_rate))
             .collect();
-        self.link_endpoint(media_addr, media_port, call_id, &rtpmap);
+        self.link_endpoint_with_ptime(media_addr, media_port, call_id, &rtpmap, media.ptime);
     }
 
     /// Associate every RTP stream on `media_addr:media_port` to `call_id` and,
@@ -872,9 +880,33 @@ impl StreamStore {
         call_id: &str,
         rtpmap: &[(u8, String, u32)],
     ) {
+        self.link_endpoint_with_ptime(media_addr, media_port, call_id, rtpmap, None);
+    }
+
+    /// [`link_endpoint`](Self::link_endpoint) plus the media description's
+    /// `a=ptime`, which reaches `RtpStream::sdp_ptime_ms`.
+    ///
+    /// Split from `link_endpoint` rather than added to it so the callers that
+    /// genuinely have no media description — the post-capture re-link sweep and
+    /// the tests that build an rtpmap by hand — say `None` by not saying
+    /// anything, instead of every call site growing a trailing argument it has
+    /// no answer for.
+    ///
+    /// # Side effects
+    ///
+    /// As [`link_endpoint`](Self::link_endpoint), and additionally writes
+    /// `sdp_ptime_ms` on every already-existing matching stream that has none.
+    pub fn link_endpoint_with_ptime(
+        &mut self,
+        media_addr: IpAddr,
+        media_port: u16,
+        call_id: &str,
+        rtpmap: &[(u8, String, u32)],
+        ptime: Option<u32>,
+    ) {
         // Remember this endpoint so a stream created *later* (the common
         // ordering) resolves codec/clock/dialog at creation — see process_rtp.
-        self.remember_sdp_endpoint(media_addr, media_port, call_id, rtpmap);
+        self.remember_sdp_endpoint(media_addr, media_port, call_id, rtpmap, ptime);
 
         // Indexed lookup (SNB-0015): the endpoint index yields exactly the streams
         // whose src or dst is this endpoint — the same set the old full-store scan
@@ -892,6 +924,15 @@ impl StreamStore {
             };
             if stream.associated_dialog.is_none() {
                 stream.associated_dialog = Some(call_id.to_string());
+                self.generation += 1;
+            }
+            // Only fills an unset one, for the same reason the codec branch
+            // below does: a re-offer that drops `a=ptime` must not erase what
+            // the original exchange declared.
+            if stream.sdp_ptime_ms.is_none()
+                && let Some(ms) = ptime
+            {
+                stream.sdp_ptime_ms = Some(ms);
                 self.generation += 1;
             }
             // Enrich codec info from SDP rtpmap for dynamic payload types. Only
@@ -926,20 +967,24 @@ impl StreamStore {
 
     /// Record an SDP-negotiated endpoint for later stream resolution, bounded
     /// to `max_streams` entries (oldest-out). A repeated offer/answer for the
-    /// same endpoint refreshes it; a re-offer that drops the rtpmap does not
-    /// clobber a previously-learned one.
+    /// same endpoint refreshes it; a re-offer that drops the rtpmap or the
+    /// `a=ptime` does not clobber a previously-learned one.
     fn remember_sdp_endpoint(
         &mut self,
         addr: IpAddr,
         port: u16,
         call_id: &str,
         rtpmap: &[(u8, String, u32)],
+        ptime: Option<u32>,
     ) {
         match self.sdp_endpoints.get_mut(&(addr, port)) {
             Some(existing) => {
                 existing.call_id = call_id.to_string();
                 if !rtpmap.is_empty() {
                     existing.rtpmap = rtpmap.to_vec();
+                }
+                if ptime.is_some() {
+                    existing.ptime = ptime;
                 }
             }
             None => {
@@ -960,6 +1005,7 @@ impl StreamStore {
                     SdpEndpoint {
                         call_id: call_id.to_string(),
                         rtpmap: rtpmap.to_vec(),
+                        ptime,
                     },
                 );
             }
@@ -980,6 +1026,9 @@ impl StreamStore {
             };
             if stream.associated_dialog.is_none() {
                 stream.associated_dialog = Some(endpoint.call_id.clone());
+            }
+            if stream.sdp_ptime_ms.is_none() {
+                stream.sdp_ptime_ms = endpoint.ptime;
             }
             if stream.codec.is_none()
                 && let Some((_, encoding, clock_rate)) = endpoint
@@ -1266,7 +1315,7 @@ impl StreamStore {
             .map(|(k, v)| (*k, v.clone()))
             .collect();
         for ((addr, port), ep) in eps {
-            self.link_endpoint(addr, port, &ep.call_id, &ep.rtpmap);
+            self.link_endpoint_with_ptime(addr, port, &ep.call_id, &ep.rtpmap, ep.ptime);
         }
     }
 

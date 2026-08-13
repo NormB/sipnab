@@ -207,6 +207,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of sipgrep `-a`). Useful for pure single-packet UDP scanning |
 | `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse (sipgrep `-x`). sipnab drops the packet either way; this only silences the notice on a noisy link |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP **signalling** port range. Media is never gated — RTP uses SDP-negotiated dynamic ports. The default is narrow and carriers routinely run SIP on 5070, 5080 and elsewhere, so widen it or analyse a fraction of the file — see the note below |
+| `--ws-portrange` | `<RANGE>` | `80, 443, 8080, 8443` | Ports carrying SIP-over-WebSocket (RFC 7118), as one inclusive `START-END` range in the same grammar as `--portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — so the whole WebRTC signalling leg stays invisible. A range **replaces** the shipped set, exactly as `--portrange` replaces the default signalling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. Config: `[capture] ws_ports` |
 | `--multi-device` | -- | off | Open one capture per interface named in a comma-separated `-d` list, e.g. `-d eth0,docker0 --multi-device`. It does **not** enumerate interfaces for you: with a single `-d` (or none) it falls back to an ordinary single capture. On Linux the zero-argument default already sniffs every interface via the `any` pseudo-device |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
 | `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode (sipgrep `-p`). Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
@@ -396,6 +397,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N --input capture.pcap --replay --limitlen 1500 --no-rtp` — replay signaling only from a pcap, parsing at most 1500 bytes of each packet
 - `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --snaplen 9000 --count 500` — stop after 500 packets that pass the sip.bpf filter, non-promiscuous, with the snapshot length sized for jumbo frames
 - `sudo sipnab -N --device eth0 --output capture.pcap --autostop duration:60 --no-reassembly` — write a one-minute capture that treats every packet standalone (IP-fragment and TCP-segment reassembly off)
+- `sipnab -N --input webrtc.pcap --ws-portrange 8081-8081 --portrange 1-65535 --json-dialogs --no-cli-print` — a WSS listener behind a reverse proxy that forwards to 8081: without the range the entire WebRTC signalling leg is invisible, and sipnab reports how many messages it skipped and on which port
+- `sudo sipnab -d eth0 --ws-portrange 1-65535 --portrange 1-65535` — unwrap SIP-over-WebSocket wherever it appears on a box whose WSS port you do not know yet, then read the skip line to learn which ports were carrying it
 
 
 ## Mode
@@ -649,6 +652,7 @@ flag has a config key under `[diagnosis]`, and the flag wins.
 | `--duration-asymmetry-pct` | `<PCT>` | `5.0` | Percentage difference between the two legs' durations that counts as asymmetric. Config: `[diagnosis] duration_asymmetry_pct` |
 | `--duration-asymmetry-secs` | `<SECS>` | `2.0` | Absolute difference between the two legs' durations that counts as asymmetric. A call has to clear both this and the percentage, so raising either one alone quiets the detection. Config: `[diagnosis] duration_asymmetry_secs` |
 | `--late-media-ms` | `<MS>` | `500` | Milliseconds after the `200 OK` that media may start before it gets reported as late. Config: `[diagnosis] late_media_ms` |
+| `--cn-suppression-ratio` | `<RATIO>` | `0.3` | Share of a call's packets, as a fraction of 1, that must be comfort noise before sipnab accepts comfort noise as the explanation for one-directional media. **The one threshold here that withholds a finding instead of raising one**, so it fails as silence: a VoLTE or mobile trunk running aggressive voice-activity detection routinely passes 30 percent comfort noise, and above the ratio sipnab never reports one-way audio on that trunk. Must be greater than 0 and 1 or less. Config: `[diagnosis] cn_suppression_ratio` |
 
 **Examples**
 
@@ -659,6 +663,8 @@ flag has a config key under `[diagnosis]`, and the flag wins.
 - `sipnab -N -I trunk.pcap --json-dialogs --ack-timeout 64 --no-final-response-timeout 300 --no-cli-print` — a lossy trunk where the RFC timers themselves fire too early, so only a genuinely dead transaction gets reported
 - `sipnab -N -I b2bua.pcap --json-dialogs --duration-asymmetry-pct 25 --duration-asymmetry-secs 5 --no-cli-print` — a B2BUA capture where the legs never tear down together, so only a large gap is worth a line
 - `sipnab -N -I b2bua.pcap --json-dialogs --duration-asymmetry-pct 1 --duration-asymmetry-secs 0.2 --no-cli-print` — the strict form of the same audit, for hunting a leg that drops media a fraction early
+- `sipnab -N -I volte-trunk.pcap --json-dialogs --cn-suppression-ratio 0.8 --no-cli-print` — a mobile trunk whose voice-activity detection sends comfort noise on well over 30 percent of packets: at the shipped ratio sipnab treats that as the explanation for a one-directional flow and reports no one-way audio on any call
+- `sipnab -N -I pbx.pcap --json-dialogs --cn-suppression-ratio 0.05 --no-cli-print` — the opposite, for a LAN PBX where a call carrying any comfort noise at all is still expected to be bidirectional
 
 
 ## Quality colour bands
@@ -973,6 +979,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`) |
 | `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |
 | `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. libpcap inflates the packet stream of a `-I capture.pcap.gz` run, and this does not bound that. The documented alternative — gunzip the file and open the plain one — costs the disk the compression was saving. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
+| `--max-tcp-buffer` | `<BYTES>` | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message — both halves parse as malformed, the cut destroys the framing for every message behind it, and the peer that sent a valid message is the one sipnab reports as broken. Raising it to N lets one TCP direction hold N bytes. The floor is one SIP header line (8192), below which no message survives, and sipnab refuses a smaller value by name. Config: `[limits] max_tcp_buffer` |
 
 **Examples**
 
@@ -984,6 +991,8 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --strip-secrets sanitised.pcapng` — the same file, sanitised for handover; the copy costs roughly twice the ceiling in memory, so raise it only for a file you trust
 - `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitised.pcapng` — sanitise an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
 - `sipnab -N -I from-customer.pcapng.gz --max-gunzip-bytes 268435456 --report` — the opposite, for a file that arrived from outside: a quarter-gigabyte ceiling on the embedded names and secrets sipnab reads out of it, so a gzip bomb wearing a capture's name cannot take the box down
+- `sipnab -N -I isup-trunk.pcap --max-tcp-buffer 1048576 --json-dialogs --no-cli-print` — a carrier trunk whose SIP/TCP messages carry encapsulated ISUP bodies past 64 KiB: at the shipped ceiling sipnab cuts each one in half and reports it malformed, and at 1 MiB the same bytes produce the call
+- `sudo sipnab -d eth0 --max-tcp-buffer 262144` — watch a live SBC that answers with long `Record-Route` sets, holding a quarter-megabyte per TCP direction so a large response frames whole instead of arriving as two malformed fragments
 
 
 ## Config

@@ -77,6 +77,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "device",
             "node_name",
             "portrange",
+            "ws_ports",
             "snaplen",
             "buffer",
             "buffer_budget_mb",
@@ -139,6 +140,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "duration_asymmetry_pct",
             "duration_asymmetry_secs",
             "late_media_ms",
+            "cn_suppression_ratio",
         ]
         .as_slice(),
     );
@@ -163,6 +165,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_grouped_messages",
             "max_metadata_file_bytes",
             "max_gunzip_bytes",
+            "max_tcp_buffer",
         ]
         .as_slice(),
     );
@@ -342,6 +345,17 @@ pub struct CaptureConfig {
     pub node_name: Option<String>,
     /// SIP port range.
     pub portrange: Option<String>,
+    /// Ports carrying SIP-over-WebSocket (RFC 7118), as one inclusive
+    /// `"START-END"` range in the same grammar as [`Self::portrange`].
+    ///
+    /// Unset means the shipped set — 80, 443, 8080 and 8443 — which is the
+    /// browser's view of the web and not the deployment's. Kamailio, OpenSIPS
+    /// and Janus all ship WSS on other ports, and behind a reverse proxy the
+    /// port sipnab sees is whichever one the proxy forwards to. On such a
+    /// deployment the whole WebRTC signalling leg is invisible, so sipnab now
+    /// tallies the SIP-over-WebSocket it declined to unwrap and reports the
+    /// ports it was on. `--ws-portrange` overrides this.
+    pub ws_ports: Option<String>,
     /// Snapshot length.
     pub snaplen: Option<u32>,
     /// Kernel buffer size (MiB).
@@ -640,6 +654,38 @@ pub fn parse_business_hours(spec: &str) -> Result<(u8, u8), crate::Error> {
     Ok((start, end))
 }
 
+/// Parse a `"START-END"` port range like `"5060-5061"` into an inclusive pair.
+///
+/// One grammar, one parser: `--portrange` and `--ws-portrange` accept the same
+/// spelling, and each has a config key (`[capture] portrange`,
+/// `[capture] ws_ports`) that must accept exactly what the flag does. A second
+/// copy of this is a second set of ports somebody's capture silently falls
+/// outside of.
+///
+/// # Errors
+/// A message naming the offending input for a malformed shape, a non-numeric
+/// or out-of-range port, or `start > end`.
+pub fn parse_portrange(s: &str) -> Result<(u16, u16), String> {
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "Expected format 'start-end' (e.g., '5060-5061'), got '{s}'"
+        ));
+    }
+    let start: u16 = parts[0]
+        .trim()
+        .parse()
+        .map_err(|_| format!("Invalid port number: '{}'", parts[0]))?;
+    let end: u16 = parts[1]
+        .trim()
+        .parse()
+        .map_err(|_| format!("Invalid port number: '{}'", parts[1]))?;
+    if start > end {
+        return Err(format!("Port range start ({start}) > end ({end})"));
+    }
+    Ok((start, end))
+}
+
 /// Thresholds the signalling and media diagnosers compare against.
 ///
 /// Separate from `[security]`, which decides whether traffic is hostile, and
@@ -669,6 +715,17 @@ pub struct DiagnosisConfig {
     /// Milliseconds after the `200 OK` that media may start before it is
     /// reported as late (default: 500).
     pub late_media_ms: Option<i64>,
+    /// Share of a call's packets that must be comfort noise before comfort
+    /// noise is accepted as the explanation for one-way audio, as a fraction
+    /// of 1 (default: 0.3).
+    ///
+    /// The one threshold here that SUPPRESSES a finding rather than raising
+    /// one, so it fails in the quiet direction. A VoLTE or mobile trunk runs
+    /// aggressive voice-activity detection, and on those legs comfort noise
+    /// routinely passes 30 % of the packets — which withdraws the one-way
+    /// audio finding, the single most-reported VoIP fault, from every call on
+    /// the trunk with nothing said.
+    pub cn_suppression_ratio: Option<f64>,
 }
 
 impl DiagnosisConfig {
@@ -710,6 +767,19 @@ impl DiagnosisConfig {
         {
             return Err(crate::Error::ConfigInvalid(format!(
                 "[diagnosis] late_media_ms must be > 0, got {ms}"
+            )));
+        }
+        // A share of the packets, so the upper bound is 1 and both ends are
+        // refused rather than clamped. `0` suppresses one-way audio on any
+        // call carrying a single CN frame; anything above 1 can never be
+        // reached, so the suppression is switched off by a number that reads
+        // like a setting. Both are silence the operator did not ask for.
+        if let Some(r) = self.cn_suppression_ratio
+            && !(r.is_finite() && r > 0.0 && r <= 1.0)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[diagnosis] cn_suppression_ratio is a share of the packets and must \
+                 be a finite number > 0 and <= 1, got {r}"
             )));
         }
         Ok(())
@@ -844,6 +914,17 @@ pub struct LimitsConfig {
     /// much RAM, so raise it for captures you compressed yourself and not for
     /// a file someone sent you.
     pub max_gunzip_bytes: Option<u64>,
+    /// Bytes one SIP/TCP direction may buffer before sipnab flushes it
+    /// (default: 65536).
+    ///
+    /// The only cap here that DESTROYS data rather than truncating a report.
+    /// TCP imposes no such ceiling and neither does RFC 3261: a message
+    /// carrying a large multipart body — ISUP encapsulation, a long
+    /// `Record-Route` set, a fat SDP offer — legitimately exceeds it, and when
+    /// it does the buffer is flushed mid-message so both halves parse as
+    /// malformed. The peer that sent a perfectly good message is the one
+    /// reported broken.
+    pub max_tcp_buffer: Option<u64>,
 }
 
 impl LimitsConfig {
@@ -964,6 +1045,22 @@ impl LimitsConfig {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] max_gunzip_bytes must be > 0".into(),
             ));
+        }
+        // Floored rather than merely non-zero, and the floor is a measured
+        // one: `MIN_TCP_BUFFER` is the widest single header line the parser
+        // will accept, so a ceiling below it cannot hold even one header of
+        // one message and every SIP/TCP message in the capture is flushed
+        // mid-message. The flag carries the same floor, so the file is not
+        // the lenient way in.
+        if let Some(v) = self.max_tcp_buffer
+            && v < crate::capture::reassembly::MIN_TCP_BUFFER as u64
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot \
+                 hold one SIP header line, so every SIP/TCP message would be \
+                 flushed mid-message and reported malformed), got {v}",
+                crate::capture::reassembly::MIN_TCP_BUFFER
+            )));
         }
         Ok(())
     }
@@ -1514,6 +1611,35 @@ pub fn write_manual_mappings_file(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    // ── parse_portrange ────────────────────────────────────────────────
+
+    /// Well-formed ranges parse, whitespace is trimmed, start==end allowed.
+    #[test]
+    fn parse_portrange_valid_and_trimmed() {
+        assert_eq!(parse_portrange("5060-5061").unwrap(), (5060, 5061));
+        // surrounding whitespace is trimmed on each side
+        assert_eq!(parse_portrange(" 100 - 200 ").unwrap(), (100, 200));
+        // single-port range (start == end) is allowed
+        assert_eq!(parse_portrange("5060-5060").unwrap(), (5060, 5060));
+    }
+
+    /// Malformed shapes, non-numeric or out-of-range ports, and start > end
+    /// all produce errors.
+    #[test]
+    fn parse_portrange_errors() {
+        // wrong number of '-' separated parts
+        assert!(parse_portrange("5060").is_err());
+        assert!(parse_portrange("5060-5061-5062").is_err());
+        // non-numeric start / end
+        assert!(parse_portrange("abc-5061").is_err());
+        assert!(parse_portrange("5060-xyz").is_err());
+        // out of u16 range
+        assert!(parse_portrange("0-70000").is_err());
+        // start > end
+        let err = parse_portrange("6000-5000").unwrap_err();
+        assert!(err.contains("start"), "got: {err}");
+    }
 
     // ── Atomic, symlink-safe sipnabrc writes (P2 item 3) ────────────────
 
@@ -2193,6 +2319,7 @@ column_selector = "F10"
             max_grouped_messages: Some(200_000),
             max_metadata_file_bytes: Some(2 * 1024 * 1024 * 1024),
             max_gunzip_bytes: Some(1 << 30),
+            max_tcp_buffer: Some(65536),
         };
         assert!(limits.validate().is_ok());
     }

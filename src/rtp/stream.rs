@@ -96,6 +96,20 @@ pub fn set_lost_seq_log_cap(cap: usize) {
 /// Interior frames are measured from actual RTP-timestamp spacing instead.
 const NOMINAL_CN_FRAME_MS: u32 = 20;
 
+/// Packetization interval assumed when neither the packets nor the SDP say.
+///
+/// The last resort of [`RtpStream::burst_gap_analysis`], and deliberately the
+/// last: it is the G.711 default and nothing more. G.729 at 30 ms and a
+/// satellite trunk at 40 ms are ordinary, and charging their frames 20 ms
+/// understates every reported burst and gap by a third to a half — a
+/// three-second outage published as two.
+const DEFAULT_PTIME_MS: f64 = 20.0;
+
+/// Narrowest and widest per-frame interval that can be a real packetization
+/// time. Outside it the measurement is describing something else — a paused
+/// capture, a stream of one talkspurt — and is discarded rather than believed.
+const PLAUSIBLE_PTIME_MS: std::ops::RangeInclusive<f64> = 5.0..=200.0;
+
 // ── Public types ─────────────────────────────────────────────────────
 
 /// Unique key for an RTP stream: SSRC combined with the 5-tuple direction.
@@ -292,6 +306,15 @@ pub struct RtpStream {
     /// Ring buffer of raw RTP payloads for audio export (G.711 and Opus).
     /// Each entry: (RTP timestamp, raw payload bytes).
     pub payload_buffer: std::collections::VecDeque<(u32, Vec<u8>)>,
+    /// Packetization interval the SDP declared with `a=ptime`, in
+    /// milliseconds, when an offer or answer for this endpoint carried one.
+    ///
+    /// `None` means no SDP said, which is different from 20: the fallback for
+    /// "nobody said" is `DEFAULT_PTIME_MS` and it is a guess, while this is
+    /// the endpoints' own agreement. Used by
+    /// [`burst_gap_analysis`](Self::burst_gap_analysis) when the stream is too
+    /// short or too damaged to measure its own cadence.
+    pub sdp_ptime_ms: Option<u32>,
 
     // ── Private state for jitter/interval tracking ───────────────────
     /// Losses this stream retains, read from the process-wide declaration
@@ -518,6 +541,7 @@ impl RtpStream {
             cn_frames: 0,
             silence_periods: Vec::new(),
             payload_buffer: std::collections::VecDeque::new(),
+            sdp_ptime_ms: None,
             lost_seq_cap: lost_seq_log_cap(),
             prev_arrival: Some(timestamp),
             prev_rtp_ts: Some(header.timestamp),
@@ -691,7 +715,8 @@ impl RtpStream {
     /// Reconstructs a received/lost bitmap over the sequence range the
     /// `lost_sequences` log actually covers — from its oldest to its newest
     /// retained entry — and delegates to `super::quality::analyze_burst_gap`
-    /// (assuming a 20 ms packet interval).
+    /// at this stream's packetization interval (see
+    /// [`ptime_ms`](Self::ptime_ms)).
     ///
     /// The window is deliberately bounded to that retained range rather than
     /// to `last_seq` and the total packet count. The log keeps only its most
@@ -711,8 +736,7 @@ impl RtpStream {
     ///
     /// Returns `None` if there are no lost packets to analyze.
     pub fn burst_gap_analysis(&self) -> Option<super::quality::BurstGapAnalysis> {
-        // Default ptime for common audio codecs (ms).
-        let ptime_ms = 20.0;
+        let ptime_ms = self.ptime_ms();
 
         let lost_set: std::collections::HashSet<u16> =
             self.lost_sequences.iter().copied().collect();
@@ -739,6 +763,69 @@ impl RtpStream {
         }
 
         Some(super::quality::analyze_burst_gap(&received, ptime_ms))
+    }
+
+    /// Milliseconds of audio each frame of this stream carries: measured,
+    /// else declared, else assumed.
+    ///
+    /// The order is the whole point. [`inferred_ptime_ms`](Self::inferred_ptime_ms)
+    /// is a measurement off the packets that actually arrived and beats any
+    /// declaration, because a declaration can be stale or aspirational and the
+    /// wire cannot. The SDP `a=ptime` is next: the endpoints agreed on it, and
+    /// it is available on the streams too short or too damaged to measure.
+    /// `DEFAULT_PTIME_MS` is last and is a guess.
+    ///
+    /// This used to be a bare `20.0` at the one call site, which meant every
+    /// burst and gap duration on a G.729 trunk at 30 ms was understated by a
+    /// third and on a 40 ms satellite trunk by half — while the inference this
+    /// now consults already existed, one module away, validating exactly this
+    /// figure for the ptime-asymmetry detector.
+    #[must_use]
+    pub fn ptime_ms(&self) -> f64 {
+        self.inferred_ptime_ms()
+            .or(self.sdp_ptime_ms)
+            .filter(|ms| PLAUSIBLE_PTIME_MS.contains(&f64::from(*ms)))
+            .map_or(DEFAULT_PTIME_MS, f64::from)
+    }
+
+    /// Infer ptime in ms from this stream's wall-clock span and packet count.
+    ///
+    /// The wall-clock span between the first and last packet covers one
+    /// packetization interval per frame that was *transmitted*, so dividing by
+    /// the number of intervals yields ms/frame. Lost packets still occupy their
+    /// slots on the wire, so the denominator must count them: using only the
+    /// received packets would stretch each interval and inflate the inferred
+    /// ptime in proportion to the loss. We therefore divide by
+    /// `(received + lost − 1)` intervals. We need at least two packets to
+    /// estimate.
+    ///
+    /// Returns `None` when the stream is too short to measure, has no
+    /// wall-clock span, or yields a figure outside `PLAUSIBLE_PTIME_MS`.
+    #[must_use]
+    pub fn inferred_ptime_ms(&self) -> Option<u32> {
+        if self.packet_count < 2 {
+            return None;
+        }
+        let dur = (self.last_seen - self.first_seen).num_milliseconds() as f64;
+        if dur <= 0.0 {
+            return None;
+        }
+        // Frames spanning the observed window = received + lost; intervals is
+        // one fewer. `lost_packets` comes from RTP sequence-gap accounting on
+        // the stream, so gaps read as their true multi-frame width rather than
+        // a single long inter-arrival interval.
+        let intervals = (self.packet_count + self.lost_packets).saturating_sub(1);
+        if intervals == 0 {
+            return None;
+        }
+        let avg_ms = dur / intervals as f64;
+        if !PLAUSIBLE_PTIME_MS.contains(&avg_ms) {
+            return None;
+        }
+        // Round to the nearest 10 ms which is the standard quantization for
+        // packetization (10/20/30/40 ms are the only realistic values).
+        let rounded = ((avg_ms / 10.0).round() * 10.0) as u32;
+        Some(rounded)
     }
 }
 

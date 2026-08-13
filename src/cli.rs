@@ -343,6 +343,23 @@ pub struct Cli {
     #[arg(help_heading = "Capture", long, value_name = "RANGE")]
     pub portrange: Option<String>,
 
+    /// Ports carrying SIP-over-WebSocket (RFC 7118), as one inclusive
+    /// `START-END` range. Config: `[capture] ws_ports`.
+    ///
+    /// The shipped set — 80, 443, 8080, 8443 — is the browser's view of the
+    /// web, not a deployment's. Kamailio, OpenSIPS and Janus each default to
+    /// WSS on ports outside it, and behind a reverse proxy sipnab sees
+    /// whichever port the proxy forwards to; on such a capture the entire
+    /// WebRTC signalling leg is invisible. Unlike `--portrange` this used to
+    /// report nothing at all, so sipnab now tallies the SIP-over-WebSocket it
+    /// declined to unwrap and names the ports it was on.
+    ///
+    /// A range REPLACES the shipped set, exactly as `--portrange` replaces the
+    /// default signalling ports; pass `--ws-portrange 1-65535` to unwrap
+    /// wherever it appears.
+    #[arg(help_heading = "Capture", long = "ws-portrange", value_name = "RANGE")]
+    pub ws_portrange: Option<String>,
+
     /// Capture on the selected interfaces given as a comma-separated list to
     /// `-d` (e.g. `-d eth0,docker0 --multi-device`), opening one capture per
     /// interface. Without this flag, the zero-argument default already sniffs
@@ -1478,6 +1495,29 @@ pub struct Cli {
     #[arg(help_heading = "Analysis", long = "late-media-ms", value_name = "MS")]
     pub late_media_ms: Option<i64>,
 
+    /// Share of a call's packets, as a fraction of 1, that must be comfort
+    /// noise before comfort noise is accepted as the explanation for
+    /// one-directional media. Default 0.3. Config:
+    /// `[diagnosis] cn_suppression_ratio`.
+    ///
+    /// The one threshold that SUPPRESSES a finding, so its failure is silence:
+    /// a VoLTE or mobile trunk with aggressive VAD routinely passes 30 % CN,
+    /// and above the ratio one-way audio is never reported on that trunk.
+    /// Raise it toward 1 on such a trunk; lower it where a call carrying any
+    /// comfort noise at all is still expected to be bidirectional.
+    ///
+    /// Refused at 0 and above 1 by name, in clap and in
+    /// `crate::config::DiagnosisConfig::validate`, so the file is not the
+    /// lenient way in. The default lives in
+    /// [`crate::rtp::diagnosis::AsymmetryThresholds::BUILT_IN`].
+    #[arg(
+        help_heading = "Analysis",
+        long = "cn-suppression-ratio",
+        value_name = "RATIO",
+        value_parser = parse_cn_suppression_ratio
+    )]
+    pub cn_suppression_ratio: Option<f64>,
+
     /// Jitter, in milliseconds, at or above which the colour column turns
     /// yellow. Config: `[quality] jitter_warn_ms`.
     ///
@@ -1874,6 +1914,32 @@ pub struct Cli {
     #[arg(help_heading = "Resource limits", long, value_name = "N")]
     pub max_reassembly: Option<u64>,
 
+    /// Bytes one SIP/TCP direction may buffer before sipnab flushes it
+    /// (default 65536). Config: `[limits] max_tcp_buffer`.
+    ///
+    /// The only cap here that DESTROYS data rather than truncating a report.
+    /// TCP imposes no such ceiling and neither does RFC 3261: on a carrier
+    /// trunk a message carrying ISUP encapsulation, a long `Record-Route` set
+    /// or a fat SDP offer passes 64 KiB legitimately, and when it does the
+    /// buffer is flushed mid-message so both halves parse as malformed. The
+    /// peer that sent a perfectly good message is the one reported broken.
+    ///
+    /// Raising it to N lets one TCP direction hold N bytes, so it is the
+    /// operator's statement about the trunk they are watching. The floor is
+    /// one SIP header line, below which no message could survive.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER`].
+    #[arg(
+        help_heading = "Resource limits",
+        long = "max-tcp-buffer",
+        value_name = "BYTES",
+        value_parser = clap::value_parser!(u64)
+            .range(crate::capture::reassembly::MIN_TCP_BUFFER as u64..)
+    )]
+    pub max_tcp_buffer: Option<u64>,
+
     /// Bytes of pcapng sipnab reads into memory for embedded names and TLS
     /// secrets (default 2 GiB). Config: `[limits] max_metadata_file_bytes`.
     ///
@@ -2180,6 +2246,52 @@ impl Cli {
             .unwrap_or(crate::capture::pcapng_meta::DEFAULT_MAX_METADATA_FILE_BYTES)
     }
 
+    /// SIP/TCP reassembly ceiling: `--max-tcp-buffer`, else
+    /// `[limits] max_tcp_buffer`, else the shipped default.
+    ///
+    /// The default is sourced from
+    /// [`crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER`] rather than
+    /// restated, so the figure the warning quotes and the figure the flush
+    /// enforces cannot drift apart.
+    #[must_use]
+    pub fn tcp_buffer_cap(&self, config: &crate::config::Config) -> usize {
+        self.max_tcp_buffer
+            .or(config.limits.max_tcp_buffer)
+            .map_or(crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER, |v| {
+                v as usize
+            })
+    }
+
+    /// SIP-over-WebSocket port set: `--ws-portrange`, else
+    /// `[capture] ws_ports`, else the shipped set.
+    ///
+    /// Returns `None` for "nobody declared a range", which is NOT the same as
+    /// an empty set: unwrapping then happens on
+    /// [`crate::capture::websocket::WS_PORTS`]. Both sources are parsed by
+    /// `crate::config::parse_portrange`, the same function `--portrange` uses,
+    /// so the two flags cannot come to disagree about what a range looks like.
+    ///
+    /// # Errors
+    ///
+    /// `crate::Error::ConfigInvalid`, naming the source, when the spec is not
+    /// two ports separated by `-` with start <= end.
+    pub fn ws_port_range(
+        &self,
+        config: &crate::config::Config,
+    ) -> Result<Option<(u16, u16)>, crate::Error> {
+        let (spec, source) = match (
+            self.ws_portrange.as_deref(),
+            config.capture.ws_ports.as_deref(),
+        ) {
+            (Some(s), _) => (s, "--ws-portrange"),
+            (None, Some(s)) => (s, "[capture] ws_ports"),
+            (None, None) => return Ok(None),
+        };
+        crate::config::parse_portrange(spec)
+            .map(Some)
+            .map_err(|e| crate::Error::ConfigInvalid(format!("{source}: {e}")))
+    }
+
     /// Gzip inflation ceiling: `--max-gunzip-bytes`, else
     /// `[limits] max_gunzip_bytes`, else the shipped default.
     ///
@@ -2464,6 +2576,10 @@ impl Cli {
                 .late_media_ms
                 .or(d.late_media_ms)
                 .unwrap_or(built_in.late_media_threshold_ms),
+            cn_suppression_ratio: self
+                .cn_suppression_ratio
+                .or(d.cn_suppression_ratio)
+                .unwrap_or(built_in.cn_suppression_ratio),
         }
     }
 
@@ -2804,6 +2920,29 @@ pub fn resolve_file_or_inline_secret(
 /// exited 0 and changed nothing — so a typo silently selected the default.
 fn parse_dialog_track(s: &str) -> Result<crate::sip::dialog_store::DialogTracking, String> {
     s.parse()
+}
+
+/// Parse `--cn-suppression-ratio`, refusing anything that is not a share of 1.
+///
+/// clap's `value_parser!(..).range(..)` covers integers only, so the bound an
+/// `f64` flag needs has to be written out. It is written to match
+/// `crate::config::DiagnosisConfig::validate` exactly — one rule, two
+/// enforcement points — because a flag that refuses `0` while the file accepts
+/// it makes the file the lenient way in, and this particular `0` silently
+/// withdraws the one-way-audio finding from every call carrying a single
+/// comfort-noise frame.
+fn parse_cn_suppression_ratio(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("not a number: '{s}'"))?;
+    if !(v.is_finite() && v > 0.0 && v <= 1.0) {
+        return Err(format!(
+            "cn-suppression-ratio is a share of the packets and must be a finite \
+             number > 0 and <= 1, got {v}"
+        ));
+    }
+    Ok(v)
 }
 
 #[cfg(test)]
@@ -3946,6 +4085,17 @@ mod tests {
                 resolve: |c, cfg| c.mcp_body_cap(cfg) as u64,
                 requires: &[],
             },
+            Case {
+                key: "max_tcp_buffer",
+                flag: "--max-tcp-buffer",
+                set_key: |l| l.max_tcp_buffer = Some(262_144),
+                key_value: 262_144,
+                flag_value: "524288",
+                flag_number: 524_288,
+                shipped: crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER as u64,
+                resolve: |c, cfg| c.tcp_buffer_cap(cfg) as u64,
+                requires: &[],
+            },
         ];
 
         for c in &cases {
@@ -4035,6 +4185,187 @@ mod tests {
                 "{flag} must refuse 0 and say so: {err}"
             );
         }
+    }
+
+    /// A `--max-tcp-buffer` below one SIP header line is refused by clap, by
+    /// the same number `crate::config::LimitsConfig::validate` refuses it by
+    /// name from a file.
+    ///
+    /// The bound is not `0` here: `1` and `4096` are equally unusable — no SIP
+    /// message survives a ceiling narrower than one of its header lines — and a
+    /// flag that accepted them would let a run destroy every SIP/TCP message in
+    /// the capture on a value that looked like a setting.
+    #[test]
+    fn a_tcp_buffer_below_one_header_line_is_refused_by_clap_and_by_the_file() {
+        let floor = crate::capture::reassembly::MIN_TCP_BUFFER;
+        for value in ["0", "1", "4096"] {
+            let err =
+                Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--max-tcp-buffer", value])
+                    .expect_err("a ceiling below one header line must be refused");
+            assert!(
+                err.to_string().contains(&floor.to_string()),
+                "--max-tcp-buffer must name the floor it enforces: {err}"
+            );
+
+            let limits = crate::config::LimitsConfig {
+                max_tcp_buffer: Some(value.parse().expect("test values are numbers")),
+                ..Default::default()
+            };
+            let err = limits
+                .validate()
+                .expect_err("the file must not be the lenient way in");
+            assert!(
+                err.to_string().contains("max_tcp_buffer"),
+                "the file's refusal must name the key: {err}"
+            );
+        }
+        // And the floor itself is accepted from both, or the two enforcement
+        // points would be refusing different numbers.
+        assert!(
+            Cli::try_parse_from([
+                "sipnab",
+                "-N",
+                "-I",
+                "x.pcap",
+                "--max-tcp-buffer",
+                &floor.to_string(),
+            ])
+            .is_ok(),
+            "the floor must be reachable from the flag"
+        );
+        let limits = crate::config::LimitsConfig {
+            max_tcp_buffer: Some(floor as u64),
+            ..Default::default()
+        };
+        assert!(
+            limits.validate().is_ok(),
+            "the floor must be reachable from the file"
+        );
+    }
+
+    /// `--cn-suppression-ratio` resolves over `[diagnosis] cn_suppression_ratio`
+    /// over the built-in, and both refuse a ratio that is not a share of 1.
+    ///
+    /// The refusal matters more here than on any other threshold, because this
+    /// one SUPPRESSES a finding: `0` would accept comfort noise as the
+    /// explanation for one-way audio on every call carrying a single CN frame,
+    /// and the operator would see a quiet report rather than an error.
+    #[test]
+    fn the_cn_suppression_ratio_resolves_and_refuses_a_non_share() {
+        let built_in = crate::rtp::diagnosis::AsymmetryThresholds::BUILT_IN.cn_suppression_ratio;
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        assert_eq!(
+            bare.asymmetry_thresholds(&crate::config::Config::default())
+                .cn_suppression_ratio,
+            built_in,
+            "with neither given, the resolver must answer with the built-in"
+        );
+
+        let mut tuned = crate::config::Config::default();
+        tuned.diagnosis.cn_suppression_ratio = Some(0.9);
+        assert_eq!(
+            bare.asymmetry_thresholds(&tuned).cn_suppression_ratio,
+            0.9,
+            "[diagnosis] cn_suppression_ratio must reach the thresholds"
+        );
+
+        let flagged = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "-I",
+            "x.pcap",
+            "--cn-suppression-ratio",
+            "0.5",
+        ]);
+        assert_eq!(
+            flagged.asymmetry_thresholds(&tuned).cn_suppression_ratio,
+            0.5,
+            "--cn-suppression-ratio must outrank the key it shadows"
+        );
+
+        for value in ["0", "-0.1", "1.5", "nan"] {
+            // `--flag=value`, not `--flag value`: clap reads a bare `-0.1` as
+            // an unknown short flag before any value parser sees it.
+            let err = Cli::try_parse_from([
+                "sipnab",
+                "-N",
+                "-I",
+                "x.pcap",
+                &format!("--cn-suppression-ratio={value}"),
+            ])
+            .expect_err("a ratio outside (0, 1] must be refused");
+            assert!(
+                err.to_string().contains("cn-suppression-ratio"),
+                "the refusal must name the flag: {err}"
+            );
+
+            let cfg = crate::config::DiagnosisConfig {
+                cn_suppression_ratio: Some(value.parse().expect("test values parse as f64")),
+                ..Default::default()
+            };
+            let err = cfg
+                .validate()
+                .expect_err("the file must not be the lenient way in");
+            assert!(
+                err.to_string().contains("cn_suppression_ratio"),
+                "the file's refusal must name the key: {err}"
+            );
+        }
+    }
+
+    /// `--ws-portrange` resolves over `[capture] ws_ports` over the shipped
+    /// set, and a malformed range from either source is refused by its source's
+    /// name.
+    #[test]
+    fn the_ws_port_range_resolves_and_names_a_malformed_source() {
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        assert_eq!(
+            bare.ws_port_range(&crate::config::Config::default())
+                .expect("nothing declared is not an error"),
+            None,
+            "with neither given the shipped set stands, which is NOT an empty set"
+        );
+
+        let mut tuned = crate::config::Config::default();
+        tuned.capture.ws_ports = Some("8081-8090".into());
+        assert_eq!(
+            bare.ws_port_range(&tuned).expect("a valid range"),
+            Some((8081, 8090)),
+            "[capture] ws_ports must reach the resolver"
+        );
+
+        let flagged = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "-I",
+            "x.pcap",
+            "--ws-portrange",
+            "5443-5443",
+        ]);
+        assert_eq!(
+            flagged.ws_port_range(&tuned).expect("a valid range"),
+            Some((5443, 5443)),
+            "--ws-portrange must outrank the [capture] ws_ports it shadows"
+        );
+
+        let mut broken = crate::config::Config::default();
+        broken.capture.ws_ports = Some("8090-8081".into());
+        let err = bare
+            .ws_port_range(&broken)
+            .expect_err("start > end must be refused");
+        assert!(
+            err.to_string().contains("ws_ports"),
+            "the refusal must name the source that carried it: {err}"
+        );
+        let flagged =
+            Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--ws-portrange", "80"]);
+        let err = flagged
+            .ws_port_range(&crate::config::Config::default())
+            .expect_err("a single port is not a range");
+        assert!(
+            err.to_string().contains("--ws-portrange"),
+            "the refusal must name the flag that carried it: {err}"
+        );
     }
 
     /// `--max-groups` and `--max-grouped-messages` arm nothing without

@@ -2631,6 +2631,31 @@ impl BatchRunner {
                 );
             }
 
+            // And what the WebSocket port set discarded. Reported separately
+            // because it is a different loss with a different fix: the SIP
+            // above was recognised and gated, this was wrapped in a WebSocket
+            // frame on a port sipnab never tried to unwrap. Before this there
+            // was no report at all — a deployment terminating WSS on 8081 was
+            // told nothing whatsoever about its entire WebRTC signalling leg.
+            let ws_skipped = crate::pipeline::ws_port_skip_report();
+            if ws_skipped.messages > 0 {
+                let top: Vec<String> = ws_skipped
+                    .ports
+                    .iter()
+                    .take(5)
+                    .map(|p| format!("{} ({})", p.port, p.messages))
+                    .collect();
+                eprintln!(
+                    "NOT ANALYSED: {} SIP-over-WebSocket message(s) arrived on ports \
+                     outside the WebSocket port set ({}) and are in none of the \
+                     totals above. Busiest: {}. Re-run with --ws-portrange covering \
+                     them (e.g. --ws-portrange 1-65535) to include them.",
+                    ws_skipped.messages,
+                    crate::capture::websocket::ws_ports_description(),
+                    top.join(", ")
+                );
+            }
+
             // What sipnab could not decode, beside the totals that hide it.
             // Read once so the notice and the no-SIP guidance below cannot
             // disagree about the same run.
