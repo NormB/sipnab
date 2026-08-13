@@ -106,8 +106,8 @@ behaviour honestly; the behaviour is what changed.
 - **The stream-detail pane gave two answers about one stream.** The headline
   `MOS:` scored on the measured path while the MOS Trend sparkline drawn beside
   it kept the 100 ms assumption, so a long-haul call rendered `MOS: 1.00`
-  against a flat, healthy trend. Both now score on the same delay. The other
-  surfaces still assume 100 ms; that convergence stays open.
+  against a flat, healthy trend. Both now score on the same delay — as does
+  every other surface, per the delay entry above.
 
 - **The documentation gate and its fixer now derive from one list.**
   `repo_paths_in_docs_are_clickable` tells a failing contributor to run
