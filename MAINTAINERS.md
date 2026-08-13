@@ -16,7 +16,7 @@ with a day job is the actual constraint, and pretending otherwise helps nobody. 
 
 **A pull request is welcome and is not guaranteed to merge.** The
 [contributing guide](CONTRIBUTING.md) covers the workflow, and
-[the developer docs](https://www.sipnab.com/docs/internals/) cover what a change
+[the developer docs](https://sipnab.com/docs/internals/) cover what a change
 has to satisfy. Two things save the most time on both sides:
 
 - Open an issue first for anything structural. A design disagreement is cheaper
@@ -27,7 +27,7 @@ has to satisfy. Two things save the most time on both sides:
 ## How releases happen
 
 The maintainer cuts them. The procedure lives in
-[the build, CI and release page](https://www.sipnab.com/docs/internals/build-ci-release/),
+[the build, CI and release page](https://sipnab.com/docs/internals/build-ci-release/),
 and the parts that matter to a contributor are:
 
 - Only the latest release gets fixes. There are no maintenance branches, which
@@ -43,7 +43,7 @@ and the parts that matter to a contributor are:
 There is none, and that is worth stating plainly. If this project matters to your
 infrastructure, the mitigations are the ordinary ones for a single-maintainer
 dependency: pin a version, keep a build of it, and read
-[the developer documentation](https://www.sipnab.com/docs/internals/) — it exists
+[the developer documentation](https://sipnab.com/docs/internals/) — it exists
 so the code is not only in one head.
 
 The licence is MIT OR Apache-2.0. Forking is always available and needs nobody's

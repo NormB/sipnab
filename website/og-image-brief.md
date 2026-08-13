@@ -1,7 +1,7 @@
 # Brief: social-card image for sipnab.com
 
 Create a **1200 × 630 px PNG** Open Graph image (`og-image.png`). It is the
-preview card shown when `https://www.sipnab.com` is shared on X/Twitter,
+preview card shown when `https://sipnab.com` is shared on X/Twitter,
 LinkedIn, Slack, Discord, and chat apps. It must look crisp full-size and
 remain legible scaled down to ~400 px wide, including with corners cropped
 to a rounded-rect by some platforms.
@@ -97,5 +97,5 @@ title bar with three dim window dots and a 1px `#2d3640` border, on the
 - If you can, also emit the source as SVG so it can be regenerated.
 
 It will be installed at `website/static/og-image.png` and referenced as
-`<meta property="og:image" content="https://www.sipnab.com/og-image.png">`
+`<meta property="og:image" content="https://sipnab.com/og-image.png">`
 plus `twitter:card=summary_large_image`.

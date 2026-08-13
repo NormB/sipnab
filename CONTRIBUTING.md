@@ -175,7 +175,7 @@ This project enforces consistent style through tooling and convention:
 ## Documentation
 
 **`docs/` is the source of truth. Edit there.** Every operator page on
-[sipnab.com](https://www.sipnab.com) is generated from it:
+[sipnab.com](https://sipnab.com) is generated from it:
 
 | Tree | Source of truth for | Published by |
 |---|---|---|

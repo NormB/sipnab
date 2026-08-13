@@ -54,7 +54,7 @@ The process stays alive serving the API until you press Ctrl-C.
 curl -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs
 ```
 
-> **More client code and integrations:** ready-to-adapt clients in several languages live in [API Client Examples](https://www.sipnab.com/docs/api-clients/); HEP forwarding, event hooks, fail2ban, and syslog live in [Integrations](https://www.sipnab.com/docs/integrations/).
+> **More client code and integrations:** ready-to-adapt clients in several languages live in [API Client Examples](https://sipnab.com/docs/api-clients/); HEP forwarding, event hooks, fail2ban, and syslog live in [Integrations](https://sipnab.com/docs/integrations/).
 
 ## Authentication
 
@@ -1173,7 +1173,7 @@ The metrics endpoint is lightweight and suitable for 5–15 second scrape interv
 
 ## Client examples
 
-Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error handling) in curl, Python (sync + async), Node/TypeScript, Rust, and Go are on the website's API Client Examples page: <https://www.sipnab.com/docs/api-clients/>.
+Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error handling) in curl, Python (sync + async), Node/TypeScript, Rust, and Go are on the website's API Client Examples page: <https://sipnab.com/docs/api-clients/>.
 
 ## Security model
 

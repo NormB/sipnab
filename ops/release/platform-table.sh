@@ -75,7 +75,7 @@ printf '%s' "$rows"
 cat <<'FOOTER'
 
 `.deb` and `.rpm` packages are attached as well, and
-`curl -fsSL https://www.sipnab.com/install.sh | sh` picks the right one for you.
+`curl -fsSL https://sipnab.com/install.sh | sh` picks the right one for you.
 
 <sub>The `unknown` in `x86_64-unknown-linux-gnu` is the <em>vendor</em> field of
 the Rust target triple — the canonical value for "no specific vendor", which is

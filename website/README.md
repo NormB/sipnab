@@ -1,6 +1,6 @@
 # sipnab.com — website source
 
-Static site for [sipnab.com](https://www.sipnab.com), built with
+Static site for [sipnab.com](https://sipnab.com), built with
 [Zola](https://www.getzola.org/).
 
 ## Local preview

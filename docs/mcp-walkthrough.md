@@ -106,7 +106,7 @@ itself):
    CPU, and glibc, verifies its sha256, and installs to `/usr/local/bin`:
 
    ```bash
-   curl -fsSL https://www.sipnab.com/install.sh | sh
+   curl -fsSL https://sipnab.com/install.sh | sh
    ```
 
    Debian/Ubuntu and RHEL/Fedora users can use the `.deb` / `.rpm`

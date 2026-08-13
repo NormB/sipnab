@@ -37,7 +37,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 ZONE = "sipnab.com"
-SITE = "https://www.sipnab.com"
+SITE = "https://sipnab.com"
 API = "https://api.cloudflare.com/client/v4"
 
 # <script> blocks without src=; type= must be executable (or absent)

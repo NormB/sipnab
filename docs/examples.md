@@ -973,7 +973,7 @@ If you've built with the `audio` feature (in default), `P` in the RTP stream vie
 
 **Problem:** You don't want to install anything. The pcap is on your laptop. You want to look at it.
 
-Open <https://www.sipnab.com/analyze/> in any modern browser. Drag-and-drop a pcap or `.pcapng` file. Everything runs locally via WebAssembly — the pcap never leaves your machine.
+Open <https://sipnab.com/analyze/> in any modern browser. Drag-and-drop a pcap or `.pcapng` file. Everything runs locally via WebAssembly — the pcap never leaves your machine.
 
 The analyze page supports `.pcap`, `.pcapng`, `.cap` (pcap format), and their gzip-compressed variants (`.pcap.gz`, `.pcapng.gz` — decompressed transparently, with a notice), and gives you the same call list, ladder diagram, RTP stream view, search, and filter DSL as the native TUI. Keyboard shortcuts match the TUI (`?` opens the help popup).
 

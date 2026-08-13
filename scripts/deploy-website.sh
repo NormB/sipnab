@@ -87,4 +87,4 @@ if ! ssh "$DEPLOY_HOST" "sudo chown -R $DEPLOY_OWNER $DEPLOY_PATH"; then
 fi
 
 echo "✓ Deployed. Verify with:"
-echo "    curl -sI https://www.sipnab.com | grep -i last-modified"
+echo "    curl -sI https://sipnab.com | grep -i last-modified"

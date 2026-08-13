@@ -12,11 +12,11 @@ does that without the ceremony of an issue.
 
 Before asking, the reference pages answer most of it directly:
 
-- [Troubleshooting](https://www.sipnab.com/docs/troubleshooting/) — symptom-first:
+- [Troubleshooting](https://sipnab.com/docs/troubleshooting/) — symptom-first:
   failed calls, one-way audio, poor quality, NAT, scanners.
-- [Cookbook](https://www.sipnab.com/docs/cookbook/) — dense recipes to copy when
+- [Cookbook](https://sipnab.com/docs/cookbook/) — dense recipes to copy when
   you know what you want.
-- [CLI reference](https://www.sipnab.com/docs/cli/) — every flag, with examples.
+- [CLI reference](https://sipnab.com/docs/cli/) — every flag, with examples.
 
 ## I think I found a bug
 
@@ -46,7 +46,7 @@ from a capture file is a security issue, not a stability one.
 ## I want to change something
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers the workflow, and
-[the developer documentation](https://www.sipnab.com/docs/internals/) covers the
+[the developer documentation](https://sipnab.com/docs/internals/) covers the
 code: what gates a merge, which invariants exist and why, and the ordered
 checklists for common changes.
 

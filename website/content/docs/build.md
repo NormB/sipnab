@@ -37,7 +37,7 @@ on Linux invokes the binary's own `--setup-caps` so live capture works without
 `sudo`. Non-Linux platforms skip the capability step and point you at `sudo`.
 
 This is a *source* install and is distinct from the one-line installer at
-<https://www.sipnab.com/install.sh>, which downloads a prebuilt release binary
+<https://sipnab.com/install.sh>, which downloads a prebuilt release binary
 and compiles nothing.
 
 ### Basic build (TUI only, default features)

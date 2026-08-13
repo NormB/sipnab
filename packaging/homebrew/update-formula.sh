@@ -50,7 +50,7 @@ base="https://github.com/NormB/sipnab/releases/download/v${VERSION}"
 cat <<EOF
 class Sipnab < Formula
   desc "SIP & RTP capture, analysis, and security tool"
-  homepage "https://www.sipnab.com"
+  homepage "https://sipnab.com"
   license any_of: ["MIT", "Apache-2.0"]
   version "${VERSION}"
 

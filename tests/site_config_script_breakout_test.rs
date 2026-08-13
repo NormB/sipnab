@@ -178,7 +178,7 @@ fn the_gate_rejects_a_script_closer_in_every_toml_quoting_form() {
     let clean = r#"
 title = "sipnab"
 description = "SIP & RTP analysis. One binary."
-base_url = "https://www.sipnab.com"
+base_url = "https://sipnab.com"
 
 [extra]
 published_version = "0.5.82"

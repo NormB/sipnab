@@ -3,7 +3,7 @@
 # Build sipnab FROM A CHECKOUT, install it, and grant live-capture capabilities.
 #
 # Not to be confused with website/static/install.sh, which is the end-user
-# installer served at https://www.sipnab.com/install.sh and downloads a
+# installer served at https://sipnab.com/install.sh and downloads a
 # prebuilt release binary. This one compiles the working tree.
 #
 # `cargo install` has no post-install hook, so this wrapper performs the two

@@ -27,7 +27,7 @@ minute.
 One command on Linux (x86_64/aarch64) or macOS:
 
 ```bash
-curl -fsSL https://www.sipnab.com/install.sh | sh
+curl -fsSL https://sipnab.com/install.sh | sh
 ```
 
 The install script detects your OS, CPU architecture, and glibc version,
@@ -35,20 +35,20 @@ downloads the matching versioned release tarball
 (`sipnab-<version>-<target-triple>.tar.gz`) together with its `.sha256` file,
 **verifies the checksum**, and installs the binary to `/usr/local/bin` (using
 `sudo` only if that directory isn't writable). Prefer to read it first:
-<https://www.sipnab.com/install.sh>.
+<https://sipnab.com/install.sh>.
 
 Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=0.5.97 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.97 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
 so root never enters into it:
 
 ```bash
-curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 Then confirm it landed — one command, and the answer is the version plus the
@@ -79,7 +79,7 @@ though the gnu build ran there fine.
 
 Every [GitHub release](https://github.com/NormB/sipnab/releases) ships the
 artifacts below. This table is the reference. The
-[download page](https://www.sipnab.com/download) carries the same files as
+[download page](https://sipnab.com/download) carries the same files as
 ready-made links for the current release.
 
 ### Release artifacts
@@ -191,7 +191,7 @@ cargo install sipnab --features full
 > without the `audio` feature, or build dynamically linked
 > (`RUSTFLAGS="-C target-feature=-crt-static"` plus `apk add alsa-lib
 > alsa-lib-dev`), which is Alpine-only. See the site's
-> [Build from Source](https://www.sipnab.com/docs/build/#audio-on-musl-and-alpine)
+> [Build from Source](https://sipnab.com/docs/build/#audio-on-musl-and-alpine)
 > page for both recipes.
 
 ## Install with your package manager
@@ -317,7 +317,7 @@ on Linux invokes the binary's own `--setup-caps` so live capture works without
 `sudo`. Non-Linux platforms skip the capability step and point you at `sudo`.
 
 This is a *source* install and is distinct from the one-line installer at
-<https://www.sipnab.com/install.sh>, which downloads a prebuilt release binary
+<https://sipnab.com/install.sh>, which downloads a prebuilt release binary
 and compiles nothing.
 
 ### Basic build (TUI only, default features)

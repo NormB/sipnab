@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib_markdown import sub_outside_code  # noqa: E402
 
 REPO = "NormB/sipnab"
-SITE = "https://www.sipnab.com"
+SITE = "https://sipnab.com"
 BLOB = f"https://github.com/{REPO}/blob/main"
 
 # Source doc (path relative to docs/) -> wiki page name. Hyphens render as
@@ -214,7 +214,7 @@ def build_home() -> str:
         "```bash",
         "# Install: detects OS/CPU/glibc, verifies the sha256, installs to",
         "# /usr/local/bin (see Installation for .deb, .rpm and manual options)",
-        "curl -fsSL https://www.sipnab.com/install.sh | sh",
+        "curl -fsSL https://sipnab.com/install.sh | sh",
         "",
         "sudo sipnab --setup-caps      # one-time: live capture without sudo (Linux)",
         "",

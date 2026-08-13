@@ -2,7 +2,7 @@
 
 Documentation for people changing sipnab, not people running it. Operator
 documentation lives one level up in `docs/`. The polished site is
-[sipnab.com](https://www.sipnab.com).
+[sipnab.com](https://sipnab.com).
 
 Pages here link directly into the source tree. That is deliberate: docs and
 code share one repository, so a claim about the code should be one click from
