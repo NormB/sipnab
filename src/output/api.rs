@@ -802,7 +802,7 @@ async fn list_streams(
         .iter()
         .filter(|s| {
             if let Some(orphaned) = orphaned_filter
-                && s.orphaned != orphaned
+                && s.orphaned() != orphaned
             {
                 return false;
             }
@@ -1072,7 +1072,7 @@ async fn get_metrics(
     let mut established = 0u64;
     let mut orphaned = 0u64;
     for s in ss.iter() {
-        if s.orphaned {
+        if s.orphaned() {
             orphaned += 1;
         } else {
             established += 1;
@@ -1888,26 +1888,47 @@ mod tests {
         assert!(first["loss_pct"].is_number());
     }
 
-    /// `orphaned=true` filters out non-orphaned streams and `total` reflects
-    /// the filtered result-set (0 here), not the store size.
+    /// `orphaned=` selects on whether a dialog claims the stream, in both
+    /// directions, and `total` reflects the filtered result-set rather than
+    /// the store size.
+    ///
+    /// The fixture used to rely on "freshly-created streams are not orphaned",
+    /// which was true only because the orphan flag waited 30 seconds — so
+    /// `orphaned=true` on a store of nothing but unclaimed streams answered
+    /// with an empty list. Orphan status is now `associated_dialog.is_none()`,
+    /// so the two arms below are a real partition of the store.
     #[tokio::test]
-    async fn list_streams_orphaned_filter_excludes_active() {
+    async fn list_streams_orphaned_filter_selects_by_dialog_association() {
         let state = make_state();
         add_stream(&state, 0x3333_3333, 21000, 31000);
+        add_stream(&state, 0x4444_4444, 21002, 31002);
+        // One of the two is claimed by a dialog; the other never is.
+        state.stream_store.write().link_to_dialog(
+            IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            31002,
+            "claimed@example.invalid",
+        );
         let app = build_router(state);
 
-        // Streams created here are not orphaned; filtering orphaned=true yields none.
-        let resp = app
-            .oneshot(test_request("/v1/streams?orphaned=true"))
-            .await
-            .expect("oneshot");
-        assert_eq!(resp.status(), StatusCode::OK);
+        for (query, expected_ssrc) in [
+            ("/v1/streams?orphaned=true", "0x33333333"),
+            ("/v1/streams?orphaned=false", "0x44444444"),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(test_request(query))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = body_to_string(resp.into_body()).await;
-        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
-        // total reflects the filtered result-set (0), not the store's 1.
-        assert_eq!(parsed["total"], 0);
+            let body = body_to_string(resp.into_body()).await;
+            let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+            let rows = parsed["streams"].as_array().expect("array");
+            assert_eq!(rows.len(), 1, "{query} returned {}", parsed["streams"]);
+            assert_eq!(rows[0]["ssrc"], expected_ssrc, "{query} selected wrongly");
+            // total reflects the filtered result-set (1), not the store's 2.
+            assert_eq!(parsed["total"], 1, "{query} reported the store size");
+        }
     }
 
     /// `mos_below` excludes a clean high-MOS stream at 1.0 and includes it
@@ -2192,9 +2213,10 @@ mod tests {
         add_stream(&state, 0x9999_0002, 40002, 50002);
         let app = build_router(state);
 
-        // Freshly-created streams are not orphaned; orphaned=true excludes all.
+        // No SDP named either stream, so no dialog claims them and
+        // `orphaned=false` excludes both.
         let resp = app
-            .oneshot(test_request("/v1/streams?orphaned=true"))
+            .oneshot(test_request("/v1/streams?orphaned=false"))
             .await
             .expect("oneshot");
         let body = body_to_string(resp.into_body()).await;
@@ -2478,7 +2500,10 @@ mod tests {
         let summary = stream_summary(s, &ss);
         assert_eq!(summary["ssrc"], "0x88888888");
         assert!(summary["mos"].is_number());
-        assert_eq!(summary["orphaned"], false);
+        // No SDP named this stream, so no dialog claims it — which is what
+        // `orphaned` reports. It read `false` here while the flag waited out a
+        // 30-second timeout that a test never advances past.
+        assert_eq!(summary["orphaned"], true);
     }
 
     /// Port 0 (OS-assigned ephemeral) parses to loopback:0.

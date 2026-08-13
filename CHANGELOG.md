@@ -8,6 +8,45 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+Four MCP tools answered confidently and wrongly. The docs described the
+behaviour honestly; the behaviour is what changed.
+
+### Changed
+
+- **BREAKING: `search_messages` returns a page object.** The rows moved from
+  the top level into `hits`, beside `returned`, `total_matched`, `truncated`,
+  `next_cursor` and `capture_identity` — the shape `list_dialogs` already used,
+  for the reason that page gives: a bare array hides its own size. On
+  `tests/pcap-samples/sipp-branch-scenario.pcapng`, `{"query":"REGISTER"}`
+  returned 50 rows and `limit: 1000` returned 1000, and neither said that 1334
+  matched. A client doing `parsed[0]` now reads `parsed.hits[0]`.
+
+- **BREAKING: `security_findings` returns a page object, and refuses an unknown
+  `kinds` value.** `[]` used to mean three different things — nothing tripped,
+  no detector armed, or a `kinds` name outside the vocabulary. The third is now
+  an `invalid_params` error naming `scanner`, `fraud`, `digest`, `reg_flood`
+  (and suggesting `reg_flood` for the `reg-flood` spelling `--alert` uses), and
+  the second is `armed_kinds` / `detection_armed` / `note` in the response. A
+  server watching for scanners alone now says so, instead of answering an
+  agent's fraud question with an empty list.
+
+- **BREAKING: `rtp_stats` reports `orphaned` as "no dialog claims this
+  stream".** It was a flag a sweep set 30 seconds after an unclaimed stream's
+  first packet, so on `tests/pcap-samples/codec-negotiation.pcap` — four
+  streams, zero dialogs, three seconds long — all four reported
+  `orphaned: false`, and an agent filtering for orphans to find a NAT or
+  one-way-audio fault found nothing. It is now derived from
+  `associated_dialog`, so the field and the association can never disagree.
+  `capture_status.orphaned_stream_count`, `/v1/streams?orphaned=`,
+  `sipnab_rtp_streams_total{status}`, the TUI and the `--report` orphan section
+  all moved with it: a short unclaimed stream now counts as an orphan
+  everywhere. `StreamStore::mark_orphaned` and the 30-second sweep are gone.
+
+- **`search_by_time` carries `next_cursor`** (and `capture_identity`), so
+  `truncated: true` is no longer a dead end. Paging a busy window no longer
+  means re-cutting it into shorter ones.
 ## [0.5.98] - 2026-08-13
 
 An export can no longer destroy a capture, and the last detector with

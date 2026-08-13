@@ -556,8 +556,8 @@ mod tests {
     fn associated_dialog_and_orphan_flow_through() {
         let mut linked = clean_stream(5, 10);
         linked.associated_dialog = Some("call-1@example.com".into());
-        let mut orphan = clean_stream(6, 10);
-        orphan.orphaned = true;
+        // No `associated_dialog`, which is the whole of what an orphan is.
+        let orphan = clean_stream(6, 10);
         let snap = DashboardSnapshot::from_streams(&store_with(vec![linked, orphan]));
         let linked_row = snap.rows.iter().find(|r| r.key.ssrc == 5).unwrap();
         let orphan_row = snap.rows.iter().find(|r| r.key.ssrc == 6).unwrap();

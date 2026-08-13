@@ -1596,8 +1596,9 @@ mod tests {
         dialog
     }
 
-    /// Build a one-packet RTP stream (SSRC 0xDEADBEEF) with the given
-    /// orphaned flag.
+    /// Build a one-packet RTP stream (SSRC 0xDEADBEEF), orphaned or claimed by
+    /// a dialog — which is the same thing as whether `associated_dialog` is
+    /// set, per [`RtpStream::orphaned`].
     fn make_rtp_stream(orphaned: bool) -> RtpStream {
         let key = StreamKey {
             ssrc: 0xDEADBEEF,
@@ -1617,7 +1618,9 @@ mod tests {
             payload_offset: 12,
         };
         let mut stream = RtpStream::new(key, &hdr, base_ts());
-        stream.orphaned = orphaned;
+        if !orphaned {
+            stream.associated_dialog = Some("claimed@example.invalid".to_string());
+        }
         stream
     }
 
@@ -1907,11 +1910,11 @@ mod tests {
     /// `rtp.orphaned` is no longer a field, and asking for it says so.
     ///
     /// It asked whether a stream *belonging to this dialog* belongs to no
-    /// dialog. A stream is flagged orphaned only while `associated_dialog` is
-    /// `None`, and the dialog's streams are exactly those whose
-    /// `associated_dialog` is set — all three linking paths in `StreamStore`
-    /// clear the flag as they set the association — so the predicate was
-    /// unsatisfiable by construction, not merely unobserved. Silently matching
+    /// dialog. A stream is orphaned exactly while `associated_dialog` is `None`
+    /// ([`RtpStream::orphaned`](crate::rtp::stream::RtpStream::orphaned)), and
+    /// the dialog's streams are exactly those whose `associated_dialog` is set,
+    /// so the predicate was unsatisfiable by construction, not merely
+    /// unobserved. Silently matching
     /// nothing is the worst of the options: `NOT rtp.orphaned` matched
     /// everything and the `problems` alias carried a disjunct that could never
     /// contribute. A parse error tells the operator; orphaned media is

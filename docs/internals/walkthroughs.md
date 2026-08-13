@@ -166,7 +166,15 @@ sequenceDiagram
    way to discover your module.)**
 3. Emit through the alert engine in
    [`alerting.rs`](../../src/security/alerting.rs) rather than printing, so
-   every sink (CLI, TUI, `fail2ban`, MCP `security_findings`) gets it.
+   every sink (CLI, TUI, `fail2ban`, MCP `security_findings`) gets it. A new
+   rule name also belongs in `SECURITY_FINDING_KINDS`
+   ([`mcp/server.rs`](../../src/mcp/server.rs)) and in
+   `DetectionEngines::armed_kinds` ([`batch.rs`](../../src/app/batch.rs)): the first is the
+   vocabulary `security_findings.kinds` accepts, so a finding filed under a
+   name missing from it is one no caller can filter for, and the second is what
+   tells an agent the run armed the detector at all.
+   **(enforced — `security_findings_kinds_match_the_names_the_detectors_file_under`
+   reads the `kind:` literals in `batch.rs` and fails on the difference.)**
 4. Add regression coverage to
    [`security_test`](../../tests/security_test.rs), including the
    false-positive case — a detector that fires on normal traffic is worse than

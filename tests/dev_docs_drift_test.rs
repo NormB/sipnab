@@ -359,7 +359,14 @@ fn linked_code_targets_exist() {
     // the gate asserted one figure while its message named another and sent
     // the next reader hunting a discrepancy that did not exist. Lowering this
     // pin to 339 reproduced it immediately — the message still said 340.
-    const EXPECTED_CODE_LINKS: usize = 339;
+    // Raised 339 -> 341 by #113: the "add a detector" walkthrough gained two
+    // links, to `SECURITY_FINDING_KINDS` in `mcp/server.rs` and
+    // `DetectionEngines::armed_kinds` in `batch.rs`. A new rule name has to
+    // reach both or `security_findings` refuses to filter on it, and the
+    // walkthrough is where someone adding one is reading. Attributed per file:
+    // `docs/internals/walkthroughs.md` +2, every other internals page
+    // unchanged.
+    const EXPECTED_CODE_LINKS: usize = 341;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

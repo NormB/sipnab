@@ -330,9 +330,9 @@ ordinary update.
 | [`get_message`](#get_message) | `call_id`, `index` | Single SIP message at a given index |
 | [`render_ladder`](#render_ladder) | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
 | [`rtp_stats`](#rtp_stats) | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
-| [`search_messages`](#search_messages) | `query`, `limit?` | Substring search across method/From/To/UA/body |
+| [`search_messages`](#search_messages) | `query`, `limit?`, `cursor?` | A page of substring matches across method/From/To/UA/body, with the total behind it |
 | [`tail_dialogs`](#tail_dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
-| [`security_findings`](#security_findings) | `kinds?`, `since?`, `limit?` | Recent scanner / fraud / digest / reg-flood alerts |
+| [`security_findings`](#security_findings) | `kinds?`, `since?`, `limit?` | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |
 | [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`capture_health`](#capture_health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
 | [`triage_call`](#triage_call) | `call_id` | First-pass verdict: signalling problem, media problem, both, or none, with evidence |
@@ -346,7 +346,7 @@ ordinary update.
 | [`compare_dialogs`](#compare_dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
 | [`find_correlated`](#find_correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`get_sdp_timeline`](#get_sdp_timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
-| [`search_by_time`](#search_by_time) | `start`, `end?`, `filter?`, `limit?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
+| [`search_by_time`](#search_by_time) | `start`, `end?`, `filter?`, `limit?`, `cursor?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
 | [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
@@ -354,6 +354,33 @@ ordinary update.
 | [`open_capture`](#open_capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save_findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 | [`server_capabilities`](#server_capabilities) | -- | sipnab version and the optional features this binary carries |
+
+### What changed in 0.5.98
+
+Four answers changed shape or meaning. A client written against 0.5.97 keeps
+working for every other tool, and these four need a look:
+
+- **`search_messages` returns a page object.** The rows moved from the top
+  level into `hits`, beside `returned`, `total_matched`, `truncated`,
+  `next_cursor` and `capture_identity`. A client doing `parsed[0]` now reads
+  `parsed.hits[0]`.
+- **`security_findings` returns a page object too**, with `findings`,
+  `returned`, `total_matched`, `truncated`, `armed_kinds`, `detection_armed`
+  and — when no detector runs — `note`. It also **refuses** a `kinds` value
+  outside `scanner` / `fraud` / `digest` / `reg_flood` rather than answering
+  with an empty list, so a call passing `reg-flood` now gets an error where it
+  used to get `[]`.
+- **`rtp_stats` reports `orphaned` as `associated_dialog.is_none()`**, computed
+  per response. Streams that used to report `false` for their first 30 seconds
+  of capture clock now report `true` from the first packet. `capture_status`'s
+  `orphaned_stream_count`, the REST `/v1/streams?orphaned=` filter and the
+  `--report` orphan section all moved with it, so the surfaces agree.
+- **`search_by_time` carries `next_cursor`** (and `capture_identity`), so a
+  you can page a truncated window instead of re-cutting it.
+
+This change removes nothing and retypes nothing. It adds fields, turns two
+payloads from array into object, and makes one boolean answer the question its
+name asks.
 
 ### Rules every tool follows
 
@@ -379,14 +406,14 @@ with an identity — `<RFC 3339>|<Call-ID>` for dialogs, and
 timestamp still parses, so rebuilding one costs rows instead of raising an
 error. `next_cursor: null` marks the final page.
 
-**Two tools answer with a bare JSON array.** `search_messages` and
-`security_findings` return arrays rather than the page object the other
-list-style tools use, so they carry no `total_matched`, no `truncated` flag and
-no cursor. A full page is the signal to worry about: 50 rows back from a default
-call means "at least 50", never "50 in the capture". Ask again with a higher
-`limit`, up to the 1000 ceiling, to learn whether more exist. [Response
-bounding](#response-bounding) tabulates which tools report a total and which do
-not.
+**Every list-style tool answers with a page object, never a bare array.** The
+rows sit under a named key — `dialogs`, `hits`, `streams`, `findings` — beside
+`returned` and `total_matched`, so counting the rows is never necessary and
+never right. `search_messages` and `security_findings` returned bare arrays
+until 0.5.98 and now carry the page fields as well — see [what changed in
+0.5.98](#what-changed-in-0-5-98). `tail_dialogs` is the one page object with no
+total, because a tail cannot have one. [Response
+bounding](#response-bounding) tabulates it.
 
 **Capture text arrives fenced, and identifiers do not.** Free text an endpoint
 wrote — display names, `User-Agent`, SDP, whole messages — comes wrapped in
@@ -993,7 +1020,7 @@ carries four streams — two PCMU, two G722 — and no dialogs at all:
       "mos": 4.357953149337916,
       "mos_grounded": true,
       "octets": 24160,
-      "orphaned": false,
+      "orphaned": true,
       "packets": 151,
       "payload_type": 0,
       "quality_intervals": [],
@@ -1020,13 +1047,17 @@ carries four streams — two PCMU, two G722 — and no dialogs at all:
 The sweep adds `frame`, `capture_identity` and the page fields the per-call mode
 omits.
 
-**To find a stream no call claims, read `associated_dialog`, not `orphaned`.**
-The key is absent when nothing claims the stream — that is the test. `orphaned`
-answers a narrower question: it turns `true` only once an unassociated stream
-has run for 30 seconds on the *capture* clock, so every stream above reports
-`orphaned: false` even though this capture holds no dialogs at all and all four
-belong to nothing. A short unclaimed stream is exactly what a NAT fault looks
-like, and it never reaches the flag.
+**`orphaned` means "no dialog claims this stream", and nothing else.** It is
+`associated_dialog.is_none()`, which sipnab computes while building the
+response, so the two fields can never disagree: every stream above reports `orphaned: true`, which
+is the truth about a capture holding four streams and no dialogs at all.
+
+Before 0.5.98 the same four reported `orphaned: false`. A sweep set the flag
+only after 30 seconds of *capture* clock, and this capture runs for three — so an agent filtering for orphans to find a NAT or one-way-audio fault
+found nothing, on a capture that is nothing but orphans. A short unclaimed
+stream is exactly what those faults look like from the media side, and it never
+reached the flag. If you have a client that works around this by reading
+`associated_dialog` instead, that still works and still means the same thing.
 
 `total_matched: 2` and `ungrounded_excluded: 2` account for all four streams.
 The two G722 streams score 4.22 from the placeholder arm, which would have put
@@ -1041,32 +1072,64 @@ User-Agent, and body across all dialogs.
 |---|---|---|---|
 | `query` | string | Any substring. Matching ignores case. | Required — the call fails. |
 | `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 hits. |
+| `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>#<zero-padded message index>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest match. |
 
-Returns a **bare JSON array** of `{ call_id, message_index, snippet }`, plus the
-provenance note as a second content block. `snippet` holds the whole raw
-message, fenced, and stops at 4 KB. Pass `call_id` and `message_index` straight
-to [`get_message`](#get_message) for the parsed form.
+**Returns** — the same page shape [`list_dialogs`](#list_dialogs) returns, not
+a bare array, plus the provenance note as a second content block:
 
-> **Count nothing from this answer.** The array carries no `total_matched`, no
-> `truncated` flag and no cursor, so a capped result looks exactly like a
-> complete one. On the 1334-dialog sample capture, `search_messages
-> { "query": "REGISTER" }` returns 50 rows, the same call with `limit: 1000`
-> returns 1000, and the capture holds close to 9000 matching messages. Nothing
-> in either response says so. Treat a full page as "at least this many" and
-> re-ask with a larger `limit`, and reach for [`list_dialogs`](#list_dialogs) or
-> [`find_problems`](#find_problems) when the question is "how many", because
-> those report `total_matched`.
+| Field | Type | Description |
+|---|---|---|
+| `hits` | object[] | This page of `{ call_id, message_index, snippet }`, ordered by the dialog's `created_at`, then Call-ID, then message index. |
+| `returned` | usize | Rows in `hits`. |
+| `total_matched` | usize | Messages matching the query across the **whole store**, whatever `limit` and `cursor` say. This is the number that answers "how many". |
+| `truncated` | bool | `true` when matches remain after this page. |
+| `next_cursor` | string? | Pass back to continue. `null` on the final page. |
+| `schema_version` | u32 | `1` for this shape. |
+| `capture_identity` | object | Which capture answered. A changed `instance` voids the cursor. |
+
+`snippet` holds the whole raw message, fenced, and stops at 4 KB. Pass `call_id`
+and `message_index` straight to [`get_message`](#get_message) for the parsed
+form.
+
+> **Before 0.5.98 you could count nothing from this answer.** It was a bare
+> array with no total, no truncation flag and no cursor, so a capped result
+> looked exactly like a complete one: on the sample capture below,
+> `{ "query": "REGISTER" }` returned 50 rows and `limit: 1000` returned 1000,
+> and neither said that 1334 messages matched. That page also claimed the
+> figure was "close to 9000", which nothing could check. Now `total_matched`
+> answers it and `next_cursor` reaches the rest.
+
+The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng):
 
 ```jsonc
-// search_messages { "query": "INVITE", "limit": 1 }
-[
-  {
-    "call_id": "1-1966@10.0.2.20",
-    "message_index": 0,
-    "snippet": "⟦untrusted-capture-data⟧INVITE sip:test@10.0.2.15:5060 SIP/2.0\r\nVia: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0\r\nFrom: \"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1\r\nTo: test <sip:test@10.0.2.15:5060>\r\nCall-ID: 1-1966@10.0.2.20\r\nCSeq: 1 INVITE\r\nContact: sip:sipp@10.0.2.20:5060\r\nMax-Forwards: 70\r\nContent-Type: application/sdp\r\nContent-Length:   123\r\n\r\nv=0\r\no=- 42 42 IN IP4 10.0.2.20\r\ns=-\r\nc=IN IP4 10.0.2.20\r\nt=0 0\r\nm=audio 6000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=recvonly\r\n⟦/untrusted-capture-data⟧"
+// search_messages { "query": "REGISTER", "limit": 1 }
+{
+  "schema_version": 1,
+  "hits": [
+    {
+      "call_id": "call-1-synth@192.0.2.10",
+      "message_index": 0,
+      "snippet": "⟦untrusted-capture-data⟧REGISTER sip:example.net SIP/2.0\r\n…⟦/untrusted-capture-data⟧"
+    }
+  ],
+  "returned": 1,
+  "total_matched": 1334,
+  "truncated": true,
+  "next_cursor": "2016-11-17T21:52:35.303349+00:00|call-1-synth@192.0.2.10#0000000000",
+  "capture_identity": {
+    "node": "thor-02",
+    "instance": "12100b18cb6971cf461cff-1",
+    "dialog_generation": 9015,
+    "stream_generation": 0
   }
-]
+}
 ```
+
+Passing that `next_cursor` back returns `call-2-synth@192.0.2.10` and reports
+the same `total_matched: 1334`: the total describes the store, not the page.
+The index half of the cursor carries leading zeros because the server compares
+the cursor as text — rebuild one by hand and `#10` sorts before `#2`, which
+silently skips eight messages of a dialog. Pass it back exactly as it arrived.
 
 ### `tail_dialogs`
 
@@ -1144,22 +1207,37 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `kinds` | string[]? | Exactly four names: `scanner`, `fraud`, `digest`, `reg_flood`. Anything else matches nothing **without an error** — see the warning below. | Findings of every kind. |
+| `kinds` | string[]? | Exactly four names: `scanner`, `fraud`, `digest`, `reg_flood`. Anything else fails with `invalid_params` naming all four — including `reg-flood` with a hyphen, which suggests the underscore spelling. | Findings of every kind. |
 | `since` | string? | RFC 3339. Keeps findings recorded strictly after it. A malformed value fails with `since must be RFC 3339`. | The whole retained history. |
 | `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 findings. |
 
-Returns a **bare JSON array** of `{ rule_name, src_ip, detail, timestamp }`,
-newest last. As with [`search_messages`](#search_messages), there is no total,
-no truncation flag and no cursor.
+**Returns** — a page object, not a bare array:
 
-> **An empty array has three different meanings, and the response tells them
-> apart in none of them.** Nothing tripped, or the operator started sipnab
-> without any detection rule so no engine exists to record one, or `kinds`
-> named something that is not one of the four. A `reg-flood` with a hyphen —
-> the spelling the `--alert` rule grammar uses — matches nothing and returns
-> `[]` exactly like a quiet capture. Call
-> [`server_capabilities`](#server_capabilities) and check the server's flags
-> before reading `[]` as "no attacks".
+| Field | Type | Description |
+|---|---|---|
+| `findings` | object[] | This page of `{ rule_name, src_ip, detail, timestamp }`, newest first. |
+| `returned` | usize | Rows in `findings`. |
+| `total_matched` | usize | Findings matching `kinds` and `since` across the whole retained ring buffer. |
+| `truncated` | bool | `true` when matches remain after this page. There is no cursor — narrow with `since`, or raise `limit`. |
+| `armed_kinds` | string[] | The detectors this server runs. Empty means it runs none, so `findings` could only ever be empty. |
+| `detection_armed` | bool | `false` when `armed_kinds` is empty, stated separately so a caller can branch on one field. |
+| `note` | string? | Present **only** when no detector runs, saying so in words. |
+| `schema_version` | u32 | `1` for this shape. |
+
+> **Read `armed_kinds` before you read `findings`.** An empty findings list
+> means "nothing tripped" only on a server that armed something; on any other
+> it means nothing was watching, and the two are opposite operational states.
+> Before 0.5.98 this tool answered `[]` for both — and for a third case, a
+> `kinds` value outside the vocabulary, which now fails instead. Cross-checking
+> [`server_capabilities`](#server_capabilities) is no longer necessary for this
+> question: the answer is in the response.
+
+The page fields carry the meanings they do everywhere else on this surface —
+[`search_messages`](#search_messages) documents the same four. `armed_kinds` is
+per detector, which is what makes it worth reading rather than a bare
+"detection is on": a server started with `--kill-scanner` alone answers
+"no fraud findings" for a capture full of toll fraud, and `armed_kinds:
+["scanner"]` is what tells an agent that the question was never asked.
 
 Arming a rule takes a flag on the server command line, such as `--kill-scanner`
 or `--digest-leak`. Findings then land in a bounded in-memory ring buffer
@@ -1176,17 +1254,29 @@ on a server started with `--digest-leak`:
 
 ```jsonc
 // security_findings {}
-[
-  {
-    "rule_name": "digest",
-    "src_ip": "203.0.113.101",
-    "detail": "WeakAlgorithm: challenge uses algorithm=MD5 (should be SHA-256+)",
-    "timestamp": "2026-08-13T12:13:26.316403868+00:00"
-  }
-]
+{
+  "schema_version": 1,
+  "findings": [
+    {
+      "rule_name": "digest",
+      "src_ip": "203.0.113.101",
+      "detail": "WeakAlgorithm: challenge uses algorithm=MD5 (should be SHA-256+)",
+      "timestamp": "2026-08-13T16:16:02.880725566+00:00"
+    }
+  ],
+  "returned": 1,
+  "total_matched": 1,
+  "truncated": false,
+  "armed_kinds": ["digest"],
+  "detection_armed": true
+}
 ```
 
-The same tool on a server started without a detection flag answers `[]`.
+The same tool on a server started without a detection flag answers with an
+empty `findings` list, `armed_kinds: []`, `detection_armed: false` and a `note`
+saying that nothing was watching. `armed_kinds: ["digest"]` above says the
+opposite in the same field: this server watched for digest weaknesses and for
+nothing else, so it answers nothing about scanners either way.
 
 ### `triage_call`
 
@@ -1874,8 +1964,10 @@ Returns dialogs whose first message falls in the window, oldest first.
 | `end` | string? | An exclusive RFC 3339 instant after `start`. At or before `start` fails with `invalid_params` (-32602). | Everything from `start` onward. |
 | `filter` | string? | An alias name or a raw [DSL](filter-dsl.md) expression, ANDed with the window. | The window alone decides the page. |
 | `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 rows. |
+| `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog in the window. |
 
-**Returns** `{ dialogs, returned, total_matched, truncated, schema_version }`.
+**Returns** `{ dialogs, returned, total_matched, truncated, next_cursor,
+capture_identity, schema_version }`.
 Each row carries `call_id`, `created_at`, `state` and `final_status_code` —
 **a narrower row than [`list_dialogs`](#list_dialogs) returns**, with no
 `msg_count`, no `from_user`, no `timing` and no `frame`. No markers appear
@@ -1912,16 +2004,24 @@ same window without a filter answers `total_matched: 247`:
   ],
   "returned": 2,
   "total_matched": 16,
-  "truncated": true
+  "truncated": true,
+  "next_cursor": "2016-11-17T21:52:37.703349+00:00|call-25-synth@192.0.2.10",
+  "capture_identity": {
+    "node": "thor-02",
+    "instance": "12100b18cb6971cf461cff-1",
+    "dialog_generation": 9015,
+    "stream_generation": 0
+  }
 }
 ```
 
-**This tool takes no cursor, so `truncated: true` is a dead end until you change
-the window.** Narrowing `start` and `end` is the pagination — the ceiling is
-1000 rows even at the maximum `limit`, so a busy five-minute window needs
-splitting into shorter ones rather than a bigger page. Reach for
-[`list_dialogs`](#list_dialogs) with a DSL expression when you want a cursor
-instead.
+**`truncated: true` is no longer a dead end.** Pass `next_cursor` back to
+continue through the window. `total_matched` keeps counting the whole window
+rather than the remainder, so it does not shrink as you page. Before 0.5.98 this
+tool carried no cursor and the only way past a truncated window was to narrow
+it, which put every row past the 1000-row ceiling out of reach. The cursor is
+the same compound form [`list_dialogs`](#list_dialogs) issues, and it is opaque:
+pass it back exactly as it arrived.
 
 ### File tools — the shared rule
 
@@ -2533,10 +2633,11 @@ underscore — the `--alert` rule grammar spells it `reg-flood`, but
 sipnab records and filters findings as `reg_flood`). Omitted or empty
 `kinds` returns findings of every kind.
 
-The two enums differ in one way that matters. `find_problems.kinds` **refuses**
-an unknown alias. `security_findings.kinds` accepts anything and matches
-nothing, so a name outside those four answers `[]` — the same bytes a quiet
-capture returns.
+Both enums **refuse** a name they do not know, and name the vocabulary in the
+refusal. `security_findings.kinds` used to accept anything and match nothing,
+so a name outside those four answered `[]` — the same bytes a quiet capture
+returns. `reg-flood` was the case that bit, and its refusal now suggests the
+underscore spelling by name.
 
 ### Error model
 
@@ -2564,25 +2665,26 @@ rather than an empty result.
 These are hard-coded to keep tool-call costs predictable for chatty
 agents. Override via the per-call `limit` parameter where supported.
 
-A bound is not a loss — for most of the surface. `list_dialogs`,
-`find_problems`, `search_by_time` and the capture-wide `rtp_stats` sweep each
-report `total_matched` beside their page, so a caller sees how much of the
-answer it holds. `list_dialogs`, `find_problems`, `tail_dialogs`, `get_dialog`
-and the `rtp_stats` sweep each carry a cursor to the rest. Raising `limit` past
-1000 does nothing: the cap clamps it. Page instead.
+A bound is not a loss. `list_dialogs`, `find_problems`, `search_by_time`,
+`search_messages`, `security_findings` and the capture-wide `rtp_stats` sweep
+each report `total_matched` beside their page, so a caller sees how much of the
+answer it holds. All of those except `security_findings` carry a cursor to the
+rest, as do `tail_dialogs` and `get_dialog`. Raising `limit` past 1000 does
+nothing: the cap clamps it. Page instead.
 
-**Four tools are exceptions, and a caller has to know which.** They report a
-page and no measure of what sits behind it:
+**Two tools remain exceptions, and a caller has to know which:**
 
 | Tool | Reports a total | Carries a cursor | How to reach the rest |
 |---|---|---|---|
-| `search_messages` | No | No | Raise `limit` to 1000 and treat a full page as "at least this many" |
-| `security_findings` | No | No | Raise `limit`, and narrow with `since` |
+| `security_findings` | Yes | No | Raise `limit`, and narrow with `since` |
 | `tail_dialogs` | No | Yes | Follow `next_cursor` until the page comes back empty |
-| `search_by_time` | Yes | No | Split `start` and `end` into shorter windows |
 
-The first two are the ones that bite, because a bare array of 50 rows is what
-both a complete answer and a truncated one look like.
+`security_findings` has no cursor because its source is a ring buffer whose
+default depth is 1000 — the same as the maximum `limit`, so one call reaches
+all of it. Raise `--findings-history` above 1000 and `total_matched` is what
+tells you a page is short, and `since` is the way through. `tail_dialogs` reports
+no total because a tail cannot have one: the store keeps changing underneath
+it, so any number it gave would describe a moment that has passed.
 
 ## Security model
 

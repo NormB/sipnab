@@ -479,8 +479,19 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     let resp =
         read_response_with_id(&mut reader, 9, test_timeout(5)).expect("search_messages response");
     let hits_text = payload_text(&resp);
-    let hits: serde_json::Value = serde_json::from_str(&hits_text).unwrap();
-    assert!(hits.as_array().map(|a| !a.is_empty()).unwrap_or(false));
+    let page: serde_json::Value = serde_json::from_str(&hits_text).unwrap();
+    assert!(
+        page["hits"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false),
+        "search_messages must return a page object carrying `hits`: {page}"
+    );
+    assert!(
+        page["total_matched"].is_u64() && page["truncated"].is_boolean(),
+        "the page must say how many matched and whether it withheld any — a \
+         bare array lets an agent count its rows and answer with them: {page}"
+    );
 
     // tail_dialogs without cursor
     send(
@@ -746,7 +757,8 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
          bare array lets an agent count its rows and answer with them: {page}"
     );
 
-    // security_findings with no AlertEngine attached → empty JSON array, no error.
+    // security_findings with nothing armed → an empty page that SAYS nothing
+    // was armed, no error.
     send(
         &mut child,
         &serde_json::json!({
@@ -760,11 +772,34 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "security_findings errored: {resp}"
     );
     let text = payload_text(&resp);
-    let arr = serde_json::from_str::<serde_json::Value>(&text).expect("security_findings JSON");
+    let page = serde_json::from_str::<serde_json::Value>(&text).expect("security_findings JSON");
     assert_eq!(
-        arr.as_array().map(Vec::len),
+        page["findings"].as_array().map(Vec::len),
         Some(0),
-        "security_findings must be an empty array without an AlertEngine"
+        "no detector was armed, so there can be no findings: {page}"
+    );
+    assert_eq!(
+        page["detection_armed"],
+        serde_json::json!(false),
+        "an agent must be able to tell 'nothing was watching' from 'the \
+         traffic was clean', and this server was watching for nothing: {page}"
+    );
+
+    // An unknown `kinds` value is refused by name rather than answering with
+    // the same empty page a quiet capture produces.
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {"name": "security_findings", "arguments": {"kinds": ["reg-flood"]}}
+        }),
+    );
+    let resp =
+        read_response_with_id(&mut reader, 5, test_timeout(5)).expect("security_findings refusal");
+    assert_eq!(
+        resp["error"]["code"], -32602,
+        "the hyphenated spelling --alert uses must be an error, not an empty \
+         list: {resp}"
     );
 
     drop(reader);

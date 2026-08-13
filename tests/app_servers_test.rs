@@ -55,6 +55,7 @@ fn nothing_enabled_spawns_nothing() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -84,6 +85,7 @@ fn selection_gates_configured_servers() {
             // These cases exercise the API/MCP selection; the metrics server
             // has its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -114,6 +116,7 @@ fn invalid_api_addr_is_an_error() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -141,6 +144,7 @@ fn api_on_ephemeral_port_starts_servers_thread() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -175,6 +179,7 @@ fn api_port_in_use_is_a_startup_error() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -210,6 +215,7 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -246,6 +252,7 @@ fn api_tls_flags_are_a_startup_error() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -282,6 +289,7 @@ fn mcp_http_transport_without_feature_is_a_startup_error() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -316,6 +324,7 @@ fn unknown_mcp_transport_is_a_startup_error() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -351,6 +360,7 @@ fn invalid_mcp_bind_is_a_startup_error() {
             // These cases exercise the API/MCP selection; the metrics server has
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         None,
@@ -444,6 +454,7 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() {
             api: false,
             mcp: false,
             metrics: true,
+            armed_detections: Vec::new(),
         },
         None,
     )
@@ -477,6 +488,7 @@ fn metrics_on_loopback_ephemeral_port_starts() {
             api: false,
             mcp: false,
             metrics: true,
+            armed_detections: Vec::new(),
         },
         None,
     );

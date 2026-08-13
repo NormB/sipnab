@@ -145,7 +145,7 @@ pub fn print_dialog_report_as(
     }
 
     // ── Associated RTP streams ──────────────────────────────────────
-    let associated: Vec<&&RtpStream> = streams.iter().filter(|s| !s.orphaned).collect();
+    let associated: Vec<&&RtpStream> = streams.iter().filter(|s| !s.orphaned()).collect();
     if !associated.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "RTP Streams:");
@@ -213,7 +213,7 @@ pub fn print_dialog_report_as(
     }
 
     // ── Orphaned RTP streams ────────────────────────────────────────
-    let orphaned: Vec<&&RtpStream> = streams.iter().filter(|s| s.orphaned).collect();
+    let orphaned: Vec<&&RtpStream> = streams.iter().filter(|s| s.orphaned()).collect();
     if !orphaned.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "Orphaned Streams:");
@@ -786,7 +786,12 @@ mod tests {
     /// with correctly derived values.
     #[test]
     fn rtp_report_includes_pt_and_critical_fields() {
-        let s = make_rtp_stream();
+        let mut s = make_rtp_stream();
+        // The columns under test belong to the ASSOCIATED table, so the
+        // fixture has to be a claimed stream. It used to reach that table by
+        // default, back when an unclaimed stream counted as an orphan only
+        // after 30 seconds.
+        s.associated_dialog = Some("report-test@example.com".to_string());
         let report = print_dialog_report(&[], &[&s]);
         for col in ["PT", "Clock", "Lost", "Loss%", "Jitter", "Dur", "Kbps"] {
             assert!(
@@ -809,14 +814,13 @@ mod tests {
 
     // ── Orphaned-stream section ────────────────────────────────────────
 
-    /// Build the stream of [`make_rtp_stream`] as an orphan: no dialog, and
-    /// flagged by the sweep. A distinct SSRC so a mixed report can name which
-    /// row landed in which table.
+    /// Build the stream of [`make_rtp_stream`] as an orphan: no dialog claims
+    /// it, which is the whole of what an orphan is. A distinct SSRC so a mixed
+    /// report can name which row landed in which table.
     fn make_orphaned_stream() -> crate::rtp::stream::RtpStream {
         let mut s = make_rtp_stream();
         s.key.ssrc = 0x0bad0bad;
         s.associated_dialog = None;
-        s.orphaned = true;
         s
     }
 

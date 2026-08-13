@@ -137,9 +137,9 @@ All 30 addressable fields, organized by type.
 > unanswerable and sipnab declines to answer it.
 >
 > **`rtp.orphaned` was withdrawn.** It asked whether a stream *belonging to this
-> dialog* belongs to no dialog, and sipnab flags a stream orphaned only while it
-> belongs to none — the two halves excluded each other, so the field matched
-> nothing on any capture while `NOT rtp.orphaned` matched everything. It is now
+> dialog* belongs to no dialog: a stream counts as an orphan exactly when no
+> dialog claims it, so the two halves excluded each other and the field matched nothing
+> on any capture while `NOT rtp.orphaned` matched everything. It is now
 > a parse error rather than a silent falsehood. Orphaned media is real and still
 > reachable: read the "Orphaned Streams" section of `--report`, or the REST
 > API's `/v1/streams?orphaned=true`, both of which model streams rather than

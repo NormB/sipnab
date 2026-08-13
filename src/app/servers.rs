@@ -21,7 +21,10 @@ use crate::sip::dialog_store::DialogStore;
 /// (MCP stdio would fight the TUI for stdio); batch mode requests both.
 /// Plain booleans — a selected-but-unconfigured (or uncompiled) server is
 /// simply not started, so callers need no feature gates.
-#[derive(Debug, Clone, Copy)]
+///
+/// `Clone` but not `Copy`: `armed_detections` is a list, and a run arms a
+/// variable number of detectors.
+#[derive(Debug, Clone)]
 pub struct Selection {
     /// Ceiling on rows in one list-style MCP response.
     ///
@@ -47,6 +50,15 @@ pub struct Selection {
     /// flag still parsed and still refused a non-loopback bind without auth, so
     /// it read as wired while scraping returned nothing.
     pub metrics: bool,
+    /// The detection rules this run armed, by the name each files findings
+    /// under (`scanner`, `fraud`, `digest`, `reg_flood`). Empty when none is.
+    ///
+    /// Reported by the MCP `security_findings` tool, and it is the caller that
+    /// knows: an `AlertEngine` is built on every headless run whether or not a
+    /// detector was armed, so the engine's presence answers a different
+    /// question. Carried on Selection for the same reason `mcp_row_cap` is —
+    /// this struct is where per-run decisions about the servers already live.
+    pub armed_detections: Vec<&'static str>,
 }
 
 /// Handles to the running servers thread.
@@ -338,6 +350,7 @@ pub fn start_servers(
             } else {
                 s
             };
+            let s = s.with_armed_detections(selection.armed_detections.iter().copied());
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),
                 None => s,

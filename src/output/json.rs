@@ -796,7 +796,7 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
         octets: stream.octet_count,
         jitter_ms: stream.jitter,
         loss_pct,
-        orphaned: stream.orphaned,
+        orphaned: stream.orphaned(),
         associated_dialog: stream.associated_dialog.clone(),
         first_seen: stream.first_seen.to_rfc3339(),
         last_seen: stream.last_seen.to_rfc3339(),

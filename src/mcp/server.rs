@@ -51,6 +51,20 @@ pub struct SipnabMcp {
     /// Optional shared alert engine for `security_findings`. When None,
     /// the tool returns an empty list rather than erroring.
     pub alert_engine: Option<Arc<RwLock<AlertEngine>>>,
+    /// The detectors this run armed, by the rule name each files findings
+    /// under, sorted. Empty when none is armed.
+    ///
+    /// `security_findings` reports it, and the reason it is a LIST rather than
+    /// a bool is that arming is per detector: a server watching for scanners
+    /// answers "no fraud findings" for a capture full of toll fraud, and the
+    /// only honest version of that answer names what was actually watched.
+    ///
+    /// Carried on the server because nothing it can reach knows: the
+    /// AlertEngine exists on every `-N` run whether or not a detector was
+    /// armed, so `alert_engine.is_some()` reads true on a server with no
+    /// detection at all. The capture owner is what knows, so the capture owner
+    /// is what tells it (`crate::app::servers::Selection::armed_detections`).
+    armed_detections: Vec<String>,
     /// Shared flag the capture owner sets once the source (typically a pcap
     /// file) is fully consumed; `tail_dialogs` reports it as
     /// `source_exhausted` so pollers know no more updates will come. When
@@ -224,6 +238,7 @@ impl SipnabMcp {
             dialog_store,
             stream_store,
             alert_engine: None,
+            armed_detections: Vec::new(),
             source_exhausted: None,
             row_cap: HARD_LIMIT,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
@@ -331,6 +346,31 @@ impl SipnabMcp {
     /// read from its FindingsHistory ring buffer.
     pub fn with_alert_engine(mut self, alerts: Arc<RwLock<AlertEngine>>) -> Self {
         self.alert_engine = Some(alerts);
+        self
+    }
+
+    /// Declare which detectors this run armed, by the rule name each files
+    /// findings under.
+    ///
+    /// Separate from [`Self::with_alert_engine`] because the two are different
+    /// facts and only one of them was ever available: the engine is built on
+    /// every headless run, armed or not. See the `armed_detections` field.
+    /// Names outside [`SECURITY_FINDING_KINDS`] are dropped, so a caller cannot
+    /// make `security_findings` advertise a kind it would then refuse to filter
+    /// on.
+    pub fn with_armed_detections<I, S>(mut self, kinds: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut armed: Vec<String> = kinds
+            .into_iter()
+            .map(|k| k.as_ref().to_string())
+            .filter(|k| SECURITY_FINDING_KINDS.contains(&k.as_str()))
+            .collect();
+        armed.sort();
+        armed.dedup();
+        self.armed_detections = armed;
         self
     }
 
@@ -731,6 +771,26 @@ pub struct SearchMessagesParams {
     pub query: String,
     /// Maximum hits to return (default 50, max 1000).
     pub limit: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339 created_at>|<Call-ID>#<zero-padded message index>`) to
+    /// continue after that page. Omit on the first call.
+    pub cursor: Option<String>,
+}
+
+/// The tie-break half of a `search_messages` cursor: `<Call-ID>#<index>`.
+///
+/// The index is zero-padded because the cursor's identity half is compared as
+/// TEXT (see [`crate::mcp::shape::Cursor::precedes`]), and unpadded decimal
+/// sorts `10` before `2` — which would resume a page in the middle of a dialog
+/// and drop every hit between. Ten digits covers any message index a dialog
+/// can reach.
+///
+/// `#` is not in RFC 3261's `word` production, so it cannot appear in a
+/// conformant Call-ID; a non-conformant one carrying it still orders
+/// consistently, because the same composed string is what the page is sorted
+/// by and what the cursor compares against.
+fn hit_identity(call_id: &str, index: usize) -> String {
+    format!("{call_id}#{index:010}")
 }
 
 /// Zero-allocation ASCII-case-insensitive substring test used by
@@ -1307,6 +1367,10 @@ pub struct SearchByTimeParams {
     pub filter: Option<String>,
     /// Maximum dialogs to return (1..=1000, default 50).
     pub limit: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339 created_at>|<Call-ID>`) to continue after that page. Omit
+    /// on the first call.
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1510,17 +1574,73 @@ pub struct UnanalysedPort {
     pub messages: u64,
 }
 
+/// The rule names `security_findings` can filter on, sorted.
+///
+/// This is the whole vocabulary: `AlertEngine::fire` is reached from exactly
+/// five call sites in `crate::app::batch`, and they file findings under these
+/// four names. An `--alert` rule tunes the threshold of one of them by name; it
+/// does not invent a fifth, because nothing calls `fire` with a rule's own
+/// name.
+///
+/// `security_findings_kinds_match_the_names_the_detectors_file_under` reads
+/// those call sites and fails if the two ever disagree, so this list cannot
+/// quietly go stale the way a documented enum does.
+pub const SECURITY_FINDING_KINDS: [&str; 4] = ["digest", "fraud", "reg_flood", "scanner"];
+
 /// Parameters for `security_findings`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct SecurityFindingsParams {
-    /// Filter to specific rule kinds (e.g. ["scanner","fraud"]). Empty/None
-    /// returns all kinds.
+    /// Filter to specific rule kinds — `scanner`, `fraud`, `digest`,
+    /// `reg_flood`. Empty/None returns all kinds. Any other name is refused
+    /// with `invalid_params` naming the four.
     pub kinds: Option<Vec<String>>,
     /// RFC 3339 timestamp; only findings recorded strictly after are returned.
     pub since: Option<String>,
     /// Maximum findings to return (default 50, max 1000).
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// What `security_findings` returns: the findings, and what was watching.
+///
+/// The tool used to answer with a bare JSON array, and `[]` meant three
+/// different things: nothing tripped, no detector was armed to trip, or the
+/// `kinds` filter named something outside the vocabulary. The third is now an
+/// error ([`SECURITY_FINDING_KINDS`]) and the second is [`Self::armed_kinds`].
+///
+/// The distinction is the whole point. "No attacks were detected" and "nothing
+/// was watching for attacks" are opposite operational states, and an agent
+/// handed `[]` reported the first for both — a clean bill of health from a
+/// server with no detector running. `sipnab -N --mcp` builds an AlertEngine on
+/// every run, so the presence of the engine never answered this; which
+/// DETECTORS the operator armed does.
+pub struct FindingsPage {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// This page of findings, newest first.
+    pub findings: Vec<FindingJson>,
+    /// Rows in `findings`, so counting the array is never necessary.
+    pub returned: usize,
+    /// Findings matching `kinds` and `since` across the whole retained ring
+    /// buffer, independent of `limit`.
+    pub total_matched: usize,
+    /// True when matches remain after this page. Narrow with `since` or raise
+    /// `limit`; there is no cursor — see the tool's docs.
+    pub truncated: bool,
+    /// The detectors this server is running, by the rule name each files
+    /// findings under. Empty means nothing is armed and `findings` could only
+    /// ever have been empty.
+    pub armed_kinds: Vec<String>,
+    /// True when at least one detector is armed. The flag [`Self::armed_kinds`]
+    /// implies, stated separately so a caller can branch on it without
+    /// interpreting a list.
+    pub detection_armed: bool,
+    /// Present ONLY when nothing is armed, saying so in words the agent will
+    /// pass on rather than leaving it to infer from an empty list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1582,6 +1702,44 @@ pub struct DialogPage {
     /// A cursor is only meaningful within one capture. `open_capture` can
     /// replace the whole dialog set between two pages, and without this the
     /// second page would look like an ordinary continuation of the first.
+    pub capture_identity: crate::provenance::CaptureEtag,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// A bounded page of `search_messages` hits that says how much of the answer
+/// it is.
+///
+/// `search_messages` returned a bare JSON array, and the argument [`DialogPage`]
+/// records applies to it verbatim: a bare array hides its own size. On
+/// `tests/pcap-samples/sipp-branch-scenario.pcapng`, which holds 8989 SIP
+/// messages, `{"query":"REGISTER"}` answered with 50 rows and `limit: 1000`
+/// with 1000, and neither response said that thousands more matched.
+///
+/// The consumer is a language model asked "how many REGISTERs are there". It
+/// counts the rows it was handed. So the fields below are the whole fix: the
+/// count it did not send, the flag saying it did not, and the cursor that
+/// reaches the remainder.
+pub struct MessagePage {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// This page of hits, ordered by the dialog's `created_at`, then Call-ID,
+    /// then message index.
+    pub hits: Vec<SearchHit>,
+    /// Rows in `hits`, so counting the array is never necessary.
+    pub returned: usize,
+    /// Messages matching the query across the WHOLE store, independent of
+    /// `limit` and `cursor`. This is the number that answers "how many".
+    pub total_matched: usize,
+    /// True when matches remain after this page. Pass `next_cursor` back to
+    /// continue.
+    pub truncated: bool,
+    /// Opaque cursor (`<RFC 3339 created_at>|<Call-ID>#<index>` of the last
+    /// row) to pass to the next call. Null on the final page.
+    pub next_cursor: Option<String>,
+    /// Which capture this page came from, and which revision of its stores.
+    ///
+    /// A cursor is only meaningful within one capture — see [`DialogPage`].
     pub capture_identity: crate::provenance::CaptureEtag,
 }
 
@@ -2842,19 +3000,23 @@ impl SipnabMcp {
     ///
     /// # Returns
     ///
-    /// A JSON array of `SearchHit` rows, empty when nothing matches;
-    /// snippets are truncated to the server's body cap (`--mcp-max-body-bytes`).
+    /// A `MessagePage`: this page of `SearchHit` rows, the `total_matched`
+    /// across the whole store, a `truncated` flag, and a `next_cursor` (null on
+    /// the final page). Snippets are truncated to the server's body cap
+    /// (`--mcp-max-body-bytes`).
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `query` is empty.
+    /// `invalid_params` (-32602) when `query` is empty, or when `cursor`'s
+    /// timestamp half is not RFC 3339.
     #[tool(
         name = "search_messages",
         description = "Case-insensitive substring search over SIP method, \
                        status, From, To, User-Agent, and body across all \
-                       dialogs in the active store. Returns up to `limit` \
-                       (default 50, max 1000) (call_id, message_index, \
-                       snippet) hits.",
+                       dialogs in the active store. Returns a page of \
+                       (call_id, message_index, snippet) hits carrying \
+                       total_matched, a truncated flag, and next_cursor for \
+                       the remaining matches.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn search_messages(
@@ -2867,6 +3029,13 @@ impl SipnabMcp {
                 None,
             ));
         }
+        let cursor = match params.cursor.as_deref() {
+            Some(raw) => Some(
+                super::shape::parse_cursor(raw)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+            ),
+            None => None,
+        };
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         // Lower-case the needle ONCE (ASCII-fold, matching the TUI search
         // paths in `tui::msg_raw` / `tui::stream_list`). Each message is then
@@ -2877,49 +3046,100 @@ impl SipnabMcp {
         // message of every call.
         let needle = params.query.to_ascii_lowercase();
         let needle_bytes = needle.as_bytes();
-        let hits: Vec<SearchHit> = {
+        let page: MessagePage = {
+            // Capture lock first, then the stores — see `CaptureState`. The
+            // identity stamped on this page must describe the capture the rows
+            // came out of, or the cursor it carries points into another one.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
-            let mut out: Vec<SearchHit> = Vec::new();
-            'outer: for d in ds.iter() {
+            let ss = self.stream_store.read();
+
+            // EVERY match, not the first `limit` of them. The scan used to stop
+            // at `limit`, which is why the old bare array could not say how much
+            // it was withholding — a truncated scan cannot count.
+            //
+            // Only the position of each hit is collected here. Building the
+            // fenced snippet costs up to `--mcp-max-body-bytes` per row, so
+            // that is done for the page alone: 9000 matches on the sample
+            // capture would otherwise mean 36 MB of snippets to return 50.
+            let mut matched: Vec<(&crate::sip::dialog::SipDialog, usize, String)> = Vec::new();
+            for d in ds.iter() {
                 for (idx, msg) in d.messages.iter().enumerate() {
                     // Cheap borrowed fields first; the body's lossy view (a
                     // borrow for valid UTF-8) is scanned last and only if the
                     // earlier fields miss.
                     let status = msg.status_code.map(|s| s.to_string());
                     let body = String::from_utf8_lossy(&msg.body);
-                    let matched =
-                        ascii_contains_ci(
-                            msg.method.as_ref().map(|m| m.as_str()).unwrap_or(""),
-                            needle_bytes,
-                        ) || ascii_contains_ci(status.as_deref().unwrap_or(""), needle_bytes)
-                            || ascii_contains_ci(msg.from_header().unwrap_or(""), needle_bytes)
-                            || ascii_contains_ci(msg.to_header().unwrap_or(""), needle_bytes)
-                            || ascii_contains_ci(msg.user_agent().unwrap_or(""), needle_bytes)
-                            || ascii_contains_ci(&body, needle_bytes);
-                    if matched {
-                        // Fenced, not raw: this is the whole message as the
-                        // sender wrote it, the largest run of attacker-authored
-                        // text the MCP surface returns.
-                        let snippet = super::shape::fence(&super::shape::truncate_string(
-                            &String::from_utf8_lossy(&msg.raw),
-                            self.body_cap,
-                        ));
-                        out.push(SearchHit {
-                            call_id: d.call_id.clone(),
-                            message_index: idx,
-                            snippet,
-                        });
-                        if out.len() >= limit {
-                            break 'outer;
-                        }
+                    let hit = ascii_contains_ci(
+                        msg.method.as_ref().map(|m| m.as_str()).unwrap_or(""),
+                        needle_bytes,
+                    ) || ascii_contains_ci(status.as_deref().unwrap_or(""), needle_bytes)
+                        || ascii_contains_ci(msg.from_header().unwrap_or(""), needle_bytes)
+                        || ascii_contains_ci(msg.to_header().unwrap_or(""), needle_bytes)
+                        || ascii_contains_ci(msg.user_agent().unwrap_or(""), needle_bytes)
+                        || ascii_contains_ci(&body, needle_bytes);
+                    if hit {
+                        matched.push((d, idx, hit_identity(&d.call_id, idx)));
                     }
                 }
             }
+            let total_matched = matched.len();
+
+            // Sorted on the cursor's own key, and sorted BEFORE the cursor
+            // filter and the truncation — the same order `dialog_page` pages
+            // on, extended by the message index. Store order is insertion
+            // order, so cutting first would let `next_cursor` skip hits that
+            // were never returned.
+            matched.sort_by(|a, b| {
+                a.0.created_at
+                    .cmp(&b.0.created_at)
+                    .then_with(|| a.2.cmp(&b.2))
+            });
+            let remaining: Vec<(&crate::sip::dialog::SipDialog, usize, String)> = match &cursor {
+                None => matched,
+                Some(c) => matched
+                    .into_iter()
+                    .filter(|(d, _, id)| c.precedes(d.created_at, id))
+                    .collect(),
+            };
+
+            let truncated = remaining.len() > limit;
+            let rows = &remaining[..remaining.len().min(limit)];
+            let next_cursor = truncated
+                .then(|| rows.last())
+                .flatten()
+                .map(|(d, _, id)| super::shape::format_cursor(d.created_at, id));
+            let hits: Vec<SearchHit> = rows
+                .iter()
+                .map(|(d, idx, _)| SearchHit {
+                    call_id: d.call_id.clone(),
+                    message_index: *idx,
+                    // Fenced, not raw: this is the whole message as the sender
+                    // wrote it, the largest run of attacker-authored text the
+                    // MCP surface returns.
+                    snippet: super::shape::fence(&super::shape::truncate_string(
+                        &String::from_utf8_lossy(&d.messages[*idx].raw),
+                        self.body_cap,
+                    )),
+                })
+                .collect();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
             drop(ds);
-            out
+            drop(state);
+
+            MessagePage {
+                schema_version: 1,
+                returned: hits.len(),
+                hits,
+                total_matched,
+                truncated,
+                next_cursor,
+                capture_identity,
+            }
         };
         Ok(CallToolResult::success(vec![
-            ContentBlock::json(hits)?,
+            ContentBlock::json(page)?,
             ContentBlock::text(super::shape::untrusted_note()),
         ]))
     }
@@ -3018,26 +3238,33 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(response)?]))
     }
 
-    /// Returns recent security findings (scanner/fraud/digest/reg-flood/etc.)
-    /// from the in-memory ring buffer. When the AlertEngine isn't attached
-    /// (e.g. running in a query-only mode without active detection rules),
-    /// returns an empty list rather than erroring.
+    /// Returns recent security findings (scanner/fraud/digest/reg_flood) from
+    /// the in-memory ring buffer, beside the list of detectors that were armed
+    /// to produce them.
     ///
     /// # Returns
     ///
-    /// A JSON array of `FindingJson` rows with details truncated to the
-    /// server's body cap (`--mcp-max-body-bytes`).
+    /// A `FindingsPage`: the findings with details truncated to the server's
+    /// body cap (`--mcp-max-body-bytes`), `total_matched`, `truncated`, and
+    /// `armed_kinds` / `detection_armed` / `note` saying what was watching.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `since` is not RFC 3339.
+    /// `invalid_params` (-32602) when `since` is not RFC 3339, or when `kinds`
+    /// names anything outside [`SECURITY_FINDING_KINDS`]. Accepting an unknown
+    /// kind silently is what made `kinds: ["reg-flood"]` — the spelling
+    /// `--alert` uses — answer `[]` on a capture full of registration floods,
+    /// indistinguishable from a quiet one. `find_problems` already refuses an
+    /// unknown alias by name; this is the same rule.
     #[tool(
         name = "security_findings",
         description = "Returns recent security findings recorded by the \
-                       active detection rules (scanner, fraud, digest leaks, \
-                       reg flood). Optional `kinds` filter and `since` RFC \
-                       3339 cursor; empty list when no AlertEngine is \
-                       attached.",
+                       armed detection rules (scanner, fraud, digest, \
+                       reg_flood). Optional `kinds` filter — an unknown kind \
+                       is an error naming the four — and a `since` RFC 3339 \
+                       cursor. The response carries total_matched, truncated, \
+                       and armed_kinds, which distinguishes 'nothing tripped' \
+                       from 'no detector was armed'.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn security_findings(
@@ -3057,24 +3284,73 @@ impl SipnabMcp {
             },
             None => None,
         };
-        let findings: Vec<FindingJson> = match &self.alert_engine {
+
+        let kinds_owned: Vec<String> = params.kinds.unwrap_or_default();
+        for k in &kinds_owned {
+            if !SECURITY_FINDING_KINDS.contains(&k.as_str()) {
+                // Name the vocabulary, and name the near miss. `reg-flood` is
+                // the spelling the `--alert` grammar uses for the same
+                // detector, so an operator who has written one reaches for it
+                // here first.
+                let suggestion = SECURITY_FINDING_KINDS
+                    .iter()
+                    .find(|known| known.replace('_', "-") == k.replace('_', "-").to_lowercase())
+                    .map(|known| format!(" (did you mean '{known}'?)"))
+                    .unwrap_or_default();
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "unknown kind '{k}', expected one of: {}{suggestion}",
+                        SECURITY_FINDING_KINDS.join(", ")
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        let (findings, total_matched) = match &self.alert_engine {
             Some(engine) => {
-                let kinds_owned: Vec<String> = params.kinds.unwrap_or_default();
                 let kinds_ref: Vec<&str> = kinds_owned.iter().map(String::as_str).collect();
                 let guard = engine.read();
-                let raw = guard.iter_findings(&kinds_ref, since, limit);
-                raw.iter()
+                // The whole ring buffer, not the first `limit` of it, for the
+                // reason `dialog_page` collects every match: a truncated scan
+                // cannot report what it truncated. The buffer is bounded by
+                // `--findings-history`, so this is a bounded walk.
+                let raw = guard.iter_findings(&kinds_ref, since, usize::MAX);
+                let total = raw.len();
+                let page = raw
+                    .iter()
+                    .take(limit)
                     .map(|f| FindingJson {
                         rule_name: f.rule_name.clone(),
                         src_ip: f.src_ip.to_string(),
                         detail: super::shape::truncate_string(&f.detail, self.body_cap),
                         timestamp: f.timestamp.to_rfc3339(),
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (page, total)
             }
-            None => Vec::new(),
+            None => (Vec::new(), 0),
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(findings)?]))
+
+        let detection_armed = !self.armed_detections.is_empty();
+        let page = FindingsPage {
+            schema_version: 1,
+            returned: findings.len(),
+            findings,
+            total_matched,
+            truncated: total_matched > limit,
+            armed_kinds: self.armed_detections.clone(),
+            detection_armed,
+            note: (!detection_armed).then(|| {
+                "No detection rule is armed on this server, so no finding could \
+                 have been recorded. An empty findings list here means nothing \
+                 was watching, NOT that the traffic was clean. Arm a detector \
+                 with --kill-scanner, --fraud-detect, --digest-leak or \
+                 --reg-flood and re-run the capture."
+                    .to_string()
+            }),
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
     /// What this server is attached to: live interface or file, for how long,
@@ -3399,13 +3675,20 @@ impl SipnabMcp {
     }
 
     /// Dialogs that started inside a time window, optionally filtered.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `start` or `end` is not RFC 3339, when
+    /// `end` is not after `start`, when `filter` does not compile, or when
+    /// `cursor`'s timestamp half is not RFC 3339.
     #[tool(
         name = "search_by_time",
         description = "Returns dialogs whose first message falls in an RFC 3339 \
                        time window, optionally narrowed by a diagnostic alias or \
                        DSL filter. Use it to scope an investigation to when a \
                        user says the problem happened. The response carries \
-                       total_matched and a truncated flag.",
+                       total_matched, a truncated flag, and next_cursor for the \
+                       remaining dialogs.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn search_by_time(
@@ -3438,12 +3721,24 @@ impl SipnabMcp {
         }
         let limit = crate::mcp::shape::resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
+        let cursor = match params.cursor.as_deref() {
+            Some(raw) => Some(
+                super::shape::parse_cursor(raw)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+            ),
+            None => None,
+        };
 
         let payload = {
+            // Capture lock first, then the stores — see `CaptureState`, and the
+            // same reason `dialog_page` holds all three: a page and the identity
+            // stamped on it must describe one capture, because the cursor is
+            // only meaningful inside it.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
             let capture = CaptureMedia::of_store(&ss);
-            let mut hits: Vec<serde_json::Value> = ds
+            let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
                 .iter()
                 .filter(|d| {
                     let t = d.created_at;
@@ -3459,6 +3754,34 @@ impl SipnabMcp {
                         expr.matches_dialog(d, &streams, capture)
                     })
                 })
+                .collect();
+            let total = matched.len();
+            // Oldest first, tie-broken by Call-ID: an investigation reads
+            // forward from when the problem started, and dialogs sharing a
+            // `created_at` are ordinary — a burst of registrations lands on one
+            // millisecond. Sorting on the cursor's full key is what lets a tie
+            // group split across a page boundary without dropping or repeating
+            // a row.
+            matched.sort_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.call_id.cmp(&b.call_id))
+            });
+            let remaining: Vec<&crate::sip::dialog::SipDialog> = match &cursor {
+                None => matched,
+                Some(c) => matched
+                    .into_iter()
+                    .filter(|d| c.precedes(d.created_at, &d.call_id))
+                    .collect(),
+            };
+            let truncated = remaining.len() > limit;
+            let rows = &remaining[..remaining.len().min(limit)];
+            let next_cursor = truncated
+                .then(|| rows.last())
+                .flatten()
+                .map(|d| super::shape::format_cursor(d.created_at, &d.call_id));
+            let hits: Vec<serde_json::Value> = rows
+                .iter()
                 .map(|d| {
                     serde_json::json!({
                         "call_id": d.call_id,
@@ -3468,19 +3791,18 @@ impl SipnabMcp {
                     })
                 })
                 .collect();
-            // Oldest first: an investigation reads forward from when the
-            // problem started.
-            hits.sort_by(|a, b| a["created_at"].as_str().cmp(&b["created_at"].as_str()));
-            let total = hits.len();
-            hits.truncate(limit);
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(ss);
             drop(ds);
+            drop(state);
             serde_json::json!({
                 "schema_version": 1,
-                "dialogs": hits,
                 "returned": hits.len(),
+                "dialogs": hits,
                 "total_matched": total,
-                "truncated": total > limit,
+                "truncated": truncated,
+                "next_cursor": next_cursor,
+                "capture_identity": capture_identity,
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -6748,33 +7070,44 @@ mod tests {
 
     // ── search_messages ──────────────────────────────────────────────
 
+    /// Parameters for a plain `search_messages` call: query and limit only.
+    fn search_params(query: &str, limit: Option<u32>) -> SearchMessagesParams {
+        SearchMessagesParams {
+            query: query.to_string(),
+            limit,
+            cursor: None,
+        }
+    }
+
     /// An empty query errors with invalid_params (-32602).
     #[tokio::test]
     async fn search_messages_empty_query_errors() {
         let server = empty_server();
         let err = server
-            .search_messages(Parameters(SearchMessagesParams {
-                query: String::new(),
-                limit: None,
-            }))
+            .search_messages(Parameters(search_params("", None)))
             .await
             .expect_err("empty query must error");
         let json = serde_json::to_value(err).unwrap();
         assert_eq!(json["code"], -32602);
     }
 
-    /// A query matching nothing returns an empty hits array.
+    /// A query matching nothing returns an empty page that SAYS it is empty.
+    ///
+    /// `total_matched: 0` rather than a bare `[]`: the two used to be the same
+    /// bytes as a capped page of a thousand matches.
     #[tokio::test]
     async fn search_messages_no_match_returns_empty() {
         let server = server_with_dialog("srch@x");
         let result = server
-            .search_messages(Parameters(SearchMessagesParams {
-                query: "zzz-no-such-token".to_string(),
-                limit: None,
-            }))
+            .search_messages(Parameters(search_params("zzz-no-such-token", None)))
             .await
             .expect("search should succeed");
-        assert!(text_of(&result).contains("[]"));
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["hits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["returned"], 0);
+        assert_eq!(v["total_matched"], 0);
+        assert_eq!(v["truncated"], false);
+        assert!(v["next_cursor"].is_null());
     }
 
     /// An upper-cased query still matches the lower-cased From header.
@@ -6782,15 +7115,12 @@ mod tests {
     async fn search_messages_case_insensitive_hit() {
         let server = server_with_dialog("srch2@x");
         let result = server
-            .search_messages(Parameters(SearchMessagesParams {
-                // Upper-cased query against lower-cased "alice".
-                query: "ALICE".to_string(),
-                limit: Some(10),
-            }))
+            // Upper-cased query against lower-cased "alice".
+            .search_messages(Parameters(search_params("ALICE", Some(10))))
             .await
             .expect("search should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-        let hits = v.as_array().expect("hits array");
+        let hits = v["hits"].as_array().expect("hits array").clone();
         assert!(!hits.is_empty(), "should match the From header");
         assert_eq!(hits[0]["call_id"], "srch2@x");
         assert!(
@@ -6809,16 +7139,122 @@ mod tests {
         let server = server_with_dialog("srch3@x");
         for q in ["InViTe", "200", "testua"] {
             let result = server
+                .search_messages(Parameters(search_params(q, Some(10))))
+                .await
+                .expect("search should succeed");
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            let hits = v["hits"].as_array().expect("hits array");
+            assert!(!hits.is_empty(), "query {q:?} should match a field");
+        }
+    }
+
+    /// A capped `search_messages` page reports the matches it withheld, and its
+    /// cursor reaches every one of them exactly once.
+    ///
+    /// The defect, reproduced against a live server on
+    /// `tests/pcap-samples/sipp-branch-scenario.pcapng`: `{"query":"REGISTER"}`
+    /// returned 50 rows of 8988 matches and `limit: 1000` returned 1000, with
+    /// nothing in either response saying so. An agent asked "how many
+    /// REGISTERs" counted its rows and answered.
+    ///
+    /// So this walks a store of five matching messages one row at a time and
+    /// asserts three things a bare array could not carry: the total is the
+    /// STORE's total on every page rather than the page's length, `truncated`
+    /// says whether more remain, and following `next_cursor` yields each hit
+    /// once — no gap, no repeat.
+    #[tokio::test]
+    async fn search_messages_pages_every_hit_exactly_once() {
+        let server = empty_server();
+        {
+            let mut ds = server.dialog_store.write();
+            for n in 0..5i64 {
+                // Distinct creation instants: the page order is
+                // (created_at, Call-ID, index), and a fixture that ties every
+                // row would not exercise the primary key at all. The 200 OK
+                // carries no INVITE token, so each dialog contributes exactly
+                // one hit and a lost row is visible as a lost dialog.
+                let at = base_ts() + chrono::Duration::seconds(n);
+                ds.process_message(invite(&format!("page-{n}@x"), at));
+                ds.process_message(ok200(&format!("page-{n}@x"), at));
+            }
+        }
+
+        let mut seen: Vec<(String, u64)> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let result = server
                 .search_messages(Parameters(SearchMessagesParams {
-                    query: q.to_string(),
-                    limit: Some(10),
+                    query: "INVITE".to_string(),
+                    limit: Some(1),
+                    cursor: cursor.clone(),
                 }))
                 .await
                 .expect("search should succeed");
             let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-            let hits = v.as_array().expect("hits array");
-            assert!(!hits.is_empty(), "query {q:?} should match a field");
+            assert_eq!(
+                v["total_matched"], 5,
+                "every page must report the STORE's match count, not the \
+                 page's: {v}"
+            );
+            let hits = v["hits"].as_array().expect("hits").clone();
+            assert_eq!(hits.len(), 1, "asked for one row");
+            assert_eq!(v["returned"], 1);
+            seen.push((
+                hits[0]["call_id"].as_str().expect("call_id").to_string(),
+                hits[0]["message_index"].as_u64().expect("index"),
+            ));
+            cursor = v["next_cursor"].as_str().map(str::to_string);
+            if cursor.is_none() {
+                assert_eq!(v["truncated"], false, "no cursor means no remainder");
+                break;
+            }
+            assert_eq!(v["truncated"], true, "a cursor means more remain");
         }
+
+        assert_eq!(seen.len(), 5, "paging must reach every hit: {seen:?}");
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 5, "a hit was returned twice: {seen:?}");
+    }
+
+    /// A malformed cursor is an error, not a silent restart from the top.
+    ///
+    /// Restarting would loop a paging agent forever while it believed it was
+    /// making progress — the same reason `dialog_page` refuses one.
+    #[tokio::test]
+    async fn search_messages_rejects_a_malformed_cursor() {
+        let server = server_with_dialog("srch4@x");
+        let err = server
+            .search_messages(Parameters(SearchMessagesParams {
+                query: "INVITE".to_string(),
+                limit: None,
+                cursor: Some("yesterday|srch4@x#0000000000".to_string()),
+            }))
+            .await
+            .expect_err("a non-RFC-3339 cursor must be refused");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    /// The cursor's index half orders numerically, not as raw text.
+    ///
+    /// `hit_identity` zero-pads because the cursor identity is compared as a
+    /// string: unpadded, `#10` sorts before `#2`, and a page boundary landing
+    /// between them would skip eight messages of a dialog and report the skip
+    /// nowhere. Asserted on the ordering the pager relies on rather than on the
+    /// padding width, so the test survives a wider field.
+    #[test]
+    fn hit_identity_orders_message_indices_numerically() {
+        assert!(
+            hit_identity("call@x", 2) < hit_identity("call@x", 10),
+            "message 2 must sort before message 10"
+        );
+        assert!(hit_identity("call@x", 9) < hit_identity("call@x", 100));
+        assert!(
+            hit_identity("aaa@x", 999) < hit_identity("aab@x", 0),
+            "the Call-ID is the primary key within one instant"
+        );
     }
 
     // ── ascii_contains_ci ────────────────────────────────────────────
@@ -6990,15 +7426,171 @@ mod tests {
 
     // ── security_findings ────────────────────────────────────────────
 
-    /// Without an attached AlertEngine the tool returns an empty list.
+    /// With nothing armed, an empty findings list SAYS nothing was armed.
+    ///
+    /// The defect this replaces: the tool answered `[]`, which is the same
+    /// answer a fully-armed server gives for a clean capture. An agent asked
+    /// "were we attacked?" read it as "no", on a server that was not looking.
     #[tokio::test]
-    async fn security_findings_no_engine_returns_empty() {
+    async fn security_findings_says_when_nothing_is_armed() {
         let server = empty_server();
         let result = server
             .security_findings(Parameters(SecurityFindingsParams::default()))
             .await
-            .expect("no engine → empty list");
-        assert!(text_of(&result).contains("[]"));
+            .expect("no engine → an empty page, not an error");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["findings"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["total_matched"], 0);
+        assert_eq!(
+            v["detection_armed"], false,
+            "nothing was armed, and the response must say so: {v}"
+        );
+        assert_eq!(v["armed_kinds"].as_array().map(Vec::len), Some(0));
+        let note = v["note"].as_str().unwrap_or_default().to_lowercase();
+        assert!(
+            note.contains("nothing was watching"),
+            "the note must distinguish an unwatched capture from a clean one: {v}"
+        );
+    }
+
+    /// An armed server reports WHICH detectors are armed, so "no fraud
+    /// findings" can be told apart from "fraud was never watched for".
+    #[tokio::test]
+    async fn security_findings_names_the_armed_detectors() {
+        let engine = Arc::new(RwLock::new(AlertEngine::new(vec![], None)));
+        let server = empty_server()
+            .with_alert_engine(engine)
+            .with_armed_detections(["scanner"]);
+        let result = server
+            .security_findings(Parameters(SecurityFindingsParams::default()))
+            .await
+            .expect("security_findings should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["detection_armed"], true);
+        assert_eq!(
+            v["armed_kinds"],
+            serde_json::json!(["scanner"]),
+            "an agent asking about fraud on a scanner-only server must be able \
+             to see that fraud was never watched: {v}"
+        );
+        assert!(
+            v["note"].is_null(),
+            "the not-armed note must not appear on an armed server: {v}"
+        );
+    }
+
+    /// A caller cannot make the server advertise a kind it would then refuse.
+    ///
+    /// `armed_kinds` is read by an agent deciding whether a question was even
+    /// asked, so a name there that `kinds` rejects would send it to a filter
+    /// that errors. The declaration is filtered to the vocabulary rather than
+    /// trusted.
+    #[tokio::test]
+    async fn armed_kinds_never_advertises_a_kind_the_filter_would_refuse() {
+        let server = empty_server().with_armed_detections(["scanner", "bogus", "reg-flood"]);
+        let result = server
+            .security_findings(Parameters(SecurityFindingsParams::default()))
+            .await
+            .expect("security_findings should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(
+            v["armed_kinds"],
+            serde_json::json!(["scanner"]),
+            "only names `kinds` accepts may be advertised: {v}"
+        );
+    }
+
+    /// A kind outside the vocabulary is refused by name, `find_problems`-style.
+    ///
+    /// `reg-flood` is the case that bit: it is the spelling the `--alert` rule
+    /// grammar uses for the same detector, and it used to return `[]` — the
+    /// bytes of a quiet capture — on a capture full of registration floods.
+    #[tokio::test]
+    async fn security_findings_refuses_an_unknown_kind() {
+        let server = empty_server();
+        for bad in ["reg-flood", "not-a-kind", "Scanner"] {
+            let outcome = server
+                .security_findings(Parameters(SecurityFindingsParams {
+                    kinds: Some(vec![bad.to_string()]),
+                    since: None,
+                    limit: None,
+                }))
+                .await;
+            let Err(err) = outcome else {
+                panic!("kind {bad:?} must be refused, not silently matched against nothing");
+            };
+            let json = serde_json::to_value(err).unwrap();
+            assert_eq!(json["code"], -32602, "kind {bad:?}: {json}");
+            let msg = json["message"].as_str().unwrap_or_default();
+            for known in SECURITY_FINDING_KINDS {
+                assert!(
+                    msg.contains(known),
+                    "the refusal must name the whole vocabulary so a caller can \
+                     correct itself in one round trip; {bad:?} produced: {msg}"
+                );
+            }
+        }
+    }
+
+    /// The near-miss hint names the right spelling rather than only the wrong
+    /// one, because `reg-flood` and `reg_flood` are one detector.
+    #[tokio::test]
+    async fn security_findings_suggests_the_underscore_spelling() {
+        let server = empty_server();
+        let err = server
+            .security_findings(Parameters(SecurityFindingsParams {
+                kinds: Some(vec!["reg-flood".to_string()]),
+                since: None,
+                limit: None,
+            }))
+            .await
+            .expect_err("reg-flood must be refused");
+        let json = serde_json::to_value(err).unwrap();
+        let msg = json["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("did you mean 'reg_flood'"),
+            "an operator who wrote --alert reg-flood:50/10s reaches for that \
+             spelling here first: {msg}"
+        );
+    }
+
+    /// The four names the tool accepts are the four the detectors file under.
+    ///
+    /// A source scan rather than a restatement: `SECURITY_FINDING_KINDS` is the
+    /// refusal's vocabulary, and a detector filing under a fifth name would
+    /// make its findings unfilterable while the tool insisted the name was
+    /// invalid. `src/app/batch.rs` is where every `DeferredAlert` is built, and
+    /// its `kind:` literals are the ground truth.
+    #[test]
+    fn security_findings_kinds_match_the_names_the_detectors_file_under() {
+        let batch = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/batch.rs"),
+        )
+        .expect("batch.rs must be readable");
+        let mut filed: Vec<String> = batch
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("kind: \""))
+            .filter_map(|rest| rest.split('"').next())
+            .map(str::to_string)
+            .collect();
+        filed.sort();
+        filed.dedup();
+        assert!(
+            filed.len() >= 4,
+            "found only {filed:?} rule names in batch.rs — the scan stopped \
+             matching, so this gate is comparing nothing"
+        );
+        assert_eq!(
+            filed,
+            SECURITY_FINDING_KINDS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>(),
+            "the kinds security_findings accepts and the kinds the detectors \
+             file under have drifted apart. A name in batch.rs and not here is \
+             a finding no caller can filter for; a name here and not there is a \
+             filter that can only ever return nothing."
+        );
     }
 
     /// A non-RFC-3339 `since` errors with invalid_params (-32602).
@@ -7038,10 +7630,50 @@ mod tests {
             .await
             .expect("security_findings should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-        let arr = v.as_array().expect("findings array");
+        let arr = v["findings"].as_array().expect("findings array");
         assert_eq!(arr.len(), 1);
+        assert_eq!(v["returned"], 1);
+        assert_eq!(v["total_matched"], 1);
+        assert_eq!(v["truncated"], false);
         assert_eq!(arr[0]["rule_name"], "scanner");
         assert_eq!(arr[0]["src_ip"], "127.0.0.1");
+    }
+
+    /// A capped findings page reports how many it withheld.
+    ///
+    /// `limit` used to be passed to the ring-buffer walk itself, so the answer
+    /// could not distinguish "two findings" from "two of two hundred" — the
+    /// same defect as the bare array, one layer down.
+    #[tokio::test]
+    async fn security_findings_reports_what_the_limit_withheld() {
+        let mut engine = AlertEngine::new(vec![], None);
+        for n in 0..5u8 {
+            engine.fire(
+                "scanner",
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, n)),
+                "probe",
+                chrono::Utc::now(),
+            );
+        }
+        let server = empty_server()
+            .with_alert_engine(Arc::new(RwLock::new(engine)))
+            .with_armed_detections(["scanner"]);
+
+        let result = server
+            .security_findings(Parameters(SecurityFindingsParams {
+                kinds: None,
+                since: None,
+                limit: Some(2),
+            }))
+            .await
+            .expect("security_findings should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["returned"], 2);
+        assert_eq!(
+            v["total_matched"], 5,
+            "the page must count the findings it did not send: {v}"
+        );
+        assert_eq!(v["truncated"], true);
     }
 
     /// The kinds filter excludes findings from other rule names.
@@ -7063,8 +7695,11 @@ mod tests {
             }))
             .await
             .expect("security_findings should succeed");
-        // Only "scanner" recorded; filtering on "fraud" yields none.
-        assert!(text_of(&result).contains("[]"));
+        // Only "scanner" recorded; filtering on "fraud" yields none — and says
+        // so with a total rather than a bare empty array.
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["findings"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["total_matched"], 0);
     }
 
     // ── diagnostic + analysis tools ──────────────────────────────────
@@ -7158,6 +7793,7 @@ mod tests {
                     end: None,
                     filter: None,
                     limit: None,
+                    cursor: None,
                 }))
                 .await
                 .is_err()
@@ -7174,10 +7810,81 @@ mod tests {
                     end: Some("2026-01-01T00:00:00Z".into()),
                     filter: None,
                     limit: None,
+                    cursor: None,
                 }))
                 .await
                 .is_err()
         );
+    }
+
+    /// `truncated: true` is no longer a dead end: the cursor reaches the rest.
+    ///
+    /// Before this, the only way past a truncated window was to narrow it, so
+    /// a busy five minutes holding more than the row cap had rows nothing could
+    /// reach. Paging one row at a time here proves the cursor visits every
+    /// dialog in the window exactly once, tie group included — the fixture's
+    /// dialogs share one `created_at`, which is what a burst of calls looks
+    /// like and what a bare-timestamp cursor loses half of.
+    #[tokio::test]
+    async fn search_by_time_cursor_reaches_every_dialog_in_the_window() {
+        let server = server_with_simultaneous_dialogs(&["t-c@x", "t-a@x", "t-b@x"]);
+        let window = |cursor: Option<String>| SearchByTimeParams {
+            start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
+            end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
+            filter: None,
+            limit: Some(1),
+            cursor,
+        };
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..8 {
+            let result = server
+                .search_by_time(Parameters(window(cursor.clone())))
+                .await
+                .expect("search_by_time should succeed");
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            assert_eq!(
+                v["total_matched"], 3,
+                "the window's total must not shrink as paging advances: {v}"
+            );
+            for d in v["dialogs"].as_array().expect("dialogs") {
+                seen.push(d["call_id"].as_str().expect("call_id").to_string());
+            }
+            cursor = v["next_cursor"].as_str().map(str::to_string);
+            if cursor.is_none() {
+                assert_eq!(v["truncated"], false);
+                break;
+            }
+            assert_eq!(v["truncated"], true, "a cursor means more remain: {v}");
+        }
+
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                "t-a@x".to_string(),
+                "t-b@x".to_string(),
+                "t-c@x".to_string()
+            ],
+            "every dialog in the window must be reachable exactly once"
+        );
+    }
+
+    /// A malformed `search_by_time` cursor is refused, not treated as absent.
+    #[tokio::test]
+    async fn search_by_time_rejects_a_malformed_cursor() {
+        let err = empty_server()
+            .search_by_time(Parameters(SearchByTimeParams {
+                start: "2026-01-01T00:00:00Z".into(),
+                end: None,
+                filter: None,
+                limit: None,
+                cursor: Some("not-a-time|abc@x".into()),
+            }))
+            .await
+            .expect_err("a non-RFC-3339 cursor must be refused");
+        assert_eq!(serde_json::to_value(err).unwrap()["code"], -32602);
     }
 
     // ── capture_status / server_capabilities ─────────────────────────

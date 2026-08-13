@@ -298,8 +298,9 @@ pub fn run_tui_mode(
 
                 if let Some(now) = sweep_clock.take_due(sweep_interval) {
                     processor.sweep();
-                    ss.write()
-                        .mark_orphaned(now.get(), std::time::Duration::from_secs(30));
+                    // No orphan sweep: orphan status is derived from
+                    // `associated_dialog` at every read, so there is no flag to
+                    // set — see [`crate::rtp::stream::RtpStream::orphaned`].
                     let compacted = ds.write().compact_idle(now.get());
                     if compacted.messages_evicted > 0 {
                         tracing::debug!(
@@ -435,6 +436,9 @@ pub fn run_tui_mode(
             api: true,
             mcp: false,
             metrics: true,
+            // MCP is never selected here, and `security_findings` is the only
+            // consumer, so there is nothing to declare.
+            armed_detections: Vec::new(),
         },
         #[cfg(feature = "metrics")]
         capture_meter,

@@ -234,9 +234,9 @@ mod tui_snapshots {
                 ssrc: 0xCCCC_DDDD,
                 payload_offset: 12,
             };
+            // No SDP ever names this stream, so no dialog claims it — which is
+            // the whole of what makes it an orphan, from its first packet.
             store.process_rtp(&parsed2, &rtp2, ts);
-            // Zero timeout on the capture clock: orphaned as of this packet.
-            store.mark_orphaned(ts, std::time::Duration::from_secs(0));
         }
 
         App::new(

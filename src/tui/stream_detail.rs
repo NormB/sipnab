@@ -259,7 +259,7 @@ pub fn render_stream_detail(
 
     let flags = format!(
         "  Orphaned: {}    Heuristic: {}",
-        if stream.orphaned { "Yes" } else { "No" },
+        if stream.orphaned() { "Yes" } else { "No" },
         if stream.heuristic { "Yes" } else { "No" },
     );
     lines.push(Line::raw(flags));

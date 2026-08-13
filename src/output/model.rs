@@ -233,7 +233,7 @@ impl From<&RtpStream> for StreamSummary {
             packets: s.packet_count,
             jitter_ms: s.jitter,
             loss_pct,
-            orphaned: s.orphaned,
+            orphaned: s.orphaned(),
             associated_dialog: s.associated_dialog.clone(),
             mos: crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref()),
             // From the stream's own record of where it began. There is no

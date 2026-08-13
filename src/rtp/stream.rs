@@ -274,9 +274,9 @@ pub struct RtpStream {
     /// Estimated lost packets from sequence number gaps.
     pub lost_packets: u64,
     /// SIP Call-ID if this stream has been linked to a dialog.
+    ///
+    /// The single source of orphan status — see [`RtpStream::orphaned`].
     pub associated_dialog: Option<String>,
-    /// `true` if no dialog has been associated after the orphan timeout.
-    pub orphaned: bool,
     /// `true` if this stream was discovered via heuristic (no SDP).
     pub heuristic: bool,
     /// Periodic quality snapshots for trend analysis (bounded, oldest-out).
@@ -316,6 +316,33 @@ pub struct RtpStream {
 }
 
 impl RtpStream {
+    /// Returns `true` when no dialog claims this stream.
+    ///
+    /// **Derived, never stored.** This was a `bool` field a periodic sweep set
+    /// 30 seconds after an unlinked stream's first packet, and the gap between
+    /// the field's name and its meaning was a wrong answer every consumer
+    /// repeated: on `tests/pcap-samples/codec-negotiation.pcap` — four streams,
+    /// zero dialogs — all four reported `orphaned: false`, because the capture
+    /// is three seconds long. An agent filtering for orphans to find a NAT or
+    /// one-way-audio fault found nothing on a capture that is nothing but
+    /// orphans, and a short unclaimed stream is exactly what those faults look
+    /// like from the media side.
+    ///
+    /// The timeout existed to damp a live capture's brief window between a
+    /// stream's first packet and the SDP that explains it. That window is real,
+    /// and it is not worth answering the question wrongly for the rest of the
+    /// run: a caller wanting "unclaimed AND settled" has `first_seen` and can
+    /// say so, while a caller wanting "unclaimed" had no way to ask.
+    ///
+    /// A method rather than an invariant maintained at each association site,
+    /// so a future path that sets `associated_dialog` cannot forget to clear a
+    /// flag beside it — the drift is unrepresentable rather than merely tested
+    /// for.
+    #[must_use]
+    pub fn orphaned(&self) -> bool {
+        self.associated_dialog.is_none()
+    }
+
     /// Returns `true` if the stream has been active within the last 30 seconds
     /// (relative to the current wall clock).
     ///
@@ -485,7 +512,6 @@ impl RtpStream {
             jitter: 0.0,
             lost_packets: 0,
             associated_dialog: None,
-            orphaned: false,
             heuristic: false,
             quality_intervals: QualityHistory::default(),
             lost_sequences: std::collections::VecDeque::new(),
@@ -993,9 +1019,13 @@ mod tests {
         assert_eq!(stream.last_seq, 100);
         assert_eq!(stream.jitter, 0.0);
         assert_eq!(stream.lost_packets, 0);
-        assert!(!stream.orphaned);
         assert!(!stream.heuristic);
         assert!(stream.associated_dialog.is_none());
+        assert!(
+            stream.orphaned(),
+            "a brand-new stream is claimed by no dialog, and that IS what \
+             orphaned means"
+        );
     }
 
     /// `is_active_at` decides activity relative to an injected instant, so it

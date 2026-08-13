@@ -1010,11 +1010,11 @@ own message to the far side regardless of what sipnab saw.
 
 Attribution needs one more step than you might expect. **Not every response
 carries `capture_identity`** — the whole-store answers do, the per-dialog ones do
-not. Measured against 0.5.95:
+not. Measured against 0.5.98:
 
 | Carries `capture_identity.node` | Does not |
 |---|---|
-| `capture_status`, `list_dialogs`, `tail_dialogs`, `find_correlated` | `get_dialog`, `get_dialog_report`, `triage_call`, `search_messages`, `capture_health` |
+| `capture_status`, `list_dialogs`, `tail_dialogs`, `find_correlated`, `search_messages`, `search_by_time` | `get_dialog`, `get_dialog_report`, `triage_call`, `capture_health` |
 
 So call `capture_status` once per node and hold the name, rather than expecting
 every answer to carry it. It matters: "answered 407" is incomplete until you

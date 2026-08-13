@@ -36,21 +36,25 @@
 //!
 //! # The sweep runs once, after the merge
 //!
-//! The single-threaded receive loop sweeps every five seconds of capture time:
-//! it flags RTP streams that no dialog claims as orphaned, and compacts dialogs
-//! that have gone idle. This module used to do neither, so the same bytes gave
-//! two answers. On one reference-corpus set `--cores 4` reported no orphaned
-//! streams at all where the single-threaded path reported 80, and the report's
-//! "Orphaned Streams:" header was absent entirely — those streams appeared in
-//! the ordinary RTP section instead, reading as though they belonged to a call.
+//! The single-threaded receive loop compacts idle dialogs every five seconds of
+//! capture time. This module used to do neither that nor the orphan flagging
+//! that used to accompany it, so the same bytes gave two answers: on one
+//! reference-corpus set `--cores 4` reported no orphaned streams at all where
+//! the single-threaded path reported 80, and the report's "Orphaned Streams:"
+//! header was absent entirely — those streams appeared in the ordinary RTP
+//! section instead, reading as though they belonged to a call.
 //!
-//! `final_sweep` closes that, and runs exactly ONCE, after the merge, at the
-//! capture's final timestamp. Not per worker: a call's SIP does not stay on one
-//! worker (see above), and a worker only sees the packets of its own host
-//! pairs, so its local last timestamp can be minutes behind the capture's. A
-//! per-worker sweep would measure each fragment against its own clock and
-//! produce a THIRD answer, matching neither path — worse than the divergence it
-//! replaced, because it would look right.
+//! Half of that divergence is now unrepresentable rather than fixed: orphan
+//! status is derived from `associated_dialog` at every read
+//! ([`crate::rtp::stream::RtpStream::orphaned`]), so no path can flag it
+//! differently from another. What remains is compaction, and `final_sweep`
+//! runs it exactly ONCE, after the merge, at the capture's final timestamp. Not
+//! per worker: a call's SIP does not stay on one worker (see above), and a
+//! worker only sees the packets of its own host pairs, so its local last
+//! timestamp can be minutes behind the capture's. A per-worker sweep would
+//! measure each fragment against its own clock and produce a THIRD answer,
+//! matching neither path — worse than the divergence it replaced, because it
+//! would look right.
 //!
 //! The "now" comes from `crate::app::batch::SweepClock`, the same capture clock
 //! the single-threaded loop uses, so the result is a function of the bytes
@@ -78,46 +82,44 @@ pub fn shard_for(src: IpAddr, dst: IpAddr, jobs: usize) -> usize {
 
 use std::thread;
 
-use crate::app::batch::{ORPHAN_AFTER, SweepClock};
+use crate::app::batch::SweepClock;
 use crate::capture::PacketProcessor;
 use crate::capture::channel::PacketRx;
 use crate::capture::parse::ParsedPacket;
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
 
-/// Sweep the MERGED stores once, at the capture's final timestamp.
+/// Compact the MERGED dialog store once, at the capture's final timestamp.
 ///
-/// The two calls answer different questions and both are needed. `mark_orphaned`
-/// is analysis: it classifies streams no dialog ever claimed, which is what puts
-/// them under the report's "Orphaned Streams:" heading instead of among the
-/// media of real calls. `compact_idle` is the memory bound: it evicts messages
-/// from dialogs that have gone quiet, keeping the ones that say what the dialog
-/// did. Running only the first leaves the parallel path retaining every message
-/// the capture held; running only the second leaves every orphan unflagged.
+/// `compact_idle` is the memory bound: it evicts messages from dialogs that
+/// have gone quiet, keeping the ones that say what the dialog did. Without it
+/// the parallel path retains every message the capture held.
 ///
-/// Call this AFTER
-/// [`reassociate_all`](crate::rtp::stream_store::StreamStore::reassociate_all).
-/// Orphan status is sticky, and cross-worker association is not resolved until
-/// that pass runs — sweeping first would permanently flag streams whose SDP
-/// merely landed on another worker.
+/// It no longer sweeps orphans. Orphan status is derived from
+/// `associated_dialog` at every read — see
+/// [`RtpStream::orphaned`](crate::rtp::stream::RtpStream::orphaned) — so there
+/// is no flag for a sweep to set, and the ordering hazard the sweep carried
+/// goes with it: this used to have to run AFTER
+/// [`reassociate_all`](crate::rtp::stream_store::StreamStore::reassociate_all),
+/// because a sticky flag set before cross-worker association resolved would
+/// permanently mark streams whose SDP merely landed on another worker.
 ///
 /// # Arguments
 ///
 /// * `clock` — the run's capture clock, fed every packet the reader saw.
-/// * `ds` / `ss` — the merged stores, swept in place.
+/// * `ds` — the merged dialog store, compacted in place.
 ///
 /// # Side effects
 ///
-/// Flags streams on `ss`, drops messages from idle dialogs on `ds` (counted
-/// into its lifetime retention totals, which the batch summary reports), and
-/// logs a `debug!` line naming what compaction shed. Does nothing at all when
-/// the run read no packets, because then there is no capture time to measure
-/// against and nothing in the stores to sweep.
-fn final_sweep(clock: &SweepClock, ds: &mut DialogStore, ss: &mut StreamStore) {
+/// Drops messages from idle dialogs on `ds` (counted into its lifetime
+/// retention totals, which the batch summary reports), and logs a `debug!` line
+/// naming what compaction shed. Does nothing at all when the run read no
+/// packets, because then there is no capture time to measure against and
+/// nothing in the store to compact.
+fn final_sweep(clock: &SweepClock, ds: &mut DialogStore) {
     let Some(now) = clock.final_now() else {
         return;
     };
-    ss.mark_orphaned(now.get(), ORPHAN_AFTER);
     let compacted = ds.compact_idle(now.get());
     if compacted.messages_evicted > 0 {
         tracing::debug!(
@@ -504,7 +506,7 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
         }
     }
     ss.reassociate_all();
-    final_sweep(&clock, &mut ds, &mut ss);
+    final_sweep(&clock, &mut ds);
 
     let result = ReconResult {
         dialog_store: ds,
@@ -984,7 +986,7 @@ pub fn run_offline_parallel_file(
         }
     }
     ss.reassociate_all();
-    final_sweep(&progress.clock, &mut ds, &mut ss);
+    final_sweep(&progress.clock, &mut ds);
     let result = ReconResult {
         dialog_store: ds,
         stream_store: ss,
@@ -1455,15 +1457,15 @@ mod tests {
         );
     }
 
-    /// The channel-fed entry point sweeps its merged stores too.
+    /// The channel-fed entry point reports orphans from its merged stores too.
     ///
     /// `run_offline_parallel_file` is what `-I` reaches; this one is reached by
     /// `--multi-device`, and it merged and returned without sweeping just the
-    /// same. The stream here is announced by no SDP and lives for two minutes
-    /// of capture time against a thirty-second timeout, so the only correct
-    /// answer is "orphaned" — and the capture epoch is years in the past, so a
-    /// sweep reading the wall clock would flag it for the wrong reason and a
-    /// sweep reading nothing would not flag it at all.
+    /// same, so its orphan count disagreed with the single-threaded path's.
+    /// The stream here is announced by no SDP, so the only correct answer is
+    /// "orphaned" — and it is now correct without any sweep having run, which
+    /// is the point: the count is derived from `associated_dialog` at read
+    /// time, and merging cannot lose a flag that does not exist.
     #[cfg(feature = "native")]
     #[test]
     fn channel_fed_cores_path_sweeps_after_the_merge() {
@@ -1489,8 +1491,8 @@ mod tests {
         assert_eq!(
             r.stream_store.orphaned_count(),
             1,
-            "a stream no dialog claimed, two minutes old in capture time, must \
-             be flagged orphaned by the post-merge sweep"
+            "a stream no dialog claimed must be reported as an orphan by the \
+             merged store"
         );
     }
 

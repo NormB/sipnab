@@ -217,7 +217,7 @@ bodies:
 | Copy | Location | Size | Consumer |
 |---|---|---|---|
 | Canonical | [`src/pipeline.rs:1879`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1879) `process_packet` | 142 ln | TUI live |
-| Batch | [`src/app/batch.rs:2776`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2776) `process_parsed_packet` | 402 ln | batch mode |
+| Batch | [`src/app/batch.rs:2807`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2807) `process_parsed_packet` | 402 ln | batch mode |
 | TUI file-open | `src/tui/events.rs:1536` `load_pcap_file` | 194 ln | F3 open |
 | Sharded | [`src/parallel.rs`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) + worker loops | ~200 ln | `--jobs N` |
 

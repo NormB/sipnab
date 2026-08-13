@@ -60,7 +60,7 @@ pub fn classify_stream(
     stream: &RtpStream,
     bands: &crate::rtp::bands::QualityBands,
 ) -> StreamHealth {
-    if stream.orphaned {
+    if stream.orphaned() {
         return StreamHealth::Orphaned;
     }
     let loss_pct = stream.loss_percent();
@@ -644,10 +644,50 @@ mod tests {
             ssrc: 0x1234,
             payload_offset: 12,
         };
-        let stream = RtpStream::new(key, &hdr, chrono::Utc::now());
+        let mut stream = RtpStream::new(key, &hdr, chrono::Utc::now());
+        // A dialog claims it, so the orphan arm of `classify_stream` does not
+        // apply and the quality bands decide. Before orphan status was derived
+        // from `associated_dialog`, a brand-new stream reached this arm by
+        // accident: the sweep had not yet had 30 seconds to flag it.
+        stream.associated_dialog = Some("classify@example.invalid".to_string());
         assert_eq!(
             classify_stream(&stream, &crate::rtp::bands::QualityBands::default()),
             StreamHealth::Good
+        );
+    }
+
+    /// A stream no dialog claims classifies as Orphaned, whatever its quality.
+    ///
+    /// The other half of the same arm, and the one that was unreachable in
+    /// practice: a clean unclaimed stream showed as Good for its first 30
+    /// seconds of capture time, which on a short capture meant always.
+    #[test]
+    fn classify_stream_orphaned_without_a_dialog() {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::{RtpStream, StreamKey};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let key = StreamKey {
+            ssrc: 0x5678,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 20002),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 30002),
+        };
+        let hdr = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 0x5678,
+            payload_offset: 12,
+        };
+        let stream = RtpStream::new(key, &hdr, chrono::Utc::now());
+        assert_eq!(
+            classify_stream(&stream, &crate::rtp::bands::QualityBands::default()),
+            StreamHealth::Orphaned
         );
     }
 }

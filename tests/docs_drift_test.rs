@@ -2484,9 +2484,19 @@ fn no_documentation_table_repeats_a_row() {
         // four (`Legal values` and `If omitted` replacing `Description`), which
         // is growth inside a table that already existed and so does not count
         // here — the same rule the capture_health entry above records.
+        // Raised 523 -> 527 by #113, which gave `search_messages` and
+        // `security_findings` page objects: each gained ONE `Returns` table
+        // documenting fields that had been prose, doubled by the site mirror
+        // (2 tables x 2 pages). Attributed per file against HEAD before this
+        // number moved — every other .md this change touched
+        // (`docs/rest-api.md`, `docs/filter-dsl.md`,
+        // `docs/mcp-walkthrough.md`, `CHANGELOG.md`, and their mirrors) held
+        // its table count. The "Four tools are exceptions" table in
+        // `docs/mcp.md` lost two ROWS and stayed a table, which this gate does
+        // not count either way.
         tables,
-        523,
-        "walked {tables} tables, expected 523. More is fine — bump this. FEWER \
+        527,
+        "walked {tables} tables, expected 527. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

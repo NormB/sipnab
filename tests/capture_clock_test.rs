@@ -2,15 +2,20 @@
 
 //! Offline analysis must not depend on how fast the machine reads the file.
 //!
-//! The periodic sweep (idle-dialog compaction + RTP orphan flagging) used to
-//! be gated on wall-clock time and to compare `Utc::now()` against *packet*
-//! timestamps. Offline those two clocks are unrelated: a capture recorded in
-//! 2023 and read in 2026 is three years "idle" the instant it is loaded, so
-//! every sweep that happened to fire truncated every dialog to
-//! `keep_messages_per_idle_dialog` and flagged every unassociated stream as
-//! orphaned. How many sweeps fired was decided by how long the *read* took —
-//! a debug build and a release build over the same bytes printed different
-//! reports, and so did the same build on a loaded machine.
+//! The periodic sweep (idle-dialog compaction, and RTP orphan flagging while
+//! that existed) used to be gated on wall-clock time and to compare
+//! `Utc::now()` against *packet* timestamps. Offline those two clocks are
+//! unrelated: a capture recorded in 2023 and read in 2026 is three years
+//! "idle" the instant it is loaded, so every sweep that happened to fire
+//! truncated every dialog to `keep_messages_per_idle_dialog` and flagged every
+//! unassociated stream as orphaned. How many sweeps fired was decided by how
+//! long the *read* took — a debug build and a release build over the same bytes
+//! printed different reports, and so did the same build on a loaded machine.
+//!
+//! Orphan flagging has since left the sweep entirely: it is derived from
+//! `associated_dialog` at every read (#113), so no clock can reach it. What
+//! the orphan assertions below hold is PARITY — the same bytes must name the
+//! same orphans however they were read.
 //!
 //! Two properties are pinned here, and both are needed: the first alone is
 //! satisfied by never sweeping offline, the second alone is satisfied by
@@ -18,8 +23,8 @@
 //!
 //! 1. [`offline_report_is_identical_fast_and_slow`] — the same capture read at
 //!    two very different speeds produces byte-identical output.
-//! 2. [`offline_compaction_follows_capture_time`] — compaction and orphan
-//!    flagging still happen offline, driven by the capture's own timeline.
+//! 2. [`offline_compaction_follows_capture_time`] — compaction still happens
+//!    offline, driven by the capture's own timeline.
 //!
 //! Two more pin the same sweep across the `--cores` boundary, where it was
 //! absent entirely: the parallel path merged its workers' stores and reported
@@ -233,8 +238,8 @@ fn dialog_records_between(
         .collect()
 }
 
-/// `count` RTP frames on a port pair no SDP ever announced, so the stream
-/// stays unassociated and is a candidate for orphan flagging.
+/// `count` RTP frames on a port pair no SDP ever announced, so no dialog ever
+/// claims the stream and it is reported as an orphan.
 fn rtp_records(start_us: u64, step_us: u64, count: u64) -> Vec<Record> {
     rtp_records_between(A, B, SSRC_BITS, start_us, step_us, count)
 }
@@ -346,15 +351,17 @@ fn offline_report_is_identical_fast_and_slow() {
         DIALOG_MESSAGES,
         "the fast read lost messages from {CALL_ID}:\n{fast}"
     );
-    // Equality alone does not pin the orphan rule: with a capture-paced sweep,
-    // a `mark_orphaned` still measuring against `Utc::now()` flags the stream
-    // in BOTH runs and they stay identical. The stream lives under four
-    // seconds of capture time against a thirty-second timeout, so the only
-    // correct answer is "not orphaned".
+    // This used to also assert that the stream was NOT under an "Orphaned
+    // Streams:" heading, on the reasoning that it lived four seconds against a
+    // thirty-second orphan timeout while being years old on the wall clock —
+    // so a sweep reading `Utc::now()` would flag it and a capture-paced one
+    // would not. There is no orphan sweep any more: no dialog claims this
+    // stream, so it is an orphan in both runs, on any clock (#113). Message
+    // retention above is what remains clock-sensitive, and it is asserted.
     assert!(
-        !fast.contains("Orphaned Streams:"),
-        "stream {SSRC} lived under four seconds of capture time but was flagged \
-         orphaned against a 30 s timeout:\n{fast}"
+        fast.contains("Orphaned Streams:"),
+        "stream {SSRC} is claimed by no dialog and must be reported as an \
+         orphan:\n{fast}"
     );
 }
 
@@ -362,9 +369,9 @@ fn offline_report_is_identical_fast_and_slow() {
 ///
 /// The guard against speed dependence must not become "never sweep offline":
 /// a capture that really does contain a ten-minute idle gap must still be
-/// compacted, and a stream unassociated for more than thirty seconds of
-/// capture time must still be flagged orphaned. Both are asserted from a fast
-/// read, where wall time never gets anywhere near those thresholds.
+/// compacted, and a stream no dialog claims must still reach the report's
+/// orphan section. Both are asserted from a fast read, where wall time never
+/// gets anywhere near the compaction threshold.
 #[test]
 fn offline_compaction_follows_capture_time() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -372,8 +379,7 @@ fn offline_compaction_follows_capture_time() {
 
     // The dialog and the RTP burst finish inside the first six seconds; filler
     // packets then carry the capture clock out to fifteen minutes, well past
-    // both the ten-minute idle-compaction threshold and the thirty-second
-    // orphan timeout.
+    // the ten-minute idle-compaction threshold.
     let mut records = dialog_records(0, 80_000);
     records.extend(rtp_records(4_000_000, 20_000, 100));
     records.extend(filler_records(10_000_000, 5_000_000, 179));
@@ -393,8 +399,8 @@ fn offline_compaction_follows_capture_time() {
         .unwrap_or_else(|| panic!("no orphaned-stream section:\n{out}"));
     assert!(
         orphans.contains(SSRC),
-        "stream {SSRC} was unassociated for fourteen minutes of capture time but \
-         was not flagged orphaned:\n{out}"
+        "stream {SSRC} is claimed by no dialog and must appear in the orphan \
+         section:\n{out}"
     );
 }
 
@@ -519,15 +525,17 @@ fn cores_flags_the_same_orphans_as_the_single_threaded_path() {
 /// `--cores` must sweep on the CAPTURE's clock, like the single-threaded path.
 ///
 /// The parity the two tests above assert is satisfied by a sweep that reads
-/// `Utc::now()`, because every dialog and stream in that fixture is genuinely
-/// idle and genuinely unassociated — a wall clock reaches the same verdict for
-/// the wrong reason. This capture is the opposite case: it spans seven seconds
-/// recorded years ago, so nothing in it is ten minutes idle or thirty seconds
-/// unassociated in capture time, while EVERYTHING in it is by the wall clock.
+/// `Utc::now()`, because every dialog in that fixture is genuinely idle — a
+/// wall clock reaches the same verdict for the wrong reason. This capture is
+/// the opposite case: it spans seven seconds recorded years ago, so nothing in
+/// it is ten minutes idle in capture time, while EVERYTHING in it is by the
+/// wall clock.
 ///
 /// A `--cores` sweep on wall time therefore compacts a dialog that was never
-/// idle and flags a stream that lived four seconds — the exact defect #57
-/// removed from the single-threaded path, reintroduced behind a flag.
+/// idle — the exact defect #57 removed from the single-threaded path,
+/// reintroduced behind a flag. Orphan status was the other half of this test
+/// and is no longer clock-dependent at all (#113), so what it asserts here is
+/// parity between the two paths rather than a timeout.
 #[test]
 fn cores_sweeps_on_capture_time_not_wall_time() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -552,11 +560,16 @@ fn cores_sweeps_on_capture_time_not_wall_time() {
         "--cores compacted a dialog that was idle for three seconds of capture \
          time, which only a wall-clock sweep would do:\n{cores}"
     );
+    // Orphan rows are no longer a clock signal — orphan status is derived from
+    // `associated_dialog` rather than swept on a timeout (#113) — but they are
+    // still a PARITY signal, and that is what this line now holds: the two
+    // paths must report the same orphans over the same bytes, which is the
+    // divergence `final_sweep` was written for.
     assert_eq!(
         orphan_rows(&cores),
-        0,
-        "--cores flagged a stream that lived under four seconds of capture time \
-         against a 30 s timeout:\n{cores}"
+        orphan_rows(&single),
+        "--cores and the single-threaded path disagree about which streams no \
+         dialog claims:\n--- single ---\n{single}\n--- cores ---\n{cores}"
     );
 }
 

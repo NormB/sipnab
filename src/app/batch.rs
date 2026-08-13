@@ -35,15 +35,6 @@ use crate::capture::tls;
 
 // ── Sweep clock ────────────────────────────────────────────────────
 
-/// How long an RTP stream may go unlinked to any dialog before a sweep flags
-/// it orphaned.
-///
-/// One constant because two paths sweep: the single-threaded receive loop
-/// below, and the post-merge sweep the `--cores` path runs in
-/// [`crate::parallel`]. A second copy of `30` is how those two would drift
-/// apart on the threshold after being brought together on the sweep itself.
-pub(crate) const ORPHAN_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// Which clock drives the periodic sweep, and what "now" the sweep's
 /// age-based cutoffs are measured against.
 ///
@@ -227,6 +218,38 @@ struct DetectionEngines {
     /// Targeted-kill directives (`-K` / `--kill-target`): any SIP request whose
     /// source matches is killed regardless of UA/behavioral detection.
     kill_targets: Vec<sec::scanner_kill::KillTarget>,
+}
+
+impl DetectionEngines {
+    /// The rule names this run can actually file a finding under, sorted.
+    ///
+    /// Read from the detectors themselves rather than from the flags that built
+    /// them, because the flags are not the arming condition: `-K/--kill-target`
+    /// files `scanner` findings with no `ScannerDetector` present, and
+    /// `--fraud-detect` is one of several inputs to `build_fraud_detector`. A
+    /// list derived from flags would be a second opinion about what is armed,
+    /// and the MCP `security_findings` tool would report it as fact.
+    ///
+    /// Every name here is one of
+    /// [`crate::mcp::server::SECURITY_FINDING_KINDS`], pinned by
+    /// `security_findings_kinds_match_the_names_the_detectors_file_under`.
+    fn armed_kinds(&self) -> Vec<&'static str> {
+        let mut armed = Vec::new();
+        if self.scanner.is_some() || !self.kill_targets.is_empty() {
+            armed.push("scanner");
+        }
+        if self.fraud.is_some() {
+            armed.push("fraud");
+        }
+        if self.digest.is_some() {
+            armed.push("digest");
+        }
+        if self.reg_flood.is_some() {
+            armed.push("reg_flood");
+        }
+        armed.sort_unstable();
+        armed
+    }
 }
 
 /// Packet processing counters and state.
@@ -1938,6 +1961,11 @@ impl BatchRunner {
                 // The whole point of #159: headless is where --metrics is
                 // actually used, and it was the one path that never started it.
                 metrics: true,
+                // What `security_findings` reports as `armed_kinds`. Taken from
+                // the detectors this run built, so an agent reading an empty
+                // findings list can tell "nothing was watching" from "the
+                // traffic was clean".
+                armed_detections: engines.armed_kinds(),
             },
             // The meter travels from `run`, where the receiver lives. Passing
             // `None` here would not omit `sipnab_capture_queue_depth_packets`
@@ -2147,11 +2175,13 @@ impl BatchRunner {
                 break;
             }
 
-            // Periodic sweep of reassembly state and orphan detection (every
-            // 5 seconds of capture time, which is wall time only when live).
+            // Periodic sweep of reassembly state and idle-dialog compaction
+            // (every 5 seconds of capture time, which is wall time only when
+            // live). Orphan status is not swept: it is derived from
+            // `associated_dialog` at every read — see
+            // [`crate::rtp::stream::RtpStream::orphaned`].
             if let Some(now) = sweep_clock.take_due(sweep_interval) {
                 processor.sweep();
-                stream_store.write().mark_orphaned(now.get(), ORPHAN_AFTER);
                 let compacted = dialog_store.write().compact_idle(now.get());
                 if compacted.messages_evicted > 0 {
                     tracing::debug!(
