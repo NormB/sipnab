@@ -98,7 +98,7 @@ const UNANSWERED_PROBE_MIN: u32 = 5;
 /// fifty extensions at boot looked exactly like a sweep into a hole. Whether
 /// it tripped came down to link latency and how deeply the peer pipelined —
 /// the same kind of accident as measuring the window on the wall clock.
-const PROBE_ANSWER_GRACE_MS: i64 = 500;
+const PROBE_ANSWER_GRACE_MS: u64 = 500;
 
 /// How much more evidence a source needs once it has completed a registration
 /// or a call with us.
@@ -144,6 +144,82 @@ const MAX_TRANSACTIONS_PER_SOURCE: usize = 1024;
 
 /// Behavioral detection window in seconds.
 const BEHAVIORAL_WINDOW_SECS: u64 = 5;
+
+/// The trigger points of the scanner detector's behavioural signals.
+///
+/// Every field was a private constant with a comment describing when to change
+/// it and no way to. They are not universal numbers, and the two deployments
+/// they are wrong for pull in opposite directions:
+///
+/// - Behind an SBC every source collapses to one address, so ordinary
+///   aggregated traffic clears ten probes in five seconds and the whole site
+///   reads as one scanner. That site needs the COUNTS raised.
+/// - A sweep paced at one probe every ten seconds never puts two probes in the
+///   same five-second window, so nothing accumulates and no count setting can
+///   see it. That site needs the WINDOW widened; the counts are not the binding
+///   constraint and tuning them alone leaves the sweep invisible.
+///
+/// [`Self::window_secs`] is therefore part of this set, unlike the fraud
+/// windows in [`crate::security::fraud_detect::FraudThresholds`], which are
+/// excluded because the volume window and the baseline decay are one
+/// calibration. Nothing here is paired with a decay: the window is simply how
+/// long the detector remembers, and how long it remembers is exactly what the
+/// low-and-slow case gets wrong.
+///
+/// The memory caps (`MAX_BEHAVIORAL_ENTRIES`, `MAX_TARGETS_PER_SOURCE`,
+/// `MAX_TRANSACTIONS_PER_SOURCE`) are deliberately NOT here: they bound
+/// sipnab's own footprint, not the network's behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScannerThresholds {
+    /// Probe transactions from one source in the window, above which the rate
+    /// signal reports — see [`BEHAVIORAL_THRESHOLD`].
+    pub behavioral_probes: u32,
+    /// Distinct target extensions from one source in the window, above which
+    /// the enumeration signal reports — see [`ENUMERATION_THRESHOLD`].
+    pub enumeration_targets: usize,
+    /// Rejected probes in the window at which a source reads as probing rather
+    /// than operating — see [`REJECTED_PROBE_MIN`].
+    pub rejected_probes: u32,
+    /// Unanswered probes in the window at which a source reads as sweeping,
+    /// provided they are also the majority of what it sent — see
+    /// [`UNANSWERED_PROBE_MIN`].
+    pub unanswered_probes: u32,
+    /// How much capture time one behavioural window spans, in seconds.
+    ///
+    /// The binding constraint on a paced sweep: a source that probes more
+    /// slowly than this never has two probes in one window, so its rate and
+    /// its spread both stay at one however low the counts are set.
+    pub window_secs: u64,
+    /// How much more evidence a source needs once it has completed a
+    /// registration or a call with us — see [`ESTABLISHED_EVIDENCE_FACTOR`].
+    pub established_factor: u32,
+    /// How long a probe must go without any response before it counts as
+    /// unanswered, in milliseconds — see [`PROBE_ANSWER_GRACE_MS`].
+    pub answer_grace_ms: u64,
+}
+
+impl ScannerThresholds {
+    /// The shipped trigger points, used when the operator declares nothing.
+    ///
+    /// Each field reads the constant that documents WHY that number, rather
+    /// than restating the literal: a default and its justification that can
+    /// drift apart is a default nobody can check.
+    pub const BUILT_IN: Self = Self {
+        behavioral_probes: BEHAVIORAL_THRESHOLD,
+        enumeration_targets: ENUMERATION_THRESHOLD,
+        rejected_probes: REJECTED_PROBE_MIN,
+        unanswered_probes: UNANSWERED_PROBE_MIN,
+        window_secs: BEHAVIORAL_WINDOW_SECS,
+        established_factor: ESTABLISHED_EVIDENCE_FACTOR,
+        answer_grace_ms: PROBE_ANSWER_GRACE_MS,
+    };
+}
+
+impl Default for ScannerThresholds {
+    fn default() -> Self {
+        Self::BUILT_IN
+    }
+}
 
 /// What became of one probe transaction inside the current window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,8 +334,8 @@ impl BehavioralState {
     /// Probes still inside the grace are excluded rather than counted, so a
     /// peer that pipelines faster than the round trip is not mistaken for one
     /// nothing is answering.
-    fn unanswered_count(&self, now: DateTime<Utc>) -> u32 {
-        let grace = TimeDelta::milliseconds(PROBE_ANSWER_GRACE_MS);
+    fn unanswered_count(&self, now: DateTime<Utc>, answer_grace_ms: u64) -> u32 {
+        let grace = TimeDelta::milliseconds(answer_grace_ms as i64);
         self.transactions
             .values()
             .filter(|(opened, outcome)| {
@@ -270,9 +346,9 @@ impl BehavioralState {
 
     /// How much evidence this source needs before its rate or its spread reads
     /// as reconnaissance.
-    fn evidence_factor(&self) -> u32 {
+    fn evidence_factor(&self, established_factor: u32) -> u32 {
         if self.established {
-            ESTABLISHED_EVIDENCE_FACTOR
+            established_factor
         } else {
             1
         }
@@ -291,14 +367,19 @@ impl BehavioralState {
     /// reported would be whichever was busiest. That is precisely the failure
     /// this signature replaced, so the test stands down until the other
     /// direction is known to be present.
-    fn is_probing(&self, now: DateTime<Utc>, responses_seen: bool) -> bool {
-        let factor = self.evidence_factor();
-        if self.rejected_count() >= REJECTED_PROBE_MIN.saturating_mul(factor) {
+    fn is_probing(
+        &self,
+        now: DateTime<Utc>,
+        responses_seen: bool,
+        thresholds: &ScannerThresholds,
+    ) -> bool {
+        let factor = self.evidence_factor(thresholds.established_factor);
+        if self.rejected_count() >= thresholds.rejected_probes.saturating_mul(factor) {
             return true;
         }
-        let unanswered = self.unanswered_count(now);
+        let unanswered = self.unanswered_count(now, thresholds.answer_grace_ms);
         responses_seen
-            && unanswered >= UNANSWERED_PROBE_MIN.saturating_mul(factor)
+            && unanswered >= thresholds.unanswered_probes.saturating_mul(factor)
             && unanswered.saturating_mul(2) > self.probe_count()
     }
 }
@@ -380,16 +461,29 @@ pub struct ScannerDetector {
     /// Ticks once per tracked source touched; the value stamped into
     /// [`BehavioralState::last_used`] to order eviction.
     use_counter: u64,
+    /// The trigger points this detector applies.
+    thresholds: ScannerThresholds,
 }
 
 impl ScannerDetector {
-    /// Create a new scanner detector.
+    /// Create a new scanner detector with the shipped trigger points.
     ///
     /// # Arguments
     ///
     /// * `custom_patterns` — Additional User-Agent regex patterns to match
     ///   (e.g., from `--kill-ua`). Invalid or oversized patterns are silently skipped.
     pub fn new(custom_patterns: &[String]) -> Self {
+        Self::with_thresholds(custom_patterns, ScannerThresholds::BUILT_IN)
+    }
+
+    /// Create a scanner detector with explicit trigger points.
+    ///
+    /// # Arguments
+    ///
+    /// * `custom_patterns` — as [`Self::new`].
+    /// * `thresholds` — see [`ScannerThresholds`];
+    ///   `ScannerThresholds::BUILT_IN` reproduces [`Self::new`].
+    pub fn with_thresholds(custom_patterns: &[String], thresholds: ScannerThresholds) -> Self {
         let mut patterns = Vec::with_capacity(KNOWN_SCANNER_PATTERNS.len() + custom_patterns.len());
 
         // Compile built-in patterns (case-insensitive, size-limited)
@@ -421,6 +515,7 @@ impl ScannerDetector {
             latest_packet: None,
             responses_seen: false,
             use_counter: 0,
+            thresholds,
         }
     }
 
@@ -476,6 +571,7 @@ impl ScannerDetector {
         // Behavioral analysis: track REGISTER/OPTIONS/INVITE rates
         if matches!(method, Some("REGISTER" | "OPTIONS" | "INVITE")) {
             let now = msg.timestamp;
+            let thresholds = self.thresholds;
 
             // Cap the behavioral map to prevent memory exhaustion (H4)
             if self.behavioral.len() >= MAX_BEHAVIORAL_ENTRIES
@@ -507,7 +603,7 @@ impl ScannerDetector {
             // window (nor panic on an `unsigned_abs` that would read a packet
             // from the past as one far in the future).
             if now.signed_duration_since(state.first_seen)
-                > TimeDelta::seconds(BEHAVIORAL_WINDOW_SECS as i64)
+                > TimeDelta::seconds(thresholds.window_secs as i64)
             {
                 state.reset_window(now);
             }
@@ -538,7 +634,7 @@ impl ScannerDetector {
             // Neither rate nor spread is reconnaissance on its own: a trunk
             // running keepalives and an enumeration sweep produce the same
             // numbers, and only the outcomes tell them apart.
-            if !state.is_probing(now, responses_seen) {
+            if !state.is_probing(now, responses_seen, &thresholds) {
                 return None;
             }
 
@@ -546,7 +642,7 @@ impl ScannerDetector {
             // resolving — catches a UA-randomized, INVITE-based, or
             // low-and-slow sweep the rate path misses. Checked first as the
             // more specific signal.
-            if state.targets.len() > ENUMERATION_THRESHOLD {
+            if state.targets.len() > thresholds.enumeration_targets {
                 return Some(ScannerAlert {
                     src_ip: msg.src_addr,
                     ua,
@@ -557,7 +653,7 @@ impl ScannerDetector {
 
             // Rate: high volume of REGISTER/OPTIONS/INVITE probes in the
             // window — a same-target flood the enumeration signal won't see.
-            if state.probe_count() > BEHAVIORAL_THRESHOLD {
+            if state.probe_count() > thresholds.behavioral_probes {
                 return Some(ScannerAlert {
                     src_ip: msg.src_addr,
                     ua,
@@ -1135,7 +1231,12 @@ mod tests {
     /// Feed `msgs` to a fresh detector and collect the detection methods it
     /// reported, in order.
     fn replay(msgs: &[SipMessage]) -> Vec<String> {
-        let mut det = ScannerDetector::new(&[]);
+        replay_with(ScannerThresholds::BUILT_IN, msgs)
+    }
+
+    /// [`replay`] against a detector built with `thresholds`.
+    fn replay_with(thresholds: ScannerThresholds, msgs: &[SipMessage]) -> Vec<String> {
+        let mut det = ScannerDetector::with_thresholds(&[], thresholds);
         msgs.iter()
             .filter_map(|m| det.check(m))
             .map(|a| a.detection_method)
@@ -1473,6 +1574,310 @@ mod tests {
         assert!(
             fired.is_empty(),
             "481s to stray NOTIFYs are not rejected probes — got {fired:?}"
+        );
+    }
+
+    // ── Trigger points an operator can move ──────────────────────────
+
+    /// A sweep paced slower than the window is invisible at ANY count, and
+    /// visible once the window is widened.
+    ///
+    /// This is the case the counts cannot reach. Every scanner count is "per
+    /// window", so a source that probes once every ten seconds has its window
+    /// reset before the second probe arrives: its rate is one, its spread is
+    /// one, and its rejected count is one, whatever the thresholds say. The
+    /// middle assertion is the point of the test — every count pinned to its
+    /// floor of 1 with the shipped window still reports nothing.
+    #[test]
+    fn a_low_and_slow_sweep_needs_a_wider_window_not_a_lower_count() {
+        let src = scanner_ip();
+        // Eight distinct extensions, one probe every ten seconds, every one
+        // answered "not found" — a dialplan walk in slow motion.
+        let mut msgs = Vec::new();
+        for i in 0..8i64 {
+            let branch = format!("z9hG4bK-slow-{i}");
+            let target = format!("ext{i:04}");
+            let at = ms(i * 10_000);
+            msgs.push(probe_at("OPTIONS", &target, src, &branch, at));
+            msgs.push(answer_at(
+                404,
+                "OPTIONS",
+                &target,
+                src,
+                &branch,
+                ms(i * 10_000 + 50),
+            ));
+        }
+
+        let shipped = replay(&msgs);
+        assert!(
+            shipped.is_empty(),
+            "a probe every 10s never puts two in one {}s window, so the shipped \
+             detector cannot see this sweep — got {shipped:?}",
+            ScannerThresholds::BUILT_IN.window_secs
+        );
+
+        // Every count at its floor, the window left alone.
+        let floored = replay_with(
+            ScannerThresholds {
+                behavioral_probes: 1,
+                enumeration_targets: 1,
+                rejected_probes: 1,
+                unanswered_probes: 1,
+                ..ScannerThresholds::BUILT_IN
+            },
+            &msgs,
+        );
+        assert!(
+            floored.is_empty(),
+            "with the window unchanged the counts cannot reach this sweep at ANY \
+             setting: each probe opens a fresh window holding one probe, one \
+             target and no settled outcome — got {floored:?}"
+        );
+
+        // The window widened, every count left at its shipped value.
+        let widened = replay_with(
+            ScannerThresholds {
+                window_secs: 60,
+                ..ScannerThresholds::BUILT_IN
+            },
+            &msgs,
+        );
+        assert_eq!(
+            widened.first().map(String::as_str),
+            Some("enumeration"),
+            "a 60s window holds all eight probes, so six distinct extensions and \
+             five refusals are in it at once — got {widened:?}"
+        );
+    }
+
+    /// The declared probe count decides when a rate is a scanner.
+    ///
+    /// The aggregation case: behind an SBC every source collapses to one
+    /// address, so ordinary traffic clears the shipped ten in five seconds.
+    #[test]
+    fn scanner_behavioral_probes_decides_when_a_rate_is_a_scanner() {
+        let src = scanner_ip();
+        let mut msgs = Vec::new();
+        for i in 0..15i64 {
+            let branch = format!("z9hG4bK-agg-{i}");
+            let at = ms(i * 100);
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, at));
+            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at));
+        }
+
+        let shipped = replay(&msgs);
+        assert_eq!(
+            shipped.first().map(String::as_str),
+            Some("behavioral"),
+            "fifteen refused REGISTERs in 1.5s clears the shipped {} — got {shipped:?}",
+            ScannerThresholds::BUILT_IN.behavioral_probes
+        );
+
+        let raised = replay_with(
+            ScannerThresholds {
+                behavioral_probes: 100,
+                ..ScannerThresholds::BUILT_IN
+            },
+            &msgs,
+        );
+        assert!(
+            raised.is_empty(),
+            "a site that aggregates behind one address raises the count, and \
+             fifteen is under a hundred — got {raised:?}"
+        );
+    }
+
+    /// The declared target count decides how wide a sweep must be.
+    #[test]
+    fn scanner_enumeration_targets_decides_how_wide_a_sweep_must_be() {
+        let src = scanner_ip();
+        let mut msgs = Vec::new();
+        for i in 0..8i64 {
+            let branch = format!("z9hG4bK-wide-{i}");
+            let target = format!("ext{i:04}");
+            let at = ms(i * 100);
+            msgs.push(probe_at("INVITE", &target, src, &branch, at));
+            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at));
+        }
+
+        let shipped = replay(&msgs);
+        assert_eq!(
+            shipped.first().map(String::as_str),
+            Some("enumeration"),
+            "eight extensions, none found, clears the shipped {} — got {shipped:?}",
+            ScannerThresholds::BUILT_IN.enumeration_targets
+        );
+
+        let raised = replay_with(
+            ScannerThresholds {
+                enumeration_targets: 50,
+                ..ScannerThresholds::BUILT_IN
+            },
+            &msgs,
+        );
+        assert!(
+            raised.is_empty(),
+            "an SBC fronting a large hunt group reaches dozens of extensions a \
+             second, so it declares fifty — got {raised:?}"
+        );
+    }
+
+    /// The declared refusal count decides how much saying no is evidence.
+    #[test]
+    fn scanner_rejected_probes_decides_how_much_refusal_is_evidence() {
+        let src = scanner_ip();
+        let mut msgs = Vec::new();
+        for i in 0..12i64 {
+            let branch = format!("z9hG4bK-crack-{i}");
+            let at = ms(i * 100);
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, at));
+            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at));
+        }
+
+        let shipped = replay(&msgs);
+        assert_eq!(
+            shipped.first().map(String::as_str),
+            Some("behavioral"),
+            "twelve refusals clears the shipped {} — got {shipped:?}",
+            ScannerThresholds::BUILT_IN.rejected_probes
+        );
+
+        let raised = replay_with(
+            ScannerThresholds {
+                rejected_probes: 20,
+                ..ScannerThresholds::BUILT_IN
+            },
+            &msgs,
+        );
+        assert!(
+            raised.is_empty(),
+            "a registrar that refuses every unauthenticated first attempt earns \
+             refusals all day, so it needs twenty before they mean anything — \
+             got {raised:?}"
+        );
+    }
+
+    /// The declared unanswered count decides how much silence is evidence.
+    #[test]
+    fn scanner_unanswered_probes_decides_how_much_silence_is_evidence() {
+        let src = scanner_ip();
+        // Another peer's answered keepalive first, so the unanswered test is
+        // armed: a capture with no responses in it can show nothing unanswered.
+        let mut msgs = vec![
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+        ];
+        for i in 0..15i64 {
+            let branch = format!("z9hG4bK-hole-{i}");
+            msgs.push(probe_at("REGISTER", "victim", src, &branch, ms(i * 100)));
+        }
+
+        let shipped = replay(&msgs);
+        assert!(
+            shipped.contains(&"behavioral".to_string()),
+            "fifteen probes into a hole clears the shipped {} — got {shipped:?}",
+            ScannerThresholds::BUILT_IN.unanswered_probes
+        );
+
+        let raised = replay_with(
+            ScannerThresholds {
+                unanswered_probes: 40,
+                ..ScannerThresholds::BUILT_IN
+            },
+            &msgs,
+        );
+        assert!(
+            raised.is_empty(),
+            "fifteen is under a declared forty — got {raised:?}"
+        );
+    }
+
+    /// The declared factor decides how much more a registered peer is trusted.
+    #[test]
+    fn scanner_established_factor_decides_what_a_registration_buys() {
+        let src = scanner_ip();
+        let mut msgs = register_exchange(src, ms(0));
+        // Twice the shipped refusal minimum: enough for an unknown source, not
+        // enough for one that has registered.
+        for i in 0..(REJECTED_PROBE_MIN as i64 * 2) {
+            let branch = format!("z9hG4bK-comp-{i}");
+            let target = format!("ext{i:04}");
+            let at = ms(10 + i * 10);
+            msgs.push(probe_at("INVITE", &target, src, &branch, at));
+            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at));
+        }
+
+        let shipped = replay(&msgs);
+        assert!(
+            shipped.is_empty(),
+            "a registered peer needs {} times the evidence, and this is twice — \
+             got {shipped:?}",
+            ScannerThresholds::BUILT_IN.established_factor
+        );
+
+        let no_credit = replay_with(
+            ScannerThresholds {
+                established_factor: 1,
+                ..ScannerThresholds::BUILT_IN
+            },
+            &msgs,
+        );
+        assert!(
+            !no_credit.is_empty(),
+            "a site that grants a registration no extra credit judges this peer \
+             like any other, and ten refusals is a dialplan walk — got {no_credit:?}"
+        );
+    }
+
+    /// The declared answer grace decides how slow a link may be.
+    ///
+    /// The shipped 500 ms is RFC 3261's Timer T1. A link whose round trip is
+    /// longer than that has every probe outstanding when the next goes out, so
+    /// an ordinary working peer reads as a sweep into a hole — the same defect
+    /// the grace exists to prevent, one round-trip further out.
+    #[test]
+    fn scanner_answer_grace_ms_decides_how_slow_a_link_may_be() {
+        let src = scanner_ip();
+        let mut msgs = vec![
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+        ];
+        // Fifteen registrations 100 ms apart, every one answered — but two
+        // seconds later, because that is what this link costs.
+        for i in 0..15i64 {
+            let branch = format!("z9hG4bK-slowlink-{i}");
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 100)));
+            msgs.push(answer_at(
+                200,
+                "REGISTER",
+                "1001",
+                src,
+                &branch,
+                ms(i * 100 + 2_000),
+            ));
+        }
+        msgs.sort_by_key(|m| m.timestamp);
+
+        let shipped = replay(&msgs);
+        assert!(
+            shipped.contains(&"behavioral".to_string()),
+            "under a {} ms grace every probe on a 2s link is 'unanswered', so a \
+             working peer is reported — got {shipped:?}",
+            ScannerThresholds::BUILT_IN.answer_grace_ms
+        );
+
+        let widened = replay_with(
+            ScannerThresholds {
+                answer_grace_ms: 3_000,
+                ..ScannerThresholds::BUILT_IN
+            },
+            &msgs,
+        );
+        assert!(
+            widened.is_empty(),
+            "a 3s grace covers this link's round trip, so nothing here was ever \
+             unanswered — got {widened:?}"
         );
     }
 

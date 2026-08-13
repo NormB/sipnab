@@ -1069,6 +1069,103 @@ pub struct Cli {
     )]
     pub fraud_volume_min_calls: Option<u32>,
 
+    /// Probes from one source inside the scanner window, above which
+    /// `--kill-scanner` reports a rate detection.
+    ///
+    /// Behind an SBC every source collapses to one address, so ordinary
+    /// aggregated traffic clears the shipped ten in five seconds and the whole
+    /// site is reported as one scanner.
+    ///
+    /// `range(1..)` because `0` reports the first probe of any kind; the
+    /// matching `[security] scanner_behavioral_probes` refuses `0` too, so the
+    /// file cannot be the lenient way in.
+    #[arg(
+        help_heading = "Security",
+        long = "scanner-behavioral-probes",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub scanner_behavioral_probes: Option<u32>,
+
+    /// Distinct target extensions from one source inside the scanner window,
+    /// above which `--kill-scanner` reports extension enumeration.
+    #[arg(
+        help_heading = "Security",
+        long = "scanner-enumeration-targets",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub scanner_enumeration_targets: Option<u64>,
+
+    /// Rejected probes inside the scanner window at which a source reads as
+    /// probing rather than operating.
+    ///
+    /// This is the evidence gate, not a rate: neither behavioural signal
+    /// reports anything until a source clears this or
+    /// `--scanner-unanswered-probes`, which is what separates an enumeration
+    /// sweep from a trunk running keepalives at the same rate.
+    #[arg(
+        help_heading = "Security",
+        long = "scanner-rejected-probes",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub scanner_rejected_probes: Option<u32>,
+
+    /// Unanswered probes inside the scanner window at which a source reads as
+    /// sweeping, provided they are also the majority of what it sent.
+    #[arg(
+        help_heading = "Security",
+        long = "scanner-unanswered-probes",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub scanner_unanswered_probes: Option<u32>,
+
+    /// How much capture time one scanner window spans, in seconds.
+    ///
+    /// Every scanner count is "per window", so this is the binding constraint
+    /// on a paced sweep rather than the counts: one probe every ten seconds
+    /// never puts two probes inside the shipped five-second window, so the rate
+    /// and the spread both stay at one however low the counts go.
+    #[arg(
+        help_heading = "Security",
+        long = "scanner-window",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub scanner_window_secs: Option<u64>,
+
+    /// How much more evidence `--kill-scanner` needs from a source that has
+    /// completed a registration or a call with us.
+    ///
+    /// A registered endpoint that starts probing is a compromised phone and is
+    /// worth reporting, but it is also the peer whose ordinary traffic looks
+    /// most like probing and the peer a false positive costs most.
+    #[arg(
+        help_heading = "Security",
+        long = "scanner-established-factor",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub scanner_established_factor: Option<u32>,
+
+    /// How long a probe may go without a response before `--kill-scanner`
+    /// counts it as unanswered, in milliseconds.
+    ///
+    /// The shipped 500 is RFC 3261's Timer T1, the round-trip estimate at which
+    /// SIP itself gives up waiting and retransmits. Raise it on a link whose
+    /// round trip is longer than that; without any grace, "unanswered" means
+    /// "not answered YET" and a client that pipelines faster than the round
+    /// trip reads as a sweep into a hole.
+    #[arg(
+        help_heading = "Security",
+        long = "scanner-answer-grace",
+        value_name = "MS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub scanner_answer_grace_ms: Option<u64>,
+
     /// Security findings kept in memory for later retrieval.
     ///
     /// `0` keeps none. Findings are the deduplicated record of what fired, so
@@ -2232,6 +2329,53 @@ impl Cli {
                 .fraud_volume_min_calls
                 .or(sec.fraud_volume_min_calls)
                 .unwrap_or(built_in.volume_min_calls),
+        }
+    }
+
+    /// Scanner trigger points: each flag, else its `[security]` key, else the
+    /// built-in. See [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// [`crate::security::scanner_detect::ScannerThresholds::window_secs`] is
+    /// resolved here alongside the counts because it is the only one of them
+    /// that can reach a sweep paced more slowly than the window: the counts are
+    /// all per-window, so under a five-second window a probe every ten seconds
+    /// leaves every counter at one whatever they are set to.
+    #[must_use]
+    pub fn scanner_thresholds(
+        &self,
+        config: &crate::config::Config,
+    ) -> crate::security::scanner_detect::ScannerThresholds {
+        let built_in = crate::security::scanner_detect::ScannerThresholds::BUILT_IN;
+        let sec = &config.security;
+        crate::security::scanner_detect::ScannerThresholds {
+            behavioral_probes: self
+                .scanner_behavioral_probes
+                .or(sec.scanner_behavioral_probes)
+                .unwrap_or(built_in.behavioral_probes),
+            enumeration_targets: self
+                .scanner_enumeration_targets
+                .or(sec.scanner_enumeration_targets)
+                .map_or(built_in.enumeration_targets, |v| v as usize),
+            rejected_probes: self
+                .scanner_rejected_probes
+                .or(sec.scanner_rejected_probes)
+                .unwrap_or(built_in.rejected_probes),
+            unanswered_probes: self
+                .scanner_unanswered_probes
+                .or(sec.scanner_unanswered_probes)
+                .unwrap_or(built_in.unanswered_probes),
+            window_secs: self
+                .scanner_window_secs
+                .or(sec.scanner_window_secs)
+                .unwrap_or(built_in.window_secs),
+            established_factor: self
+                .scanner_established_factor
+                .or(sec.scanner_established_factor)
+                .unwrap_or(built_in.established_factor),
+            answer_grace_ms: self
+                .scanner_answer_grace_ms
+                .or(sec.scanner_answer_grace_ms)
+                .unwrap_or(built_in.answer_grace_ms),
         }
     }
 

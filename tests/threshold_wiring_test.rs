@@ -31,6 +31,14 @@ use pcap_build::{invite_without_max_forwards, udp_frame, write_pcap_at};
 const A: [u8; 4] = [10, 1, 0, 1];
 /// Callee side of every synthetic capture here.
 const B: [u8; 4] = [10, 2, 0, 1];
+/// A third peer, used where a scanner capture needs one WORKING source
+/// alongside the one under examination.
+///
+/// The unanswered half of the scanner's probing test stands down until the
+/// detector has seen a response exist at all — in a capture of requests alone
+/// every probe ever sent looks unanswered. So a capture whose subject is never
+/// answered still needs somebody else's answered exchange in it.
+const C: [u8; 4] = [10, 3, 0, 1];
 
 /// Run sipnab with `SIPNAB_LOG=warn`, returning `(stdout, stderr)`.
 ///
@@ -230,6 +238,67 @@ fn alerted(stderr: &str, kind: &str) -> bool {
     stderr
         .lines()
         .any(|l| l.contains("[ALERT]") && l.contains(kind))
+}
+
+// ── SIP probe builders for the scanner detector ─────────────────────────
+
+/// A probe of `method` at `to_user` from `src`, carrying the top `Via` branch
+/// a response echoes back.
+///
+/// The branch is what ties a response to the request it answers, and every
+/// scanner signal now rests on that tie: a probe with no settled outcome counts
+/// toward the rate and toward nothing else.
+fn probe(src: [u8; 4], method: &str, to_user: &str, branch: &str) -> Vec<u8> {
+    let msg = format!(
+        "{method} sip:{to_user}@10.2.0.1 SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.9.0.1:5060;branch=z9hG4bK{branch}\r\n\
+         Max-Forwards: 70\r\n\
+         From: <sip:probe@10.9.0.1>;tag=f{branch}\r\n\
+         To: <sip:{to_user}@10.2.0.1>\r\n\
+         Call-ID: {branch}@10.9.0.1\r\n\
+         CSeq: 1 {method}\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    udp_frame(src, B, 5060, 5060, msg.as_bytes())
+}
+
+/// The answer `code` sent back to `dst` on transaction `branch`.
+///
+/// Addressed deliberately: a response travels back the way the request came, so
+/// its DESTINATION is the source whose probe it settles.
+fn answer(dst: [u8; 4], code: u16, method: &str, to_user: &str, branch: &str) -> Vec<u8> {
+    let msg = format!(
+        "SIP/2.0 {code} Whatever\r\n\
+         Via: SIP/2.0/UDP 10.9.0.1:5060;branch=z9hG4bK{branch}\r\n\
+         From: <sip:probe@10.9.0.1>;tag=f{branch}\r\n\
+         To: <sip:{to_user}@10.2.0.1>;tag=t{branch}\r\n\
+         Call-ID: {branch}@10.9.0.1\r\n\
+         CSeq: 1 {method}\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    udp_frame(B, dst, 5060, 5060, msg.as_bytes())
+}
+
+/// One working peer's answered keepalive, at the very start of the capture.
+///
+/// Arms the unanswered test without putting a single packet on the account of
+/// the source the test is about — see [`C`].
+fn working_peer_keepalive() -> Vec<(Vec<u8>, u64)> {
+    vec![
+        (probe(C, "OPTIONS", "trunk", "-arm"), 0),
+        (answer(C, 200, "OPTIONS", "trunk", "-arm"), 10_000),
+    ]
+}
+
+/// Run the scanner detector over `pcap` with `extra` arguments, returning
+/// stderr.
+///
+/// `--kill-scanner` is what builds the detector; offline it only reports, and
+/// never transmits.
+fn scan(pcap: &str, extra: &[&str]) -> String {
+    let mut args = vec!["-N", "-I", pcap, "--kill-scanner"];
+    args.extend_from_slice(extra);
+    run(&args).1
 }
 
 // ── [security] reg_flood_threshold ──────────────────────────────────────
@@ -596,6 +665,374 @@ fn a_malformed_business_hours_spec_is_refused_by_name() {
         assert_ne!(code, Some(0), "{bad:?} must fail the run");
         assert!(
             stderr.contains("business_hours"),
+            "the error must name the key; got {stderr}"
+        );
+    }
+}
+
+// ── [security] scanner_* ────────────────────────────────────────────────
+
+/// The declared window is what decides whether a PACED sweep is visible at all.
+///
+/// This is the case no count can reach. Every scanner count is "per window", so
+/// a source probing once every ten seconds has its window reset before the
+/// second probe lands: its rate is one, its spread is one, and its refusal
+/// count is one, whatever the counts are set to. The middle run pins that —
+/// every count driven to its floor of 1, the window left alone, still reports
+/// nothing.
+#[test]
+fn scanner_window_secs_decides_whether_a_paced_sweep_is_visible() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = Vec::new();
+    for i in 0..8u64 {
+        let branch = format!("-slow-{i}");
+        let target = format!("ext{i:04}");
+        frames.push((probe(A, "OPTIONS", &target, &branch), i * 10_000_000));
+        frames.push((
+            answer(A, 404, "OPTIONS", &target, &branch),
+            i * 10_000_000 + 50_000,
+        ));
+    }
+    let pcap = arg(&write_capture(&dir, "slowsweep", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nscanner_window_secs = 60\n",
+    ));
+
+    let shipped = scan(&pcap, &["--no-config"]);
+    assert!(
+        !alerted(&shipped, "detection="),
+        "a probe every 10s never puts two in one 5s window, so the shipped \
+         detector cannot see this sweep:\n{shipped}"
+    );
+
+    let floored = scan(
+        &pcap,
+        &[
+            "--no-config",
+            "--scanner-behavioral-probes",
+            "1",
+            "--scanner-enumeration-targets",
+            "1",
+            "--scanner-rejected-probes",
+            "1",
+            "--scanner-unanswered-probes",
+            "1",
+        ],
+    );
+    assert!(
+        !alerted(&floored, "detection="),
+        "with the window unchanged the counts cannot reach this sweep at ANY \
+         setting — each probe opens a fresh window holding one probe, one target \
+         and no settled outcome:\n{floored}"
+    );
+
+    let declared = scan(&pcap, &["--config", &cfg]);
+    assert!(
+        alerted(&declared, "detection=enumeration"),
+        "[security] scanner_window_secs = 60 holds all eight probes at once, so \
+         six distinct extensions and five refusals are in the window \
+         together:\n{declared}"
+    );
+
+    let overridden = scan(&pcap, &["--scanner-window", "5", "--config", &cfg]);
+    assert!(
+        !alerted(&overridden, "detection="),
+        "--scanner-window must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared probe count decides when an aggregated rate is a scanner.
+///
+/// Behind an SBC every source collapses to one address, so ordinary aggregated
+/// traffic clears the shipped ten probes in five seconds and the whole site is
+/// reported as one scanner.
+#[test]
+fn scanner_behavioral_probes_decides_when_an_aggregated_rate_is_a_scanner() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = Vec::new();
+    for i in 0..15u64 {
+        let branch = format!("-agg-{i}");
+        frames.push((probe(A, "REGISTER", "1001", &branch), i * 100_000));
+        frames.push((
+            answer(A, 403, "REGISTER", "1001", &branch),
+            i * 100_000 + 10_000,
+        ));
+    }
+    let pcap = arg(&write_capture(&dir, "aggregated", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nscanner_behavioral_probes = 100\n",
+    ));
+
+    let shipped = scan(&pcap, &["--no-config"]);
+    assert!(
+        alerted(&shipped, "detection=behavioral"),
+        "fifteen refused REGISTERs in 1.5s clears the shipped ten:\n{shipped}"
+    );
+
+    let declared = scan(&pcap, &["--config", &cfg]);
+    assert!(
+        !alerted(&declared, "detection="),
+        "[security] scanner_behavioral_probes = 100 must reach the \
+         detector:\n{declared}"
+    );
+
+    let overridden = scan(
+        &pcap,
+        &["--scanner-behavioral-probes", "10", "--config", &cfg],
+    );
+    assert!(
+        alerted(&overridden, "detection=behavioral"),
+        "--scanner-behavioral-probes must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared target count decides how wide a sweep has to be.
+#[test]
+fn scanner_enumeration_targets_decides_how_wide_a_sweep_must_be() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = Vec::new();
+    for i in 0..8u64 {
+        let branch = format!("-wide-{i}");
+        let target = format!("ext{i:04}");
+        frames.push((probe(A, "INVITE", &target, &branch), i * 100_000));
+        frames.push((
+            answer(A, 404, "INVITE", &target, &branch),
+            i * 100_000 + 10_000,
+        ));
+    }
+    let pcap = arg(&write_capture(&dir, "widesweep", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nscanner_enumeration_targets = 50\n",
+    ));
+
+    let shipped = scan(&pcap, &["--no-config"]);
+    assert!(
+        alerted(&shipped, "detection=enumeration"),
+        "eight extensions, none of them found, clears the shipped five:\n{shipped}"
+    );
+
+    let declared = scan(&pcap, &["--config", &cfg]);
+    assert!(
+        !alerted(&declared, "detection="),
+        "an SBC fronting a large hunt group reaches dozens of extensions a \
+         second, so fifty must reach the detector:\n{declared}"
+    );
+
+    let overridden = scan(
+        &pcap,
+        &["--scanner-enumeration-targets", "5", "--config", &cfg],
+    );
+    assert!(
+        alerted(&overridden, "detection=enumeration"),
+        "--scanner-enumeration-targets must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared refusal count decides how much saying no is evidence.
+#[test]
+fn scanner_rejected_probes_decides_how_much_refusal_is_evidence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = Vec::new();
+    for i in 0..12u64 {
+        let branch = format!("-crack-{i}");
+        frames.push((probe(A, "REGISTER", "1001", &branch), i * 100_000));
+        frames.push((
+            answer(A, 403, "REGISTER", "1001", &branch),
+            i * 100_000 + 10_000,
+        ));
+    }
+    let pcap = arg(&write_capture(&dir, "refused", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nscanner_rejected_probes = 20\n",
+    ));
+
+    let shipped = scan(&pcap, &["--no-config"]);
+    assert!(
+        alerted(&shipped, "detection=behavioral"),
+        "twelve refusals clears the shipped five, which is what makes the rate \
+         reportable:\n{shipped}"
+    );
+
+    let declared = scan(&pcap, &["--config", &cfg]);
+    assert!(
+        !alerted(&declared, "detection="),
+        "a registrar that refuses every unauthenticated first attempt earns \
+         refusals all day, so twenty must reach the detector:\n{declared}"
+    );
+
+    let overridden = scan(&pcap, &["--scanner-rejected-probes", "5", "--config", &cfg]);
+    assert!(
+        alerted(&overridden, "detection=behavioral"),
+        "--scanner-rejected-probes must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared unanswered count decides how much silence is evidence.
+#[test]
+fn scanner_unanswered_probes_decides_how_much_silence_is_evidence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = working_peer_keepalive();
+    for i in 0..15u64 {
+        frames.push((
+            probe(A, "REGISTER", "victim", &format!("-hole-{i}")),
+            100_000 + i * 100_000,
+        ));
+    }
+    let pcap = arg(&write_capture(&dir, "hole", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nscanner_unanswered_probes = 40\n",
+    ));
+
+    let shipped = scan(&pcap, &["--no-config"]);
+    assert!(
+        alerted(&shipped, "detection=behavioral"),
+        "fifteen probes nothing answered clears the shipped five:\n{shipped}"
+    );
+
+    let declared = scan(&pcap, &["--config", &cfg]);
+    assert!(
+        !alerted(&declared, "detection="),
+        "[security] scanner_unanswered_probes = 40 must reach the \
+         detector:\n{declared}"
+    );
+
+    let overridden = scan(
+        &pcap,
+        &["--scanner-unanswered-probes", "5", "--config", &cfg],
+    );
+    assert!(
+        alerted(&overridden, "detection=behavioral"),
+        "--scanner-unanswered-probes must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared factor decides what completing a registration buys a peer.
+#[test]
+fn scanner_established_factor_decides_what_a_registration_buys() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The registration that makes A a peer we serve: a REGISTER, its challenge,
+    // the authenticated retry, and the 200 OK.
+    let mut frames = vec![
+        (probe(A, "REGISTER", "alice", "-reg-a"), 0),
+        (answer(A, 401, "REGISTER", "alice", "-reg-a"), 20_000),
+        (probe(A, "REGISTER", "alice", "-reg-b"), 40_000),
+        (answer(A, 200, "REGISTER", "alice", "-reg-b"), 60_000),
+    ];
+    for i in 0..10u64 {
+        let branch = format!("-comp-{i}");
+        let target = format!("ext{i:04}");
+        frames.push((probe(A, "INVITE", &target, &branch), 100_000 + i * 100_000));
+        frames.push((
+            answer(A, 404, "INVITE", &target, &branch),
+            110_000 + i * 100_000,
+        ));
+    }
+    let pcap = arg(&write_capture(&dir, "compromised", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nscanner_established_factor = 1\n",
+    ));
+
+    let shipped = scan(&pcap, &["--no-config"]);
+    assert!(
+        !alerted(&shipped, "detection="),
+        "a registered peer needs four times the evidence, and ten refusals is \
+         twice:\n{shipped}"
+    );
+
+    let declared = scan(&pcap, &["--config", &cfg]);
+    assert!(
+        alerted(&declared, "detection=enumeration"),
+        "[security] scanner_established_factor = 1 grants a registration no \
+         extra credit, and ten dead extensions is a dialplan walk:\n{declared}"
+    );
+
+    let overridden = scan(
+        &pcap,
+        &["--scanner-established-factor", "4", "--config", &cfg],
+    );
+    assert!(
+        !alerted(&overridden, "detection="),
+        "--scanner-established-factor must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared answer grace decides how slow a link may be.
+///
+/// The shipped 500 ms is RFC 3261's Timer T1. A link whose round trip is longer
+/// than that has every probe outstanding when the next goes out, so an ordinary
+/// working peer reads as a sweep into a hole.
+#[test]
+fn scanner_answer_grace_ms_decides_how_slow_a_link_may_be() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = working_peer_keepalive();
+    for i in 0..15u64 {
+        let branch = format!("-slowlink-{i}");
+        frames.push((probe(A, "REGISTER", "1001", &branch), 100_000 + i * 100_000));
+        frames.push((
+            answer(A, 200, "REGISTER", "1001", &branch),
+            2_100_000 + i * 100_000,
+        ));
+    }
+    frames.sort_by_key(|(_, t)| *t);
+    let pcap = arg(&write_capture(&dir, "slowlink", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nscanner_answer_grace_ms = 3000\n",
+    ));
+
+    let shipped = scan(&pcap, &["--no-config"]);
+    assert!(
+        alerted(&shipped, "detection=behavioral"),
+        "under a 500 ms grace every probe on a 2s link is 'unanswered', so a \
+         working peer is reported:\n{shipped}"
+    );
+
+    let declared = scan(&pcap, &["--config", &cfg]);
+    assert!(
+        !alerted(&declared, "detection="),
+        "[security] scanner_answer_grace_ms = 3000 covers this link's round \
+         trip, so nothing here was ever unanswered:\n{declared}"
+    );
+
+    let overridden = scan(&pcap, &["--scanner-answer-grace", "500", "--config", &cfg]);
+    assert!(
+        alerted(&overridden, "detection=behavioral"),
+        "--scanner-answer-grace must beat the config key:\n{overridden}"
+    );
+}
+
+/// A zero scanner threshold is refused by name rather than read as "off".
+#[test]
+fn a_zero_scanner_threshold_is_refused_by_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = arg(&write_capture(
+        &dir,
+        "zero",
+        &[(probe(A, "OPTIONS", "trunk", "-z"), 0)],
+    ));
+    for key in [
+        "scanner_behavioral_probes",
+        "scanner_enumeration_targets",
+        "scanner_rejected_probes",
+        "scanner_unanswered_probes",
+        "scanner_window_secs",
+        "scanner_established_factor",
+        "scanner_answer_grace_ms",
+    ] {
+        let cfg = arg(&write_config(&dir, &format!("[security]\n{key} = 0\n")));
+        let (_, stderr, code) = run_support::run(
+            &["-N", "-I", &pcap, "--kill-scanner", "--config", &cfg],
+            Some("error"),
+        );
+        assert_ne!(code, Some(0), "{key} = 0 must fail the run");
+        assert!(
+            stderr.contains(key),
             "the error must name the key; got {stderr}"
         );
     }

@@ -145,7 +145,19 @@ Security detection defaults.
 | `fraud_sequential_calls` | integer | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. `--fraud-sequential-calls` overrides it |
 | `fraud_volume_multiplier` | integer | `5` | Multiple of a source's own baseline call rate that `--fraud-detect` reports as a volume spike. `--fraud-volume-multiplier` overrides it |
 | `fraud_volume_min_calls` | integer | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. `--fraud-volume-min-calls` overrides it |
+| `scanner_behavioral_probes` | integer | `10` | Probes from one source inside the scanner window, above which `--kill-scanner` reports a rate detection. Behind an SBC every source collapses to one address, so ordinary aggregated traffic clears ten in five seconds and the whole site reads as one scanner. `--scanner-behavioral-probes` overrides it |
+| `scanner_enumeration_targets` | integer | `5` | Distinct target extensions from one source inside the scanner window, above which `--kill-scanner` reports extension enumeration. `--scanner-enumeration-targets` overrides it |
+| `scanner_rejected_probes` | integer | `5` | Rejected probes inside the scanner window at which a source reads as probing rather than operating. This is the evidence gate: neither behavioral signal reports anything until a source clears this or `scanner_unanswered_probes`, which is what separates an enumeration sweep from a trunk running keepalives at the same rate. `--scanner-rejected-probes` overrides it |
+| `scanner_unanswered_probes` | integer | `5` | Probes inside the scanner window that drew no response, at which a source reads as sweeping, provided they also outnumber the rest of what it sent. `--scanner-unanswered-probes` overrides it |
+| `scanner_window_secs` | integer | `5` | How much capture time one scanner window spans, in seconds. Every scanner count above is per window, so this is the binding constraint on a paced sweep rather than the counts: one probe every ten seconds never puts two inside the shipped five-second window, so the rate and the spread both stay at one however low the counts go. `--scanner-window` overrides it |
+| `scanner_established_factor` | integer | `4` | How much more evidence `--kill-scanner` needs from a source that has completed a registration or a call. A registered endpoint that starts probing is a compromised phone worth reporting, but it is also the peer whose ordinary working traffic looks most like probing, and the peer a false positive costs most. `--scanner-established-factor` overrides it |
+| `scanner_answer_grace_ms` | integer | `500` | How long a probe may go without a response before `--kill-scanner` counts it as unanswered, in milliseconds. The default is RFC 3261's Timer T1, the round-trip estimate at which SIP itself gives up waiting and retransmits. Raise it on a link whose round trip runs longer than that, where the default reports every probe still in flight as one nobody answered. `--scanner-answer-grace` overrides it |
 | `findings_history` | integer | `1000` | Security findings kept in memory for later retrieval. `0` keeps none, which is a real setting rather than a mistake. `--findings-history` overrides it |
+
+Every `scanner_*` key above rejects `0` and names the key. A zero count reports
+the first probe of any kind as a scanner, a zero window resets the counters on
+every packet so nothing ever accumulates, and a zero grace restores the very
+defect `scanner_answer_grace_ms` exists to prevent.
 
 ```toml
 [security]
@@ -156,6 +168,9 @@ fraud_detect = true
 business_hours = "8-18"
 fraud_short_call_secs = 2
 reg_flood_threshold = 10
+scanner_window_secs = 60
+scanner_behavioral_probes = 40
+scanner_enumeration_targets = 12
 findings_history = 5000
 alert = ["syslog", "json"]
 alert_exec = "/usr/local/bin/sipnab-alert.sh"
@@ -482,6 +497,8 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"  # Custom alert handler
 reg_flood_threshold = 10           # REGISTER/sec from one source that is a flood
 kill_rate_limit = 10               # Kill responses/sec sipnab may transmit
 business_hours = "8-18"            # Enables off-hours fraud detection (UTC hours)
+scanner_window_secs = 60           # Wide enough to hold a sweep paced at one probe/10s
+scanner_behavioral_probes = 40     # Raised: this site aggregates behind one SBC address
 
 # -- Diagnosis thresholds --
 [diagnosis]

@@ -1663,7 +1663,15 @@ impl BatchRunner {
                 .as_deref()
                 .map(|s| vec![s.to_string()])
                 .unwrap_or_default();
-            Some(ScannerDetector::new(&custom))
+            // `with_thresholds`, not `new`: the trigger points reach the run
+            // from here or they reach nothing. `ScannerDetector::new` keeps its
+            // compiled-in numbers, which is the shape #68 found six detectors
+            // in — a resolver that passes its own unit test and changes nothing
+            // an operator sees. See the comment on `SipnabMcp::row_cap`.
+            Some(ScannerDetector::with_thresholds(
+                &custom,
+                cli.scanner_thresholds(config),
+            ))
         } else {
             None
         };

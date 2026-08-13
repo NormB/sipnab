@@ -114,6 +114,13 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "fraud_sequential_calls",
             "fraud_volume_multiplier",
             "fraud_volume_min_calls",
+            "scanner_behavioral_probes",
+            "scanner_enumeration_targets",
+            "scanner_rejected_probes",
+            "scanner_unanswered_probes",
+            "scanner_window_secs",
+            "scanner_established_factor",
+            "scanner_answer_grace_ms",
             "findings_history",
         ]
         .as_slice(),
@@ -477,6 +484,32 @@ pub struct SecurityConfig {
     /// Calls a source must place inside the window before a volume spike can
     /// be reported at all (default: 6).
     pub fraud_volume_min_calls: Option<u32>,
+    /// Probes from one source inside the scanner window, above which the rate
+    /// signal reports (default: 10).
+    ///
+    /// Behind an SBC every source collapses to one address, so ordinary
+    /// aggregated traffic clears ten and the whole site reads as one scanner.
+    pub scanner_behavioral_probes: Option<u32>,
+    /// Distinct target extensions from one source inside the scanner window,
+    /// above which the enumeration signal reports (default: 5).
+    pub scanner_enumeration_targets: Option<u64>,
+    /// Rejected probes inside the scanner window at which a source reads as
+    /// probing rather than operating (default: 5).
+    pub scanner_rejected_probes: Option<u32>,
+    /// Unanswered probes inside the scanner window at which a source reads as
+    /// sweeping (default: 5).
+    pub scanner_unanswered_probes: Option<u32>,
+    /// How much capture time one scanner window spans, in seconds (default: 5).
+    ///
+    /// The counts above are all "per window", so a sweep paced more slowly than
+    /// this never accumulates and no count setting can see it.
+    pub scanner_window_secs: Option<u64>,
+    /// How much more evidence a source needs once it has registered or placed a
+    /// call with us (default: 4).
+    pub scanner_established_factor: Option<u32>,
+    /// How long a probe may go without a response before it counts as
+    /// unanswered, in milliseconds (default: 500, RFC 3261's Timer T1).
+    pub scanner_answer_grace_ms: Option<u64>,
     /// Security findings kept in memory for later retrieval (default: 1000).
     ///
     /// `0` keeps none, which is a real setting rather than a mistake: an
@@ -534,9 +567,24 @@ impl SecurityConfig {
         if let Some(spec) = self.business_hours.as_deref() {
             parse_business_hours(spec)?;
         }
+        // Zero is refused for every scanner key too, and for the same reason it
+        // is refused above: each reading of it is silent behaviour nobody
+        // asked for. A zero count reports the first probe of any kind as a
+        // scanner; a zero window resets the counters on every packet, so
+        // nothing ever accumulates and the detector reports nothing at all; a
+        // zero established factor drops a registered peer's bar to zero; and a
+        // zero answer grace restores the defect `scanner_answer_grace_ms`
+        // exists to prevent, where "unanswered" means "not answered YET" and a
+        // peer that pipelines faster than the round trip looks like a sweep.
         for (key, value) in [
             ("fraud_short_call_secs", self.fraud_short_call_secs),
             ("fraud_sequential_calls", self.fraud_sequential_calls),
+            (
+                "scanner_enumeration_targets",
+                self.scanner_enumeration_targets,
+            ),
+            ("scanner_window_secs", self.scanner_window_secs),
+            ("scanner_answer_grace_ms", self.scanner_answer_grace_ms),
         ] {
             if let Some(0) = value {
                 return Err(crate::Error::ConfigInvalid(format!(
@@ -548,6 +596,13 @@ impl SecurityConfig {
             ("fraud_wangiri_calls", self.fraud_wangiri_calls),
             ("fraud_volume_multiplier", self.fraud_volume_multiplier),
             ("fraud_volume_min_calls", self.fraud_volume_min_calls),
+            ("scanner_behavioral_probes", self.scanner_behavioral_probes),
+            ("scanner_rejected_probes", self.scanner_rejected_probes),
+            ("scanner_unanswered_probes", self.scanner_unanswered_probes),
+            (
+                "scanner_established_factor",
+                self.scanner_established_factor,
+            ),
         ] {
             if let Some(0) = value {
                 return Err(crate::Error::ConfigInvalid(format!(
@@ -2169,6 +2224,44 @@ column_selector = "F10"
             let zeroed = format!("[limits]\n{key} = 0\n");
             let zero: Config = toml::from_str(&zeroed).expect("parses");
             let err = zero.limits.validate().expect_err("0 must be rejected");
+            assert!(
+                err.to_string().contains(key),
+                "the refusal must name {key}, got: {err}"
+            );
+        }
+    }
+
+    /// Every `[security] scanner_*` trigger point parses, is REGISTERED, and
+    /// refuses 0 by name.
+    ///
+    /// Registration is the half nothing else catches. An unregistered key still
+    /// parses, still deserializes, and still reaches the detector — it only
+    /// warns "Unknown config key" on every start, which is how an operator
+    /// learns to ignore the warning that matters. The end-to-end wiring tests
+    /// in `tests/threshold_wiring_test.rs` pass either way, so they cannot
+    /// stand in for this: that is #81's defect class exactly.
+    #[test]
+    fn scanner_thresholds_parse_are_registered_and_reject_zero() {
+        for key in [
+            "scanner_behavioral_probes",
+            "scanner_enumeration_targets",
+            "scanner_rejected_probes",
+            "scanner_unanswered_probes",
+            "scanner_window_secs",
+            "scanner_established_factor",
+            "scanner_answer_grace_ms",
+        ] {
+            let set = format!("[security]\n{key} = 60\n");
+            let cfg: Config = toml::from_str(&set).expect("valid");
+            assert!(
+                Config::unknown_keys(&set).expect("scan").is_empty(),
+                "{key} must be registered in KNOWN_KEYS, or a file that sets it \
+                 warns on every start"
+            );
+            assert!(cfg.security.validate().is_ok(), "{key} = 60 must validate");
+            let zeroed = format!("[security]\n{key} = 0\n");
+            let zero: Config = toml::from_str(&zeroed).expect("parses");
+            let err = zero.security.validate().expect_err("0 must be rejected");
             assert!(
                 err.to_string().contains(key),
                 "the refusal must name {key}, got: {err}"
