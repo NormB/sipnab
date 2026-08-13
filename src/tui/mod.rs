@@ -222,6 +222,15 @@ pub struct App {
     /// [`crate::rtp::quality::resolve_one_way_delay`]. `None` means they said
     /// nothing, not that they chose the default.
     pub(crate) declared_one_way_delay_ms: Option<f64>,
+    /// The one band set every view in this session colours from, resolved at
+    /// startup from `--jitter-warn-ms` and friends over `[quality]`.
+    ///
+    /// Held here for the same reason [`Self::theme`] is: it is a decision the
+    /// session makes once, and a view free to resolve its own is free to
+    /// disagree with the pane beside it. That disagreement is not
+    /// hypothetical — it is the defect [`crate::rtp::bands::QualityBands`] was
+    /// written to end, where four views banded one stream three ways.
+    pub(crate) quality_bands: crate::rtp::bands::QualityBands,
     /// Shared IP -> name resolver (manual mappings, hosts, reverse DNS).
     resolver: Arc<NameResolver>,
     /// Path the manual mappings persist to (set from config/CLI).
@@ -342,6 +351,7 @@ impl App {
             mouse_capture_enabled: true,
             name_mode: NameMode::default(),
             declared_one_way_delay_ms: None,
+            quality_bands: crate::rtp::bands::QualityBands::default(),
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
             names_config_path: None,

@@ -190,8 +190,10 @@ fn loss_to_block(loss_pct: f64) -> char {
 ///
 /// Draws widgets into `frame` only.
 pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
-    // One band set for the whole render, shared with every other view.
-    let bands = QualityBands::default();
+    // One band set for the whole render, shared with every other view — the
+    // session's, resolved at startup from `[quality]` and the flags, not a
+    // fresh `::default()` this pane invents for itself.
+    let bands: QualityBands = app.quality_bands;
     use crate::tui::stream_detail::{jitter_to_block, mos_to_block};
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};

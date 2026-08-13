@@ -13,6 +13,9 @@
 
 use std::collections::HashSet;
 
+#[path = "support/source_scan.rs"]
+mod source_scan;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sipnab::tui::help::HELP_TEXT;
 use sipnab::tui::{
@@ -81,7 +84,16 @@ fn scraped_char_keys() -> HashSet<char> {
         // Only scan production code, not the `#[cfg(test)]` modules (whose
         // tests use arbitrary keys like 'z'/'Q' to assert unknown keys are
         // ignored).
-        let src = full.split("#[cfg(test)]").next().unwrap_or(full);
+        //
+        // Cut at the test MODULE, not at the first text match. Splitting the
+        // raw source on `#[cfg(test)]` stopped at line 23 of
+        // `controllers/mod.rs`, where the attribute guards a test-only `use`
+        // — so this scrape read 22 of that file's 1662 lines and saw NONE of
+        // the global dispatcher's handled keys ('c', 'v', 'V', 'n', '?', ' ',
+        // 'j', 'k', 's'), the very keys it exists to hold to the F1 help. A
+        // scraper that stops reading reports the same clean result as one
+        // that found nothing wrong.
+        let src = source_scan::production_source(full);
         let pat = "KeyCode::Char('";
         let mut idx = 0;
         while let Some(p) = src[idx..].find(pat) {

@@ -104,7 +104,10 @@ pub fn render_loss_map(f: &mut Frame, app: &App, area: Rect, key: &StreamKey) {
     let total_pkts = stream.packet_count.saturating_add(stream.lost_packets);
     lines.push(Line::from(vec![
         Span::styled("  Loss ", Style::default().fg(theme.muted)),
-        Span::styled(format!("{loss_pct:.2}%"), loss_style(loss_pct, theme)),
+        Span::styled(
+            format!("{loss_pct:.2}%"),
+            loss_style(loss_pct, theme, &app.quality_bands),
+        ),
         Span::styled(
             format!("   {} lost / {} packets", map.total_lost, total_pkts),
             Style::default().fg(theme.muted),
@@ -251,14 +254,15 @@ fn axis_line(width: usize, left: &str, mid: &str, right: &str) -> String {
     cells.into_iter().collect()
 }
 
-/// Style for a packet-loss percentage, using the shared bands.
+/// Style for a packet-loss percentage, using the session's bands.
 ///
 /// This used 0.5/2.0 while the stream list used 1.0/5.0, and its own doc
 /// comment claimed "the same bands the dashboard and stream-detail views use"
 /// — which was true of neither. A comment asserting consistency is not
-/// consistency; the boundaries now come from one place.
-fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
-    match crate::rtp::bands::QualityBands::default().loss(loss_pct) {
+/// consistency; the boundaries now come from one place, and that place is now
+/// an argument so `[quality]` can move them for every pane at once.
+fn loss_style(loss_pct: f64, theme: &Theme, bands: &crate::rtp::bands::QualityBands) -> Style {
+    match bands.loss(loss_pct) {
         crate::rtp::bands::Band::Good => Style::default().fg(theme.good),
         crate::rtp::bands::Band::Warning => Style::default().fg(theme.warning),
         crate::rtp::bands::Band::Bad => Style::default().fg(theme.bad),

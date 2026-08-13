@@ -2455,9 +2455,18 @@ fn no_documentation_table_repeats_a_row() {
         // deciding whether to upgrade needs to know `sender_report_echo` is a
         // lower bound on most topologies, not just that latency "works now".
         // One file, one table, diffed against HEAD before the number moved.
+        // Raised 505 -> 509 by the quality colour bands, which take the same
+        // shape the `[diagnosis]` wiring did at 498 -> 502: a new `[quality]`
+        // table in docs/config-reference.md and a new "Quality colour bands"
+        // table in docs/cli-reference.md, each mirrored once under
+        // website/content/docs/. Two written tables, four pages. Every staged
+        // .md was diffed against HEAD first: exactly those four gained one
+        // separator row each, and README.md and docs/design/backlog.md — both
+        // also staged — held their table counts, so nothing here is a boundary
+        // that stopped being detected.
         tables,
-        505,
-        "walked {tables} tables, expected 505. More is fine — bump this. FEWER \
+        509,
+        "walked {tables} tables, expected 509. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

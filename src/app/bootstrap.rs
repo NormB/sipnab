@@ -545,8 +545,21 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // is here: an operator who believes their scanner defence is armed has to
     // be told before the capture starts, not left to read an empty finding
     // list as quiet.
-    if let Some(msg) = security_detection_ignored_warning(cli, config, &mode) {
-        tracing::warn!("{msg}");
+    // REFUSED, not warned. A warning was the first shape of this, and it is the
+    // wrong one for a SECURITY feature: it scrolls off a busy terminal, and the
+    // consequence of missing it is an operator who believes they are protected
+    // and is not. Every other outcome here is recoverable by reading the output
+    // again; this one is not, because the output is empty either way.
+    //
+    // It also makes the flags agree with each other. `--fail2ban` and the other
+    // OUTPUT flags already require `-N` (`src/cli.rs`), so a run that asked for
+    // fail2ban output without it never started. The DETECTION flags accepted
+    // the same mistake silently, which is the sharper end of the same rule.
+    if let Some(msg) = security_detection_unarmed_refusal(cli, config, &mode) {
+        return Err(PlanError {
+            exit_code: 2,
+            message: msg,
+        });
     }
 
     // Immediate mode picks the kernel ring format, so it can only be answered
@@ -1293,6 +1306,18 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         });
     }
 
+    // [quality] is validated as a RESOLVED band set rather than as a section,
+    // because an unreachable middle can be assembled from both sources: a warn
+    // boundary in the file and its bad boundary on the command line. Checking
+    // the file alone would refuse a pair the flags go on to fix, and accept
+    // the pair they go on to break.
+    if let Err(msg) = cli.quality_bands(&loaded.config).validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: format!("[quality] {msg}"),
+        });
+    }
+
     // Apply configurable security limits from the [limits] section.
     if let Some(v) = loaded.config.limits.max_header_line {
         crate::sip::parser::set_parser_limits(
@@ -1980,14 +2005,25 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
 /// layer up: an empty finding list reads as "nothing attacked me" when it
 /// means "nothing was looking".
 ///
-/// Warned rather than refused, on the same reasoning as
-/// [`cores_ignored_warning`]: the capture, the panes and `-O` are all correct
-/// and worth having on their own, and refusing the combination would break
-/// invocations that only ever wanted to watch.
+/// REFUSED, not warned, and the distinction is the whole point.
 ///
-/// Returns the message rather than logging it, so it can be asserted on,
-/// matching [`cores_ignored_warning`].
-fn security_detection_ignored_warning(
+/// The first shape of this was a warning, on the reasoning [`cores_ignored_warning`]
+/// uses: the capture and the panes are correct on their own, so do not break an
+/// invocation that only wanted to watch. That argument is right for `--cores`
+/// and wrong here, because the two failures are not alike. A `--cores` run that
+/// silently reads on one core is SLOW; a detection run that silently arms
+/// nothing is UNPROTECTED, and both look identical from the outside — an empty
+/// finding list. A warning scrolls off a busy terminal and the operator is left
+/// believing a defence is up.
+///
+/// It also settles an inconsistency. `--fail2ban` and the other OUTPUT flags
+/// already require `-N`, so asking for fail2ban output without it never
+/// started. The DETECTION flags accepted the same mistake in silence, which is
+/// the sharper end of one rule.
+///
+/// Returns the message rather than raising it, so it can be asserted on;
+/// `plan` turns it into a `PlanError` with exit code 2.
+fn security_detection_unarmed_refusal(
     cli: &Cli,
     config: &Config,
     mode: &RunMode,
@@ -2026,10 +2062,11 @@ fn security_detection_ignored_warning(
         return None;
     }
     Some(format!(
-        "{flags} accepted and ignored: security detection is built only by the \
-         headless single-capture path, and this run is {path}. Nothing will be \
-         detected and no finding will be reported, so an empty result here is \
-         not an all-clear. To detect, {remedy}.",
+        "{flags} refused: security detection is built only by the headless \
+         single-capture path, and this run is {path}. Nothing would be \
+         detected and no finding reported, so an empty result would not be an \
+         all-clear — which is why this is refused rather than warned about. To \
+         detect, {remedy}.",
         flags = asked.join(", "),
     ))
 }
@@ -2700,14 +2737,14 @@ mod tests {
     /// warns about one layer up ("an empty jail log means 'nothing was
     /// detected', not 'nothing happened'").
     #[test]
-    fn detection_flags_warn_when_the_tui_will_not_run_them() {
+    fn detection_flags_are_refused_when_the_tui_will_not_run_them() {
         let mut cli = base_cli();
         cli.no_tui = false;
         cli.device = Some("eth0".to_string());
         cli.kill_scanner = true;
         cli.fraud_detect = true;
         cli.reg_flood = true;
-        let msg = security_detection_ignored_warning(&cli, &Config::default(), &RunMode::Tui)
+        let msg = security_detection_unarmed_refusal(&cli, &Config::default(), &RunMode::Tui)
             .expect("detection flags the TUI cannot honour must be reported");
         for flag in ["--kill-scanner", "--fraud-detect", "--reg-flood"] {
             assert!(
@@ -2731,12 +2768,12 @@ mod tests {
     /// the `--cores`/`--metrics` combination beside it, with a security answer
     /// instead of a dashboard.
     #[test]
-    fn detection_flags_warn_on_the_parallel_offline_reader_too() {
+    fn detection_flags_are_refused_on_the_parallel_offline_reader_too() {
         let mut cli = base_cli();
         cli.cores = 8;
         cli.input = vec!["capture.pcap".to_string()];
         cli.kill_scanner = true;
-        let msg = security_detection_ignored_warning(&cli, &Config::default(), &RunMode::CoresFile)
+        let msg = security_detection_unarmed_refusal(&cli, &Config::default(), &RunMode::CoresFile)
             .expect("detection flags on the parallel path must be reported");
         assert!(
             msg.contains("--kill-scanner") && msg.contains("--cores"),
@@ -2751,7 +2788,7 @@ mod tests {
     /// run which then detects normally teaches operators to ignore it, and an
     /// ignored security warning is worse than none.
     #[test]
-    fn detection_warning_is_silent_where_the_detectors_actually_run() {
+    fn detection_refusal_is_silent_where_the_detectors_actually_run() {
         let mut headless = base_cli();
         headless.device = Some("eth0".to_string());
         headless.kill_scanner = true;
@@ -2759,7 +2796,7 @@ mod tests {
         headless.reg_flood = true;
         headless.digest_leak = true;
         assert!(
-            security_detection_ignored_warning(&headless, &Config::default(), &RunMode::Batch)
+            security_detection_unarmed_refusal(&headless, &Config::default(), &RunMode::Batch)
                 .is_none(),
             "batch::run builds every one of these; warning here would be false"
         );
@@ -2768,7 +2805,7 @@ mod tests {
         watching.no_tui = false;
         watching.device = Some("eth0".to_string());
         assert!(
-            security_detection_ignored_warning(&watching, &Config::default(), &RunMode::Tui)
+            security_detection_unarmed_refusal(&watching, &Config::default(), &RunMode::Tui)
                 .is_none(),
             "nothing was asked for, so nothing is being ignored"
         );
@@ -2781,13 +2818,13 @@ mod tests {
     /// forgotten: it is set once and never retyped, so the operator has no flag
     /// in front of them to reconsider when the run mode changes.
     #[test]
-    fn detection_warning_reads_the_config_file_too() {
+    fn detection_refusal_reads_the_config_file_too() {
         let mut config = Config::default();
         config.security.kill_scanner = Some(true);
         let mut cli = base_cli();
         cli.no_tui = false;
         cli.device = Some("eth0".to_string());
-        let msg = security_detection_ignored_warning(&cli, &config, &RunMode::Tui)
+        let msg = security_detection_unarmed_refusal(&cli, &config, &RunMode::Tui)
             .expect("a config-armed detector must be reported like a flag-armed one");
         assert!(msg.contains("--kill-scanner"), "{msg}");
     }
@@ -2798,8 +2835,54 @@ mod tests {
     /// where the modes are written, so it is checked there: wire a detector
     /// into the TUI thread or the parallel reader and this fails, which is the
     /// moment the warning turns into a lie and has to go.
+    /// `plan` REFUSES — it does not merely produce a message.
+    ///
+    /// Every other test here asserts the string. None of them asserted that the
+    /// run stops, so the whole warn-to-refuse change could have been reverted
+    /// with all of them still green. This one asserts the EFFECT: a non-zero
+    /// exit and no plan, which is what an operator experiences.
+    ///
+    /// Exit 2 rather than 1 on purpose — it is the code the other
+    /// misconfiguration refusals use (a non-loopback bind without auth), and an
+    /// operator scripting sipnab can tell "you asked for something impossible"
+    /// apart from "the capture failed".
     #[test]
-    fn the_modes_this_warns_about_still_build_no_detector() {
+    fn plan_refuses_a_run_whose_detection_flags_would_arm_nothing() {
+        let mut cli = base_cli();
+        cli.input = vec!["tests/fixtures/sip_call.pcap".to_string()];
+        cli.no_tui = true;
+        cli.fraud_detect = true;
+        cli.cores = 2;
+
+        let err = plan(&cli, &Config::default())
+            .err()
+            .expect("a run that would detect nothing must not start");
+        assert_eq!(
+            err.exit_code, 2,
+            "refusals of an impossible request exit 2, matching the other \
+             misconfiguration refusals: {err:?}"
+        );
+        assert!(
+            err.message.contains("--fraud-detect"),
+            "the refusal must name the flag the operator typed: {}",
+            err.message
+        );
+
+        // Anti-vacuity: the SAME cli without --cores plans successfully, so the
+        // refusal is about the mode and not about the fixture or the flags.
+        let mut ok = base_cli();
+        ok.input = vec!["tests/fixtures/sip_call.pcap".to_string()];
+        ok.no_tui = true;
+        ok.fraud_detect = true;
+        assert!(
+            plan(&ok, &Config::default()).is_ok(),
+            "headless detection must still plan — this refusal is scoped to the \
+             modes that build no detector"
+        );
+    }
+
+    #[test]
+    fn the_modes_this_refuses_still_build_no_detector() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         for rel in ["src/app/tui_mode.rs", "src/parallel.rs"] {
             let full = std::fs::read_to_string(root.join(rel))
@@ -2822,7 +2905,7 @@ mod tests {
                 assert!(
                     !text.contains(detector),
                     "{rel} now builds a {detector}, so \
-                     `security_detection_ignored_warning` is telling operators \
+                     `security_detection_unarmed_refusal` is telling operators \
                      their detection is off while it runs. Delete that mode \
                      from the warning."
                 );

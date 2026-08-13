@@ -38,6 +38,28 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "names",
             "crash",
             "media",
+            "quality",
+        ]
+        .as_slice(),
+    );
+    // [quality] holds the boundaries the COLOUR COLUMN paints from, which is a
+    // third question again: not "is this traffic hostile" ([security]), not
+    // "how much may this run hold" ([limits]), and not "report this call as
+    // faulty" ([diagnosis]). A number here decides only what an operator's eye
+    // is drawn to while triaging, and the right values belong to the network
+    // being watched — 30 ms of jitter is already a fault on a LAN PBX and 1 %
+    // loss is a Tuesday on an international trunk.
+    m.insert(
+        "quality",
+        [
+            "jitter_warn_ms",
+            "jitter_bad_ms",
+            "loss_warn_pct",
+            "loss_bad_pct",
+            "mos_warn",
+            "mos_bad",
+            "rtt_warn_ms",
+            "rtt_bad_ms",
         ]
         .as_slice(),
     );
@@ -258,6 +280,10 @@ pub struct Config {
     /// Properties of the observed media path — see [`MediaConfig`].
     #[serde(default)]
     pub media: MediaConfig,
+    /// Boundaries the quality colour column paints from — see
+    /// [`QualityConfig`].
+    #[serde(default)]
+    pub quality: QualityConfig,
 
     /// Resource limits.
     #[serde(default)]
@@ -640,6 +666,49 @@ pub struct MediaConfig {
     /// beats an RTCP-reported round trip, because a config file cannot be
     /// changed by a packet on the wire.
     pub one_way_delay_ms: Option<f64>,
+}
+
+/// Where the quality colour column turns yellow, and where it turns red.
+///
+/// Every key is an override for one boundary of
+/// [`crate::rtp::bands::QualityBands`], which is the single place any view
+/// asks whether a number is good, a warning or bad. Unset keys keep the
+/// shipped default, so a file may move one boundary without restating the
+/// other seven.
+///
+/// These are the numbers a site actually disagrees about. The defaults suit a
+/// general-purpose trunk: on a LAN PBX 30 ms of jitter is already a fault
+/// worth chasing, and on an international trunk 1 % loss is unremarkable. A
+/// colour column tuned for neither is wrong in both directions, and it is the
+/// first thing an operator's eye lands on.
+///
+/// Validation is deliberately NOT here. A warn boundary may be typed in the
+/// file and its matching bad boundary on the command line, so the only band
+/// set worth checking is the RESOLVED one — see
+/// [`crate::rtp::bands::QualityBands::validate`], which
+/// `crate::app::bootstrap::load_config` runs against the value
+/// [`crate::cli::Cli::quality_bands`] produces.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct QualityConfig {
+    /// Jitter at or above this is a warning, in milliseconds (default: 30.0).
+    pub jitter_warn_ms: Option<f64>,
+    /// Jitter at or above this is bad, in milliseconds (default: 50.0).
+    pub jitter_bad_ms: Option<f64>,
+    /// Loss at or above this is a warning, in percent (default: 1.0).
+    pub loss_warn_pct: Option<f64>,
+    /// Loss at or above this is bad, in percent (default: 5.0).
+    pub loss_bad_pct: Option<f64>,
+    /// MOS below this is a warning (default: 4.0).
+    pub mos_warn: Option<f64>,
+    /// MOS below this is bad (default: 3.0).
+    pub mos_bad: Option<f64>,
+    /// Round trip at or above this is a warning, in milliseconds
+    /// (default: 300.0, ITU-T G.114's 150 ms one way doubled).
+    pub rtt_warn_ms: Option<f64>,
+    /// Round trip at or above this is bad, in milliseconds
+    /// (default: 800.0, G.114's 400 ms one way doubled).
+    pub rtt_bad_ms: Option<f64>,
 }
 
 /// Resource limits.

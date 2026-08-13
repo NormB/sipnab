@@ -1643,6 +1643,7 @@ fn stream_detail_render_does_not_panic() {
                     theme: &theme,
                     resolver: &sipnab::names::NameResolver::new(),
                     name_mode: sipnab::names::NameMode::Off,
+                    quality_bands: &sipnab::rtp::bands::QualityBands::default(),
                 },
             );
         })

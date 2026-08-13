@@ -8,6 +8,9 @@
 #[path = "support/run.rs"]
 mod run_support;
 
+#[path = "support/source_scan.rs"]
+mod source_scan;
+
 /// Runs the `sipnab` binary from the crate root under the shared test baseline
 /// (see [`run_support::run`]); this surface asserts only on stdout and exit
 /// codes, so it leaves `SIPNAB_LOG` unset (`None`).
@@ -162,10 +165,14 @@ fn implementing_signature_verification_must_also_update_the_claims() {
     // Production code only. What makes the help wrong is shipped behaviour,
     // not scaffolding: a test may name `Valid` to assert it is absent, or to
     // exercise a decoder, without sipnab verifying anything.
-    let prod = src
-        .split("#[cfg(test)]")
-        .next()
-        .expect("stir_shaken.rs has a production section");
+    //
+    // Cut at the test MODULE, via the shared rule. This gate used to split the
+    // raw text on `#[cfg(test)]`, which stops at the first line that merely
+    // SPELLS the attribute — a comment, or the test-only `use` imports other
+    // files in this crate put near the top. `stir_shaken.rs` happens to have
+    // neither today, so the scan was reading all 255 of its production lines;
+    // it was one comment away from reading none of them and still passing.
+    let prod = source_scan::production_source(&src);
 
     assert!(
         !prod.contains("VerificationStatus::Valid"),

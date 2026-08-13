@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Self-tests for the shared test-support `normalize()` helper (M1/T1.1).
+//! Self-tests for the shared test-support `normalize()` helper (M1/T1.1) and
+//! for `source_scan::production_source()`.
 //!
 //! TDD: these are written against a stubbed `normalize` (red), then the real
 //! implementation makes them pass (green). Per the repo TDD rule, edge cases
@@ -9,6 +10,10 @@
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "support/source_scan.rs"]
+mod source_scan;
+
+use source_scan::production_source;
 use support::normalize;
 
 /// An RFC3339 Z-suffixed timestamp is replaced with `<TS>`.
@@ -157,4 +162,153 @@ fn timeout_scaling_contract() {
         );
     }
     set(None);
+}
+
+// ── production_source: where a source scan must stop reading ─────────
+
+/// The ordinary shape: production code, then a `#[cfg(test)] mod tests`.
+/// Everything before the attribute is kept, everything from it is dropped.
+#[test]
+fn production_source_cuts_at_the_test_module() {
+    let src = r"
+pub fn handle() -> char { 'k' }
+
+#[cfg(test)]
+mod tests {
+    fn t() -> char { 'z' }
+}
+";
+    let prod = production_source(src);
+    assert!(
+        prod.contains("'k'"),
+        "production code must survive: {prod:?}"
+    );
+    assert!(!prod.contains("'z'"), "test module must be cut: {prod:?}");
+}
+
+/// The defect this rule was written for. A COMMENT that spells the attribute
+/// is prose, not a test module, and must not end the scan — `src/tui/
+/// dashboard.rs` mentions it on line 17 and truncated a 375-line view to 17.
+#[test]
+fn production_source_ignores_the_attribute_written_in_a_comment() {
+    let src = r"
+// fixtures -- deliberately there rather than as a #[cfg(test)] import
+pub fn handle() -> char { 'k' }
+
+#[cfg(test)]
+mod tests {
+    fn t() -> char { 'z' }
+}
+";
+    let prod = production_source(src);
+    assert!(
+        prod.contains("'k'"),
+        "a comment naming the attribute must not stop the scan: {prod:?}"
+    );
+    assert!(!prod.contains("'z'"));
+}
+
+/// A real `#[cfg(test)]` guarding a test-only IMPORT is not the test module.
+/// `src/tui/controllers/mod.rs` has one on line 23, which cut a 1662-line
+/// file to 22 lines and hid every key its dispatcher handles.
+#[test]
+fn production_source_steps_over_an_attribute_on_a_use() {
+    let src = r"
+#[cfg(test)]
+use crate::tui::clipboard::spawn_clipboard_copy;
+
+pub fn handle() -> char { 'k' }
+
+#[cfg(test)]
+mod tests {
+    fn t() -> char { 'z' }
+}
+";
+    let prod = production_source(src);
+    assert!(
+        prod.contains("'k'"),
+        "an attribute on a `use` must not stop the scan: {prod:?}"
+    );
+    assert!(!prod.contains("'z'"));
+}
+
+/// The attribute also guards single statements and `thread_local!` counters
+/// INSIDE production functions (`src/tui/call_list.rs`, `stream_list.rs`).
+/// Stopping there would discard the rest of the function around it.
+#[test]
+fn production_source_steps_over_an_attribute_inside_a_function() {
+    let src = r"
+pub fn render() -> char {
+    #[cfg(test)]
+    CALLS.with(|c| c.set(c.get() + 1));
+    'k'
+}
+
+#[cfg(test)]
+mod tests {
+    fn t() -> char { 'z' }
+}
+";
+    let prod = production_source(src);
+    assert!(
+        prod.contains("'k'"),
+        "an attribute on a statement must not stop the scan: {prod:?}"
+    );
+    assert!(!prod.contains("'z'"));
+}
+
+/// `#[cfg(test)] mod tests;` — attribute and item on one line, the form used
+/// when the tests live in their own file.
+#[test]
+fn production_source_cuts_at_a_one_line_module_declaration() {
+    let src = r"
+pub fn handle() -> char { 'k' }
+#[cfg(test)]
+mod tests;
+";
+    assert!(production_source(src).contains("'k'"));
+    assert!(!production_source(src).contains("mod tests;"));
+}
+
+/// Restricted visibility and further attributes between `#[cfg(test)]` and
+/// the `mod` are still the test module: `pub(crate) mod test_support` is how
+/// `src/tui/controllers/mod.rs` spells it.
+#[test]
+fn production_source_cuts_at_a_restricted_visibility_module() {
+    for decl in [
+        "pub(crate) mod test_support {",
+        "pub(in crate::tui) mod test_support {",
+        "pub mod test_support {",
+    ] {
+        let src = format!(
+            "pub fn handle() {{}}\n\n#[cfg(test)]\n#[allow(dead_code)]\n/// doc\n{decl}\n    fn t() {{}}\n}}\n"
+        );
+        let prod = production_source(&src);
+        assert!(
+            !prod.contains("test_support"),
+            "{decl} is a test module and must be cut: {prod:?}"
+        );
+        assert!(prod.contains("handle"), "{decl}: {prod:?}");
+    }
+}
+
+/// A file with no test module is returned whole — the anti-vacuity direction.
+/// A rule that trims something here would silently shorten every scan.
+#[test]
+fn production_source_keeps_a_file_with_no_test_module() {
+    let src = "pub fn handle() -> char { 'k' }\n";
+    assert_eq!(production_source(src), src);
+    assert_eq!(production_source(""), "");
+}
+
+/// The result is a PREFIX, so its line count is the index of the cut and
+/// callers can slice their own line vector with it.
+#[test]
+fn production_source_line_count_is_the_cut_index() {
+    let src = "a\nb\nc\n#[cfg(test)]\nmod tests {}\n";
+    let prod = production_source(src);
+    assert!(src.starts_with(prod), "must be a prefix of the input");
+    assert_eq!(prod.lines().count(), 3);
+    let all: Vec<&str> = src.lines().collect();
+    assert_eq!(&all[..prod.lines().count()], &["a", "b", "c"]);
 }

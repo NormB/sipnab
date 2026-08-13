@@ -159,6 +159,7 @@ pub(in crate::tui) fn render_app(
                     resolver: app.resolver.as_ref(),
                     name_mode: app.name_mode,
                     displayed: &app.stream_displayed.keys,
+                    quality_bands: &app.quality_bands,
                 },
             );
         }
@@ -176,6 +177,7 @@ pub(in crate::tui) fn render_app(
                         resolver: app.resolver.as_ref(),
                         name_mode: app.name_mode,
                         declared_one_way_delay_ms: app.declared_one_way_delay_ms,
+                        quality_bands: &app.quality_bands,
                     },
                 );
                 // Report the clamped scroll back: over-scrolling past the

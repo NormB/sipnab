@@ -1330,6 +1330,51 @@ pub struct Cli {
     #[arg(help_heading = "Analysis", long = "late-media-ms", value_name = "MS")]
     pub late_media_ms: Option<i64>,
 
+    /// Jitter, in milliseconds, at or above which the colour column turns
+    /// yellow. Config: `[quality] jitter_warn_ms`.
+    ///
+    /// None of the eight quality flags carries a clap `default_value`, for the
+    /// reason spelled out on [`Self::mcp_max_rows`]: a populated field cannot
+    /// tell "not typed" from "typed the default", and its config key would
+    /// have nothing left to override.
+    #[arg(help_heading = "Analysis", long = "jitter-warn-ms", value_name = "MS")]
+    pub jitter_warn_ms: Option<f64>,
+
+    /// Jitter, in milliseconds, at or above which the colour column turns red.
+    /// Config: `[quality] jitter_bad_ms`.
+    #[arg(help_heading = "Analysis", long = "jitter-bad-ms", value_name = "MS")]
+    pub jitter_bad_ms: Option<f64>,
+
+    /// Packet loss, in percent, at or above which the colour column turns
+    /// yellow. Config: `[quality] loss_warn_pct`.
+    #[arg(help_heading = "Analysis", long = "loss-warn-pct", value_name = "PCT")]
+    pub loss_warn_pct: Option<f64>,
+
+    /// Packet loss, in percent, at or above which the colour column turns red.
+    /// Config: `[quality] loss_bad_pct`.
+    #[arg(help_heading = "Analysis", long = "loss-bad-pct", value_name = "PCT")]
+    pub loss_bad_pct: Option<f64>,
+
+    /// MOS below which the colour column turns yellow. MOS bands run downward,
+    /// so this must sit at or above `--mos-bad`. Config: `[quality] mos_warn`.
+    #[arg(help_heading = "Analysis", long = "mos-warn", value_name = "MOS")]
+    pub mos_warn: Option<f64>,
+
+    /// MOS below which the colour column turns red.
+    /// Config: `[quality] mos_bad`.
+    #[arg(help_heading = "Analysis", long = "mos-bad", value_name = "MOS")]
+    pub mos_bad: Option<f64>,
+
+    /// Round trip, in milliseconds, at or above which the colour column turns
+    /// yellow. Config: `[quality] rtt_warn_ms`.
+    #[arg(help_heading = "Analysis", long = "rtt-warn-ms", value_name = "MS")]
+    pub rtt_warn_ms: Option<f64>,
+
+    /// Round trip, in milliseconds, at or above which the colour column turns
+    /// red. Config: `[quality] rtt_bad_ms`.
+    #[arg(help_heading = "Analysis", long = "rtt-bad-ms", value_name = "MS")]
+    pub rtt_bad_ms: Option<f64>,
+
     /// Maximum rows in one list-style MCP response.
     ///
     /// Deliberately has NO clap `default_value`: that is what made
@@ -2061,6 +2106,54 @@ impl Cli {
                 .late_media_ms
                 .or(d.late_media_ms)
                 .unwrap_or(built_in.late_media_threshold_ms),
+        }
+    }
+
+    /// Quality colour bands: each flag, else its `[quality]` key, else the
+    /// shipped boundary. See [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// Resolved ONCE, at startup, and handed to the views. That is the whole
+    /// point of the type: `QualityBands` exists because four panes each banded
+    /// jitter and loss with their own numbers and disagreed about the same
+    /// stream. A config every view read for itself would rebuild that defect
+    /// with extra steps, so no view constructs a band set — each is given the
+    /// one this returns.
+    ///
+    /// The result is checked by [`crate::rtp::bands::QualityBands::validate`]
+    /// in `crate::app::bootstrap::load_config`, not here. An unreachable
+    /// middle is a property of the PAIR, and either half of a pair may come
+    /// from the file while the other comes from the command line.
+    #[must_use]
+    pub fn quality_bands(&self, config: &crate::config::Config) -> crate::rtp::bands::QualityBands {
+        let built_in = crate::rtp::bands::QualityBands::default();
+        let q = &config.quality;
+        crate::rtp::bands::QualityBands {
+            jitter_warn_ms: self
+                .jitter_warn_ms
+                .or(q.jitter_warn_ms)
+                .unwrap_or(built_in.jitter_warn_ms),
+            jitter_bad_ms: self
+                .jitter_bad_ms
+                .or(q.jitter_bad_ms)
+                .unwrap_or(built_in.jitter_bad_ms),
+            loss_warn_pct: self
+                .loss_warn_pct
+                .or(q.loss_warn_pct)
+                .unwrap_or(built_in.loss_warn_pct),
+            loss_bad_pct: self
+                .loss_bad_pct
+                .or(q.loss_bad_pct)
+                .unwrap_or(built_in.loss_bad_pct),
+            mos_warn: self.mos_warn.or(q.mos_warn).unwrap_or(built_in.mos_warn),
+            mos_bad: self.mos_bad.or(q.mos_bad).unwrap_or(built_in.mos_bad),
+            rtt_warn_ms: self
+                .rtt_warn_ms
+                .or(q.rtt_warn_ms)
+                .unwrap_or(built_in.rtt_warn_ms),
+            rtt_bad_ms: self
+                .rtt_bad_ms
+                .or(q.rtt_bad_ms)
+                .unwrap_or(built_in.rtt_bad_ms),
         }
     }
 
@@ -3225,5 +3318,178 @@ mod tests {
         assert!(err.to_string().contains("--json"));
         assert!(err.to_string().contains("--report"));
         assert!(err.to_string().contains("--fail2ban"));
+    }
+
+    /// Every `[quality]` key moves the band a measurement lands in, and every
+    /// flag outranks the key it shadows.
+    ///
+    /// The assertion is on the BAND, not on the field holding the number. Eight
+    /// keys that deserialise and are then never consulted is exactly the defect
+    /// this wiring exists to prevent, and a field-equality test passes just as
+    /// happily when nothing downstream reads the value. Banding a measurement
+    /// is the effect an operator sees, so that is what is checked.
+    ///
+    /// All eight are covered rather than one representative, because the
+    /// precedence chain is written out per field: a copy-paste slip in the
+    /// seventh is invisible to a test that exercises the first.
+    #[test]
+    fn every_quality_key_moves_its_band_and_every_flag_outranks_its_key() {
+        use crate::rtp::bands::{Band, QualityBands};
+
+        /// One boundary: how to set it from a file, how to set it from the
+        /// command line, and a measurement whose band moves when it does.
+        struct Case {
+            key: &'static str,
+            flag: &'static str,
+            set_key: fn(&mut crate::config::QualityConfig),
+            band_of: fn(&QualityBands, f64) -> Band,
+            measurement: f64,
+            /// The band the measurement falls in with nothing overridden.
+            shipped: Band,
+            /// The band it moves to once the file sets this boundary.
+            with_key: Band,
+            /// A flag value chosen to put the measurement back in `shipped`,
+            /// so "the flag won" and "the key was ignored" cannot look alike.
+            flag_value: &'static str,
+        }
+
+        let cases = [
+            Case {
+                key: "jitter_warn_ms",
+                flag: "--jitter-warn-ms",
+                set_key: |q| q.jitter_warn_ms = Some(10.0),
+                band_of: |b, v| b.jitter(v),
+                measurement: 12.0,
+                shipped: Band::Good,
+                with_key: Band::Warning,
+                flag_value: "20",
+            },
+            Case {
+                key: "jitter_bad_ms",
+                flag: "--jitter-bad-ms",
+                set_key: |q| q.jitter_bad_ms = Some(35.0),
+                band_of: |b, v| b.jitter(v),
+                measurement: 40.0,
+                shipped: Band::Warning,
+                with_key: Band::Bad,
+                flag_value: "45",
+            },
+            Case {
+                key: "loss_warn_pct",
+                flag: "--loss-warn-pct",
+                set_key: |q| q.loss_warn_pct = Some(0.25),
+                band_of: |b, v| b.loss(v),
+                measurement: 0.5,
+                shipped: Band::Good,
+                with_key: Band::Warning,
+                flag_value: "0.75",
+            },
+            Case {
+                key: "loss_bad_pct",
+                flag: "--loss-bad-pct",
+                set_key: |q| q.loss_bad_pct = Some(2.0),
+                band_of: |b, v| b.loss(v),
+                measurement: 3.0,
+                shipped: Band::Warning,
+                with_key: Band::Bad,
+                flag_value: "4",
+            },
+            Case {
+                key: "mos_warn",
+                flag: "--mos-warn",
+                set_key: |q| q.mos_warn = Some(4.3),
+                band_of: |b, v| b.mos(v),
+                measurement: 4.2,
+                shipped: Band::Good,
+                with_key: Band::Warning,
+                flag_value: "4.1",
+            },
+            Case {
+                key: "mos_bad",
+                flag: "--mos-bad",
+                set_key: |q| q.mos_bad = Some(3.6),
+                band_of: |b, v| b.mos(v),
+                measurement: 3.5,
+                shipped: Band::Warning,
+                with_key: Band::Bad,
+                flag_value: "3.4",
+            },
+            Case {
+                key: "rtt_warn_ms",
+                flag: "--rtt-warn-ms",
+                set_key: |q| q.rtt_warn_ms = Some(150.0),
+                band_of: |b, v| b.rtt(v),
+                measurement: 200.0,
+                shipped: Band::Good,
+                with_key: Band::Warning,
+                flag_value: "250",
+            },
+            Case {
+                key: "rtt_bad_ms",
+                flag: "--rtt-bad-ms",
+                set_key: |q| q.rtt_bad_ms = Some(500.0),
+                band_of: |b, v| b.rtt(v),
+                measurement: 600.0,
+                shipped: Band::Warning,
+                with_key: Band::Bad,
+                flag_value: "700",
+            },
+        ];
+
+        let bare = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+
+        for c in &cases {
+            // Anti-vacuity: the measurement must start where the case claims,
+            // or a "moved" band below would be the fixture and not the wiring.
+            let shipped = bare.quality_bands(&crate::config::Config::default());
+            assert_eq!(
+                (c.band_of)(&shipped, c.measurement),
+                c.shipped,
+                "{}: {} must start in {:?}, or this case proves nothing",
+                c.key,
+                c.measurement,
+                c.shipped
+            );
+
+            let mut tuned = crate::config::Config::default();
+            (c.set_key)(&mut tuned.quality);
+            assert_eq!(
+                (c.band_of)(&bare.quality_bands(&tuned), c.measurement),
+                c.with_key,
+                "[quality] {} must reach the bands the views paint from",
+                c.key
+            );
+
+            let flagged = Cli::parse_from_args(["sipnab", "-I", "x.pcap", c.flag, c.flag_value]);
+            assert_eq!(
+                (c.band_of)(&flagged.quality_bands(&tuned), c.measurement),
+                c.shipped,
+                "{} must outrank the [quality] {} it shadows",
+                c.flag,
+                c.key
+            );
+
+            // A file that moves one boundary must not disturb the other seven.
+            let moved_one = bare.quality_bands(&tuned);
+            let shipped_set = QualityBands::default();
+            let differences = [
+                moved_one.jitter_warn_ms != shipped_set.jitter_warn_ms,
+                moved_one.jitter_bad_ms != shipped_set.jitter_bad_ms,
+                moved_one.loss_warn_pct != shipped_set.loss_warn_pct,
+                moved_one.loss_bad_pct != shipped_set.loss_bad_pct,
+                moved_one.mos_warn != shipped_set.mos_warn,
+                moved_one.mos_bad != shipped_set.mos_bad,
+                moved_one.rtt_warn_ms != shipped_set.rtt_warn_ms,
+                moved_one.rtt_bad_ms != shipped_set.rtt_bad_ms,
+            ]
+            .iter()
+            .filter(|d| **d)
+            .count();
+            assert_eq!(
+                differences, 1,
+                "setting {} alone must leave the other seven at their defaults",
+                c.key
+            );
+        }
     }
 }

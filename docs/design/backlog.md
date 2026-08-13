@@ -292,7 +292,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:1905`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1905)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:1940`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1940)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -460,7 +460,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2051`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2051),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2088`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2088),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and

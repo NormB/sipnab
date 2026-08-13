@@ -43,20 +43,27 @@ pub enum StreamHealth {
 ///
 /// Orphaned streams win outright; otherwise the loss percentage
 /// ([`RtpStream::loss_percent`] — lost over received plus lost) and the jitter
-/// are compared against the module's warning/bad thresholds, the worse
-/// classification winning. Pure.
+/// are compared against the SESSION's bands, the worse classification
+/// winning. Pure.
+///
+/// The bands arrive as an argument rather than as a `::default()` built here.
+/// A view that constructs its own band set is a view that can disagree with
+/// the pane beside it, and the operator's `[quality]` settings would reach
+/// only the call sites that remembered to ask.
 ///
 /// The loss arithmetic itself is deliberately NOT here. A `loss_percent` free
 /// function used to sit in this file calling itself the single source of truth
 /// while two byte-identical copies lived elsewhere; it is now
 /// [`RtpStream::loss_percent`], on the type that owns the two counters, where
 /// `src/output/` can reach it without a `pub(in crate::tui)` carve-out.
-pub fn classify_stream(stream: &RtpStream) -> StreamHealth {
+pub fn classify_stream(
+    stream: &RtpStream,
+    bands: &crate::rtp::bands::QualityBands,
+) -> StreamHealth {
     if stream.orphaned {
         return StreamHealth::Orphaned;
     }
     let loss_pct = stream.loss_percent();
-    let bands = crate::rtp::bands::QualityBands::default();
     // Worst of the two dimensions wins: a stream with clean jitter and 6% loss
     // is not a healthy stream.
     use crate::rtp::bands::Band;
@@ -157,6 +164,8 @@ pub struct StreamListDisplay<'a> {
     /// Stream keys in display order, derived once per tick by
     /// `App::sync_caches` — the render must not re-filter the store.
     pub displayed: &'a [crate::rtp::stream::StreamKey],
+    /// The session's quality bands, resolved once at startup.
+    pub quality_bands: &'a crate::rtp::bands::QualityBands,
 }
 
 // Same "derived once per tick" property as the call list (thread-local so
@@ -296,6 +305,7 @@ pub fn render_stream_list(
         resolver,
         name_mode,
         displayed,
+        quality_bands,
     } = *display;
     // The entire area is used for the table (no title line)
     let table_area = area;
@@ -353,7 +363,7 @@ pub fn render_stream_list(
 
     // Format only the visible rows
     for stream in visible_streams {
-        let health = classify_stream(stream);
+        let health = classify_stream(stream, quality_bands);
         let loss_pct = stream.loss_percent();
 
         let duration = {
@@ -635,6 +645,9 @@ mod tests {
             payload_offset: 12,
         };
         let stream = RtpStream::new(key, &hdr, chrono::Utc::now());
-        assert_eq!(classify_stream(&stream), StreamHealth::Good);
+        assert_eq!(
+            classify_stream(&stream, &crate::rtp::bands::QualityBands::default()),
+            StreamHealth::Good
+        );
     }
 }

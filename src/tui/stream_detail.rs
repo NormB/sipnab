@@ -29,6 +29,10 @@ pub struct StreamDetailDisplay<'a> {
     /// the default: the resolver then falls back to what the far end reported
     /// and, failing that, says the figure was assumed.
     pub declared_one_way_delay_ms: Option<f64>,
+    /// The session's quality bands, resolved once at startup from `[quality]`
+    /// and the flags. This view holds six banded figures, which is why it was
+    /// the worst offender when each one carried its own numbers.
+    pub quality_bands: &'a crate::rtp::bands::QualityBands,
 }
 
 /// Render a full-screen scrollable detail view for a single RTP stream.
@@ -61,6 +65,7 @@ pub fn render_stream_detail(
         resolver,
         name_mode,
         declared_one_way_delay_ms,
+        quality_bands,
     } = *display;
     let stream = match store.get(key) {
         Some(s) => s,
@@ -148,7 +153,7 @@ pub fn render_stream_detail(
         }
     };
 
-    let mos_band = MosBand::of(mos);
+    let mos_band = MosBand::of(mos, quality_bands);
     let mos_style = Style::default()
         .fg(mos_band.color(theme))
         .add_modifier(Modifier::BOLD);
@@ -162,10 +167,13 @@ pub fn render_stream_detail(
         Span::raw("    Jitter: "),
         Span::styled(
             format!("{:.1}ms", stream.jitter),
-            jitter_style(stream.jitter, theme),
+            jitter_style(stream.jitter, theme, quality_bands),
         ),
         Span::raw("    Loss: "),
-        Span::styled(format!("{loss_pct:.2}%"), loss_style(loss_pct, theme)),
+        Span::styled(
+            format!("{loss_pct:.2}%"),
+            loss_style(loss_pct, theme, quality_bands),
+        ),
         Span::raw("    RTT: "),
         // The third number of the triage row, beside the two it belongs with.
         // It used to appear only inside the XR block far below, which most
@@ -184,7 +192,7 @@ pub fn render_stream_detail(
                         crate::rtp::rtcp::RttSource::SenderReportEcho => "~",
                     }
                 ),
-                rtt_style(ms, theme),
+                rtt_style(ms, theme, quality_bands),
             ),
             // Not "0ms", and not blank. An operator scanning this row has to
             // be able to tell "nobody measured it" from "it is fine".
@@ -280,7 +288,7 @@ pub fn render_stream_detail(
         let mos_start = mos_values.len().saturating_sub(spark_budget);
         for &m in &mos_values[mos_start..] {
             let ch = mos_to_block(m);
-            let color = MosBand::of(m).color(theme);
+            let color = MosBand::of(m, quality_bands).color(theme);
             mos_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
         mos_spans.push(Span::styled(
@@ -308,7 +316,7 @@ pub fn render_stream_detail(
             // consolidated the other six copies read straight past it, and this
             // pane called a 25 ms interval a warning in its trend row and good
             // in the table three lines under it.
-            let color = band_color(crate::rtp::bands::QualityBands::default().jitter(j), theme);
+            let color = band_color(quality_bands.jitter(j), theme);
             jitter_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
         jitter_spans.push(Span::styled(
@@ -338,16 +346,16 @@ pub fn render_stream_detail(
                 Span::raw(format!("  +{offset:<8}s ")),
                 Span::styled(
                     format!("{:<10.1}ms ", qi.jitter_ms),
-                    jitter_style(qi.jitter_ms, theme),
+                    jitter_style(qi.jitter_ms, theme, quality_bands),
                 ),
                 Span::styled(
                     format!("{:<10.2}% ", qi.loss_pct),
-                    loss_style(qi.loss_pct, theme),
+                    loss_style(qi.loss_pct, theme, quality_bands),
                 ),
                 Span::raw(format!("{:<10} ", qi.packets)),
                 Span::styled(
                     format!("{qi_mos:.1}"),
-                    Style::default().fg(MosBand::of(qi_mos).color(theme)),
+                    Style::default().fg(MosBand::of(qi_mos, quality_bands).color(theme)),
                 ),
             ]));
         }
@@ -573,8 +581,7 @@ impl MosBand {
     /// cannot. Only the OUTER boundaries are shared, so this stays finer
     /// without being able to disagree — a score this view calls Good can never
     /// be one the dashboard colours yellow.
-    fn of(mos: f64) -> Self {
-        let bands = crate::rtp::bands::QualityBands::default();
+    fn of(mos: f64, bands: &crate::rtp::bands::QualityBands) -> Self {
         if mos >= bands.mos_warn {
             Self::Good
         } else if mos >= (bands.mos_warn + bands.mos_bad) / 2.0 {
@@ -636,13 +643,10 @@ fn band_color(band: crate::rtp::bands::Band, theme: &Theme) -> ratatui::style::C
 }
 
 /// Style for a jitter value, using the shared bands. Pure.
-fn jitter_style(jitter_ms: f64, theme: &Theme) -> Style {
+fn jitter_style(jitter_ms: f64, theme: &Theme, bands: &crate::rtp::bands::QualityBands) -> Style {
     // Was 20/50 here against the stream list's 30/50, which is the pair that
     // made one stream green in the list and yellow in its own detail view.
-    Style::default().fg(band_color(
-        crate::rtp::bands::QualityBands::default().jitter(jitter_ms),
-        theme,
-    ))
+    Style::default().fg(band_color(bands.jitter(jitter_ms), theme))
 }
 
 /// Style for a round-trip figure, using the shared bands. Pure.
@@ -650,22 +654,16 @@ fn jitter_style(jitter_ms: f64, theme: &Theme) -> Style {
 /// Takes a measured value only. There is no style for "not measured" because
 /// that is not a quality verdict — the caller renders it as `n/a` in the muted
 /// colour, which is neither green nor red on purpose.
-fn rtt_style(rtt_ms: f64, theme: &Theme) -> Style {
-    Style::default().fg(band_color(
-        crate::rtp::bands::QualityBands::default().rtt(rtt_ms),
-        theme,
-    ))
+fn rtt_style(rtt_ms: f64, theme: &Theme, bands: &crate::rtp::bands::QualityBands) -> Style {
+    Style::default().fg(band_color(bands.rtt(rtt_ms), theme))
 }
 
 /// Style for a packet-loss percentage, using the shared bands. Pure.
 ///
 /// The sixth and last copy: 0.5/2.0 here against the stream list's 1.0/5.0.
 /// The gate that found it is `no_view_carries_its_own_quality_bands`.
-fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
-    Style::default().fg(band_color(
-        crate::rtp::bands::QualityBands::default().loss(loss_pct),
-        theme,
-    ))
+fn loss_style(loss_pct: f64, theme: &Theme, bands: &crate::rtp::bands::QualityBands) -> Style {
+    Style::default().fg(band_color(bands.loss(loss_pct), theme))
 }
 
 /// Map a MOS value (1.0–4.5) to a Unicode block character.
@@ -765,22 +763,25 @@ mod tests {
     fn jitter_style_follows_the_shared_bands() {
         let theme = Theme::default();
         let b = crate::rtp::bands::QualityBands::default();
-        assert_eq!(jitter_style(0.0, &theme).fg, Some(theme.good));
+        assert_eq!(jitter_style(0.0, &theme, &b).fg, Some(theme.good));
         assert_eq!(
-            jitter_style(b.jitter_warn_ms - 0.1, &theme).fg,
+            jitter_style(b.jitter_warn_ms - 0.1, &theme, &b).fg,
             Some(theme.good)
         );
         assert_eq!(
-            jitter_style(b.jitter_warn_ms, &theme).fg,
+            jitter_style(b.jitter_warn_ms, &theme, &b).fg,
             Some(theme.warning)
         );
         assert_eq!(
-            jitter_style(b.jitter_bad_ms - 0.1, &theme).fg,
+            jitter_style(b.jitter_bad_ms - 0.1, &theme, &b).fg,
             Some(theme.warning)
         );
-        assert_eq!(jitter_style(b.jitter_bad_ms, &theme).fg, Some(theme.bad));
         assert_eq!(
-            jitter_style(b.jitter_bad_ms * 3.0, &theme).fg,
+            jitter_style(b.jitter_bad_ms, &theme, &b).fg,
+            Some(theme.bad)
+        );
+        assert_eq!(
+            jitter_style(b.jitter_bad_ms * 3.0, &theme, &b).fg,
             Some(theme.bad)
         );
     }
@@ -794,7 +795,7 @@ mod tests {
         let theme = Theme::default();
         let b = crate::rtp::bands::QualityBands::default();
         for jitter in [0.0, 25.0, 29.9, 30.0, 49.9, 50.0, 100.0] {
-            let detail_good = jitter_style(jitter, &theme).fg == Some(theme.good);
+            let detail_good = jitter_style(jitter, &theme, &b).fg == Some(theme.good);
             let list_good = b.jitter(jitter) == crate::rtp::bands::Band::Good;
             assert_eq!(
                 detail_good, list_good,
@@ -802,7 +803,7 @@ mod tests {
             );
         }
         for loss in [0.0, 0.4, 0.8, 1.0, 4.9, 5.0, 90.0] {
-            let detail_good = loss_style(loss, &theme).fg == Some(theme.good);
+            let detail_good = loss_style(loss, &theme, &b).fg == Some(theme.good);
             let list_good = b.loss(loss) == crate::rtp::bands::Band::Good;
             assert_eq!(
                 detail_good, list_good,
@@ -816,14 +817,17 @@ mod tests {
     fn loss_style_follows_the_shared_bands() {
         let theme = Theme::default();
         let b = crate::rtp::bands::QualityBands::default();
-        assert_eq!(loss_style(0.0, &theme).fg, Some(theme.good));
+        assert_eq!(loss_style(0.0, &theme, &b).fg, Some(theme.good));
         assert_eq!(
-            loss_style(b.loss_warn_pct - 0.01, &theme).fg,
+            loss_style(b.loss_warn_pct - 0.01, &theme, &b).fg,
             Some(theme.good)
         );
-        assert_eq!(loss_style(b.loss_warn_pct, &theme).fg, Some(theme.warning));
-        assert_eq!(loss_style(b.loss_bad_pct, &theme).fg, Some(theme.bad));
-        assert_eq!(loss_style(90.0, &theme).fg, Some(theme.bad));
+        assert_eq!(
+            loss_style(b.loss_warn_pct, &theme, &b).fg,
+            Some(theme.warning)
+        );
+        assert_eq!(loss_style(b.loss_bad_pct, &theme, &b).fg, Some(theme.bad));
+        assert_eq!(loss_style(90.0, &theme, &b).fg, Some(theme.bad));
     }
 
     /// A section header carries the bold accented title span followed by
@@ -958,6 +962,7 @@ mod tests {
                     0,
                     &StreamDetailDisplay {
                         declared_one_way_delay_ms: None,
+                        quality_bands: &crate::rtp::bands::QualityBands::default(),
                         theme: &theme,
                         resolver: &crate::names::NameResolver::new(),
                         name_mode: crate::names::NameMode::Off,
@@ -1002,6 +1007,7 @@ mod tests {
                     0,
                     &StreamDetailDisplay {
                         declared_one_way_delay_ms: None,
+                        quality_bands: &crate::rtp::bands::QualityBands::default(),
                         theme: &theme,
                         resolver: &crate::names::NameResolver::new(),
                         name_mode: crate::names::NameMode::Off,
@@ -1293,6 +1299,7 @@ mod tests {
                     0,
                     &StreamDetailDisplay {
                         declared_one_way_delay_ms: None,
+                        quality_bands: &crate::rtp::bands::QualityBands::default(),
                         theme: &theme,
                         resolver: &crate::names::NameResolver::new(),
                         name_mode: crate::names::NameMode::Off,
@@ -1375,6 +1382,7 @@ mod tests {
         store.insert_for_test(stream);
 
         let theme = Theme::default();
+        let b = crate::rtp::bands::QualityBands::default();
         let backend = TestBackend::new(100, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -1388,6 +1396,7 @@ mod tests {
                     0,
                     &StreamDetailDisplay {
                         declared_one_way_delay_ms: None,
+                        quality_bands: &crate::rtp::bands::QualityBands::default(),
                         theme: &theme,
                         resolver: &crate::names::NameResolver::new(),
                         name_mode: crate::names::NameMode::Off,
@@ -1423,7 +1432,7 @@ mod tests {
             "no {glyph:?} sparkline glyph was rendered for a {sample_ms} ms \
              history — the row moved and this test now proves nothing"
         );
-        let expected = jitter_style(sample_ms, &theme)
+        let expected = jitter_style(sample_ms, &theme, &b)
             .fg
             .expect("jitter_style always sets a foreground");
         for (i, got) in glyph_colors.iter().enumerate() {

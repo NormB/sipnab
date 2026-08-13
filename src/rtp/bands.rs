@@ -143,7 +143,37 @@ impl QualityBands {
     /// an unreachable middle: nothing would ever render as a warning, and the
     /// operator who wrote it would see green until the value was already bad.
     /// Refused at startup rather than silently reordered.
+    ///
+    /// A boundary that is not a finite, non-negative number is refused first,
+    /// and for a worse reason: every comparison against `NaN` is false, so a
+    /// single `nan` here paints the whole column green and reports a healthy
+    /// network. Zero itself is allowed — `loss_warn_pct = 0.0` means "any loss
+    /// at all is worth a colour", which is a real setting on a strict network.
+    ///
+    /// This is the ONLY validator for a band set. `[quality]` keys are checked
+    /// through it rather than beside it, because a warn boundary can arrive
+    /// from the config file while its bad boundary arrives from the command
+    /// line, and a second validator over either half alone would pass the pair
+    /// that is actually unreachable.
     pub fn validate(&self) -> Result<(), String> {
+        for (key, value) in [
+            ("jitter_warn_ms", self.jitter_warn_ms),
+            ("jitter_bad_ms", self.jitter_bad_ms),
+            ("loss_warn_pct", self.loss_warn_pct),
+            ("loss_bad_pct", self.loss_bad_pct),
+            ("mos_warn", self.mos_warn),
+            ("mos_bad", self.mos_bad),
+            ("rtt_warn_ms", self.rtt_warn_ms),
+            ("rtt_bad_ms", self.rtt_bad_ms),
+        ] {
+            if !(value.is_finite() && value >= 0.0) {
+                return Err(format!(
+                    "{key} ({value}) must be a finite number of 0 or more; a \
+                     boundary that is not compares false against every \
+                     measurement and paints the column green"
+                ));
+            }
+        }
         if self.jitter_warn_ms > self.jitter_bad_ms {
             return Err(format!(
                 "jitter_warn_ms ({}) is above jitter_bad_ms ({}), so no jitter \
@@ -244,5 +274,53 @@ mod tests {
             QualityBands::default().validate().is_ok(),
             "the shipped defaults must be a valid band set"
         );
+    }
+
+    /// A boundary that is not a finite, non-negative number is refused, by name.
+    ///
+    /// `NaN` is the dangerous one and the reason this check runs first: every
+    /// comparison against it is false, so `jitter(1000.0)` would return `Good`
+    /// and the column would report a healthy network in the middle of an
+    /// outage. Refusing an unreachable middle while accepting `nan` would
+    /// guard the harmless case and pass the harmful one.
+    #[test]
+    fn a_boundary_that_is_not_a_finite_non_negative_number_is_refused() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let b = QualityBands {
+                jitter_warn_ms: bad,
+                ..Default::default()
+            };
+            let Err(err) = b.validate() else {
+                panic!("{bad} must be refused as a boundary");
+            };
+            assert!(
+                err.contains("jitter_warn_ms"),
+                "the error must name the key: {err}"
+            );
+        }
+
+        // The proof that this refuses the right thing: NaN really does paint
+        // an outage green, which is what the check is for.
+        let blind = QualityBands {
+            jitter_warn_ms: f64::NAN,
+            jitter_bad_ms: f64::NAN,
+            ..Default::default()
+        };
+        assert_eq!(
+            blind.jitter(10_000.0),
+            Band::Good,
+            "if NaN did not read as Good, this validation would be arbitrary"
+        );
+    }
+
+    /// Zero is a setting, not a mistake: "any loss at all is worth a colour".
+    #[test]
+    fn a_zero_boundary_is_accepted_and_bands_from_zero() {
+        let b = QualityBands {
+            loss_warn_pct: 0.0,
+            ..Default::default()
+        };
+        assert!(b.validate().is_ok(), "0.0 is a legitimate strict boundary");
+        assert_eq!(b.loss(0.0), Band::Warning);
     }
 }

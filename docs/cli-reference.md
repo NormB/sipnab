@@ -653,6 +653,55 @@ flag has a config key under `[diagnosis]`, and the flag wins.
 - `sipnab -N -I b2bua.pcap --json-dialogs --duration-asymmetry-pct 1 --duration-asymmetry-secs 0.2 --no-cli-print` — the strict form of the same audit, for hunting a leg that drops media a fraction early
 
 
+## Quality colour bands
+
+Where the quality colour column turns yellow, and where it turns red. This is
+a different question from the diagnosis thresholds above: those decide whether
+a working call counts as broken, while these decide only what catches an
+operator's eye during triage. Every flag has a config key under `[quality]`,
+and the flag wins.
+
+The shipped figures suit a general-purpose trunk, and the right values belong
+to the network you are watching — 30 ms of jitter is already a fault on a LAN
+PBX, and 1 percent loss is unremarkable on an international one. A column
+tuned for neither is wrong in both directions.
+
+These bands paint the TUI. A `-N` run prints the measurements themselves
+rather than a colour, so sipnab validates a band set on a non-interactive run
+and then never consults it.
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--jitter-warn-ms` | `<MS>` | `30.0` | Jitter at or above which the column turns yellow. Config: `[quality] jitter_warn_ms` |
+| `--jitter-bad-ms` | `<MS>` | `50.0` | Jitter at or above which the column turns red. Config: `[quality] jitter_bad_ms` |
+| `--loss-warn-pct` | `<PCT>` | `1.0` | Loss at or above which the column turns yellow. `0` is a legitimate setting: it means any loss at all is worth a colour. Config: `[quality] loss_warn_pct` |
+| `--loss-bad-pct` | `<PCT>` | `5.0` | Loss at or above which the column turns red. Config: `[quality] loss_bad_pct` |
+| `--mos-warn` | `<MOS>` | `4.0` | MOS below which the column turns yellow. MOS bands run downward, so this must sit at or above `--mos-bad`. Config: `[quality] mos_warn` |
+| `--mos-bad` | `<MOS>` | `3.0` | MOS below which the column turns red. Config: `[quality] mos_bad` |
+| `--rtt-warn-ms` | `<MS>` | `300.0` | Round trip at or above which the column turns yellow. The default is ITU-T G.114's 150 ms one-way guidance doubled. Config: `[quality] rtt_warn_ms` |
+| `--rtt-bad-ms` | `<MS>` | `800.0` | Round trip at or above which the column turns red. The default is G.114's 400 ms one-way figure doubled. Config: `[quality] rtt_bad_ms` |
+
+sipnab refuses a warn boundary that sits above its matching bad boundary,
+rather than silently reordering the pair, because that pair leaves an
+unreachable middle: nothing would ever render as a warning, and whoever wrote
+it would see green until the value was already bad. A boundary that is not a
+finite, non-negative number fails for a worse reason — every comparison
+against `NaN` is false, so a single one would paint the whole column green and
+report a healthy network in the middle of an outage.
+
+**Examples**
+
+- `sipnab -I lan-pbx.pcap --jitter-warn-ms 10 --jitter-bad-ms 20` — a LAN PBX, where the shipped 30 ms boundary hides a fault worth chasing
+- `sipnab -I wifi-softphone.pcap --jitter-warn-ms 60 --jitter-bad-ms 120` — the other direction, for a Wi-Fi leg where the defaults paint every healthy call yellow
+- `sipnab -I intl-trunk.pcap --loss-warn-pct 2 --loss-bad-pct 8` — an international trunk, where 1 percent loss is a Tuesday rather than an incident
+- `sipnab -I strict-lan.pcap --loss-warn-pct 0 --loss-bad-pct 1` — the strict form: any loss at all takes a colour
+- `sipnab -I sat-trunk.pcap --rtt-warn-ms 700 --rtt-bad-ms 1200` — a satellite path, where G.114's terrestrial figures report every call as bad
+- `sipnab -I campus.pcap --rtt-warn-ms 50 --rtt-bad-ms 150` — a campus network, where a 300 ms round trip is already an escalation
+- `sipnab -I hd-codec.pcap --mos-warn 4.3 --mos-bad 3.8` — a wideband codec deployment, where 4.0 is not the good score it is on narrowband
+- `sipnab -I gsm-gateway.pcap --mos-warn 3.6 --mos-bad 2.8` — a low-bitrate gateway, where nothing ever clears the shipped 4.0 warning
+- `sipnab -I triage.pcap --jitter-warn-ms 15 --loss-warn-pct 0.5 --rtt-warn-ms 120 --mos-warn 4.2` — one strict pass across all four columns, for a first look at a network you have not seen before
+
+
 ## Security
 
 | Flag | Value | Default | Description |

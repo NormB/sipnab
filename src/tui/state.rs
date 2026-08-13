@@ -247,6 +247,14 @@ pub struct TuiOptions {
     /// `[media] one_way_delay_ms`. `None` means undeclared, which the MOS
     /// resolver treats differently from "declared the default".
     pub declared_one_way_delay_ms: Option<f64>,
+    /// The band set every view in this session colours from, resolved once by
+    /// [`crate::cli::Cli::quality_bands`] from the flags over `[quality]`.
+    ///
+    /// Carried through here rather than read at each view for the reason the
+    /// type exists at all: one source of truth. A view that resolved its own
+    /// would be a view that could disagree, which is the defect
+    /// [`crate::rtp::bands::QualityBands`] ended.
+    pub quality_bands: crate::rtp::bands::QualityBands,
     /// Capture files this session reads, which the save dialog must never
     /// write over (see [`crate::capture::output_guard`]).
     pub protected_inputs: crate::capture::output_guard::ProtectedInputs,
@@ -311,6 +319,7 @@ impl TuiOptions {
         }
         app.set_from_to_mode(self.from_to_mode);
         app.declared_one_way_delay_ms = self.declared_one_way_delay_ms;
+        app.quality_bands = self.quality_bands;
         app.set_protected_inputs(self.protected_inputs);
         app.set_bpf_filter(self.bpf_filter);
         app.set_resolver(self.name_setup.resolver);

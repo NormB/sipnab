@@ -24,6 +24,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[path = "support/source_scan.rs"]
+mod source_scan;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -365,20 +368,21 @@ fn no_view_carries_its_own_quality_bands() {
         let text = std::fs::read_to_string(view).unwrap_or_else(|e| panic!("read {rel}: {e}"));
         let all: Vec<&str> = text.lines().collect();
         let bare = |l: &str| l.split("//").next().unwrap_or("").to_string();
-        // Everything from `#[cfg(test)]` on is assertions ABOUT the bands, not
-        // bands. Its first run reported two `assert!(loss_pct > 30.0)` lines,
-        // and a gate that cries about its own tests gets skimmed.
+        // Everything from the test MODULE on is assertions ABOUT the bands,
+        // not bands. Its first run reported two `assert!(loss_pct > 30.0)`
+        // lines, and a gate that cries about its own tests gets skimmed.
         //
-        // Cut at the ATTRIBUTE, not at the text. Splitting the raw file on
-        // `#[cfg(test)]` cut `dashboard.rs` at line 17, where a COMMENT says
-        // the words — so the gate read seventeen lines of that view and passed
-        // on the 350 it never opened, one of which bands jitter. A scanner
-        // silenced by prose about itself reports clean for the same reason it
-        // reports nothing.
-        let end = all
-            .iter()
-            .position(|l| bare(l).trim_start().starts_with("#[cfg(test)]"))
-            .unwrap_or(all.len());
+        // Cut with the shared rule, not at the text and not at the attribute.
+        // Splitting the raw file on `#[cfg(test)]` cut `dashboard.rs` at the
+        // line where a COMMENT says the words. Cutting at the first ATTRIBUTE
+        // fixed that view and still stopped these dead, because the attribute
+        // also guards test-only `use`s and `thread_local!` call counters near
+        // the top of a file: 22 lines of `controllers/mod.rs` (of 677
+        // production), 163 of `stream_list.rs` (of 450), 249 of
+        // `call_flow/prepare.rs` (of 1317), 418 of `call_list.rs` (of 1367).
+        // A scanner silenced by its own scaffolding reports clean for the same
+        // reason it reports nothing.
+        let end = source_scan::production_source(&text).lines().count();
         let lines = &all[..end];
         severity_seen += lines
             .iter()

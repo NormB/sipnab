@@ -203,6 +203,50 @@ itself.
 |---|---|---|---|
 | `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; with neither, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured |
 
+### [quality]
+
+Where the quality colour column turns yellow, and where it turns red. A number
+here decides only what catches an operator's eye during triage, which is a
+different question from `[diagnosis]`: that one decides whether a call that is
+working counts as broken. The defaults suit a general-purpose trunk, and the
+right values belong to the network you are watching -- 30 ms of jitter is
+already a fault on a LAN PBX, and 1 percent loss is unremarkable on an
+international one.
+
+Unset keys keep the shipped default, so a file may move one boundary without
+restating the other seven. Every value must be a finite number of zero or more,
+and each warn boundary must leave a reachable middle against its matching bad
+boundary. A set that does not fails validation and names the key. Zero itself
+counts as a real setting: `loss_warn_pct = 0.0` means any loss at all is worth
+a colour.
+
+These bands paint the TUI. A `-N` run prints the measurements themselves rather
+than a colour, so sipnab validates a band set on a non-interactive run and then
+never consults it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `jitter_warn_ms` | float | `30.0` | Jitter at or above which the column turns yellow, in milliseconds. `--jitter-warn-ms` overrides it |
+| `jitter_bad_ms` | float | `50.0` | Jitter at or above which the column turns red, in milliseconds. `--jitter-bad-ms` overrides it |
+| `loss_warn_pct` | float | `1.0` | Loss at or above which the column turns yellow, in percent. `--loss-warn-pct` overrides it |
+| `loss_bad_pct` | float | `5.0` | Loss at or above which the column turns red, in percent. `--loss-bad-pct` overrides it |
+| `mos_warn` | float | `4.0` | MOS below which the column turns yellow. MOS bands run downward, so this must sit at or above `mos_bad`. `--mos-warn` overrides it |
+| `mos_bad` | float | `3.0` | MOS below which the column turns red. `--mos-bad` overrides it |
+| `rtt_warn_ms` | float | `300.0` | Round trip at or above which the column turns yellow, in milliseconds. The default is ITU-T G.114's 150 ms one-way guidance doubled. `--rtt-warn-ms` overrides it |
+| `rtt_bad_ms` | float | `800.0` | Round trip at or above which the column turns red, in milliseconds. The default is G.114's 400 ms one-way figure doubled. `--rtt-bad-ms` overrides it |
+
+```toml
+[quality]
+jitter_warn_ms = 10.0
+jitter_bad_ms = 20.0
+loss_warn_pct = 0.5
+loss_bad_pct = 2.0
+mos_warn = 4.2
+mos_bad = 3.5
+rtt_warn_ms = 120.0
+rtt_bad_ms = 300.0
+```
+
 ### [limits]
 
 Resource limits to prevent unbounded memory growth.

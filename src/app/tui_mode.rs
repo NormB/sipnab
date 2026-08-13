@@ -479,6 +479,11 @@ pub fn run_tui_mode(
             // scope. `None` propagates as "undeclared", which the MOS resolver
             // distinguishes from "declared the default".
             declared_one_way_delay_ms: cli.declared_one_way_delay_ms(&config),
+            // Resolved ONCE, here, and handed to every view through the App.
+            // `bootstrap::load_config` has already refused an unreachable
+            // middle, so this value is known good by the time a pane paints
+            // with it.
+            quality_bands: cli.quality_bands(&config),
             // The save dialog writes wherever the analyst types, and the
             // capture on screen is the obvious name to reach for.
             protected_inputs: crate::capture::output_guard::ProtectedInputs::new(
