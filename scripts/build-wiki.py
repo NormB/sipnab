@@ -26,7 +26,7 @@ from pathlib import Path
 # being run as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib_markdown import sub_outside_code  # noqa: E402
+from lib_markdown import code_link_re, sub_outside_code  # noqa: E402
 
 REPO = "NormB/sipnab"
 SITE = "https://sipnab.com"
@@ -108,17 +108,14 @@ GROUPS: list[tuple[str, list[str]]] = [
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 
-# Links into the code tree. LINK_RE only matches .md, so without this a
-# relative `../../src/pipeline.rs` link survives verbatim into the flat wiki
-# and resolves to nothing. Anchored on the top-level trees so a bare
-# `foo.txt` in prose is not mistaken for a repo path. The path after the tree
-# name is optional: a subsystem is often cited as a bare directory
-# (`../../harness`), and dev_docs_drift_test counts that as a code link too,
-# so both forms must rewrite or the bare one reaches the wiki dead.
-CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|\.vale|benches|contrib|harness|scripts|website|LICENSES"
-    r"|\.cargo|crates|docker|bench|demos|tests|fuzz|man|ops|src)(?:/[^)\s]*)?)\s*\)"
-)
+# Links into the code tree, built from `.config/code-trees.txt` -- the one
+# list the site generators, the fixer scripts/link-repo-paths.py and the Rust
+# documentation gates all read. It used to be an alternation spelled out here,
+# and pasted into the two site generators and the fixer; the copies drifted,
+# and the fixer's copy is what made `link-repo-paths.py --apply` write 33
+# links no gate had asked for. See lib_markdown.code_link_re for what the
+# pattern must still match, and why the trailing path stays optional.
+CODE_LINK_RE = code_link_re()
 
 
 def wiki_bullet(page: str) -> str:

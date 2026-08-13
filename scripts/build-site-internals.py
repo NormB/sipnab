@@ -33,7 +33,7 @@ from pathlib import Path
 # being run as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib_markdown import fence_mask, fences, sub_outside_code  # noqa: E402
+from lib_markdown import code_link_re, fence_mask, fences, sub_outside_code  # noqa: E402
 
 REPO = "NormB/sipnab"
 BLOB = f"https://github.com/{REPO}/blob/main"
@@ -187,13 +187,12 @@ DOCS_TO_SITE = {
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 
-# Links into the code tree — same trees `build-wiki.py` recognizes. LINK_RE
-# only matches `.md`, so without this a relative `../../src/pipeline.rs`
-# survives verbatim onto a site page and resolves to nothing.
-CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|\.vale|benches|contrib|harness|scripts|website|LICENSES"
-    r"|\.cargo|crates|docker|bench|demos|tests|fuzz|man|ops|src)(?:/[^)\s]*)?)\s*\)"
-)
+# Links into the code tree — same trees `build-wiki.py` recognizes, because
+# both now build the pattern from `.config/code-trees.txt` rather than each
+# keeping a pasted copy of the alternation. LINK_RE only matches `.md`, so
+# without this a relative `../../src/pipeline.rs` survives verbatim onto a site
+# page and resolves to nothing.
+CODE_LINK_RE = code_link_re()
 
 
 def blob_url(target: str) -> str:

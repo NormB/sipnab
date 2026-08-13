@@ -32,7 +32,7 @@ from pathlib import Path
 # being run as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib_markdown import sub_outside_code  # noqa: E402
+from lib_markdown import code_link_re, sub_outside_code  # noqa: E402
 
 # (docs source, site filename, expected H1, title, weight, description)
 PAGES: list[tuple[str, str, str, str, int, str]] = [
@@ -319,11 +319,10 @@ def _xlate(target: str, anchor: str) -> str:
     return "#" + ANCHORS.get(target, {}).get(anchor[1:], anchor[1:])
 
 # Links into the code tree; a relative `packaging/deb/build-deb.sh` would
-# otherwise survive verbatim onto a site page and resolve to nothing.
-CODE_LINK_RE = re.compile(
-    r"\]\(\s*((?:\.{1,2}/)*(?:\.githooks|packaging|\.config|\.github|\.vale|benches|contrib|harness|scripts|website|LICENSES"
-    r"|\.cargo|crates|docker|bench|demos|tests|fuzz|man|ops|src)(?:/[^)\s]*)?)\s*\)"
-)
+# otherwise survive verbatim onto a site page and resolve to nothing. Built
+# from `.config/code-trees.txt`, the one list every generator, the fixer and
+# the Rust gates share -- the alternation used to be pasted here.
+CODE_LINK_RE = code_link_re()
 
 
 def rewrite_link(m: re.Match) -> str:

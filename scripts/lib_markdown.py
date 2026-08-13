@@ -32,9 +32,77 @@ of this repository's gates shipped with -- reads a ``~~~`` block containing a
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Callable, Iterator, NamedTuple
 
-__all__ = ["Fence", "code_regions", "fences", "fence_mask", "sub_outside_code"]
+__all__ = [
+    "CODE_TREES_FILE",
+    "Fence",
+    "code_link_re",
+    "code_regions",
+    "code_trees",
+    "fences",
+    "fence_mask",
+    "repo_root",
+    "sub_outside_code",
+]
+
+#: The one list of top-level trees a documentation link may point into.
+CODE_TREES_FILE = ".config/code-trees.txt"
+
+
+def repo_root() -> Path:
+    """The repository this script lives in.
+
+    Derived from ``__file__``, never from a hardcoded absolute path: these
+    scripts run inside git worktrees, and a hardcoded root makes a fixer
+    invoked from a worktree edit the *other* checkout's documents.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
+def code_trees() -> tuple[str, ...]:
+    """The shared tree list, longest name first.
+
+    Same file and same grammar as ``tests/support/markdown.rs``: one tree per
+    line, blank lines and ``#`` comments ignored. Every generator here, the
+    fixer ``scripts/link-repo-paths.py`` and the Rust documentation gates all
+    read it, because the six hand-kept copies that preceded it disagreed --
+    see the file's own header for what that cost.
+
+    Longest first so the alternation built from it is stable and reads
+    unambiguously (``benches`` before ``bench``).
+    """
+    text = (repo_root() / CODE_TREES_FILE).read_text(encoding="utf-8")
+    trees = [
+        stripped
+        for line in text.splitlines()
+        if (stripped := line.split("#", 1)[0].strip())
+    ]
+    if len(trees) < 10:
+        raise SystemExit(
+            f"{CODE_TREES_FILE} yielded only {len(trees)} trees ({trees}) -- the "
+            f"list or its parser is broken, and every link rewrite built on it "
+            f"just went blind"
+        )
+    return tuple(sorted(trees, key=lambda t: (-len(t), t)))
+
+
+def code_link_re() -> re.Pattern[str]:
+    """``](…)`` targets that point into the code tree.
+
+    ``LINK_RE`` in each generator only matches ``.md``, so without this a
+    relative ``../../src/pipeline.rs`` survives verbatim into the flat wiki or
+    onto a site page and resolves to nothing. Anchored on the top-level trees
+    so a bare ``foo.txt`` in prose is not mistaken for a repo path.
+
+    The path after the tree name is optional: a subsystem is often cited as a
+    bare directory (``../../harness``), and ``dev_docs_drift_test`` counts that
+    as a code link too, so both forms must rewrite or the bare one reaches the
+    wiki dead.
+    """
+    alt = "|".join(re.escape(t) for t in code_trees())
+    return re.compile(r"\]\(\s*((?:\.{1,2}/)*(?:" + alt + r")(?:/[^)\s]*)?)\s*\)")
 
 
 class Fence(NamedTuple):

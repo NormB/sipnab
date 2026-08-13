@@ -355,46 +355,82 @@ pub fn repo_root() -> &'static Path {
     ROOT.get_or_init(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
-/// Every git-tracked top-level directory except `docs/`.
+/// The shared code-tree list, verbatim.
+///
+/// `include_str!` rather than a runtime read, so every gate built on it is
+/// recompiled when the list changes and none of them can be looking at a stale
+/// copy.
+pub const CODE_TREES_FILE: &str = ".config/code-trees.txt";
+const CODE_TREES_TEXT: &str = include_str!("../../.config/code-trees.txt");
+
+/// Parse the shared list: one tree per line, `#` comments and blanks ignored.
+///
+/// Shared with `scripts/lib_markdown.py`, which parses the same file the same
+/// way. Two parsers, one grammar — deliberately the simplest grammar that can
+/// carry the comments explaining why the list exists.
+pub fn parse_code_trees(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every top-level repository directory a link may point into, except `docs/`.
 ///
 /// This is the set a link target can start with and still be a link into the
-/// code rather than into the documentation. It is read off `git ls-files`
-/// rather than typed out, because the typed-out version diverged: the test
-/// listed thirteen names, `build-wiki.py` listed `bench`, `build-site-pages.py`
-/// listed `packaging`, `build-site-internals.py` listed neither, and none of
-/// the four knew about `docker/` or `website/`. A link into an unlisted tree is
-/// not classified as a code link at all, so a citation to a file that does not
+/// code rather than into the documentation. It lives in
+/// [`CODE_TREES_FILE`] because it had been typed out five times and the copies
+/// diverged: this helper derived it from `git ls-files`, `build-wiki.py` listed
+/// `bench`, `build-site-pages.py` listed `packaging`,
+/// `build-site-internals.py` listed neither, and `scripts/link-repo-paths.py`
+/// — the fixer a failing gate tells you to run — knew none of it and rewrote 33
+/// paths the gates never asked for. A link into an unlisted tree is not
+/// classified as a code link at all, so a citation to a file that does not
 /// exist passes every gate and ships.
+///
+/// The file is no longer derived from `git ls-files` at read time;
+/// `code_tree_list_matches_the_repository` holds the two equal instead, so
+/// adding a top-level directory fails loudly rather than silently changing
+/// what every documentation gate believes.
 ///
 /// `docs/` is excluded deliberately: a link into it is a document link, and the
 /// generators must not rewrite it into a blob URL.
 pub fn code_trees() -> &'static BTreeSet<String> {
     static TREES: OnceLock<BTreeSet<String>> = OnceLock::new();
     TREES.get_or_init(|| {
-        let out = Command::new("git")
-            .args(["ls-files", "-z"])
-            .current_dir(repo_root())
-            .output()
-            .expect("git ls-files — the code-tree set is derived from it, not hardcoded");
-        assert!(
-            out.status.success(),
-            "git ls-files failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let set: BTreeSet<String> = String::from_utf8_lossy(&out.stdout)
-            .split('\0')
-            .filter_map(|p| p.split_once('/'))
-            .map(|(top, _)| top.to_string())
-            .filter(|top| top != "docs")
-            .collect();
+        let set = parse_code_trees(CODE_TREES_TEXT);
         assert!(
             set.len() >= 10,
-            "derived only {} top-level code trees ({set:?}) — the derivation is \
-             broken and every code-link gate built on it just went blind",
+            "read only {} top-level code trees from {CODE_TREES_FILE} ({set:?}) — \
+             the list or its parser is broken and every code-link gate built on \
+             it just went blind",
             set.len()
         );
         set
     })
+}
+
+/// The top-level directories git actually tracks, `docs/` excluded.
+///
+/// The truth [`code_trees`] is checked against, not a second source of it.
+pub fn tracked_top_level_dirs() -> BTreeSet<String> {
+    let out = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(repo_root())
+        .output()
+        .expect("git ls-files — the code-tree list is checked against it");
+    assert!(
+        out.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter_map(|p| p.split_once('/'))
+        .map(|(top, _)| top.to_string())
+        .filter(|top| top != "docs")
+        .collect()
 }
 
 /// Whether a link target points into the code tree.

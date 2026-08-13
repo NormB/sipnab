@@ -268,6 +268,14 @@ the [`classify_packet()`](../../src/pipeline.rs) router
   with no fence awareness and would corrupt the diagram.
 - **A new page must be registered** in `PAGES` *and* `GROUPS` in
   `scripts/build-wiki.py`, or it never publishes to the wiki.
+- **A new top-level directory must be added to `.config/code-trees.txt`.** That
+  file is the one list of trees a documentation link may point into: the wiki
+  and site generators build their link-rewriting pattern from it, the fixer
+  `scripts/link-repo-paths.py` decides from it what it may link under
+  `docs/internals/`, and the Rust gates read it with `include_str!`.
+  `code_tree_list_matches_the_repository` fails until the file names the new
+  directory, because a tree missing from it is one whose links nothing
+  rewrites and nothing checks.
 
 **The coupling rule: a change to linked code updates the page that links it, in
 the same pull request.** The pre-commit hook's gate 8 prints a `REVIEW` list

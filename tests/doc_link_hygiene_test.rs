@@ -22,6 +22,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "support/markdown.rs"]
+mod markdown;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -135,35 +138,19 @@ fn repo_paths_in_docs_are_clickable() {
                 let p = &c[1];
                 scanned += 1;
                 // Under internals/, only paths build-wiki.py can rewrite may be
-                // linked -- its CODE_LINK_RE lists source trees and nothing
-                // else. Demanding a link for `Cargo.toml` there would demand
-                // one the linker must not produce, because it would reach the
-                // wiki relative and resolve to nothing.
-                let wiki_trees = [
-                    ".githooks",
-                    "packaging",
-                    ".config",
-                    ".github",
-                    ".vale",
-                    "benches",
-                    "contrib",
-                    "harness",
-                    "scripts",
-                    "website",
-                    "LICENSES",
-                    ".cargo",
-                    "crates",
-                    "docker",
-                    "bench",
-                    "demos",
-                    "tests",
-                    "fuzz",
-                    "man",
-                    "ops",
-                    "src",
-                ];
+                // linked -- its CODE_LINK_RE covers the source trees and
+                // nothing else. Demanding a link for `Cargo.toml` there would
+                // demand one the linker must not produce, because it would
+                // reach the wiki relative and resolve to nothing.
+                //
+                // The tree list is NOT restated here. It is
+                // `.config/code-trees.txt`, the same file build-wiki.py and
+                // scripts/link-repo-paths.py read, because this array and the
+                // fixer's own list disagreed: the fixer wanted 33 links in
+                // docs/internals/ that this exemption exists to forbid.
+                let wiki_trees = markdown::code_trees();
                 let in_internals = f.to_string_lossy().contains("/internals/");
-                let rewritable = p.split('/').next().is_some_and(|t| wiki_trees.contains(&t));
+                let rewritable = p.split('/').next().is_some_and(|t| wiki_trees.contains(t));
                 if in_internals && !rewritable {
                     continue;
                 }
@@ -187,13 +174,15 @@ fn repo_paths_in_docs_are_clickable() {
     assert!(
         offenders.is_empty(),
         "tracked repo paths shown as bare code spans ({}):\n  {}\n\n\
-         Run scripts/link-repo-paths.py --apply. Binaries need /raw/ (a /blob/ \
-         URL for a .pcapng renders a page saying it cannot be shown), \
-         directories need /tree/, and the URL must be absolute: docs/ is \
-         published to the website AND the GitHub wiki, where a relative hop out \
-         of the docs tree resolves to nothing -- EXCEPT under docs/internals/, \
-         which is wiki-only and whose links scripts/build-wiki.py rewrites, so \
-         those stay relative.",
+         Run scripts/link-repo-paths.py --apply, which produces exactly what \
+         this gate demands and nothing else. Binaries need /raw/ (a /blob/ URL \
+         for a .pcapng renders a page saying it cannot be shown), and the URL \
+         must be absolute: docs/ is published to the website AND the GitHub \
+         wiki, where a relative hop out of the docs tree resolves to nothing -- \
+         EXCEPT under docs/internals/, which is wiki-only and whose links \
+         scripts/build-wiki.py rewrites, so those stay relative. Only a TRACKED \
+         FILE is demanded: a directory is never reported here, so the fixer \
+         does not link one either.",
         offenders.len(),
         offenders.join("\n  ")
     );

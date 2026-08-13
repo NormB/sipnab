@@ -47,6 +47,27 @@ behaviour honestly; the behaviour is what changed.
 - **`search_by_time` carries `next_cursor`** (and `capture_identity`), so
   `truncated: true` is no longer a dead end. Paging a busy window no longer
   means re-cutting it into shorter ones.
+
+### Fixed
+
+- **The documentation gate and its fixer now derive from one list.**
+  `repo_paths_in_docs_are_clickable` tells a failing contributor to run
+  `scripts/link-repo-paths.py --apply`, and running it damaged the docs: the
+  fixer wrote 33 links the gate had never asked for, including branch-pinned
+  `blob/main/` URLs into `docs/internals/`, where the gate demands the exact
+  opposite and `linked_code_uses_relative_paths` rejects them. The tree list
+  behind that rule had been written out six times — in the Rust helper, in the
+  gate, once per site generator, and again in the fixer — and the copies
+  disagreed. It now lives in `.config/code-trees.txt`: the Rust gates read it
+  with `include_str!`, the three generators build their link-rewriting pattern
+  from it, and the fixer applies the same `docs/internals/` exemption the gate
+  applies, emitting a relative link there and an absolute one everywhere else.
+  A dry run against a clean tree now reports zero changes rather than 33.
+  `code_tree_list_matches_the_repository` holds the file equal to the
+  repository's tracked top-level directories, and
+  `no_script_respells_the_code_tree_alternation` fails if anyone pastes the
+  list back into a script.
+
 ## [0.5.98] - 2026-08-13
 
 An export can no longer destroy a capture, and the last detector with

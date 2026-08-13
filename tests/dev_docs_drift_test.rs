@@ -113,80 +113,207 @@ fn code_links(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The three generators rewrite code links into blob URLs using their own
-/// inline copy of the tree list, and all three had drifted apart:
-/// `build-wiki.py` knew `bench`, `build-site-pages.py` knew `packaging`,
-/// `build-site-internals.py` knew neither, and none knew `docker` or
-/// `website`. A tree missing from a generator's alternation is a link that
-/// silently publishes as a relative path into a wiki or a site that has no such
-/// file.
+/// The shared code-tree list still describes this repository.
 ///
-/// They cannot import the Rust helper, so this asserts their regexes still
-/// spell the derived set. Adding a top-level directory to the repository now
-/// fails here until all three learn about it.
+/// `.config/code-trees.txt` is the one list; nothing derives it from `git
+/// ls-files` at read time any more, because four consumers need it and two of
+/// them are Python scripts that would each have re-derived it differently.
+/// Deriving it once, here, and failing on a mismatch is what keeps a new
+/// top-level directory from silently changing what every documentation gate
+/// believes a code link is.
+///
+/// `docs/` is excluded on both sides: a link into it is a document link.
+#[test]
+fn code_tree_list_matches_the_repository() {
+    let listed = markdown::code_trees();
+    let tracked = markdown::tracked_top_level_dirs();
+    let missing: Vec<&String> = tracked.iter().filter(|d| !listed.contains(*d)).collect();
+    let stale: Vec<&String> = listed.iter().filter(|d| !tracked.contains(*d)).collect();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "{} disagrees with the repository's tracked top-level directories: \
+         missing {missing:?}, stale {stale:?}. Every documentation gate and \
+         both link fixers read that file, so a directory absent from it is a \
+         tree whose links nothing rewrites and nothing checks.",
+        markdown::CODE_TREES_FILE
+    );
+}
+
+/// Every consumer of the code-tree list behaves as the list says.
+///
+/// The list was spelled out six times — once in `tests/support/markdown.rs`,
+/// once as a Rust array in `doc_link_hygiene_test`, once per generator as a
+/// regex alternation, and once as a `ROOTS` tuple in
+/// `scripts/link-repo-paths.py` — and the copies drifted:
+/// `build-wiki.py` knew `bench`, `build-site-pages.py` knew `packaging`,
+/// `build-site-internals.py` knew neither, none knew `docker` or `website`,
+/// and the fixer knew none of the four. A tree missing from a generator's
+/// alternation is a link that silently publishes as a relative path into a
+/// wiki or a site that has no such file; a tree missing from the fixer is a
+/// link the gate demands and the fixer cannot write.
+///
+/// This asserts the BEHAVIOUR, not the spelling. An earlier version read the
+/// alternation back out of each script's source, which is a proxy: it says
+/// what the file contains, not what the compiled pattern matches. Each
+/// generator's live `CODE_LINK_RE` is probed against every tree in the list,
+/// in both the `tree/path` and bare-`tree` forms the generators must rewrite,
+/// and against a name that is not a tree at all.
 #[test]
 fn generators_agree_on_the_code_tree_set() {
-    let derived = markdown::code_trees();
-    // Concatenate the adjacent string literals of the CODE_LINK_RE assignment
-    // the way Python does, then read the alternation out of the resulting
-    // pattern. Stripping quote characters from the raw file instead looks
-    // simpler and is wrong: the first draft of this test also stripped the `r`
-    // raw-string prefix with a blanket replace and reported `crates` as
-    // `cates`, `src` as `sc` — a gate whose own extraction is a proxy.
-    let literal = regex::Regex::new(r#"r?"([^"]*)""#).expect("literal regex");
-    let alt = regex::Regex::new(r"\(\?:((?:[A-Za-z0-9_.\\]+\|)+[A-Za-z0-9_.\\]+)\)")
-        .expect("alternation regex");
+    let probe = registries(
+        "{'trees': sorted(lm.code_trees()), \
+          'fixer': sorted(l.WIKI_TREES), \
+          'fixer_roots': sorted(l.ROOTS), \
+          'generators': {n: { \
+              'accepts': sorted(t for t in lm.code_trees() \
+                  if g.CODE_LINK_RE.search('](%s/x.rs)' % t) \
+                  and g.CODE_LINK_RE.search('](../../%s)' % t)), \
+              'rejects_unknown': not g.CODE_LINK_RE.search('](notatree/x.rs)'), \
+              'rejects_docs': not g.CODE_LINK_RE.search('](../design/notes.md)')} \
+            for n, g in (('build-wiki.py', w), \
+                         ('build-site-internals.py', i), \
+                         ('build-site-pages.py', p))}}",
+    );
+
+    let strings = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .expect("json array")
+            .iter()
+            .map(|s| s.as_str().expect("json string").to_string())
+            .collect()
+    };
+    let expected: Vec<String> = markdown::code_trees().iter().cloned().collect();
+
+    // The Rust gates parse the file with `include_str!`, the scripts read it
+    // at run time. Two parsers, one grammar: prove they agree before trusting
+    // anything below, or a comment-stripping difference makes every other
+    // assertion here compare a set with itself.
+    assert_eq!(
+        strings(&probe["trees"]),
+        expected,
+        "{} parses differently in Python and in Rust",
+        markdown::CODE_TREES_FILE
+    );
+
     let mut wrong = Vec::new();
-    for script in [
-        "scripts/build-wiki.py",
-        "scripts/build-site-pages.py",
-        "scripts/build-site-internals.py",
-    ] {
-        let src = read(script);
-        let Some(start) = src.find("CODE_LINK_RE = re.compile(") else {
-            wrong.push(format!("{script}: no CODE_LINK_RE assignment"));
-            continue;
-        };
-        let block = &src[start..];
-        let end = block.find("\n)").unwrap_or(block.len());
-        let pattern: String = literal
-            .captures_iter(&block[..end])
-            .map(|c| c[1].to_string())
-            .collect();
-        let Some(c) = alt.captures(&pattern) else {
+    for (name, g) in probe["generators"]
+        .as_object()
+        .expect("generator probe map")
+        .iter()
+    {
+        let accepts = strings(&g["accepts"]);
+        if accepts != expected {
+            let missing: Vec<&String> = expected.iter().filter(|t| !accepts.contains(t)).collect();
             wrong.push(format!(
-                "{script}: no CODE_LINK_RE tree alternation found — the rewrite \
-                 is not doing what this gate believes it does"
+                "{name}: CODE_LINK_RE does not rewrite links into {missing:?}"
             ));
-            continue;
-        };
-        let listed: std::collections::BTreeSet<String> = c[1]
-            .split('|')
-            .map(|t| t.replace("\\.", ".").trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
-        // A parse that yields a couple of names means the extraction broke,
-        // and every "missing" below would be an artifact of that rather than a
-        // real divergence.
-        assert!(
-            listed.len() >= 10,
-            "{script}: extracted only {} tree names from CODE_LINK_RE ({listed:?}) — \
-             the extraction is broken, not the generator",
-            listed.len()
-        );
-        let missing: Vec<&String> = derived.iter().filter(|d| !listed.contains(*d)).collect();
-        let extra: Vec<&String> = listed.iter().filter(|l| !derived.contains(*l)).collect();
-        if !missing.is_empty() || !extra.is_empty() {
+        }
+        if g["rejects_unknown"] != serde_json::Value::Bool(true) {
             wrong.push(format!(
-                "{script}: CODE_LINK_RE missing {missing:?}, has stale {extra:?}"
+                "{name}: CODE_LINK_RE rewrites `](notatree/x.rs)`, so a bare \
+                 filename in prose is being taken for a repo path"
+            ));
+        }
+        if g["rejects_docs"] != serde_json::Value::Bool(true) {
+            wrong.push(format!(
+                "{name}: CODE_LINK_RE rewrites a link into docs/, which is a \
+                 document link and must map to a wiki or site page instead"
             ));
         }
     }
+
+    // The fixer's two lists are different questions and both matter. WIKI_TREES
+    // is the shared list, and decides what it may link under docs/internals/ —
+    // it must equal the list exactly, or it writes a link the wiki cannot
+    // rewrite (too wide) or refuses one the gate demands (too narrow). ROOTS is
+    // what a code span may be anchored on, which includes `docs` precisely
+    // because `docs/install.md` IS a tracked file the gate wants linked.
+    if strings(&probe["fixer"]) != expected {
+        wrong.push(format!(
+            "scripts/link-repo-paths.py: WIKI_TREES is {:?}, the list is {expected:?}",
+            strings(&probe["fixer"])
+        ));
+    }
+    let roots = strings(&probe["fixer_roots"]);
+    for t in expected.iter().chain(std::iter::once(&"docs".to_string())) {
+        if !roots.contains(t) {
+            wrong.push(format!(
+                "scripts/link-repo-paths.py: ROOTS omits `{t}`, so a code span \
+                 naming a file there is one the gate demands and the fixer \
+                 cannot write"
+            ));
+        }
+    }
+
     assert!(
         wrong.is_empty(),
-        "generator code-tree lists disagree with the repository's actual \
-         top-level directories:\n  {}",
+        "consumers of {} disagree with it:\n  {}",
+        markdown::CODE_TREES_FILE,
         wrong.join("\n  ")
+    );
+}
+
+/// Nobody has pasted the tree list back into a script.
+///
+/// The behaviour probe above catches a re-hardcoded copy only once it has
+/// already drifted. This catches the paste itself, in the exact shape the
+/// three generators shipped for months: `a|b|c` spelled out in a regex
+/// literal. Adjacent tree names joined by `|` appear nowhere else in this
+/// repository, so the pattern is specific to the mistake.
+#[test]
+fn no_script_respells_the_code_tree_alternation() {
+    // Both spellings a Python regex literal uses: bare, and with the leading
+    // dot escaped (`\.githooks`).
+    // A set, not a Vec: for a tree with no dot the two spellings are the same
+    // string, and the duplicate reported one paste four times.
+    let variants: std::collections::BTreeSet<String> = markdown::code_trees()
+        .iter()
+        .flat_map(|t| [t.clone(), t.replace('.', "\\.")])
+        .collect();
+    let mut offenders = std::collections::BTreeSet::new();
+    let mut scanned = 0usize;
+    let mut stack = vec![repo().join("scripts"), repo().join("tests")];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("read_dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let ext = p.extension().and_then(|s| s.to_str());
+            if ext != Some("py") && ext != Some("rs") {
+                continue;
+            }
+            scanned += 1;
+            let src = std::fs::read_to_string(&p).expect("read source");
+            // Anchored on each `|` rather than testing every ordered pair of
+            // names against the whole file: the pair sweep is 676 substring
+            // searches per source and took 37 seconds across the tree.
+            // `|` is one byte, so the split is always on a char boundary.
+            for (idx, _) in src.match_indices('|') {
+                let (before, after) = (&src[..idx], &src[idx + 1..]);
+                let a = variants.iter().find(|v| before.ends_with(v.as_str()));
+                let b = variants.iter().find(|v| after.starts_with(v.as_str()));
+                if let (Some(a), Some(b)) = (a, b) {
+                    offenders.insert(format!(
+                        "{}: spells `{a}|{b}` — build the pattern from {} instead",
+                        p.strip_prefix(repo()).expect("under repo").display(),
+                        markdown::CODE_TREES_FILE
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned > 20,
+        "scanned only {scanned} sources — the walk broke, so this gate is \
+         checking nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the code-tree alternation is spelled out again ({}):\n  {}",
+        offenders.len(),
+        offenders.iter().cloned().collect::<Vec<_>>().join("\n  ")
     );
 }
 
@@ -503,13 +630,18 @@ fn linked_code_uses_relative_paths() {
     );
 }
 
-/// Run a snippet of Python against the generator registries and parse its JSON.
+/// Run a snippet of Python against the generators and parse its JSON.
 ///
-/// The registries are imported, not read as text. Every gate below used to
-/// grep the generator source, which made "the string appears twice in the file"
-/// the proxy for "the page is registered" — and a commented-out entry
+/// Bound names: `w` build-wiki, `i` build-site-internals, `p` build-site-pages,
+/// `l` link-repo-paths (the fixer), `lm` lib_markdown (the shared library).
+///
+/// They are imported, not read as text. Every gate below used to grep the
+/// generator source, which made "the string appears twice in the file" the
+/// proxy for "the page is registered" — and a commented-out entry
 /// (`# "internals/threading.md",`), the single most likely way a nav entry
-/// disappears, satisfies the count while registering nothing.
+/// disappears, satisfies the count while registering nothing. Importing also
+/// means a probe sees the pattern the script actually compiled, not the
+/// characters its source happens to contain.
 fn registries(expr: &str) -> serde_json::Value {
     let script = format!(
         "import importlib.util as u, json\n\
@@ -519,6 +651,8 @@ fn registries(expr: &str) -> serde_json::Value {
          w = load('scripts/build-wiki.py', 'w')\n\
          i = load('scripts/build-site-internals.py', 'i')\n\
          p = load('scripts/build-site-pages.py', 'p')\n\
+         l = load('scripts/link-repo-paths.py', 'l')\n\
+         lm = load('scripts/lib_markdown.py', 'lm')\n\
          print(json.dumps({expr}))"
     );
     let out = std::process::Command::new("python3")
