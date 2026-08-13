@@ -961,8 +961,8 @@ Both transcripts below are real output from sipnab 0.5.95, from the script in
 node in — which is what proxy mode looks like, not what a lost call looks like:
 
 ```text
-[proxy] sipnab 0.5.96 node=proxy-1
-[pbx] sipnab 0.5.96 node=pbx-2
+[proxy] sipnab 0.5.97 node=proxy-1
+[pbx] sipnab 0.5.97 node=pbx-2
 [proxy] 0 leg(s) correlated to proxied-call-synth@192.0.2.101
   (nothing correlated: a call that stayed in proxy mode keeps its
    Call-ID, so ask the other nodes for the SAME id.)
@@ -973,7 +973,7 @@ node in — which is what proxy mode looks like, not what a lost call looks like
 from a 3 ms gap and a shared endpoint — no identifier crossed the box:
 
 ```text
-[sbc] sipnab 0.5.96 node=sbc-edge-1
+[sbc] sipnab 0.5.97 node=sbc-edge-1
 [sbc] 1 leg(s) correlated to b2bua-leg-synth@203.0.113.101:5060
   b2bua-caller-synth@203.0.113.1
       via timing_heuristic [GUESS] score 50, gap 3ms
@@ -1194,9 +1194,9 @@ python3 contrib/mcp/trace-call.py \
 ```
 
 ```text
-[sbc] sipnab 0.5.96 node=sbc-edge-1
-[proxy] sipnab 0.5.96 node=proxy-1
-[pbx] sipnab 0.5.96 node=pbx-1
+[sbc] sipnab 0.5.97 node=sbc-edge-1
+[proxy] sipnab 0.5.97 node=proxy-1
+[pbx] sipnab 0.5.97 node=pbx-1
 [sbc] 1 leg(s) correlated to b2bua-leg-synth@203.0.113.101:5060
   b2bua-caller-synth@203.0.113.1
       via timing_heuristic [GUESS] score 50, gap 3ms
