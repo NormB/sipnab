@@ -8,6 +8,80 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.97] - 2026-08-13
+
+Thresholds became settings, and MOS stopped guessing on calls that carried the
+answer all along.
+
+### Added
+
+- **The quality colour bands are yours.** Eight `[quality]` keys and eight
+  matching flags — `jitter_warn_ms`, `jitter_bad_ms`, `loss_warn_pct`,
+  `loss_bad_pct`, `mos_warn`, `mos_bad`, `rtt_warn_ms`, `rtt_bad_ms` — set
+  where the colour column turns yellow and where it turns red. The shipped
+  figures suit a general-purpose trunk, and 30 ms of jitter is already a fault
+  on a LAN PBX while 1 percent loss is unremarkable on an international one, so
+  a column tuned for neither was wrong in both directions. sipnab validates the
+  RESOLVED set, after the file and the flags merge, because a warn boundary can
+  arrive from one and its matching bad boundary from the other. A boundary that
+  is not a finite, non-negative number fails first and for a worse reason:
+  every comparison against `NaN` is false, so one would paint the whole column
+  green in the middle of an outage.
+
+- **Six caps that truncated an answer or refused a file now move.**
+  `[limits] max_lost_sequences` (the Packet Loss Map and the burst/gap analysis
+  covered only the tail of a long lossy call), `max_groups` and
+  `max_grouped_messages` (`--group-by` could not finish on a big capture),
+  `max_metadata_file_bytes`, `max_gunzip_bytes`, and `mcp_max_body_bytes` (an
+  agent could not read a whole `INVITE` with a long SDP). The last three are
+  memory-exhaustion guards: their defaults do not move, and the reference now
+  states what raising each one exposes.
+
+- **Every MCP parameter is answerable where a reader meets it.** The tool
+  reference states, for every parameter of every tool, what it is, what values
+  are legal, what happens if you omit it, and what comes back. Every JSON
+  sample was recaptured from a live server; several had drifted enough to break
+  a client written from them.
+
+### Changed
+
+- **BREAKING: detection flags refuse in the default mode instead of warning.**
+  `--kill-scanner` and its neighbours were accepted in the interactive mode and
+  armed nothing, silently — indistinguishable, from the operator's side, from a
+  detector that ran and found nothing. They now exit 2 naming the flag, which
+  is the requirement `--fail2ban` already carried. A run that relied on the
+  warning will now stop.
+
+- **BREAKING: `--problems`, `--slow-setup` and `--short-calls` read your
+  configuration.** They expanded from fixed strings carrying `pdd > 32.0`,
+  `rtp.loss > 2.0` and `duration < 5.0` — none of which any operator could
+  reach. They now come from the effective diagnosis thresholds, quality bands
+  and fraud settings, so tuning `[diagnosis]` to an SLA moves the filter with
+  it. `slow-setup` and the post-dial-delay term of `problems` now read the SAME
+  threshold; under the old pair a call could be slow enough for sipnab to
+  report and not slow enough for `--problems` to select. Expect a different set
+  of dialogs from an unchanged command.
+
+### Fixed
+
+- **MOS was assumed on 97 percent of streams that carried the evidence.**
+  A round trip derived from a receiver report's sender-report echo now feeds
+  the delay term, ranked below a figure the far end reported because it is
+  weaker evidence. Measured over a 6635-stream corpus: 2212 streams moved off
+  the assumed baseline, and of the 22 sitting past [ITU-T
+  G.114](https://www.itu.int/rec/T-REC-G.114)'s knee, 20 lose more than a full
+  MOS point — the worst reading 4.36 before and 1.00 after. Those calls were
+  being reported as excellent. Note the delay-aware score reaches the TUI only;
+  the other surfaces still assume 100 ms.
+
+- **Two gates were reading a fraction of what they claimed to check.** One
+  scanned 15 of 1237 lines and reported a fully documented metrics exposition
+  while an undocumented family was being emitted. The other kept the wrong side
+  of its split, so a single comment swept 3493 of `src/cli.rs`'s 3503 lines into
+  a corpus meant to hold only tests — and a new flag's own help text counted as
+  its own test coverage. Both now cut at the attribute rather than the text, and
+  all four related gates are proven to fail on a real violation.
+
 ## [0.5.96] - 2026-08-12
 
 Latency became a first-class number, and a documented threshold became one you
