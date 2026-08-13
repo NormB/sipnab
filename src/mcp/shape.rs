@@ -202,8 +202,20 @@ pub const DEFAULT_LIMIT: usize = 50;
 /// `[limits] mcp_max_rows`; see [`crate::cli::Cli::mcp_row_cap`].
 pub const HARD_LIMIT: usize = 1000;
 
-/// Maximum SIP body / snippet bytes returned in a single response.
-pub const MAX_BODY_BYTES: usize = 4096;
+/// DEFAULT maximum SIP body / snippet bytes returned in a single response.
+///
+/// A default, not a law, for the same reason [`HARD_LIMIT`] is one — and this
+/// was the tighter of the two: a caller could always pass `limit` to get fewer
+/// rows, while nothing it could send widened a row. An SDP body with a dozen
+/// codecs and ICE candidates passes 4 KiB, and the agent reading the clipped
+/// half cannot tell a truncated answer from a short one. Override with
+/// `--mcp-max-body-bytes` or `[limits] mcp_max_body_bytes`; see
+/// [`crate::cli::Cli::mcp_body_cap`].
+///
+/// The number itself lives on [`crate::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES`],
+/// beside the other flag defaults, so the flag and this ceiling cannot drift
+/// apart the way `HARD_LIMIT` and `DEFAULT_MCP_MAX_ROWS` already have.
+pub const DEFAULT_MAX_BODY_BYTES: usize = crate::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize;
 
 /// Truncate a string to `max_bytes` bytes (UTF-8 boundary aware), appending
 /// a marker on truncation. Used for SIP body and snippet returns.

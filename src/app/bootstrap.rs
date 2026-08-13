@@ -1043,6 +1043,17 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
             tracing::error!("--strip-secrets requires an input file (-I <file>)");
             return Some(1);
         }
+        // This command runs BEFORE main()'s ordinary config load, and it is the
+        // one that reads a whole pcapng into memory — so it is the first place
+        // the in-memory ceiling bites. Loading here (for the side effect of
+        // applying `[limits]`) keeps `max_metadata_file_bytes` one setting:
+        // without it, a ring member over the default would be strippable when
+        // the ceiling was typed on the command line and refused when the same
+        // number was written in the config file.
+        if let Err(e) = load_config(cli) {
+            tracing::error!("{}", e.message);
+            return Some(e.exit_code);
+        }
         // Resolve `-I` the way a normal run does instead of reading
         // `cli.primary_input()`, the first `-I` *argument*. `-I` is repeatable
         // and expands directories and globs, so the argument is often not a
@@ -1344,6 +1355,20 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     if let Some(v) = loaded.config.limits.keep_messages_per_idle_dialog {
         crate::sip::dialog_store::set_keep_messages_per_idle_dialog(v as usize);
     }
+
+    // Three caps that reach code no config is threaded to: streams are created
+    // by the batch runner, the TUI, every `--cores` shard and the WASM entry
+    // point, and both byte ceilings guard free functions the file loaders and
+    // the decryptor call. Declared here, once, so a value cannot be honoured on
+    // one surface and ignored on another.
+    //
+    // Resolved rather than read straight off the config, because each has a
+    // flag that must win over the file — see the resolvers on `Cli`.
+    crate::rtp::stream::set_lost_seq_log_cap(cli.lost_sequence_log_cap(&loaded.config));
+    crate::capture::pcapng_meta::set_max_metadata_file_bytes(
+        cli.metadata_file_byte_cap(&loaded.config),
+    );
+    crate::capture::pcap_reader::set_max_gunzip_bytes(cli.gunzip_byte_cap(&loaded.config));
 
     Ok(loaded)
 }

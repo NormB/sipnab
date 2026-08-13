@@ -15,18 +15,72 @@
 use std::net::IpAddr;
 use std::path::Path;
 
-/// Cap on a file we slurp entirely into memory for metadata extraction or
-/// secret stripping. Generous enough for real captures while preventing a
-/// hostile multi-GB "pcapng" from OOMing the process (`strip_secrets` holds
-/// roughly 2× the input). Streaming would lift this; until then, fail loudly.
-const MAX_METADATA_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+/// Shipped cap on a file sipnab slurps entirely into memory for metadata
+/// extraction or secret stripping. Generous enough for real captures while
+/// preventing a hostile multi-GB "pcapng" from OOMing the process
+/// (`strip_secrets` holds roughly 2× the input). Streaming would lift this;
+/// until then, fail loudly.
+///
+/// `tcpdump -C` and `dumpcap -b` rings do exceed it on a host with the RAM to
+/// spare, so it is a setting: `--max-metadata-file-bytes` or
+/// `[limits] max_metadata_file_bytes`. **What raising it exposes:** this is a
+/// memory-exhaustion guard on untrusted input, and the file is read whole
+/// before anything in it is parsed. Raising it to N lets one capture claim N
+/// bytes of this host's RAM — roughly 2N while `--strip-secrets` writes its
+/// copy — on nothing but a file size, from a file that need not be a valid
+/// pcapng at all. Raise it for captures you produced; leave it where it is for
+/// captures someone sent you.
+pub const DEFAULT_MAX_METADATA_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
+/// The ceiling this process declared, in bytes.
+///
+/// Process-global and written once at startup, like
+/// [`crate::sip::parser::set_parser_limits`] and for the same reason: the
+/// readers are free functions reached from the TUI's file-open controller, the
+/// decryptor and `--strip-secrets`, none of which is handed a config.
+static MAX_METADATA_FILE_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_MAX_METADATA_FILE_BYTES);
+
+/// Bytes of pcapng this process will read into memory at once.
+#[must_use]
+pub fn max_metadata_file_bytes() -> u64 {
+    MAX_METADATA_FILE_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Declare the in-memory pcapng ceiling for this process. Call once, at
+/// startup.
+///
+/// # Arguments
+///
+/// * `bytes` — the ceiling. `0` is treated as the shipped default; the
+///   operator-facing `0` is refused earlier, by
+///   `crate::config::LimitsConfig::validate`.
+///
+/// # Side effects
+///
+/// Stores `bytes` into a process-wide atomic (relaxed ordering), raising or
+/// lowering the guard for every later read in this process.
+pub fn set_max_metadata_file_bytes(bytes: u64) {
+    MAX_METADATA_FILE_BYTES.store(
+        if bytes == 0 {
+            DEFAULT_MAX_METADATA_FILE_BYTES
+        } else {
+            bytes
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 /// Reject a file larger than `max` before we read it into memory.
 fn ensure_within_size_cap(len: u64, max: u64) -> std::io::Result<()> {
     if len > max {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("pcapng too large to process in memory: {len} bytes (cap {max})"),
+            format!(
+                "pcapng too large to process in memory: {len} bytes (cap {max}); \
+                 raise --max-metadata-file-bytes or [limits] \
+                 max_metadata_file_bytes for a capture you trust"
+            ),
         ));
     }
     Ok(())
@@ -60,14 +114,14 @@ pub struct PcapngMetadata {
 ///
 /// # Side effects
 ///
-/// Reads the whole file into memory (bounded by `MAX_METADATA_FILE_BYTES`).
+/// Reads the whole file into memory (bounded by [`max_metadata_file_bytes`]).
 pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
     use pcap_file::pcapng::Block;
     use pcap_file::pcapng::blocks::name_resolution::Record;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     let mut meta = PcapngMetadata::default();
-    ensure_within_size_cap(std::fs::metadata(path)?.len(), MAX_METADATA_FILE_BYTES)?;
+    ensure_within_size_cap(std::fs::metadata(path)?.len(), max_metadata_file_bytes())?;
     let bytes = std::fs::read(path)?;
     // The file-open path hands us the ORIGINAL file, which may be
     // gzip-compressed (the packet loader gunzips separately); inflate so
@@ -173,13 +227,13 @@ pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
     // the same regardless of section byte order.
     const SHB_BYTES: [u8; 4] = [0x0A, 0x0D, 0x0D, 0x0A];
 
-    ensure_within_size_cap(std::fs::metadata(src)?.len(), MAX_METADATA_FILE_BYTES)?;
+    ensure_within_size_cap(std::fs::metadata(src)?.len(), max_metadata_file_bytes())?;
     let raw = std::fs::read(src)?;
     let bytes = crate::capture::pcap_reader::decompress_capture(&raw)
         .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
     // The on-disk cap above saw the compressed size; re-check what it inflated
     // to before block-walking it.
-    ensure_within_size_cap(bytes.len() as u64, MAX_METADATA_FILE_BYTES)?;
+    ensure_within_size_cap(bytes.len() as u64, max_metadata_file_bytes())?;
     let bytes: &[u8] = &bytes;
     if bytes.len() < 12 || bytes[0..4] != SHB_BYTES {
         return Err(Error::new(

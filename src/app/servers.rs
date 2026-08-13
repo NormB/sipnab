@@ -30,6 +30,11 @@ pub struct Selection {
     /// parameter for the same reason the flags above are: this struct is where
     /// per-run decisions about the servers already live.
     pub mcp_row_cap: usize,
+    /// Ceiling on body/snippet bytes in one MCP response.
+    ///
+    /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
+    /// for the same reason `mcp_row_cap` is.
+    pub mcp_body_cap: usize,
     /// Start the REST API server when `--api` is configured.
     pub api: bool,
     /// Start the MCP server when `--mcp` is configured.
@@ -312,7 +317,8 @@ pub fn start_servers(
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_max_concurrent as usize)
                 .with_rate_limit_per_peer(cli.mcp_rate_limit_per_peer)
-                .with_row_cap(selection.mcp_row_cap);
+                .with_row_cap(selection.mcp_row_cap)
+                .with_body_cap(selection.mcp_body_cap);
             let s = match cli.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
                 None => s,

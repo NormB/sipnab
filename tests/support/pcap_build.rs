@@ -181,6 +181,150 @@ pub fn write_pcap(path: &Path, frames: &[Vec<u8>]) {
     write_pcap_with_linktype(path, frames, 1);
 }
 
+/// Wrap `data` in a gzip member built from STORED (uncompressed) deflate
+/// blocks.
+///
+/// `flate2` is a main dependency, so an integration test cannot compress with
+/// it — and a checked-in `.gz` fixture would be a binary blob nobody can read
+/// a diff of. Stored blocks are the one deflate encoding short enough to emit
+/// by hand, and every gzip reader accepts them, which is all a test of the
+/// INFLATION CAP needs: the cap counts bytes coming out, not how they were
+/// packed.
+pub fn gzip_stored(data: &[u8]) -> Vec<u8> {
+    // Fixed header: magic, deflate method, no flags, no mtime, no extra
+    // flags, unknown OS.
+    let mut out = vec![0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff];
+    let mut chunks = data.chunks(0xffff).peekable();
+    if chunks.peek().is_none() {
+        // One final, empty stored block: an empty member still has to say
+        // where the stream ends.
+        out.extend_from_slice(&[0x01, 0x00, 0x00, 0xff, 0xff]);
+    }
+    while let Some(chunk) = chunks.next() {
+        let len = chunk.len() as u16;
+        out.push(u8::from(chunks.peek().is_none())); // BFINAL, BTYPE=00
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(chunk);
+    }
+    out.extend_from_slice(&crc32(data).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out
+}
+
+/// CRC-32 (IEEE, reflected) over `data`, for the gzip trailer.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            // Branchless reflected update: subtract the low bit from zero to
+            // build an all-ones or all-zeros mask.
+            crc = (crc >> 1) ^ (0xEDB8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}
+
+/// Frames for one answered call whose SDP anchors an RTP stream, followed by
+/// that stream with `losses_per_ten` of every ten sequence numbers missing.
+///
+/// An orphan RTP stream reaches no batch surface — `--json-dialogs` prints
+/// dialogs — so a capture that exercises per-stream loss retention has to
+/// carry the signalling that anchors the media to a call. The SDP offer names
+/// the caller's port and the answer the callee's, which is what links the
+/// stream to the dialog.
+pub fn sdp_call_with_lossy_rtp(call_id: &str, packets: u16, losses_per_ten: u16) -> Vec<Vec<u8>> {
+    const A: [u8; 4] = [10, 0, 0, 1];
+    const B: [u8; 4] = [10, 0, 0, 2];
+    let sdp = |ip: &str, port: u16| {
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 {ip}\r\ns=-\r\nc=IN IP4 {ip}\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        )
+    };
+    let offer = sdp("10.0.0.1", 20000);
+    let answer = sdp("10.0.0.2", 30000);
+    let via = "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKlossy\r\n";
+    let from = "From: <sip:a@10.0.0.1>;tag=t1\r\n";
+    let to = "To: <sip:b@10.0.0.2>";
+    let to_tagged = "To: <sip:b@10.0.0.2>;tag=t2\r\n";
+    let cid = format!("Call-ID: {call_id}\r\n");
+
+    let mut frames = vec![
+        udp_frame(
+            A,
+            B,
+            5060,
+            5060,
+            format!(
+                "INVITE sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to}\r\n{cid}\
+             CSeq: 1 INVITE\r\nContact: <sip:a@10.0.0.1:5060>\r\n\
+             Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{offer}",
+                offer.len()
+            )
+            .as_bytes(),
+        ),
+        udp_frame(
+            B,
+            A,
+            5060,
+            5060,
+            format!(
+                "SIP/2.0 200 OK\r\n{via}{from}{to_tagged}{cid}CSeq: 1 INVITE\r\n\
+             Contact: <sip:b@10.0.0.2:5060>\r\nContent-Type: application/sdp\r\n\
+             Content-Length: {}\r\n\r\n{answer}",
+                answer.len()
+            )
+            .as_bytes(),
+        ),
+        udp_frame(
+            A,
+            B,
+            5060,
+            5060,
+            format!(
+                "ACK sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
+             CSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
+            )
+            .as_bytes(),
+        ),
+    ];
+    for seq in 0..packets {
+        if seq % 10 < losses_per_ten {
+            continue; // the packet the capture never saw
+        }
+        let mut rtp = vec![0x80, 0x00];
+        rtp.extend_from_slice(&seq.to_be_bytes());
+        rtp.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+        rtp.extend_from_slice(&0x1122_3344u32.to_be_bytes());
+        rtp.extend_from_slice(&[0xff; 160]);
+        frames.push(udp_frame(A, B, 20000, 30000, &rtp));
+    }
+    frames.push(udp_frame(
+        A,
+        B,
+        5060,
+        5060,
+        format!(
+            "BYE sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
+         CSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
+        )
+        .as_bytes(),
+    ));
+    frames.push(udp_frame(
+        B,
+        A,
+        5060,
+        5060,
+        format!(
+            "SIP/2.0 200 OK\r\n{via}{from}{to_tagged}{cid}CSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
+        )
+        .as_bytes(),
+    ));
+    frames
+}
+
 /// Write `frames` as a little-endian pcap declaring link type `network`.
 ///
 /// The link type is the whole point for the undecodable-frame suite: a

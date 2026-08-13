@@ -1722,7 +1722,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | Phase 8.6 expansion (★) | Wraps |
 |---|---|
-| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:61`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L61) — bump interval, add `status` field |
+| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:117`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L117) — bump interval, add `status` field |
 | OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` ([`src/rtp/quality.rs:52`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L52)) |
 | `.sipnab` project file | New module `src/project.rs`; reuses existing `output::json::dialog_to_json` for report content and `audio_export` for WAV files |
 | `--open <foo.sipnab>` | New CLI dispatch path that bypasses the capture pipeline and rehydrates `DialogStore`/`StreamStore` from `report.json` |
@@ -1731,7 +1731,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Phase 8.7 surface (★) | Wraps |
 |---|---|
 | `codec_asymmetry` | Compares `RtpStream::codec` (`src/rtp/stream.rs:309 codec_from_pt`) across the two streams of a dialog |
-| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:166`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L166)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
+| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:222`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L222)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
 | `payload_asymmetry` | Compares payload types across streams; data already in `RtpStream` |
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |

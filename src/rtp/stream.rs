@@ -24,16 +24,72 @@ const QUALITY_INTERVAL_SECS: i64 = 5;
 /// Oldest-out when full.
 const MAX_QUALITY_INTERVALS: usize = 720;
 
-/// Cap on the retained `lost_sequences` log (oldest-out when full). This is
-/// the only window over which loss/no-loss is known reliably, so burst/gap
-/// analysis must not reason about a wider span (see [`BURST_WINDOW_CAP`]).
-const LOST_SEQ_LOG_CAP: usize = 1000;
+/// Shipped cap on the retained `lost_sequences` log (oldest-out when full).
+/// This is the only window over which loss/no-loss is known reliably, so
+/// burst/gap analysis must not reason about a wider span (see
+/// [`RtpStream::burst_window_cap`]).
+///
+/// One thousand losses is roughly a minute of a call losing 1 % at 50 packets
+/// a second — the tail of the call, on exactly the half-hour capture an
+/// operator escalates. Raise it with `--max-lost-sequences` or
+/// `[limits] max_lost_sequences`; see [`crate::cli::Cli::lost_sequence_log_cap`].
+pub const DEFAULT_LOST_SEQ_LOG_CAP: usize = 1000;
 
-/// Allocation ceiling for the burst/gap reconstruction bitmap. The analysis
-/// window is additionally bounded by the span the `lost_sequences` log
-/// actually covers, so it never exceeds `LOST_SEQ_LOG_CAP` losses' worth of
-/// reliable data.
-const BURST_WINDOW_CAP: usize = 10_000;
+/// Sequence numbers the burst/gap bitmap may cover per RETAINED loss.
+///
+/// The shipped pair — 1000 retained losses over a 10 000-sequence window — is
+/// one loss in ten, so the ceiling is stated as that ratio rather than as a
+/// second free-standing number. Both halves then move together when an
+/// operator raises the log cap, which is what keeps
+/// [`RtpStream::burst_gap_analysis`]'s window bounded BY the log rather than
+/// by a constant the log has outgrown.
+const BURST_WINDOW_PER_RETAINED_LOSS: usize = 10;
+
+/// Widest burst/gap window that means anything: one lap of the 16-bit RTP
+/// sequence counter. Past this a serial span repeats itself.
+const BURST_WINDOW_SEQ_SPACE: usize = u16::MAX as usize + 1;
+
+/// The retention this process declared, in losses per stream.
+///
+/// Process-global and written once at startup, the same shape as
+/// [`crate::sip::dialog_store::set_max_messages_per_dialog`] and for the same
+/// reason: streams are created on four independent paths — the batch runner,
+/// the TUI, each `--cores` shard and the WASM entry point — and a value
+/// threaded to some of them is a setting honoured on some surfaces and
+/// ignored on others.
+static LOST_SEQ_LOG_CAP: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_LOST_SEQ_LOG_CAP);
+
+/// Losses a newly created stream will retain.
+#[must_use]
+pub fn lost_seq_log_cap() -> usize {
+    LOST_SEQ_LOG_CAP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Declare the per-stream loss-log retention for this process. Call once, at
+/// startup.
+///
+/// # Arguments
+///
+/// * `cap` — lost sequence numbers each stream retains. `0` is treated as the
+///   shipped default; the operator-facing `0` is refused earlier, by
+///   `crate::config::LimitsConfig::validate`.
+///
+/// # Side effects
+///
+/// Stores `cap` into a process-wide atomic (relaxed ordering). Streams created
+/// after this call carry it; ones already created keep the value they were
+/// created under.
+pub fn set_lost_seq_log_cap(cap: usize) {
+    LOST_SEQ_LOG_CAP.store(
+        if cap == 0 {
+            DEFAULT_LOST_SEQ_LOG_CAP
+        } else {
+            cap
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 /// Nominal duration charged for a single Comfort Noise frame when its true
 /// extent is not observable (the opening/closing frame of a silence period).
@@ -225,8 +281,9 @@ pub struct RtpStream {
     pub heuristic: bool,
     /// Periodic quality snapshots for trend analysis (bounded, oldest-out).
     pub quality_intervals: QualityHistory,
-    /// Sequence numbers of lost packets, capped at `LOST_SEQ_LOG_CAP` most
-    /// recent entries (oldest-out). Used for burst/gap analysis.
+    /// Sequence numbers of lost packets, capped at
+    /// [`lost_seq_cap`](Self::lost_seq_cap) most recent entries (oldest-out).
+    /// Used for burst/gap analysis and the Packet Loss Map.
     pub lost_sequences: std::collections::VecDeque<u16>,
     /// Count of Comfort Noise (PT=13) frames received.
     pub cn_frames: u32,
@@ -237,6 +294,15 @@ pub struct RtpStream {
     pub payload_buffer: std::collections::VecDeque<(u32, Vec<u8>)>,
 
     // ── Private state for jitter/interval tracking ───────────────────
+    /// Losses this stream retains, read from the process-wide declaration
+    /// when the stream was created.
+    ///
+    /// Carried as a field rather than read from the global at each use so the
+    /// two readers — the capture-time eviction in
+    /// [`update`](Self::update) and the after-the-fact
+    /// [`burst_gap_analysis`](Self::burst_gap_analysis) — can never disagree
+    /// about how much of the call the log covers.
+    lost_seq_cap: usize,
     /// Wall-clock arrival time of the previous packet (for jitter calc).
     prev_arrival: Option<DateTime<Utc>>,
     /// RTP timestamp of the previous packet (for jitter calc).
@@ -365,6 +431,34 @@ impl RtpStream {
         (ratio > 1.15).then_some(ratio)
     }
 
+    /// Losses this stream retains, fixed when the stream was created.
+    ///
+    /// Exposed so a caller's retention decision can be asserted against a
+    /// stream it created, without feeding a lossy capture through one first —
+    /// the same reason `StreamStore::audio_capture` is readable.
+    #[must_use]
+    pub fn lost_seq_cap(&self) -> usize {
+        self.lost_seq_cap
+    }
+
+    /// Widest sequence span the burst/gap bitmap may cover for this stream.
+    ///
+    /// Derived from the retention rather than fixed, so the documented
+    /// relationship stays true when an operator raises it: the log covers at
+    /// most `lost_seq_cap` losses, and at the shipped one-loss-in-ten this is
+    /// the 10 000 sequence numbers that ratio implies. Without the derivation,
+    /// raising the log to 10 000 losses would retain ten times the history and
+    /// then analyse the same 10 000-sequence tail of it.
+    ///
+    /// Clamped to one lap of the 16-bit sequence counter, past which a serial
+    /// span repeats itself and a wider bitmap would allocate for nothing.
+    #[must_use]
+    pub fn burst_window_cap(&self) -> usize {
+        self.lost_seq_cap
+            .saturating_mul(BURST_WINDOW_PER_RETAINED_LOSS)
+            .min(BURST_WINDOW_SEQ_SPACE)
+    }
+
     /// A stream with `packet_count == 1`, zeroed jitter/loss counters, and
     /// the jitter/interval trackers primed with this packet so the next
     /// `update` produces the first jitter sample.
@@ -398,6 +492,7 @@ impl RtpStream {
             cn_frames: 0,
             silence_periods: Vec::new(),
             payload_buffer: std::collections::VecDeque::new(),
+            lost_seq_cap: lost_seq_log_cap(),
             prev_arrival: Some(timestamp),
             prev_rtp_ts: Some(header.timestamp),
             interval_start: timestamp,
@@ -448,9 +543,9 @@ impl RtpStream {
                 self.lost_packets += gap;
                 self.interval_lost += gap;
                 // Record lost sequence numbers for burst/gap analysis
-                // (per-gap and total both capped at LOST_SEQ_LOG_CAP).
-                for offset in 0..gap.min(LOST_SEQ_LOG_CAP as u64) {
-                    if self.lost_sequences.len() >= LOST_SEQ_LOG_CAP {
+                // (per-gap and total both capped at `lost_seq_cap`).
+                for offset in 0..gap.min(self.lost_seq_cap as u64) {
+                    if self.lost_sequences.len() >= self.lost_seq_cap {
                         self.lost_sequences.pop_front();
                     }
                     self.lost_sequences
@@ -574,18 +669,19 @@ impl RtpStream {
     ///
     /// The window is deliberately bounded to that retained range rather than
     /// to `last_seq` and the total packet count. The log keeps only its most
-    /// recent `LOST_SEQ_LOG_CAP` entries, so a wider window would mark
-    /// already-evicted losses as "received" and silently understate
+    /// recent [`lost_seq_cap`](Self::lost_seq_cap) entries, so a wider window
+    /// would mark already-evicted losses as "received" and silently understate
     /// burstiness once the log is full — for example, a long clean tail that
     /// advances `last_seq` far past the loss region. Anchoring at the newest
     /// retained loss keeps every loss inside the window known, so bursts are
     /// not undercounted. Allocation is additionally capped at
-    /// `BURST_WINDOW_CAP`; if the retained span is wider, the most recent
-    /// `BURST_WINDOW_CAP` sequence numbers are analyzed.
+    /// [`burst_window_cap`](Self::burst_window_cap), which is derived from the
+    /// same retention; if the retained span is wider, the most recent
+    /// `burst_window_cap()` sequence numbers are analyzed.
     ///
-    /// Note: a single gap larger than `LOST_SEQ_LOG_CAP` is itself
-    /// truncated at capture time, so an extreme lone burst remains a lower
-    /// bound; the eviction-driven undercount above is the case fixed here.
+    /// Note: a single gap larger than the retention is itself truncated at
+    /// capture time, so an extreme lone burst remains a lower bound; the
+    /// eviction-driven undercount above is the case fixed here.
     ///
     /// Returns `None` if there are no lost packets to analyze.
     pub fn burst_gap_analysis(&self) -> Option<super::quality::BurstGapAnalysis> {
@@ -605,7 +701,7 @@ impl RtpStream {
         // Reliable span [front, back], capped for allocation. When capped,
         // keep the most recent losses (anchored at `back`).
         let span = back.wrapping_sub(front) as usize + 1;
-        let window_size = span.min(BURST_WINDOW_CAP);
+        let window_size = span.min(self.burst_window_cap());
 
         // Walk ascending from (back - window_size + 1) up to and including
         // `back`. Every lost sequence in this range is still in the log, so
@@ -824,7 +920,7 @@ mod tests {
 
         // Retained log: 250 bursts of 4 consecutive losses, each separated by
         // a single received sequence — lost {1,2,3,4, 6,7,8,9, ...}. front=1,
-        // back=1249, exactly LOST_SEQ_LOG_CAP entries.
+        // back=1249, exactly `lost_seq_cap()` entries.
         stream.lost_sequences.clear();
         for g in 0..250u16 {
             let base = g * 5 + 1;
@@ -832,15 +928,15 @@ mod tests {
                 stream.lost_sequences.push_back(base + j);
             }
         }
-        assert_eq!(stream.lost_sequences.len(), LOST_SEQ_LOG_CAP);
+        assert_eq!(stream.lost_sequences.len(), stream.lost_seq_cap());
         assert_eq!(stream.lost_sequences.front().copied(), Some(1));
         assert_eq!(stream.lost_sequences.back().copied(), Some(1249));
-        stream.lost_packets = LOST_SEQ_LOG_CAP as u64;
+        stream.lost_packets = stream.lost_seq_cap() as u64;
 
-        // A long clean tail pushes last_seq past back + BURST_WINDOW_CAP, so a
-        // last_seq-anchored window of BURST_WINDOW_CAP would exclude the loss
-        // region entirely.
-        stream.last_seq = 1249 + BURST_WINDOW_CAP as u16 + 100;
+        // A long clean tail pushes last_seq past back + the burst window, so a
+        // last_seq-anchored window of that width would exclude the loss region
+        // entirely.
+        stream.last_seq = 1249 + stream.burst_window_cap() as u16 + 100;
         stream.packet_count = 20_000;
 
         let bga = stream.burst_gap_analysis().expect("losses present");
@@ -1194,6 +1290,59 @@ mod tests {
             Some(2501),
             "newest should be seq 2501"
         );
+    }
+
+    /// A raised retention keeps the whole loss region AND widens the burst/gap
+    /// window with it.
+    ///
+    /// The window is the half that is easy to leave behind: raising only the
+    /// log retains ten times the history and then analyses the same tail of
+    /// it, which reads to an operator exactly like the setting doing nothing.
+    #[test]
+    fn a_raised_retention_widens_both_the_log_and_the_burst_window() {
+        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+        // Set the field rather than the process-wide declaration: this asserts
+        // what a stream DOES with its retention, and a test that moved the
+        // global would move it for every other test in this binary too.
+        stream.lost_seq_cap = 5000;
+        assert_eq!(
+            stream.burst_window_cap(),
+            50_000,
+            "the burst window must follow the retention, not a fixed 10 000"
+        );
+
+        // One gap of 2000. At the shipped retention exactly half of it would
+        // survive; at 5000 all of it does.
+        stream.update(&make_header(2001, 2001 * 160, 0), ts(1), 160);
+        assert_eq!(stream.lost_packets, 2000);
+        assert_eq!(
+            stream.lost_sequences.len(),
+            2000,
+            "a retention of 5000 must keep all 2000 losses, not the shipped 1000"
+        );
+        assert_eq!(stream.lost_sequences.front().copied(), Some(1));
+        assert_eq!(stream.lost_sequences.back().copied(), Some(2000));
+    }
+
+    /// The burst window stops growing at one lap of the 16-bit sequence
+    /// counter, past which a serial span repeats itself and the extra bitmap
+    /// would be allocated for nothing.
+    #[test]
+    fn the_burst_window_stops_at_one_lap_of_the_sequence_counter() {
+        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+        stream.lost_seq_cap = 1_000_000;
+        assert_eq!(stream.burst_window_cap(), BURST_WINDOW_SEQ_SPACE);
+    }
+
+    /// A stream is born with the retention the process declared.
+    ///
+    /// Read through the accessor rather than the field so the wiring a
+    /// `--cores` shard or the WASM entry point relies on — neither of which
+    /// can be handed a value — is the thing asserted.
+    #[test]
+    fn a_new_stream_carries_the_declared_retention() {
+        let stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+        assert_eq!(stream.lost_seq_cap(), lost_seq_log_cap());
     }
 
     /// The loss figure is lost over received-PLUS-lost, and an empty stream

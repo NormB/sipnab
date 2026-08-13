@@ -301,7 +301,8 @@ pub enum CaptureError {
     /// Decompressing a gzip capture would exceed the in-memory safety cap.
     #[error(
         "gzip-compressed capture inflates past the {limit}-byte safety cap; \
-         decompress it manually (e.g. gunzip) and open the raw file"
+         raise --max-gunzip-bytes (or [limits] max_gunzip_bytes) for a capture \
+         you trust, or decompress it manually (e.g. gunzip) and open the raw file"
     )]
     GzipTooLarge {
         /// The inflation cap, in bytes.

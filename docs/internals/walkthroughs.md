@@ -122,7 +122,7 @@ touching the help failed two assertions in `keybinding_drift_test`.
 3. Take the store guard, project what you need into owned data, **drop the
    guard**, and only then `.await`.
 4. Bound the response with [`resolve_limit()`](../../src/mcp/shape.rs) and the
-   `MAX_BODY_BYTES` cap.
+   `DEFAULT_MAX_BODY_BYTES` cap (`--mcp-max-body-bytes` moves it).
 5. Add an end-to-end case to
    [`mcp_stdio_test`](../../tests/mcp_stdio_test.rs) and, for HTTP-visible
    tools, [`mcp_http_test`](../../tests/mcp_http_test.rs).
@@ -148,7 +148,7 @@ sequenceDiagram
     Tool->>Tool: project into owned summaries
     Tool->>DS: drop(guard)
     Note over Tool: the guard is gone — the future is Send again
-    Tool->>Shape: resolve_limit, MAX_BODY_BYTES
+    Tool->>Shape: resolve_limit, body cap
     Shape-->>Tool: bounded payload
     Tool-->>Client: CallToolResult
 ```

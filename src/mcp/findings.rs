@@ -50,8 +50,13 @@
 /// reports the original length, so a shortened finding is visibly shortened.
 pub(in crate::mcp) const MAX_SUMMARY_CHARS: usize = 500;
 
-/// Longest detail retained. Matches `shape::MAX_BODY_BYTES`, the ceiling every
-/// other body on this surface already answers to.
+/// Longest detail retained. Matches `shape::DEFAULT_MAX_BODY_BYTES`, the
+/// ceiling every other body on this surface already answers to.
+///
+/// Fixed rather than settable, unlike the read-side cap: this bounds what an
+/// agent WRITES into the operator's journal, and `--mcp-max-body-bytes` is the
+/// operator saying how much they want to READ. Widening one must not widen the
+/// other.
 pub(in crate::mcp) const MAX_DETAIL_CHARS: usize = 4096;
 
 /// How many findings one process will accept.

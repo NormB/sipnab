@@ -564,6 +564,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--tshark-filter` | `<EXPR>` | -- | Generate a tshark-compatible display filter string |
 | `--fail2ban` | -- | off | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (or `--kill-ua`) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me" |
 | `--group-by` | `<FIELD>` | -- | Group output by field (e.g., `call-id`, `from`, `method`) |
+| `--max-groups` | `<N>` | `10000` | Distinct `--group-by` keys one run retains. Past it sipnab refuses new keys and warns that the output is incomplete; `-l`/`--limit` bounds tracked dialogs and never reached this buffer. Requires `--group-by`. Config: `[limits] max_groups` |
+| `--max-grouped-messages` | `<N>` | `200000` | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory sipnab holds until the capture ends. Requires `--group-by`. Config: `[limits] max_grouped_messages` |
 | `--node-name` | `<NAME>` | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers at once tell WHICH one saw a given fact — "answered 407" is incomplete until you know where. Distinct from the capture instance, which rotates when a different capture loads; the node is the box and stays put, so a capture restart does not read as a topology change. **The default puts your hostname on the wire.** Clipped to 64 characters |
 
 **Examples**
@@ -585,6 +587,9 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -d eth0 -N --match OPTIONS --after 5 --show-empty --proto-number --payload-limit 256` — inspect OPTIONS keepalives with 5 messages of trailing context, empty bodies shown, and display capped at 256 payload bytes
 - `sudo sipnab -d eth0 --from-to-mode host-port --wireshark` — watch the live TUI with host:port From/To columns and hand the capture to Wireshark with a matching display filter
 - `sipnab -I capture.pcap --from-to-mode user-host-port` — browse an existing capture in the TUI with full user@host:port From/To columns
+- `sipnab -N -I busy-day.pcap --group-by call-id --max-groups 250000 --no-cli-print` — group a capture holding more calls than the shipped 10000-key cap, instead of taking the first ten thousand and a warning naming how many keys sipnab turned away
+- `sipnab -N -I busy-day.pcap --group-by from --max-grouped-messages 2000000 --json` — regroup a large capture by caller with room for every message, keeping the output one valid JSON object per line
+- `sipnab -N -I untrusted.pcap --group-by call-id --max-groups 500 --max-grouped-messages 5000 --no-cli-print` — group a capture from outside your network under a tight pair of caps, so an attacker-chosen Call-ID cannot buy more memory than you allowed
 - `sipnab -N -I capture.pcap --tshark-filter 'sip.Method == "INVITE"'` — print a tshark-compatible display filter for the INVITE traffic in a capture. sipnab hands the expression to tshark's `-Y` verbatim, so it takes WIRESHARK display-filter syntax rather than sipnab's `--filter` DSL: `sip.Method`, not `method`. Quote the whole expression in single quotes so the inner double quotes survive the shell
 
 
@@ -623,12 +628,15 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 |------|-------|---------|-------------|
 | `--rtp-interval` | `<SECS>` | `1` | **Accepted and ignored.** Periodic RTP statistics reporting is not implemented, so no interval report appears. sipnab warns when you pass a non-default value, and reports stream statistics once, at end of capture |
 | `--max-streams` | `<N>` | `50000` | Maximum number of RTP streams to track simultaneously |
+| `--max-lost-sequences` | `<N>` | `1000` | Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. The default is about a minute of a call losing 1 % at 50 packets a second, so on a half-hour call the map shows the tail and marks itself truncated. The burst/gap window widens with it, and each retained loss costs two bytes per stream. Config: `[limits] max_lost_sequences` |
 | `--quality-threshold` | `<MOS>` | `3.0` | MOS quality threshold for alerts (1.0-5.0 scale) |
 
 **Examples**
 
 - `sudo sipnab -d eth0 --rtp-interval 5 --quality-threshold 3.5 --max-streams 10000` — monitor live RTP with MOS alerts below 3.5. sipnab accepts `--rtp-interval 5`, ignores it, and says so: expect no 5-second reports, only the end-of-capture statistics
 - `sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000` — batch-analyse RTP streams with a raised stream cap. Again `--rtp-interval 2` changes nothing; the statistics arrive once, when the capture ends
+- `sipnab -N -I long-call.pcap --max-lost-sequences 100000 --json-dialogs --no-cli-print` — keep every loss from a half-hour call that an operator escalated, so the Packet Loss Map covers the whole call and the burst count is the real one rather than the tail's
+- `sudo sipnab -d eth0 --max-lost-sequences 200` — watch a busy trunk on a small box, holding a fifth of the shipped loss history per stream; the map still shows where loss is landing right now and marks itself truncated
 
 
 ## Diagnosis thresholds
@@ -884,6 +892,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--mcp-max-concurrent` | `<N>` | `100` | Maximum tool calls the MCP server runs at once (`0` = unlimited). sipnab refuses a call that cannot take a slot immediately, with a retry-shortly error, rather than queueing it — an unbounded backlog behind the cap is the exhaustion the cap prevents. The default mirrors `--api-max-conn` and bounds a flooding client without impeding an agent's ordinary parallel calls. Applies to both stdio and HTTP servers, though a network-exposed HTTP server is the case it matters for. Feature: `mcp` |
 | `--one-way-delay` | `<MS>` | -- | One-way network path delay, in milliseconds — the single MOS input a passive tap cannot measure directly. Declared here it beats an RTCP-reported round trip, which an unauthenticated packet can move, and that in turn beats the round trip sipnab derives from a sender-report echo carried in a receiver report; with none of the three, sipnab assumes 100 ms and says so. Config: `[media] one_way_delay_ms` |
 | `--mcp-max-rows` | `<N>` | `1000` | Maximum rows in one list-style MCP response. The consumer decides the right value: a small-context agent wants fewer, a batch client wants more. Config: `[limits] mcp_max_rows`. Do not mistake this for `-l`/`--limit`, which bounds dialogs tracked over the run |
+| `--mcp-max-body-bytes` | `<N>` | `4096` | Maximum bytes of SIP body or matched snippet in one MCP response. `--mcp-max-rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. An SDP body with a dozen codecs and ICE candidates passes the default, and the agent reading the clipped half cannot tell a truncated answer from a short one. Config: `[limits] mcp_max_body_bytes` |
 | `--mcp-rate-limit-per-peer` | `<N>` | `100` | Maximum tool calls one peer may make per second (`0` = unlimited). The other half of `--mcp-max-concurrent`: that caps calls *in flight*, this caps their *arrival rate*, and without it an agent that stays under the concurrency cap while looping as fast as sipnab answers has no bound at all. A call over the cap gets the same retry-shortly error, never a queue slot. A peer is the source IP over HTTP (the address, not the socket, so reconnecting mints no fresh allowance) and the pipe itself over stdio. Shares its per-peer accounting with `--hep-rate-limit-per-peer`. Feature: `mcp` |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
 | `--mcp-file-root` | `<DIR>` | -- | Directory the MCP file tools (`export_capture`, `export_audio`, `list_captures`) may read and write. Without it those tools refuse to run. They take a bare FILENAME, never a path — an agent cannot escape this directory. Feature: `mcp` |
@@ -921,6 +930,8 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sipnab -N -I lan.pcap --one-way-delay 5` — a LAN capture, where assuming 100 ms understates the score; the declared figure also beats any round trip the far end reports or sipnab derives from RTCP, since no packet on the wire can rewrite a config value
 - `sipnab -N -I capture.pcap --mcp --mcp-max-rows 50` — cap every list-style MCP response at fifty rows, for an agent whose context window a thousand-row page would swamp; a caller asking for more gets fifty
 - `sipnab -N -I capture.pcap --mcp --mcp-max-rows 5000` — raise the ceiling above the 1000 default for a batch client that pipes whole pages to a file, where the round trips cost more than the bytes
+- `sipnab -N -I capture.pcap --mcp --mcp-max-body-bytes 65536` — let an agent read a whole `INVITE` with a long SDP body rather than the first 4096 bytes of it, on a capture whose bodies are what the investigation is about
+- `sipnab -N -I capture.pcap --mcp --mcp-max-rows 20 --mcp-max-body-bytes 512` — a small-context agent: few rows, and each one short, so a page of hits fits the window it has to reason in
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-rate-limit-per-peer 20` — a network-facing MCP server where any one client may make twenty tool calls a second; sipnab answers the twenty-first that second with a retry-shortly error instead of serving it
 - `sipnab -N -I capture.pcap --mcp --mcp-max-concurrent 8 --mcp-rate-limit-per-peer 0` — bound how many calls run at once but put no cap on the arrival rate (`0` = unlimited), for a scripted client that sweeps a capture as fast as it can
 - `sipnab -N -I capture.pcap --tls-key /etc/sipnab/tls-rsa.key --keylog /etc/sipnab/keys.log --allow-coredump` — decrypt TLS 1.2 RSA-key-exchange SIP from a pcap using an RSA private key, with core dumps left enabled
@@ -952,6 +963,8 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions |
 | `--lint-max-per-rule` | `<N>` | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. Needs `--lint`. Config: `[limits] lint_max_per_rule` |
 | `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`) |
+| `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |
+| `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. libpcap inflates the packet stream of a `-I capture.pcap.gz` run, and this does not bound that. The documented alternative — gunzip the file and open the plain one — costs the disk the compression was saving. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
 
 **Examples**
 
@@ -959,6 +972,10 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sipnab -N -I capture.pcap --cores 4 --max-reassembly 2000` — offline reconstruction sharded across 4 cores, with a tight reassembly bound for an untrusted capture
 - `sipnab -N -I calls.pcap --lint --lint-max-per-rule 3 --no-cli-print` — keep the lint output to three repeats of any one rule, so a capture full of retransmissions still shows what else it trips
 - `sipnab -N -I calls.pcap --lint --lint-max-per-rule 500 --no-cli-print` — the opposite: every repeat, for counting how often one rule actually fires
+- `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --report` — read the embedded names and TLS secrets out of an 8 GiB ring member you captured yourself, which the shipped ceiling refuses outright
+- `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --strip-secrets sanitised.pcapng` — the same file, sanitised for handover; the copy costs roughly twice the ceiling in memory, so raise it only for a file you trust
+- `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitised.pcapng` — sanitise an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
+- `sipnab -N -I from-customer.pcapng.gz --max-gunzip-bytes 268435456 --report` — the opposite, for a file that arrived from outside: a quarter-gigabyte ceiling on the embedded names and secrets sipnab reads out of it, so a gzip bomb wearing a capture's name cannot take the box down
 
 
 ## Config

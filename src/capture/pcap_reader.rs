@@ -384,12 +384,66 @@ impl<'a> NgReader<'a> {
 
 // ── Gzip transparency ─────────────────────────────────────────────────
 
-/// Cap on the decompressed size accepted from a gzip-compressed capture
-/// (1 GiB). A hostile "gzip bomb" expands by up to ~1000×, so a small upload
-/// could otherwise inflate into an allocation that OOMs the process. Real
-/// captures near this size should be decompressed manually and streamed
-/// through the native libpcap reader instead.
-pub const MAX_GUNZIP_BYTES: u64 = 1 << 30;
+/// Shipped cap on the decompressed size accepted from a gzip-compressed
+/// capture (1 GiB). A hostile "gzip bomb" expands by up to ~1000×, so a small
+/// upload could otherwise inflate into an allocation that OOMs the process.
+///
+/// The documented workaround — decompress the capture by hand and stream the
+/// plain file — needs the disk the compression was saving, which is why this
+/// is a setting rather than a wall: `--max-gunzip-bytes` or
+/// `[limits] max_gunzip_bytes`.
+///
+/// It bounds what SIPNAB inflates: the embedded names and TLS secrets it reads
+/// out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole
+/// capture in the browser build. The packet stream of a `-I capture.pcap.gz`
+/// run is inflated by libpcap instead and never reaches this.
+///
+/// **What raising it exposes:** the cap is the only thing standing between a
+/// gzip bomb and this process's memory on those paths. Inflation stops one
+/// byte past the cap, so raising it to N lets a file of a few kilobytes claim
+/// N bytes of RAM before sipnab can tell that it is not a capture. Raise it
+/// for archives you compressed yourself; leave it where it is for anything
+/// that arrived from outside.
+pub const DEFAULT_MAX_GUNZIP_BYTES: u64 = 1 << 30;
+
+/// The inflation ceiling this process declared, in bytes.
+///
+/// Process-global and written once at startup, like
+/// [`crate::sip::parser::set_parser_limits`] and for the same reason:
+/// [`decompress_capture`] is a free function called from the file loaders, the
+/// pcapng metadata reader and the WASM entry point, none of which is handed a
+/// config.
+static MAX_GUNZIP_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_MAX_GUNZIP_BYTES);
+
+/// Bytes a gzip-compressed capture may inflate to in this process.
+#[must_use]
+pub fn max_gunzip_bytes() -> u64 {
+    MAX_GUNZIP_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Declare the gzip inflation ceiling for this process. Call once, at startup.
+///
+/// # Arguments
+///
+/// * `bytes` — the ceiling. `0` is treated as the shipped default; the
+///   operator-facing `0` is refused earlier, by
+///   `crate::config::LimitsConfig::validate`.
+///
+/// # Side effects
+///
+/// Stores `bytes` into a process-wide atomic (relaxed ordering), raising or
+/// lowering the guard for every later decompression in this process.
+pub fn set_max_gunzip_bytes(bytes: u64) {
+    MAX_GUNZIP_BYTES.store(
+        if bytes == 0 {
+            DEFAULT_MAX_GUNZIP_BYTES
+        } else {
+            bytes
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 /// True if `data` starts with the gzip magic (`1f 8b`).
 fn is_gzip(data: &[u8]) -> bool {
@@ -402,7 +456,7 @@ fn is_gzip(data: &[u8]) -> bool {
 /// Wireshark opens `.pcap.gz`/`.pcapng.gz` (and gzip files mislabeled as
 /// plain `.pcap`) by gunzipping on the fly; sipnab matches that. Non-gzip
 /// input is returned as a borrowed slice (zero-copy); gzip input is inflated
-/// into an owned buffer, bounded by [`MAX_GUNZIP_BYTES`] so a gzip bomb
+/// into an owned buffer, bounded by [`max_gunzip_bytes`] so a gzip bomb
 /// cannot OOM the process. Concatenated gzip members (which some capture
 /// tools emit) are handled.
 ///
@@ -410,7 +464,7 @@ fn is_gzip(data: &[u8]) -> bool {
 ///
 /// [`CaptureError::GzipDecode`] when the stream is corrupt or truncated;
 /// [`CaptureError::GzipTooLarge`] when the decompressed size would exceed
-/// [`MAX_GUNZIP_BYTES`].
+/// [`max_gunzip_bytes`].
 ///
 /// # Examples
 ///
@@ -426,7 +480,7 @@ fn is_gzip(data: &[u8]) -> bool {
 /// ```
 #[must_use = "decompression result must be handled"]
 pub fn decompress_capture(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, CaptureError> {
-    gunzip_limited(data, MAX_GUNZIP_BYTES)
+    gunzip_limited(data, max_gunzip_bytes())
 }
 
 /// [`decompress_capture`] with an explicit inflation cap (unit-testable

@@ -13,13 +13,19 @@
 //! `From` user come off the wire — so it is bounded like every other such map
 //! in the tree (invariant 4). Two independent caps apply:
 //!
-//! * [`MAX_GROUPS`] distinct keys, and
-//! * [`MAX_BUFFERED`] messages in total.
+//! * [`DEFAULT_MAX_GROUPS`] distinct keys, and
+//! * [`DEFAULT_MAX_BUFFERED`] messages in total.
 //!
 //! On hitting either cap the buffer stops accepting new work and reports it, so
 //! the operator learns the output was truncated instead of quietly receiving a
 //! partial picture. Grouping is therefore a convenience for bounded offline
 //! captures, not something to point at an unbounded live feed.
+//!
+//! Both defaults are settings, not laws: `--max-groups` /
+//! `[limits] max_groups` and `--max-grouped-messages` /
+//! `[limits] max_grouped_messages` move them, and `-l`/`--limit` does not —
+//! that one bounds tracked dialogs, which is a different question from how
+//! much rendered output this buffer holds.
 //!
 //! # What "grouping" means
 //!
@@ -31,12 +37,41 @@ use std::collections::HashMap;
 
 use crate::sip::message::SipMessage;
 
-/// Maximum distinct group keys retained. Matches the store default so a
-/// grouped run cannot outgrow an ordinary capture.
-pub const MAX_GROUPS: usize = 10_000;
+/// Shipped maximum of distinct group keys retained. Matches the store default
+/// so a grouped run cannot outgrow an ordinary capture.
+///
+/// Raise it with `--max-groups` or `[limits] max_groups` for a capture that
+/// genuinely holds more calls than this — the warning says the output is
+/// incomplete, but nothing short of the setting can complete it.
+pub const DEFAULT_MAX_GROUPS: usize = 10_000;
 
-/// Maximum messages buffered across all groups.
-pub const MAX_BUFFERED: usize = 200_000;
+/// Shipped maximum of messages buffered across all groups. Raise it with
+/// `--max-grouped-messages` or `[limits] max_grouped_messages`.
+pub const DEFAULT_MAX_BUFFERED: usize = 200_000;
+
+/// The two caps a [`GroupBuffer`] enforces, resolved once at startup.
+///
+/// Carried as a pair rather than as two loose arguments so a call site cannot
+/// swap them: both are bare counts, and `new(field, 200_000, 10_000)` compiles
+/// as happily as the correct order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupCaps {
+    /// Distinct group keys the buffer will retain.
+    pub groups: usize,
+    /// Messages the buffer will hold across every group.
+    pub buffered: usize,
+}
+
+impl Default for GroupCaps {
+    /// The shipped pair: [`DEFAULT_MAX_GROUPS`] keys, [`DEFAULT_MAX_BUFFERED`]
+    /// messages.
+    fn default() -> Self {
+        Self {
+            groups: DEFAULT_MAX_GROUPS,
+            buffered: DEFAULT_MAX_BUFFERED,
+        }
+    }
+}
 
 /// The field a run groups on. Parsed from `--group-by` once, at startup, so an
 /// unrecognized value fails immediately instead of being silently ignored.
@@ -127,13 +162,18 @@ pub struct GroupBuffer {
     buffered: usize,
     /// Messages dropped after a cap was reached.
     dropped: usize,
-    /// Group keys refused after [`MAX_GROUPS`] was reached.
+    /// Group keys refused after the group cap was reached.
     dropped_groups: usize,
+    /// The caps this buffer enforces, resolved from the flags and the config
+    /// file. Held here rather than read from a constant at each check,
+    /// because a limit that exists only as a constant is one an operator
+    /// cannot move — which is the whole defect this replaced.
+    caps: GroupCaps,
 }
 
 impl GroupBuffer {
-    /// Create an empty buffer for `field`.
-    pub fn new(field: GroupField) -> Self {
+    /// Create an empty buffer for `field`, bounded by `caps`.
+    pub fn new(field: GroupField, caps: GroupCaps) -> Self {
         Self {
             field,
             order: Vec::new(),
@@ -142,19 +182,27 @@ impl GroupBuffer {
             buffered: 0,
             dropped: 0,
             dropped_groups: 0,
+            caps,
         }
+    }
+
+    /// The caps in force, so a caller's resolution can be asserted against the
+    /// buffer it configured rather than against the resolver alone.
+    #[must_use]
+    pub fn caps(&self) -> GroupCaps {
+        self.caps
     }
 
     /// Buffer one rendered message. Returns `false` when a cap refused it.
     pub fn push(&mut self, msg: &SipMessage, rendered: String) -> bool {
-        if self.buffered >= MAX_BUFFERED {
+        if self.buffered >= self.caps.buffered {
             self.dropped += 1;
             return false;
         }
         match self.field.key_of(msg) {
             Some(key) => {
                 if !self.groups.contains_key(&key) {
-                    if self.order.len() >= MAX_GROUPS {
+                    if self.order.len() >= self.caps.groups {
                         self.dropped_groups += 1;
                         self.dropped += 1;
                         return false;
@@ -175,11 +223,17 @@ impl GroupBuffer {
     }
 
     /// A one-line description of what was dropped, for a warning.
+    ///
+    /// Names the flag that raises each cap: an operator told the output is
+    /// incomplete, and not told what completes it, has been informed of a
+    /// problem and handed no way out of it.
     pub fn truncation_note(&self) -> String {
         format!(
             "--group-by buffer full: {} message(s) dropped ({} group(s) refused past the \
-             {MAX_GROUPS}-group cap, {MAX_BUFFERED}-message total cap). Output is incomplete.",
-            self.dropped, self.dropped_groups
+             {}-group cap, {}-message total cap). Output is incomplete. Raise \
+             --max-groups / --max-grouped-messages (or [limits] max_groups / \
+             max_grouped_messages) to keep it all.",
+            self.dropped, self.dropped_groups, self.caps.groups, self.caps.buffered
         )
     }
 
@@ -254,15 +308,15 @@ mod tests {
     /// without bound on attacker-supplied Call-IDs.
     #[test]
     fn group_cap_refuses_new_keys_and_reports() {
-        let mut b = GroupBuffer::new(GroupField::Method);
+        let mut b = GroupBuffer::new(GroupField::Method, GroupCaps::default());
         // Drive the cap directly: the buffer is what is under test, not the
         // parser, so synthesize keys by filling `order`/`groups`.
-        for i in 0..MAX_GROUPS {
+        for i in 0..DEFAULT_MAX_GROUPS {
             b.order.push(format!("k{i}"));
             b.groups.insert(format!("k{i}"), vec![String::new()]);
         }
-        b.buffered = MAX_GROUPS;
-        assert_eq!(b.group_count(), MAX_GROUPS);
+        b.buffered = DEFAULT_MAX_GROUPS;
+        assert_eq!(b.group_count(), DEFAULT_MAX_GROUPS);
         assert!(!b.truncated(), "nothing dropped yet");
 
         // A message whose key is not already present must be refused.
@@ -277,10 +331,75 @@ mod tests {
         );
     }
 
+    /// A raised group cap accepts keys the shipped one refuses, and the note
+    /// names the cap that was actually enforced.
+    ///
+    /// Asserted on the buffer's behaviour rather than on `caps()`: a resolver
+    /// that computed the right number and a buffer that ignored it read the
+    /// same way through the accessor alone.
+    #[test]
+    fn a_raised_group_cap_accepts_what_the_shipped_one_refuses() {
+        let caps = GroupCaps {
+            groups: 3,
+            buffered: 5,
+        };
+        let mut b = GroupBuffer::new(GroupField::Method, caps);
+        for i in 0..3 {
+            b.order.push(format!("k{i}"));
+            b.groups.insert(format!("k{i}"), vec![String::new()]);
+        }
+        b.buffered = 3;
+        assert_eq!(b.group_count(), 3, "the configured group cap is what bites");
+        assert!(!b.truncated(), "nothing dropped at exactly the cap");
+
+        b.dropped_groups += 1;
+        b.dropped += 1;
+        let note = b.truncation_note();
+        assert!(
+            note.contains("3-group cap") && note.contains("5-message"),
+            "the note must state the caps this run enforced, not the shipped \
+             pair: {note}"
+        );
+        assert!(
+            note.contains("--max-groups") && note.contains("--max-grouped-messages"),
+            "the note must name what raises them: {note}"
+        );
+    }
+
+    /// The message cap refuses a push once the buffer is full, whatever the
+    /// group cap allows.
+    #[test]
+    fn the_message_cap_refuses_a_push_at_its_configured_value() {
+        let mut b = GroupBuffer::new(
+            GroupField::Method,
+            GroupCaps {
+                groups: 100,
+                buffered: 2,
+            },
+        );
+        b.buffered = 2;
+        let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let msg = crate::sip::parser::parse_sip(
+            b"INVITE sip:b@example.com SIP/2.0\r\nCall-ID: c1\r\n\r\n",
+            chrono::Utc::now(),
+            local,
+            local,
+            5060,
+            5060,
+            crate::capture::parse::TransportProto::Udp,
+        )
+        .expect("fixture parses");
+        assert!(
+            !b.push(&msg, "rendered".into()),
+            "a buffer at its configured message cap must refuse the push"
+        );
+        assert!(b.truncated(), "and report it rather than dropping silently");
+    }
+
     /// Drain yields groups in first-seen order with the ungrouped tail last.
     #[test]
     fn drain_preserves_first_seen_group_order() {
-        let mut b = GroupBuffer::new(GroupField::Method);
+        let mut b = GroupBuffer::new(GroupField::Method, GroupCaps::default());
         b.order = vec!["INVITE".into(), "BYE".into()];
         b.groups
             .insert("INVITE".into(), vec!["i1".into(), "i2".into()]);

@@ -1924,6 +1924,7 @@ impl BatchRunner {
             Some(&engines.alerts),
             crate::app::servers::Selection {
                 mcp_row_cap: cli.mcp_row_cap(config),
+                mcp_body_cap: cli.mcp_body_cap(config),
                 api: true,
                 mcp: true,
                 // The whole point of #159: headless is where --metrics is
@@ -2071,7 +2072,7 @@ impl BatchRunner {
             .group_by
             .as_deref()
             .and_then(|f| output::group::GroupField::parse(f).ok())
-            .map(output::group::GroupBuffer::new);
+            .map(|f| output::group::GroupBuffer::new(f, cli.group_caps(&config)));
 
         // Wall time for a live device, the capture's own timeline for `-I`.
         // See `SweepClock` for why the two cannot share one rule.

@@ -775,6 +775,37 @@ pub struct Cli {
     #[arg(help_heading = "Output", long, value_name = "FIELD")]
     pub group_by: Option<String>,
 
+    /// Distinct `--group-by` keys one run may retain (default 10000). Config:
+    /// `[limits] max_groups`.
+    ///
+    /// Past it the buffer refuses new keys and warns that the output is
+    /// incomplete — honest, and until now unfixable: `-l`/`--limit` bounds
+    /// tracked dialogs and never reached this map.
+    #[arg(
+        help_heading = "Output",
+        long = "max-groups",
+        value_name = "N",
+        requires = "group_by",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub max_groups: Option<u64>,
+
+    /// Messages `--group-by` may buffer across every group (default 200000).
+    /// Config: `[limits] max_grouped_messages`.
+    ///
+    /// The other half of `--max-groups`, and a different question: that one
+    /// bounds how many groups exist, this one how much rendered output they
+    /// hold between them. Grouping cannot stream — the last packet may belong
+    /// to the first group — so this is memory held until the capture ends.
+    #[arg(
+        help_heading = "Output",
+        long = "max-grouped-messages",
+        value_name = "N",
+        requires = "group_by",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub max_grouped_messages: Option<u64>,
+
     // ── Dialog ───────────────────────────────────────────────────────
     /// Maximum dialogs the store may hold in TOTAL over the run (default
     /// 100000). NOT a concurrency limit: nothing removes a completed dialog,
@@ -847,6 +878,26 @@ pub struct Cli {
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,
+
+    /// Lost RTP sequence numbers retained per stream, for the Packet Loss Map
+    /// and the burst/gap analysis. Config: `[limits] max_lost_sequences`.
+    ///
+    /// The shipped 1000 is about a minute of a call losing 1 % at 50 packets a
+    /// second, so on the half-hour call an operator actually escalates the map
+    /// shows the tail and says so. Raising it costs two bytes per retained
+    /// loss per stream, and widens the burst/gap window in step.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]: a populated field cannot tell "not typed" from
+    /// "typed the default". The default lives in
+    /// [`crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP`].
+    #[arg(
+        help_heading = "RTP",
+        long = "max-lost-sequences",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub max_lost_sequences: Option<u64>,
 
     /// MOS quality threshold for alerts (1.0-5.0 scale).
     #[arg(help_heading = "RTP", long, value_name = "MOS", default_value = "3.0")]
@@ -1395,6 +1446,26 @@ pub struct Cli {
     )]
     pub mcp_max_rows: Option<u64>,
 
+    /// Maximum bytes of SIP body or matched snippet in one MCP response.
+    ///
+    /// `--mcp-max-rows` for the WIDTH of a row rather than their number, and
+    /// the tighter of the two on a body question: a caller may ask for one
+    /// dialog and still be answered with a clipped `INVITE`. An SDP body
+    /// carrying a dozen codecs and ICE candidates passes the 4096-byte
+    /// default, and the agent reading the clipped half cannot tell a truncated
+    /// answer from a short one.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`crate::mcp::shape::DEFAULT_MAX_BODY_BYTES`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-max-body-bytes",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub mcp_max_body_bytes: Option<u64>,
+
     /// Maximum MCP tool calls one peer may make per second (`0` = unlimited).
     ///
     /// The other half of `--mcp-max-concurrent`, and a different question:
@@ -1706,6 +1777,44 @@ pub struct Cli {
     #[arg(help_heading = "Resource limits", long, value_name = "N")]
     pub max_reassembly: Option<u64>,
 
+    /// Bytes of pcapng sipnab reads into memory for embedded names and TLS
+    /// secrets (default 2 GiB). Config: `[limits] max_metadata_file_bytes`.
+    ///
+    /// A `tcpdump -C` or `dumpcap -b` ring member routinely passes the default
+    /// on a host with the RAM to spare, and the refusal is fatal. Raising it
+    /// lets ONE file claim that much memory — twice over while
+    /// `--strip-secrets` writes its copy — on nothing but a file size, before
+    /// sipnab can tell the file is a capture at all. Raise it for captures you
+    /// produced, not for one that arrived from outside.
+    #[arg(
+        help_heading = "Resource limits",
+        long = "max-metadata-file-bytes",
+        value_name = "BYTES",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub max_metadata_file_bytes: Option<u64>,
+
+    /// Bytes a gzip-compressed capture may inflate to (default 1 GiB). Config:
+    /// `[limits] max_gunzip_bytes`.
+    ///
+    /// The documented workaround for the refusal — gunzip the file and open
+    /// the plain one — costs the disk the compression was saving, which is why
+    /// this moves. It bounds what sipnab inflates itself: the embedded names
+    /// and TLS secrets in a `.pcapng.gz`, the copy `--strip-secrets` rewrites,
+    /// and the whole capture in the browser build. A `-I capture.pcap.gz`
+    /// packet stream is inflated by libpcap and is not bounded by this.
+    ///
+    /// It is a gzip-bomb guard: inflation stops one byte past the cap, so
+    /// raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for
+    /// archives you compressed yourself.
+    #[arg(
+        help_heading = "Resource limits",
+        long = "max-gunzip-bytes",
+        value_name = "BYTES",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub max_gunzip_bytes: Option<u64>,
+
     /// CPU cores for OFFLINE pcap reconstruction (`-I`). 1 = the standard
     /// single-threaded path. >1 shards packets by host pair across N worker
     /// threads for multi-core throughput on large captures; covers dialog +
@@ -1843,6 +1952,14 @@ impl Cli {
     pub const DEFAULT_MAX_REASSEMBLY: u64 = 10_000;
     /// Default MCP response row ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].
     pub const DEFAULT_MCP_MAX_ROWS: u64 = 1_000;
+    /// Default MCP body/snippet ceiling, in bytes — see
+    /// [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// The number lives here rather than in `mcp::shape` because this module
+    /// is compiled into every native build while that one is not, so a single
+    /// definition can serve both — `mcp::shape::DEFAULT_MAX_BODY_BYTES` reads
+    /// it from here.
+    pub const DEFAULT_MCP_MAX_BODY_BYTES: u64 = 4_096;
     /// Default colour mode. `auto` means "colour when stdout is a terminal".
     pub const DEFAULT_COLOR: &'static str = "auto";
     /// Default scanner-kill response code. `200 OK` is the sipgrep default: it
@@ -1900,6 +2017,83 @@ impl Cli {
         self.mcp_max_rows
             .or(config.limits.mcp_max_rows)
             .unwrap_or(Self::DEFAULT_MCP_MAX_ROWS) as usize
+    }
+
+    /// MCP body/snippet ceiling: `--mcp-max-body-bytes`, else
+    /// `[limits] mcp_max_body_bytes`, else the default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// Bounds the WIDTH of a row where [`Self::mcp_row_cap`] bounds their
+    /// number. A caller can always ask for fewer rows; nothing it can send
+    /// widens one, which is why this needed an operator setting more than the
+    /// row cap did.
+    #[must_use]
+    pub fn mcp_body_cap(&self, config: &crate::config::Config) -> usize {
+        self.mcp_max_body_bytes
+            .or(config.limits.mcp_max_body_bytes)
+            .unwrap_or(Self::DEFAULT_MCP_MAX_BODY_BYTES) as usize
+    }
+
+    /// Per-stream loss-log retention: `--max-lost-sequences`, else
+    /// `[limits] max_lost_sequences`, else the shipped default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The default is sourced from
+    /// [`crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP`] rather than restated,
+    /// so the shipped figure has one definition and the resolver cannot
+    /// disagree with the code it feeds.
+    #[must_use]
+    pub fn lost_sequence_log_cap(&self, config: &crate::config::Config) -> usize {
+        self.max_lost_sequences
+            .or(config.limits.max_lost_sequences)
+            .map_or(crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP, |v| v as usize)
+    }
+
+    /// `--group-by` caps: the flags, else `[limits] max_groups` /
+    /// `max_grouped_messages`, else the shipped pair.
+    ///
+    /// Resolved as a PAIR because that is how `GroupBuffer` consumes them, and
+    /// a resolver per cap is a resolver a call site can half-apply.
+    #[must_use]
+    pub fn group_caps(&self, config: &crate::config::Config) -> crate::output::group::GroupCaps {
+        let shipped = crate::output::group::GroupCaps::default();
+        crate::output::group::GroupCaps {
+            groups: self
+                .max_groups
+                .or(config.limits.max_groups)
+                .map_or(shipped.groups, |v| v as usize),
+            buffered: self
+                .max_grouped_messages
+                .or(config.limits.max_grouped_messages)
+                .map_or(shipped.buffered, |v| v as usize),
+        }
+    }
+
+    /// In-memory pcapng ceiling: `--max-metadata-file-bytes`, else
+    /// `[limits] max_metadata_file_bytes`, else the shipped default.
+    ///
+    /// A memory-exhaustion guard, so the shipped default stays where it is and
+    /// raising it is the operator's declaration that they trust the file. See
+    /// [`crate::capture::pcapng_meta::DEFAULT_MAX_METADATA_FILE_BYTES`] for
+    /// what that exposes.
+    #[must_use]
+    pub fn metadata_file_byte_cap(&self, config: &crate::config::Config) -> u64 {
+        self.max_metadata_file_bytes
+            .or(config.limits.max_metadata_file_bytes)
+            .unwrap_or(crate::capture::pcapng_meta::DEFAULT_MAX_METADATA_FILE_BYTES)
+    }
+
+    /// Gzip inflation ceiling: `--max-gunzip-bytes`, else
+    /// `[limits] max_gunzip_bytes`, else the shipped default.
+    ///
+    /// A gzip-bomb guard, on the same terms as
+    /// [`Self::metadata_file_byte_cap`] — see
+    /// [`crate::capture::pcap_reader::DEFAULT_MAX_GUNZIP_BYTES`].
+    #[must_use]
+    pub fn gunzip_byte_cap(&self, config: &crate::config::Config) -> u64 {
+        self.max_gunzip_bytes
+            .or(config.limits.max_gunzip_bytes)
+            .unwrap_or(crate::capture::pcap_reader::DEFAULT_MAX_GUNZIP_BYTES)
     }
 
     /// Colour mode: `--color`, else `[display] color`, else the default.
@@ -3509,6 +3703,210 @@ mod tests {
                 differences, 1,
                 "setting {} alone must leave the other seven at their defaults",
                 c.key
+            );
+        }
+    }
+
+    /// Every truncation/refusal cap resolves flag over key over the SHIPPED
+    /// CONSTANT, and the shipped figure is read from the constant the
+    /// enforcement site uses rather than restated here.
+    ///
+    /// Sourcing the default from the constant is the half worth stating: a
+    /// resolver carrying its own copy of the number agrees with the code today
+    /// and silently disagrees the day one of them moves, which is a limit
+    /// documented at one value and enforced at another.
+    ///
+    /// Each case sets the key and the flag to DIFFERENT values, so "the flag
+    /// won" and "the key was never read" cannot look alike.
+    #[test]
+    fn every_truncation_cap_resolves_flag_over_key_over_the_shipped_constant() {
+        /// One cap: how to set it from a file, how to set it from the command
+        /// line, and how to ask the resolver what it decided.
+        struct Case {
+            key: &'static str,
+            flag: &'static str,
+            set_key: fn(&mut crate::config::LimitsConfig),
+            key_value: u64,
+            flag_value: &'static str,
+            flag_number: u64,
+            shipped: u64,
+            resolve: fn(&Cli, &crate::config::Config) -> u64,
+            /// Arguments the flag cannot be given without.
+            requires: &'static [&'static str],
+        }
+
+        let cases = [
+            Case {
+                key: "max_lost_sequences",
+                flag: "--max-lost-sequences",
+                set_key: |l| l.max_lost_sequences = Some(5_000),
+                key_value: 5_000,
+                flag_value: "250",
+                flag_number: 250,
+                shipped: crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP as u64,
+                resolve: |c, cfg| c.lost_sequence_log_cap(cfg) as u64,
+                requires: &[],
+            },
+            Case {
+                key: "max_groups",
+                flag: "--max-groups",
+                set_key: |l| l.max_groups = Some(42),
+                key_value: 42,
+                flag_value: "7",
+                flag_number: 7,
+                shipped: crate::output::group::DEFAULT_MAX_GROUPS as u64,
+                resolve: |c, cfg| c.group_caps(cfg).groups as u64,
+                requires: &["--group-by", "call-id"],
+            },
+            Case {
+                key: "max_grouped_messages",
+                flag: "--max-grouped-messages",
+                set_key: |l| l.max_grouped_messages = Some(900),
+                key_value: 900,
+                flag_value: "80",
+                flag_number: 80,
+                shipped: crate::output::group::DEFAULT_MAX_BUFFERED as u64,
+                resolve: |c, cfg| c.group_caps(cfg).buffered as u64,
+                requires: &["--group-by", "call-id"],
+            },
+            Case {
+                key: "max_metadata_file_bytes",
+                flag: "--max-metadata-file-bytes",
+                set_key: |l| l.max_metadata_file_bytes = Some(4_294_967_296),
+                key_value: 4_294_967_296,
+                flag_value: "8589934592",
+                flag_number: 8_589_934_592,
+                shipped: crate::capture::pcapng_meta::DEFAULT_MAX_METADATA_FILE_BYTES,
+                resolve: Cli::metadata_file_byte_cap,
+                requires: &[],
+            },
+            Case {
+                key: "max_gunzip_bytes",
+                flag: "--max-gunzip-bytes",
+                set_key: |l| l.max_gunzip_bytes = Some(2_147_483_648),
+                key_value: 2_147_483_648,
+                flag_value: "4294967296",
+                flag_number: 4_294_967_296,
+                shipped: crate::capture::pcap_reader::DEFAULT_MAX_GUNZIP_BYTES,
+                resolve: Cli::gunzip_byte_cap,
+                requires: &[],
+            },
+            Case {
+                key: "mcp_max_body_bytes",
+                flag: "--mcp-max-body-bytes",
+                set_key: |l| l.mcp_max_body_bytes = Some(65_536),
+                key_value: 65_536,
+                flag_value: "1024",
+                flag_number: 1024,
+                shipped: Cli::DEFAULT_MCP_MAX_BODY_BYTES,
+                resolve: |c, cfg| c.mcp_body_cap(cfg) as u64,
+                requires: &[],
+            },
+        ];
+
+        for c in &cases {
+            let mut bare_args: Vec<&str> = vec!["sipnab", "-N", "-I", "x.pcap"];
+            bare_args.extend_from_slice(c.requires);
+            let bare = Cli::parse_from_args(bare_args.clone());
+
+            // Anti-vacuity: the key and flag values must differ from the
+            // shipped figure, or every assertion below passes on a broken
+            // resolver.
+            assert_ne!(
+                c.key_value, c.shipped,
+                "{}: key value is the default",
+                c.key
+            );
+            assert_ne!(
+                c.flag_number, c.key_value,
+                "{}: flag and key values must differ",
+                c.key
+            );
+
+            assert_eq!(
+                (c.resolve)(&bare, &crate::config::Config::default()),
+                c.shipped,
+                "with neither given, {} must resolve to the constant the code \
+                 enforces",
+                c.key
+            );
+
+            let mut tuned = crate::config::Config::default();
+            (c.set_key)(&mut tuned.limits);
+            assert_eq!(
+                (c.resolve)(&bare, &tuned),
+                c.key_value,
+                "[limits] {} must reach the resolver",
+                c.key
+            );
+
+            let mut flag_args = bare_args;
+            flag_args.push(c.flag);
+            flag_args.push(c.flag_value);
+            let flagged = Cli::parse_from_args(flag_args);
+            assert_eq!(
+                (c.resolve)(&flagged, &tuned),
+                c.flag_number,
+                "{} must outrank the [limits] {} it shadows",
+                c.flag,
+                c.key
+            );
+        }
+    }
+
+    /// `0` is refused by clap on every byte/count cap, so the permissive
+    /// reading — "unlimited" — cannot be reached from the command line either.
+    ///
+    /// The config layer refuses it by name; a flag that accepted it would make
+    /// the guard bypassable by the shorter route.
+    #[test]
+    fn zero_is_refused_on_every_truncation_flag() {
+        for flag in [
+            "--max-lost-sequences",
+            "--max-metadata-file-bytes",
+            "--max-gunzip-bytes",
+            "--mcp-max-body-bytes",
+        ] {
+            let err = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "0"])
+                .expect_err("0 must be refused");
+            assert!(
+                err.to_string().contains("0"),
+                "{flag} must refuse 0 and say so: {err}"
+            );
+        }
+        for flag in ["--max-groups", "--max-grouped-messages"] {
+            let err = Cli::try_parse_from([
+                "sipnab",
+                "-N",
+                "-I",
+                "x.pcap",
+                "--group-by",
+                "call-id",
+                flag,
+                "0",
+            ])
+            .expect_err("0 must be refused");
+            assert!(
+                err.to_string().contains("0"),
+                "{flag} must refuse 0 and say so: {err}"
+            );
+        }
+    }
+
+    /// `--max-groups` and `--max-grouped-messages` arm nothing without
+    /// `--group-by`, so clap refuses them alone.
+    ///
+    /// The same rule commit 30a5689 applied to the detection flags: a flag
+    /// accepted and then ignored looks, from the operator's side, exactly like
+    /// one that worked.
+    #[test]
+    fn the_group_caps_are_refused_without_the_grouping_they_bound() {
+        for flag in ["--max-groups", "--max-grouped-messages"] {
+            let err = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "5"])
+                .expect_err("must require --group-by");
+            assert!(
+                err.to_string().contains("--group-by"),
+                "{flag} without --group-by must name what it needs: {err}"
             );
         }
     }

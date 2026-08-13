@@ -330,7 +330,7 @@ wrong test anyway: what protects the operator is the identity on the wire, not
 the absence of the verb.
 
 **Enforced by.** [`shape.rs`](../../src/mcp/shape.rs) — `DEFAULT_LIMIT` 50,
-`HARD_LIMIT` 1000, `MAX_BODY_BYTES` 4096, applied by
+`HARD_LIMIT` 1000, `DEFAULT_MAX_BODY_BYTES` 4096, applied by
 [`resolve_limit()`](../../src/mcp/shape.rs) — with
 [`mcp_stdio_test`](../../tests/mcp_stdio_test.rs) and
 [`mcp_http_test`](../../tests/mcp_http_test.rs) end to end. The identity half is

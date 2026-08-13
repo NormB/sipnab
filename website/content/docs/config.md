@@ -265,6 +265,12 @@ Resource limits to prevent unbounded memory growth.
 | `keep_messages_per_idle_dialog` | integer | `20` | Messages an idle dialog keeps after compaction |
 | `max_audio_frames` | integer | `1500` | Maximum RTP payload frames stored per stream for WAV export (~30s at G.711 50pps) |
 | `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
+| `mcp_max_body_bytes` | integer | `4096` | Bytes of SIP body or matched snippet in ONE MCP response. `mcp_max_rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. `--mcp-max-body-bytes` overrides it. `0` fails validation and names the key |
+| `max_lost_sequences` | integer | `1000` | Lost RTP sequence numbers retained per stream. This is the window the Packet Loss Map draws and the burst/gap analysis reasons over, so a 30-minute call losing 1 % shows only its last minute at the default. The burst/gap window widens with it. `--max-lost-sequences` overrides it. `0` fails validation and names the key |
+| `max_groups` | integer | `10000` | Distinct `--group-by` keys one run retains. Past it sipnab refuses new keys and warns that the output is incomplete. `--max-groups` overrides it |
+| `max_grouped_messages` | integer | `200000` | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory held until the capture ends. `--max-grouped-messages` overrides it |
+| `max_metadata_file_bytes` | integer | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. **A memory-exhaustion guard on untrusted input.** Raising it to N lets ONE file claim N bytes of this host's RAM — roughly 2N while `--strip-secrets` writes its copy — on nothing but a file size, before sipnab can tell the file is a capture at all. Raise it for captures you produced; leave it for captures someone sent you. `--max-metadata-file-bytes` overrides it |
+| `max_gunzip_bytes` | integer | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets read out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. libpcap inflates the packet stream of a `-I capture.pcap.gz` run and this does not bound it. **A gzip-bomb guard.** Inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for archives you compressed yourself. `--max-gunzip-bytes` overrides it |
 
 ```toml
 [limits]
@@ -280,10 +286,12 @@ keep_messages_per_idle_dialog = 20
 max_audio_frames = 1500
 ```
 
-The last two are the only limits that discard data sipnab already captured.
-Every other key here refuses to take something in. Compaction shortens a ladder
-already in memory, so a call that went quiet shows fewer messages than crossed
-the wire. sipnab warns once per run when this first happens.
+The compaction pair — `idle_compact_after_secs` and
+`keep_messages_per_idle_dialog` — is where a limit discards a ladder sipnab
+already holds, so a call that went quiet shows fewer messages than crossed the
+wire. sipnab warns once per run when this first happens. The retention logs
+(`max_audio_frames`, `max_lost_sequences`) drop their oldest entries as they
+fill. Every other key here refuses to take something in.
 
 Raise both when the ladder matters more than the footprint — a call parked on
 hold, a dialog waiting on a slow PSTN leg, or a capture you paused all go quiet

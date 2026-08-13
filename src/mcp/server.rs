@@ -70,6 +70,14 @@ pub struct SipnabMcp {
     /// expand `problems` from a `'static` string, so an operator who tuned
     /// `[diagnosis]` still got a filter selecting on figures nobody chose.
     alias_thresholds: crate::sip::dsl::AliasThresholds,
+    /// Ceiling on body/snippet bytes in one response, from
+    /// `--mcp-max-body-bytes` or `[limits] mcp_max_body_bytes`. Defaults to
+    /// [`shape::DEFAULT_MAX_BODY_BYTES`](super::shape::DEFAULT_MAX_BODY_BYTES).
+    ///
+    /// Carried beside `row_cap` and for the reason spelled out there: a value
+    /// read from a constant at each call site is not something an operator can
+    /// move.
+    body_cap: usize,
     /// Directory the file tools are confined to. `None` disables them.
     file_root: Option<std::path::PathBuf>,
     /// Capture files and directories this server is reading, which the file
@@ -219,6 +227,7 @@ impl SipnabMcp {
             source_exhausted: None,
             row_cap: HARD_LIMIT,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
+            body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
             file_root: None,
             protected_inputs: Default::default(),
             allow_shutdown: false,
@@ -261,6 +270,20 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_alias_thresholds(mut self, thresholds: crate::sip::dsl::AliasThresholds) -> Self {
         self.alias_thresholds = thresholds;
+        self
+    }
+
+    /// Cap the bytes of SIP body or matched snippet one response may carry.
+    ///
+    /// `0` is treated as the default rather than as "unlimited", the same
+    /// reading [`Self::with_row_cap`] gives it and for the same reason.
+    #[must_use]
+    pub fn with_body_cap(mut self, bytes: usize) -> Self {
+        self.body_cap = if bytes == 0 {
+            super::shape::DEFAULT_MAX_BODY_BYTES
+        } else {
+            bytes
+        };
         self
     }
 
@@ -2791,7 +2814,7 @@ impl SipnabMcp {
     /// # Returns
     ///
     /// A JSON array of `SearchHit` rows, empty when nothing matches;
-    /// snippets are truncated to `MAX_BODY_BYTES`.
+    /// snippets are truncated to the server's body cap (`--mcp-max-body-bytes`).
     ///
     /// # Errors
     ///
@@ -2850,7 +2873,7 @@ impl SipnabMcp {
                         // text the MCP surface returns.
                         let snippet = super::shape::fence(&super::shape::truncate_string(
                             &String::from_utf8_lossy(&msg.raw),
-                            super::shape::MAX_BODY_BYTES,
+                            self.body_cap,
                         ));
                         out.push(SearchHit {
                             call_id: d.call_id.clone(),
@@ -2973,8 +2996,8 @@ impl SipnabMcp {
     ///
     /// # Returns
     ///
-    /// A JSON array of `FindingJson` rows with details truncated to
-    /// `MAX_BODY_BYTES`.
+    /// A JSON array of `FindingJson` rows with details truncated to the
+    /// server's body cap (`--mcp-max-body-bytes`).
     ///
     /// # Errors
     ///
@@ -3015,10 +3038,7 @@ impl SipnabMcp {
                     .map(|f| FindingJson {
                         rule_name: f.rule_name.clone(),
                         src_ip: f.src_ip.to_string(),
-                        detail: super::shape::truncate_string(
-                            &f.detail,
-                            super::shape::MAX_BODY_BYTES,
-                        ),
+                        detail: super::shape::truncate_string(&f.detail, self.body_cap),
                         timestamp: f.timestamp.to_rfc3339(),
                     })
                     .collect::<Vec<_>>()

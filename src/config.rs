@@ -149,7 +149,13 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "keep_messages_per_idle_dialog",
             "max_audio_frames",
             "mcp_max_rows",
+            "mcp_max_body_bytes",
             "lint_max_per_rule",
+            "max_lost_sequences",
+            "max_groups",
+            "max_grouped_messages",
+            "max_metadata_file_bytes",
+            "max_gunzip_bytes",
         ]
         .as_slice(),
     );
@@ -749,6 +755,40 @@ pub struct LimitsConfig {
     /// eleven times and every one of them is true, so this is the knob that
     /// decides whether the other rules are still readable underneath.
     pub lint_max_per_rule: Option<u64>,
+    /// Bytes of SIP body or matched snippet one MCP response may carry
+    /// (default: 4096).
+    ///
+    /// The counterpart of `mcp_max_rows` for the WIDTH of a row rather than
+    /// their number, and the tighter of the two on a body question: a caller
+    /// may ask for one dialog and still be answered with a clipped `INVITE`.
+    pub mcp_max_body_bytes: Option<u64>,
+    /// Lost RTP sequence numbers retained per stream (default: 1000).
+    ///
+    /// The window the Packet Loss Map and the burst/gap analysis reason over.
+    /// A 30-minute call at 1 % loss drops ~900 packets a minute, so the shipped
+    /// figure shows the last minute of a call an operator escalated for the
+    /// whole half hour.
+    pub max_lost_sequences: Option<u64>,
+    /// Distinct `--group-by` keys one run may retain (default: 10000).
+    pub max_groups: Option<u64>,
+    /// Messages `--group-by` may buffer across every group (default: 200000).
+    pub max_grouped_messages: Option<u64>,
+    /// Bytes of pcapng sipnab will read into memory for embedded names and
+    /// TLS secrets (default: 2 GiB).
+    ///
+    /// A memory-exhaustion guard on untrusted input. Raising it lets one file
+    /// claim that much of this host's RAM, twice over while
+    /// `--strip-secrets` is rewriting it.
+    pub max_metadata_file_bytes: Option<u64>,
+    /// Bytes a gzip-compressed capture may inflate to where sipnab does the
+    /// inflating (default: 1 GiB).
+    ///
+    /// A gzip-bomb guard over the embedded names and TLS secrets read out of a
+    /// `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole
+    /// capture in the browser build. Raising it lets a small file claim that
+    /// much RAM, so raise it for captures you compressed yourself and not for
+    /// a file someone sent you.
+    pub max_gunzip_bytes: Option<u64>,
 }
 
 impl LimitsConfig {
@@ -830,6 +870,44 @@ impl LimitsConfig {
         if let Some(0) = self.keep_messages_per_idle_dialog {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] keep_messages_per_idle_dialog must be > 0".into(),
+            ));
+        }
+        if let Some(0) = self.mcp_max_body_bytes {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] mcp_max_body_bytes must be > 0 (0 would answer every \
+                 body question with a truncation marker and no body)"
+                    .into(),
+            ));
+        }
+        if let Some(0) = self.max_lost_sequences {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_lost_sequences must be > 0 (0 would retain no \
+                 losses, so the loss map and the burst/gap analysis would \
+                 report a lossless call)"
+                    .into(),
+            ));
+        }
+        if let Some(0) = self.max_groups {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_groups must be > 0".into(),
+            ));
+        }
+        if let Some(0) = self.max_grouped_messages {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_grouped_messages must be > 0".into(),
+            ));
+        }
+        // Both byte caps guard against memory exhaustion on untrusted input,
+        // so 0 is refused rather than read as "no limit": the permissive
+        // reading is the one a typo must never reach.
+        if let Some(0) = self.max_metadata_file_bytes {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_metadata_file_bytes must be > 0".into(),
+            ));
+        }
+        if let Some(0) = self.max_gunzip_bytes {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_gunzip_bytes must be > 0".into(),
             ));
         }
         Ok(())
@@ -2054,8 +2132,48 @@ column_selector = "F10"
             max_audio_frames: Some(1500),
             mcp_max_rows: Some(1000),
             lint_max_per_rule: Some(25),
+            mcp_max_body_bytes: Some(4096),
+            max_lost_sequences: Some(1000),
+            max_groups: Some(10_000),
+            max_grouped_messages: Some(200_000),
+            max_metadata_file_bytes: Some(2 * 1024 * 1024 * 1024),
+            max_gunzip_bytes: Some(1 << 30),
         };
         assert!(limits.validate().is_ok());
+    }
+
+    /// Every truncation/refusal cap added for #94 parses, is registered, and
+    /// refuses 0 by name.
+    ///
+    /// Registration is the half that fails silently: an unregistered key still
+    /// parses and still works, and warns "Unknown config key" on every start —
+    /// which is how an operator learns to ignore the warning that matters.
+    #[test]
+    fn truncation_caps_parse_are_registered_and_reject_zero() {
+        for key in [
+            "mcp_max_body_bytes",
+            "max_lost_sequences",
+            "max_groups",
+            "max_grouped_messages",
+            "max_metadata_file_bytes",
+            "max_gunzip_bytes",
+        ] {
+            let set = format!("[limits]\n{key} = 64\n");
+            let cfg: Config = toml::from_str(&set).expect("valid");
+            assert!(
+                Config::unknown_keys(&set).expect("scan").is_empty(),
+                "{key} must be registered in KNOWN_KEYS, or a file that sets it \
+                 warns on every start"
+            );
+            assert!(cfg.limits.validate().is_ok(), "{key} = 64 must validate");
+            let zeroed = format!("[limits]\n{key} = 0\n");
+            let zero: Config = toml::from_str(&zeroed).expect("parses");
+            let err = zero.limits.validate().expect_err("0 must be rejected");
+            assert!(
+                err.to_string().contains(key),
+                "the refusal must name {key}, got: {err}"
+            );
+        }
     }
 
     /// `dialog_limit = 0` is rejected, naming the key.

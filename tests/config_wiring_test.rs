@@ -958,6 +958,36 @@ fn limit_probes() -> Vec<LimitProbe> {
             enabled: true,
             observe: probe_lint_max_per_rule,
         },
+        LimitProbe {
+            key: "mcp_max_body_bytes",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_max_body_bytes,
+        },
+        LimitProbe {
+            key: "max_lost_sequences",
+            enabled: true,
+            observe: probe_max_lost_sequences,
+        },
+        LimitProbe {
+            key: "max_groups",
+            enabled: true,
+            observe: probe_max_groups,
+        },
+        LimitProbe {
+            key: "max_grouped_messages",
+            enabled: true,
+            observe: probe_max_grouped_messages,
+        },
+        LimitProbe {
+            key: "max_metadata_file_bytes",
+            enabled: true,
+            observe: probe_max_metadata_file_bytes,
+        },
+        LimitProbe {
+            key: "max_gunzip_bytes",
+            enabled: true,
+            observe: probe_max_gunzip_bytes,
+        },
     ]
 }
 
@@ -1118,6 +1148,265 @@ fn probe_lint_max_per_rule() -> (String, String) {
             )
         },
     )
+}
+
+/// `max_lost_sequences`: 1200 losses retained against a cap of 100.
+///
+/// The observation is the BURST COUNT the burst/gap analysis reports, not the
+/// length of any log: the retained log is the only window that analysis can
+/// reason over, so shrinking it is visible as bursts that stop being counted.
+/// A capture losing three of every ten packets over 4000 sequence numbers
+/// holds 400 bursts; the shipped 1000-loss retention sees 333 of them and a
+/// 100-loss retention sees 33.
+fn probe_max_lost_sequences() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = dir.path().join("lossy-call.pcap");
+    pcap_build::write_pcap(
+        &pcap,
+        &pcap_build::sdp_call_with_lossy_rtp("loss-probe", 4000, 3),
+    );
+    observe_stdout(
+        &pcap,
+        "[limits]\nmax_lost_sequences = 100\n",
+        &["--json-dialogs"],
+        |out| format!("bursts={}", first_stream_burst_count(out)),
+    )
+}
+
+/// Bursts the first dialog's first stream reported, off `--json-dialogs`.
+fn first_stream_burst_count(stdout: &str) -> i64 {
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("the probe capture must produce one dialog");
+    let v: serde_json::Value = serde_json::from_str(line).expect("valid dialog JSON");
+    v["streams"][0]["burst_gap"]["burst_count"]
+        .as_i64()
+        .expect("the linked stream must carry a burst/gap analysis")
+}
+
+/// `max_groups`: eight Call-IDs grouped against a cap of two.
+fn probe_max_groups() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 8);
+    observe_stdout(
+        &pcap,
+        "[limits]\nmax_groups = 2\n",
+        &["--group-by", "call-id"],
+        |out| format!("groups={}", out.matches("── call-id ").count()),
+    )
+}
+
+/// `max_grouped_messages`: a 56-message grouped run against a cap of three.
+///
+/// Distinct from `max_groups` above: the group cap bounds how many groups
+/// exist, this one how much rendered output they hold between them, so the
+/// observation is the MESSAGE count under an unrestricted number of groups.
+fn probe_max_grouped_messages() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 8);
+    observe_stdout(
+        &pcap,
+        "[limits]\nmax_grouped_messages = 3\n",
+        &["--group-by", "call-id"],
+        |out| {
+            format!(
+                "messages={}",
+                out.lines().filter(|l| l.contains(" -> ")).count()
+            )
+        },
+    )
+}
+
+/// `max_metadata_file_bytes`: a pcapng stripped of its secrets, against a
+/// ceiling of ten bytes.
+///
+/// `--strip-secrets` is the command that reads a whole pcapng into memory, so
+/// it is where the ceiling bites. It also runs BEFORE the ordinary config
+/// load, which is why this probe is worth having: the key reaching it is not
+/// something the other paths prove.
+fn probe_max_metadata_file_bytes() -> (String, String) {
+    fn strip_with(extra: &[&str]) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("secrets.pcapng");
+        let dst = dir.path().join("stripped.pcapng");
+        pcap_build::write_pcapng_with_dsb(
+            &src,
+            "CLIENT_RANDOM abcd 0123\n",
+            &pcap_build::udp_frame([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5060, b"OPTIONS\r\n\r\n"),
+        );
+        let mut args: Vec<String> = vec![
+            "-N".into(),
+            "-I".into(),
+            src.to_str().unwrap().into(),
+            "--strip-secrets".into(),
+            dst.to_str().unwrap().into(),
+            "--no-cli-print".into(),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_string()));
+        let (_out, _err, code) = run_owned(&args);
+        if code == 0 && dst.exists() {
+            "stripped".into()
+        } else {
+            "refused".into()
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(&dir, "[limits]\nmax_metadata_file_bytes = 10\n");
+    (
+        strip_with(&["--no-config"]),
+        strip_with(&["--config", cfg.to_str().unwrap()]),
+    )
+}
+
+/// `max_gunzip_bytes`: a gzip-compressed pcapng against a 100-byte inflation
+/// ceiling.
+///
+/// Driven through `--strip-secrets`, because that is a path where sipnab does
+/// the inflating. The packet stream of a `-I capture.pcap.gz` is decompressed
+/// by libpcap itself and this ceiling never sees it; what sipnab inflates is
+/// the pcapng it reads for embedded names and TLS secrets, and the copy
+/// `--strip-secrets` rewrites.
+fn probe_max_gunzip_bytes() -> (String, String) {
+    fn strip_gzipped_with(extra: &[&str]) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("secrets.pcapng");
+        let gz = dir.path().join("secrets.pcapng.gz");
+        let dst = dir.path().join("stripped.pcapng");
+        pcap_build::write_pcapng_with_dsb(
+            &plain,
+            "CLIENT_RANDOM abcd 0123\n",
+            &pcap_build::udp_frame([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5060, b"OPTIONS\r\n\r\n"),
+        );
+        std::fs::write(
+            &gz,
+            pcap_build::gzip_stored(&std::fs::read(&plain).expect("read the plain pcapng")),
+        )
+        .expect("write the gzip member");
+        let mut args: Vec<String> = vec![
+            "-N".into(),
+            "-I".into(),
+            gz.to_str().unwrap().into(),
+            "--strip-secrets".into(),
+            dst.to_str().unwrap().into(),
+            "--no-cli-print".into(),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_string()));
+        let (_out, _err, code) = run_owned(&args);
+        if code == 0 && dst.exists() {
+            "stripped".into()
+        } else {
+            "refused".into()
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(&dir, "[limits]\nmax_gunzip_bytes = 100\n");
+    (
+        strip_gzipped_with(&["--no-config"]),
+        strip_gzipped_with(&["--config", cfg.to_str().unwrap()]),
+    )
+}
+
+/// `mcp_max_body_bytes`: one `search_messages` snippet against a 64-byte
+/// ceiling.
+///
+/// Driven over the MCP stdio server for the same reason `mcp_max_rows` is:
+/// there is no other surface this key is visible on, and a cap that only
+/// exists in a resolver is not wired.
+#[cfg(feature = "mcp")]
+fn probe_mcp_max_body_bytes() -> (String, String) {
+    fn snippet_len(cfg: Option<&std::path::Path>, pcap: &std::path::Path) -> usize {
+        use std::io::{BufRead, BufReader, Write};
+        let mut args: Vec<String> = vec![
+            "--mcp".into(),
+            "-N".into(),
+            "-I".into(),
+            pcap.to_str().unwrap().into(),
+            "--quiet".into(),
+        ];
+        match cfg {
+            Some(c) => {
+                args.push("--config".into());
+                args.push(c.to_str().unwrap().into());
+            }
+            None => args.push("--no-config".into()),
+        }
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn mcp server");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+
+        let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| {
+            writeln!(w, "{v}").expect("write");
+            w.flush().expect("flush");
+        };
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                      "clientInfo":{"name":"probe","version":"0"}}}),
+        );
+        let mut line = String::new();
+        out.read_line(&mut line).expect("initialize reply");
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","method":"notifications/initialized"}),
+        );
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"search_messages","arguments":{"query":"INVITE","limit":1}}}),
+        );
+
+        let mut len = 0usize;
+        for _ in 0..40 {
+            line.clear();
+            if out.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if v["id"] != serde_json::json!(2) {
+                continue;
+            }
+            let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            len = parsed[0]["snippet"]
+                .as_str()
+                .map(str::len)
+                .or_else(|| parsed["hits"][0]["snippet"].as_str().map(str::len))
+                .unwrap_or(0);
+            break;
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        len
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 1);
+    let cfg = write_config(&dir, "[limits]\nmcp_max_body_bytes = 64\n");
+    (
+        format!("snippet={}", snippet_len(None, &pcap)),
+        format!("snippet={}", snippet_len(Some(&cfg), &pcap)),
+    )
+}
+
+/// Placeholder for a build without the `mcp` feature; the registry marks the
+/// probe disabled, so it is never called.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_max_body_bytes() -> (String, String) {
+    (String::new(), String::new())
 }
 
 /// `max_streams`: a four-stream capture against a cap of one.

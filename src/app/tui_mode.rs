@@ -431,6 +431,7 @@ pub fn run_tui_mode(
         None,
         crate::app::servers::Selection {
             mcp_row_cap: cli.mcp_row_cap(&config),
+            mcp_body_cap: cli.mcp_body_cap(&config),
             api: true,
             mcp: false,
             metrics: true,
