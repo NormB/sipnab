@@ -8,12 +8,40 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.99] - 2026-08-13
+
+Four numbers an operator could not reach became settable, a pane stopped
+disagreeing with itself, and the MCP surface stopped answering confidently
+where it did not know.
+
+### Added
+
+- **Four Tier 1 assumptions are now reachable.** `[limits] max_tcp_buffer` — a
+  SIP/TCP or TLS message over 64 KiB was flushed MID-MESSAGE, so both halves
+  parsed as malformed and a peer that sent a valid message was reported broken.
+  `[diagnosis] cn_suppression_ratio` — comfort noise above 30 percent of packets
+  suppressed the one-way-audio finding outright, which on a VoLTE or mobile
+  trunk with aggressive VAD is routine, so the most-reported VoIP fault was
+  undetectable there.
+
+- **SIP-over-WebSocket now says what it skipped.** sipnab unwrapped it only on
+  ports 80, 443, 8080 and 8443, so a deployment terminating WSS anywhere else —
+  Kamailio, OpenSIPS and Janus defaults among them, or anything behind a reverse
+  proxy — had its entire WebRTC signalling leg vanish, and unlike `--portrange`
+  was told nothing at all. `[capture] ws_ports` / `--ws-portrange` sets the
+  ports, and sipnab now tallies the SIP-over-WebSocket it declines to unwrap and
+  names the ports it arrived on.
 
 Four MCP tools answered confidently and wrongly. The docs described the
 behaviour honestly; the behaviour is what changed.
 
 ### Changed
+
+- **Packetization time is derived, not assumed.** `burst_gap_analysis`
+  hardcoded 20 ms while the diagnosis path already inferred ptime from
+  inter-arrival and validated it, so on G.729 at 30 ms or a satellite trunk at
+  40 ms every reported burst and gap was understated by a third to a half.
+  sipnab now uses the inferred value, else the SDP `a=ptime`, else 20 ms.
 
 - **BREAKING: `search_messages` returns a page object.** The rows moved from
   the top level into `hits`, beside `returned`, `total_matched`, `truncated`,
@@ -49,6 +77,12 @@ behaviour honestly; the behaviour is what changed.
   means re-cutting it into shorter ones.
 
 ### Fixed
+
+- **The stream-detail pane gave two answers about one stream.** The headline
+  `MOS:` scored on the measured path while the MOS Trend sparkline drawn beside
+  it kept the 100 ms assumption, so a long-haul call rendered `MOS: 1.00`
+  against a flat, healthy trend. Both now score on the same delay. The other
+  surfaces still assume 100 ms; that convergence stays open.
 
 - **The documentation gate and its fixer now derive from one list.**
   `repo_paths_in_docs_are_clickable` tells a failing contributor to run
