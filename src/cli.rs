@@ -884,14 +884,6 @@ pub struct Cli {
     pub tag: Option<String>,
 
     // ── RTP ──────────────────────────────────────────────────────────
-    /// Accepted and ignored: periodic RTP statistics reporting is not built.
-    ///
-    /// The flag stays so an existing invocation keeps working, and sipnab warns
-    /// when you pass a value, because the alternative is a runbook that quietly
-    /// reports nothing. See docs/cli-reference.md.
-    #[arg(help_heading = "RTP", long, value_name = "SECS", default_value = "1")]
-    pub rtp_interval: u32,
-
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,
@@ -1212,7 +1204,9 @@ pub struct Cli {
     /// certificate the token references and checking the signature over it,
     /// and sipnab makes no outbound request to analyse a capture. The one
     /// check applied locally is `iat` freshness (RFC 8224 Section 4.4), which
-    /// reports `Expired`.
+    /// reports `Expired`. That window is measured against the capture
+    /// timestamp of the packet carrying the header, so an old pcap reports the
+    /// tokens that were fresh when they were sent.
     ///
     /// So an attestation of `A` here means the originator CLAIMED full
     /// attestation, not that anything confirmed the claim. A forged Identity
@@ -2754,19 +2748,6 @@ impl Cli {
         if let Some(spec) = self.business_hours.as_deref() {
             crate::config::parse_business_hours(spec)?;
         }
-        // --rtp-interval parses, defaults and documents itself, and nothing
-        // reads it. Saying so beats accepting a value and reporting nothing,
-        // because docs/cli-reference.md used to teach "stats every 5 seconds"
-        // as a worked example. Warn rather than refuse: an existing invocation
-        // keeps working, and the operator learns the interval is not honoured.
-        if self.rtp_interval != 1 {
-            tracing::warn!(
-                "--rtp-interval {} is accepted and ignored: periodic RTP statistics \
-                 reporting is not implemented, so no interval report will appear. \
-                 Stream statistics are reported once, at end of capture.",
-                self.rtp_interval
-            );
-        }
         let output_flags_used: Vec<&str> = [
             (self.json, "--json"),
             (self.json_dialogs, "--json-dialogs"),
@@ -3397,7 +3378,6 @@ mod tests {
         let cfg = crate::config::Config::default();
         assert_eq!(cli.dialog_limit(&cfg), 100_000);
         assert_eq!(cli.max_streams_limit(&cfg), 50_000);
-        assert_eq!(cli.rtp_interval, 1);
         assert!((cli.quality_threshold - 3.0).abs() < f64::EPSILON);
         assert_eq!(cli.kill_response_code(&cfg), 200);
         assert_eq!(cli.exec_rate_limit, 10);

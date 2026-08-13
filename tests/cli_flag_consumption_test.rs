@@ -26,21 +26,12 @@ use std::path::Path;
 /// Adding an entry is a deliberate act. If a flag lands here because it is
 /// unimplemented, its help text and its documentation must say so too —
 /// otherwise this list becomes the place where a lie is kept tidy.
-const ACCEPTED_WITHOUT_A_READER: &[(&str, &str)] = &[
-    (
-        "_sngrep_r",
-        "sngrep compatibility: -r is accepted and ignored on purpose, so a \
+const ACCEPTED_WITHOUT_A_READER: &[(&str, &str)] = &[(
+    "_sngrep_r",
+    "sngrep compatibility: -r is accepted and ignored on purpose, so a \
          muscle-memory invocation does not fail. The leading underscore marks it, \
          and CLI_REFERENCE documents it as a no-op.",
-    ),
-    (
-        "rtp_interval",
-        "Periodic RTP statistics reporting is not implemented. The flag stays so \
-         an existing invocation keeps working, and Cli::validate warns when a \
-         non-default value is passed, because docs/cli-reference.md used to teach \
-         it as a worked example. Remove this entry when the feature lands.",
-    ),
-];
+)];
 
 /// Read a repo file relative to the manifest directory.
 fn repo_file(rel: &str) -> String {
@@ -104,9 +95,11 @@ fn every_cli_flag_reaches_something_that_reads_it() {
     }
 
     // A flag consumed by a `cli.rs` helper that callers use is genuinely read,
-    // so `cli.rs` counts — but only its non-test half. `--rtp-interval` is the
-    // reason that distinction matters: its sole reference is a unit test
-    // asserting its default value, which makes a dead flag look tested.
+    // so `cli.rs` counts — but only its non-test half. `--rtp-interval` was the
+    // reason that distinction matters: its sole reference was a unit test
+    // asserting its default value, which made a dead flag look tested. It has
+    // since been removed rather than kept; the distinction stays, because the
+    // next such flag will look exactly the same from here.
     let cli_non_test = match cli_src.find("\nmod tests") {
         Some(i) => &cli_src[..i],
         None => &cli_src[..],

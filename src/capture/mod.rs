@@ -11,10 +11,6 @@
 pub mod atomic;
 #[cfg(feature = "native")]
 pub mod channel;
-// SDP-declared media sockets, so a decoder cannot read RTP as a tunnel header.
-// Ungated on purpose: every entry point that parses a packet needs the veto,
-// including the wasm analyser, which has no `native`.
-pub mod declared_media;
 #[cfg(feature = "tls")]
 pub mod decrypt;
 #[cfg(feature = "native")]

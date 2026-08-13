@@ -54,7 +54,8 @@ pub struct DtmfEvent {
 
 // ── Public API ───────────────────────────────────────────────────────
 
-/// Extract a DTMF event from an RTP telephone-event payload.
+/// Extract a DTMF event from an RTP telephone-event payload, using the
+/// negotiated telephone-event clock rate.
 ///
 /// RFC 4733 telephone-event format (4 bytes):
 /// ```text
@@ -69,41 +70,19 @@ pub struct DtmfEvent {
 /// - `E` bit: 1 = end of event (only these are returned)
 /// - `duration`: in RTP timestamp units of the telephone-event clock
 ///
-/// This is a convenience wrapper over [`extract_dtmf_with_clock`] that
-/// assumes the RFC 4733 default 8000 Hz telephone-event clock. Callers that
-/// know the negotiated clock rate — e.g. a `16000` Hz wideband
-/// telephone-event from `a=rtpmap:<pt> telephone-event/16000` — should call
-/// [`extract_dtmf_with_clock`] directly so the reported duration is correct.
-///
-/// # Arguments
-///
-/// * `payload` — the RTP payload bytes (after the RTP header).
-/// * `payload_type` — the PT from the RTP header for this packet.
-/// * `expected_pt` — the telephone-event PT negotiated via SDP.
-/// * `timestamp` — capture timestamp for the resulting event.
-///
-/// # Returns
-///
-/// `Some(DtmfEvent)` if this is a complete telephone-event (E bit set)
-/// with a valid digit. `None` for intermediate packets, wrong payload
-/// type, or payloads too short to decode.
-pub fn extract_dtmf(
-    payload: &[u8],
-    payload_type: u8,
-    expected_pt: u8,
-    timestamp: DateTime<Utc>,
-) -> Option<DtmfEvent> {
-    extract_dtmf_with_clock(payload, payload_type, expected_pt, 8000, timestamp)
-}
-
-/// Extract a DTMF event using an explicit telephone-event clock rate.
-///
-/// The RFC 4733 `duration` field is expressed in RTP timestamp units of the
+/// The `duration` field is expressed in RTP timestamp units of the
 /// telephone-event clock, which is negotiated in SDP as
 /// `a=rtpmap:<pt> telephone-event/<clock_rate>`. It is commonly 8000 Hz but
 /// is 16000 Hz for wideband; assuming 8000 Hz for a 16 kHz event reports
 /// double the true duration. Pass the negotiated `clock_rate` (in Hz) so the
 /// duration is scaled correctly.
+///
+/// The clock rate is deliberately a required argument and there is no
+/// 8 kHz-defaulting wrapper beside it. One existed, and it was the same shape
+/// as `estimate_mos`'s: a convenience overload that bakes an assumption in, so
+/// that a caller reaching for the shorter name silently gets the wideband
+/// answer wrong. Callers with no SDP to read supply the RFC 4733 convention
+/// themselves, at the call site, where it is visible.
 ///
 /// # Arguments
 ///
@@ -210,7 +189,7 @@ mod tests {
     #[test]
     fn extract_digit_1_end() {
         let payload = build_event(1, true, 10, 1600); // 200ms at 8kHz
-        let event = extract_dtmf(&payload, 101, 101, ts());
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts());
         let event = event.expect("should extract digit 1");
         assert_eq!(event.digit, '1');
         assert_eq!(event.duration_ms, 200);
@@ -220,7 +199,8 @@ mod tests {
     #[test]
     fn extract_digit_0() {
         let payload = build_event(0, true, 10, 800);
-        let event = extract_dtmf(&payload, 101, 101, ts()).expect("should extract digit 0");
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts())
+            .expect("should extract digit 0");
         assert_eq!(event.digit, '0');
         assert_eq!(event.duration_ms, 100);
     }
@@ -229,7 +209,8 @@ mod tests {
     #[test]
     fn extract_star() {
         let payload = build_event(10, true, 10, 1600);
-        let event = extract_dtmf(&payload, 101, 101, ts()).expect("should extract *");
+        let event =
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract *");
         assert_eq!(event.digit, '*');
     }
 
@@ -237,7 +218,8 @@ mod tests {
     #[test]
     fn extract_hash() {
         let payload = build_event(11, true, 10, 1600);
-        let event = extract_dtmf(&payload, 101, 101, ts()).expect("should extract #");
+        let event =
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract #");
         assert_eq!(event.digit, '#');
     }
 
@@ -245,7 +227,8 @@ mod tests {
     #[test]
     fn extract_letter_a() {
         let payload = build_event(12, true, 10, 1600);
-        let event = extract_dtmf(&payload, 101, 101, ts()).expect("should extract A");
+        let event =
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract A");
         assert_eq!(event.digit, 'A');
     }
 
@@ -253,7 +236,8 @@ mod tests {
     #[test]
     fn extract_letter_d() {
         let payload = build_event(15, true, 10, 1600);
-        let event = extract_dtmf(&payload, 101, 101, ts()).expect("should extract D");
+        let event =
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract D");
         assert_eq!(event.digit, 'D');
     }
 
@@ -262,7 +246,7 @@ mod tests {
     fn intermediate_packet_not_returned() {
         // E bit = 0 (intermediate)
         let payload = build_event(5, false, 10, 800);
-        let event = extract_dtmf(&payload, 101, 101, ts());
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts());
         assert!(event.is_none(), "Intermediate packets should return None");
     }
 
@@ -271,21 +255,21 @@ mod tests {
     fn wrong_payload_type_not_returned() {
         let payload = build_event(1, true, 10, 1600);
         // PT 96 doesn't match expected 101
-        let event = extract_dtmf(&payload, 96, 101, ts());
+        let event = extract_dtmf_with_clock(&payload, 96, 101, 8000, ts());
         assert!(event.is_none(), "Wrong PT should return None");
     }
 
     /// A payload under 4 bytes is too short to decode and returns `None`.
     #[test]
     fn payload_too_short() {
-        let event = extract_dtmf(&[0x01, 0x80], 101, 101, ts());
+        let event = extract_dtmf_with_clock(&[0x01, 0x80], 101, 101, 8000, ts());
         assert!(event.is_none(), "Payload < 4 bytes should return None");
     }
 
     /// An empty payload returns `None`.
     #[test]
     fn empty_payload() {
-        let event = extract_dtmf(&[], 101, 101, ts());
+        let event = extract_dtmf_with_clock(&[], 101, 101, 8000, ts());
         assert!(event.is_none(), "Empty payload should return None");
     }
 
@@ -294,7 +278,7 @@ mod tests {
     fn invalid_event_code() {
         // Event 16 is outside DTMF range
         let payload = build_event(16, true, 10, 1600);
-        let event = extract_dtmf(&payload, 101, 101, ts());
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts());
         assert!(event.is_none(), "Event code 16 should return None");
     }
 
@@ -321,7 +305,7 @@ mod tests {
         ];
         for (code, digit) in expected {
             let payload = build_event(code, true, 10, 1600);
-            let event = extract_dtmf(&payload, 101, 101, ts())
+            let event = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts())
                 .unwrap_or_else(|| panic!("Should extract event code {code}"));
             assert_eq!(
                 event.digit, digit,
@@ -330,12 +314,13 @@ mod tests {
         }
     }
 
-    /// Duration in timestamp units is converted to ms assuming an 8 kHz clock.
+    /// Duration in timestamp units is converted to ms against an 8 kHz clock.
     #[test]
     fn duration_calculation() {
         // 3200 timestamp units at 8kHz = 400ms
         let payload = build_event(5, true, 10, 3200);
-        let event = extract_dtmf(&payload, 101, 101, ts()).expect("should extract");
+        let event =
+            extract_dtmf_with_clock(&payload, 101, 101, 8000, ts()).expect("should extract");
         assert_eq!(event.duration_ms, 400);
     }
 
@@ -371,14 +356,11 @@ mod tests {
         }
     }
 
-    /// The 8 kHz-default `extract_dtmf` remains equivalent to calling
-    /// `extract_dtmf_with_clock` with an 8000 Hz clock.
+    /// A zero clock rate — which no valid `a=rtpmap` carries — returns `None`
+    /// rather than dividing by zero.
     #[test]
-    fn extract_dtmf_defaults_to_8khz() {
-        let payload = build_event(1, true, 10, 1600); // 200 ms at 8 kHz
-        let default = extract_dtmf(&payload, 101, 101, ts());
-        let explicit = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts());
-        assert_eq!(default, explicit);
-        assert_eq!(default.expect("extract").duration_ms, 200);
+    fn a_zero_clock_rate_yields_no_event() {
+        let payload = build_event(1, true, 10, 1600);
+        assert!(extract_dtmf_with_clock(&payload, 101, 101, 0, ts()).is_none());
     }
 }

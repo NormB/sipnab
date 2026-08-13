@@ -913,14 +913,24 @@ fn missing_config_file_errors() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  RTP FLAGS (--rtp-interval, --max-streams, --quality-threshold, -t)
+//  RTP FLAGS (--max-streams, --quality-threshold, -t)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// `--rtp-interval 5` is accepted and exits 0.
+/// `--rtp-interval` is refused outright, not accepted and ignored.
+///
+/// It parsed, defaulted, documented itself and reached nothing for the whole
+/// of its life; the interval report it named was never built. An accepted
+/// value is the worse failure of the two, because a runbook reads as
+/// configured and reports nothing. clap now names the flag it does not know,
+/// which is an answer an operator can act on.
 #[test]
-fn rtp_interval_accepted() {
-    let (_, _, code) = run_json(&["--rtp-interval", "5"]);
-    assert_eq!(code, 0);
+fn rtp_interval_is_refused_rather_than_accepted_and_ignored() {
+    let (_, stderr, code) = run_json(&["--rtp-interval", "5"]);
+    assert_ne!(code, 0, "a flag sipnab does not implement must not exit 0");
+    assert!(
+        stderr.contains("--rtp-interval"),
+        "the refusal must name the flag; got: {stderr}"
+    );
 }
 
 /// `--max-streams 100` is accepted and exits 0.

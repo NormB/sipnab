@@ -334,7 +334,9 @@ fn fuzz_tls_text_entry_points_no_panic() {
     let id_seeds: &[&[u8]] = &[&id_seed];
     pound("stir_shaken", id_seeds, ITERS, |d| {
         if let Ok(s) = std::str::from_utf8(d) {
-            let _ = sipnab::sip::stir_shaken::parse_identity_header(s);
+            // Fixed capture clock, so a failure reproduces from the input
+            // alone rather than from when the suite happened to run.
+            let _ = sipnab::sip::stir_shaken::parse_identity_header(s, 1_700_000_000);
         }
     });
 

@@ -486,13 +486,6 @@ fn default_tag_is_none() {
 //  RTP
 // ═══════════════════════════════════════════════════════════════════════
 
-/// `rtp_interval` (stats period) defaults to 1 second.
-#[test]
-fn default_rtp_interval() {
-    let cli = defaults();
-    assert_eq!(cli.rtp_interval, 1, "default rtp_interval should be 1");
-}
-
 /// `max_streams` defaults to 50000 RTP streams.
 #[test]
 fn default_max_streams() {

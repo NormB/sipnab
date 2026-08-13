@@ -14,6 +14,25 @@
 //! (RFC 8224 Section 4.4) reports [`VerificationStatus::Expired`]. Those are
 //! the only two states the type has; an attestation level here is the
 //! originator's claim, not a confirmed fact.
+//!
+//! # The freshness window is measured against CAPTURE time
+//!
+//! RFC 8224 §4.4 gives the `iat` claim a ±60 s window, and the only clock that
+//! window may be read against is the timestamp of the packet that carried the
+//! header. sipnab analyses files: a capture taken last Tuesday is read today,
+//! and against the wall clock every Identity header in it is minutes, days or
+//! years stale — so every token would report
+//! [`Expired`](VerificationStatus::Expired) and the check would be reporting
+//! the age of the FILE, not the freshness of the token.
+//!
+//! That is the same distinction `app::batch::SweepClock` draws for dialog and
+//! stream expiry, and the same one the scanner and fraud detectors were
+//! corrected for. Here it needs no enum: a parsed [`SipMessage`] already
+//! carries the capture timestamp of the packet it came from, and for a LIVE
+//! capture that timestamp *is* the wall clock. So
+//! [`parse_identity_header`] takes the clock as an argument and
+//! [`SipMessage::stir_shaken`] supplies the message's own timestamp — there is
+//! no wall-clock-reading overload for a later caller to pick up by accident.
 
 use anyhow::{Result, bail};
 use base64::Engine;
@@ -61,8 +80,8 @@ pub enum Attestation {
 pub enum VerificationStatus {
     /// The signature was not checked: sipnab fetches no certificate.
     NotChecked,
-    /// The `iat` claim is stale — more than 60 seconds from the current time
-    /// (RFC 8224 Section 4.4).
+    /// The `iat` claim is stale — more than 60 seconds from the capture
+    /// timestamp of the packet that carried the header (RFC 8224 Section 4.4).
     Expired,
 }
 
@@ -138,31 +157,22 @@ struct ShakenPayload {
 ///
 /// * `header_value` — the raw `Identity` header value (JWT plus optional
 ///   `;`-separated parameters).
+/// * `now_unix` — the clock the RFC 8224 §4.4 freshness window is measured
+///   against, in Unix epoch seconds. This is the **capture timestamp** of the
+///   packet that carried the header, never `chrono::Utc::now()`: an offline
+///   capture read a minute after it was taken would otherwise report every
+///   token `Expired`. See the module docs.
 ///
 /// # Returns
 ///
 /// The decoded claims. `verified` is `Expired` when the `iat` claim is more
-/// than 60 seconds from the current system time (read via
-/// `chrono::Utc::now`, so results are time-dependent), otherwise
-/// `NotChecked`.
+/// than 60 seconds from `now_unix`, otherwise `NotChecked`.
 ///
 /// # Errors
 ///
 /// Returns an error if the JWT cannot be split into its three parts or if
 /// base64 decoding / JSON parsing of the payload fails.
-pub fn parse_identity_header(header_value: &str) -> Result<StirShakenInfo> {
-    // Public entry point reads the wall clock; the iat freshness logic lives
-    // in `parse_identity_header_at` so it can be tested deterministically.
-    parse_identity_header_at(header_value, chrono::Utc::now().timestamp())
-}
-
-/// Clock-injected core of [`parse_identity_header`].
-///
-/// Identical to the public function except the "current time" used for the
-/// RFC 8224 §4.4 iat freshness check is passed in as `now_unix` (Unix epoch
-/// seconds) rather than read from the system clock, making the iat-window
-/// classification deterministic under test.
-fn parse_identity_header_at(header_value: &str, now_unix: i64) -> Result<StirShakenInfo> {
+pub fn parse_identity_header(header_value: &str, now_unix: i64) -> Result<StirShakenInfo> {
     // The Identity header may have parameters after the JWT, separated by ';'
     // The JWT itself is the first token (before any ';')
     let jwt_part = header_value.split(';').next().unwrap_or("").trim();
@@ -194,10 +204,10 @@ fn parse_identity_header_at(header_value: &str, now_unix: i64) -> Result<StirSha
     let orig_tn = claims.orig.and_then(|o| o.tn);
     let (dest_tn, dest_uri) = claims.dest.map(|d| (d.tn, d.uri)).unwrap_or_default();
 
-    // RFC 8224 Section 4.4: the `iat` claim must be within 60 seconds of
-    // the current time. If it is stale (or too far in the future), mark
-    // the token as expired. Missing `iat` is noted by leaving the field
-    // as `None` — callers can treat absence as suspicious.
+    // RFC 8224 Section 4.4: the `iat` claim must be within 60 seconds of the
+    // time the message was on the wire. If it is stale (or too far in the
+    // future), mark the token as expired. Missing `iat` is noted by leaving
+    // the field as `None` — callers can treat absence as suspicious.
     let verified = match claims.iat {
         Some(iat) => {
             if (now_unix - iat).abs() > 60 {
@@ -241,11 +251,19 @@ impl StirShakenInfo {
 impl SipMessage {
     /// Extract STIR/SHAKEN information from the `Identity` header, if present.
     ///
+    /// The RFC 8224 §4.4 freshness window is measured against **this message's
+    /// capture timestamp**, not the wall clock. `--stir-shaken -I capture.pcap`
+    /// therefore answers "was the token fresh when it was sent", which is the
+    /// only question the capture can answer; reading the wall clock would
+    /// instead report the age of the file, marking every token in any capture
+    /// older than a minute `Expired`. On a live capture the two coincide,
+    /// because the packet's timestamp is the current time.
+    ///
     /// Returns `None` if there is no `Identity` header. Returns `Some(Err(...))`
     /// if the header exists but cannot be parsed.
     pub fn stir_shaken(&self) -> Option<Result<StirShakenInfo>> {
         let identity = self.header("Identity")?;
-        Some(parse_identity_header(identity))
+        Some(parse_identity_header(identity, self.timestamp.timestamp()))
     }
 }
 
@@ -257,6 +275,15 @@ impl SipMessage {
 mod tests {
     use super::*;
     use crate::net::TransportProto;
+
+    /// The `iat` every fixed payload below carries: 2023-11-14T22:13:20Z.
+    const FIXED_IAT: i64 = 1_700_000_000;
+
+    /// A capture clock a full hour after [`FIXED_IAT`], for the tests that are
+    /// about claim extraction rather than freshness. Named and fixed rather
+    /// than `Utc::now()`, so no test in this module can pass or fail because of
+    /// when the suite ran.
+    const LONG_AFTER_IAT: i64 = FIXED_IAT + 3600;
 
     /// Build a minimal SHAKEN JWT with the given claims.
     ///
@@ -285,7 +312,7 @@ mod tests {
             "origid": "550e8400-e29b-41d4-a716-446655440000"
         }"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.attestation, Attestation::A);
         assert_eq!(info.orig_tn.as_deref(), Some("12125559876"));
@@ -310,7 +337,7 @@ mod tests {
             "orig": {"tn": "12125559876"}
         }"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(
             info.dest_tn,
@@ -332,7 +359,7 @@ mod tests {
             "orig": {"tn": "12125559876"}
         }"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.dest_tn, ["12025551000"]);
         assert_eq!(
@@ -351,7 +378,7 @@ mod tests {
     fn parse_attest_b() {
         let payload = r#"{"attest": "B", "orig": {"tn": "1001"}, "dest": {"tn": ["2002"]}, "iat": 1700000001}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.attestation, Attestation::B);
     }
@@ -361,7 +388,7 @@ mod tests {
     fn parse_attest_c() {
         let payload = r#"{"attest": "C", "orig": {"tn": "1001"}, "dest": {"tn": ["2002"]}, "iat": 1700000002}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.attestation, Attestation::C);
     }
@@ -371,7 +398,7 @@ mod tests {
     fn parse_unknown_attestation() {
         let payload = r#"{"attest": "X", "orig": {"tn": "1001"}}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.attestation, Attestation::Unknown);
     }
@@ -381,7 +408,7 @@ mod tests {
     fn parse_missing_attestation() {
         let payload = r#"{"orig": {"tn": "1001"}}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.attestation, Attestation::Unknown);
     }
@@ -390,21 +417,21 @@ mod tests {
     #[test]
     fn malformed_jwt_too_many_parts() {
         // "not.a.valid.jwt.with.too.many.parts" splits into 8 parts (> 3).
-        let result = parse_identity_header("not.a.valid.jwt.with.too.many.parts");
+        let result = parse_identity_header("not.a.valid.jwt.with.too.many.parts", LONG_AFTER_IAT);
         assert!(result.is_err());
     }
 
     /// A single-segment token (no dots) is rejected.
     #[test]
     fn malformed_jwt_single_segment() {
-        let result = parse_identity_header("justatoken");
+        let result = parse_identity_header("justatoken", LONG_AFTER_IAT);
         assert!(result.is_err());
     }
 
     /// A payload segment that is not valid base64url is rejected.
     #[test]
     fn malformed_jwt_bad_base64() {
-        let result = parse_identity_header("aaa.!!!invalid_base64!!!.ccc");
+        let result = parse_identity_header("aaa.!!!invalid_base64!!!.ccc", LONG_AFTER_IAT);
         assert!(result.is_err());
     }
 
@@ -413,7 +440,7 @@ mod tests {
     fn malformed_jwt_bad_json() {
         let payload_b64 = URL_SAFE_NO_PAD.encode(b"not json at all");
         let header = format!("aaa.{payload_b64}.ccc");
-        let result = parse_identity_header(&header);
+        let result = parse_identity_header(&header, LONG_AFTER_IAT);
         assert!(result.is_err());
     }
 
@@ -422,7 +449,7 @@ mod tests {
     fn parse_minimal_payload() {
         let payload = r#"{}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.attestation, Attestation::Unknown);
         assert!(info.orig_tn.is_none());
@@ -433,39 +460,38 @@ mod tests {
         assert!(info.iat.is_none());
     }
 
-    /// An iat within the 60-second window stays NotChecked.
+    /// An iat matching the capture clock stays NotChecked.
     #[test]
     fn iat_fresh_within_window() {
-        let now = chrono::Utc::now().timestamp();
         let payload = format!(
-            r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "dest": {{"tn": ["2002"]}}, "iat": {now}}}"#,
+            r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "dest": {{"tn": ["2002"]}}, "iat": {LONG_AFTER_IAT}}}"#,
         );
         let header = build_identity_header(&payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.verified, VerificationStatus::NotChecked);
     }
 
-    /// An iat two minutes in the past is marked Expired.
+    /// An iat two minutes before the capture clock is marked Expired.
     #[test]
     fn iat_stale_past() {
-        // 2 minutes ago — well outside the 60s window
-        let stale = chrono::Utc::now().timestamp() - 120;
+        // 2 minutes before the packet was captured — outside the 60s window.
+        let stale = LONG_AFTER_IAT - 120;
         let payload = format!(r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {stale}}}"#,);
         let header = build_identity_header(&payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.verified, VerificationStatus::Expired);
     }
 
-    /// An iat two minutes in the future is also marked Expired.
+    /// An iat two minutes after the capture clock is also marked Expired.
     #[test]
     fn iat_stale_future() {
-        // 2 minutes in the future — also outside the 60s window
-        let future = chrono::Utc::now().timestamp() + 120;
+        // 2 minutes after the packet was captured — also outside the window.
+        let future = LONG_AFTER_IAT + 120;
         let payload = format!(r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {future}}}"#,);
         let header = build_identity_header(&payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert_eq!(info.verified, VerificationStatus::Expired);
     }
@@ -475,7 +501,7 @@ mod tests {
     fn iat_missing_not_expired() {
         let payload = r#"{"attest": "B", "orig": {"tn": "1001"}}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
 
         assert!(info.iat.is_none());
         assert_eq!(info.verified, VerificationStatus::NotChecked);
@@ -487,7 +513,7 @@ mod tests {
     #[test]
     fn iat_window_boundary_with_injected_clock() {
         // Fixed reference "now" so the test never depends on Utc::now().
-        let now: i64 = 1_700_000_000;
+        let now: i64 = FIXED_IAT;
 
         let header_at = |iat: i64| {
             let payload = format!(r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {iat}}}"#);
@@ -496,7 +522,7 @@ mod tests {
 
         // Exactly on the 60s boundary (both directions) stays NotChecked.
         for iat in [now - 60, now + 60] {
-            let info = parse_identity_header_at(&header_at(iat), now).expect("should parse");
+            let info = parse_identity_header(&header_at(iat), now).expect("should parse");
             assert_eq!(
                 info.verified,
                 VerificationStatus::NotChecked,
@@ -506,7 +532,7 @@ mod tests {
 
         // One second past the boundary (both directions) is Expired.
         for iat in [now - 61, now + 61] {
-            let info = parse_identity_header_at(&header_at(iat), now).expect("should parse");
+            let info = parse_identity_header(&header_at(iat), now).expect("should parse");
             assert_eq!(
                 info.verified,
                 VerificationStatus::Expired,
@@ -586,16 +612,15 @@ mod tests {
         assert_eq!(info.orig_tn.as_deref(), Some("5551234"));
     }
 
-    /// `stir_shaken()` parses a present Identity header into claims.
-    #[test]
-    fn sip_message_stir_shaken_with_identity() {
+    /// An INVITE carrying `identity_value`, captured at `captured_at`.
+    fn message_with_identity(
+        identity_value: String,
+        captured_at: chrono::DateTime<chrono::Utc>,
+    ) -> SipMessage {
         use crate::sip::message::SipHeader;
         use std::net::{IpAddr, Ipv4Addr};
 
-        let payload = r#"{"attest": "A", "orig": {"tn": "5551234"}, "dest": {"tn": ["5559876"]}, "iat": 1700000000}"#;
-        let identity_value = build_identity_header(payload);
-
-        let msg = SipMessage {
+        SipMessage {
             frame: None,
             raw: Default::default(),
             is_request: true,
@@ -609,14 +634,21 @@ mod tests {
             }],
             body: Default::default(),
             parse_error: false,
-            timestamp: chrono::Utc::now(),
+            timestamp: captured_at,
             src_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             dst_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             src_port: 5060,
             dst_port: 5060,
             transport: TransportProto::Udp,
             is_retransmission: false,
-        };
+        }
+    }
+
+    /// `stir_shaken()` parses a present Identity header into claims.
+    #[test]
+    fn sip_message_stir_shaken_with_identity() {
+        let payload = r#"{"attest": "A", "orig": {"tn": "5551234"}, "dest": {"tn": ["5559876"]}, "iat": 1700000000}"#;
+        let msg = message_with_identity(build_identity_header(payload), chrono::Utc::now());
 
         let info = msg
             .stir_shaken()
@@ -624,7 +656,50 @@ mod tests {
             .expect("should parse");
         assert_eq!(info.attestation, Attestation::A);
         assert_eq!(info.orig_tn.as_deref(), Some("5551234"));
-        // iat=1700000000 is stale
+        // Captured now, issued in 2023: stale against this packet's own clock.
         assert_eq!(info.verified, VerificationStatus::Expired);
+    }
+
+    /// A token issued when the packet was captured is FRESH, however long ago
+    /// the capture was taken.
+    ///
+    /// This is the whole defect in one assertion. sipnab reads files, so the
+    /// wall clock answers a question nobody asked — "is this pcap younger than
+    /// a minute" — and under it every Identity header in every stored capture
+    /// reports `Expired`, including the ones a carrier signed correctly. The
+    /// packet's own timestamp answers the question RFC 8224 §4.4 actually
+    /// poses. Both readings are computed here so the test names what it is
+    /// choosing between rather than merely asserting the good one.
+    #[test]
+    fn an_old_capture_does_not_expire_a_token_that_was_fresh_when_sent() {
+        // A capture from 2023. The token was issued as the INVITE went out.
+        let captured_at = chrono::DateTime::from_timestamp(FIXED_IAT, 0).expect("valid epoch");
+        let payload =
+            format!(r#"{{"attest": "A", "orig": {{"tn": "5551234"}}, "iat": {FIXED_IAT}}}"#);
+        let identity_value = build_identity_header(&payload);
+
+        let info = message_with_identity(identity_value.clone(), captured_at)
+            .stir_shaken()
+            .expect("should have Identity header")
+            .expect("should parse");
+        assert_eq!(
+            info.verified,
+            VerificationStatus::NotChecked,
+            "a token issued at capture time is fresh; reading the wall clock \
+             would call every header in every stored capture Expired"
+        );
+
+        // The reading that was replaced, computed rather than asserted from
+        // memory: the same header against the wall clock IS Expired, so the
+        // assertion above cannot pass by both clocks agreeing.
+        let wall = chrono::Utc::now().timestamp();
+        assert!(
+            (wall - FIXED_IAT).abs() > 60,
+            "this test needs the suite to run more than a minute after \
+             {FIXED_IAT}; it is 2023, so only a badly wrong system clock \
+             gets here"
+        );
+        let by_wall_clock = parse_identity_header(&identity_value, wall).expect("should parse");
+        assert_eq!(by_wall_clock.verified, VerificationStatus::Expired);
     }
 }

@@ -8,6 +8,55 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--stir-shaken` no longer marks every token in a stored capture `Expired`.**
+  The RFC 8224 Section 4.4 `iat` freshness window was measured against the wall
+  clock, so the answer depended on when you opened the file rather than on
+  anything in it: any capture read more than 60 seconds after it was taken
+  reported `Expired` for every Identity header in it, including the ones a
+  carrier signed correctly, and the one check sipnab does apply locally was
+  reporting the age of the pcap. The window is now measured against the capture
+  timestamp of the packet carrying the header — the same capture-clock-versus-
+  wall-clock distinction `SweepClock` draws for dialog and stream expiry, and
+  the scanner and fraud detectors before it. A live capture is unaffected,
+  because there the packet's timestamp is the current time.
+
+### Changed
+
+- **BREAKING: `sip::stir_shaken::parse_identity_header` takes the clock as an
+  argument.** There is no wall-clock-reading overload beside it, so a later
+  caller cannot pick one up by accident. Callers pass the capture timestamp of
+  the message; `SipMessage::stir_shaken()` does this for you.
+
+- **BREAKING: `--rtp-interval` is removed rather than accepted and ignored.**
+  It parsed, defaulted, documented itself and reached nothing for its whole
+  life — the periodic RTP statistics report it named was never built. 0.5.9x
+  kept it with a warning so an existing invocation would keep working, which
+  left a flag that reads as configured from the outside. sipnab now refuses it
+  and names it. Stream statistics are unchanged: they arrive once, at end of
+  capture.
+
+- **BREAKING: `rtp::dtmf::extract_dtmf` is removed.** It was a convenience
+  wrapper baking in the RFC 4733 default 8000 Hz telephone-event clock, so a
+  16 kHz wideband event reported double its true duration to any caller who
+  reached for the shorter name. `extract_dtmf_with_clock` takes the negotiated
+  rate and is now the only entry point. Nothing in sipnab called the wrapper —
+  the batch path already passed the SDP-negotiated rate — so no reported
+  duration changes.
+
+### Removed
+
+- **The unwired SDP media-declaration registry (`capture::declared_media`).**
+  It was a complete, tested design for vetoing tunnel decapsulation on sockets
+  that SDP had declared as media, and nothing in the codebase called `declare`,
+  `unless_declared` or `clear`. Its own module documentation described the
+  wiring in the present tense, so the rustdoc promised a defence sipnab did not
+  have. Retired rather than kept as dead code with an honest sign on it; the
+  design is intact in git at 1466cd86 for whoever schedules the work.
+
 ## [0.5.99] - 2026-08-13
 
 Four numbers an operator could not reach became settable, a pane stopped

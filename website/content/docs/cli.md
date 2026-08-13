@@ -629,15 +629,14 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--rtp-interval` | `<SECS>` | `1` | **Accepted and ignored.** Periodic RTP statistics reporting is not implemented, so no interval report appears. sipnab warns when you pass a non-default value, and reports stream statistics once, at end of capture |
 | `--max-streams` | `<N>` | `50000` | Maximum number of RTP streams to track simultaneously |
 | `--max-lost-sequences` | `<N>` | `1000` | Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. The default is about a minute of a call losing 1 % at 50 packets a second, so on a half-hour call the map shows the tail and marks itself truncated. The burst/gap window widens with it, and each retained loss costs two bytes per stream. Config: `[limits] max_lost_sequences` |
 | `--quality-threshold` | `<MOS>` | `3.0` | MOS quality threshold for alerts (1.0-5.0 scale) |
 
 **Examples**
 
-- `sudo sipnab -d eth0 --rtp-interval 5 --quality-threshold 3.5 --max-streams 10000` — monitor live RTP with MOS alerts below 3.5. sipnab accepts `--rtp-interval 5`, ignores it, and says so: expect no 5-second reports, only the end-of-capture statistics
-- `sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000` — batch-analyse RTP streams with a raised stream cap. Again `--rtp-interval 2` changes nothing; the statistics arrive once, when the capture ends
+- `sudo sipnab -d eth0 --quality-threshold 3.5 --max-streams 10000` — monitor live RTP with MOS alerts below 3.5. sipnab reports stream statistics once, at end of capture. There is no periodic interval report
+- `sipnab -N -I capture.pcap --max-streams 100000` — batch-analyse RTP streams with a raised stream cap. The statistics arrive once, when the capture ends
 - `sipnab -N -I long-call.pcap --max-lost-sequences 100000 --json-dialogs --no-cli-print` — keep every loss from a half-hour call that an operator escalated, so the Packet Loss Map covers the whole call and the burst count is the real one rather than the tail's
 - `sudo sipnab -d eth0 --max-lost-sequences 200` — watch a busy trunk on a small box, holding a fifth of the shipped loss history per stream; the map still shows where loss is landing right now and marks itself truncated
 

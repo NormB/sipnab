@@ -1812,9 +1812,7 @@ pub struct StreamPage {
 // integers, codes and one proportion, with no `String` anywhere in it or
 // anything nested in it. A type that cannot represent packet content cannot
 // leak packet content, so the guarantee survives a reviewer having a bad day
-// and a comment going stale. It is the same discipline that makes
-// `unless_declared` in `capture::declared_media` safe: that function cannot
-// construct a `T`, so it can only ever suppress and never assert.
+// and a comment going stale.
 //
 // `a_populated_capture_health_response_carries_no_string_value_anywhere`
 // enforces it by walking a serialized response and failing on any string
