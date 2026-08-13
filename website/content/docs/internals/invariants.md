@@ -503,6 +503,16 @@ Writing it somewhere else is not disclosure, and it reads as one.
   `capture_status`, since folded into one) returned a byte-identical key set whether the run dropped a third of it or
   none of it — so a model driving the MCP tools answered from two thirds of the
   capture with full confidence, and had no way to learn otherwise.
+- The SIP-over-WebSocket skip tally repeated the `--portrange` defect above,
+  months after that rule landed, with the fixed field one line away to copy.
+  It reached the operator as a stderr warning and a CLI summary line and
+  reached an MCP client not at all, so on a capture whose WSS lands on 8081 —
+  Kamailio, OpenSIPS, Janus and any reverse proxy — `capture_status` answered
+  `dialog_count: 0`, `unanalysed_sip_messages: 0` and `degraded: false`, which
+  is character for character what a perfect read of a capture holding no SIP
+  produces, while an entire WebRTC signalling leg went unreported. Adding a
+  disclosure to one surface is not the fix; the fix is adding it to every
+  surface that answers the question it qualifies.
 - `export_capture` re-synthesises a frame per SIP message rather than writing
   the packets it read. The function's own doc comment said so plainly and
   called the result "honest about the rest". The tool description an MCP client

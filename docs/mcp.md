@@ -2377,6 +2377,8 @@ No parameters. Returns:
   },
   "unanalysed_sip_messages": 0,  // SIP that --portrange excluded
   "unanalysed_busiest_ports": [],
+  "unanalysed_websocket_messages": 0,  // SIP-over-WebSocket the WS port set excluded
+  "unanalysed_websocket_ports": [],    // pass these to --ws-portrange
   "load": null                   // an open_capture load in flight, if any
 }
 ```
@@ -2414,6 +2416,25 @@ holds several servers at once.
 The stores fill as the read goes, so dialogs appear before `done`. Wait for
 `done` before concluding anything about how many calls the capture holds — a
 partial answer looks exactly like a complete one.
+
+Read the two `unanalysed_` pairs before reading anything into `dialog_count`.
+They report SIP that sipnab recognised and did not analyse, and they are the
+only way to tell a capture that holds no calls from one whose calls fell
+outside a port setting. They count different losses with different
+remedies, so a non-zero figure names its own flag:
+
+- `unanalysed_sip_messages` / `unanalysed_busiest_ports` — plain SIP signalling
+  with both ports outside `--portrange`. Re-run with a range that covers the
+  ports listed.
+- `unanalysed_websocket_messages` / `unanalysed_websocket_ports` —
+  SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)) on a
+  port outside the WebSocket set. Re-run with `--ws-portrange` covering the
+  ports listed; widening `--portrange` recovers none of it. This is the common
+  case on a WSS listener behind a reverse proxy, and on Kamailio, OpenSIPS and
+  Janus, which all default outside sipnab's shipped 80/443/8080/8443.
+
+Both are zero on a live capture, where BPF filtered before the pipeline saw
+anything and there is nothing to under-report.
 
 ### `server_capabilities`
 

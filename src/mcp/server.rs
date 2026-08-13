@@ -1436,6 +1436,30 @@ pub struct CaptureStatusResponse {
     /// Actionable rather than merely alarming: these are the values to pass to
     /// `--portrange`, so the answer names its own remedy.
     pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
+    /// SIP-over-WebSocket (RFC 7118) sipnab recognised and did not analyse
+    /// because neither port was in the WebSocket port set.
+    ///
+    /// The same defect as `unanalysed_sip_messages` above, one layer down, and
+    /// it survived the fix that field was added for: the WebSocket tally
+    /// reached the operator as a stderr warning and a CLI summary line, and
+    /// reached an MCP client not at all. On a capture whose WSS lands on 8081
+    /// — where Kamailio, OpenSIPS, Janus and any reverse proxy routinely put
+    /// it — `capture_status` answered `dialog_count: 0`,
+    /// `unanalysed_sip_messages: 0` and `degraded: false`: byte-identical to a
+    /// perfect read of a capture holding no SIP at all, while an entire WebRTC
+    /// signalling leg went unreported.
+    ///
+    /// Counted separately from the `--portrange` figure above because it is a
+    /// different loss with a different remedy: that SIP was recognised and
+    /// gated, this was wrapped in a WebSocket frame on a port sipnab was not
+    /// asked to unwrap. Zero on live capture, for the same reason.
+    pub unanalysed_websocket_messages: u64,
+    /// The busiest ports carrying that unanalysed SIP-over-WebSocket, up to
+    /// five.
+    ///
+    /// These are the values to pass to `--ws-portrange`, so the answer names
+    /// its own remedy — `--portrange` will not recover them.
+    pub unanalysed_websocket_ports: Vec<UnanalysedPort>,
     /// The background load filling this capture, while one runs. Null
     /// otherwise, including before any `open_capture` call.
     pub load: Option<LoadStatus>,
@@ -1564,7 +1588,8 @@ impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
     }
 }
 
-/// One port carrying SIP that `--portrange` excluded from the analysis.
+/// One port carrying SIP that a port set excluded from the analysis —
+/// `--portrange` for plain signalling, `--ws-portrange` for SIP-over-WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct UnanalysedPort {
@@ -3414,6 +3439,11 @@ impl SipnabMcp {
                 .as_ref()
                 .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire));
             let skipped = crate::pipeline::portrange_skip_report();
+            // Read beside the portrange tally, never instead of it: the two
+            // name different losses with different remedies, and a client that
+            // sees only one is told a capture is complete when a whole
+            // transport's worth of signalling is missing.
+            let ws_skipped = crate::pipeline::ws_port_skip_report();
             let resp = CaptureStatusResponse {
                 // 2: absorbed the `stats` tool — the counters and
                 // capture_quality it used to return alone now live here.
@@ -3435,6 +3465,16 @@ impl SipnabMcp {
                 capture_identity: state.identity.etag(ds.generation(), ss.generation()),
                 unanalysed_sip_messages: skipped.messages,
                 unanalysed_busiest_ports: skipped
+                    .ports
+                    .iter()
+                    .take(5)
+                    .map(|p| UnanalysedPort {
+                        port: p.port,
+                        messages: p.messages,
+                    })
+                    .collect(),
+                unanalysed_websocket_messages: ws_skipped.messages,
+                unanalysed_websocket_ports: ws_skipped
                     .ports
                     .iter()
                     .take(5)
@@ -8051,6 +8091,125 @@ mod tests {
             "the per-port breakdown must be an array, empty when nothing was \
              skipped: {v}"
         );
+    }
+
+    /// `capture_status` reports the SIP-over-WebSocket the port set excluded,
+    /// as its own figure, always.
+    ///
+    /// The `--portrange` tally above was added because a response that is
+    /// byte-identical with and without the loss lets an agent answer "what
+    /// calls are in this capture" from a fraction of them with full
+    /// confidence. The WebSocket tally landed with exactly that defect intact:
+    /// it reached the operator as a stderr warning and a CLI summary line and
+    /// reached an MCP client not at all. On a capture whose WSS lands on 8081
+    /// — the Kamailio, OpenSIPS, Janus and reverse-proxy case — this tool
+    /// answered `dialog_count: 0`, `unanalysed_sip_messages: 0` and
+    /// `degraded: false`, which is character for character what a perfect read
+    /// of a capture holding no SIP produces.
+    ///
+    /// Three things are asserted, and the third is the one that matters. The
+    /// keys exist at ZERO, so a reader learns the concept before it has a
+    /// problem. A real skip moves them and names the port, so they are wired
+    /// to the tally rather than to a constant. And the `--portrange` figure
+    /// stays at zero across the same skip, because wiring the new fields to
+    /// the old report would satisfy every presence check while still telling
+    /// an agent to widen the wrong flag.
+    #[tokio::test]
+    #[serial_test::serial(ws_port_skips)]
+    async fn capture_status_reports_the_websocket_left_outside_the_port_set() {
+        crate::capture::websocket::set_ws_port_range(None);
+        crate::pipeline::reset_ws_port_skips();
+        crate::pipeline::reset_portrange_skips();
+
+        let status = || async {
+            let result = empty_server()
+                .capture_status()
+                .await
+                .expect("capture_status should succeed");
+            serde_json::from_str::<serde_json::Value>(&text_of(&result)).expect("valid JSON")
+        };
+
+        let quiet = status().await;
+        assert_eq!(
+            quiet["unanalysed_websocket_messages"], 0,
+            "the count must be present at zero, or a reader who cannot ask a \
+             follow-up never learns the concept exists: {quiet}"
+        );
+        assert!(
+            quiet["unanalysed_websocket_ports"].is_array(),
+            "the per-port breakdown must be an array, empty when nothing was \
+             skipped: {quiet}"
+        );
+
+        // One RFC 7118 INVITE on 8081, through the real classifier: outside
+        // the shipped set, so it is recognised, declined and tallied.
+        let sip = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+                    Via: SIP/2.0/WS 10.0.0.1:51000;branch=z9hG4bKmcpws\r\n\
+                    From: <sip:alice@example.com>;tag=w1\r\n\
+                    To: <sip:bob@example.com>\r\n\
+                    Call-ID: mcp-ws-skip@example.com\r\n\
+                    CSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
+        // FIN + opcode 1 (text), unmasked. A SIP request never fits the 7-bit
+        // length field, so the 16-bit extension is the branch that matters
+        // here: writing the length into the 7-bit field would set the MASK bit
+        // instead and the frame would not unwrap at all — a green test that
+        // proved nothing about the tally.
+        let mut framed = vec![0x81u8, 126u8];
+        framed.extend_from_slice(&(sip.len() as u16).to_be_bytes());
+        framed.extend_from_slice(sip);
+        let pp = crate::capture::parse::ParsedPacket {
+            frame: None,
+            timestamp: chrono::Utc::now(),
+            src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 51000,
+            dst_port: 8081,
+            transport: crate::capture::parse::TransportProto::Tcp,
+            payload: framed.into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 6,
+            from_hep: false,
+        };
+        let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
+        let mut decrypt = crate::pipeline::MediaDecrypt::default();
+        assert!(
+            matches!(
+                crate::pipeline::classify_packet(
+                    &pp,
+                    &mut heuristic,
+                    &crate::pipeline::PipelineOptions::default(),
+                    &mut decrypt,
+                ),
+                crate::pipeline::PacketAction::None
+            ),
+            "8081 is outside the shipped WebSocket set, so the message is \
+             declined — that is the loss this field has to disclose"
+        );
+
+        let after = status().await;
+        assert_eq!(
+            after["unanalysed_websocket_messages"], 1,
+            "the declined SIP-over-WebSocket must reach the MCP answer, or a \
+             capture whose whole WebRTC leg vanished reads as an empty one: \
+             {after}"
+        );
+        assert_eq!(
+            after["unanalysed_websocket_ports"][0]["port"], 8081,
+            "the port must be named — it is the value an agent passes to \
+             --ws-portrange, so the answer carries its own remedy: {after}"
+        );
+        assert_eq!(
+            after["unanalysed_sip_messages"], 0,
+            "the WebSocket loss must NOT be reported as a --portrange loss: \
+             the two have different remedies, and widening --portrange \
+             recovers none of this: {after}"
+        );
+
+        crate::pipeline::reset_ws_port_skips();
     }
 
     /// `stats` carries the capture-quality block, always, with the three
