@@ -18,6 +18,18 @@
 //! here that sets a knob must therefore also stay out of the way of anything
 //! else here — hence one test per knob, each restoring the default.
 //!
+//! One knob per test is NOT enough on its own, and the gap cost a red
+//! pre-commit run to find. `compact_idle` reads BOTH atomics, so the two tests
+//! are not independent even though each writes only one: while
+//! `raising_the_keep_limit_keeps_more_of_the_ladder` holds the keep limit at
+//! four times the default, the anti-vacuity half of
+//! `widening_the_idle_window_spares_a_quiet_dialog` — whose fixture is three
+//! times the default — evicts nothing and fails, reporting a compaction bug
+//! that is really a thread interleaving. It fails on a busy machine and passes
+//! on an idle one, which is the worst kind of gate. `#[serial]` is what makes
+//! "one test per knob" actually hold: the tests that move process-global state
+//! run one at a time, the way `icmp_quote_test` and friends already do it.
+//!
 //! # Why the compaction tests are `native`-gated and the config one is not
 //!
 //! Reading a pcap needs `capture::file`, which only exists under `native`. The
@@ -105,6 +117,7 @@ fn store_with_long_dialog(
 /// let an operator reach it.
 #[test]
 #[cfg(feature = "native")]
+#[serial_test::serial(dialog_retention_knobs)]
 fn raising_the_keep_limit_keeps_more_of_the_ladder() {
     let raised = DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG * 4;
     let (mut store, call_id, grown_to, updated_at) = store_with_long_dialog(raised * 2);
@@ -142,6 +155,7 @@ fn raising_the_keep_limit_keeps_more_of_the_ladder() {
 /// Same store, same timestamp, opposite outcome.
 #[test]
 #[cfg(feature = "native")]
+#[serial_test::serial(dialog_retention_knobs)]
 fn widening_the_idle_window_spares_a_quiet_dialog() {
     let (mut store, call_id, _, updated_at) =
         store_with_long_dialog(DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG * 3);

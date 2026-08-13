@@ -202,15 +202,50 @@ pub fn one_way_delay_from_rtt_ms(round_trip_delay_ms: u16) -> Option<f64> {
     (round_trip_delay_ms > 0).then(|| f64::from(round_trip_delay_ms) / 2.0)
 }
 
+/// One-way delay from a round trip sipnab DERIVED, rather than one it was told.
+///
+/// The sibling of [`one_way_delay_from_rtt_ms`] for
+/// [`RttSource::SenderReportEcho`](crate::rtp::rtcp::RttSource::SenderReportEcho):
+/// the figure
+/// [`rtt_from_sender_report_echo`](crate::rtp::rtcp::rtt_from_sender_report_echo)
+/// computes from an RR's `LSR`/`DLSR` pair. It takes an `f64` because that
+/// derivation produces one — RFC 3550 §6.4.1's units are 1/65536 s, not whole
+/// milliseconds — and the two are kept as separate entry points rather than one
+/// generic halver so a caller cannot pass an echo figure where the wire field
+/// was meant, or the reverse.
+///
+/// **Halving is the same convention and the same approximation** as for a
+/// reported round trip, with one extra caveat stacked on it: the echo figure is
+/// anchored on the capture point, so on any tap that does not sit with the SR's
+/// sender it is a LOWER BOUND on the endpoint-to-endpoint round trip. Half of a
+/// lower bound is a lower bound, so a MOS resting on this is optimistic — which
+/// is why the result is labelled [`DelaySource::DerivedFromEcho`] and never
+/// folded in with what an endpoint actually reported.
+///
+/// Zero is absent, for the same reason as in the reported case: a round trip of
+/// exactly zero does not occur on a path with two endpoints, so it is the
+/// derivation coming up empty rather than a measurement of no delay. Non-finite
+/// is absent too — arithmetic, not evidence.
+#[must_use]
+pub fn one_way_delay_from_derived_rtt_ms(round_trip_ms: f64) -> Option<f64> {
+    (round_trip_ms.is_finite() && round_trip_ms > 0.0).then_some(round_trip_ms / 2.0)
+}
+
 /// Where the one-way delay behind a MOS came from.
 ///
 /// A sibling of [`MosProvenance`], and it exists for the same reason: the
 /// remedy differs by source. A score that looks wrong under
 /// [`Declared`](Self::Declared) means checking the number the operator set; under
 /// [`ReportedByEndpoint`](Self::ReportedByEndpoint) it means suspecting the far
-/// end, or whoever forged its datagram; under [`Assumed`](Self::Assumed) it
+/// end, or whoever forged its datagram; under
+/// [`DerivedFromEcho`](Self::DerivedFromEcho) it means suspecting where the tap
+/// sits, or the clock it keeps; under [`Assumed`](Self::Assumed) it
 /// means the delay was never known at all and the score is only as good as a
 /// domestic guess.
+///
+/// The variants are written in preference order and read that way in
+/// [`resolve_one_way_delay`], which is the only thing that decides between
+/// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DelaySource {
@@ -225,26 +260,94 @@ pub enum DelaySource {
     /// resting on a remote claim can be told apart from one resting on the
     /// operator's own figure.
     ReportedByEndpoint,
+    /// Halved from a round trip SIPNAB DERIVED from an RR's `LSR`/`DLSR` pair,
+    /// per RFC 3550 §6.4.1.
+    ///
+    /// A different provenance CLASS from
+    /// [`ReportedByEndpoint`](Self::ReportedByEndpoint), not a weaker sample of
+    /// it, which is why it gets its own variant rather than borrowing that
+    /// name. Nobody reported this figure; sipnab computed it, from two
+    /// timestamps stamped on two different clocks, anchored on when the CAPTURE
+    /// POINT saw the report. It is the true endpoint-to-endpoint round trip
+    /// only when the tap sits with the sender of the SR, and a lower bound
+    /// otherwise, because the leg beyond the tap is not in it.
+    ///
+    /// Ranked BELOW an endpoint's own figure for exactly that reason: a
+    /// reported round trip describes the call, and this describes a path
+    /// segment plus a vantage point. It is ranked well above
+    /// [`Assumed`](Self::Assumed) all the same, because plain receiver reports
+    /// are mandatory in RFC 3550 while an XR is rare — so this is the source
+    /// that reaches ordinary traffic, and a lower bound derived from the
+    /// capture beats a constant chosen at build time.
+    DerivedFromEcho,
     /// Nothing said. [`DEFAULT_ONE_WAY_DELAY_MS`] stood in.
     Assumed,
 }
 
+impl DelaySource {
+    /// A short label for a reader, suitable for putting beside the number.
+    ///
+    /// Lives here rather than in each view for the reason
+    /// [`MosProvenance::label`] does: a provenance rendered in two places is a
+    /// provenance that can be worded two ways, and the whole value of the
+    /// distinction is that a reader meets the same word for the same thing.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Declared => "declared",
+            Self::ReportedByEndpoint => "per far end",
+            Self::DerivedFromEcho => "from RR echo",
+            Self::Assumed => "assumed",
+        }
+    }
+
+    /// Whether a delay term this good is a stand-in rather than evidence.
+    ///
+    /// True only for [`Assumed`](Self::Assumed). The point of the question is
+    /// that everything else — including a lower bound sipnab derived itself —
+    /// is anchored on something that happened on the wire, and a caller
+    /// deciding whether to caveat the MOS should caveat exactly one case.
+    #[must_use]
+    pub fn is_assumed(self) -> bool {
+        matches!(self, Self::Assumed)
+    }
+}
+
 /// Resolve the one-way delay for a stream, and say where it came from.
 ///
-/// Order: what the operator declared, then what the far end reported, then the
-/// assumption. The operator wins because theirs is the only figure that cannot
-/// be changed by an unauthenticated packet — and because they are the one who
-/// knows the trunk is satellite.
+/// Order: what the operator declared, then what the far end reported, then what
+/// sipnab derived from an RR's sender-report echo, then the assumption.
+///
+/// The operator wins because theirs is the only figure that cannot be changed
+/// by an unauthenticated packet — and because they are the one who knows the
+/// trunk is satellite. A reported round trip beats a derived one because the
+/// two are not the same quantity: an endpoint's XR figure is the round trip
+/// between the two RTP interfaces, which is what ITU-T G.114 is about, while
+/// the echo is anchored on the capture point and is a lower bound on any tap
+/// that does not sit with the SR's sender. Weaker evidence about the right
+/// quantity still loses to stronger evidence about the right quantity.
+///
+/// The echo nonetheless beats the assumption on the overwhelming majority of
+/// traffic, and that is the point of it: RFC 3550 makes plain receiver reports
+/// mandatory while XR VoIP-metrics blocks are rare, so before this rank existed
+/// the delay term fell to [`DEFAULT_ONE_WAY_DELAY_MS`] on essentially every
+/// call — a domestic guess feeding the score an operator escalates on, on a
+/// long-haul leg where G.107's `Id` knee at 177.3 ms makes it wrong by more
+/// than a full MOS point.
 #[must_use]
 pub fn resolve_one_way_delay(
     declared_ms: Option<f64>,
     reported_rtt_ms: Option<u16>,
+    derived_rtt_ms: Option<f64>,
 ) -> (f64, DelaySource) {
     if let Some(d) = declared_ms.filter(|d| d.is_finite() && *d >= 0.0) {
         return (d, DelaySource::Declared);
     }
     if let Some(one_way) = reported_rtt_ms.and_then(one_way_delay_from_rtt_ms) {
         return (one_way, DelaySource::ReportedByEndpoint);
+    }
+    if let Some(one_way) = derived_rtt_ms.and_then(one_way_delay_from_derived_rtt_ms) {
+        return (one_way, DelaySource::DerivedFromEcho);
     }
     (DEFAULT_ONE_WAY_DELAY_MS, DelaySource::Assumed)
 }

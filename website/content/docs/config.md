@@ -201,7 +201,7 @@ itself.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; with neither, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured |
+| `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire directly: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; that beats the round trip sipnab derives from an RR's sender-report echo, which is anchored on the capture point and so a lower bound; with none of the three, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured |
 
 ### [quality]
 

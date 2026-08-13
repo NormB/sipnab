@@ -120,16 +120,32 @@ pub fn render_stream_detail(
 
     // ── Quality Metrics ─────────────────────────────────────────────
     let loss_pct = stream.loss_percent();
-    // MOS rests on a one-way delay sipnab cannot measure. Take the operator's
-    // figure first, then the far end's reported round trip, then say it was
-    // assumed — and show WHICH, because the remedy differs: a wrong declared
-    // value is the operator's to fix, a wrong reported one means suspecting
-    // the endpoint, and an assumed one means the delay was never known.
+    // The store's best round trip, taken ONCE: the delay term of the MOS below
+    // and the RTT cell of the same row are the same measurement, and reading it
+    // twice is how the two come to disagree.
+    let round_trip = store.round_trip_for(stream);
+    // MOS rests on a one-way delay sipnab cannot measure directly. Take the
+    // operator's figure first, then the far end's reported round trip, then the
+    // one derived from an RR's sender-report echo, then say it was assumed —
+    // and show WHICH, because the remedy differs: a wrong declared value is the
+    // operator's to fix, a wrong reported one means suspecting the endpoint, a
+    // wrong derived one means suspecting where the tap sits, and an assumed one
+    // means the delay was never known.
+    //
+    // The echo figure is passed only when it is what the store settled on,
+    // which by construction means no XR block exists for this stream. That is
+    // not a shortcut around the ranking in `resolve_one_way_delay` — both
+    // figures are handed to it and it does the ranking — it is that the store
+    // has no echo to offer once an endpoint has reported its own.
     let (one_way, delay_src) = crate::rtp::quality::resolve_one_way_delay(
         declared_one_way_delay_ms,
         store
             .remote_voip_metrics(key)
             .map(|xr| xr.metrics.round_trip_delay),
+        match round_trip {
+            Some((ms, crate::rtp::rtcp::RttSource::SenderReportEcho)) => Some(ms),
+            _ => None,
+        },
     );
     let mos = crate::rtp::quality::estimate_mos_with_delay(
         stream.jitter,
@@ -138,20 +154,11 @@ pub fn render_stream_detail(
         one_way,
     );
 
-    // Say where the delay came from. An operator seeing a bad MOS needs to
-    // know whether to check their own declared figure, suspect the far end, or
-    // recognise that nothing measured it at all — the three remedies differ.
-    let delay_note = match delay_src {
-        crate::rtp::quality::DelaySource::Declared => {
-            format!("delay {one_way:.0}ms declared")
-        }
-        crate::rtp::quality::DelaySource::ReportedByEndpoint => {
-            format!("delay {one_way:.0}ms per far end")
-        }
-        crate::rtp::quality::DelaySource::Assumed => {
-            format!("delay {one_way:.0}ms assumed")
-        }
-    };
+    // Say where the delay came from, in the wording `DelaySource` owns — an
+    // operator seeing a bad MOS needs to know which of the four remedies is
+    // theirs, and a view that words the provenance itself is a view that can
+    // word it differently from the next one.
+    let delay_note = format!("delay {one_way:.0}ms {}", delay_src.label());
 
     let mos_band = MosBand::of(mos, quality_bands);
     let mos_style = Style::default()
@@ -180,7 +187,7 @@ pub fn render_stream_detail(
         // calls never carry — so the row an operator reads to decide "was this
         // acceptable?" showed two of the three numbers that decide it, with
         // nothing saying the third was missing rather than fine.
-        match store.round_trip_for(stream) {
+        match round_trip {
             Some((ms, src)) => Span::styled(
                 format!(
                     "{ms:.0}ms{}",
