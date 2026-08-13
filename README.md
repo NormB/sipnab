@@ -14,8 +14,6 @@ sipnab unifies [sngrep](https://github.com/irontec/sngrep) (TUI) and
 binary with first-class RTP quality monitoring, VoIP diagnostic aliases, and
 security analysis.
 
-> **Status:** Under active development. Not yet ready for production use.
-
 ## Features
 
 - **Four output modes** -- interactive TUI, non-interactive CLI, JSON, MCP server (drive sipnab from an AI agent)
