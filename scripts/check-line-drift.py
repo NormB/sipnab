@@ -110,7 +110,17 @@ def check(apply: bool) -> int:
             continue
         text = md.read_text()
         rel = md.relative_to(REPO)
-        out, moved = text, False
+        # Collected as (start, end, replacement) against the ORIGINAL text and
+        # applied right-to-left below, never with `str.replace`.
+        #
+        # `str.replace` rewrites EVERY occurrence of the matched text, and the
+        # matches come from `text` while the edits accumulated in a separate
+        # string. So repointing symbol A to line N, then repointing symbol B
+        # whose original citation was line N, rewrote A's just-corrected
+        # citation as well. On 2026-08-13 that left `security_findings` in
+        # docs/design/backlog.md pointing at `capture_status`, and the fixer
+        # reported both as repaired.
+        edits: list[tuple[int, int, str]] = []
 
         for m in CITE.finditer(text):
             path, line = m.group(1), int(m.group(2))
@@ -124,8 +134,7 @@ def check(apply: bool) -> int:
             if line > len(lines):
                 where = definition_lines(lines, sym) if sym else []
                 if apply and len(where) == 1:
-                    out = out.replace(m.group(0), _repoint(m.group(0), where[0]))
-                    moved = True
+                    edits.append((m.start(), m.end(), _repoint(m.group(0), where[0])))
                     fixed += 1
                 else:
                     problems.append(
@@ -154,8 +163,7 @@ def check(apply: bool) -> int:
                 continue
 
             if apply and len(where) == 1:
-                out = out.replace(m.group(0), _repoint(m.group(0), where[0]))
-                moved = True
+                edits.append((m.start(), m.end(), _repoint(m.group(0), where[0])))
                 fixed += 1
             else:
                 problems.append(
@@ -164,7 +172,11 @@ def check(apply: bool) -> int:
                     + (f" (defined at {where})" if where else " (no unique definition found)")
                 )
 
-        if moved:
+        if edits:
+            # Right-to-left, so an earlier edit cannot shift a later span.
+            out = text
+            for start, end, replacement in sorted(edits, reverse=True):
+                out = out[:start] + replacement + out[end:]
             md.write_text(out)
 
     if apply:
