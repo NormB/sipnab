@@ -76,6 +76,31 @@ behaviour honestly; the behaviour is what changed.
   `truncated: true` is no longer a dead end. Paging a busy window no longer
   means re-cutting it into shorter ones.
 
+- **BREAKING: every MOS sipnab reports is scored on the path delay the capture
+  measured, not on an assumed 100 ms.** ITU-T G.107's `Id` term reads a one-way
+  delay, and only the TUI's stream-detail pane supplied one. `rtp.mos` in the
+  filter DSL, the TUI call list, `StreamSummary.mos` (REST `/v1/streams`, MCP
+  `rtp_stats`, the CLI JSON, the TUI's saved stream JSON), REST `?mos_below=`,
+  the `sipnab_rtp_mos` histogram, the `--on-quality` alert threshold and the
+  browser analyzer all assumed a domestic 100 ms path. They now resolve it the
+  way the detail pane does: what the operator declared, then what an endpoint
+  reported in an RTCP XR VoIP-metrics block, then what sipnab derives from a
+  receiver report's sender-report echo, then the assumption — and say which.
+  Measured over 4041 streams of real captures, 558 carry a delay that is not
+  the assumption, 556 scores move, 6 move by more than a FULL MOS point, and
+  the worst read 4.36 where the truth is 1.00 on a 740 ms path. A `mos` value
+  is therefore expected to change for any stream whose call carried RTCP, and
+  `rtp.mos < X` now selects calls it used to miss.
+
+- **BREAKING (library): `StreamSummary::from(&RtpStream)` is now
+  `StreamSummary::of(&RtpStream, MosDelay)`.** A conversion from a stream could
+  not see the delay, because a round trip is not on the stream — it is filed in
+  the store's provenance table. `FilterExpr::matches_dialog` takes the same
+  evidence as a fourth argument, `sip::dsl::stream_mos` as a second,
+  `DashboardSnapshot::from_streams` takes the declared figure, and
+  `stream_list::displayed_streams` takes the evidence.
+  `sipnab::estimate_mos` is unchanged and still exported; nothing inside the
+  crate calls it any more.
 ### Fixed
 
 - **The stream-detail pane gave two answers about one stream.** The headline

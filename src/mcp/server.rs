@@ -2221,6 +2221,7 @@ fn stream_json(
 ) -> serde_json::Value {
     let line = crate::output::json::stream_to_json(s);
     let mut v: serde_json::Value = serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
+    let delay = crate::rtp::quality::MosDelay::from_capture(store);
     // Say whether the MOS is a real estimate or a placeholder.
     //
     // An agent reading `mos: 4.2` cannot otherwise tell a grounded G.711 score
@@ -2234,7 +2235,7 @@ fn stream_json(
         // the dialog instead. Without this the grounding flag below described a
         // number absent from the payload, which is worse than saying nothing:
         // it implies a MOS is there.
-        if let Some(n) = serde_json::Number::from_f64(stream_mos(s)) {
+        if let Some(n) = serde_json::Number::from_f64(stream_mos(s, delay)) {
             obj.insert("mos".into(), serde_json::Value::Number(n));
         }
         let grounded = mos_is_grounded(s);
@@ -2305,14 +2306,15 @@ fn stream_json(
 }
 
 /// The MOS `rtp_stats` reports for a stream, on the narrowband G.107 scale.
-fn stream_mos(s: &crate::rtp::stream::RtpStream) -> f64 {
-    let total = s.packet_count + s.lost_packets;
-    let loss_pct = if total > 0 {
-        (s.lost_packets as f64 / total as f64) * 100.0
-    } else {
-        0.0
-    };
-    crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref())
+///
+/// `delay` is the one-way path delay the E-model's `Id` term reads, resolved
+/// from the capture's own RTCP. An agent bounding a search with `min_mos` and
+/// then reading `mos` in the results must meet ONE number, and while this
+/// assumed 100 ms it met two: the bound was scored on a domestic guess and the
+/// filter DSL's `rtp.mos` on the same guess, against a stream whose receiver
+/// reports said 225 ms.
+fn stream_mos(s: &crate::rtp::stream::RtpStream, delay: crate::rtp::quality::MosDelay<'_>) -> f64 {
+    delay.score(s)
 }
 
 /// Whether ITU-T G.113 publishes an impairment value for this stream's codec.
@@ -2378,6 +2380,7 @@ impl SipnabMcp {
             &crate::sip::dialog::SipDialog,
             &[&crate::rtp::stream::RtpStream],
             CaptureMedia,
+            crate::rtp::quality::MosDelay<'_>,
         ) -> bool,
     ) -> Result<DialogPage, rmcp::ErrorData> {
         let cursor = match cursor {
@@ -2412,13 +2415,16 @@ impl SipnabMcp {
         const NO_STREAMS: &[&crate::rtp::stream::RtpStream] = &[];
         // One run-level fact, read once rather than per dialog.
         let capture = CaptureMedia::of_store(&ss);
+        // And the other: `rtp.mos` in a caller's filter is scored on the delay
+        // the capture's RTCP supports, the same one `rtp_stats` reports.
+        let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
         let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
             .iter()
             .filter(|d| {
                 let streams = by_call
                     .get(d.call_id.as_str())
                     .map_or(NO_STREAMS, Vec::as_slice);
-                select(d, streams, capture)
+                select(d, streams, capture, delay)
             })
             .collect();
         let total_matched = matched.len();
@@ -2513,6 +2519,9 @@ impl SipnabMcp {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
+            // The same evidence `stream_json` scores the rows with, so the
+            // bound and the reported number cannot disagree.
+            let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
 
             let mut ungrounded_excluded = 0usize;
             let mut matched: Vec<&crate::rtp::stream::RtpStream> = Vec::new();
@@ -2525,7 +2534,7 @@ impl SipnabMcp {
                     ungrounded_excluded += 1;
                     continue;
                 }
-                let mos = stream_mos(s);
+                let mos = stream_mos(s, delay);
                 if params.min_mos.is_some_and(|lo| mos < lo)
                     || params.max_mos.is_some_and(|hi| mos >= hi)
                 {
@@ -2609,11 +2618,15 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
-        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams, capture| {
-            filter
-                .as_ref()
-                .is_none_or(|expr| expr.matches_dialog(d, streams, capture))
-        })?;
+        let page = self.dialog_page(
+            params.cursor.as_deref(),
+            limit,
+            |d, streams, capture, delay| {
+                filter
+                    .as_ref()
+                    .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
+            },
+        )?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
@@ -2755,14 +2768,18 @@ impl SipnabMcp {
         // ANY alias AND the filter. The aliases answer "is this call
         // interesting", the filter answers "is it the one I am looking at" —
         // ORing them instead would widen the triage sweep rather than narrow it.
-        let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams, capture| {
-            compiled
-                .iter()
-                .any(|expr| expr.matches_dialog(d, streams, capture))
-                && extra
-                    .as_ref()
-                    .is_none_or(|expr| expr.matches_dialog(d, streams, capture))
-        })?;
+        let page = self.dialog_page(
+            params.cursor.as_deref(),
+            limit,
+            |d, streams, capture, delay| {
+                compiled
+                    .iter()
+                    .any(|expr| expr.matches_dialog(d, streams, capture, delay))
+                    && extra
+                        .as_ref()
+                        .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
+            },
+        )?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
@@ -3778,6 +3795,7 @@ impl SipnabMcp {
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
             let capture = CaptureMedia::of_store(&ss);
+            let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
             let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
                 .iter()
                 .filter(|d| {
@@ -3791,7 +3809,7 @@ impl SipnabMcp {
                     filter.as_ref().is_none_or(|expr| {
                         let streams: Vec<&crate::rtp::stream::RtpStream> =
                             ss.streams_for(&d.call_id).collect();
-                        expr.matches_dialog(d, &streams, capture)
+                        expr.matches_dialog(d, &streams, capture, delay)
                     })
                 })
                 .collect();

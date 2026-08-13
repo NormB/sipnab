@@ -151,8 +151,11 @@ fn stream_summary_canonical_keys() {
     ss.process_rtp(&pp, &hdr, pp.timestamp);
     let stream = ss.iter().next().expect("stream tracked");
 
-    let v = serde_json::to_value(sipnab::output::model::StreamSummary::from(stream))
-        .expect("serializes");
+    let v = serde_json::to_value(sipnab::output::model::StreamSummary::of(
+        stream,
+        sipnab::rtp::quality::MosDelay::from_capture(&ss),
+    ))
+    .expect("serializes");
     let obj = v.as_object().expect("object");
     for key in [
         "ssrc",

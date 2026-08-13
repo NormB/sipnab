@@ -2964,6 +2964,7 @@ fn process_parsed_packet(
                             dialog,
                             &dialog_streams,
                             crate::rtp::diagnosis::CaptureMedia::of_store(stream_store),
+                            crate::rtp::quality::MosDelay::from_capture(stream_store),
                         )
                     } else {
                         false
@@ -3279,7 +3280,10 @@ fn process_parsed_packet(
                 if let Some(stream) = stream_store.get(&key) {
                     // Queued, not fired — same reason as the dialog event: the
                     // MOS estimate reads the stream, the `fork`/`exec` does not.
-                    event_exec.queue_quality_event(stream);
+                    event_exec.queue_quality_event(
+                        stream,
+                        crate::rtp::quality::MosDelay::from_capture(stream_store),
+                    );
                 }
             }
         }

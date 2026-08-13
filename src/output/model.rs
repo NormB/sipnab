@@ -122,7 +122,8 @@ impl From<&SipDialog> for DialogSummary {
 ///
 /// `ssrc` uses the `0x`-prefixed 8-digit hex form every surface renders;
 /// `mos` is the single E-model estimate from
-/// `crate::rtp::quality::estimate_mos` (surfaces must not roll their own).
+/// [`MosDelay::score`](crate::rtp::quality::MosDelay::score) (surfaces must not
+/// roll their own).
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
@@ -211,20 +212,30 @@ impl StreamSummary {
         }
         self
     }
-}
 
-impl From<&RtpStream> for StreamSummary {
     /// Project a stream into its compact summary: loss percentage is
     /// derived as `lost / (received + lost)` (0.0 when no packets) and
     /// `mos` is computed via the canonical E-model estimate. Pure — the
     /// stream is not modified.
-    fn from(s: &RtpStream) -> Self {
-        let total = s.packet_count + s.lost_packets;
-        let loss_pct = if total > 0 {
-            (s.lost_packets as f64 / total as f64) * 100.0
-        } else {
-            0.0
-        };
+    ///
+    /// This replaced a `From<&RtpStream>` impl, and the missing parameter is
+    /// why. A conversion FROM a stream can see only what a stream carries, and
+    /// the one-way delay the E-model needs is not on it — it is a round trip
+    /// somebody else reported, filed in the store's provenance table. So the
+    /// impl had no way to ask, and every surface projecting through it —
+    /// REST, MCP, the TUI's JSON save — reported a MOS scored on a guessed
+    /// 100 ms path. Taking the evidence as an argument makes the answer a
+    /// decision each caller states rather than one the type shape forces.
+    ///
+    /// # Arguments
+    ///
+    /// * `s` — the stream to project.
+    /// * `delay` — one-way-delay evidence; callers holding the store pass
+    ///   [`MosDelay::of_run`](crate::rtp::quality::MosDelay::of_run) or
+    ///   [`MosDelay::from_capture`](crate::rtp::quality::MosDelay::from_capture).
+    #[must_use]
+    pub fn of(s: &RtpStream, delay: crate::rtp::quality::MosDelay<'_>) -> Self {
+        let loss_pct = s.loss_percent();
         Self {
             ssrc: format!("0x{:08x}", s.key.ssrc),
             codec: s.codec.clone(),
@@ -235,7 +246,7 @@ impl From<&RtpStream> for StreamSummary {
             loss_pct,
             orphaned: s.orphaned(),
             associated_dialog: s.associated_dialog.clone(),
-            mos: crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref()),
+            mos: delay.score(s),
             // From the stream's own record of where it began. There is no
             // second source to derive it from: unlike a dialog, a stream
             // retains no packets at all.

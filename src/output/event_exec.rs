@@ -392,8 +392,8 @@ impl EventExecEngine {
     /// Callers holding a lock the child's runtime would block must use
     /// [`Self::queue_quality_event`] plus [`Self::dispatch_pending`] instead;
     /// this method is that pair back to back, so the two can never drift.
-    pub fn fire_quality_event(&mut self, stream: &RtpStream) {
-        self.queue_quality_event(stream);
+    pub fn fire_quality_event(&mut self, stream: &RtpStream, delay: quality::MosDelay<'_>) {
+        self.queue_quality_event(stream, delay);
         self.dispatch_pending();
     }
 
@@ -410,18 +410,18 @@ impl EventExecEngine {
     /// most one request onto the pending queue. Every queued request must
     /// reach [`Self::dispatch_pending`] before the engine is dropped, or its
     /// command never runs at all.
-    pub fn queue_quality_event(&mut self, stream: &RtpStream) {
+    pub fn queue_quality_event(&mut self, stream: &RtpStream, delay: quality::MosDelay<'_>) {
         let cmd = match self.on_quality_cmd {
             Some(ref cmd) => cmd.clone(),
             None => return,
         };
 
-        // Estimate MOS from jitter and loss via the canonical E-model
-        let mos = quality::estimate_mos(
-            stream.jitter,
-            stream.loss_percent(),
-            stream.codec.as_deref(),
-        );
+        // Estimate MOS via the canonical E-model, on the delay the capture's
+        // own RTCP supports. `--on-quality` fires against a threshold an
+        // operator typed after reading a MOS elsewhere in the tool; scoring the
+        // trigger on a guessed 100 ms path meant the alert and the display
+        // disagreed about whether the call had crossed it.
+        let mos = delay.score(stream);
         if mos >= self.quality_threshold {
             return;
         }
@@ -1049,7 +1049,7 @@ mod tests {
         engine.fire_dialog_event(&make_dialog());
 
         let stream = make_stream();
-        engine.fire_quality_event(&stream);
+        engine.fire_quality_event(&stream, quality::MosDelay::unknown());
     }
 
     /// A fresh engine reports queue depth 0.
@@ -1096,7 +1096,7 @@ mod tests {
         stream.packet_count = 100;
         stream.lost_packets = 50;
 
-        engine.queue_quality_event(&stream);
+        engine.queue_quality_event(&stream, quality::MosDelay::unknown());
         assert_eq!(engine.pending_depth(), 1, "the request must be parked");
         assert_eq!(engine.outcomes().spawned, 0, "queueing must not fork");
 
@@ -1131,7 +1131,7 @@ mod tests {
             "the fixture must be one a wrong denominator gets wrong: {expected}"
         );
 
-        engine.queue_quality_event(&stream);
+        engine.queue_quality_event(&stream, quality::MosDelay::unknown());
         let request = engine.pending.first().expect("the event must be queued");
         let loss = request
             .env

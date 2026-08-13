@@ -10,7 +10,7 @@
 //! the summary strip, worst-first stream table, per-stream trend rows,
 //! and legend from that cached snapshot.
 
-use crate::rtp::quality::estimate_mos;
+use crate::rtp::quality::{MosDelay, estimate_mos_with_delay};
 // `RtpStream` is no longer named here: the loss figure moved onto the type
 // itself (`RtpStream::loss_percent`), so this module reaches streams only
 // through the store's iterator. The test module imports it for its own
@@ -82,24 +82,39 @@ impl DashboardSnapshot {
     /// # Arguments
     ///
     /// * `store` — stream store to aggregate; not mutated.
+    /// * `declared_one_way_delay_ms` — the operator's `--one-way-delay`, or
+    ///   `None`. The MOS column is the first thing an operator reads, and it
+    ///   used to be the only number on this screen scored on a guessed 100 ms
+    ///   path while the detail view one keypress away scored the same stream on
+    ///   what its RTCP measured — so the same call was Good in the list and Bad
+    ///   in the pane.
     ///
     /// # Returns
     ///
     /// A snapshot with one `StreamHealth` row per stream, sorted worst
     /// MOS first (ties: higher loss, then stream key), plus the derived
     /// totals; `avg_mos`/`worst_mos` are `None` when the store is empty.
-    pub fn from_streams(store: &StreamStore) -> Self {
+    pub fn from_streams(store: &StreamStore, declared_one_way_delay_ms: Option<f64>) -> Self {
+        let delay = MosDelay::of_run(declared_one_way_delay_ms, store);
         let mut rows: Vec<StreamHealth> = store
             .iter()
             .map(|s| {
                 let loss_pct = s.loss_percent();
                 let codec = s.codec.clone();
-                let mos = estimate_mos(s.jitter, loss_pct, codec.as_deref());
+                // Resolved once per stream and reused by the trend, so the row
+                // and the sparkline in it cannot give two verdicts.
+                let one_way = delay.one_way_ms(s);
+                let mos = delay.score(s);
                 let trend = s
                     .quality_intervals
                     .iter()
                     .map(|qi| TrendPoint {
-                        mos: estimate_mos(qi.jitter_ms, qi.loss_pct, codec.as_deref()),
+                        mos: estimate_mos_with_delay(
+                            qi.jitter_ms,
+                            qi.loss_pct,
+                            codec.as_deref(),
+                            one_way,
+                        ),
                         jitter_ms: qi.jitter_ms,
                         loss_pct: qi.loss_pct,
                     })
@@ -432,7 +447,7 @@ mod tests {
     /// no rows.
     #[test]
     fn empty_store_yields_empty_snapshot() {
-        let snap = DashboardSnapshot::from_streams(&StreamStore::new(64));
+        let snap = DashboardSnapshot::from_streams(&StreamStore::new(64), None);
         assert_eq!(snap.total_streams, 0);
         assert_eq!(snap.active_streams, 0);
         assert_eq!(snap.avg_mos, None);
@@ -461,7 +476,7 @@ mod tests {
         s.lost_packets = 10;
         let expected = s.loss_percent();
 
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         let row = &snap.rows[0];
 
         assert!(
@@ -484,7 +499,7 @@ mod tests {
     /// the average and worst aggregates.
     #[test]
     fn single_clean_stream_scores_high_and_matches_aggregates() {
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![clean_stream(1, 50)]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![clean_stream(1, 50)]), None);
         assert_eq!(snap.total_streams, 1);
         assert_eq!(snap.active_streams, 1);
         assert_eq!(snap.streams_with_loss, 0);
@@ -509,7 +524,7 @@ mod tests {
         let clean = clean_stream(1, 50);
         let mut lossy = clean_stream(2, 50);
         lossy.lost_packets = 25; // ~33% loss
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![clean, lossy]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![clean, lossy]), None);
         assert_eq!(snap.total_streams, 2);
         assert_eq!(snap.streams_with_loss, 1);
         assert_eq!(snap.rows.len(), 2);
@@ -532,7 +547,7 @@ mod tests {
         let mut s = clean_stream(3, 1);
         s.packet_count = 0; // hypothetical: nothing received
         s.lost_packets = 100;
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         assert_eq!(snap.rows[0].loss_pct, 100.0);
         assert!(snap.rows[0].mos >= 1.0, "MOS stays clamped at >=1.0");
     }
@@ -545,7 +560,7 @@ mod tests {
         let mut s = clean_stream(4, 1);
         s.packet_count = 0;
         s.lost_packets = 0;
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         assert_eq!(snap.total_streams, 1);
         assert_eq!(snap.rows[0].loss_pct, 0.0);
     }
@@ -558,7 +573,7 @@ mod tests {
         linked.associated_dialog = Some("call-1@example.com".into());
         // No `associated_dialog`, which is the whole of what an orphan is.
         let orphan = clean_stream(6, 10);
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![linked, orphan]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![linked, orphan]), None);
         let linked_row = snap.rows.iter().find(|r| r.key.ssrc == 5).unwrap();
         let orphan_row = snap.rows.iter().find(|r| r.key.ssrc == 6).unwrap();
         assert_eq!(linked_row.call_id.as_deref(), Some("call-1@example.com"));
@@ -571,7 +586,7 @@ mod tests {
     fn inactive_stream_is_counted_but_not_active() {
         let mut old = clean_stream(7, 10);
         old.last_seen = Utc::now() - Duration::seconds(120);
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![old]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![old]), None);
         assert_eq!(snap.total_streams, 1);
         assert_eq!(snap.active_streams, 0);
         assert!(!snap.rows[0].active);
@@ -599,7 +614,7 @@ mod tests {
                 loss_pct: 20.0,
                 packets: 200,
             });
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         let trend = &snap.rows[0].trend;
         assert_eq!(trend.len(), 2);
         assert!(
@@ -609,8 +624,16 @@ mod tests {
         assert_eq!(trend[0].loss_pct, 0.0);
         assert_eq!(trend[1].jitter_ms, 80.0);
         assert_eq!(trend[1].loss_pct, 20.0);
-        // trend MOS must agree with the canonical estimator
-        let expect = estimate_mos(80.0, 20.0, snap.rows[0].codec.as_deref());
+        // trend MOS must agree with the canonical estimator, on the delay the
+        // row itself was scored with — a fixture with no RTCP resolves to the
+        // assumption, and the point of naming it here is that the trend and the
+        // row read the same term rather than one of them guessing.
+        let expect = estimate_mos_with_delay(
+            80.0,
+            20.0,
+            snap.rows[0].codec.as_deref(),
+            crate::rtp::quality::DEFAULT_ONE_WAY_DELAY_MS,
+        );
         assert!((trend[1].mos - expect).abs() < 1e-9);
     }
 
@@ -709,7 +732,7 @@ mod tests {
     #[test]
     fn render_shows_loss_spike_and_legend() {
         let s = stream_with_intervals(1, &[(1.0, 0.0), (2.0, 100.0)]);
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         let out = render_snapshot(snap, 0, 100, 30);
         // The legend names the metrics, their units, and the color keys.
         assert!(out.contains("Legend"), "legend missing: {out}");
@@ -728,7 +751,7 @@ mod tests {
     #[test]
     fn render_full_loss_is_max_glyph() {
         let s = stream_with_intervals(1, &[(1.0, 100.0), (1.0, 100.0)]);
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         let out = render_snapshot(snap, 0, 100, 30);
         let row = loss_row(&out);
         assert!(row.contains('\u{2588}'), "expected full block: {row}");
@@ -743,7 +766,7 @@ mod tests {
     #[test]
     fn render_zero_loss_is_flat_baseline() {
         let s = stream_with_intervals(1, &[(1.0, 0.0), (1.0, 0.0), (1.0, 0.0)]);
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         let out = render_snapshot(snap, 0, 100, 30);
         let row = loss_row(&out);
         assert!(row.contains('\u{2581}'), "expected baseline glyph: {row}");
@@ -761,7 +784,7 @@ mod tests {
         // row and legend without panicking.
         let mut s = clean_stream(1, 3);
         s.quality_intervals.clear();
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         let out = render_snapshot(snap, 0, 100, 30);
         assert!(out.contains("Loss:"), "loss row label missing: {out}");
         assert!(out.contains("Legend"), "legend missing: {out}");
@@ -776,7 +799,7 @@ mod tests {
     fn render_narrow_terminal_does_not_panic() {
         // Robustness: a very narrow, short terminal must clip, not overflow.
         let s = stream_with_intervals(1, &[(1.0, 50.0)]);
-        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]), None);
         let _ = render_snapshot(snap, 0, 8, 4);
     }
 

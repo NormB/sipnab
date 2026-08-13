@@ -327,7 +327,7 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:3270`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3270)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:3312`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3312)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -989,7 +989,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:171`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L171)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:4448`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4448), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:4466`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4466), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -1455,7 +1455,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:5512`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5512), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:5530`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5530), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the

@@ -305,11 +305,20 @@ sequenceDiagram
 
 ### MOS is an estimate, not a measurement
 
-[`estimate_mos()`](../../src/rtp/quality.rs) is an E-model computation from
-jitter, loss, and codec — a model output on the 1.0–4.5 scale, not an opinion
-score from a listener. Say "estimated MOS" in anything user-facing. The
-distinction is the difference between a tool an engineer trusts and one they
-re-derive.
+[`estimate_mos_with_delay()`](../../src/rtp/quality.rs) is an E-model
+computation from jitter, loss, codec **and one-way path delay** — a model
+output on the 1.0–4.5 scale, not an opinion score from a listener. Say
+"estimated MOS" in anything user-facing. The distinction is the difference
+between a tool an engineer trusts and one they re-derive.
+
+The delay term is the one input a passive tap cannot measure, so
+[`MosDelay`](../../src/rtp/quality.rs) resolves it per stream and every surface
+scores through that: what the operator declared, then what an endpoint reported
+in an RTCP XR VoIP-metrics block, then what sipnab derives from a receiver
+report's sender-report echo, then a labelled assumption. Score a stream any
+other way and two surfaces report two numbers for one call — G.107's delay
+penalty has a knee at 177.3 ms, and a call past it reads more than a full MOS
+point too high on the assumption.
 
 ### Bursty loss and diffuse loss are not the same impairment
 

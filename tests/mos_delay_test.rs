@@ -568,44 +568,202 @@ fn the_one_way_delay_flag_parses_and_beats_config() {
     );
 }
 
-#[path = "support/source_scan.rs"]
-mod source_scan;
+// ── One stream, one MOS, every surface ───────────────────────────────
+//
+// Everything above proves the RESOLVER is right and that one TUI pane reads it.
+// What follows proves the other consumers read the same thing, because they did
+// not: `estimate_mos` was called with no delay at all from the filter DSL, the
+// call-list MOS column, the canonical `StreamSummary` that REST, MCP and the
+// TUI's JSON save all project through, the `--on-quality` alert threshold and
+// the browser build. One scorer, one formula, and six surfaces reporting a
+// domestic 100 ms path for calls whose own RTCP said otherwise.
 
-/// The stream-detail pane scores every MOS it draws on ONE delay.
+/// The same stream scores the same MOS on every surface reachable from a test,
+/// and that score is NOT the assumption.
 ///
-/// The headline `MOS:` moved to the measured path when the derived round trip
-/// landed; the MOS Trend sparkline directly beside it kept calling the
-/// assumed-delay wrapper. A long-haul call therefore rendered `MOS: 1.00`
-/// against a flat, healthy trend — one pane giving two answers about the same
-/// stream, which is the defect shape the call-list-versus-detail work and the
-/// jitter-banding fix each closed once already.
-///
-/// Asserted against the source rather than a render because the trend needs
-/// five seconds of intervals to draw at all, so a rendering test would pass on
-/// an empty sparkline and prove nothing. The rule is structural: this view may
-/// not reach for the wrapper that bakes in the assumption.
+/// The private scorers — REST's `approximate_mos`, MCP's `stream_mos` — cannot
+/// be called from here; both delegate to `MosDelay::score` now, and
+/// `no_surface_scores_a_mos_on_the_assumed_delay` in `surface_parity_test` is
+/// what keeps them delegating. This is the behavioural half: the surfaces that
+/// ARE reachable must agree on a real number rather than agree on a constant.
 #[test]
-fn the_stream_detail_pane_scores_every_mos_on_the_same_delay() {
-    let src = include_str!("../src/tui/stream_detail.rs");
-    let production = source_scan::production_source(src);
+fn one_stream_scores_one_mos_on_every_surface() {
+    use sipnab::rtp::quality::MosDelay;
 
-    // `estimate_mos(` but not `estimate_mos_with_delay(`.
-    let assumed = production
-        .match_indices("estimate_mos(")
-        .filter(|(i, _)| !production[..*i].ends_with("_with_delay"))
-        .count();
+    let ssrc = 0x0EC4_5A11;
+    let key = key_for(ssrc);
+    // 500 ms since the SR, 50 ms held by the reporter: a 450 ms round trip,
+    // 225 ms one way — past the 177.3 ms `Id` knee and short of the MOS floor.
+    let store = store_with_rr(ssrc, Some(500), 50);
+    let delay = MosDelay::from_capture(&store);
+    let stream = store.get(&key).expect("stream present");
 
-    assert_eq!(
-        assumed, 0,
-        "src/tui/stream_detail.rs calls the assumed-delay `estimate_mos` {assumed} time(s). \
-         Every MOS this pane draws — the headline and the trend beside it — must be scored \
-         with the delay `resolve_one_way_delay` settled on, or the pane contradicts itself."
+    // The filter DSL — `rtp.mos`, and so `--filter` and `--problems`.
+    let dsl = sipnab::sip::dsl::stream_mos(stream, delay);
+    // The canonical projection: REST `/v1/streams`, MCP `rtp_stats`, the CLI's
+    // JSON and the TUI's "save streams as JSON".
+    let summary = sipnab::output::model::StreamSummary::of(stream, delay).mos;
+
+    let mut surfaces: Vec<(&str, f64)> = vec![("filter DSL", dsl), ("StreamSummary", summary)];
+    surfaces.extend(tui_surfaces(&store));
+
+    let assumed = estimate_mos(
+        stream.jitter,
+        stream.loss_percent(),
+        stream.codec.as_deref(),
     );
-
-    // Anti-vacuity: the pane must actually be scoring MOS, or a file that
-    // stopped rendering one entirely would satisfy the assertion above.
+    for (name, mos) in &surfaces {
+        assert!(
+            (mos - dsl).abs() < 1e-9,
+            "{name} scored {mos:.4} where the filter DSL scored {dsl:.4}. One \
+             stream, one MOS — a surface that disagrees is a surface an \
+             operator can catch contradicting the one beside it"
+        );
+        // Anti-vacuity, and the whole point. A fixture with no RTCP would make
+        // every surface agree on the assumption and prove nothing at all.
+        assert!(
+            assumed - mos > 1.0,
+            "{name} reported {mos:.4}, which is the assumed-delay score \
+             {assumed:.4} — this stream's own receiver reports put it 225 ms \
+             out, so a surface still on the assumption has not moved"
+        );
+    }
     assert!(
-        production.contains("estimate_mos_with_delay("),
-        "the pane must still score MOS with an explicit delay"
+        surfaces.len() >= 2,
+        "only {} surfaces were compared, so this gate asserted almost nothing",
+        surfaces.len()
     );
+}
+
+/// The TUI's own MOS surfaces for `store`: the call-list row and the sparkline
+/// drawn inside it.
+///
+/// A function rather than a `#[cfg]` block inside the test, so the list it
+/// extends is mutated on every feature set — a block leaves `surfaces`
+/// needlessly `mut` without the TUI, and the warning that follows is the kind
+/// a build eventually learns to ignore.
+#[cfg(feature = "tui")]
+fn tui_surfaces(store: &StreamStore) -> Vec<(&'static str, f64)> {
+    let snap = sipnab::tui::dashboard::DashboardSnapshot::from_streams(store, None);
+    let row = snap.rows.first().expect("one row");
+    let mut out = vec![("TUI call list", row.mos)];
+    // The sparkline beside the row too: a pane scoring its trend on a different
+    // delay from its own headline is the defect that was closed in the
+    // stream-detail view, one view over.
+    if let Some(point) = row.trend.first() {
+        out.push(("TUI call-list trend", point.mos));
+    }
+    out
+}
+
+/// No TUI compiled in, so it contributes no surface.
+#[cfg(not(feature = "tui"))]
+fn tui_surfaces(_store: &StreamStore) -> Vec<(&'static str, f64)> {
+    Vec::new()
+}
+
+/// `rtp.mos < X` now SELECTS a call the assumption would have missed.
+///
+/// Consistency is not the point on its own — every surface agreeing on a wrong
+/// number is still wrong. The point is that `--filter "rtp.mos < 3.5"` returns
+/// the calls that were actually bad. This stream's audio is unacceptable on
+/// delay alone (ITU-T G.114 puts interactive speech at about 150 ms one way and
+/// this is 225 ms), and until the filter read the delay it scored above 4 and
+/// was excluded from every triage sweep in the tool.
+#[test]
+fn a_measured_delay_selects_a_call_the_assumption_would_have_missed() {
+    use sipnab::rtp::diagnosis::CaptureMedia;
+    use sipnab::rtp::quality::MosDelay;
+    use sipnab::sip::dsl::FilterExpr;
+
+    let ssrc = 0x0EC4_5E1E;
+    let key = key_for(ssrc);
+    let mut store = store_with_rr(ssrc, Some(500), 50);
+    let call_id = "delay-selection@example.net";
+    store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000, call_id);
+    let stream = store.get(&key).expect("stream present");
+    assert_eq!(
+        stream.associated_dialog.as_deref(),
+        Some(call_id),
+        "the stream must belong to the dialog, or the filter sees no media"
+    );
+
+    let measured = MosDelay::from_capture(&store);
+    let assumed_only = MosDelay::unknown();
+
+    // A threshold BETWEEN the two scores, derived rather than hard-coded so it
+    // cannot drift away from the model.
+    let scored = sipnab::sip::dsl::stream_mos(stream, measured);
+    let assumed = sipnab::sip::dsl::stream_mos(stream, assumed_only);
+    assert!(
+        assumed - scored > 1.0,
+        "the fixture must straddle a threshold: got {assumed:.2} assumed vs \
+         {scored:.2} measured"
+    );
+    let threshold = (scored + assumed) / 2.0;
+
+    let filter = FilterExpr::parse(&format!("rtp.mos < {threshold:.4}")).expect("parses");
+    let mut dialogs = sipnab::sip::dialog_store::DialogStore::new(16, false);
+    dialogs.process_message(invite_for(call_id));
+    let dialog = dialogs.get(call_id).expect("dialog tracked");
+    let streams = [stream];
+
+    assert!(
+        filter.matches_dialog(dialog, &streams, CaptureMedia::Observed, measured),
+        "`rtp.mos < {threshold:.2}` must select a call whose own RTCP scores it \
+         {scored:.2}"
+    );
+    assert!(
+        !filter.matches_dialog(dialog, &streams, CaptureMedia::Observed, assumed_only),
+        "the same filter on the assumed 100 ms path must NOT select it — if it \
+         does, this test is not measuring the change it exists to measure"
+    );
+
+    // And through the production selection path, which resolves the delay for
+    // itself from the store rather than being handed it.
+    let selection = sipnab::sip::dsl::select_dialogs(Some(&filter), &dialogs, &store);
+    assert_eq!(
+        selection.dialogs.len(),
+        1,
+        "`select_dialogs` is what --report and --json-dialogs narrow through; \
+         it must select the same call the filter does"
+    );
+}
+
+/// A parsed INVITE for `call_id`, carrying SDP for the fixture's media endpoint
+/// so the dialog and the stream describe one call.
+fn invite_for(call_id: &str) -> sipnab::sip::SipMessage {
+    let body = "v=0\r\n\
+                o=- 0 0 IN IP4 10.0.0.1\r\n\
+                s=-\r\n\
+                c=IN IP4 10.0.0.1\r\n\
+                t=0 0\r\n\
+                m=audio 20000 RTP/AVP 0\r\n\
+                a=rtpmap:0 PCMU/8000\r\n";
+    let mut raw = Vec::new();
+    raw.extend_from_slice(b"INVITE sip:b@example.net SIP/2.0\r\n");
+    for h in [
+        "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-delay".to_string(),
+        "From: <sip:a@example.net>;tag=aaa".to_string(),
+        "To: <sip:b@example.net>".to_string(),
+        format!("Call-ID: {call_id}"),
+        "CSeq: 1 INVITE".to_string(),
+        "Content-Type: application/sdp".to_string(),
+        format!("Content-Length: {}", body.len()),
+    ] {
+        raw.extend_from_slice(h.as_bytes());
+        raw.extend_from_slice(b"\r\n");
+    }
+    raw.extend_from_slice(b"\r\n");
+    raw.extend_from_slice(body.as_bytes());
+    sipnab::sip::parser::parse_sip(
+        &raw,
+        ts(0),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+        5060,
+        5060,
+        sipnab::capture::parse::TransportProto::Udp,
+    )
+    .expect("INVITE parses")
 }

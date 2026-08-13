@@ -25,7 +25,7 @@
 //! a tool disagrees with itself.
 
 use sipnab::rtp::parser::RtpHeader;
-use sipnab::rtp::quality::estimate_mos;
+use sipnab::rtp::quality::{DEFAULT_ONE_WAY_DELAY_MS, MosDelay, estimate_mos_with_delay};
 use sipnab::rtp::stream::{RtpStream, StreamKey};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -75,9 +75,13 @@ fn the_filter_scores_a_stream_exactly_as_the_display_does() {
         let displayed = {
             let received = total - lost;
             let loss_pct = lost as f64 / (received + lost) as f64 * 100.0;
-            estimate_mos(jitter, loss_pct, codec)
+            // The delay `MosDelay::unknown()` resolves to. Named rather than
+            // hidden behind the assumed-delay wrapper: this test is about the
+            // FORMULA agreeing, so the delay term has to be held equal on both
+            // sides or it proves the wrong thing.
+            estimate_mos_with_delay(jitter, loss_pct, codec, DEFAULT_ONE_WAY_DELAY_MS)
         };
-        let filtered = sipnab::sip::dsl::stream_mos(&s);
+        let filtered = sipnab::sip::dsl::stream_mos(&s, MosDelay::unknown());
         assert!(
             (displayed - filtered).abs() < 1e-9,
             "jitter {jitter} loss {lost}/{total} codec {codec:?}: the filter \
@@ -94,8 +98,10 @@ fn the_filter_scores_a_stream_exactly_as_the_display_does() {
 /// one, and rated them identically.
 #[test]
 fn the_filter_now_distinguishes_codecs() {
-    let g711 = sipnab::sip::dsl::stream_mos(&stream(10.0, 10, 990, Some("PCMU")));
-    let g729 = sipnab::sip::dsl::stream_mos(&stream(10.0, 10, 990, Some("G729")));
+    let g711 =
+        sipnab::sip::dsl::stream_mos(&stream(10.0, 10, 990, Some("PCMU")), MosDelay::unknown());
+    let g729 =
+        sipnab::sip::dsl::stream_mos(&stream(10.0, 10, 990, Some("G729")), MosDelay::unknown());
     assert!(
         g711 > g729,
         "G.729 compression impairment must score below G.711 on identical \
@@ -106,7 +112,7 @@ fn the_filter_now_distinguishes_codecs() {
 /// A stream that has seen nothing scores as unknown, not as perfect.
 #[test]
 fn an_empty_stream_does_not_score_as_flawless() {
-    let mos = sipnab::sip::dsl::stream_mos(&stream(0.0, 0, 0, None));
+    let mos = sipnab::sip::dsl::stream_mos(&stream(0.0, 0, 0, None), MosDelay::unknown());
     assert!(
         (1.0..=4.5).contains(&mos),
         "an empty stream produced {mos}, which is not a MOS"

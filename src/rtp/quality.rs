@@ -46,6 +46,16 @@ pub struct BurstGapAnalysis {
 /// packet loss, and codec type. Assumes a baseline one-way delay of 100ms
 /// (typical for well-provisioned VoIP).
 ///
+/// **No surface in this crate calls this**, and a gate
+/// (`no_surface_scores_a_mos_on_the_assumed_delay`) keeps it that way. It
+/// remains as the NAMED assumption — the reference point
+/// [`DEFAULT_ONE_WAY_DELAY_MS`] documents and the tests pin the model against
+/// — while everything that reports a number to a human or an agent goes
+/// through [`MosDelay`], which resolves the delay from the capture's own RTCP
+/// and says where it came from. A caller outside the crate that wants the old
+/// behaviour still has it; a caller that wants the truth wants
+/// [`estimate_mos_with_delay`].
+///
 /// # Arguments
 ///
 /// * `jitter_ms` — measured interarrival jitter in milliseconds.
@@ -350,6 +360,123 @@ pub fn resolve_one_way_delay(
         return (one_way, DelaySource::DerivedFromEcho);
     }
     (DEFAULT_ONE_WAY_DELAY_MS, DelaySource::Assumed)
+}
+
+/// What one surface can see about the one-way delay behind a stream's MOS.
+///
+/// [`resolve_one_way_delay`] is the RANKING; this is what carries its three
+/// inputs to a scorer holding a stream but not the store the RTCP landed in.
+/// Two of those inputs live in the store's provenance side-table rather than on
+/// the stream — a round trip is somebody else's measurement — so a surface
+/// iterating `&RtpStream` cannot reach them, and every surface that scored a
+/// MOS without a store therefore scored it on [`DEFAULT_ONE_WAY_DELAY_MS`].
+/// That is the defect this type exists to close: the filter DSL, the call list,
+/// the REST and MCP projections and the browser build all reported a
+/// domestic 100 ms path for calls whose own RTCP said 225 ms or more.
+///
+/// It is a value rather than a trait so the choice is made ONCE per surface and
+/// visible at the call site: `MosDelay::of_run` says the operator's figure was
+/// consulted, `MosDelay::from_capture` says this surface has no way to consult
+/// it, and `MosDelay::unknown` says nothing was available at all. All three
+/// still go through the one resolver, so the answer carries a
+/// [`DelaySource`] and a reader can be told which of the four remedies is
+/// theirs.
+#[derive(Clone, Copy)]
+pub struct MosDelay<'a> {
+    /// What the operator declared for this deployment, when the surface can
+    /// see a config file or a command line.
+    declared_ms: Option<f64>,
+    /// The store whose provenance table holds the reported and derived round
+    /// trips. `None` where a surface genuinely holds no store.
+    store: Option<&'a crate::rtp::stream_store::StreamStore>,
+}
+
+impl<'a> MosDelay<'a> {
+    /// Everything this run knows: the operator's declared figure and the store
+    /// its RTCP landed in.
+    #[must_use]
+    pub fn of_run(
+        declared_ms: Option<f64>,
+        store: &'a crate::rtp::stream_store::StreamStore,
+    ) -> Self {
+        Self {
+            declared_ms,
+            store: Some(store),
+        }
+    }
+
+    /// The capture's own evidence, on a surface that cannot see a declaration.
+    ///
+    /// `declared_ms` is `None` here as a FACT about the surface, not a default:
+    /// the browser build has no config file and no command line, so the
+    /// [`Declared`](DelaySource::Declared) rank is structurally unreachable
+    /// there. A capture opened in a browser can still carry RTCP, and it is
+    /// scored on it — the alternative, stating the assumption, would make the
+    /// same capture read one MOS in the browser and another in the CLI, which
+    /// is the "one tool, two numbers" defect wearing a different build target.
+    #[must_use]
+    pub fn from_capture(store: &'a crate::rtp::stream_store::StreamStore) -> Self {
+        Self {
+            declared_ms: None,
+            store: Some(store),
+        }
+    }
+
+    /// Nothing at all: no declaration and no store to ask.
+    ///
+    /// Resolves to [`DelaySource::Assumed`], which is the same number
+    /// [`estimate_mos`] returns and a different claim — the score says it was
+    /// guessed rather than implying it was measured.
+    #[must_use]
+    pub fn unknown() -> MosDelay<'static> {
+        MosDelay {
+            declared_ms: None,
+            store: None,
+        }
+    }
+
+    /// The one-way delay for `stream`, and where it came from.
+    ///
+    /// The echo figure is offered only when it is what the store settled on,
+    /// which by construction means no XR block exists for this stream. That is
+    /// not a shortcut around the ranking — both figures are handed to
+    /// [`resolve_one_way_delay`] and it does the ranking — it is that the store
+    /// has no echo to offer once an endpoint has reported its own.
+    #[must_use]
+    pub fn resolve(&self, stream: &crate::rtp::stream::RtpStream) -> (f64, DelaySource) {
+        resolve_one_way_delay(
+            self.declared_ms,
+            self.store
+                .and_then(|s| s.remote_voip_metrics(&stream.key))
+                .map(|xr| xr.metrics.round_trip_delay),
+            match self.store.and_then(|s| s.round_trip_for(stream)) {
+                Some((ms, crate::rtp::rtcp::RttSource::SenderReportEcho)) => Some(ms),
+                _ => None,
+            },
+        )
+    }
+
+    /// Just the delay from [`Self::resolve`], for a caller that has already
+    /// said where it came from — a trend loop beside a headline, say.
+    #[must_use]
+    pub fn one_way_ms(&self, stream: &crate::rtp::stream::RtpStream) -> f64 {
+        self.resolve(stream).0
+    }
+
+    /// The MOS for a whole stream, scored on the delay this evidence resolves.
+    ///
+    /// The one place a stream becomes a MOS. Six surfaces each derived the loss
+    /// percentage and called [`estimate_mos`] themselves, which is how five of
+    /// them were still on the assumption after the sixth stopped being.
+    #[must_use]
+    pub fn score(&self, stream: &crate::rtp::stream::RtpStream) -> f64 {
+        estimate_mos_with_delay(
+            stream.jitter,
+            stream.loss_percent(),
+            stream.codec.as_deref(),
+            self.one_way_ms(stream),
+        )
+    }
 }
 
 /// Convert an R-factor to MOS using the standard formula.

@@ -204,7 +204,7 @@ mod tests {
         let mut app = App::new_test();
         app.current_view = View::QualityDashboard;
         app.dashboard_snapshot = Some(crate::tui::dashboard::DashboardSnapshot::from_streams(
-            &store,
+            &store, None,
         ));
         app.dashboard_selected = 0;
 

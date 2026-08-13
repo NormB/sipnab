@@ -84,12 +84,35 @@ fn code(rel: &str) -> String {
 /// MCP in the same commit, and a gate scoped to `api.rs` alone called that
 /// asymmetric drift. The scan looks for a metric's name, so the scope has to be
 /// every file where the surface's shape is decided.
+///
+/// `src/output/json.rs` is in scope for the same reason and was missing:
+/// `GET /v1/streams/{{ssrc}}` renders through `output::json::stream_to_json`,
+/// so `burst_gap` has always been on REST while a scan of `api.rs` +
+/// `model.rs` could not see it.
 fn rest_surface() -> String {
     format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         code("src/output/api.rs"),
-        code("src/output/model.rs")
+        code("src/output/model.rs"),
+        code("src/output/json.rs")
     )
+}
+
+/// The MCP surface's exposed shape: its tools PLUS the shared stream renderer
+/// they serialise through.
+///
+/// The same lesson as [`rest_surface`], learned the same way and by the same
+/// file. `src/mcp` named `loss_pct` only inside its own copy of "derive the
+/// loss percentage, then score a MOS"; the moment that copy was replaced by a
+/// call to the canonical scorer, a scan scoped to `src/mcp` reported loss as
+/// ABSENT from MCP — at the exact moment the sharing was doing its job, and
+/// while `rtp_stats` was serving the field unchanged through
+/// `crate::output::json::stream_to_json`.
+///
+/// A gate that reads a surface's own file cannot see a surface that delegates.
+/// Both surfaces here delegate, to the same renderer, so both scans include it.
+fn mcp_surface() -> String {
+    format!("{}\n{}", code("src/mcp"), code("src/output/json.rs"))
 }
 
 /// Does `hay` use `needle` as a whole identifier?
@@ -124,7 +147,16 @@ const QUALITY_METRICS: &[Metric] = &[
         name: "round_trip",
         aliases: &["round_trip_delay", "round_trip_ms", "round_trip_for"],
     },
-    Metric::named("burst_gap"),
+    // Burst/gap needs one for the same reason latency does: `burst_gap` is the
+    // JSON key both APIs serialise, and `burst_gap_analysis` is the accessor
+    // the TUI's loss map renders through — a terminal shows "Bursty / 3 bursts
+    // / avg 60ms", not a key. Whole-identifier matching does not see one in the
+    // other, so tracking the key alone reported the analysis as unreachable in
+    // an interface that has drawn it since the loss map existed.
+    Metric {
+        name: "burst_gap",
+        aliases: &["burst_gap_analysis"],
+    },
     Metric::named("dtmf"),
 ];
 
@@ -152,7 +184,7 @@ impl Metric {
 /// neither. One surface alone is drift.
 #[test]
 fn every_quality_metric_is_on_both_mcp_and_the_rest_api() {
-    let mcp = code("src/mcp");
+    let mcp = mcp_surface();
     let api = rest_surface();
 
     let mut asymmetric = Vec::new();
@@ -205,7 +237,7 @@ fn every_quality_metric_is_on_both_mcp_and_the_rest_api() {
 /// somewhere in the interface, not that it is on the summary row.
 #[test]
 fn metrics_the_apis_report_are_reachable_in_the_tui() {
-    let mcp = code("src/mcp");
+    let mcp = mcp_surface();
     let api = rest_surface();
     let tui = code("src/tui");
 
@@ -300,6 +332,98 @@ fn only_one_place_in_the_tree_scores_a_mos() {
          answers for one stream, and the operator meets them as a filter that \
          disagrees with the display.",
         strays.join("\n  ")
+    );
+}
+
+/// No surface scores a MOS on the assumed one-way delay.
+///
+/// The sibling of `only_one_place_in_the_tree_scores_a_mos`, and it exists
+/// because that gate passed throughout the defect it was written for. There was
+/// exactly one scorer; five of the six surfaces calling it passed no delay, so
+/// `estimate_mos` supplied `DEFAULT_ONE_WAY_DELAY_MS` — a domestic 100 ms guess
+/// — for every stream. One scorer, one formula, and still two answers: the
+/// stream-detail pane scored a call on the path its own RTCP measured while the
+/// filter DSL, the call list, the REST and MCP projections, the alert threshold
+/// and the browser build all scored the same call as if it were domestic.
+///
+/// Over a 6635-stream corpus that is 2212 streams whose delay is not the
+/// assumption, 22 of them past G.107's `Id` knee at 177.3 ms, and 20 of those
+/// wrong by more than a FULL MOS point — worst case reading 4.36 where the
+/// truth is 1.00. Those calls reported as excellent everywhere but one pane.
+///
+/// So the rule is structural, not behavioural: a production caller must supply
+/// the delay, either through [`MosDelay`](sipnab::rtp::quality::MosDelay) or by
+/// naming it in `estimate_mos_with_delay`. `estimate_mos` itself survives as
+/// the documented assumption and the reference the model is pinned against —
+/// it is a legitimate thing for a downstream crate to call, and an illegitimate
+/// thing for a surface of this one to.
+#[test]
+fn no_surface_scores_a_mos_on_the_assumed_delay() {
+    // Where the assumption is allowed to be named: the model's own home, which
+    // defines the wrapper, documents it and doc-tests it.
+    const HOME: &str = "src/rtp/quality.rs";
+
+    let mut strays = Vec::new();
+    let mut delay_aware = 0usize;
+    let mut stack = vec![repo().join("src")];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("read_dir src").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(repo())
+                .expect("under repo")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = std::fs::read_to_string(&p).expect("read");
+            // Production only. A unit test may legitimately hold the delay term
+            // still by naming the assumed wrapper, and `dashboard.rs` does.
+            for (i, line) in source_scan::production_source(&text).lines().enumerate() {
+                // Prose may DISCUSS the wrapper — most of these files carry a
+                // comment explaining why they stopped calling it — and a gate
+                // that banned the words would ban the explanation.
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains("estimate_mos_with_delay(") || code.contains(".score(") {
+                    delay_aware += 1;
+                }
+                if !code.contains("estimate_mos(") {
+                    continue;
+                }
+                // The re-export in `src/lib.rs` is the public API, not a call.
+                if code.contains("pub use") || rel == HOME {
+                    continue;
+                }
+                strays.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+
+    // Anti-vacuity. A walk that found nothing, or a rename of the delay-aware
+    // entry point, would leave this reporting a clean tree because it read an
+    // empty one. Nine sites score a MOS on a resolved delay today.
+    assert!(
+        delay_aware >= 9,
+        "only {delay_aware} delay-aware scoring sites were found in src/ — the \
+         scan or the entry-point name broke, so this gate is checking nothing"
+    );
+
+    strays.sort();
+    assert!(
+        strays.is_empty(),
+        "a surface has gone back to scoring a MOS on the assumed \
+         {assumed} ms path:\n  {}\n\nPass the delay: hold a \
+         `crate::rtp::quality::MosDelay` for the store and call `.score(stream)`, \
+         or name the figure in `estimate_mos_with_delay`. A surface that assumes \
+         the delay reports a long-haul call as excellent, and disagrees with \
+         every surface that does not.",
+        strays.join("\n  "),
+        assumed = sipnab::rtp::quality::DEFAULT_ONE_WAY_DELAY_MS,
     );
 }
 

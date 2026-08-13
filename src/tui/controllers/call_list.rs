@@ -421,10 +421,14 @@ pub(in crate::tui) fn clear_non_matching(app: &mut App) {
         let mut ds = app.dialog_store.write();
         let ss = app.stream_store.read();
         let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
+        // The same delay term the call list and the detail pane score with, so
+        // a destructive `rtp.mos` filter removes the calls the operator was
+        // looking at rather than a set scored on a guessed 100 ms path.
+        let delay = crate::rtp::quality::MosDelay::of_run(app.declared_one_way_delay_ms, &ss);
         let before = ds.len();
         ds.retain(|d| {
             let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-            filter.matches_dialog(d, &streams, capture)
+            filter.matches_dialog(d, &streams, capture, delay)
         });
         before - ds.len()
     };
@@ -453,10 +457,14 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
         let mut ds = app.dialog_store.write();
         let ss = app.stream_store.read();
         let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
+        // The same delay term the call list and the detail pane score with, so
+        // a destructive `rtp.mos` filter removes the calls the operator was
+        // looking at rather than a set scored on a guessed 100 ms path.
+        let delay = crate::rtp::quality::MosDelay::of_run(app.declared_one_way_delay_ms, &ss);
         let before = ds.len();
         ds.retain(|d| {
             let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-            !filter.matches_dialog(d, &streams, capture)
+            !filter.matches_dialog(d, &streams, capture, delay)
         });
         before - ds.len()
     };

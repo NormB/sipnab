@@ -963,6 +963,10 @@ pub(super) fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
         return "No RTP streams to save".to_string();
     }
 
+    // The saved file must carry the same MOS the screen showed while it was
+    // being saved, so the projection is handed the store's delay evidence
+    // rather than falling back to the assumption a file cannot be corrected on.
+    let delay = crate::rtp::quality::MosDelay::of_run(app.declared_one_way_delay_ms, &stream_store);
     let json_streams: Vec<serde_json::Value> = streams
         .iter()
         .map(|s| {
@@ -975,11 +979,11 @@ pub(super) fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
             // Canonical summary (WS3) — MOS comes from the single E-model in
             // rtp::quality (this path used to carry its own divergent copy) —
             // plus the save-specific media extras.
-            let mut obj = match serde_json::to_value(crate::output::model::StreamSummary::from(*s))
-            {
-                Ok(serde_json::Value::Object(map)) => map,
-                _ => serde_json::Map::new(),
-            };
+            let mut obj =
+                match serde_json::to_value(crate::output::model::StreamSummary::of(s, delay)) {
+                    Ok(serde_json::Value::Object(map)) => map,
+                    _ => serde_json::Map::new(),
+                };
             obj.insert(
                 "duration_secs".into(),
                 ((duration_secs * 10.0).round() / 10.0).into(),

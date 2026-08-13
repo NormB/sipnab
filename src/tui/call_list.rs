@@ -463,7 +463,17 @@ pub fn displayed_dialogs<'a>(
         // cannot testify that a call carried no media.
         Some(f) => store
             .iter()
-            .filter(|d| f.matches_dialog(d, &[], crate::rtp::diagnosis::CaptureMedia::Absent))
+            // No streams reach this list, so `rtp.*` compares as unknown and
+            // no delay evidence could change an answer. `unknown()` states
+            // that rather than implying a store was consulted.
+            .filter(|d| {
+                f.matches_dialog(
+                    d,
+                    &[],
+                    crate::rtp::diagnosis::CaptureMedia::Absent,
+                    crate::rtp::quality::MosDelay::unknown(),
+                )
+            })
             .collect(),
         None => store.iter().collect(),
     };

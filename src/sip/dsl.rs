@@ -28,6 +28,7 @@ use nom::{
 
 use super::dialog::{DialogState, SipDialog};
 use crate::rtp::diagnosis::{self, CaptureMedia, MediaDiagnosis};
+use crate::rtp::quality::MosDelay;
 use crate::rtp::stream::RtpStream;
 
 // ── Maximum nesting depth (D17) ─────────────────────────────────────
@@ -53,7 +54,7 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 ///
 /// let filter = FilterExpr::parse("from.user == '1001' AND rtp.loss > 2.0")?;
 /// // Evaluate against tracked calls with
-/// // `filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed)`.
+/// // `filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed, MosDelay::unknown())`.
 ///
 /// // Malformed expressions fail to parse:
 /// assert!(FilterExpr::parse("from.user ==").is_err());
@@ -479,6 +480,19 @@ impl FilterExpr {
     ///   [`CaptureMedia::of_store`]; the surfaces that filter dialogs with no
     ///   media data at all pass [`CaptureMedia::Absent`], which is the honest
     ///   reading of what they know.
+    /// * `delay` — what this caller knows about one-way path delay, which is
+    ///   the term `rtp.mos` is scored on. A caller holding the stream store
+    ///   passes [`MosDelay::of_run`] or [`MosDelay::from_capture`]; one holding
+    ///   no media at all passes [`MosDelay::unknown`].
+    ///
+    ///   It is a PARAMETER rather than something the expression resolves for
+    ///   itself because the two figures that outrank the assumption — an
+    ///   endpoint's reported round trip and the one sipnab derives from an RR's
+    ///   sender-report echo — live in the store's provenance table, and this
+    ///   function is handed streams. Without it `rtp.mos < 3.0` scored every
+    ///   stream on a domestic 100 ms guess while the pane displaying that same
+    ///   stream scored it on the path its own RTCP measured, so the filter
+    ///   selected a different set of calls from the one the operator could see.
     ///
     /// # Returns
     ///
@@ -488,6 +502,7 @@ impl FilterExpr {
         dialog: &SipDialog,
         streams: &[&RtpStream],
         capture: CaptureMedia,
+        delay: MosDelay<'_>,
     ) -> bool {
         // Only run the media/asymmetry diagnosis when the expression actually
         // reads a diagnosis field; otherwise a default (all-clear) diagnosis
@@ -506,7 +521,7 @@ impl FilterExpr {
         } else {
             MediaDiagnosis::default()
         };
-        eval_expr(&self.root, dialog, streams, &diag)
+        eval_expr(&self.root, dialog, streams, &diag, delay)
     }
 }
 
@@ -591,6 +606,12 @@ pub fn select_dialogs<'a>(
 
     // One run-level fact, read once rather than per dialog.
     let capture = CaptureMedia::of_store(stream_store);
+    // The other run-level fact, from the same store and for the same reason:
+    // `rtp.mos` must be the number the streams' own RTCP supports, not the
+    // build-time guess. `from_capture` rather than `of_run` because no
+    // post-capture output path is handed the operator's declared figure — see
+    // the type's own note; the ranks the capture can support are all live.
+    let delay = crate::rtp::quality::MosDelay::from_capture(stream_store);
     let dialogs: Vec<(&'a SipDialog, Vec<&'a RtpStream>)> = dialog_store
         .iter()
         .filter_map(|dialog| {
@@ -599,7 +620,7 @@ pub fn select_dialogs<'a>(
                 .cloned()
                 .unwrap_or_default();
             match filter {
-                Some(expr) if !expr.matches_dialog(dialog, &streams, capture) => None,
+                Some(expr) if !expr.matches_dialog(dialog, &streams, capture, delay) => None,
                 _ => Some((dialog, streams)),
             }
         })
@@ -1226,16 +1247,21 @@ fn eval_expr(
     dialog: &SipDialog,
     streams: &[&RtpStream],
     diag: &MediaDiagnosis,
+    delay: MosDelay<'_>,
 ) -> bool {
     match expr {
         Expr::And(lhs, rhs) => {
-            eval_expr(lhs, dialog, streams, diag) && eval_expr(rhs, dialog, streams, diag)
+            eval_expr(lhs, dialog, streams, diag, delay)
+                && eval_expr(rhs, dialog, streams, diag, delay)
         }
         Expr::Or(lhs, rhs) => {
-            eval_expr(lhs, dialog, streams, diag) || eval_expr(rhs, dialog, streams, diag)
+            eval_expr(lhs, dialog, streams, diag, delay)
+                || eval_expr(rhs, dialog, streams, diag, delay)
         }
-        Expr::Not(inner) => !eval_expr(inner, dialog, streams, diag),
-        Expr::Compare(field, op, value) => eval_compare(field, op, value, dialog, streams, diag),
+        Expr::Not(inner) => !eval_expr(inner, dialog, streams, diag, delay),
+        Expr::Compare(field, op, value) => {
+            eval_compare(field, op, value, dialog, streams, diag, delay)
+        }
     }
 }
 
@@ -1255,6 +1281,8 @@ fn eval_expr(
 /// * `dialog` — Dialog under test.
 /// * `streams` — RTP streams associated with the dialog.
 /// * `diag` — Precomputed media diagnosis for boolean fields.
+/// * `delay` — One-way-delay evidence for `rtp.mos`, so the filter scores a
+///   stream the way every display of that stream does.
 ///
 /// # Returns
 ///
@@ -1266,6 +1294,7 @@ fn eval_compare(
     dialog: &SipDialog,
     streams: &[&RtpStream],
     diag: &MediaDiagnosis,
+    delay: MosDelay<'_>,
 ) -> bool {
     match field {
         // ── String fields ──────────────────────────────────────────
@@ -1340,7 +1369,10 @@ fn eval_compare(
         Field::RtpMos => {
             // Use worst (lowest) MOS across streams for filtering
             // MOS is approximated from jitter and loss using E-model R-factor
-            let mos = streams.iter().map(|s| stream_mos(s)).reduce(f64::min);
+            let mos = streams
+                .iter()
+                .map(|s| stream_mos(s, delay))
+                .reduce(f64::min);
             compare_opt_num(mos, op, value)
         }
         Field::RtpJitter => {
@@ -1499,7 +1531,7 @@ fn state_to_str(state: &DialogState) -> &'static str {
     }
 }
 
-/// MOS for a stream, scored by [`crate::rtp::quality::estimate_mos`].
+/// MOS for a stream, scored by [`MosDelay::score`].
 ///
 /// Deliberately a thin wrapper and nothing more. This function once carried
 /// its own formula — `R = 93.2 - min(jitter,100) - 2.5*loss_pct`, with no
@@ -1507,24 +1539,21 @@ fn state_to_str(state: &DialogState) -> &'static str {
 /// different set of streams than the ones the detail view showed below 3.0,
 /// diverging by as much as 1.7 MOS at 60 ms and 5% loss.
 ///
-/// The only thing it computes now is loss percentage, because
-/// `estimate_mos` takes a percentage and a stream carries counts.
+/// It computes nothing at all now. The loss percentage it used to derive came
+/// from the stream, and the delay term it used to assume comes from `delay` —
+/// both belong to the scorer, and the second one is why this wrapper stopped
+/// agreeing with the display a second time.
 ///
 /// # Arguments
 ///
 /// * `stream` — the RTP stream whose jitter, loss and codec feed the estimate.
+/// * `delay` — one-way-delay evidence, resolved per stream.
 ///
 /// # Returns
 ///
 /// The MOS, on the same scale and from the same code as every other surface.
-pub fn stream_mos(stream: &RtpStream) -> f64 {
-    let total = stream.packet_count + stream.lost_packets;
-    let loss_pct = if total > 0 {
-        (stream.lost_packets as f64 / total as f64) * 100.0
-    } else {
-        0.0
-    };
-    crate::rtp::quality::estimate_mos(stream.jitter, loss_pct, stream.codec.as_deref())
+pub fn stream_mos(stream: &RtpStream, delay: MosDelay<'_>) -> f64 {
+    delay.score(stream)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1645,7 +1674,7 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "REGISTER");
         let filter = FilterExpr::parse("rtp.mos < 3.0").expect("should parse");
         assert!(
-            !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+            !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "a dialog with no RTP has no MOS; it is not a bad-audio call"
         );
     }
@@ -1662,7 +1691,7 @@ mod tests {
         for expr in ["rtp.mos != 3.0", "rtp.mos > 3.0", "rtp.mos == 0.0"] {
             let filter = FilterExpr::parse(expr).expect("should parse");
             assert!(
-                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "`{expr}` must not match a dialog whose MOS was never measured"
             );
         }
@@ -1678,7 +1707,7 @@ mod tests {
         for expr in ["rtp.jitter < 30", "rtp.loss < 5", "rtp.jitter != 1"] {
             let filter = FilterExpr::parse(expr).expect("should parse");
             assert!(
-                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "`{expr}` must not match a dialog with no RTP"
             );
         }
@@ -1695,12 +1724,12 @@ mod tests {
         let streams = [&stream];
         let filter = FilterExpr::parse("rtp.mos > 0").expect("should parse");
         assert!(
-            filter.matches_dialog(&dialog, &streams, CaptureMedia::Absent),
+            filter.matches_dialog(&dialog, &streams, CaptureMedia::Absent, MosDelay::unknown()),
             "a measured MOS must still compare; the rule is about unknowns only"
         );
         let filter = FilterExpr::parse("rtp.jitter >= 0").expect("should parse");
         assert!(
-            filter.matches_dialog(&dialog, &streams, CaptureMedia::Absent),
+            filter.matches_dialog(&dialog, &streams, CaptureMedia::Absent, MosDelay::unknown()),
             "a measured jitter must still compare"
         );
     }
@@ -1718,7 +1747,7 @@ mod tests {
         for expr in ["setup_time < 1", "pdd < 1", "setup_time != 9"] {
             let filter = FilterExpr::parse(expr).expect("should parse");
             assert!(
-                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "`{expr}` must not match a dialog that was never timed"
             );
         }
@@ -1732,7 +1761,7 @@ mod tests {
         let dialog = make_dialog_with_timing(1500);
         let filter = FilterExpr::parse("pdd < 2").expect("should parse");
         assert!(
-            filter.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+            filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "a measured 1.5 s post-dial delay must still match `pdd < 2`"
         );
 
@@ -1741,7 +1770,7 @@ mod tests {
         answered.timing.answered_at = Some(base_ts() + TimeDelta::milliseconds(2500));
         let filter = FilterExpr::parse("setup_time > 2").expect("should parse");
         assert!(
-            filter.matches_dialog(&answered, &[], CaptureMedia::Absent),
+            filter.matches_dialog(&answered, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "a measured 2.5 s setup must still match `setup_time > 2`"
         );
     }
@@ -1751,7 +1780,7 @@ mod tests {
     fn from_user_equals_match() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("from.user == '1001'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     /// `payload` greps the raw text of every message: regex matches
@@ -1762,13 +1791,13 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         // The raw INVITE contains the To URI.
         let f = FilterExpr::parse("payload =~ '2002@example'").expect("should parse");
-        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
         let f = FilterExpr::parse("payload =~ 'not-there'").expect("should parse");
-        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
         // Equality against a whole raw message: never matches here, must not
         // panic (raw bytes are lossily decoded).
         let f = FilterExpr::parse("payload == 'x'").expect("should parse");
-        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     /// Build a dialog whose sole INVITE carries `body` verbatim (so
@@ -1828,7 +1857,7 @@ mod tests {
         // matches. The escaped `\'` here proves the delimiter is expressible
         // inside a regex too (matches nothing, but must parse).
         let f = FilterExpr::parse(r"from.user =~ '^\d\d\d\d$'").expect("should parse");
-        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent)); // from.user == "1001"
+        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown())); // from.user == "1001"
 
         // `\\` is preserved as two characters, so the regex engine sees one
         // literal backslash. This keeps `regex::escape`-produced text (e.g.
@@ -1853,15 +1882,15 @@ mod tests {
 
         // U+FFFD is absent from the true bytes → no match.
         let f = FilterExpr::parse(r"payload =~ '\x{FFFD}'").expect("should parse");
-        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
 
         // ASCII content around the invalid byte still greps fine and never
         // panics on the non-UTF-8 message.
         let dialog2 = make_dialog_with_body(b"MARK\xffER");
         let f = FilterExpr::parse("payload =~ 'MARK'").expect("should parse");
-        assert!(f.matches_dialog(&dialog2, &[], CaptureMedia::Absent));
+        assert!(f.matches_dialog(&dialog2, &[], CaptureMedia::Absent, MosDelay::unknown()));
         let f = FilterExpr::parse("payload == 'nope'").expect("should parse");
-        assert!(!f.matches_dialog(&dialog2, &[], CaptureMedia::Absent));
+        assert!(!f.matches_dialog(&dialog2, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     /// `from.user ==` rejects a dialog with a different From user.
@@ -1869,7 +1898,7 @@ mod tests {
     fn from_user_equals_no_match() {
         let dialog = make_dialog("2002", "1001", "INVITE");
         let filter = FilterExpr::parse("from.user == '1001'").expect("should parse");
-        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── AND + NOT ───────────────────────────────────────────────────
@@ -1882,7 +1911,7 @@ mod tests {
         let filter =
             FilterExpr::parse("method == 'INVITE' AND NOT ua =~ 'scanner'").expect("should parse");
         // UA is "TestUA/1.0", does not match 'scanner', so NOT flips to true
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── PDD in seconds ─────────────────────────────────────────────
@@ -1893,7 +1922,7 @@ mod tests {
         // PDD of 4000ms = 4.0 seconds, filter asks > 3.0
         let dialog = make_dialog_with_timing(4000);
         let filter = FilterExpr::parse("pdd > 3.0").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     /// A 2000 ms PDD does not satisfy `pdd > 3.0`.
@@ -1902,7 +1931,7 @@ mod tests {
         // PDD of 2000ms = 2.0 seconds, filter asks > 3.0
         let dialog = make_dialog_with_timing(2000);
         let filter = FilterExpr::parse("pdd > 3.0").expect("should parse");
-        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── rtp.orphaned, withdrawn ─────────────────────────────────────
@@ -1961,12 +1990,22 @@ mod tests {
         let filter_grouped_or =
             FilterExpr::parse("(from.user == '1001' OR from.user == '9999') AND method == 'BYE'")
                 .expect("should parse");
-        assert!(!filter_grouped_or.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!filter_grouped_or.matches_dialog(
+            &dialog,
+            &[],
+            CaptureMedia::Absent,
+            MosDelay::unknown()
+        ));
 
         let filter_grouped_and =
             FilterExpr::parse("from.user == '1001' OR (from.user == '9999' AND method == 'BYE')")
                 .expect("should parse");
-        assert!(filter_grouped_and.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter_grouped_and.matches_dialog(
+            &dialog,
+            &[],
+            CaptureMedia::Absent,
+            MosDelay::unknown()
+        ));
     }
 
     /// Without parentheses, `AND` binds tighter than `OR`.
@@ -1982,7 +2021,7 @@ mod tests {
         let filter =
             FilterExpr::parse("from.user == '1001' OR from.user == '9999' AND method == 'BYE'")
                 .expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── Regex matching ──────────────────────────────────────────────
@@ -1992,7 +2031,7 @@ mod tests {
     fn regex_match_accepts() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("from.user =~ '100[0-9]'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     /// `=~` rejects when the field value does not satisfy the regex.
@@ -2000,7 +2039,7 @@ mod tests {
     fn regex_match_rejects() {
         let dialog = make_dialog("2001", "3003", "INVITE");
         let filter = FilterExpr::parse("from.user =~ '100[0-9]'").expect("should parse");
-        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── Nesting depth limit ─────────────────────────────────────────
@@ -2207,7 +2246,7 @@ mod tests {
     fn double_quoted_string() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse(r#"from.user == "1001""#).expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── State comparison ────────────────────────────────────────────
@@ -2219,10 +2258,15 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         // Initial state for INVITE is Trying
         let filter = FilterExpr::parse("state == 'Trying'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
 
         let filter_fail = FilterExpr::parse("state == 'Failed'").expect("should parse");
-        assert!(!filter_fail.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!filter_fail.matches_dialog(
+            &dialog,
+            &[],
+            CaptureMedia::Absent,
+            MosDelay::unknown()
+        ));
     }
 
     // ── Dialog state with Failed ────────────────────────────────────
@@ -2256,7 +2300,7 @@ mod tests {
         crate::sip::dialog::update_state(&mut dialog, &fail_msg);
         assert_eq!(*dialog.state(), DialogState::Failed);
         let filter = FilterExpr::parse("state == 'Failed'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── Complex compound expression ─────────────────────────────────
@@ -2268,7 +2312,7 @@ mod tests {
         let dialog = make_dialog_with_timing(4000);
         let filter = FilterExpr::parse("from.user == '1001' AND (pdd > 3.0 OR state == 'Failed')")
             .expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── Msg count ───────────────────────────────────────────────────
@@ -2279,10 +2323,15 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         // Dialog has exactly 1 message (the initial INVITE)
         let filter = FilterExpr::parse("msg_count == 1").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
 
         let filter_more = FilterExpr::parse("msg_count > 5").expect("should parse");
-        assert!(!filter_more.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(!filter_more.matches_dialog(
+            &dialog,
+            &[],
+            CaptureMedia::Absent,
+            MosDelay::unknown()
+        ));
     }
 
     // ── RTP packets count ───────────────────────────────────────────
@@ -2295,7 +2344,12 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
         // Stream has 1 packet from construction
         let filter = FilterExpr::parse("rtp.packets >= 1").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(filter.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
     }
 
     // ── Retransmits ─────────────────────────────────────────────────
@@ -2309,7 +2363,7 @@ mod tests {
             .retransmit_counts
             .insert("1 INVITE".to_string(), 5);
         let filter = FilterExpr::parse("retransmits > 3").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── Not-equal operator ──────────────────────────────────────────
@@ -2319,7 +2373,7 @@ mod tests {
     fn not_equal_operator() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("method != 'BYE'").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── Integer numeric values ──────────────────────────────────────
@@ -2329,7 +2383,7 @@ mod tests {
     fn integer_numeric_value() {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("msg_count == 1").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── expand_alias: every alias maps to its documented expression ─────
@@ -2606,7 +2660,7 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         // one_way is false with no streams, so == false matches.
         let filter = FilterExpr::parse("one_way == false").expect("should parse");
-        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     /// A partial method selection (OR of method equalities) hides dialogs
@@ -2621,12 +2675,12 @@ mod tests {
         let partial = FilterExpr::parse("(method == 'REGISTER' OR method == 'INVITE')")
             .expect("should parse");
         assert!(
-            !partial.matches_dialog(&bye, &[], CaptureMedia::Absent),
+            !partial.matches_dialog(&bye, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "a partial method selection must not match an unlisted-method dialog"
         );
         // And it does match a dialog whose method IS in the selection.
         let invite = make_dialog("1001", "2002", "INVITE");
-        assert!(partial.matches_dialog(&invite, &[], CaptureMedia::Absent));
+        assert!(partial.matches_dialog(&invite, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     /// FilterExpr::never() rejects every dialog regardless of method.
@@ -2638,7 +2692,7 @@ mod tests {
         for method in ["INVITE", "REGISTER", "BYE", "OPTIONS"] {
             let dialog = make_dialog("1001", "2002", method);
             assert!(
-                !never.matches_dialog(&dialog, &[], CaptureMedia::Absent),
+                !never.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "never() must not match a {method} dialog"
             );
         }
@@ -2718,10 +2772,20 @@ mod tests {
         stream.jitter = 30.0 + 1e-7;
         let streams: Vec<&RtpStream> = vec![&stream];
         let f = FilterExpr::parse("rtp.jitter == 30").expect("parse");
-        assert!(f.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(f.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
         stream.jitter = 30.6;
         let streams: Vec<&RtpStream> = vec![&stream];
-        assert!(!f.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(!f.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
     }
 
     // ── src.port/dst.port: stable across idle compaction ────────────────
@@ -2784,8 +2848,8 @@ mod tests {
 
         let src = FilterExpr::parse("src.port == 5060").expect("parse");
         let dst = FilterExpr::parse("dst.port == 5080").expect("parse");
-        assert!(src.matches_dialog(&dialog, &[], CaptureMedia::Absent));
-        assert!(dst.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(src.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        assert!(dst.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     // ── compare_bool: operators + type mismatch ─────────────────────────
@@ -2847,7 +2911,7 @@ mod tests {
     fn approximate_mos_clean_stream_is_high() {
         // No loss, no jitter => R near 93 => MOS in the ~4.4 range.
         let stream = make_rtp_stream(false);
-        let mos = stream_mos(&stream);
+        let mos = stream_mos(&stream, MosDelay::unknown());
         assert!(mos > 4.0 && mos <= 4.5, "got {mos}");
     }
 
@@ -2859,8 +2923,8 @@ mod tests {
         stream.jitter = 80.0;
         stream.lost_packets = 50;
         // packet_count is 1 from construction; make loss heavy.
-        let degraded = stream_mos(&stream);
-        let clean = stream_mos(&make_rtp_stream(false));
+        let degraded = stream_mos(&stream, MosDelay::unknown());
+        let clean = stream_mos(&make_rtp_stream(false), MosDelay::unknown());
         assert!(degraded < clean, "degraded {degraded} < clean {clean}");
         assert!(degraded >= 1.0, "MOS floor is 1.0, got {degraded}");
     }
@@ -2871,7 +2935,7 @@ mod tests {
         let mut stream = make_rtp_stream(false);
         stream.jitter = 100.0;
         stream.lost_packets = 1_000_000;
-        let mos = stream_mos(&stream);
+        let mos = stream_mos(&stream, MosDelay::unknown());
         assert!((mos - 1.0).abs() < 1e-9, "expected floor 1.0, got {mos}");
     }
 
@@ -2883,7 +2947,7 @@ mod tests {
         let mut stream = make_rtp_stream(false);
         stream.packet_count = 0;
         stream.lost_packets = 0;
-        let mos = stream_mos(&stream);
+        let mos = stream_mos(&stream, MosDelay::unknown());
         assert!(mos > 4.0, "got {mos}");
     }
 
@@ -2901,15 +2965,30 @@ mod tests {
 
         // MOS should be degraded below 4.0.
         let mos_filter = FilterExpr::parse("rtp.mos < 4.0").expect("parse");
-        assert!(mos_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(mos_filter.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
 
         // Jitter worst-case across streams is 60.0.
         let jitter_filter = FilterExpr::parse("rtp.jitter > 50.0").expect("parse");
-        assert!(jitter_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(jitter_filter.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
 
         // Loss percentage is high.
         let loss_filter = FilterExpr::parse("rtp.loss > 50.0").expect("parse");
-        assert!(loss_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(loss_filter.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
     }
 
     /// rtp.codec matches a stream's codec; rtp.ssrc matches the
@@ -2922,11 +3001,21 @@ mod tests {
         let streams: Vec<&RtpStream> = vec![&stream];
 
         let codec_filter = FilterExpr::parse("rtp.codec == 'PCMU'").expect("parse");
-        assert!(codec_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(codec_filter.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
 
         // SSRC is rendered as 0x-prefixed 10-char hex of 0xDEADBEEF.
         let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0xdeadbeef'").expect("parse");
-        assert!(ssrc_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(ssrc_filter.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
     }
 
     /// Item 3: the parse-time `needs_diagnosis` flag is set iff the
@@ -2975,7 +3064,7 @@ mod tests {
         // streams are present (the skipped diagnosis changes nothing).
         let dialog = make_dialog("1001", "2002", "INVITE");
         let f = FilterExpr::parse("from.user == '1001'").unwrap();
-        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent));
+        assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
     }
 
     /// Item 2: `rtp.codec` / `rtp.ssrc` match if ANY linked stream matches,
@@ -2997,15 +3086,30 @@ mod tests {
 
         // Codec carried only by the second stream matches.
         let codec_filter = FilterExpr::parse("rtp.codec == 'G722'").expect("parse");
-        assert!(codec_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(codec_filter.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
 
         // SSRC carried only by the second stream matches.
         let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0x00000001'").expect("parse");
-        assert!(ssrc_filter.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(ssrc_filter.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
 
         // A codec present on no stream still does not match.
         let miss = FilterExpr::parse("rtp.codec == 'opus'").expect("parse");
-        assert!(!miss.matches_dialog(&dialog, &streams, CaptureMedia::Observed));
+        assert!(!miss.matches_dialog(
+            &dialog,
+            &streams,
+            CaptureMedia::Observed,
+            MosDelay::unknown()
+        ));
     }
 
     // ── select_dialogs ──────────────────────────────────────────────

@@ -131,21 +131,12 @@ pub fn render_stream_detail(
     // wrong derived one means suspecting where the tap sits, and an assumed one
     // means the delay was never known.
     //
-    // The echo figure is passed only when it is what the store settled on,
-    // which by construction means no XR block exists for this stream. That is
-    // not a shortcut around the ranking in `resolve_one_way_delay` — both
-    // figures are handed to it and it does the ranking — it is that the store
-    // has no echo to offer once an endpoint has reported its own.
-    let (one_way, delay_src) = crate::rtp::quality::resolve_one_way_delay(
-        declared_one_way_delay_ms,
-        store
-            .remote_voip_metrics(key)
-            .map(|xr| xr.metrics.round_trip_delay),
-        match round_trip {
-            Some((ms, crate::rtp::rtcp::RttSource::SenderReportEcho)) => Some(ms),
-            _ => None,
-        },
-    );
+    // Which figure goes to which rank is `MosDelay`'s to decide, not this
+    // view's. It was decided here first and copied into the DSL and the call
+    // list wrongly — as nothing at all — so the rule now lives beside the
+    // resolver it feeds.
+    let delay = crate::rtp::quality::MosDelay::of_run(declared_one_way_delay_ms, store);
+    let (one_way, delay_src) = delay.resolve(stream);
     let mos = crate::rtp::quality::estimate_mos_with_delay(
         stream.jitter,
         loss_pct,
@@ -284,7 +275,7 @@ pub fn render_stream_detail(
         let mos_values: Vec<f64> = stream
             .quality_intervals
             .iter()
-            // Same delay the headline MOS above was scored with. Scoring the
+            // The delay the headline MOS above was scored with. Scoring the
             // trend on the assumed 100 ms while the number beside it used the
             // measured path made one pane give two answers: a long-haul call
             // read `MOS: 1.00` next to a flat, healthy sparkline.

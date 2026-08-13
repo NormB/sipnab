@@ -493,7 +493,15 @@ fn linked_code_targets_exist() {
     // walkthrough is where someone adding one is reading. Attributed per file:
     // `docs/internals/walkthroughs.md` +2, every other internals page
     // unchanged.
-    const EXPECTED_CODE_LINKS: usize = 341;
+    // Raised 341 -> 342 by #114: the domain primer's "MOS is an estimate"
+    // section gained one link, to `MosDelay` in `rtp/quality.rs`, because the
+    // delay term became an input every surface must supply rather than a
+    // constant the model assumed. The `estimate_mos()` link in the same
+    // paragraph was RE-POINTED to `estimate_mos_with_delay()`, not added, so
+    // it is not part of the +1. Attributed per file:
+    // `docs/internals/domain-primer.md` +1, every other internals page
+    // unchanged.
+    const EXPECTED_CODE_LINKS: usize = 342;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

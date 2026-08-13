@@ -579,7 +579,8 @@ impl App {
             let force = self.dashboard_snapshot.is_none();
             let stale = self.dashboard_generation != Some(g);
             if force || (stale && self.dashboard_floor.ready()) {
-                let snap = dashboard::DashboardSnapshot::from_streams(&ss);
+                let snap =
+                    dashboard::DashboardSnapshot::from_streams(&ss, self.declared_one_way_delay_ms);
                 self.dashboard_selected = self
                     .dashboard_selected
                     .min(snap.rows.len().saturating_sub(1));
@@ -675,6 +676,7 @@ impl App {
                     Some(&store),
                     self.active_filter.as_ref(),
                     &self.search_query,
+                    crate::rtp::quality::MosDelay::of_run(self.declared_one_way_delay_ms, &ss),
                 )
                 .iter()
                 .map(|s| s.key.clone())

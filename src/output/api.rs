@@ -795,6 +795,9 @@ async fn list_streams(
     let mos_threshold = params.mos_below;
 
     let ss = state.stream_store.read();
+    // The delay every MOS on this response is scored with — the `mos_below`
+    // test below and the `mos` field of each row it admits.
+    let delay = quality::MosDelay::from_capture(&ss);
     // Materialize the FILTERED set first so `total` reflects what the page is
     // drawn from (see `list_dialogs`); the unfiltered store size would break a
     // client paging by `total`.
@@ -807,7 +810,7 @@ async fn list_streams(
                 return false;
             }
             if let Some(threshold) = mos_threshold {
-                let mos = approximate_mos(s);
+                let mos = approximate_mos(s, delay);
                 if mos >= threshold {
                     return false;
                 }
@@ -1071,13 +1074,17 @@ async fn get_metrics(
     // Populate from stream store
     let mut established = 0u64;
     let mut orphaned = 0u64;
+    // Hoisted: the scrape's MOS histogram must describe the same scores the
+    // `/v1/streams` rows carry, so it reads the same evidence rather than a
+    // per-stream reconstruction of it.
+    let delay = quality::MosDelay::from_capture(&ss);
     for s in ss.iter() {
         if s.orphaned() {
             orphaned += 1;
         } else {
             established += 1;
         }
-        metrics.mos_histogram.push(approximate_mos(s));
+        metrics.mos_histogram.push(approximate_mos(s, delay));
         metrics.jitter_histogram.push(s.jitter);
         let total = s.packet_count + s.lost_packets;
         if total > 0 {
@@ -1126,25 +1133,21 @@ fn stream_summary(
     store: &crate::rtp::stream_store::StreamStore,
 ) -> Value {
     serde_json::to_value(
-        crate::output::model::StreamSummary::from(s).with_round_trip(store.round_trip_for(s)),
+        crate::output::model::StreamSummary::of(s, quality::MosDelay::from_capture(store))
+            .with_round_trip(store.round_trip_for(s)),
     )
     .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
 }
 
-/// Approximate MOS score from jitter and loss using the canonical E-model.
+/// Approximate MOS score for a stream, on the delay the capture supports.
 ///
-/// Delegates to `rtp::quality::estimate_mos` for a single MOS
-/// implementation; loss is computed as `lost / (received + lost)` (0.0 for
-/// an empty stream).
-fn approximate_mos(stream: &crate::rtp::stream::RtpStream) -> f64 {
-    let total = stream.packet_count + stream.lost_packets;
-    let loss_pct = if total > 0 {
-        (stream.lost_packets as f64 / total as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    quality::estimate_mos(stream.jitter, loss_pct, stream.codec.as_deref())
+/// Delegates to [`quality::MosDelay::score`] for a single MOS implementation.
+/// `delay` is not optional and not defaulted: this number decides which
+/// streams `?mos_below=` returns, and while it was scored on the assumed
+/// 100 ms path it disagreed with the `mos` field in the very rows it
+/// selected — one endpoint, two numbers.
+fn approximate_mos(stream: &crate::rtp::stream::RtpStream, delay: quality::MosDelay<'_>) -> f64 {
+    delay.score(stream)
 }
 
 /// Compute the p-th percentile of a sorted slice (nearest-rank by rounded
@@ -2396,7 +2399,7 @@ mod tests {
         add_stream(&state, 0x7777_7777, 27000, 37000);
         let ss = state.stream_store.read();
         let s = ss.iter().next().expect("one stream");
-        let mos = approximate_mos(s);
+        let mos = approximate_mos(s, quality::MosDelay::from_capture(&ss));
         // A loss-free, jitter-free PCMU stream should score well above 3.0.
         assert!(mos > 3.0, "expected good MOS, got {mos}");
         assert!(mos <= 5.0, "MOS should not exceed ceiling, got {mos}");

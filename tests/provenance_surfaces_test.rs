@@ -41,6 +41,7 @@ use sipnab::capture::packet::Packet;
 use sipnab::capture::resolve::{parse_pointer, resolve};
 use sipnab::output::json::stream_to_json;
 use sipnab::output::model::{DialogSummary, StreamSummary};
+use sipnab::rtp::quality::MosDelay;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::{DialogStore, idle_compact_after, keep_messages_per_idle_dialog};
 
@@ -544,7 +545,8 @@ fn a_stream_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
         "a stream with no frame must omit the key entirely, not emit null or a \
          placeholder that reads as a pointer to frame 0; got {json}"
     );
-    let summary = serde_json::to_value(StreamSummary::from(s)).expect("serialize");
+    let summary = serde_json::to_value(StreamSummary::of(s, MosDelay::from_capture(&live_like)))
+        .expect("serialize");
     assert!(
         !summary.as_object().expect("object").contains_key("frame"),
         "the compact stream projection must omit the key too; got {summary}"
@@ -560,7 +562,9 @@ fn a_stream_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
         with.as_object().expect("object").contains_key("frame"),
         "a stream that knows its frame must emit the key; got {with}"
     );
-    let with_summary = serde_json::to_value(StreamSummary::from(s)).expect("serialize");
+    let with_summary =
+        serde_json::to_value(StreamSummary::of(s, MosDelay::from_capture(&from_file)))
+            .expect("serialize");
     assert!(
         with_summary
             .as_object()

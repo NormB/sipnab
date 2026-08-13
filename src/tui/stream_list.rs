@@ -238,6 +238,10 @@ pub fn stream_matches_search(stream: &RtpStream, query_lower: &str) -> bool {
 /// * `dialog_store` - Dialog store for filter evaluation, if available.
 /// * `filter` - Active SIP display filter, if any.
 /// * `search_query` - Raw (not yet lowercased) search text.
+/// * `delay` - One-way-delay evidence for `rtp.mos`. This list judges each
+///   stream against its own dialog, so a `rtp.mos` filter here decides which
+///   ROWS appear beside the MOS column; the two must be scored on one delay or
+///   the list hides streams whose displayed score satisfies the filter.
 ///
 /// # Returns
 /// References to the streams that pass both the search and the filter, in
@@ -250,6 +254,7 @@ pub fn displayed_streams<'a>(
     dialog_store: Option<&DialogStore>,
     filter: Option<&FilterExpr>,
     search_query: &str,
+    delay: crate::rtp::quality::MosDelay<'_>,
 ) -> Vec<&'a RtpStream> {
     #[cfg(test)]
     DISPLAYED_STREAMS_CALLS.with(|c| c.set(c.get() + 1));
@@ -266,9 +271,12 @@ pub fn displayed_streams<'a>(
             };
             match ds.get(cid) {
                 // Holding a stream IS the capture having observed RTP.
-                Some(dialog) => {
-                    f.matches_dialog(dialog, &[s], crate::rtp::diagnosis::CaptureMedia::Observed)
-                }
+                Some(dialog) => f.matches_dialog(
+                    dialog,
+                    &[s],
+                    crate::rtp::diagnosis::CaptureMedia::Observed,
+                    delay,
+                ),
                 None => true,
             }
         })
@@ -542,24 +550,58 @@ mod tests {
         let b = mk_stream(0x11223344, 20002, Some("G722"), Some("call-x@test"));
         let all = [&a, &b];
 
-        let by_codec = displayed_streams(all, None, None, "g722");
+        let by_codec = displayed_streams(
+            all,
+            None,
+            None,
+            "g722",
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         assert_eq!(by_codec.len(), 1);
         assert_eq!(by_codec[0].key.ssrc, 0x11223344);
 
-        let by_ssrc = displayed_streams(all, None, None, "aabbccdd");
+        let by_ssrc = displayed_streams(
+            all,
+            None,
+            None,
+            "aabbccdd",
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         assert_eq!(by_ssrc.len(), 1, "SSRC hex must be searchable");
 
-        let by_dialog = displayed_streams(all, None, None, "call-x");
+        let by_dialog = displayed_streams(
+            all,
+            None,
+            None,
+            "call-x",
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         assert_eq!(by_dialog.len(), 1);
 
-        let none = displayed_streams(all, None, None, "no-match");
+        let none = displayed_streams(
+            all,
+            None,
+            None,
+            "no-match",
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         assert!(none.is_empty());
 
         // Adversarial: backslashes / quotes / empty never panic.
         for q in ["a\\b", "'\"", ""] {
-            let _ = displayed_streams(all, None, None, q);
+            let _ = displayed_streams(all, None, None, q, crate::rtp::quality::MosDelay::unknown());
         }
-        assert_eq!(displayed_streams(all, None, None, "").len(), 2);
+        assert_eq!(
+            displayed_streams(
+                all,
+                None,
+                None,
+                "",
+                crate::rtp::quality::MosDelay::unknown()
+            )
+            .len(),
+            2
+        );
     }
 
     /// A SIP display filter restricts streams via their associated dialog;
@@ -604,7 +646,13 @@ mod tests {
         let all = [&matching, &other, &orphan];
 
         let f = FilterExpr::parse("from.user == '1001'").expect("parse filter");
-        let shown = displayed_streams(all, Some(&ds), Some(&f), "");
+        let shown = displayed_streams(
+            all,
+            Some(&ds),
+            Some(&f),
+            "",
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         let ssrcs: Vec<u32> = shown.iter().map(|s| s.key.ssrc).collect();
         assert!(ssrcs.contains(&1), "stream of the matching dialog stays");
         assert!(ssrcs.contains(&3), "unassociated stream stays");
@@ -614,7 +662,13 @@ mod tests {
         );
 
         let f2 = FilterExpr::parse("from.user == '9999'").expect("parse filter");
-        let shown = displayed_streams(all, Some(&ds), Some(&f2), "");
+        let shown = displayed_streams(
+            all,
+            Some(&ds),
+            Some(&f2),
+            "",
+            crate::rtp::quality::MosDelay::unknown(),
+        );
         let ssrcs: Vec<u32> = shown.iter().map(|s| s.key.ssrc).collect();
         assert!(!ssrcs.contains(&1), "dialog fails the filter -> hidden");
         assert!(ssrcs.contains(&3), "unassociated stream still shown");

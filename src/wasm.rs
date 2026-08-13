@@ -231,16 +231,24 @@ impl SipnabSession {
         let filter =
             FilterExpr::parse(expr).map_err(|e| JsError::new(&format!("Filter error: {e}")))?;
         let empty_streams: Vec<&crate::rtp::stream::RtpStream> = Vec::new();
+        // No declared figure exists in a browser — there is no config file and
+        // no command line — but the capture opened here can still carry RTCP,
+        // so the delay is resolved from what the store holds rather than
+        // asserted as 100 ms. Stating the assumption instead would make the
+        // same file read one MOS on this page and another in the CLI.
+        let delay = crate::rtp::quality::MosDelay::from_capture(&self.stream_store);
         let matching: Vec<&str> = self
             .dialog_store
             .iter()
-            // The wasm build carries no stream store, so it has no RTP to
-            // reason about and must not claim a call had none.
+            // Dialogs are filtered without their streams here, so `rtp.*`
+            // fields compare as unknown; the capture flag says so rather than
+            // letting the build claim a call had no media.
             .filter(|d| {
                 filter.matches_dialog(
                     d,
                     &empty_streams,
                     crate::rtp::diagnosis::CaptureMedia::Absent,
+                    delay,
                 )
             })
             .map(|d| d.call_id.as_str())
@@ -347,7 +355,10 @@ impl SipnabSession {
 
     /// Get all RTP streams as JSON array.
     pub fn get_streams(&self) -> String {
-        use crate::rtp::quality::estimate_mos;
+        // Same evidence the filter above scores on, for the same reason: this
+        // table and a `rtp.mos` filter over it must not report two numbers for
+        // one stream.
+        let delay = crate::rtp::quality::MosDelay::from_capture(&self.stream_store);
 
         let streams: Vec<serde_json::Value> = self
             .stream_store
@@ -360,7 +371,7 @@ impl SipnabSession {
                     0.0
                 };
                 let jitter_ms = s.jitter;
-                let mos = estimate_mos(jitter_ms, loss_pct, s.codec.as_deref());
+                let mos = delay.score(s);
                 let duration_secs = s
                     .last_seen
                     .signed_duration_since(s.first_seen)
@@ -403,7 +414,6 @@ impl SipnabSession {
 
     /// Get detailed JSON for a single RTP stream identified by SSRC + src + dst.
     pub fn get_stream_detail(&self, ssrc: u32, src: &str, dst: &str) -> String {
-        use crate::rtp::quality::estimate_mos;
         use crate::rtp::stream::StreamKey;
         use std::net::SocketAddr;
 
@@ -433,7 +443,11 @@ impl SipnabSession {
             0.0
         };
         let jitter_ms = s.jitter;
-        let mos = estimate_mos(jitter_ms, loss_pct, s.codec.as_deref());
+        // Resolved once, above the interval loop, so the headline MOS and the
+        // per-interval trend below it cannot be scored on different delays.
+        let delay = crate::rtp::quality::MosDelay::from_capture(&self.stream_store);
+        let one_way = delay.one_way_ms(s);
+        let mos = delay.score(s);
         let duration_secs = s
             .last_seen
             .signed_duration_since(s.first_seen)
@@ -449,10 +463,11 @@ impl SipnabSession {
                     "jitter_ms": (qi.jitter_ms * 100.0).round() / 100.0,
                     "loss_pct": (qi.loss_pct * 100.0).round() / 100.0,
                     "packets": qi.packets,
-                    "mos": (estimate_mos(
+                    "mos": (crate::rtp::quality::estimate_mos_with_delay(
                         qi.jitter_ms,
                         qi.loss_pct,
                         s.codec.as_deref(),
+                        one_way,
                     ) * 100.0).round() / 100.0,
                 })
             })
