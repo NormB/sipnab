@@ -246,7 +246,12 @@ pub struct AliasThresholds {
     /// Jitter counting as bad, in milliseconds. From
     /// [`crate::rtp::bands::QualityBands::jitter_bad_ms`].
     pub jitter_ms: f64,
-    /// Retransmissions counting as excessive. See [`ALIAS_RETRANSMIT_LIMIT`].
+    /// Retransmissions counting as excessive.
+    ///
+    /// The one alias threshold with no configuration behind it, because
+    /// nothing else in sipnab has an opinion about a retransmission count to
+    /// borrow. Not linked to its constant: that constant is private, and
+    /// rustdoc refuses a public link into private scope.
     pub retransmits: u32,
     /// A call this short is a short call, in seconds. From
     /// [`crate::security::fraud_detect::FraudThresholds::short_call_secs`].
