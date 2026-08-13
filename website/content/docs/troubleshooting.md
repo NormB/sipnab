@@ -45,7 +45,7 @@ asymmetries:
 sipnab -N -I capture.pcap --problems --json
 ```
 
-`--problems` is shorthand for the full Filter-DSL expression `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR ...` -- so it is a superset of "failed calls". Once you know the symptom, jump to the matching section below for the precise filter.
+`--problems` is shorthand for the full Filter-DSL expression `state == 'Failed' OR one_way == true OR rtp.loss > 5.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 11.0 OR ...` -- so it is a superset of "failed calls". Once you know the symptom, jump to the matching section below for the precise filter.
 
 > **First, check you are reading the whole capture.** `--portrange` defaults to
 > `5060-5061`, and sipnab skips any SIP message whose source and destination

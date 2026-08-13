@@ -64,6 +64,12 @@ pub struct SipnabMcp {
     /// six detectors in this tree accept a threshold no production caller ever
     /// supplies, and this must not become the seventh.
     row_cap: usize,
+    /// The numbers the diagnostic filter aliases compare against.
+    ///
+    /// Carried here for the same reason `row_cap` is: `find_problems` used to
+    /// expand `problems` from a `'static` string, so an operator who tuned
+    /// `[diagnosis]` still got a filter selecting on figures nobody chose.
+    alias_thresholds: crate::sip::dsl::AliasThresholds,
     /// Directory the file tools are confined to. `None` disables them.
     file_root: Option<std::path::PathBuf>,
     /// Capture files and directories this server is reading, which the file
@@ -212,6 +218,7 @@ impl SipnabMcp {
             alert_engine: None,
             source_exhausted: None,
             row_cap: HARD_LIMIT,
+            alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             file_root: None,
             protected_inputs: Default::default(),
             allow_shutdown: false,
@@ -243,6 +250,17 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_row_cap(mut self, rows: usize) -> Self {
         self.row_cap = if rows == 0 { HARD_LIMIT } else { rows };
+        self
+    }
+
+    /// Set the thresholds the diagnostic filter aliases compare against.
+    ///
+    /// Without this the server answers `find_problems` from the shipped
+    /// figures, which is the drift this exists to close: build it from
+    /// [`crate::cli::Cli::alias_thresholds`] so every surface agrees.
+    #[must_use]
+    pub fn with_alias_thresholds(mut self, thresholds: crate::sip::dsl::AliasThresholds) -> Self {
+        self.alias_thresholds = thresholds;
         self
     }
 
@@ -2090,9 +2108,10 @@ impl SipnabMcp {
     ///
     /// `invalid_params` (-32602) naming the offending expression when it is
     /// neither a known alias nor parseable.
-    fn compile_filter(filter: Option<&str>) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
+    fn compile_filter(&self, filter: Option<&str>) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
         let Some(f) = filter else { return Ok(None) };
-        let expr_str = expand_alias(f).unwrap_or(f);
+        let expanded = expand_alias(f, &self.alias_thresholds);
+        let expr_str = expanded.as_deref().unwrap_or(f);
         FilterExpr::parse(expr_str).map(Some).map_err(|e| {
             rmcp::ErrorData::invalid_params(format!("invalid filter '{f}': {e}"), None)
         })
@@ -2354,7 +2373,7 @@ impl SipnabMcp {
         Parameters(params): Parameters<ListDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let filter = Self::compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_filter(params.filter.as_deref())?;
         let page = self.dialog_page(params.cursor.as_deref(), limit, |d, streams, capture| {
             filter
                 .as_ref()
@@ -2483,10 +2502,10 @@ impl SipnabMcp {
         // Compile each kind individually so a bad alias is reported by name.
         let mut compiled: Vec<FilterExpr> = Vec::with_capacity(kinds.len());
         for k in &kinds {
-            let expr_str = expand_alias(k).ok_or_else(|| {
+            let expr_str = expand_alias(k, &self.alias_thresholds).ok_or_else(|| {
                 rmcp::ErrorData::invalid_params(format!("unknown alias '{k}'"), None)
             })?;
-            match FilterExpr::parse(expr_str) {
+            match FilterExpr::parse(&expr_str) {
                 Ok(expr) => compiled.push(expr),
                 Err(e) => {
                     return Err(rmcp::ErrorData::invalid_params(
@@ -2496,7 +2515,7 @@ impl SipnabMcp {
                 }
             }
         }
-        let extra = Self::compile_filter(params.filter.as_deref())?;
+        let extra = self.compile_filter(params.filter.as_deref())?;
 
         // ANY alias AND the filter. The aliases answer "is this call
         // interesting", the filter answers "is it the one I am looking at" —
@@ -3369,7 +3388,7 @@ impl SipnabMcp {
             ));
         }
         let limit = crate::mcp::shape::resolve_limit_with_cap(params.limit, self.row_cap);
-        let filter = Self::compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_filter(params.filter.as_deref())?;
 
         let payload = {
             let ds = self.dialog_store.read();

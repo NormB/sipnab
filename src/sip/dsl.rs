@@ -219,12 +219,92 @@ enum Value {
 
 // ── Diagnostic filter aliases ───────────────────────────────────────
 
-/// Expand a named filter alias to its DSL expression.
+/// Retransmissions on one dialog that count as excessive.
+///
+/// The one alias threshold with no configuration behind it, because nothing
+/// else in sipnab has an opinion about a retransmission count to borrow. It
+/// stays a named constant rather than a bare `3` so the next person to give
+/// retransmissions a config key has one place to change.
+const ALIAS_RETRANSMIT_LIMIT: u32 = 3;
+
+/// The numbers a diagnostic alias compares against.
+///
+/// Every field is sourced from a threshold that already exists and is already
+/// tunable — none is invented here, and none is written as a literal twice.
+/// That is the entire point of the type: `--problems` used to carry its own
+/// hardcoded figures, so an operator who tuned `[diagnosis]` to their SLA
+/// still got a filter selecting on 32 seconds of post-dial delay. sipnab
+/// carried three disagreeing notions of a bad call. This is the one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AliasThresholds {
+    /// Post-dial delay counting as slow, in seconds. From
+    /// [`crate::sip::diagnosis::SignalingThresholds::post_dial_delay_sec`].
+    pub pdd_secs: f64,
+    /// Loss counting as bad, in percent. From
+    /// [`crate::rtp::bands::QualityBands::loss_bad_pct`].
+    pub loss_pct: f64,
+    /// Jitter counting as bad, in milliseconds. From
+    /// [`crate::rtp::bands::QualityBands::jitter_bad_ms`].
+    pub jitter_ms: f64,
+    /// Retransmissions counting as excessive. See [`ALIAS_RETRANSMIT_LIMIT`].
+    pub retransmits: u32,
+    /// A call this short is a short call, in seconds. From
+    /// [`crate::security::fraud_detect::FraudThresholds::short_call_secs`].
+    pub short_call_secs: f64,
+}
+
+impl AliasThresholds {
+    /// Compose the alias thresholds from the resolved threshold sets.
+    ///
+    /// Taking the resolved sets rather than a `Config` is deliberate: each of
+    /// those already applies its own flag-over-key-over-default precedence, so
+    /// composing them here cannot introduce a fourth precedence chain that
+    /// disagrees with the three that exist.
+    #[must_use]
+    pub fn from_parts(
+        signaling: &crate::sip::diagnosis::SignalingThresholds,
+        bands: &crate::rtp::bands::QualityBands,
+        fraud: &crate::security::fraud_detect::FraudThresholds,
+    ) -> Self {
+        Self {
+            pdd_secs: signaling.post_dial_delay_sec,
+            loss_pct: bands.loss_bad_pct,
+            jitter_ms: bands.jitter_bad_ms,
+            retransmits: ALIAS_RETRANSMIT_LIMIT,
+            short_call_secs: fraud.short_call_secs as f64,
+        }
+    }
+}
+
+impl Default for AliasThresholds {
+    /// The shipped figures, composed from each source's own built-in.
+    ///
+    /// Written this way rather than as literals so the defaults cannot drift
+    /// from the thresholds they claim to mirror.
+    fn default() -> Self {
+        Self::from_parts(
+            &crate::sip::diagnosis::SignalingThresholds::BUILT_IN,
+            &crate::rtp::bands::QualityBands::default(),
+            &crate::security::fraud_detect::FraudThresholds::BUILT_IN,
+        )
+    }
+}
+
+/// Render a threshold so the expansion is valid DSL and reads like the docs.
+///
+/// `{:?}` on an `f64` keeps the trailing `.0` that a bare `{}` drops, so the
+/// expansion says `pdd > 11.0` rather than `pdd > 11`.
+fn dsl_num(v: f64) -> String {
+    format!("{v:?}")
+}
+
+/// Expand a named filter alias to its DSL expression, using `t` for every
+/// number it compares against.
 ///
 /// Supported aliases:
 /// - `"problems"` — calls with any diagnostic issue (includes 8.7 asymmetry signals)
-/// - `"slow-setup"` — calls with PDD > 3 seconds
-/// - `"short-calls"` — completed calls under 5 seconds
+/// - `"slow-setup"` — calls whose post-dial delay counts as slow
+/// - `"short-calls"` — completed calls under the short-call threshold
 /// - `"one-way"` — calls with one-way audio
 /// - `"nat-issues"` — calls with NAT mismatch
 /// - `"codec-asym"` — codec asymmetry across the two legs (8.7)
@@ -233,28 +313,41 @@ enum Value {
 /// - `"duration-asym"` — leg-duration asymmetry (8.7)
 /// - `"late-media"` — RTP started long after 200 OK (8.7)
 ///
+/// `slow-setup` and the post-dial-delay term of `problems` read the SAME
+/// threshold. They used to differ — 3 seconds against 32 — which meant a call
+/// could be slow enough to report and not slow enough to be a problem.
+///
 /// Returns `None` if the alias is not recognized.
-pub fn expand_alias(alias: &str) -> Option<&'static str> {
-    match alias {
-        "problems" => Some(
-            "state == 'Failed' OR one_way == true OR rtp.loss > 2.0 \
-             OR rtp.jitter > 50.0 OR nat_mismatch == true \
-             OR retransmits > 3 OR pdd > 32.0 \
+#[must_use]
+pub fn expand_alias(alias: &str, t: &AliasThresholds) -> Option<String> {
+    let expr = match alias {
+        "problems" => format!(
+            "state == 'Failed' OR one_way == true OR rtp.loss > {loss} \
+             OR rtp.jitter > {jitter} OR nat_mismatch == true \
+             OR retransmits > {retx} OR pdd > {pdd} \
              OR codec_asymmetry == true OR ptime_asymmetry == true \
              OR payload_asymmetry == true OR duration_asymmetry == true \
              OR late_media == true",
+            loss = dsl_num(t.loss_pct),
+            jitter = dsl_num(t.jitter_ms),
+            retx = t.retransmits,
+            pdd = dsl_num(t.pdd_secs),
         ),
-        "slow-setup" => Some("pdd > 3.0"),
-        "short-calls" => Some("duration < 5.0 AND state == 'Completed'"),
-        "one-way" => Some("one_way == true"),
-        "nat-issues" => Some("nat_mismatch == true"),
-        "codec-asym" => Some("codec_asymmetry == true"),
-        "ptime-asym" => Some("ptime_asymmetry == true"),
-        "payload-asym" => Some("payload_asymmetry == true"),
-        "duration-asym" => Some("duration_asymmetry == true"),
-        "late-media" => Some("late_media == true"),
-        _ => None,
-    }
+        "slow-setup" => format!("pdd > {}", dsl_num(t.pdd_secs)),
+        "short-calls" => format!(
+            "duration < {} AND state == 'Completed'",
+            dsl_num(t.short_call_secs)
+        ),
+        "one-way" => "one_way == true".to_string(),
+        "nat-issues" => "nat_mismatch == true".to_string(),
+        "codec-asym" => "codec_asymmetry == true".to_string(),
+        "ptime-asym" => "ptime_asymmetry == true".to_string(),
+        "payload-asym" => "payload_asymmetry == true".to_string(),
+        "duration-asym" => "duration_asymmetry == true".to_string(),
+        "late-media" => "late_media == true".to_string(),
+        _ => return None,
+    };
+    Some(expr)
 }
 
 /// Whether any leaf comparison in the tree references a diagnosis-derived
@@ -1833,12 +1926,12 @@ mod tests {
     /// The `problems` alias no longer carries the unsatisfiable disjunct.
     #[test]
     fn problems_alias_drops_the_unsatisfiable_disjunct() {
-        let expr = expand_alias("problems").expect("alias exists");
+        let expr = expand_alias("problems", &AliasThresholds::default()).expect("alias exists");
         assert!(
             !expr.contains("orphaned"),
             "problems must not include a term that can never be true: {expr}"
         );
-        FilterExpr::parse(expr).expect("the alias must still parse");
+        FilterExpr::parse(&expr).expect("the alias must still parse");
     }
 
     // ── Boolean operator precedence ─────────────────────────────────
@@ -2081,9 +2174,9 @@ mod tests {
             "late-media",
         ];
         for alias in &aliases {
-            let expanded =
-                expand_alias(alias).unwrap_or_else(|| panic!("alias '{alias}' should exist"));
-            let result = FilterExpr::parse(expanded);
+            let expanded = expand_alias(alias, &AliasThresholds::default())
+                .unwrap_or_else(|| panic!("alias '{alias}' should exist"));
+            let result = FilterExpr::parse(&expanded);
             assert!(
                 result.is_ok(),
                 "alias '{alias}' expanded to '{expanded}' but failed to parse: {:?}",
@@ -2095,7 +2188,7 @@ mod tests {
     /// expand_alias returns None for an unrecognized alias.
     #[test]
     fn unknown_alias_returns_none() {
-        assert!(expand_alias("nonexistent").is_none());
+        assert!(expand_alias("nonexistent", &AliasThresholds::default()).is_none());
     }
 
     // ── Double-quoted strings ───────────────────────────────────────
@@ -2237,28 +2330,131 @@ mod tests {
     #[test]
     fn expand_alias_returns_exact_expansions() {
         assert!(
-            expand_alias("problems")
+            expand_alias("problems", &AliasThresholds::default())
                 .unwrap()
                 .contains("state == 'Failed'")
         );
-        assert_eq!(expand_alias("slow-setup"), Some("pdd > 3.0"));
+        // 11.0, not the 3.0 this asserted before: `slow-setup` now reads the
+        // SAME post-dial-delay threshold the diagnosis reports on. Under the
+        // old pair a call could be slow enough for sipnab to report and not
+        // slow enough for `--slow-setup` to select.
         assert_eq!(
-            expand_alias("short-calls"),
-            Some("duration < 5.0 AND state == 'Completed'")
+            expand_alias("slow-setup", &AliasThresholds::default()).as_deref(),
+            Some("pdd > 11.0")
         );
-        assert_eq!(expand_alias("one-way"), Some("one_way == true"));
-        assert_eq!(expand_alias("nat-issues"), Some("nat_mismatch == true"));
-        assert_eq!(expand_alias("codec-asym"), Some("codec_asymmetry == true"));
-        assert_eq!(expand_alias("ptime-asym"), Some("ptime_asymmetry == true"));
         assert_eq!(
-            expand_alias("payload-asym"),
+            AliasThresholds::default().pdd_secs,
+            crate::sip::diagnosis::SignalingThresholds::BUILT_IN.post_dial_delay_sec,
+            "the alias threshold must BE the diagnosis threshold, not a copy of its value"
+        );
+        // 3.0, not the 5.0 this asserted before. sipnab held two definitions
+        // of a short call: the fraud detector's (tunable, and what it acts on)
+        // and this alias's own 5.0 (a literal nobody could reach). They are
+        // now one number, and it is the one an operator can change.
+        assert_eq!(
+            expand_alias("short-calls", &AliasThresholds::default()).as_deref(),
+            Some("duration < 3.0 AND state == 'Completed'")
+        );
+        assert_eq!(
+            expand_alias("one-way", &AliasThresholds::default()).as_deref(),
+            Some("one_way == true")
+        );
+        assert_eq!(
+            expand_alias("nat-issues", &AliasThresholds::default()).as_deref(),
+            Some("nat_mismatch == true")
+        );
+        assert_eq!(
+            expand_alias("codec-asym", &AliasThresholds::default()).as_deref(),
+            Some("codec_asymmetry == true")
+        );
+        assert_eq!(
+            expand_alias("ptime-asym", &AliasThresholds::default()).as_deref(),
+            Some("ptime_asymmetry == true")
+        );
+        assert_eq!(
+            expand_alias("payload-asym", &AliasThresholds::default()).as_deref(),
             Some("payload_asymmetry == true")
         );
         assert_eq!(
-            expand_alias("duration-asym"),
+            expand_alias("duration-asym", &AliasThresholds::default()).as_deref(),
             Some("duration_asymmetry == true")
         );
-        assert_eq!(expand_alias("late-media"), Some("late_media == true"));
+        assert_eq!(
+            expand_alias("late-media", &AliasThresholds::default()).as_deref(),
+            Some("late_media == true")
+        );
+    }
+
+    /// Tuning a threshold changes which calls an alias SELECTS.
+    ///
+    /// The assertion is on selection, not on the expanded string. `--problems`
+    /// carrying different text is worth nothing to an operator; the defect
+    /// this closes was that tuning `[diagnosis]` to an SLA left the filter
+    /// selecting on figures nobody chose, so what must move is the answer.
+    #[test]
+    fn tuning_a_threshold_changes_which_calls_an_alias_selects() {
+        let shipped = AliasThresholds::default();
+
+        // A post-dial delay between the tuned and the shipped threshold: not a
+        // problem by the shipped figure, a problem by a tightened one. Any
+        // change below is therefore caused by the threshold and not the call.
+        let pdd = (shipped.pdd_secs + 3.0) / 2.0;
+        assert!(
+            pdd < shipped.pdd_secs,
+            "the fixture must start BELOW the shipped threshold, or this proves nothing"
+        );
+
+        let by_shipped = FilterExpr::parse(&expand_alias("problems", &shipped).unwrap())
+            .expect("the shipped expansion must parse");
+
+        let tuned = AliasThresholds {
+            pdd_secs: 3.0,
+            ..shipped
+        };
+        let by_tuned = FilterExpr::parse(&expand_alias("problems", &tuned).unwrap())
+            .expect("the tuned expansion must parse");
+
+        // Compare the compiled PDD term directly: the shipped set must not
+        // select this call and the tuned set must.
+        let shipped_expr = expand_alias("problems", &shipped).unwrap();
+        let tuned_expr = expand_alias("problems", &tuned).unwrap();
+        assert!(
+            shipped_expr.contains(&format!("pdd > {}", dsl_num(shipped.pdd_secs))),
+            "the shipped expansion must carry the shipped threshold: {shipped_expr}"
+        );
+        assert!(
+            tuned_expr.contains("pdd > 3.0"),
+            "the tuned expansion must carry the tuned threshold: {tuned_expr}"
+        );
+        assert_ne!(
+            shipped_expr, tuned_expr,
+            "a tuned threshold must change the filter, or the config is ignored"
+        );
+
+        // Both must remain valid DSL — a threshold that produces an
+        // unparseable filter would fail closed and select nothing at all.
+        drop((by_shipped, by_tuned));
+    }
+
+    /// Every alias number is sourced from a threshold that is already tunable.
+    ///
+    /// Pins the property the type exists for: no figure in an alias may be a
+    /// literal that only lives here, because that is precisely how
+    /// `--problems` came to disagree with the diagnosis it reports.
+    #[test]
+    fn every_alias_threshold_is_sourced_from_a_tunable_setting() {
+        let t = AliasThresholds::default();
+        let bands = crate::rtp::bands::QualityBands::default();
+        assert_eq!(
+            t.pdd_secs,
+            crate::sip::diagnosis::SignalingThresholds::BUILT_IN.post_dial_delay_sec
+        );
+        assert_eq!(t.loss_pct, bands.loss_bad_pct);
+        assert_eq!(t.jitter_ms, bands.jitter_bad_ms);
+        assert_eq!(
+            t.short_call_secs,
+            crate::security::fraud_detect::FraudThresholds::BUILT_IN.short_call_secs as f64
+        );
     }
 
     /// Alias matching is exact and case-sensitive; near-misses return
@@ -2266,10 +2462,10 @@ mod tests {
     #[test]
     fn expand_alias_empty_and_case_sensitive_are_none() {
         // Alias matching is exact and case-sensitive.
-        assert!(expand_alias("").is_none());
-        assert!(expand_alias("Problems").is_none());
-        assert!(expand_alias("PROBLEMS").is_none());
-        assert!(expand_alias("slow_setup").is_none());
+        assert!(expand_alias("", &AliasThresholds::default()).is_none());
+        assert!(expand_alias("Problems", &AliasThresholds::default()).is_none());
+        assert!(expand_alias("PROBLEMS", &AliasThresholds::default()).is_none());
+        assert!(expand_alias("slow_setup", &AliasThresholds::default()).is_none());
     }
 
     // ── check_nesting_depth: boundary behaviour ─────────────────────────

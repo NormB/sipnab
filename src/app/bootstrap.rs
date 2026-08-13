@@ -1446,8 +1446,10 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
     // (so `--filter codec-asym` works the same as MCP find_problems'
     // kinds shorthand); fall back to raw DSL parsing.
     if let Some(ref expr) = cli.filter {
-        let resolved = crate::sip::dsl::expand_alias(expr).unwrap_or(expr.as_str());
-        return match FilterExpr::parse(resolved) {
+        let thresholds = cli.alias_thresholds(config);
+        let resolved =
+            crate::sip::dsl::expand_alias(expr, &thresholds).unwrap_or_else(|| expr.clone());
+        return match FilterExpr::parse(&resolved) {
             Ok(f) => Ok(Some(f)),
             Err(e) => Err(PlanError::arg(format!("Invalid --filter expression: {e}"))),
         };
@@ -1461,7 +1463,8 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
     // where the documented `duration < 5.0 AND state == 'Completed'` selected
     // 1681, and `--slow-setup` measured `setup_time` where the alias measures
     // `pdd`. Two spellings of one flag cannot disagree if there is only one.
-    let mut parts: Vec<&str> = Vec::new();
+    let thresholds = cli.alias_thresholds(config);
+    let mut parts: Vec<String> = Vec::new();
     for (enabled, alias) in [
         (cli.problems, "problems"),
         (cli.slow_setup, "slow-setup"),
@@ -1469,7 +1472,7 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
         (cli.one_way, "one-way"),
         (cli.nat_issues, "nat-issues"),
     ] {
-        if enabled && let Some(expansion) = crate::sip::dsl::expand_alias(alias) {
+        if enabled && let Some(expansion) = crate::sip::dsl::expand_alias(alias, &thresholds) {
             parts.push(expansion);
         }
     }

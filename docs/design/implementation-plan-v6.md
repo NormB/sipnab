@@ -1443,7 +1443,9 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] Unit tests for all operators, field types, and edge cases
 - [ ] **Built-in diagnostic filter aliases** (compile to DSL expressions internally):
   - `--problems` — calls with any detected issue: failed (4xx/5xx/6xx final), one-way audio, loss >2%, jitter >50ms, MOS <3.0, NAT mismatch, retransmit storms (>3 retransmits), setup timeout (>32s), orphaned RTP
-  - `--slow-setup` — PDD > 3 seconds (equivalent to `--filter "pdd > 3.0"`)
+  - `--slow-setup` — PDD over the effective `[diagnosis] post_dial_delay_secs`
+    (11 s shipped). It was a fixed 3 s until the aliases were built from the
+    configuration.
   - `--short-calls` — duration < 5 seconds with completed state (wangiri/robocall pattern)
   - `--one-way` — calls with one-way audio detected
   - `--nat-issues` — calls where SDP media address differs from observed RTP source

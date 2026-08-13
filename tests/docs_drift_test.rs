@@ -2881,9 +2881,11 @@ fn the_published_amr_wb_tables_match_the_model() {
 /// contain "orphaned", but neither reads the documentation. This does.
 #[test]
 fn a_documented_alias_expands_to_what_the_code_expands_it_to() {
-    let want = sipnab::sip::dsl::expand_alias("problems").expect("the problems alias exists");
+    let want =
+        sipnab::sip::dsl::expand_alias("problems", &sipnab::sip::dsl::AliasThresholds::default())
+            .expect("the problems alias exists");
     let normalise = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let want = normalise(want);
+    let want = normalise(&want);
 
     let mut checked = 0;
     for rel in ["docs/examples.md", "website/content/docs/cookbook.md"] {

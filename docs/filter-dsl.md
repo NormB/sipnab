@@ -196,9 +196,9 @@ tool. They expand to DSL expressions internally.
 
 | Alias | Dedicated CLI Flag | Expansion |
 |-------|--------------------|-----------|
-| `problems` | `--problems` | `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true` |
-| `slow-setup` | `--slow-setup` | `pdd > 3.0` |
-| `short-calls` | `--short-calls` | `duration < 5.0 AND state == 'Completed'` |
+| `problems` | `--problems` | `state == 'Failed' OR one_way == true OR rtp.loss > 5.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 11.0 OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true` |
+| `slow-setup` | `--slow-setup` | `pdd > 11.0` |
+| `short-calls` | `--short-calls` | `duration < 3.0 AND state == 'Completed'` |
 | `one-way` | `--one-way` | `one_way == true` |
 | `nat-issues` | `--nat-issues` | `nat_mismatch == true` |
 | `codec-asym` | — (use `--filter codec-asym`) | `codec_asymmetry == true` |
@@ -217,7 +217,7 @@ pick whichever reads better in the command you are writing.
 The dedicated flag, the `--filter <alias>` spelling and the MCP `kinds` entry
 are three names for one expression: `sipnab --short-calls`,
 `sipnab --filter short-calls` and
-`sipnab --filter "duration < 5.0 AND state == 'Completed'"` all select the same
+`sipnab --filter "duration < 3.0 AND state == 'Completed'"` all select the same
 dialogs. Combining several flags ORs their expansions together.
 
 `--nat-issues` / `--filter nat-issues` selects the calls whose RTP arrived from

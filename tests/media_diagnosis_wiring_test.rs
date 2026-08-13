@@ -750,9 +750,11 @@ fn the_nat_issues_alias_selects_the_rewritten_call() {
         0x1111,
     );
 
-    let expr = sipnab::sip::dsl::expand_alias("nat-issues").expect("alias exists");
+    let expr =
+        sipnab::sip::dsl::expand_alias("nat-issues", &sipnab::sip::dsl::AliasThresholds::default())
+            .expect("alias exists");
     assert_eq!(
-        selected(expr, &ds, &ss),
+        selected(&expr, &ds, &ss),
         vec![call_id.to_string()],
         "the --nat-issues alias must find what nat_mismatch finds"
     );

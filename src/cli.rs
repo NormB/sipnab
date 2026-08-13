@@ -2084,6 +2084,26 @@ impl Cli {
         }
     }
 
+    /// The numbers the diagnostic filter aliases compare against.
+    ///
+    /// Composed from the three resolved threshold sets rather than resolved
+    /// again here, so `--problems` cannot disagree with the diagnosis it
+    /// reports, the colour an operator sees, or the fraud detector's idea of a
+    /// short call. Each part has already applied its own
+    /// flag-over-key-over-default precedence; a fourth chain here is exactly
+    /// the drift this replaces.
+    #[must_use]
+    pub fn alias_thresholds(
+        &self,
+        config: &crate::config::Config,
+    ) -> crate::sip::dsl::AliasThresholds {
+        crate::sip::dsl::AliasThresholds::from_parts(
+            &self.signaling_thresholds(config),
+            &self.quality_bands(config),
+            &self.fraud_thresholds(config),
+        )
+    }
+
     /// Media asymmetry thresholds: each flag, else its `[diagnosis]` key, else
     /// the built-in.
     #[must_use]
