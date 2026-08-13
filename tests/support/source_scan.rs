@@ -26,7 +26,17 @@
 //!
 //! A gate silenced this way cannot be told apart from a gate that found
 //! nothing, which is why the rule lives in one place with its own self-tests
-//! (`tests/support_selftest.rs`) instead of three times by hand.
+//! (`tests/support_selftest.rs`) instead of once per gate by hand. Five gates
+//! call it: `cli_help_test`, `keybinding_drift_test`, `surface_parity_test`,
+//! `metrics_docs_drift_test`, and `flag_coverage_test`.
+//!
+//! The last of those wants the OTHER side of the cut — the test module — and
+//! takes it as `&src[production_source(src).len()..]`, which is why the result
+//! is documented as a prefix. Its blindness ran the opposite way: a text match
+//! moving the split UP swept `src/cli.rs`'s clap definitions into what is
+//! supposed to be a corpus of tests, and a flag's own `///` help text then
+//! counted as that flag's test coverage. Reading too much and reading too
+//! little are the same defect, and one cut rule answers both.
 #![allow(dead_code)]
 
 /// The text of `src` up to (not including) its first `#[cfg(test)]` module.

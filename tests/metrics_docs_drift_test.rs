@@ -10,6 +10,9 @@
 //! and only one of those is visible to a reader. This gate reads the
 //! formatter and the page and compares them.
 
+#[path = "support/source_scan.rs"]
+mod source_scan;
+
 /// The exposition formatter, the single place metric names are written.
 const SOURCE: &str = include_str!("../src/output/prometheus.rs");
 
@@ -58,13 +61,18 @@ fn families(text: &str) -> Vec<String> {
 /// (whose fixtures name `_bucket` / `_count` suffixes the page documents as
 /// suffixes rather than as families).
 ///
+/// Cut at the test MODULE, via the shared rule. This used to split the raw
+/// text on `#[cfg(test)]`, which ends the scan at the first line that merely
+/// SPELLS the attribute — a comment, a doc comment, or a test-only `use`. The
+/// direction of that failure is the dangerous one: a shorter production text
+/// emits fewer families, so `every_emitted_metric_is_documented` reports every
+/// remaining name as documented and passes on a page it never compared against
+/// the metrics below the cut.
+///
 /// # Returns
 /// Family names the exposition can emit.
 fn emitted_families() -> Vec<String> {
-    let production = SOURCE
-        .split_once("#[cfg(test)]")
-        .map_or(SOURCE, |(before, _)| before);
-    families(production)
+    families(source_scan::production_source(SOURCE))
 }
 
 /// Every family the formatter emits appears in the REST API page.

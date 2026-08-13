@@ -17,6 +17,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+#[path = "support/source_scan.rs"]
+mod source_scan;
+
 use clap::CommandFactory;
 
 /// Baseline of flags that currently have NO referencing test — **technical
@@ -191,12 +194,23 @@ fn test_corpus(manifest: &Path) -> String {
     let mut corpus = String::new();
     read_tree(&manifest.join("tests"), &["rs", "trycmd"], &mut corpus);
 
-    // Append only the test module of cli.rs (after the first `#[cfg(test)]`),
-    // so flag *definitions* (`long = "..."`) don't trivially satisfy the gate.
-    if let Ok(cli) = std::fs::read_to_string(manifest.join("src/cli.rs"))
-        && let Some(idx) = cli.find("#[cfg(test)]")
-    {
-        corpus.push_str(&cli[idx..]);
+    // Append only the test module of cli.rs, so flag *definitions*
+    // (`long = "..."`) don't trivially satisfy the gate.
+    //
+    // The cut is the shared "production source" rule, and the tail is whatever
+    // it left behind. This used to be `cli.find("#[cfg(test)]")`, a TEXT match,
+    // and this gate's blindness runs the OPPOSITE way to a scan that stops
+    // early: one comment spelling the attribute above line 2451 moves the split
+    // UP to it and sweeps the clap definitions into the corpus. Measured, with
+    // such a comment added on line 11: 3493 of cli.rs's 3503 lines entered the
+    // corpus, and a freshly added flag whose own `///` help says
+    // "pass --new-flag to ..." — the ordinary way clap help is written — then
+    // counted as its own test coverage. Part (a), the "a new flag cannot ship
+    // untested" mandate, passed on a flag no test had ever run.
+    if let Ok(cli) = std::fs::read_to_string(manifest.join("src/cli.rs")) {
+        // `production_source` returns a PREFIX of its input, so its length is
+        // the byte offset of the test module.
+        corpus.push_str(&cli[source_scan::production_source(&cli).len()..]);
     }
     corpus
 }
