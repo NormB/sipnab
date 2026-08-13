@@ -559,7 +559,24 @@ fn wiki_intra_docs_links_resolve() {
     // `.md` — after a first pass counted every relative link and reported a
     // net zero, which would have sent me looking for a regression that did not
     // exist. auth.md is the only changed file, +2, nothing lost elsewhere.
-    const EXPECTED_WIKI_LINKS: usize = 347;
+    // Raised 347 -> 383 by the MCP tool-reference rewrite. Attributed with this
+    // gate's OWN rule — relative targets that are same-page anchors or end in
+    // `.md` — against HEAD before the number moved: docs/mcp.md is the only
+    // changed wiki source and carries all 36, and the site mirror under
+    // website/content/ is not a wiki source, so this counts each authored link
+    // once rather than twice.
+    //
+    // All 36 are same-page anchors, and they exist because the rewrite answers
+    // each parameter where a reader meets it instead of restating the
+    // vocabulary on every tool that shares it.
+    // `#list_dialogs` takes 9 of them: it owns the diagnostic-alias list, the
+    // `DialogSummary` shape and the page-object contract, so find_problems,
+    // tail_dialogs, get_dialog, search_by_time and rtp_stats point at it rather
+    // than repeating any of the three. `#get_message` takes 4 as the fenced
+    // counterpart to get_dialog's unfenced `messages[]`, and `#list_captures`
+    // 3 because export_capture, export_audio and open_capture all write names
+    // into a directory it is the only tool that reads back.
+    const EXPECTED_WIKI_LINKS: usize = 383;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \

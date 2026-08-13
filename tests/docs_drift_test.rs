@@ -2464,9 +2464,29 @@ fn no_documentation_table_repeats_a_row() {
         // separator row each, and README.md and docs/design/backlog.md — both
         // also staged — held their table counts, so nothing here is a boundary
         // that stopped being detected.
+        // Raised 509 -> 523 by the MCP tool-reference rewrite, which made every
+        // parameter of every tool answerable: what it is, what values are
+        // legal, what the tool does when you omit it, and what comes back.
+        // Attributed per file against HEAD before this number moved. Exactly
+        // two .md files changed — docs/mcp.md and its site mirror — and each
+        // gained SEVEN tables, which is the +14:
+        //   * FIVE parameter tables for tools that previously documented no
+        //     parameters at all (find_correlated, show_evidence, export_audio,
+        //     shutdown_server, save_findings). Every one of them accepts
+        //     arguments the page never named.
+        //   * ONE `Returns` table for get_dialog, whose five response fields
+        //     had been a single prose sentence.
+        //   * ONE table under "Response bounding" naming the four tools that do
+        //     NOT report a total_matched, because the paragraph above it
+        //     claimed every list-style tool does and two of them return a bare
+        //     array with no total, no truncation flag and no cursor.
+        // The other 14 parameter tables on the page grew from three columns to
+        // four (`Legal values` and `If omitted` replacing `Description`), which
+        // is growth inside a table that already existed and so does not count
+        // here — the same rule the capture_health entry above records.
         tables,
-        509,
-        "walked {tables} tables, expected 509. More is fine — bump this. FEWER \
+        523,
+        "walked {tables} tables, expected 523. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
