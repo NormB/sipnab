@@ -9,7 +9,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::rtp::quality::estimate_mos;
 use crate::rtp::stream::StreamKey;
 use crate::rtp::stream_store::StreamStore;
 
@@ -285,7 +284,18 @@ pub fn render_stream_detail(
         let mos_values: Vec<f64> = stream
             .quality_intervals
             .iter()
-            .map(|qi| estimate_mos(qi.jitter_ms, qi.loss_pct, stream.codec.as_deref()))
+            // Same delay the headline MOS above was scored with. Scoring the
+            // trend on the assumed 100 ms while the number beside it used the
+            // measured path made one pane give two answers: a long-haul call
+            // read `MOS: 1.00` next to a flat, healthy sparkline.
+            .map(|qi| {
+                crate::rtp::quality::estimate_mos_with_delay(
+                    qi.jitter_ms,
+                    qi.loss_pct,
+                    stream.codec.as_deref(),
+                    one_way,
+                )
+            })
             .collect();
         let mos_avg = mos_values.iter().sum::<f64>() / mos_values.len() as f64;
         let mut mos_spans: Vec<Span<'_>> = vec![Span::styled(
@@ -347,7 +357,12 @@ pub fn render_stream_detail(
             let offset = first_ts
                 .map(|ft| qi.timestamp.signed_duration_since(ft).num_seconds())
                 .unwrap_or(0);
-            let qi_mos = estimate_mos(qi.jitter_ms, qi.loss_pct, stream.codec.as_deref());
+            let qi_mos = crate::rtp::quality::estimate_mos_with_delay(
+                qi.jitter_ms,
+                qi.loss_pct,
+                stream.codec.as_deref(),
+                one_way,
+            );
 
             lines.push(Line::from(vec![
                 Span::raw(format!("  +{offset:<8}s ")),

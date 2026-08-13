@@ -567,3 +567,45 @@ fn the_one_way_delay_flag_parses_and_beats_config() {
          assumption; got {assumed:.2} vs {declared:.2}"
     );
 }
+
+#[path = "support/source_scan.rs"]
+mod source_scan;
+
+/// The stream-detail pane scores every MOS it draws on ONE delay.
+///
+/// The headline `MOS:` moved to the measured path when the derived round trip
+/// landed; the MOS Trend sparkline directly beside it kept calling the
+/// assumed-delay wrapper. A long-haul call therefore rendered `MOS: 1.00`
+/// against a flat, healthy trend — one pane giving two answers about the same
+/// stream, which is the defect shape the call-list-versus-detail work and the
+/// jitter-banding fix each closed once already.
+///
+/// Asserted against the source rather than a render because the trend needs
+/// five seconds of intervals to draw at all, so a rendering test would pass on
+/// an empty sparkline and prove nothing. The rule is structural: this view may
+/// not reach for the wrapper that bakes in the assumption.
+#[test]
+fn the_stream_detail_pane_scores_every_mos_on_the_same_delay() {
+    let src = include_str!("../src/tui/stream_detail.rs");
+    let production = source_scan::production_source(src);
+
+    // `estimate_mos(` but not `estimate_mos_with_delay(`.
+    let assumed = production
+        .match_indices("estimate_mos(")
+        .filter(|(i, _)| !production[..*i].ends_with("_with_delay"))
+        .count();
+
+    assert_eq!(
+        assumed, 0,
+        "src/tui/stream_detail.rs calls the assumed-delay `estimate_mos` {assumed} time(s). \
+         Every MOS this pane draws — the headline and the trend beside it — must be scored \
+         with the delay `resolve_one_way_delay` settled on, or the pane contradicts itself."
+    );
+
+    // Anti-vacuity: the pane must actually be scoring MOS, or a file that
+    // stopped rendering one entirely would satisfy the assertion above.
+    assert!(
+        production.contains("estimate_mos_with_delay("),
+        "the pane must still score MOS with an explicit delay"
+    );
+}
