@@ -1952,14 +1952,17 @@ That escape needed prior write access inside the root, so it never amounted to a
 remote break. sipnab closes it because this page calls the boundary absolute, and
 a boundary described that way ought to be.
 
-> **The boundary stops an escape, not an overwrite.** Inside the root,
-> `export_capture` and `export_audio` replace an existing file of the same name
-> without asking and report success. The one file they refuse is the capture
-> this run is reading, and only when it sits inside the root — every other
-> capture staged there for [`open_capture`](#open-capture), and every earlier
-> export, is destroyable by a name collision. Give exports a name nothing else
-> uses, and call [`list_captures`](#list-captures) first when an agent picks
-> the name.
+> **The boundary stops an escape, and an overwrite.** Inside the root,
+> `export_capture`, `export_audio` and `shutdown_server`'s `save_to` refuse a
+> filename that already exists, name the file, and ask for one that is free.
+> sipnab declines to write over a file it did not create, because that file may
+> hold the only copy of a capture. Call
+> [`list_captures`](#list-captures) to see which names a directory already
+> uses.
+>
+> Before 0.5.97 the guard covered only the capture the run was reading. Every
+> other capture staged there for [`open_capture`](#open-capture), and every
+> earlier export, fell to a name collision on a call that reported success.
 
 ### `list_captures`
 

@@ -327,7 +327,7 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:2995`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2995)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:3043`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3043)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -435,7 +435,7 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3043`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3043),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3091`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3091),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -989,11 +989,11 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:171`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L171)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:4038`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4038), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:4086`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4086), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1028`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1028)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1057`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1057)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -1139,7 +1139,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:503`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L503)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:532`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L532)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -1455,7 +1455,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:5118`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5118), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:5150`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5150), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the

@@ -484,6 +484,35 @@ impl SipnabMcp {
         self.protected_inputs
             .check(&target, "the requested filename", false)
             .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+
+        // Refuse ANY name already taken, not merely the capture being read.
+        //
+        // `protected_inputs` above knows only the files this server opened, so
+        // every other file in the root was destroyable by name collision — and
+        // the call reported success. A capture staged in the root for
+        // `open_capture`, which is the documented way to hand one over, could
+        // be destroyed by an agent picking an output name.
+        //
+        // `symlink_metadata` rather than `exists`: it does not follow the link,
+        // so a symlink is refused as itself rather than judged by whatever it
+        // points at, and a dangling one still counts as a name in use.
+        //
+        // Refusal rather than an `overwrite` flag, for now: an agent that meant
+        // to replace a file can choose another name and delete the old one
+        // deliberately, while one that did not mean to cannot lose a capture by
+        // accident. The asymmetry is the point — the cost of refusing is a
+        // second call, and the cost of allowing is somebody's only copy.
+        if std::fs::symlink_metadata(&target).is_ok() {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "the requested filename '{}' already exists. sipnab will \
+                     not write over it, because that file may be the only copy \
+                     of a capture — choose a name that is not taken.",
+                    target.display(),
+                ),
+                None,
+            ));
+        }
         Ok(target)
     }
 }
@@ -5655,6 +5684,51 @@ mod tests {
             "the file outside the root must be untouched"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A write refuses a name that already exists, and the bytes survive.
+    ///
+    /// The overwrite guard covered only the capture being READ, so every other
+    /// file in the root was destroyable by name collision — and the call
+    /// returned success. An agent choosing an output name could silently
+    /// destroy a capture staged in the root for `open_capture`, which is the
+    /// documented workflow.
+    ///
+    /// The assertion is on the BYTES, not just the refusal: a guard that
+    /// refuses after opening the file with truncation has already destroyed it,
+    /// and would pass a test that only checked for an error.
+    #[test]
+    fn a_write_refuses_a_name_that_already_exists() {
+        let root = std::env::temp_dir().join(format!("sipnab-mcp-clobber-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+
+        let staged = root.join("staged.pcap");
+        let original = b"a capture somebody staged here".to_vec();
+        std::fs::write(&staged, &original).expect("seed the staged capture");
+
+        let srv = server_with_dialog("clobber@test").with_file_root(&root);
+
+        let err = srv
+            .resolve_in_root_for_write("staged.pcap")
+            .expect_err("writing over an existing file must be refused");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("exists"),
+            "the refusal must say the file is already there: {msg}"
+        );
+        assert_eq!(
+            std::fs::read(&staged).expect("read back"),
+            original,
+            "the existing file's bytes must be untouched by the refused write"
+        );
+
+        // Anti-vacuity: a name that is NOT taken still resolves, or this guard
+        // would be refusing every export rather than the destructive ones.
+        srv.resolve_in_root_for_write("brand-new.pcap")
+            .expect("a free name must still be writable");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// `capture_status` reports SIP the portrange skipped (#95).
