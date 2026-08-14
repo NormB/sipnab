@@ -8,6 +8,43 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Media hints name the ports, not just the addresses.** The one-way-audio
+  hint read `RTP from 10.0.2.15 -> 10.0.2.20 only`, which stops exactly where
+  the operator's next action begins: one-way audio is fixed through port-based
+  artifacts — a firewall rule, a NAT pinhole, an RTP port range, the
+  `m=audio <port>` line — and none of them is reachable from an address. It now
+  reads `RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b)`,
+  and the SSRC ties the sentence to a row in `stream_count`'s stream list.
+
+  Each side advertises a RECEIVE port in its SDP and, under symmetric RTP
+  (RFC 4961), sends from that same port; NATs and many endpoints break that,
+  the far end replies to a port nothing is sending from, no pinhole was ever
+  opened there, and the audio is one-way. That comparison is now made in both
+  directions and stated when it fails — `10.0.2.15 advertised 16384 to receive
+  RTP but sends from 41002 — not symmetric (RFC 4961), so 10.0.2.20 replies to
+  16384, where nothing is sending and no NAT pinhole was opened` — and stays
+  silent when the ports agree, which is most calls.
+
+  `nat_mismatch` and `no_media` carry the same evidence: the NAT hint names the
+  5-tuple it saw against the endpoint the SDP advertised, and the no-media hint
+  names the advertised receive endpoints nothing arrived at. Both flags are
+  verdicts, and a verdict a reader cannot check against the SDP is one they can
+  only take on trust. Ports are reported where the SDP supplied them and are
+  never inferred: an address the dialog advertised no port for — an FQDN `c=`
+  line, or a source a NAT rewrote — draws no comparison at all.
+
+  The detection rules are unchanged. `nat_mismatch` still compares addresses
+  only, because NATs and RTP proxies rewrite the port on a large share of
+  perfectly healthy calls; the ports are evidence in the hint, not a new
+  trigger. Every surface that renders hints — the text and Markdown call
+  reports, `--json-dialogs`, the REST API and the MCP tools — carries the new
+  text, because it is produced once in `rtp::diagnosis` rather than formatted
+  per surface.
+
 ## [0.5.100] - 2026-08-14
 
 ### Added

@@ -618,7 +618,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   },
   "diagnosis": {
     "hints": [
-      "RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."
+      "RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."
     ],
     "nat_mismatch": false,
     "no_media": false,
@@ -891,7 +891,7 @@ capture's per-message dump ahead of the report, and the tool never does.
 
 ## Issues
 
-- RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected.
+- RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected.
 ```
 
 ### `rtp_stats`
@@ -957,7 +957,7 @@ NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
   "diagnosis": {
     "actual_media": null,
     "hints": [
-      "RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."
+      "RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."
     ],
     "nat_mismatch": false,
     "no_media": false,
@@ -1415,7 +1415,7 @@ returned by [`list_dialogs`](#list-dialogs). An unknown one fails with
     "nat_mismatch": false,
     "no_media": false,
     "stream_count": 1,
-    "hints": ["RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."]
+    "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
   }
 }
 ```

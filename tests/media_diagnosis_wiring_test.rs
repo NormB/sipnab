@@ -760,3 +760,84 @@ fn the_nat_issues_alias_selects_the_rewritten_call() {
         "the --nat-issues alias must find what nat_mismatch finds"
     );
 }
+
+// ── The port evidence must reach the surfaces, not just the MCP tool ─────
+
+/// The one-way hint's ports reach the text call report.
+///
+/// The hints are produced once, in `rtp::diagnosis`, and rendered by four
+/// separate surfaces — the text and Markdown call reports, `--json-dialogs`,
+/// the REST layer and the MCP tools. Formatting the ports inside any one
+/// renderer would improve that surface and leave the other three emitting the
+/// weaker sentence, so this test asserts the improved text arriving through a
+/// NON-MCP surface: if the ports were added to a renderer rather than to the
+/// producer, this fails.
+///
+/// The capture is the fault the ports exist to explain: the caller advertises
+/// 16384, a NAT rewrote its source port to 41002, and the callee's reply goes
+/// to 16384 where nothing is sending.
+///
+/// Gated on `native` at the call site because that is where the dependency is:
+/// `sipnab::output` is compiled only under that feature, while everything else
+/// in this file builds without it. The rest of the file must keep compiling
+/// under `--no-default-features --features tls`, which is one of the
+/// combinations CI builds and `--features full` cannot see.
+#[cfg(feature = "native")]
+#[test]
+fn the_text_call_report_carries_the_port_evidence() {
+    let call_id = "one-way-ports@example.net";
+    let mut ds = DialogStore::new(64, false);
+    offer(
+        &mut ds,
+        call_id,
+        &sdp_body("10.0.2.15", 16384, "sendrecv"),
+        ts(0),
+    );
+    answer(
+        &mut ds,
+        call_id,
+        &sdp_body("10.0.2.20", 16386, "sendrecv"),
+        ts(1),
+    );
+
+    let mut ss = StreamStore::new(64);
+    ss.link_endpoint(ip([10, 0, 2, 20]), 16386, call_id, &[]);
+    record_stream(
+        &mut ss,
+        ip([10, 0, 2, 15]),
+        41002,
+        ip([10, 0, 2, 20]),
+        16386,
+        0x343d_a99b,
+    );
+
+    let dialog = ds.get(call_id).expect("dialog was stored");
+    let streams: Vec<&sipnab::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
+    assert_eq!(streams.len(), 1, "one direction only, by construction");
+    let ctx = sipnab::rtp::diagnosis::MediaContext::for_dialog(
+        dialog,
+        sipnab::rtp::diagnosis::CaptureMedia::of_store(&ss),
+    );
+    let diagnosis = sipnab::rtp::diagnosis::diagnose_media(&streams, &ctx);
+
+    let report = sipnab::output::generate_call_report(
+        dialog,
+        &streams,
+        &diagnosis,
+        sipnab::output::ReportFormat::Text,
+    );
+
+    assert!(
+        report.contains("10.0.2.15:41002 -> 10.0.2.20:16386"),
+        "the report's issues section must name both ports of the flow:\n{report}"
+    );
+    assert!(
+        report.contains("10.0.2.15 advertised 16384") && report.contains("sends from 41002"),
+        "the report must carry the advertised-versus-actual comparison:\n{report}"
+    );
+    assert!(
+        report.contains("10.0.2.20 replies to 16384"),
+        "the report must name the port the reply goes to, where the pinhole is \
+         missing:\n{report}"
+    );
+}

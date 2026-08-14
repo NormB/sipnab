@@ -1541,7 +1541,7 @@ You have a Call-ID from a complaint or a billing record. Start with the split:
     "problem": true,
     "one_way_audio": true,
     "stream_count": 1,
-    "hints": ["RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."]
+    "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
   }
 }
 ```
@@ -1692,7 +1692,7 @@ When `triage_call` returns `verdict: media`, go to the streams:
   "diagnosis": {
     "one_way_audio": true,
     "nat_mismatch": false,
-    "hints": ["RTP from 10.0.2.15 -> 10.0.2.20 only. No reverse media flow detected."]
+    "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
   }
 }
 ```
