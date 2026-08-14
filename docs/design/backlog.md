@@ -1989,10 +1989,53 @@ treats as critical.
   data — so this must use `-m keylog`. **rtcagent is AGPL-3.0**: interoperate
   over a pipe, never vendor or link it into an MIT-OR-Apache-2.0 tree.
 
+### Measured 2026-08-14: this needs no BPF program at all
+
+Before choosing a loader, the cheapest mechanism was tested on
+`opensips-1.goes.com` (Debian 13, kernel 6.12.101, x86\_64, BTF present,
+OpenSSL 3.5.6). A **tracefs uprobe with array fetch arguments**, and no BPF
+bytecode anywhere:
+
+```sh
+# SSL_write(SSL *rdi, const void *rsi, int edx) — x86-64 SysV
+echo 'p:sipnabtk7 /usr/lib/x86_64-linux-gnu/libssl.so.3:0x3e110 buf=+0(%si):x8[24] len=%dx:s32' \
+  >> /sys/kernel/tracing/uprobe_events
+```
+
+read back, from a real TLS session:
+
+```
+buf={0x49,0x4e,0x56,0x49,0x54,0x45,0x20,0x73,0x69,0x70,0x3a,0x62,0x40,...} len=59
+      I    N    V    I    T    E   ' '   s    i    p    :    b    @
+```
+
+That is the plaintext `INVITE` out of `SSL_write` with **no `aya`, no
+`bpf-linker`, no nightly toolchain, and no BTF**. It matters for three reasons.
+sipnab pins Rust 1.97.1 stable in CI and the BPF program side of `aya` needs
+nightly plus `bpf-linker`, so this removes the entire build-system argument
+against `TK6`/`TK7`. It works on kernels with **no BTF**, which includes
+thor-02, so development and testing are not confined to one host. And the only
+offsets required are **ELF function symbols** — resolvable from the library
+file with the `object` crate — rather than the struct layouts that force
+ecapture to carry a table per OpenSSL release.
+
+Three limits, so this is not read as more than it is. The `len=0` lines in the
+same trace are `SSL_write` calls carrying nothing, so a length and content
+filter is required rather than optional. `trace_pipe` is a **text** interface
+and unfit for a busy host — attach the same uprobe through `perf_event_open`
+and read binary records from a perf ring buffer, which is still not a BPF
+program. And array fetch arguments are size-bounded: 24 bytes was verified, a
+SIP-message-sized read was not, so **measure the ceiling before designing
+around it**.
+
+Unchanged by this result: plaintext still arrives with no 5-tuple, which is
+`TK7`'s hard half and the reason `MessageOrigin` exists.
+
 - [ ] **TK6 — sipnab cannot extract the secrets itself.** Every path above needs
   a second tool installed on the SBC. **Do:** a non-default Linux-only `ebpf`
-  feature on [`aya`](https://aya-rs.dev) (pure Rust, no libbpf or clang at build
-  time), with `--ebpf-tls-pid` / `--ebpf-tls-lib`, attaching a uretprobe to
+  feature — see the measurement above before reaching for
+  [`aya`](https://aya-rs.dev), which the tracefs route may make unnecessary —
+  with `--ebpf-tls-pid` / `--ebpf-tls-lib`, attaching a uretprobe to
   `SSL_do_handshake`/`SSL_connect`/`SSL_accept` and reading the master secret and
   client random from the `SSL` struct. Not in `full`: it needs a kernel and root
   to exercise, so CI builds it and cannot run it. Find libraries by scanning
