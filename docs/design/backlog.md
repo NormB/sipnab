@@ -1721,7 +1721,10 @@ authoritative; the PB text above adds only what they do not already say.
   `setuid`, `drop_supplementary_groups`, `PR_SET_NO_NEW_PRIVS`,
   `PR_SET_DUMPABLE=0`, `setrlimit(RLIMIT_CORE, 0)`, optional `chroot` — but
   there is no syscall filter and no filesystem-access restriction
-  (`grep -rn 'seccomp\|landlock\|unshare' src/` matches nothing). sipnab's own
+  (`grep -rniE 'seccomp|landlock|\bunshare\(' src/` exits 1; the older
+  `grep -rn 'seccomp\|landlock\|unshare' src/` written here matched the prose
+  "(unshared)" in [`src/tui/mod.rs:297`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L297) and so was never evidence for
+  the claim it was cited for). sipnab's own
   parsers are safe Rust, but **libpcap is C and touches every untrusted byte
   first**, in the address space holding TLS key material, bearer tokens and a
   pre-drop `CAP_NET_RAW` socket. A seccomp-bpf allowlist installed after the
@@ -1732,6 +1735,10 @@ authoritative; the PB text above adds only what they do not already say.
   Landlock would additionally bound filesystem reach for runs without
   `--chroot`. Ranked P5 only because it needs a carefully-derived allowlist and
   a per-platform fallback; the argument for it is stronger than its rank.
+  Written up in [`docs/design/syscall-sandbox.md`](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md), whose §0 tabulates the
+  hardening listed above against what each one does **not** stop — read that
+  before implementing, because the first four of the seven are skipped outright
+  on a non-root start, which is what `--setup-caps` gives you.
 - [x] **CT14 — `any` costs ~41x ring capacity and all promiscuous mode:
   DOCUMENTED.** Found 2026-08-03, written up as [`docs/tuning-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tuning-capture.md) §5.
   libpcap's `create_ring()` sizes each TPACKET_V2 slot from the snaplen, and
