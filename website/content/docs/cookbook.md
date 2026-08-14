@@ -455,11 +455,51 @@ Accepted values for `--pcap-export-mode`: `decrypted` (default), `encrypted+dsb`
 sipnab -I capture.pcap --dtls-keylog /tmp/dtls.keylog
 ```
 
+### 7e. Decrypt traffic from a daemon you cannot restart
+
+Everything above needs the SIP daemon to cooperate: `SSLKEYLOGFILE` has to be in
+its environment when it starts. On a running production Kamailio, OpenSIPS or
+Asterisk that means a restart, and a restart is usually the reason you are
+looking at the capture in the first place.
+
+[eCapture](https://github.com/gojue/ecapture) reads the TLS master secrets
+straight out of the process with eBPF uprobes on the TLS library. It needs
+nothing from the daemon — no environment variable, no configuration, no
+restart — and it writes the same NSS keylog format sipnab already consumes.
+
+On the SIP host, as root:
+
+```bash
+ecapture tls -m keylog --keylogfile=/tmp/sip.keylog
+```
+
+Then point sipnab at that file, exactly as in 7a:
+
+```bash
+sudo sipnab -N -d eth0 --keylog /tmp/sip.keylog --keylog-watch
+```
+
+`-m keylog` is the mode that matters. eCapture's other modes emit *plaintext*,
+which would mean writing capture files whose packets never existed on the wire.
+Taking the keys instead keeps the real encrypted bytes on the wire and the real
+secrets beside them, so `--pcap-export-mode encrypted+dsb` (7c) still produces
+an artifact Wireshark verifies independently.
+
+**Measured, not assumed** (2026-08-14): a TLS 1.3 `REGISTER` over
+`TLS_AES_256_GCM_SHA384`, keys taken from a running process with no
+`SSLKEYLOGFILE` anywhere, decoded by sipnab as
+`127.0.0.1:53810 -> 127.0.0.1:15300 REGISTER TLS`. Verified on both aarch64
+(kernel 6.8, no BTF — eCapture falls back to its non-CO-RE bytecode
+automatically) and x86_64 (Debian 13, OpenSSL 3.5.6, BTF present).
+
 **Pitfalls:**
 
 - `tls` is a **build-time** feature, not a runtime flag. There is no `sipnab --features tls` invocation; pass `--features` to `cargo build` and use the resulting binary. `sipnab --version` only prints the version string and a commit hash — it does *not* enumerate the features in the build. To verify support, `sipnab --help | grep -E '\-\-keylog|\-\-tls-key'` — if the flags appear, the build has `tls`.
 - The keylog format is the standard NSS `SSLKEYLOGFILE` (one line per session). Same format Firefox/Chrome/curl produce.
 - TLS 1.3 + ECDH ephemeral handshakes are fully supported via the `ring` backend.
+- eCapture is a separate program under Apache-2.0; sipnab neither bundles nor links it. It needs `CAP_BPF`/`CAP_PERFMON` or root, and Linux 4.18+ on x86_64 or 5.5+ on aarch64.
+- A keylog is key material. It decrypts every session it covers, so treat the file as a secret: sipnab disables core dumps once decryption is active for the same reason.
+- Keys only appear for handshakes eCapture was running for. Start it before the calls you care about — it cannot recover a session whose handshake it missed.
 
 ---
 

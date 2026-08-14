@@ -33,6 +33,16 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `--keylogfile` is eCapture's, not sipnab's. The cookbook's §7e tells the
+    // reader to run `ecapture tls -m keylog --keylogfile=...` on the SIP host
+    // to lift TLS secrets out of a daemon that cannot be restarted, and then
+    // hands that file to sipnab's own `--keylog`. Naming the producing flag is
+    // the point of the recipe. Scoped to the cookbook and its mirror: written
+    // anywhere else it would read as a sipnab flag, and must still fail here.
+    (
+        "keylogfile",
+        &["docs/examples.md", "website/content/docs/cookbook.md"],
+    ),
     // `demos/gen-mcp-examples.sh --check` re-runs the homepage's four MCP
     // examples and fails on any difference. It is that script's flag, not
     // sipnab's, and the testing page names it because a reader who has just
