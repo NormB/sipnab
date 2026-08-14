@@ -54,6 +54,25 @@ entry that carries them.
   takes the owner and repository from `Cargo.toml` and checks every
   cla-assistant.io link against it, so a fork or a copied badge cannot send a
   contributor to sign against a different project.
+- **`scripts/preflight.sh` no longer reports a gate it never ran as a pass.**
+  An absent `vale` or `codespell` printed `WARN` and the run still ended
+  "Preflight clean" — right for a contributor who has not installed the tool,
+  and wrong for everything else. A background script whose hardened `PATH`
+  omitted `~/.local/bin` got exactly that answer with both blocking gates
+  silently downgraded, and two Vale errors reached CI. Strictness is now
+  decided rather than assumed: `PREFLIGHT_STRICT=1` makes a check that cannot
+  run a failure carrying the same install hint the warning carried, `CI` and a
+  non-terminal stdout both default to it, and `PREFLIGHT_STRICT=0` keeps the
+  warning anywhere. A human at a terminal still only gets warned. Four more
+  silent passes went with it: `cd "$(git rev-parse --show-toplevel)"` looked
+  like a guard but `cd ""` succeeds, so a run without git measured whatever
+  directory it started in; an unreadable `VALE_VERSION` pin skipped the
+  version comparison and ran Vale anyway; a site generator that exited
+  non-zero read as "the mirror is current" because its status was discarded;
+  and an untracked `*.rs` file was invisible to the homepage-count heuristic
+  the same way an untracked `*.md` was to the documentation ratchets. Vale
+  failing to LOAD its styles now says `vale sync` rather than printing `E100`
+  and leaving a reader to think the prose is broken.
 - **`--stir-shaken` no longer marks every token in a stored capture `Expired`.**
   The RFC 8224 Section 4.4 `iat` freshness window was measured against the wall
   clock, so the answer depended on when you opened the file rather than on
