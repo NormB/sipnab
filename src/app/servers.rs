@@ -51,6 +51,17 @@ pub struct Selection {
     /// Distinct peers one rate-limit window may hold, for the MCP per-peer
     /// limiter. Resolved by the caller with `cli.tracked_peer_capacity(config)`.
     pub max_tracked_peers: usize,
+    /// Findings `save_findings` accepts before refusing further writes.
+    ///
+    /// Resolved by the caller with `cli.mcp_findings_cap(config)`, and carried
+    /// here for the same reason `mcp_row_cap` is.
+    pub mcp_max_findings: u64,
+    /// Metrics scrapes served at once before further ones get `503`.
+    ///
+    /// Resolved by the caller with `cli.metrics_conn_cap(config)`, and carried
+    /// here for the same reason `mcp_row_cap` is: this function is handed a
+    /// `Cli` and no `Config`, so every resolved ceiling arrives on Selection.
+    pub metrics_max_conn: usize,
     /// Start the REST API server when `--api` is configured.
     pub api: bool,
     /// Start the MCP server when `--mcp` is configured.
@@ -243,6 +254,7 @@ pub fn start_servers(
             Arc::clone(stream_store),
             auth,
             capture_meter,
+            selection.metrics_max_conn,
         )
         .map_err(|e| anyhow::anyhow!("Failed to start metrics server: {e}"))?;
     }
@@ -346,7 +358,8 @@ pub fn start_servers(
                 .with_max_concurrent(cli.mcp_max_concurrent as usize)
                 .with_rate_limit_per_peer(cli.mcp_rate_limit_per_peer, selection.max_tracked_peers)
                 .with_row_cap(selection.mcp_row_cap)
-                .with_body_cap(selection.mcp_body_cap);
+                .with_body_cap(selection.mcp_body_cap)
+                .with_findings_cap(selection.mcp_max_findings);
             let s = match cli.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
                 None => s,

@@ -1018,10 +1018,33 @@ fn rotated_path(base: &Path, sequence: u32) -> PathBuf {
     parent.join(format!("{stem}_{sequence:05}.{ext}"))
 }
 
+/// Bytes in the unit every `filesize:N` condition counts in.
+///
+/// **MiB, not MB**, and the same judgement `-B/--buffer` records: the help
+/// text, the man page and `docs/cli-reference.md` all say MiB, an operator
+/// reading "100" means the figure their filesystem browser will show them, and
+/// a decimal megabyte makes `--autostop filesize:100` stop 4.9 MiB early —
+/// which nothing reports, because a capture that stopped when asked looks
+/// exactly like a capture that stopped when asked.
+///
+/// Both `filesize:N` conditions read this one constant so the two spellings of
+/// the same word cannot mean two different sizes again.
+pub const BYTES_PER_MIB: u64 = 1024 * 1024;
+
+/// Convert a size in MiB to bytes, saturating rather than wrapping.
+///
+/// Saturating because the input is an operator-typed `u64`: `filesize:N` for a
+/// large enough N overflows the multiplication, and a wrapped threshold is a
+/// capture that stops on its first packet.
+#[must_use]
+pub fn mib_to_bytes(mib: u64) -> u64 {
+    mib.saturating_mul(BYTES_PER_MIB)
+}
+
 /// Parse a `--split` value into rotation parameters.
 ///
 /// Supported formats:
-/// - `filesize:N` — rotate after N megabytes
+/// - `filesize:N` — rotate after N mebibytes (see [`BYTES_PER_MIB`])
 /// - `duration:N` — rotate after N seconds
 ///
 /// Returns `(max_file_bytes, max_file_duration)`.
@@ -1037,7 +1060,7 @@ pub fn parse_split(split: &str) -> Result<(Option<u64>, Option<std::time::Durati
         .with_context(|| format!("Invalid --split value: '{}'", parts[1]))?;
 
     match key {
-        "filesize" => Ok((Some(value * 1_000_000), None)), // N megabytes
+        "filesize" => Ok((Some(mib_to_bytes(value)), None)),
         "duration" => Ok((None, Some(std::time::Duration::from_secs(value)))),
         _ => anyhow::bail!("Unknown --split condition: '{key}'. Expected 'filesize' or 'duration'"),
     }
@@ -1246,8 +1269,34 @@ mod tests {
     #[test]
     fn parse_split_filesize() {
         let (bytes, dur) = parse_split("filesize:50").unwrap();
-        assert_eq!(bytes, Some(50_000_000));
+        assert_eq!(bytes, Some(52_428_800));
         assert!(dur.is_none());
+    }
+
+    /// The two `filesize:N` conditions read N in the same unit.
+    ///
+    /// `--split filesize:N` and `--autostop filesize:N` are spelled
+    /// identically and both measure the same output file, so an operator reads
+    /// them as one setting. They were two independent multiplications by
+    /// 1 000 000 while `-B/--buffer` had already been corrected to MiB, and
+    /// nothing held them together. Asserted against the shared conversion
+    /// rather than against a literal, so a third site cannot reintroduce a
+    /// second unit without failing here.
+    #[test]
+    fn split_and_autostop_filesize_agree_on_the_unit() {
+        let (bytes, _) = parse_split("filesize:7").expect("filesize:7 parses");
+        assert_eq!(
+            bytes,
+            Some(mib_to_bytes(7)),
+            "--split filesize must measure MiB, as its help text and the docs say"
+        );
+        let (_, threshold) =
+            crate::app::bootstrap::parse_autostop("filesize:7").expect("filesize:7 parses");
+        assert_eq!(
+            threshold,
+            Some(mib_to_bytes(7)),
+            "--autostop filesize must reach the same byte threshold as --split"
+        );
     }
 
     /// `duration:300` parses as a 300-second cap and no size cap.

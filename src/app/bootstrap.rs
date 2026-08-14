@@ -279,6 +279,8 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             auth_key: hep_auth,
             #[cfg(feature = "hep")]
             auth_mode: cli.hep_auth_mode,
+            #[cfg(feature = "hep")]
+            hmac_window_secs: cli.hep_hmac_window_secs(config),
         })
     } else {
         None
@@ -388,7 +390,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     }
 
     // --autostop condition.
-    let (autostop_duration, autostop_filesize_mb) = match cli.autostop {
+    let (autostop_duration, autostop_filesize_bytes) = match cli.autostop {
         Some(ref cond) => {
             parse_autostop(cond).map_err(|e| PlanError::arg(format!("Invalid --autostop: {e}")))?
         }
@@ -599,7 +601,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             split_bytes,
             split_duration,
             autostop_duration,
-            autostop_filesize_mb,
+            autostop_filesize_bytes,
             portrange,
         },
         matcher,
@@ -1342,6 +1344,17 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         });
     }
 
+    // [media.codec_ie] decides what a MOS MEANS for every codec sipnab has no
+    // published impairment for, so an out-of-range figure has to fail the run:
+    // clamped, it would be a number the operator did not write, reported
+    // afterwards as grounded in their declaration.
+    if let Err(e) = loaded.config.media.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [quality] is validated as a RESOLVED band set rather than as a section,
     // because an unreachable middle can be assembled from both sources: a warn
     // boundary in the file and its bad boundary on the command line. Checking
@@ -1380,6 +1393,12 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     if let Some(v) = loaded.config.limits.keep_messages_per_idle_dialog {
         crate::sip::dialog_store::set_keep_messages_per_idle_dialog(v as usize);
     }
+    // Resolved rather than read off the config: `--active-idle-window` must
+    // beat the key, and the same window has to reach every `DialogStore` in the
+    // process because every one of them publishes the same two gauges.
+    crate::sip::dialog_store::set_active_idle_window_secs(
+        cli.active_idle_window_secs(&loaded.config) as i64,
+    );
 
     // Three caps that reach code no config is threaded to: streams are created
     // by the batch runner, the TUI, every `--cores` shard and the WASM entry
@@ -1398,6 +1417,24 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // runner, the TUI and every `--cores` shard; the WebSocket unwrap runs on
     // all of those plus the WASM entry point. Neither is threaded a config.
     crate::capture::reassembly::set_max_tcp_buffer(cli.tcp_buffer_cap(&loaded.config));
+    // And the retention beside the ceiling, for the same reason: the TTL is
+    // read by `PacketProcessor::with_max_sessions`, which the batch runner, the
+    // TUI and every `--cores` shard call for themselves.
+    crate::capture::reassembly::set_reassembly_ttl_secs(cli.reassembly_ttl_secs(&loaded.config));
+    // And the codec impairment table, for the same reason again: `estimate_mos`
+    // is a free function the CLI, the REST API, the filter DSL, the Prometheus
+    // exporter and the TUI all reach, and none of them is threaded a config. A
+    // declaration honoured on some of those would be two surfaces reporting
+    // different MOS for one stream.
+    crate::rtp::quality::set_codec_ie_table(
+        loaded
+            .config
+            .media
+            .codec_ie
+            .as_ref()
+            .map(|t| t.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default(),
+    );
     // Parsed here rather than at the flush site so a malformed range fails the
     // RUN, naming the source that carried it, instead of silently reverting to
     // the shipped ports on every packet.
@@ -1443,10 +1480,18 @@ pub fn dump_config(loaded: &LoadedConfig) -> i32 {
 ///
 /// Supported formats:
 /// - `duration:N` — stop after N seconds
-/// - `filesize:N` — stop when output file reaches N megabytes
+/// - `filesize:N` — stop when the output file reaches N mebibytes
 ///
-/// Returns `(Option<Duration>, Option<filesize_mb>)`.
-fn parse_autostop(s: &str) -> Result<(Option<std::time::Duration>, Option<u64>), String> {
+/// Returns `(Option<Duration>, Option<filesize_bytes>)`.
+///
+/// The size is returned in BYTES, converted here through
+/// [`crate::capture::writer::mib_to_bytes`], because the capture loop compares
+/// it against `PcapWriter::bytes_written`. Returning megabytes left the loop
+/// holding the second half of a unit conversion, and it disagreed with
+/// `--split filesize` — the identically spelled condition on the same file.
+pub(crate) fn parse_autostop(
+    s: &str,
+) -> Result<(Option<std::time::Duration>, Option<u64>), String> {
     let parts: Vec<&str> = s.splitn(2, ':').collect();
     if parts.len() != 2 {
         return Err(format!(
@@ -1460,7 +1505,7 @@ fn parse_autostop(s: &str) -> Result<(Option<std::time::Duration>, Option<u64>),
 
     match key {
         "duration" => Ok((Some(std::time::Duration::from_secs(value)), None)),
-        "filesize" => Ok((None, Some(value))),
+        "filesize" => Ok((None, Some(crate::capture::writer::mib_to_bytes(value)))),
         _ => Err(format!(
             "Unknown autostop condition: '{key}'. Expected 'duration' or 'filesize'"
         )),
@@ -2295,7 +2340,11 @@ mod tests {
 
     // ── parse_autostop ─────────────────────────────────────────────────
 
-    /// `duration:N` yields a Duration; `filesize:N` yields a megabyte count.
+    /// `duration:N` yields a Duration; `filesize:N` yields a byte threshold.
+    ///
+    /// Bytes rather than the megabyte count this used to return: the
+    /// conversion belongs where the string is read, so the one comparison the
+    /// capture loop makes cannot carry a second opinion about the unit.
     #[test]
     fn parse_autostop_duration_and_filesize() {
         let (dur, size) = parse_autostop("duration:30").unwrap();
@@ -2304,7 +2353,7 @@ mod tests {
 
         let (dur, size) = parse_autostop("filesize:100").unwrap();
         assert_eq!(dur, None);
-        assert_eq!(size, Some(100));
+        assert_eq!(size, Some(104_857_600));
     }
 
     /// Missing colon, non-numeric value, and unknown key are rejected.

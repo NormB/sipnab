@@ -8,8 +8,9 @@
 //! feature gate in `super`).
 //!
 //! Started when `--metrics <addr:port>` is specified without `--api`.
-//! Concurrency is capped at `MAX_CONCURRENT_CONNECTIONS`; optional HTTP
-//! Basic auth protects non-loopback binds.
+//! Concurrency is capped at the caller's `max_conn`
+//! ([`DEFAULT_MAX_CONCURRENT_CONNECTIONS`] unless an operator raised it);
+//! optional HTTP Basic auth protects non-loopback binds.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -22,12 +23,30 @@ use crate::output::prometheus::{PrometheusMetrics, format_metrics};
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
 
-/// Maximum number of metrics connections handled concurrently. Beyond this,
+/// Default number of metrics connections handled concurrently. Beyond this,
 /// new connections are answered `503` and closed immediately, so a burst of
 /// slow clients cannot exhaust threads and make monitoring unavailable
 /// (SN-02, CWE-770). Prometheus scrapes are infrequent and cheap, so a small
 /// ceiling is ample for legitimate use.
-const MAX_CONCURRENT_CONNECTIONS: usize = 16;
+///
+/// Ample is not the same as universal, which is why this is now a default
+/// rather than the number. An HA pair of Prometheus servers, a federating
+/// parent, a `remote_write` shard, an alertmanager sidecar and one engineer's
+/// `curl` are six clients before anyone has done anything unusual, and a scrape
+/// refused with `503` leaves a gap in the series that looks like the CAPTURE
+/// died — the one failure an operator must not be told about wrongly. Raise it
+/// with `--metrics-max-conn` or `[limits] metrics_max_conn`.
+///
+/// The FLOOR is 1, enforced by clap and by
+/// [`crate::config::LimitsConfig::validate`]. At 0 the gate refuses every
+/// connection and the endpoint is permanently `503`, which inverts the
+/// mechanism into the outage it exists to prevent — the same judgement
+/// [`crate::config::MIN_TRACKED_PEERS`] records for the rate-limit map.
+///
+/// Read from [`crate::cli::Cli::DEFAULT_METRICS_MAX_CONN`] rather than stated
+/// here, because this module is compiled only for a `metrics` build while the
+/// resolver that answers for it is compiled for every native one.
+pub const DEFAULT_MAX_CONCURRENT_CONNECTIONS: usize = crate::cli::Cli::DEFAULT_METRICS_MAX_CONN;
 
 /// Bounds the number of in-flight metrics connections. A permit is taken per
 /// accepted connection and released (via `ConnPermit`'s `Drop`) when its
@@ -92,6 +111,10 @@ impl ConnGate {
 ///   auth (loopback binds only).
 /// * `capture_meter` — Optional capture-queue meter for queue-depth and
 ///   backpressure gauges.
+/// * `max_conn` — Simultaneous connections before further ones get `503`.
+///   Clamped up to 1: a zero gate refuses every scrape, and the operator-facing
+///   refusal happens earlier, in `crate::config::LimitsConfig::validate` and in
+///   clap, so it can name the key.
 ///
 /// # Returns
 ///
@@ -117,6 +140,7 @@ pub fn start_metrics_server(
     stream_store: Arc<RwLock<StreamStore>>,
     basic_auth: Option<String>,
     capture_meter: Option<crate::capture::channel::CaptureMeter>,
+    max_conn: usize,
 ) -> anyhow::Result<(SocketAddr, std::thread::JoinHandle<()>)> {
     // Fail closed on a non-loopback bind without authentication, matching
     // the REST API and MCP HTTP transports (SN-02). An unauthenticated
@@ -152,7 +176,7 @@ pub fn start_metrics_server(
     let handle = std::thread::Builder::new()
         .name("metrics-server".to_string())
         .spawn(move || {
-            let gate = ConnGate::new(MAX_CONCURRENT_CONNECTIONS);
+            let gate = ConnGate::new(max_conn.max(1));
             for stream in listener.incoming() {
                 if crate::signals::shutdown_requested() {
                     break;
@@ -762,6 +786,7 @@ mod tests {
             populated_stream_store(),
             None,
             None,
+            DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
         .expect("server should bind");
 
@@ -784,6 +809,7 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(10))),
             None,
             None,
+            DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
         .expect("server should bind");
 
@@ -801,6 +827,7 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(10))),
             Some("user:pass".to_string()),
             None,
+            DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
         .expect("server should bind");
 
@@ -859,6 +886,7 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(10))),
             None,
             None,
+            DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
         .expect_err("non-loopback without auth must be refused");
         assert!(
@@ -877,6 +905,7 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(10))),
             Some("user:pass".to_string()),
             None,
+            DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         );
         assert!(
             handle.is_ok(),
@@ -893,6 +922,7 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(10))),
             None,
             None,
+            DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         );
         assert!(handle.is_ok(), "loopback without auth should start");
     }

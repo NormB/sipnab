@@ -416,7 +416,14 @@ pub struct Cli {
     #[arg(help_heading = "Capture", long, value_name = "DURATION")]
     pub duration: Option<String>,
 
-    /// Autostop condition (e.g., "filesize:100", "duration:60").
+    /// Autostop condition: "filesize:N" (N MiB of output) or "duration:N"
+    /// (N seconds).
+    ///
+    /// `filesize` counts MEBIBYTES, the same unit `--split filesize` and
+    /// `-B/--buffer` use, so `filesize:100` stops at what a file browser calls
+    /// 100 MiB. Both `filesize` conditions counted decimal megabytes before
+    /// and stopped 4.9 % early; a capture that stopped short looks exactly
+    /// like one that stopped when asked, so nothing reported the difference.
     #[arg(help_heading = "Capture", long, value_name = "CONDITION")]
     pub autostop: Option<String>,
 
@@ -492,6 +499,24 @@ pub struct Cli {
     /// `--resolve`. Off by default (it emits DNS queries for captured IPs).
     #[arg(help_heading = "Name resolution", long = "reverse-dns")]
     pub reverse_dns: bool,
+
+    /// Reverse-DNS results held at once (default 4096). Config:
+    /// `[names] dns_cache_entries`.
+    ///
+    /// Past the cap the oldest entry is evicted, so a capture touching more
+    /// hosts than this — a carrier edge, a peering point, or any long
+    /// `--reverse-dns` window — keeps re-looking-up addresses it already
+    /// resolved. Nothing reports that: a dropped lookup only shows as an
+    /// address displayed unresolved, so the symptom is names that flicker.
+    /// The worker queue's depth follows this figure rather than being set
+    /// separately.
+    #[arg(
+        help_heading = "Name resolution",
+        long = "dns-cache-entries",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub dns_cache_entries: Option<u64>,
 
     /// Load IP -> name mappings from an `/etc/hosts`-format file. Repeatable.
     #[arg(help_heading = "Name resolution", long = "names", value_name = "FILE")]
@@ -1086,6 +1111,24 @@ pub struct Cli {
     )]
     pub leg_correlation_window_ms: Option<u64>,
 
+    /// Seconds a dialog may go untouched and still count as active.
+    ///
+    /// Bounds the active-dialog and active-call gauges every surface publishes.
+    /// The shipped hour is twice RFC 4028's default `Session-Expires`, which
+    /// describes a trunk carrying session timers and not a contact centre: a
+    /// caller parked on hold past an hour is a channel in use that the gauge
+    /// stops counting. Widening it also widens the opposite error — a call
+    /// whose BYE was lost stays counted for longer — and that one never
+    /// recovers on its own, so raise it for traffic that genuinely goes quiet
+    /// rather than as a precaution.
+    #[arg(
+        help_heading = "Dialog",
+        long = "active-idle-window",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub active_idle_window_secs: Option<u64>,
+
     /// Calls a source must place inside the volume window before
     /// `--fraud-detect` will report a spike at all.
     #[arg(
@@ -1380,6 +1423,23 @@ pub struct Cli {
         default_value = "100"
     )]
     pub api_max_conn: u32,
+
+    /// Metrics scrapes served at once before further ones get `503`
+    /// (default 16). Config: `[limits] metrics_max_conn`.
+    ///
+    /// The gate exists so a burst of slow clients cannot exhaust threads and
+    /// take monitoring down (SN-02). Sixteen suits one Prometheus; an HA pair,
+    /// a federating parent, a `remote_write` shard, an alertmanager sidecar and
+    /// one engineer's `curl` reach it without anything unusual happening — and
+    /// a refused scrape leaves a hole in the series that reads as a capture
+    /// that died rather than as a busy endpoint.
+    #[arg(
+        help_heading = "Network listeners",
+        long = "metrics-max-conn",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub metrics_max_conn: Option<u64>,
 
     /// Rows one list-style REST response may return (default 1000). Config:
     /// `[limits] api_max_rows`.
@@ -1690,6 +1750,25 @@ pub struct Cli {
     )]
     pub mcp_max_body_bytes: Option<u64>,
 
+    /// Findings `save_findings` accepts before refusing further writes
+    /// (default 1000). Config: `[limits] mcp_max_findings`.
+    ///
+    /// The one WRITE budget on this surface, and the opposite direction from
+    /// `--mcp-max-rows` and `--mcp-max-body-bytes`: it bounds what an agent
+    /// puts into the operator's journal rather than what it may read. Past it
+    /// the write is refused and says so; nothing is evicted to make room,
+    /// because a finding is a log line the journal already holds and there is
+    /// no retained copy a newer one could displace. Raise it for a long agent
+    /// session on a large capture, where a thousand annotations is a session
+    /// doing its job.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-max-findings",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub mcp_max_findings: Option<u64>,
+
     /// Maximum MCP tool calls one peer may make per second (`0` = unlimited).
     ///
     /// The other half of `--mcp-max-concurrent`, and a different question:
@@ -1890,6 +1969,28 @@ pub struct Cli {
     )]
     pub hep_auth_mode: HepAuthMode,
 
+    /// Seconds either side of now a `--hep-auth-mode hmac` token's timestamp
+    /// may fall and still be accepted (default 30, maximum 300). Config:
+    /// `[security] hep_hmac_window_secs`.
+    ///
+    /// On an agent/collector pair with poor NTP every packet is rejected as
+    /// out-of-window, and what the operator sees is a collector receiving
+    /// NOTHING — which they will attribute to routing, a firewall, or a dead
+    /// agent long before they suspect a clock.
+    ///
+    /// Widening it is a security trade, not a convenience: the window is
+    /// exactly how long a packet an on-path attacker captured stays acceptable,
+    /// and it is how far back the receiver's nonce cache must remember. The
+    /// ceiling is 300 s, past which the sender has no working time daemon and
+    /// that is what to repair.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-hmac-window",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_HEP_HMAC_WINDOW_SECS)
+    )]
+    pub hep_hmac_window_secs: Option<u64>,
+
     /// Parse incoming HEP packets (enable HEP decoding).
     #[arg(help_heading = "HEP", short = 'E', long = "hep-parse")]
     pub hep_parse: bool,
@@ -2000,6 +2101,23 @@ pub struct Cli {
     /// Maximum concurrent TCP/TLS reassembly sessions.
     #[arg(help_heading = "Resource limits", long, value_name = "N")]
     pub max_reassembly: Option<u64>,
+
+    /// Seconds an incomplete datagram or half-read TCP stream is held before a
+    /// sweep evicts it (default 30). Config: `[limits] reassembly_ttl_secs`.
+    ///
+    /// `--max-reassembly` bounds how MANY entries are held and says nothing
+    /// about how long. Thirty seconds describes IP fragments in flight; a
+    /// persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far
+    /// longer on any ordinary night, and sweeping its half-read stream means
+    /// the next segment re-initialises mid-message — so the peer that sent a
+    /// valid message is the one reported broken.
+    #[arg(
+        help_heading = "Resource limits",
+        long = "reassembly-ttl",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub reassembly_ttl_secs: Option<u64>,
 
     /// Bytes one SIP/TCP direction may buffer before sipnab flushes it
     /// (default 65536). Config: `[limits] max_tcp_buffer`.
@@ -2259,6 +2377,23 @@ impl Cli {
     /// builds that have no CLI at all and a key whose floor is enforced in
     /// some builds and not others is worse than one with no floor.
     pub const DEFAULT_MAX_TRACKED_PEERS: usize = 4096;
+    /// Default findings one MCP server accepts before refusing further writes.
+    ///
+    /// The number lives here rather than in `crate::mcp::findings` — which is
+    /// `pub(in crate::mcp)` and compiled only for an `mcp` build — for the
+    /// reason [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records: `Selection` carries
+    /// the resolved figure through `start_servers`, which is compiled whether
+    /// or not the server behind it is.
+    pub const DEFAULT_MCP_MAX_FINDINGS: u64 = 1_000;
+    /// Default metrics scrapes served at once before further ones get `503`.
+    ///
+    /// The number lives here rather than in `crate::output::prometheus_server`
+    /// — which reads it from here — for the reason
+    /// [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records: that module is compiled
+    /// only for a `metrics` build, and this resolver answers for every native
+    /// one. `Selection` carries the resolved figure through `start_servers`,
+    /// which is compiled whether or not the server behind it is.
+    pub const DEFAULT_METRICS_MAX_CONN: usize = 16;
 
     /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
     ///
@@ -2420,6 +2555,69 @@ impl Cli {
             .unwrap_or(crate::capture::pcap_reader::DEFAULT_MAX_GUNZIP_BYTES)
     }
 
+    /// Reverse-DNS cache size: `--dns-cache-entries`, else
+    /// `[names] dns_cache_entries`, else the resolver's own default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The default is read from
+    /// [`crate::names::MAX_DNS_CACHE_ENTRIES`] rather than restated here, so
+    /// the figure an operator is told and the cap the cache enforces cannot
+    /// drift apart. The worker queue's depth is derived from the result by
+    /// [`crate::names::dns_queue_capacity`] rather than resolved separately.
+    #[must_use]
+    pub fn dns_cache_entries(&self, config: &crate::config::Config) -> usize {
+        self.dns_cache_entries
+            .or(config.names.dns_cache_entries)
+            .map_or(crate::names::MAX_DNS_CACHE_ENTRIES, |v| v as usize)
+    }
+
+    /// HEP HMAC acceptance window: `--hep-hmac-window`, else
+    /// `[security] hep_hmac_window_secs`, else the shipped width. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The default is read from
+    /// [`crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS`] rather than restated
+    /// here, so the window an operator is told, the window the verifier
+    /// applies, and the number the refusal warning quotes are all one figure.
+    #[cfg(feature = "hep")]
+    #[must_use]
+    pub fn hep_hmac_window_secs(&self, config: &crate::config::Config) -> u64 {
+        self.hep_hmac_window_secs
+            .or(config.security.hep_hmac_window_secs)
+            .unwrap_or(crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS)
+    }
+
+    /// MCP findings budget: `--mcp-max-findings`, else
+    /// `[limits] mcp_max_findings`, else the default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// Bounds how much an agent may WRITE into the operator's journal, which is
+    /// the opposite direction from [`Self::mcp_row_cap`] and
+    /// [`Self::mcp_body_cap`]. Past the budget the write is refused out loud
+    /// rather than dropped, and nothing is evicted to make room: a finding is a
+    /// log line the journal already holds, so there is no retained copy for a
+    /// newer one to displace.
+    #[must_use]
+    pub fn mcp_findings_cap(&self, config: &crate::config::Config) -> u64 {
+        self.mcp_max_findings
+            .or(config.limits.mcp_max_findings)
+            .unwrap_or(Self::DEFAULT_MCP_MAX_FINDINGS)
+    }
+
+    /// Metrics connection ceiling: `--metrics-max-conn`, else
+    /// `[limits] metrics_max_conn`, else the server's own default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The default is [`Self::DEFAULT_METRICS_MAX_CONN`], which the accept
+    /// loop's own `DEFAULT_MAX_CONCURRENT_CONNECTIONS` reads from, so the
+    /// figure an operator is told and the gate the loop builds cannot disagree.
+    #[must_use]
+    pub fn metrics_conn_cap(&self, config: &crate::config::Config) -> usize {
+        self.metrics_max_conn
+            .or(config.limits.metrics_max_conn)
+            .map_or(Self::DEFAULT_METRICS_MAX_CONN, |v| v as usize)
+    }
+
     /// REST response ceiling: `--api-max-rows`, else `[limits] api_max_rows`,
     /// else the default. See [`Self::dialog_limit`] for the precedence rule.
     ///
@@ -2515,6 +2713,21 @@ impl Cli {
         self.max_reassembly
             .or(config.limits.max_reassembly)
             .unwrap_or(Self::DEFAULT_MAX_REASSEMBLY) as usize
+    }
+
+    /// Reassembly retention: `--reassembly-ttl`, else
+    /// `[limits] reassembly_ttl_secs`, else the shipped wait. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The default is read from
+    /// [`crate::capture::reassembly::DEFAULT_TTL`] rather than restated here,
+    /// so the wait an operator is told and the wait the sweep applies cannot
+    /// drift apart.
+    #[must_use]
+    pub fn reassembly_ttl_secs(&self, config: &crate::config::Config) -> u64 {
+        self.reassembly_ttl_secs
+            .or(config.limits.reassembly_ttl_secs)
+            .unwrap_or_else(|| crate::capture::reassembly::DEFAULT_TTL.as_secs())
     }
 
     /// HEP global ingest ceiling: `--hep-rate-limit`, else
@@ -2711,6 +2924,25 @@ impl Cli {
         self.leg_correlation_window_ms
             .or(config.sip.leg_correlation_window_ms)
             .unwrap_or(crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS)
+    }
+
+    /// Active-dialog idle window: `--active-idle-window`, else
+    /// `[sip] active_idle_window_secs`, else the shipped hour. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The default is read from
+    /// [`crate::sip::dialog_store::DEFAULT_ACTIVE_IDLE_WINDOW`] rather than
+    /// restated here, so the window an operator is told and the window the two
+    /// gauges apply cannot drift apart.
+    #[must_use]
+    pub fn active_idle_window_secs(&self, config: &crate::config::Config) -> u64 {
+        self.active_idle_window_secs
+            .or(config.sip.active_idle_window_secs)
+            .unwrap_or_else(|| {
+                crate::sip::dialog_store::DEFAULT_ACTIVE_IDLE_WINDOW
+                    .num_seconds()
+                    .max(0) as u64
+            })
     }
 
     /// Hook-command queue depth: `--exec-queue-depth`, else
@@ -4393,6 +4625,39 @@ mod tests {
                 resolve: |c, cfg| u64::from(c.api_peer_rate_limit(cfg)),
                 requires: &[],
             },
+            Case {
+                key: "metrics_max_conn",
+                flag: "--metrics-max-conn",
+                set_key: |l| l.metrics_max_conn = Some(64),
+                key_value: 64,
+                flag_value: "3",
+                flag_number: 3,
+                shipped: Cli::DEFAULT_METRICS_MAX_CONN as u64,
+                resolve: |c, cfg| c.metrics_conn_cap(cfg) as u64,
+                requires: &[],
+            },
+            Case {
+                key: "reassembly_ttl_secs",
+                flag: "--reassembly-ttl",
+                set_key: |l| l.reassembly_ttl_secs = Some(900),
+                key_value: 900,
+                flag_value: "120",
+                flag_number: 120,
+                shipped: crate::capture::reassembly::DEFAULT_TTL.as_secs(),
+                resolve: Cli::reassembly_ttl_secs,
+                requires: &[],
+            },
+            Case {
+                key: "mcp_max_findings",
+                flag: "--mcp-max-findings",
+                set_key: |l| l.mcp_max_findings = Some(50),
+                key_value: 50,
+                flag_value: "5000",
+                flag_number: 5_000,
+                shipped: Cli::DEFAULT_MCP_MAX_FINDINGS,
+                resolve: Cli::mcp_findings_cap,
+                requires: &[],
+            },
         ];
 
         for c in &cases {
@@ -4472,6 +4737,65 @@ mod tests {
             bare.tracked_peer_capacity(&tuned),
             9,
             "[limits] max_tracked_peers must reach the resolver"
+        );
+    }
+
+    /// `--hep-hmac-window` beats `[security] hep_hmac_window_secs`, which beats
+    /// the verifier's own constant.
+    ///
+    /// The precedence half only; that the resolved window decides whether a
+    /// clock-skewed sender is HEARD is proved end-to-end against the real
+    /// listener in `tests/hep_test.rs`.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn the_hmac_window_is_flag_then_key_then_the_verifiers_constant() {
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        let shipped = crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS;
+        assert_eq!(
+            bare.hep_hmac_window_secs(&crate::config::Config::default()),
+            shipped,
+            "with nothing set the resolver must report what the verifier ships"
+        );
+
+        let mut tuned = crate::config::Config::default();
+        tuned.security.hep_hmac_window_secs = Some(90);
+        assert_ne!(90, shipped, "the case value must differ from the default");
+        assert_eq!(
+            bare.hep_hmac_window_secs(&tuned),
+            90,
+            "[security] hep_hmac_window_secs must reach the resolver"
+        );
+
+        let flagged =
+            Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--hep-hmac-window", "7"]);
+        assert_eq!(
+            flagged.hep_hmac_window_secs(&tuned),
+            7,
+            "--hep-hmac-window must outrank the key it shadows"
+        );
+    }
+
+    /// Neither end of the HMAC window can be reached from the command line.
+    ///
+    /// The file is refused by `SecurityConfig::validate` from the same numbers;
+    /// this is the half that keeps the flag from being the lenient way in.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn clap_refuses_an_hmac_window_outside_the_documented_range() {
+        for bad in ["0", "301"] {
+            assert!(
+                Cli::try_parse_from(["sipnab", "--hep-hmac-window", bad]).is_err(),
+                "--hep-hmac-window {bad} must be refused by clap, as the file is"
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "sipnab",
+                "--hep-hmac-window",
+                &crate::config::MAX_HEP_HMAC_WINDOW_SECS.to_string(),
+            ])
+            .is_ok(),
+            "the documented maximum itself must be accepted, or the range is off by one"
         );
     }
 

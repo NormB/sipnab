@@ -1015,6 +1015,23 @@ fn limit_probes() -> Vec<LimitProbe> {
             observe: probe_api_rate_limit_per_peer,
         },
         LimitProbe {
+            key: "mcp_max_findings",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_max_findings,
+        },
+        LimitProbe {
+            key: "reassembly_ttl_secs",
+            // The KEY is wired on every build; the probe needs a command line
+            // to walk the resolver half, and `crate::cli` is native-only.
+            enabled: cfg!(feature = "native"),
+            observe: probe_reassembly_ttl_secs,
+        },
+        LimitProbe {
+            key: "metrics_max_conn",
+            enabled: cfg!(feature = "metrics"),
+            observe: probe_metrics_max_conn,
+        },
+        LimitProbe {
             key: "max_tracked_peers",
             // Linux-only, and not because the key is: the probe needs THREE
             // distinct source addresses to fill a tracking map, and only Linux
@@ -1158,6 +1175,106 @@ fn probe_mcp_max_rows() -> (String, String) {
         format!("rows={}", rows_with(None, &pcap)),
         format!("rows={}", rows_with(Some(&cfg), &pcap)),
     )
+}
+
+/// `mcp_max_findings`: what one accepted write says is left after it.
+///
+/// The budget is reported to the agent in every `save_findings` reply, as
+/// `remaining`, so the observation is that number after a single write — the
+/// same figure the refusal at the end of the budget is counted against. A
+/// probe that wrote until it was refused would prove the same thing far more
+/// slowly and would not distinguish a cap of 1000 from no cap at all inside a
+/// test's patience.
+#[cfg(feature = "mcp")]
+fn probe_mcp_max_findings() -> (String, String) {
+    fn remaining_after_one_write(cfg: Option<&std::path::Path>, pcap: &std::path::Path) -> i64 {
+        use std::io::{BufRead, BufReader, Write};
+        let mut args: Vec<String> = vec![
+            "--mcp".into(),
+            "--mcp-allow-save-findings".into(),
+            "-N".into(),
+            "-I".into(),
+            pcap.to_str().unwrap().into(),
+            "--quiet".into(),
+        ];
+        match cfg {
+            Some(c) => {
+                args.push("--config".into());
+                args.push(c.to_str().unwrap().into());
+            }
+            None => args.push("--no-config".into()),
+        }
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn mcp server");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+
+        let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| {
+            writeln!(w, "{v}").expect("write");
+            w.flush().expect("flush");
+        };
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                      "clientInfo":{"name":"probe","version":"0"}}}),
+        );
+        let mut line = String::new();
+        out.read_line(&mut line).expect("initialize reply");
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","method":"notifications/initialized"}),
+        );
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"save_findings",
+                      "arguments":{"summary":"probing the findings budget"}}}),
+        );
+
+        let mut remaining = -1i64;
+        for _ in 0..40 {
+            line.clear();
+            if out.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if v["id"] != serde_json::json!(2) {
+                continue;
+            }
+            let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            remaining = parsed["remaining"].as_i64().unwrap_or(-1);
+            break;
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        remaining
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 2);
+    let cfg = write_config(&dir, "[limits]\nmcp_max_findings = 3\n");
+    (
+        format!("remaining={}", remaining_after_one_write(None, &pcap)),
+        format!("remaining={}", remaining_after_one_write(Some(&cfg), &pcap)),
+    )
+}
+
+/// Placeholder for builds without MCP; the gate never calls it.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_max_findings() -> (String, String) {
+    unreachable!("the mcp_max_findings probe only runs in an `mcp` build")
 }
 
 /// `lint_max_per_rule`: forty repeats of one rule against a cap of five.
@@ -1833,6 +1950,176 @@ fn probe_max_tracked_peers() -> (String, String) {
     unreachable!("the max_tracked_peers probe only runs on Linux `hep` builds")
 }
 
+/// `reassembly_ttl_secs`: four half-sent SIP/TCP flows left to go quiet.
+///
+/// This probe drives the LIBRARY rather than the binary, for a reason the
+/// mechanism forces. The sweep is paced by CAPTURE time — every five seconds of
+/// packet timestamps — while the TTL is measured on the wall clock, so a
+/// headless file run reads the whole capture in about twenty milliseconds and
+/// no entry can ever reach any TTL. There is no observation to make from the
+/// outside, which is exactly why nobody noticed the TTL was unsettable. The
+/// observation is still behavioural: the real fixture frames, the real
+/// `PacketProcessor` constructor a capture uses, and the eviction counter every
+/// `/metrics` scrape publishes.
+///
+/// The whole chain from the FILE is covered as well: the key is read through
+/// the real loader and the real resolver, and the value that reaches the setter
+/// is the one `crate::app::bootstrap` would pass.
+///
+/// Gated on `native` because that resolver lives on `Cli`, and `crate::cli` is
+/// compiled only for a native build — a `--no-default-features --features tls`
+/// check has a reassembler and no command line at all. The reassembly TTL
+/// itself is wired on every build; it is the RESOLVER half this probe walks
+/// that needs the feature.
+#[cfg(feature = "native")]
+fn probe_reassembly_ttl_secs() -> (String, String) {
+    use sipnab::capture::packet::Packet;
+    use sipnab::capture::reassembly::{reassembly_timeouts, set_reassembly_ttl_secs};
+
+    fn verdict(toml: Option<&str>) -> String {
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let config = match toml {
+            Some(t) => {
+                let path = write_config(&dir, t);
+                sipnab::config::Config::load(path.to_str(), false)
+                    .expect("the sample config loads")
+                    .config
+            }
+            None => sipnab::config::Config::default(),
+        };
+        let cli = sipnab::cli::Cli::try_parse_from(["sipnab"]).expect("parse");
+        set_reassembly_ttl_secs(cli.reassembly_ttl_secs(&config));
+
+        let mut processor = sipnab::capture::PacketProcessor::with_max_sessions(100);
+        for frame in pcap_build::partial_tcp_sip_flows(4) {
+            let len = frame.len();
+            let _ = processor.process(&Packet::new(chrono::Utc::now(), frame, len, len, None, 1));
+        }
+
+        let before = reassembly_timeouts();
+        // Past a one-second TTL and nowhere near the shipped thirty.
+        std::thread::sleep(std::time::Duration::from_millis(1_400));
+        processor.sweep();
+        let verdict = if reassembly_timeouts() > before {
+            "half-sent-flows-swept"
+        } else {
+            "half-sent-flows-held"
+        };
+        set_reassembly_ttl_secs(sipnab::capture::reassembly::DEFAULT_TTL.as_secs().max(1));
+        verdict.to_string()
+    }
+
+    (
+        verdict(None),
+        verdict(Some("[limits]\nreassembly_ttl_secs = 1\n")),
+    )
+}
+
+/// Placeholder for a build with no command line; the gate never calls it.
+#[cfg(not(feature = "native"))]
+fn probe_reassembly_ttl_secs() -> (String, String) {
+    unreachable!("the reassembly_ttl_secs probe only runs in a `native` build")
+}
+
+/// `metrics_max_conn`: one connection parked against a one-slot gate.
+///
+/// The refusal is what the key governs, so the observation is whether a second
+/// scrape is served or answered `503`. It is made deterministic by what an
+/// UNSENT request does: the accept loop takes a permit and hands the socket to
+/// a handler that blocks reading the request line for five seconds, so an idle
+/// connection holds its slot for as long as the probe needs and nothing has to
+/// race a real scrape.
+///
+/// Driven against `--hep-listen` rather than a file for the reason
+/// `tests/metrics_headless_test.rs` records: a headless FILE run lives about
+/// 20 ms, so any connect races a process that has already exited.
+#[cfg(feature = "metrics")]
+fn probe_metrics_max_conn() -> (String, String) {
+    use std::io::{BufRead, BufReader, Write};
+
+    /// Bind an ephemeral port and release it, so the probe knows the number.
+    fn free_port() -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let p = l.local_addr().expect("read it back").port();
+        drop(l);
+        p
+    }
+
+    fn second_scrape_verdict(extra: &[&str]) -> String {
+        let hep = free_port();
+        let metrics = free_port();
+        let addr = format!("127.0.0.1:{metrics}");
+        let mut args = vec![
+            "-N".to_string(),
+            "--hep-listen".to_string(),
+            format!("127.0.0.1:{hep}"),
+            "--metrics".to_string(),
+            addr.clone(),
+            "--quiet".to_string(),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_string()));
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sipnab");
+
+        // Wait for the listener, without consuming a slot: a connect that is
+        // closed again releases its permit when the handler's read fails.
+        let mut up = false;
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if std::net::TcpStream::connect(&addr).is_ok() {
+                up = true;
+                break;
+            }
+        }
+        assert!(up, "the metrics server never came up on {addr}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // One connection parked mid-request, holding its slot.
+        let parked = std::net::TcpStream::connect(&addr).expect("park a connection");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let mut status = String::from("no-answer");
+        if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let _ = write!(
+                s,
+                "GET /metrics HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+            );
+            let mut line = String::new();
+            if BufReader::new(&s).read_line(&mut line).unwrap_or(0) > 0 {
+                status = if line.contains(" 503 ") {
+                    "second-scrape-refused".into()
+                } else {
+                    "second-scrape-served".into()
+                };
+            }
+        }
+
+        drop(parked);
+        let _ = child.kill();
+        let _ = child.wait();
+        status
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(&dir, "[limits]\nmetrics_max_conn = 1\n");
+    (
+        second_scrape_verdict(&["--no-config"]),
+        second_scrape_verdict(&["--config", cfg.to_str().unwrap()]),
+    )
+}
+
+/// Placeholder for builds without the metrics server; the gate never calls it.
+#[cfg(not(feature = "metrics"))]
+fn probe_metrics_max_conn() -> (String, String) {
+    unreachable!("the metrics_max_conn probe only runs in a `metrics` build")
+}
+
 /// `hep_rate_limit`: a burst well above a one-packet-per-second ceiling.
 #[cfg(all(unix, feature = "hep"))]
 fn probe_hep_rate_limit() -> (String, String) {
@@ -2366,5 +2653,192 @@ fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
     assert!(
         err.contains("SIP-over-WebSocket") && err.contains("8081"),
         "and the traffic the narrower range excluded must be reported:\n{err}"
+    );
+}
+
+// ── [names] dns_cache_entries ──────────────────────────────────────────
+
+/// `[names] dns_cache_entries` reaches the resolver a RUN builds, and the flag
+/// beats it.
+///
+/// Read off the constructed resolver rather than off the config, because the
+/// link this covers is the one a resolved-value assertion cannot see: a key
+/// that is parsed, validated, documented and then never handed to
+/// `NameResolver::with_limits` produces exactly the same resolved number as a
+/// wired one. What the cap then DOES — evict at the configured size rather
+/// than at 4096 — is proved against the cache itself in
+/// `names::tests::the_configured_cache_cap_is_the_one_the_cache_enforces`,
+/// which is where the eviction is reachable.
+#[test]
+#[cfg(feature = "native")]
+fn names_dns_cache_entries_reaches_the_resolver() {
+    use clap::Parser;
+
+    fn built_with(args: &[&str], cfg: &sipnab::config::Config) -> usize {
+        let cli = sipnab::cli::Cli::try_parse_from(args).expect("parse");
+        // Reverse DNS stays off in every case here, so no lookup leaves the
+        // box: the cap is a property of the resolver, not of the worker.
+        let (resolver, _mode) = sipnab::app::build_resolver(&cli, cfg);
+        resolver.dns_cache_capacity()
+    }
+
+    let shipped = sipnab::names::MAX_DNS_CACHE_ENTRIES;
+    assert_eq!(
+        built_with(&["sipnab"], &sipnab::config::Config::default()),
+        shipped,
+        "with nothing set the run must build the cache at its own constant"
+    );
+
+    let mut tuned = sipnab::config::Config::default();
+    tuned.names.dns_cache_entries = Some(9);
+    assert_ne!(9, shipped, "the case value must differ from the default");
+    assert_eq!(
+        built_with(&["sipnab"], &tuned),
+        9,
+        "[names] dns_cache_entries must reach the resolver the run builds"
+    );
+    assert_eq!(
+        built_with(&["sipnab", "--dns-cache-entries", "77"], &tuned),
+        77,
+        "--dns-cache-entries must outrank the key it shadows"
+    );
+}
+
+// ── [sip] active_idle_window_secs ──────────────────────────────────────
+
+/// An `InCall` dialog whose only messages are an INVITE and its 200 OK at `t0`.
+///
+/// Built through the public store API rather than from a fixture file so the
+/// dialog reaches `InCall` the way a captured call does. The store's idea of
+/// "now" is supplied per call, which is what makes the window observable
+/// without waiting out one.
+#[cfg(feature = "native")]
+fn answered_call_store(
+    t0: chrono::DateTime<chrono::Utc>,
+) -> sipnab::sip::dialog_store::DialogStore {
+    use sipnab::net::TransportProto;
+    use sipnab::sip::parse_sip;
+    let loopback = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let msg = |raw: &str, ts| {
+        parse_sip(
+            raw.as_bytes(),
+            ts,
+            loopback,
+            loopback,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("the fixture message parses")
+    };
+    let mut store = sipnab::sip::dialog_store::DialogStore::new(100, false);
+    store.process_message(msg(
+        "INVITE sip:bob@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKidle\r\n\
+         From: <sip:alice@example.com>;tag=t1\r\n\
+         To: <sip:bob@example.com>\r\n\
+         Call-ID: idle-window@example.com\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n",
+        t0,
+    ));
+    store.process_message(msg(
+        "SIP/2.0 200 OK\r\n\
+         Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKidle\r\n\
+         From: <sip:alice@example.com>;tag=t1\r\n\
+         To: <sip:bob@example.com>;tag=t2\r\n\
+         Call-ID: idle-window@example.com\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n",
+        t0 + chrono::TimeDelta::seconds(1),
+    ));
+    store
+}
+
+/// `[sip] active_idle_window_secs` moves the active-call gauge.
+///
+/// The observation is the count itself, at one fixed instant, under two
+/// windows: a call parked on hold for ninety minutes is zero channels in use
+/// under the shipped hour and one under a contact centre's two. Asserting the
+/// resolved number instead would pass against a store that ignored it, which
+/// is the state this key exists to make unreachable.
+///
+/// This test owns the process-wide window for the whole binary. Nothing else
+/// in it reads an active count, and it restores the shipped value on the way
+/// out so a later addition cannot inherit a narrowed one.
+#[test]
+#[cfg(feature = "native")]
+fn sip_active_idle_window_reaches_the_active_call_gauge() {
+    use sipnab::sip::dialog_store::{
+        DEFAULT_ACTIVE_IDLE_WINDOW, active_idle_window, set_active_idle_window_secs,
+    };
+
+    let t0 = chrono::DateTime::parse_from_rfc3339("2026-08-14T12:00:00Z")
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .expect("the fixture timestamp parses");
+    let store = answered_call_store(t0);
+    // Ninety minutes of silence: outside the shipped hour, inside a wider one.
+    let now = t0 + chrono::TimeDelta::minutes(90);
+
+    set_active_idle_window_secs(DEFAULT_ACTIVE_IDLE_WINDOW.num_seconds());
+    assert_eq!(
+        store.active_call_count_at(now),
+        0,
+        "under the shipped window a call silent for ninety minutes is not counted"
+    );
+
+    set_active_idle_window_secs(7200);
+    assert_eq!(
+        active_idle_window(),
+        chrono::TimeDelta::seconds(7200),
+        "the setter must be what the store reads"
+    );
+    assert_eq!(
+        store.active_call_count_at(now),
+        1,
+        "[sip] active_idle_window_secs must reach the gauge: at two hours the \
+         same parked call is a channel in use"
+    );
+    assert_eq!(
+        store.active_dialog_count_at(now),
+        1,
+        "the wider window must reach active_dialog_count too — it shares the \
+         same predicate, and a key honoured by one gauge and not the other is \
+         worse than none"
+    );
+
+    set_active_idle_window_secs(DEFAULT_ACTIVE_IDLE_WINDOW.num_seconds());
+}
+
+/// `--active-idle-window` outranks the `[sip]` key, which outranks the default.
+#[test]
+#[cfg(feature = "native")]
+fn active_idle_window_precedence_is_flag_then_key_then_default() {
+    use clap::Parser;
+    use sipnab::sip::dialog_store::DEFAULT_ACTIVE_IDLE_WINDOW;
+
+    let bare = sipnab::cli::Cli::try_parse_from(["sipnab"]).expect("parse");
+    let shipped = DEFAULT_ACTIVE_IDLE_WINDOW.num_seconds() as u64;
+    assert_eq!(
+        bare.active_idle_window_secs(&sipnab::config::Config::default()),
+        shipped,
+        "with nothing set the resolver must report the store's own constant"
+    );
+
+    let mut tuned = sipnab::config::Config::default();
+    tuned.sip.active_idle_window_secs = Some(7200);
+    assert_ne!(7200, shipped, "the case value must differ from the default");
+    assert_eq!(
+        bare.active_idle_window_secs(&tuned),
+        7200,
+        "[sip] active_idle_window_secs must reach the resolver"
+    );
+
+    let flagged =
+        sipnab::cli::Cli::try_parse_from(["sipnab", "--active-idle-window", "300"]).expect("parse");
+    assert_eq!(
+        flagged.active_idle_window_secs(&tuned),
+        300,
+        "--active-idle-window must outrank the key it shadows"
     );
 }

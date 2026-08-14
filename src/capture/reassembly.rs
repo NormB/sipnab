@@ -48,12 +48,68 @@ const DEFAULT_MAX_ENTRIES: usize = 10_000;
 
 /// Default time-to-live for incomplete entries before eviction.
 ///
-/// `pub(crate)` because the only production constructor for a reassembler,
+/// `pub` because the only production constructor for a reassembler,
 /// `PacketProcessor::with_max_sessions`, sits in `capture::mod` and used to
 /// pass its own inline `Duration::from_secs(30)`. Two spellings of one policy
 /// that happened to agree — changing this constant would have moved the
 /// default everywhere EXCEPT the path every live capture actually takes.
-pub(crate) const DEFAULT_TTL: Duration = Duration::from_secs(30);
+///
+/// Thirty seconds describes an IP datagram whose fragments are in flight, and
+/// the TCP reassembler inherited it. Those are not the same wait. A persistent
+/// SIP/TLS trunk to a carrier is idle for far longer than thirty seconds on any
+/// quiet night, and sweeping its half-read stream means the next segment
+/// re-initialises MID-MESSAGE: the message it lands in the middle of parses as
+/// malformed, and the peer that sent a perfectly good one is the peer reported
+/// broken. `--max-reassembly` bounds how MANY entries are held and says nothing
+/// about how long; `--reassembly-ttl` or `[limits] reassembly_ttl_secs` is the
+/// other half.
+///
+/// Raising it holds partial state for longer, which is memory the entry cap
+/// already bounds — so the cost of a wider window is bounded and the cost of a
+/// narrow one is data.
+pub const DEFAULT_TTL: Duration = Duration::from_secs(30);
+
+/// The TTL this process declared, in seconds.
+///
+/// Process-global and written once at startup, the same shape as
+/// [`MAX_TCP_BUFFER`] below and for the same reason: a reassembler is created
+/// by the batch runner, the TUI and every `--cores` shard, so a value threaded
+/// to some of them is a setting honoured on some surfaces and ignored on
+/// others.
+static REASSEMBLY_TTL_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_TTL.as_secs());
+
+/// How long an incomplete entry is held before a sweep may evict it.
+#[must_use]
+pub fn reassembly_ttl() -> Duration {
+    Duration::from_secs(REASSEMBLY_TTL_SECS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Declare the reassembly TTL for this process. Call once, at startup.
+///
+/// # Arguments
+///
+/// * `secs` — seconds an incomplete entry survives. `0` is treated as the
+///   shipped default; the operator-facing refusal happens earlier, in
+///   `crate::config::LimitsConfig::validate` and in clap, so it can name the
+///   key. A zero TTL would evict every partial on the first sweep after it
+///   arrived, which is not "no waiting" but reassembly switched off while still
+///   reporting the halves as malformed messages.
+///
+/// # Side effects
+///
+/// Stores `secs` into a process-wide atomic (relaxed ordering), affecting every
+/// reassembler CONSTRUCTED after this call.
+pub fn set_reassembly_ttl_secs(secs: u64) {
+    REASSEMBLY_TTL_SECS.store(
+        if secs == 0 {
+            DEFAULT_TTL.as_secs()
+        } else {
+            secs
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 /// Shipped maximum TCP stream buffer size before forced flush (64 KB).
 ///

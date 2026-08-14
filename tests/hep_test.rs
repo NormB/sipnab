@@ -259,6 +259,105 @@ fn hep_allowlist_rejects_source_outside_cidr() {
     );
 }
 
+/// A HEP3 datagram whose HMAC token is stamped `skew` seconds in the past.
+///
+/// Built with the production token encoder, so the only thing wrong with it is
+/// the clock — which is the condition the acceptance window is about.
+fn hep3_sip_hmac_skewed(key: &str, payload: &[u8], skew: u64, nonce_byte: u8) -> Vec<u8> {
+    use sipnab::capture::hep::{build_hep_v3_bytes, build_hmac_auth_token};
+    let ep = HepEndpoint {
+        src_addr: "127.0.0.1".parse().unwrap(),
+        dst_addr: "127.0.0.1".parse().unwrap(),
+        src_port: 5060,
+        dst_port: 5062,
+    };
+    let ts = (Utc::now().timestamp().max(0) as u64).saturating_sub(skew);
+    let nonce = [nonce_byte; 16];
+    let token = build_hmac_auth_token(key.as_bytes(), ts, &nonce, payload);
+    build_hep_v3_bytes(&ep, Utc::now(), HepProtocol::Sip, 0, Some(&token), payload)
+}
+
+/// `--hep-hmac-window` decides whether a clock-skewed agent is heard at all.
+///
+/// The failure this settles is the hardest one on a collector to attribute: a
+/// sender whose clock is out by more than the window has EVERY packet dropped,
+/// and the symptom is a collector that receives nothing — which an operator
+/// reads as routing, or a firewall, or the agent being down. The observation
+/// here is the packet itself surfacing on stdout, not a log line, because
+/// "was this agent heard" is the question the window answers.
+///
+/// Ninety seconds of skew: outside the shipped thirty, inside a widened one.
+#[test]
+fn hep_hmac_window_decides_whether_a_skewed_sender_is_heard() {
+    const KEY: &str = "hmac-window-probe-key";
+    let payload = invite_bytes();
+
+    let shipped = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-auth",
+        KEY,
+        "--hep-auth-mode",
+        "hmac",
+    ]);
+    shipped.send(&hep3_sip_hmac_skewed(KEY, &payload, 90, 0xA1));
+    assert!(
+        shipped
+            .wait_for_stdout(CALL_ID, Duration::from_millis(750))
+            .is_none(),
+        "ninety seconds of skew is outside the shipped thirty-second window, so \
+         the packet must be dropped — otherwise this test cannot tell the \
+         window apart from no window at all"
+    );
+    drop(shipped);
+
+    let widened = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-auth",
+        KEY,
+        "--hep-auth-mode",
+        "hmac",
+        "--hep-hmac-window",
+        "120",
+    ]);
+    widened.send(&hep3_sip_hmac_skewed(KEY, &payload, 90, 0xB2));
+    let line = widened
+        .wait_for_stdout(CALL_ID, test_timeout(5))
+        .expect("--hep-hmac-window 120 must let the same ninety-second skew through");
+    let msg: serde_json::Value = serde_json::from_str(&line).expect("ndjson");
+    assert_eq!(msg["call_id"], CALL_ID);
+}
+
+/// The refusal warning quotes the window this run is enforcing.
+///
+/// The message names the number so an operator can tell "the sender is 40 s out
+/// of a 30 s window" from "the sender is 4000 s out"; a warning that quoted a
+/// constant while the run enforced something else would send them to check the
+/// wrong clock.
+#[test]
+fn the_skew_warning_quotes_the_configured_window() {
+    const KEY: &str = "hmac-window-message-key";
+    let srv = HepListener::spawn_with_log(
+        "debug",
+        &[
+            "--hep-allow",
+            "127.0.0.1/32",
+            "--hep-auth",
+            KEY,
+            "--hep-auth-mode",
+            "hmac",
+            "--hep-hmac-window",
+            "45",
+        ],
+    );
+    srv.send(&hep3_sip_hmac_skewed(KEY, &invite_bytes(), 600, 0xC3));
+    assert!(
+        srv.wait_for_stderr("outside the 45s", test_timeout(5)),
+        "the skew warning must quote the window this run enforces, not a constant"
+    );
+}
+
 /// A 20-datagram burst against `--hep-rate-limit 1` logs a
 /// "rate limit exceeded" drop (visible at debug log level).
 #[test]

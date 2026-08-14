@@ -106,6 +106,81 @@ pub fn estimate_mos(jitter_ms: f64, loss_pct: f64, codec: Option<&str>) -> f64 {
 /// one-way is conventionally half.
 pub const DEFAULT_ONE_WAY_DELAY_MS: f64 = 100.0;
 
+/// Equipment impairment factor used for a codec sipnab has no value for.
+///
+/// A PLACEHOLDER, and the number is chosen to be unremarkable rather than
+/// right: it is what makes an unknown codec score the same as an unidentified
+/// stream, which is the honest answer when nothing is known. Every caller that
+/// shows the resulting MOS must consult [`mos_grounding`] and say so.
+pub const PLACEHOLDER_UNKNOWN_CODEC_IE: f64 = 5.0;
+
+/// Largest equipment impairment factor the E-model can carry.
+///
+/// Not a policy figure. G.107 Appendix I computes `Ie_eff = Ie + (95 - Ie) *
+/// Ppl / (Ppl/BurstR + Bpl)`, so at `Ie = 95` the loss term vanishes and above
+/// it the term goes NEGATIVE — more packet loss would raise the score. An `Ie`
+/// at or past 95 does not make the model pessimistic, it inverts it, so
+/// `crate::config::MediaConfig::validate` refuses one by name.
+pub const MAX_CODEC_IE: f64 = 95.0;
+
+/// Operator-declared equipment impairment factors, by lower-cased codec name.
+///
+/// Process-wide and written once at startup, the same shape as
+/// `crate::rtp::stream::set_lost_seq_log_cap` and for the same reason:
+/// [`estimate_mos_with_delay`] is a free function reached from the CLI, the
+/// REST API, the filter DSL, the Prometheus exporter, the TUI and the WASM
+/// build, and not one of them is threaded a config. A table handed to some of
+/// those is a declaration honoured on some surfaces and ignored on others,
+/// which for a MOS means two surfaces disagreeing about the same stream — the
+/// exact defect [`crate::rtp::bands::QualityBands`] exists to prevent for
+/// colour.
+static CODEC_IE: std::sync::LazyLock<parking_lot::RwLock<std::collections::HashMap<String, f64>>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
+
+/// Declare the operator-supplied impairment table for this process.
+///
+/// # Arguments
+///
+/// * `table` — codec name to `Ie`. Keys are lower-cased here, so a declaration
+///   matches whichever way the SDP `rtpmap` spelled the codec. Values outside
+///   `0.0..MAX_CODEC_IE` are DROPPED rather than clamped, because a clamped
+///   impairment is a number the operator did not write being reported as
+///   grounded in their declaration; the operator-facing refusal happens
+///   earlier, in `crate::config::MediaConfig::validate` and in the loader, so
+///   it can name the codec.
+///
+/// # Side effects
+///
+/// Replaces the process-wide table, affecting every MOS computed after this
+/// call — including the grounding [`mos_grounding`] reports.
+pub fn set_codec_ie_table(table: std::collections::HashMap<String, f64>) {
+    let cleaned = table
+        .into_iter()
+        .filter(|(_, ie)| ie.is_finite() && *ie >= 0.0 && *ie < MAX_CODEC_IE)
+        .map(|(name, ie)| (name.to_lowercase(), ie))
+        .collect();
+    *CODEC_IE.write() = cleaned;
+}
+
+/// The operator-declared `Ie` for `codec`, if one was declared.
+///
+/// Consulted by BOTH [`estimate_mos_with_delay`] and [`mos_grounding`], which
+/// is what keeps the score and the confidence beside it from disagreeing — the
+/// property `grounding_agrees_with_the_score` pins.
+fn declared_codec_ie(codec: Option<&str>) -> Option<f64> {
+    let codec = codec?;
+    let table = CODEC_IE.read();
+    // The empty table is the overwhelmingly common case — nothing declared —
+    // and this is on the path of every MOS the TUI, the exporter and the filter
+    // DSL compute. Checking it first keeps that case to one uncontended read
+    // and no allocation, rather than lower-casing a codec name per stream per
+    // refresh to look it up in a map that has nothing in it.
+    if table.is_empty() {
+        return None;
+    }
+    table.get(&codec.to_lowercase()).copied()
+}
+
 /// [`estimate_mos`], with the one-way path delay supplied rather than assumed.
 ///
 /// `one_way_delay_ms` is the network path delay in one direction, EXCLUDING
@@ -125,38 +200,57 @@ pub fn estimate_mos_with_delay(
     one_way_delay_ms: f64,
 ) -> f64 {
     // Codec-specific equipment impairment factor (Ie)
-    let ie = match codec {
-        Some("PCMU") | Some("PCMA") => 0.0,   // G.711 baseline
-        Some("G729") | Some("G.729") => 10.0, // G.729 compression impairment
-        Some("opus") | Some("Opus") => 0.0,   // Opus comparable to G.711
-        // PLACEHOLDER, not a measurement. See `mos_grounding`.
-        //
-        // ITU-T G.113 Table I.1 publishes Ie for a specific list of codecs and
-        // sipnab knows three of them. Everything else — AMR, AMR-WB, EVS,
-        // G.722, G.726, iLBC — lands here and scores identically to a stream
-        // whose codec was never identified at all: `estimate_mos(10.0, 0.0,
-        // Some("AMR-WB"))` and `estimate_mos(10.0, 0.0, None)` both return
-        // 4.216.
-        //
-        // AMR-WB cannot be rescued here even though G.113 publishes values for
-        // it, and the reason is worth knowing. Those values are `Ie,WB`, on the
-        // wideband G.107.1 scale that anchors at 129; this function is the
-        // narrowband G.107, anchored at 93.2. Dropping a wideband Ie into it is
-        // not an approximation but a 35.8-point scale error. AMR-WB is scored
-        // in `crate::rtp::emodel_wb` instead, which also needs something this
-        // signature does not carry: the *mode*. Its nine modes span `Ie,WB` 1
-        // to 41 — about 4.49 down to 3.51 MOS — so "AMR-WB" alone leaves a full
-        // MOS point of ambiguity, and only an SDP `mode-set` pinning one mode,
-        // or the RTP payload header, resolves it.
-        //
-        // AMR narrowband and EVS stay here permanently. G.113 has no AMR-NB row
-        // at all, and publishes EVS only as a fullband `Ie,fb` for SWB mode on
-        // the third scale (G.107.2, anchored at 148).
-        //
-        // Callers that present this number to a human or an agent must consult
-        // `mos_grounding` and say so, rather than letting a guess wear the
-        // shape of a measurement.
-        _ => 5.0,
+    //
+    // The operator's own table is consulted FIRST, and deliberately outranks
+    // the built-ins. sipnab's three are the narrowband G.107 figures for a
+    // generic implementation; an operator scoring one transcoding gateway, or a
+    // G.729 running at a different bit rate, knows their network better than a
+    // published average does — and there is no reading of "I declared this
+    // codec's impairment" that means "use yours instead". A declaration that
+    // silently lost to a built-in would be the worst kind of setting: accepted,
+    // documented, and inert on exactly the codecs an operator is most likely to
+    // measure.
+    let ie = match declared_codec_ie(codec) {
+        Some(declared) => declared,
+        None => match codec {
+            Some("PCMU") | Some("PCMA") => 0.0,   // G.711 baseline
+            Some("G729") | Some("G.729") => 10.0, // G.729 compression impairment
+            Some("opus") | Some("Opus") => 0.0,   // Opus comparable to G.711
+            // PLACEHOLDER, not a measurement. See `mos_grounding`.
+            //
+            // ITU-T G.113 Table I.1 publishes Ie for a specific list of codecs and
+            // sipnab knows three of them. Everything else — AMR, AMR-WB, EVS,
+            // G.722, G.726, iLBC — lands here and scores identically to a stream
+            // whose codec was never identified at all: `estimate_mos(10.0, 0.0,
+            // Some("AMR-WB"))` and `estimate_mos(10.0, 0.0, None)` both return
+            // 4.216.
+            //
+            // AMR-WB cannot be rescued here even though G.113 publishes values for
+            // it, and the reason is worth knowing. Those values are `Ie,WB`, on the
+            // wideband G.107.1 scale that anchors at 129; this function is the
+            // narrowband G.107, anchored at 93.2. Dropping a wideband Ie into it is
+            // not an approximation but a 35.8-point scale error. AMR-WB is scored
+            // in `crate::rtp::emodel_wb` instead, which also needs something this
+            // signature does not carry: the *mode*. Its nine modes span `Ie,WB` 1
+            // to 41 — about 4.49 down to 3.51 MOS — so "AMR-WB" alone leaves a full
+            // MOS point of ambiguity, and only an SDP `mode-set` pinning one mode,
+            // or the RTP payload header, resolves it.
+            //
+            // AMR narrowband and EVS stay here permanently. G.113 has no AMR-NB row
+            // at all, and publishes EVS only as a fullband `Ie,fb` for SWB mode on
+            // the third scale (G.107.2, anchored at 148).
+            //
+            // An operator who KNOWS the figure for their network can supply it —
+            // `[media.codec_ie]`, consulted above — and `mos_grounding` then reports
+            // the result as declared rather than published, so a declaration is
+            // never laundered into a G.113 citation. Everything still landing here
+            // is a codec nobody has told sipnab about.
+            //
+            // Callers that present this number to a human or an agent must consult
+            // `mos_grounding` and say so, rather than letting a guess wear the
+            // shape of a measurement.
+            _ => PLACEHOLDER_UNKNOWN_CODEC_IE,
+        },
     };
 
     // Effective equipment impairment with packet loss (Ie-eff)
@@ -683,6 +777,84 @@ mod grounding_tests {
         }
     }
 
+    /// A declared impairment changes the SCORE, and only for that codec.
+    ///
+    /// The defect: every codec G.113 does not publish for scores identically to
+    /// a stream whose codec was never identified, so a G.722 network reads as
+    /// 4.2 whatever its impairment really is. An operator who knows the figure
+    /// had no way to supply it.
+    ///
+    /// `SILK` rather than `G722` on purpose. The table is process-wide, and
+    /// `cellular_codecs_are_reported_as_ungrounded` above asserts `G722` is
+    /// ungrounded — declaring it here would make these two tests fight when the
+    /// harness runs them in parallel. Nothing else in this binary names `SILK`.
+    #[test]
+    fn a_declared_impairment_moves_the_score_for_that_codec_alone() {
+        let placeholder = estimate_mos(10.0, 0.0, None);
+        let before = estimate_mos(10.0, 0.0, Some("SILK"));
+        assert_eq!(
+            before, placeholder,
+            "with nothing declared an unknown codec must still score as the \
+             placeholder, or this test cannot see the change it is about"
+        );
+
+        set_codec_ie_table([("SILK".to_string(), 20.0)].into_iter().collect());
+        let after = estimate_mos(10.0, 0.0, Some("SILK"));
+        assert!(
+            after < placeholder,
+            "a declared impairment of 20 is worse than the placeholder 5, so \
+             the score must fall: {placeholder} then {after}"
+        );
+        assert_eq!(
+            estimate_mos(10.0, 0.0, None),
+            placeholder,
+            "an unidentified stream must be untouched by a declaration about a \
+             codec it is not"
+        );
+        assert_eq!(
+            mos_grounding(Some("SILK")),
+            MosGrounding::OperatorDeclared,
+            "a declared codec is grounded in the OPERATOR's figure, which is a \
+             third thing from a G.113 one and from a placeholder"
+        );
+        // Case is not part of the identity: an SDP `rtpmap` may spell the same
+        // codec either way, and a declaration that missed on capitalisation
+        // would silently do nothing.
+        assert_eq!(
+            estimate_mos(10.0, 0.0, Some("silk")),
+            after,
+            "the lookup must be case-insensitive, or a declaration is a spelling test"
+        );
+
+        set_codec_ie_table(std::collections::HashMap::new());
+        assert_eq!(
+            estimate_mos(10.0, 0.0, Some("SILK")),
+            placeholder,
+            "clearing the table must restore the placeholder"
+        );
+        assert_eq!(mos_grounding(Some("SILK")), MosGrounding::Unpublished);
+    }
+
+    /// A codec sipnab does not know and nobody declared stays a placeholder.
+    ///
+    /// The honesty this whole feature must not cost: `[media.codec_ie]` makes
+    /// SOME unknown codecs knowable, and the ones left over must still refuse
+    /// to claim a grounded MOS rather than inherit the new mechanism's
+    /// confidence.
+    #[test]
+    fn an_undeclared_unknown_codec_still_refuses_to_claim_grounding() {
+        assert_eq!(
+            mos_grounding(Some("EVS")),
+            MosGrounding::Unpublished,
+            "EVS is published only on the fullband scale, so a narrowband score \
+             for it is a placeholder however many other codecs were declared"
+        );
+        assert_eq!(
+            estimate_mos(10.0, 0.0, Some("EVS")),
+            estimate_mos(10.0, 0.0, None)
+        );
+    }
+
     /// The three sipnab does know are grounded.
     #[test]
     fn known_codecs_are_reported_as_grounded() {
@@ -1088,6 +1260,18 @@ pub enum MosGrounding {
     /// ITU-T G.113 publishes an equipment impairment factor for this codec, so
     /// the MOS is a genuine estimate.
     Published,
+    /// The operator declared an impairment factor for this codec in
+    /// `[media.codec_ie]`, so the MOS rests on a real number — theirs, not a
+    /// published one.
+    ///
+    /// Kept distinct from [`Published`](Self::Published) rather than folded
+    /// into it, because the two fail differently and the remedies differ. A
+    /// `Published` score that looks wrong means suspecting sipnab's vantage
+    /// point; a declared one means suspecting the declaration, which is a file
+    /// on the operator's own disk. Reporting a declaration as a G.113 citation
+    /// would put an operator's estimate on the same footing as a standard, in
+    /// the one field that exists to keep those apart.
+    OperatorDeclared,
     /// No published impairment value **on this scale**. The MOS is a
     /// placeholder and means "unknown", not "about 4.2".
     ///
@@ -1106,6 +1290,12 @@ pub enum MosGrounding {
 /// the placeholder arm there would be the worst of both.
 #[must_use]
 pub fn mos_grounding(codec: Option<&str>) -> MosGrounding {
+    // The declared table is consulted first, in the same order the scorer
+    // consults it. Any other order would let a codec score on one Ie and be
+    // described by the other.
+    if declared_codec_ie(codec).is_some() {
+        return MosGrounding::OperatorDeclared;
+    }
     match codec {
         Some("PCMU") | Some("PCMA") | Some("G729") | Some("G.729") | Some("opus")
         | Some("Opus") => MosGrounding::Published,
@@ -1149,7 +1339,12 @@ impl From<MosGrounding> for MosProvenance {
     /// [`MosGrounding`] to map back to, which is the whole point.
     fn from(grounding: MosGrounding) -> Self {
         match grounding {
-            MosGrounding::Published => Self::Estimated,
+            // A declared impairment maps to `Estimated`, not to `Placeholder`.
+            // Both are numbers sipnab COMPUTED — that is what this scale
+            // separates, and the operator's Ie is as real an input as G.113's.
+            // Which of the two grounded it stays visible on `MosGrounding`
+            // itself, where the distinction is actionable.
+            MosGrounding::Published | MosGrounding::OperatorDeclared => Self::Estimated,
             MosGrounding::Unpublished => Self::Placeholder,
         }
     }

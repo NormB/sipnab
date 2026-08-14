@@ -49,6 +49,64 @@ entry that carries them.
   published answer cannot outlive the code that gave it. The examples are text
   rather than a recording for exactly this reason: a recording cannot be
   compared against anything, and JSON is what an agent actually receives.
+- **`--reassembly-ttl` / `[limits] reassembly_ttl_secs`** sets how long an
+  incomplete IP datagram or half-read TCP stream is held before a sweep evicts
+  it, which was a hard-coded 30 seconds. `--max-reassembly` bounds how MANY
+  entries are held and says nothing about how long. Thirty seconds describes IP
+  fragments in flight and the TCP reassembler inherited it: a persistent
+  SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any
+  ordinary night, and sweeping its half-read stream means the next segment
+  re-initialises mid-message — so the peer that sent a valid message is the one
+  sipnab reports as broken.
+- **`--hep-hmac-window` / `[security] hep_hmac_window_secs`** sets the
+  acceptance window for a `--hep-auth-mode hmac` token's timestamp, which was a
+  hard-coded 30 seconds. On an agent/collector pair with poor NTP every packet
+  is rejected as out-of-window and the symptom is a collector that receives
+  NOTHING — attributed to routing, a firewall or a dead agent long before a
+  clock. The refusal warning now quotes the window this run enforces and names
+  the flag. Bounded 1-300: the window is exactly how long a captured packet
+  stays replayable and how far back the receiver's nonce cache must remember,
+  and past 300 s the sender has no working time daemon, which is what to
+  repair.
+- **`--mcp-max-findings` / `[limits] mcp_max_findings`** sets how many findings
+  the MCP `save_findings` tool accepts, which was a hard-coded 1000. The one
+  WRITE budget on that surface — `--mcp-max-rows` and `--mcp-max-body-bytes`
+  bound what an agent may read — and a long session on a large capture reaches
+  it legitimately. Past the budget the write is still REFUSED rather than
+  evicted, and deliberately: nothing is retained to evict, because a finding is
+  a log line the operator's journal already holds.
+- **`--metrics-max-conn` / `[limits] metrics_max_conn`** sets how many metrics
+  scrapes are served at once, which was a hard-coded 16. The gate stops a burst
+  of slow clients exhausting threads and taking monitoring down, and sixteen
+  suits one Prometheus; an HA pair, a federating parent, a `remote_write`
+  shard, an alertmanager sidecar and one engineer's `curl` reach it without
+  anything unusual happening — and a refused scrape leaves a hole in the series
+  that reads as a capture that died. Floor of 1, refused by name: a gate of 0
+  answers `503` forever.
+- **`--dns-cache-entries` / `[names] dns_cache_entries`** sets how many
+  reverse-DNS results are held at once, which was a hard-coded 4096. Past the
+  cap the oldest entry is evicted, so a capture touching more hosts than that —
+  a carrier edge, a peering point, any long `--reverse-dns` window — keeps
+  re-looking-up addresses it already resolved, and the symptom is names that
+  flicker rather than an error. The worker queue's depth is DERIVED from this
+  rather than being a second number to keep in step.
+- **`--active-idle-window` / `[sip] active_idle_window_secs`** sets how long a
+  dialog may go untouched and still count toward the active-dialog and
+  active-call gauges, which was a hard-coded hour. Twice RFC 4028's default
+  `Session-Expires` grounds the DEFAULT, not the number being fixed: a contact
+  centre parks callers on hold past an hour and its gauge stops counting every
+  one of them.
+- **`[media.codec_ie]`** declares ITU-T G.107 `Ie` values for codecs sipnab has
+  no published figure for. sipnab knows G.711, G.729 and Opus; G.722, G.726,
+  iLBC, AMR and EVS all fell to one placeholder and scored identically to a
+  stream whose codec was never identified. A map rather than a scalar because
+  the answer is per codec. A declared codec reports
+  `mos_grounding: "operator_declared"` — a new `rtp_stats` field beside
+  `mos_grounded` — with a note saying the figure came from this deployment, so
+  a declaration is never presented as a G.113 citation, and a codec nobody
+  declared still says its MOS is a placeholder. Values are refused, not
+  clamped, outside `0.0..95.0`: at 95 the E-model's loss term vanishes and
+  above it more packet loss would RAISE the score.
 - **A poster rule in `demos/Makefile`.** Every animated demo ships a first
   frame for `prefers-reduced-motion`, and `site_journey_test` refuses a demo
   whose poster is missing — but nothing generated them. All seven had been made
@@ -56,6 +114,18 @@ entry that carries them.
 
 ### Changed
 
+- **BREAKING: `--autostop filesize:N` and `--split filesize:N` now count
+  MEBIBYTES, not decimal megabytes.** Both multiplied by 1 000 000 while
+  `-B/--buffer` had already been corrected to MiB, and while the `--split` help
+  text, `docs/cli-reference.md` and the site all said MiB. **This changes what
+  an existing invocation does**: `--autostop filesize:100` used to stop at
+  100 000 000 bytes and now stops at 104 857 600, so a run relying on the old
+  meaning writes 4.9 % more before it stops, and `--split filesize:50` rotates
+  4.9 % later. Nothing reported the old behaviour, which is why it survived: a
+  capture that stopped early looks exactly like a capture that stopped when
+  asked. Divide by 1.048576 to keep the old byte figure. The conversion now has
+  one definition, `capture::writer::mib_to_bytes`, which both conditions read,
+  and a test asserts the two agree.
 - **The shipped `--group-by` key cap is now the store's, 100000 rather than
   10000.** Its doc comment claimed it "matches the store default so a grouped
   run cannot outgrow an ordinary capture", and that was the stated

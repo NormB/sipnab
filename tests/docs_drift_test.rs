@@ -2517,9 +2517,20 @@ fn no_documentation_table_repeats_a_row() {
         // files were diffed, and exactly one `|---|` separator was added.
         // docs/design/backlog.md gained prose in the G5 entry and held its
         // table count, so nothing here is a boundary that stopped matching.
+        // Raised 528 -> 530 by the `mos_grounding` table in docs/mcp.md, which
+        // `[media.codec_ie]` made necessary: "grounded" now covers a published
+        // G.113 value AND an operator-declared one, and a bare boolean cannot
+        // say which. ONE table, doubled by the site mirror. Attributed per file
+        // against HEAD before this number moved: every other .md this change
+        // touched — docs/cli-reference.md, docs/config-reference.md,
+        // docs/mos-and-codecs.md, docs/design/backlog.md,
+        // docs/design/ml-anomaly-detection.md and their mirrors — held its
+        // separator count exactly, so nothing here is a boundary that stopped
+        // matching. New ROWS in the existing `[limits]`, `[sip]`, `[security]`,
+        // `[media]` and flag tables are rows, which this gate does not count.
         tables,
-        528,
-        "walked {tables} tables, expected 528. More is fine — bump this. FEWER \
+        530,
+        "walked {tables} tables, expected 530. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

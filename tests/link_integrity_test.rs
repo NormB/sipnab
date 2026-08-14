@@ -579,7 +579,13 @@ fn wiki_intra_docs_links_resolve() {
     // 384: `docs/benchmarks.md` +1. The reach argument added there points at
     // `--hep-rate-limit` in `cli-reference.md#network-listeners` rather than
     // restating the default packets-per-second ceiling a third time.
-    const EXPECTED_WIKI_LINKS: usize = 384;
+    // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
+    // sipnab does not have" section points at "AMR-WB — published, and
+    // mode-dependent" further down the same page rather than restating why a
+    // wideband `Ie` cannot go in `[media.codec_ie]`. Attributed per file against
+    // HEAD before this number moved: it is the only counted link any staged .md
+    // gained, and every other page held its count exactly.
+    const EXPECTED_WIKI_LINKS: usize = 385;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \

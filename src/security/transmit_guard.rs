@@ -142,6 +142,8 @@ mod tests {
             auth_key: None,
             #[cfg(feature = "hep")]
             auth_mode: crate::cli::HepAuthMode::default(),
+            #[cfg(feature = "hep")]
+            hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
         };
         assert!(
             TransmitPermit::for_source(&hep).is_some(),

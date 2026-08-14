@@ -39,7 +39,7 @@ use crate::config::Config;
 ///
 /// Reads `/etc/hosts` and every configured mapping file from disk (failures
 /// are logged and skipped, never fatal), and — when reverse DNS is enabled —
-/// `NameResolver::with_reverse_dns` starts the background reverse-DNS lookup
+/// `NameResolver::with_limits` starts the background reverse-DNS lookup
 /// machinery. Invalid `[names.manual]` entries are warned about via
 /// `tracing` and ignored.
 pub fn build_resolver(
@@ -57,7 +57,10 @@ pub fn build_resolver(
         || cfg.hosts_file.is_some()
         || cfg.manual.as_ref().is_some_and(|m| !m.is_empty());
 
-    let resolver = Arc::new(NameResolver::with_reverse_dns(reverse));
+    let resolver = Arc::new(NameResolver::with_limits(
+        reverse,
+        cli.dns_cache_entries(config),
+    ));
     // System hosts table (offline, cheap).
     let _ = resolver.load_hosts_file(std::path::Path::new("/etc/hosts"));
     // Operator-provided mapping files (manual layer, highest priority).
