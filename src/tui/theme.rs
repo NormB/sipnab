@@ -339,8 +339,29 @@ fn key_label(code: KeyCode) -> String {
 // ── Adaptive refresh constants ──────────────────────────────────────
 
 /// Poll timeout when data was recently updated.
+///
+/// A property of the person watching, not of the wire: 100 ms is roughly where
+/// a redraw stops reading as a response and starts reading as a delay, and
+/// nothing about SIP or RTP argues for a different number. This timeout also
+/// bounds how long a keypress waits before the TUI notices it, so raising it
+/// makes the whole interface feel late — the arrow key, not just the counters.
+/// Lowering it spends CPU redrawing frames nobody perceives, and on a busy
+/// capture that CPU competes with the ingest thread this view exists to watch.
+///
+/// An operator who wants fresher NUMBERS wants a shorter capture or export
+/// interval. This constant only decides how often the TUI looks, never how
+/// often the data underneath it changes.
 pub(super) const ACTIVE_POLL_MS: u64 = 100;
 /// Poll timeout when idle (no recent updates).
+///
+/// The same perception argument, pointed at the case where nothing is
+/// happening: at 500 ms an idle session wakes a fifth as often as an active
+/// one, and no input feels stuck, because the first keypress ends the poll
+/// early rather than waiting it out. Raising it stretches how long the TUI
+/// takes to notice that traffic resumed, so the view stays visibly stale after
+/// the wire is not. Lowering it hands back the idle saving that having a
+/// second constant buys at all — set equal to `ACTIVE_POLL_MS` and the
+/// adaptive tier stops existing.
 pub(super) const IDLE_POLL_MS: u64 = 500;
 /// Duration after the last data update before switching to idle polling.
 pub(super) const IDLE_THRESHOLD: Duration = Duration::from_secs(2);
@@ -354,11 +375,28 @@ pub(super) const IDLE_THRESHOLD: Duration = Duration::from_secs(2);
 /// floor; user inputs (filter/search/sort/view changes) bypass it.
 /// 300 ms ≈ 3 refreshes/s, above what a human tracks in a monitoring
 /// view.
+///
+/// Fixed against the eye rather than the traffic. Raising it makes a busy
+/// capture's lists visibly lag the counters beside them, and the two
+/// disagreeing is worse than either being slow. Lowering it walks back toward
+/// the defect this floor exists to fix, where every ingest re-derives every
+/// cache and the UI crawls exactly when the capture is most worth watching.
+/// An operator who wants a specific view refreshed sooner presses the key for
+/// it, since user input bypasses this floor by design.
 pub(super) const CHURN_REBUILD_MIN: Duration = Duration::from_millis(300);
 /// Consecutive render ticks allowed to skip on store-lock contention
 /// before the next tick takes blocking reads instead. Bounds staleness
 /// to ~FORCED_DRAW_AFTER_SKIPS × ACTIVE_POLL_MS on a write-saturated
 /// capture without ever flushing a half-rendered frame.
+///
+/// Three is what keeps that staleness ceiling inside human tolerance at the
+/// active poll rate. Raise it and a write-saturated capture shows a frozen
+/// screen for longer with no sign that anything is wrong — the worst reading
+/// of a monitoring view, because a stopped display and a quiet wire look
+/// identical. Lower it to zero and every tick takes blocking reads, so the TUI
+/// contends with the ingest path it is there to observe. The remedy for
+/// persistent contention is a cheaper view or a narrower filter, not a
+/// different number here.
 pub(super) const FORCED_DRAW_AFTER_SKIPS: u32 = 3;
 
 /// Tests for `Keymap::collisions`: duplicate bindings, rebinds shadowed

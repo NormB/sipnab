@@ -289,6 +289,18 @@ const DEFAULT_EXEC_PER_SECOND: u32 = 10;
 /// global-only limiter would spend its whole budget on that one peer and stay
 /// silent about everything else. Bounding per source bounds the blast radius
 /// to the peer the signature was wrong about.
+///
+/// Fixed, with no knob reaching it. `--alert-exec` runs an operator's own
+/// command line, so raising this multiplies whatever that command costs by the
+/// number of times one misidentified peer may trigger it — and the peer that
+/// triggers it is the peer sipnab got wrong, never a peer it got right.
+/// Lowering it to zero silences every hook while the flag still reports itself
+/// as armed, so an operator watching for alerts sees the same nothing a quiet
+/// wire produces.
+///
+/// An operator who needs more headroom raises the global `--exec-rate-limit`.
+/// That spends the extra budget across distinct sources, which is the shape
+/// that helps; concentrating it on one source is the shape that hurts.
 #[cfg(feature = "native")]
 const MAX_EXEC_PER_SOURCE_PER_MINUTE: u32 = 3;
 
@@ -298,6 +310,20 @@ const MAX_EXEC_PER_SOURCE_PER_MINUTE: u32 = 3;
 /// its slot immediately — so this is the last line of the three checks, not
 /// the only one it used to be. It still matters for a *slow* command, which
 /// the budgets above cannot bound.
+///
+/// Fixed, because this is a fork-bomb bound rather than a tuning number. A
+/// hundred children that never exit already hold a hundred process slots on a
+/// host whose real job is keeping up with the wire; raising this hands a
+/// misfiring signature the rest of the process table, and the capture starves
+/// before the hooks do. Lowering it below the burst a legitimate alert storm
+/// produces drops hooks that would have run — visibly, as
+/// `ExecDropReason::QueueFull`, so the loss reaches a log rather than
+/// vanishing.
+///
+/// An operator who genuinely needs more concurrency makes the hook itself
+/// return faster, because a command that exits promptly frees its slot and
+/// never reaches this cap at all. Raising the cap instead buys room for
+/// commands that hang, which is the case it exists to survive.
 #[cfg(feature = "native")]
 const MAX_EXEC_CHILDREN: usize = 100;
 
@@ -1490,6 +1516,47 @@ mod tests {
         assert!(
             engine.source_allows_exec(noisy, at(60), 102),
             "a capture minute later the source's window has rolled"
+        );
+    }
+
+    /// The per-source exec budget is exactly three spawns per capture minute.
+    ///
+    /// Written with literal counts rather than with
+    /// `MAX_EXEC_PER_SOURCE_PER_MINUTE`, because every other test here loops
+    /// `0..MAX_EXEC_PER_SOURCE_PER_MINUTE` and so moves with the constant
+    /// instead of guarding it. `--alert-exec` runs an operator's own command
+    /// line, and the source that spends this budget is whichever peer a
+    /// signature misidentified, so raising the bound multiplies real process
+    /// spawns aimed at exactly the wrong peer. An operator who needs more
+    /// headroom raises the global `--exec-rate-limit`, which spends the extra
+    /// budget across distinct sources instead of concentrating it on one.
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_per_source_exec_budget_is_three_a_minute() {
+        let mut engine = AlertEngine::new(vec![], None);
+        let misidentified = test_ip();
+
+        for attempt in 1..=3u64 {
+            assert!(
+                engine.source_allows_exec(misidentified, at(0), attempt),
+                "spawn {attempt} of 3 must sit inside the per-source budget; \
+                 if this fails MAX_EXEC_PER_SOURCE_PER_MINUTE dropped below 3 \
+                 and --alert-exec quietly stops firing for real alerts"
+            );
+            engine
+                .exec_per_source
+                .get_mut(&misidentified)
+                .expect("bucket exists after allows")
+                .0
+                .record();
+        }
+
+        assert!(
+            !engine.source_allows_exec(misidentified, at(0), 4),
+            "a 4th spawn for one source inside one capture minute must be \
+             refused; if this fails MAX_EXEC_PER_SOURCE_PER_MINUTE was raised, \
+             and one misidentified peer now forks more of the operator's \
+             command than the blast radius this bound exists to hold"
         );
     }
 

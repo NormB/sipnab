@@ -708,7 +708,26 @@ struct PerDstRateLimiter {
     last_cleanup: Option<Instant>,
 }
 
-/// Maximum responses per destination IP per minute.
+/// Responses this process may aim at any single destination IP per minute.
+///
+/// Fixed on purpose, and deliberately the one bound on the kill path that no
+/// operator knob reaches. The kill path answers packets whose source address
+/// the sender chose, so an attacker picks the destination; three is enough for
+/// a genuine scanner to see that sipnab refused it, and few enough that the
+/// answer is never worth eliciting.
+///
+/// Raising it multiplies exactly the amplification factor an attacker gets for
+/// free. `--kill-rate-limit` cannot bound that, because it caps responses per
+/// second across ALL destinations and says nothing about how they concentrate:
+/// one forged source address collects every response the global cap allows.
+/// Lowering it to zero stops the kill path answering anything while the flag
+/// still reports itself as armed, which hides a dead mitigation behind a
+/// configuration that looks live.
+///
+/// An operator who wants a wider blast radius raises `--kill-rate-limit`,
+/// which buys more DISTINCT destinations per second. Nothing buys more packets
+/// per destination, and a knob that did would hand the attacker the multiplier
+/// directly.
 const MAX_PER_DST_PER_MINUTE: u32 = 3;
 
 impl PerDstRateLimiter {
@@ -1149,6 +1168,44 @@ mod tests {
         assert!(
             !lim.buckets.contains_key(&stale_b),
             "cleanup must run again once ≥1s has elapsed"
+        );
+    }
+
+    /// The per-destination cap answers one destination three times a minute
+    /// and refuses the fourth.
+    ///
+    /// Written with literal counts rather than with `MAX_PER_DST_PER_MINUTE`,
+    /// so raising the constant fails HERE instead of quietly widening the
+    /// amplification an attacker gets for free. The kill path answers packets
+    /// whose source address the sender chose, so this destination is the
+    /// attacker's pick; `--kill-rate-limit` caps responses per second across
+    /// ALL destinations and cannot bound how they concentrate on one.
+    #[test]
+    fn the_per_destination_cap_answers_three_times_and_refuses_the_fourth() {
+        let mut lim = PerDstRateLimiter::new();
+        let victim: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+
+        for attempt in 1..=3 {
+            assert!(
+                lim.allow(victim),
+                "response {attempt} of 3 must be allowed; if this fails \
+                 MAX_PER_DST_PER_MINUTE dropped below 3 and a genuine scanner \
+                 never sees enough refusals to notice one"
+            );
+        }
+        assert!(
+            !lim.allow(victim),
+            "a 4th response to one destination inside a minute must be \
+             refused; if this fails MAX_PER_DST_PER_MINUTE was raised, and \
+             sipnab now amplifies harder at whichever victim an attacker \
+             forges as the source address"
+        );
+
+        let bystander: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10));
+        assert!(
+            lim.allow(bystander),
+            "the cap is per destination, so a different destination must keep \
+             its own budget"
         );
     }
 
