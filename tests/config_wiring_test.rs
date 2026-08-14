@@ -502,8 +502,8 @@ fn contrib_example_config_parses_with_real_loader() {
 //     explicit CLI flag  >  config file  >  built-in default
 //
 // the same order every other CLI-vs-config pair in this repo resolves in
-// (`cli.portrange.or(config.capture.portrange)` in `bootstrap::plan`,
-// `cli.snaplen.or(config.capture.snaplen)`, `cli.from.or(config.filter.from)`).
+// (`cli.capture_args.portrange.or(config.capture.portrange)` in `bootstrap::plan`,
+// `cli.capture_args.snaplen.or(config.capture.snaplen)`, `cli.matching_args.from.or(config.filter.from)`).
 
 /// Run sipnab with owned arguments, adapting to the `&[&str]` [`run`] takes.
 fn run_owned(args: &[String]) -> (String, String, i32) {

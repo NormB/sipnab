@@ -207,7 +207,91 @@ fn compiled_features() -> Vec<&'static str> {
         sipnab 'host 10.0.0.1 and port 5060'   BPF capture filter"
 )]
 pub struct Cli {
-    // ── Capture ──────────────────────────────────────────────────────
+    // ── Capture ──
+    #[command(flatten)]
+    pub capture_args: CaptureArgs,
+
+    // ── Mode ──
+    #[command(flatten)]
+    pub mode_args: ModeArgs,
+
+    // ── Name resolution ──
+    #[command(flatten)]
+    pub name_args: NameResolutionArgs,
+
+    // ── Matching ──
+    #[command(flatten)]
+    pub matching_args: MatchingArgs,
+
+    // ── Diagnostic aliases ──
+    #[command(flatten)]
+    pub alias_args: DiagnosticAliasArgs,
+
+    // ── Output ──
+    #[command(flatten)]
+    pub output_args: OutputArgs,
+
+    // ── Dialog ──
+    #[command(flatten)]
+    pub dialog_args: DialogArgs,
+
+    // ── RTP ──
+    #[command(flatten)]
+    pub rtp_args: RtpArgs,
+
+    // ── Security ──
+    #[command(flatten)]
+    pub security_args: SecurityArgs,
+
+    // ── Event execution ──
+    #[command(flatten)]
+    pub exec_args: EventExecArgs,
+
+    // ── Network listeners ──
+    #[command(flatten)]
+    pub listener_args: ListenerArgs,
+
+    // ── MCP (Model Context Protocol) ──
+    #[command(flatten)]
+    pub mcp_args: McpArgs,
+
+    // ── HEP (Homer Encapsulation Protocol) ──
+    #[command(flatten)]
+    pub hep_args: HepArgs,
+
+    // ── TLS / Decryption ──
+    #[command(flatten)]
+    pub tls_args: TlsArgs,
+
+    // ── Privilege ──
+    #[command(flatten)]
+    pub privilege_args: PrivilegeArgs,
+
+    // ── Resource limits ──
+    #[command(flatten)]
+    pub limits_args: LimitsArgs,
+
+    // ── Token minting ──
+    #[command(flatten)]
+    pub token_args: TokenArgs,
+
+    // ── Config ──
+    #[command(flatten)]
+    pub config_args: ConfigArgs,
+
+    // ── Positional ──
+    /// BPF display filter expression (trailing positional arguments).
+    #[arg(trailing_var_arg = true, value_name = "BPF_FILTER")]
+    pub bpf_filter: Vec<String>,
+}
+/// `Capture` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct CaptureArgs {
     /// Network interface to capture on.
     ///
     /// Omit it and sipnab picks a default, which differs by platform.
@@ -450,8 +534,16 @@ pub struct Cli {
     /// Use pcapng format for output files.
     #[arg(help_heading = "Capture", long)]
     pub pcapng: bool,
+}
 
-    // ── Mode ─────────────────────────────────────────────────────────
+/// `Mode` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ModeArgs {
     /// Non-interactive mode (no TUI). Required for batch/output flags.
     #[arg(help_heading = "Mode", short = 'N', long = "no-tui")]
     pub no_tui: bool,
@@ -499,8 +591,16 @@ pub struct Cli {
     /// Suppress informational output; only show results.
     #[arg(help_heading = "Mode", short = 'q', long = "quiet")]
     pub quiet: bool,
+}
 
-    // ── Name resolution ──────────────────────────────────────────────
+/// `Name resolution` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct NameResolutionArgs {
     /// Resolve IP addresses to names for display (manual mappings + hosts).
     /// Sets the TUI's initial name-resolution mode; press `n` to cycle it
     /// (Off / Static / DNS).
@@ -574,8 +674,16 @@ pub struct Cli {
         value_name = "POINTER"
     )]
     pub show_frame: Option<String>,
+}
 
-    // ── Matching ─────────────────────────────────────────────────────
+/// `Matching` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct MatchingArgs {
     /// SIP payload match-expression (the sngrep/sipgrep positional match
     /// expression). A regex tested against the whole raw SIP message; once any
     /// message in a dialog matches, every later message of that dialog is shown
@@ -627,8 +735,16 @@ pub struct Cli {
     /// docs/filter-dsl.md.
     #[arg(help_heading = "Matching", long, value_name = "EXPR")]
     pub filter: Option<String>,
+}
 
-    // ── Diagnostic aliases ───────────────────────────────────────────
+/// `Diagnostic aliases` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct DiagnosticAliasArgs {
     /// Show calls with detected problems (retransmits, timeouts, errors).
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub problems: bool,
@@ -649,8 +765,16 @@ pub struct Cli {
     /// advertised — the signature of a NAT rewriting the media source.
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub nat_issues: bool,
+}
 
-    // ── Output ───────────────────────────────────────────────────────
+/// `Output` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct OutputArgs {
     /// Output NDJSON: one JSON object per SIP message, pipeable to jq.
     /// Schema in docs/output-formats.md.
     #[arg(help_heading = "Output", long)]
@@ -738,7 +862,7 @@ pub struct Cli {
     /// typed the flag, so "not given" and "given the default" become
     /// indistinguishable and `[display] color` has nothing to override. That is
     /// exactly why that key was silently ignored. The default lives in
-    /// [`Self::DEFAULT_COLOR`] and is applied by [`Self::color_mode`].
+    /// [`Cli::DEFAULT_COLOR`] and is applied by [`Cli::color_mode`].
     #[arg(
         help_heading = "Output",
         long,
@@ -860,8 +984,16 @@ pub struct Cli {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub max_grouped_messages: Option<u64>,
+}
 
-    // ── Dialog ───────────────────────────────────────────────────────
+/// `Dialog` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct DialogArgs {
     /// Maximum dialogs the store may hold in TOTAL over the run (default
     /// 100000). NOT a concurrency limit: nothing removes a completed dialog,
     /// so this bound scales with UPTIME, not with load.
@@ -920,8 +1052,16 @@ pub struct Cli {
     /// Filter dialogs by tag value.
     #[arg(help_heading = "Dialog", long, value_name = "TAG")]
     pub tag: Option<String>,
+}
 
-    // ── RTP ──────────────────────────────────────────────────────────
+/// `RTP` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct RtpArgs {
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,
@@ -935,7 +1075,7 @@ pub struct Cli {
     /// loss per stream, and widens the burst/gap window in step.
     ///
     /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]: a populated field cannot tell "not typed" from
+    /// [`McpArgs::mcp_max_rows`]: a populated field cannot tell "not typed" from
     /// "typed the default". The default lives in
     /// [`crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP`].
     #[arg(
@@ -949,8 +1089,16 @@ pub struct Cli {
     /// MOS quality threshold for alerts (1.0-5.0 scale).
     #[arg(help_heading = "RTP", long, value_name = "MOS", default_value = "3.0")]
     pub quality_threshold: f64,
+}
 
-    // ── Security ─────────────────────────────────────────────────────
+/// `Security` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct SecurityArgs {
     /// Detect and report SIP scanning activity.
     #[arg(help_heading = "Security", long)]
     pub kill_scanner: bool,
@@ -964,7 +1112,7 @@ pub struct Cli {
     /// No clap `default_value`, for the reason given on `--color`: it made
     /// `[security] kill_response` unreachable. The range check stays — dropping
     /// the default must not drop the validation. Default in
-    /// [`Self::DEFAULT_KILL_RESPONSE`], applied by [`Self::kill_response_code`].
+    /// [`Cli::DEFAULT_KILL_RESPONSE`], applied by [`Cli::kill_response_code`].
     #[arg(help_heading = "Security", long, value_name = "CODE", value_parser = clap::value_parser!(u16).range(100..=699))]
     pub kill_response: Option<u16>,
 
@@ -1017,7 +1165,7 @@ pub struct Cli {
     /// reports a flood.
     ///
     /// No clap `default_value`, so `[security] reg_flood_threshold` can take
-    /// effect; the default lives in [`Self::DEFAULT_REG_FLOOD_THRESHOLD`] and
+    /// effect; the default lives in [`Cli::DEFAULT_REG_FLOOD_THRESHOLD`] and
     /// is applied by [`Self::reg_flood_threshold`].
     ///
     /// The shipped 50/s is a carrier-registrar figure: it never sees the
@@ -1314,7 +1462,25 @@ pub struct Cli {
     #[arg(help_heading = "Security", long)]
     pub stir_shaken: bool,
 
-    // ── Event execution ──────────────────────────────────────────────
+    /// Send alerts to syslog.
+    #[arg(help_heading = "Security", long)]
+    pub syslog: bool,
+
+    /// Emit each security alert as a structured JSON line on stderr (in addition
+    /// to the human `[ALERT]` line) — a stable machine channel that survives log
+    /// format changes. stdout stays reserved for `--json` / MCP.
+    #[arg(help_heading = "Security", long)]
+    pub alert_json: bool,
+}
+
+/// `Event execution` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct EventExecArgs {
     /// Execute command when a dialog state changes.
     #[arg(help_heading = "Event execution", long, value_name = "CMD")]
     pub on_dialog_exec: Option<String>,
@@ -1345,8 +1511,16 @@ pub struct Cli {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub exec_queue_depth: Option<u64>,
+}
 
-    // ── Network listeners ────────────────────────────────────────────
+/// `Network listeners` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ListenerArgs {
     /// Enable Prometheus metrics endpoint (e.g., "127.0.0.1:9090"). A
     /// non-loopback bind (e.g. "0.0.0.0:9090") is refused unless
     /// --metrics-auth / --metrics-auth-file is also set.
@@ -1487,8 +1661,16 @@ pub struct Cli {
         value_name = "N"
     )]
     pub api_rate_limit_per_peer: Option<u32>,
+}
 
-    // ── MCP (Model Context Protocol) ──────────────────────────────────
+/// `MCP (Model Context Protocol)` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct McpArgs {
     /// Run sipnab as an MCP server (Model Context Protocol) instead of TUI/CLI.
     /// Implies --no-tui. Default transport is stdio; --mcp-transport selects
     /// http (requires the mcp-http feature).
@@ -1729,8 +1911,8 @@ pub struct Cli {
     /// config — clap fills the field whether or not the operator typed the
     /// flag, so "not given" and "given the default" become indistinguishable
     /// and the config key has nothing to override. The default lives in
-    /// [`Self::DEFAULT_MCP_MAX_ROWS`] and is applied by
-    /// [`Self::mcp_row_cap`].
+    /// [`Cli::DEFAULT_MCP_MAX_ROWS`] and is applied by
+    /// [`Cli::mcp_row_cap`].
     ///
     /// The right ceiling belongs to the CONSUMER, not to sipnab: an agent with
     /// a small context window wants far fewer than 1000 rows and a batch
@@ -1923,8 +2105,16 @@ pub struct Cli {
         long = "mcp-allow-save-findings"
     )]
     pub mcp_allow_save_findings: bool,
+}
 
-    // ── HEP (Homer Encapsulation Protocol) ───────────────────────────
+/// `HEP (Homer Encapsulation Protocol)` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct HepArgs {
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
     #[arg(
         help_heading = "HEP",
@@ -2031,19 +2221,16 @@ pub struct Cli {
         default_value = "off"
     )]
     pub hep_rate_limit_per_peer: PerPeerLimit,
+}
 
-    // ── Alert channels (grouped with --alert / --alert-exec under Security) ──
-    /// Send alerts to syslog.
-    #[arg(help_heading = "Security", long)]
-    pub syslog: bool,
-
-    /// Emit each security alert as a structured JSON line on stderr (in addition
-    /// to the human `[ALERT]` line) — a stable machine channel that survives log
-    /// format changes. stdout stays reserved for `--json` / MCP.
-    #[arg(help_heading = "Security", long)]
-    pub alert_json: bool,
-
-    // ── TLS / Decryption ─────────────────────────────────────────────
+/// `TLS / Decryption` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct TlsArgs {
     /// TLS private key (PEM) for TLS 1.2 RSA-key-exchange decryption. Only
     /// non-PFS RSA handshakes; ECDHE/DHE (forward secrecy) need --keylog.
     #[arg(
@@ -2089,8 +2276,16 @@ pub struct Cli {
     /// Allow core dumps (do not call prctl to disable).
     #[arg(help_heading = "TLS / Decryption", long)]
     pub allow_coredump: bool,
+}
 
-    // ── Privilege ────────────────────────────────────────────────────
+/// `Privilege` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct PrivilegeArgs {
     /// Drop privileges to this user after opening capture devices.
     #[arg(help_heading = "Privilege", long, value_name = "USER")]
     pub user: Option<String>,
@@ -2108,8 +2303,16 @@ pub struct Cli {
     /// sudo, then exit. Re-invokes itself through sudo when not already root.
     #[arg(help_heading = "Privilege", long = "setup-caps")]
     pub setup_caps: bool,
+}
 
-    // ── Resource limits ──────────────────────────────────────────────
+/// `Resource limits` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct LimitsArgs {
     /// Maximum concurrent TCP/TLS reassembly sessions.
     #[arg(help_heading = "Resource limits", long, value_name = "N")]
     pub max_reassembly: Option<u64>,
@@ -2146,7 +2349,7 @@ pub struct Cli {
     /// one SIP header line, below which no message could survive.
     ///
     /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`McpArgs::mcp_max_rows`]. The default lives in
     /// [`crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER`].
     #[arg(
         help_heading = "Resource limits",
@@ -2208,8 +2411,16 @@ pub struct Cli {
         default_value = "1"
     )]
     pub cores: usize,
+}
 
-    // ── Token minting ────────────────────────────────────────────────
+/// `Token minting` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct TokenArgs {
     /// Mint a signed bearer token from the first configured signing key,
     /// print it to stdout, and exit. TTL comes from --api-token-ttl (or
     /// --mcp-token-ttl); id from --token-id (or auto-derived). Does NOT start
@@ -2239,8 +2450,16 @@ pub struct Cli {
         value_parser = ["full", "metrics", "read"]
     )]
     pub token_scope: String,
+}
 
-    // ── Config ───────────────────────────────────────────────────────
+/// `Config` flags.
+///
+/// Split out of [`Cli`] so clap's generated parser builds this group in its
+/// own stack frame. See the `RUST_MIN_STACK` note this replaced in
+/// `.cargo/config.toml`: one function carrying every flag sat just over the
+/// 2 MiB libtest thread stack.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ConfigArgs {
     /// Path to configuration file.
     #[arg(
         help_heading = "Config",
@@ -2267,11 +2486,6 @@ pub struct Cli {
     /// Example: `sipnab --completions bash > /etc/bash_completion.d/sipnab`.
     #[arg(help_heading = "Config", long = "completions", value_name = "SHELL")]
     pub completions: Option<clap_complete::Shell>,
-
-    // ── Positional ───────────────────────────────────────────────────
-    /// BPF display filter expression (trailing positional arguments).
-    #[arg(trailing_var_arg = true, value_name = "BPF_FILTER")]
-    pub bpf_filter: Vec<String>,
 }
 
 /// Source-address strategy for the scanner-kill response packet.
@@ -2410,12 +2624,13 @@ impl Cli {
     /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
     ///
     /// The explicit flag wins because it is the more specific instruction —
-    /// the same precedence the boolean settings use (`cli.no_rtp ||
+    /// the same precedence the boolean settings use (`cli.capture_args.no_rtp ||
     /// config.capture.no_rtp`), stated here because a numeric setting cannot
     /// express it with an `||`.
     #[must_use]
     pub fn dialog_limit(&self, config: &crate::config::Config) -> usize {
-        self.limit
+        self.dialog_args
+            .limit
             .or(config.limits.dialog_limit)
             .unwrap_or(Self::DEFAULT_DIALOG_LIMIT) as usize
     }
@@ -2427,7 +2642,9 @@ impl Cli {
     /// end reported, and only then to the assumption.
     #[must_use]
     pub fn declared_one_way_delay_ms(&self, config: &crate::config::Config) -> Option<f64> {
-        self.one_way_delay_ms.or(config.media.one_way_delay_ms)
+        self.mcp_args
+            .one_way_delay_ms
+            .or(config.media.one_way_delay_ms)
     }
 
     /// MCP response ceiling: `--mcp-max-rows`, else `[limits] mcp_max_rows`,
@@ -2439,7 +2656,8 @@ impl Cli {
     /// difference is worth stating here.
     #[must_use]
     pub fn mcp_row_cap(&self, config: &crate::config::Config) -> usize {
-        self.mcp_max_rows
+        self.mcp_args
+            .mcp_max_rows
             .or(config.limits.mcp_max_rows)
             .unwrap_or(Self::DEFAULT_MCP_MAX_ROWS) as usize
     }
@@ -2454,7 +2672,8 @@ impl Cli {
     /// row cap did.
     #[must_use]
     pub fn mcp_body_cap(&self, config: &crate::config::Config) -> usize {
-        self.mcp_max_body_bytes
+        self.mcp_args
+            .mcp_max_body_bytes
             .or(config.limits.mcp_max_body_bytes)
             .unwrap_or(Self::DEFAULT_MCP_MAX_BODY_BYTES) as usize
     }
@@ -2469,7 +2688,8 @@ impl Cli {
     /// disagree with the code it feeds.
     #[must_use]
     pub fn lost_sequence_log_cap(&self, config: &crate::config::Config) -> usize {
-        self.max_lost_sequences
+        self.rtp_args
+            .max_lost_sequences
             .or(config.limits.max_lost_sequences)
             .map_or(crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP, |v| v as usize)
     }
@@ -2484,10 +2704,12 @@ impl Cli {
         let shipped = crate::output::group::GroupCaps::default();
         crate::output::group::GroupCaps {
             groups: self
+                .output_args
                 .max_groups
                 .or(config.limits.max_groups)
                 .map_or(shipped.groups, |v| v as usize),
             buffered: self
+                .output_args
                 .max_grouped_messages
                 .or(config.limits.max_grouped_messages)
                 .map_or(shipped.buffered, |v| v as usize),
@@ -2503,7 +2725,8 @@ impl Cli {
     /// what that exposes.
     #[must_use]
     pub fn metadata_file_byte_cap(&self, config: &crate::config::Config) -> u64 {
-        self.max_metadata_file_bytes
+        self.limits_args
+            .max_metadata_file_bytes
             .or(config.limits.max_metadata_file_bytes)
             .unwrap_or(crate::capture::pcapng_meta::DEFAULT_MAX_METADATA_FILE_BYTES)
     }
@@ -2517,7 +2740,8 @@ impl Cli {
     /// enforces cannot drift apart.
     #[must_use]
     pub fn tcp_buffer_cap(&self, config: &crate::config::Config) -> usize {
-        self.max_tcp_buffer
+        self.limits_args
+            .max_tcp_buffer
             .or(config.limits.max_tcp_buffer)
             .map_or(crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER, |v| {
                 v as usize
@@ -2542,7 +2766,7 @@ impl Cli {
         config: &crate::config::Config,
     ) -> Result<Option<(u16, u16)>, crate::Error> {
         let (spec, source) = match (
-            self.ws_portrange.as_deref(),
+            self.capture_args.ws_portrange.as_deref(),
             config.capture.ws_ports.as_deref(),
         ) {
             (Some(s), _) => (s, "--ws-portrange"),
@@ -2562,7 +2786,8 @@ impl Cli {
     /// [`crate::capture::pcap_reader::DEFAULT_MAX_GUNZIP_BYTES`].
     #[must_use]
     pub fn gunzip_byte_cap(&self, config: &crate::config::Config) -> u64 {
-        self.max_gunzip_bytes
+        self.limits_args
+            .max_gunzip_bytes
             .or(config.limits.max_gunzip_bytes)
             .unwrap_or(crate::capture::pcap_reader::DEFAULT_MAX_GUNZIP_BYTES)
     }
@@ -2578,7 +2803,8 @@ impl Cli {
     /// [`crate::names::dns_queue_capacity`] rather than resolved separately.
     #[must_use]
     pub fn dns_cache_entries(&self, config: &crate::config::Config) -> usize {
-        self.dns_cache_entries
+        self.name_args
+            .dns_cache_entries
             .or(config.names.dns_cache_entries)
             .map_or(crate::names::MAX_DNS_CACHE_ENTRIES, |v| v as usize)
     }
@@ -2594,7 +2820,8 @@ impl Cli {
     #[cfg(feature = "hep")]
     #[must_use]
     pub fn hep_hmac_window_secs(&self, config: &crate::config::Config) -> u64 {
-        self.hep_hmac_window_secs
+        self.hep_args
+            .hep_hmac_window_secs
             .or(config.security.hep_hmac_window_secs)
             .unwrap_or(crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS)
     }
@@ -2611,7 +2838,8 @@ impl Cli {
     /// newer one to displace.
     #[must_use]
     pub fn mcp_findings_cap(&self, config: &crate::config::Config) -> u64 {
-        self.mcp_max_findings
+        self.mcp_args
+            .mcp_max_findings
             .or(config.limits.mcp_max_findings)
             .unwrap_or(Self::DEFAULT_MCP_MAX_FINDINGS)
     }
@@ -2625,7 +2853,8 @@ impl Cli {
     /// figure an operator is told and the gate the loop builds cannot disagree.
     #[must_use]
     pub fn metrics_conn_cap(&self, config: &crate::config::Config) -> usize {
-        self.metrics_max_conn
+        self.listener_args
+            .metrics_max_conn
             .or(config.limits.metrics_max_conn)
             .map_or(Self::DEFAULT_METRICS_MAX_CONN, |v| v as usize)
     }
@@ -2639,7 +2868,8 @@ impl Cli {
     /// it from the same kind of setting.
     #[must_use]
     pub fn api_row_cap(&self, config: &crate::config::Config) -> usize {
-        self.api_max_rows
+        self.listener_args
+            .api_max_rows
             .or(config.limits.api_max_rows)
             .unwrap_or(Self::DEFAULT_API_MAX_ROWS) as usize
     }
@@ -2654,7 +2884,8 @@ impl Cli {
     /// listener.
     #[must_use]
     pub fn api_peer_rate_limit(&self, config: &crate::config::Config) -> u32 {
-        self.api_rate_limit_per_peer
+        self.listener_args
+            .api_rate_limit_per_peer
             .or_else(|| {
                 config
                     .limits
@@ -2690,7 +2921,8 @@ impl Cli {
     /// the field was already populated, so there was nothing left to override.
     #[must_use]
     pub fn color_mode(&self, config: &crate::config::Config) -> String {
-        self.color
+        self.output_args
+            .color
             .clone()
             .or_else(|| config.display.color.clone())
             .unwrap_or_else(|| Self::DEFAULT_COLOR.to_string())
@@ -2704,7 +2936,8 @@ impl Cli {
     /// is range-checked by clap, and the key must not be the lenient way in.
     #[must_use]
     pub fn kill_response_code(&self, config: &crate::config::Config) -> u16 {
-        self.kill_response
+        self.security_args
+            .kill_response
             .or(config.security.kill_response)
             .unwrap_or(Self::DEFAULT_KILL_RESPONSE)
     }
@@ -2713,7 +2946,8 @@ impl Cli {
     /// default. See [`Self::dialog_limit`] for the precedence rule.
     #[must_use]
     pub fn max_streams_limit(&self, config: &crate::config::Config) -> usize {
-        self.max_streams
+        self.rtp_args
+            .max_streams
             .or(config.limits.max_streams)
             .unwrap_or(Self::DEFAULT_MAX_STREAMS) as usize
     }
@@ -2722,7 +2956,8 @@ impl Cli {
     /// else the default. See [`Self::dialog_limit`].
     #[must_use]
     pub fn max_reassembly_limit(&self, config: &crate::config::Config) -> usize {
-        self.max_reassembly
+        self.limits_args
+            .max_reassembly
             .or(config.limits.max_reassembly)
             .unwrap_or(Self::DEFAULT_MAX_REASSEMBLY) as usize
     }
@@ -2737,7 +2972,8 @@ impl Cli {
     /// drift apart.
     #[must_use]
     pub fn reassembly_ttl_secs(&self, config: &crate::config::Config) -> u64 {
-        self.reassembly_ttl_secs
+        self.limits_args
+            .reassembly_ttl_secs
             .or(config.limits.reassembly_ttl_secs)
             .unwrap_or_else(|| crate::capture::reassembly::DEFAULT_TTL.as_secs())
     }
@@ -2750,7 +2986,8 @@ impl Cli {
     /// defaulted to 0.
     #[must_use]
     pub fn hep_rate_limit_resolved(&self, config: &crate::config::Config) -> u64 {
-        self.hep_rate_limit
+        self.hep_args
+            .hep_rate_limit
             .or(config.limits.hep_rate_limit)
             .unwrap_or(Self::DEFAULT_HEP_RATE_LIMIT)
     }
@@ -2760,7 +2997,8 @@ impl Cli {
     /// [`Self::dialog_limit`] for the precedence rule.
     #[must_use]
     pub fn reg_flood_threshold(&self, config: &crate::config::Config) -> u32 {
-        self.reg_flood_threshold
+        self.security_args
+            .reg_flood_threshold
             .or(config.security.reg_flood_threshold)
             .unwrap_or(Self::DEFAULT_REG_FLOOD_THRESHOLD)
     }
@@ -2774,7 +3012,8 @@ impl Cli {
     /// how this cap came to be unreachable in the first place.
     #[must_use]
     pub fn kill_rate_limit(&self, config: &crate::config::Config) -> u32 {
-        self.kill_rate_limit
+        self.security_args
+            .kill_rate_limit
             .or(config.security.kill_rate_limit)
             .unwrap_or(Self::DEFAULT_KILL_RATE_LIMIT)
     }
@@ -2795,6 +3034,7 @@ impl Cli {
         config: &crate::config::Config,
     ) -> Result<Option<(u8, u8)>, crate::Error> {
         match self
+            .security_args
             .business_hours
             .as_deref()
             .or(config.security.business_hours.as_deref())
@@ -2815,30 +3055,37 @@ impl Cli {
         let sec = &config.security;
         crate::security::fraud_detect::FraudThresholds {
             short_call_secs: self
+                .security_args
                 .fraud_short_call_secs
                 .or(sec.fraud_short_call_secs)
                 .unwrap_or(built_in.short_call_secs),
             wangiri_calls: self
+                .security_args
                 .fraud_wangiri_calls
                 .or(sec.fraud_wangiri_calls)
                 .unwrap_or(built_in.wangiri_calls),
             sequential_calls: self
+                .security_args
                 .fraud_sequential_calls
                 .or(sec.fraud_sequential_calls)
                 .map_or(built_in.sequential_calls, |v| v as usize),
             volume_multiplier: self
+                .security_args
                 .fraud_volume_multiplier
                 .or(sec.fraud_volume_multiplier)
                 .unwrap_or(built_in.volume_multiplier),
             volume_min_calls: self
+                .security_args
                 .fraud_volume_min_calls
                 .or(sec.fraud_volume_min_calls)
                 .unwrap_or(built_in.volume_min_calls),
             volume_window_secs: self
+                .security_args
                 .fraud_volume_window_secs
                 .or(sec.fraud_volume_window_secs)
                 .unwrap_or(built_in.volume_window_secs),
             wangiri_window_secs: self
+                .security_args
                 .fraud_wangiri_window_secs
                 .or(sec.fraud_wangiri_window_secs)
                 .unwrap_or(built_in.wangiri_window_secs),
@@ -2886,30 +3133,37 @@ impl Cli {
         let sec = &config.security;
         crate::security::scanner_detect::ScannerThresholds {
             behavioral_probes: self
+                .security_args
                 .scanner_behavioral_probes
                 .or(sec.scanner_behavioral_probes)
                 .unwrap_or(built_in.behavioral_probes),
             enumeration_targets: self
+                .security_args
                 .scanner_enumeration_targets
                 .or(sec.scanner_enumeration_targets)
                 .map_or(built_in.enumeration_targets, |v| v as usize),
             rejected_probes: self
+                .security_args
                 .scanner_rejected_probes
                 .or(sec.scanner_rejected_probes)
                 .unwrap_or(built_in.rejected_probes),
             unanswered_probes: self
+                .security_args
                 .scanner_unanswered_probes
                 .or(sec.scanner_unanswered_probes)
                 .unwrap_or(built_in.unanswered_probes),
             window_secs: self
+                .security_args
                 .scanner_window_secs
                 .or(sec.scanner_window_secs)
                 .unwrap_or(built_in.window_secs),
             established_factor: self
+                .security_args
                 .scanner_established_factor
                 .or(sec.scanner_established_factor)
                 .unwrap_or(built_in.established_factor),
             answer_grace_ms: self
+                .security_args
                 .scanner_answer_grace_ms
                 .or(sec.scanner_answer_grace_ms)
                 .unwrap_or(built_in.answer_grace_ms),
@@ -2920,7 +3174,8 @@ impl Cli {
     /// `[security] findings_history`, else the default.
     #[must_use]
     pub fn findings_history(&self, config: &crate::config::Config) -> usize {
-        self.findings_history
+        self.security_args
+            .findings_history
             .or(config.security.findings_history)
             .unwrap_or(Self::DEFAULT_FINDINGS_HISTORY) as usize
     }
@@ -2933,7 +3188,8 @@ impl Cli {
     /// applies cannot drift apart.
     #[must_use]
     pub fn leg_correlation_window_ms(&self, config: &crate::config::Config) -> u64 {
-        self.leg_correlation_window_ms
+        self.security_args
+            .leg_correlation_window_ms
             .or(config.sip.leg_correlation_window_ms)
             .unwrap_or(crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS)
     }
@@ -2948,7 +3204,8 @@ impl Cli {
     /// gauges apply cannot drift apart.
     #[must_use]
     pub fn active_idle_window_secs(&self, config: &crate::config::Config) -> u64 {
-        self.active_idle_window_secs
+        self.security_args
+            .active_idle_window_secs
             .or(config.sip.active_idle_window_secs)
             .unwrap_or_else(|| {
                 crate::sip::dialog_store::DEFAULT_ACTIVE_IDLE_WINDOW
@@ -2965,7 +3222,8 @@ impl Cli {
     /// the engine applies cannot drift apart.
     #[must_use]
     pub fn exec_queue_depth(&self, config: &crate::config::Config) -> usize {
-        self.exec_queue_depth
+        self.exec_args
+            .exec_queue_depth
             .or(config.limits.exec_queue_depth)
             .map_or(crate::output::event_exec::DEFAULT_QUEUE_DEPTH, |v| {
                 v as usize
@@ -2976,7 +3234,8 @@ impl Cli {
     /// `[limits] lint_max_per_rule`, else the default.
     #[must_use]
     pub fn lint_max_per_rule(&self, config: &crate::config::Config) -> usize {
-        self.lint_max_per_rule
+        self.output_args
+            .lint_max_per_rule
             .or(config.limits.lint_max_per_rule)
             .unwrap_or(Self::DEFAULT_LINT_MAX_PER_RULE) as usize
     }
@@ -2992,14 +3251,17 @@ impl Cli {
         let d = &config.diagnosis;
         crate::sip::diagnosis::SignalingThresholds {
             post_dial_delay_sec: self
+                .mcp_args
                 .pdd_threshold_secs
                 .or(d.post_dial_delay_secs)
                 .unwrap_or(built_in.post_dial_delay_sec),
             ack_timeout_sec: self
+                .mcp_args
                 .ack_timeout_secs
                 .or(d.ack_timeout_secs)
                 .unwrap_or(built_in.ack_timeout_sec),
             no_final_response_sec: self
+                .mcp_args
                 .no_final_response_secs
                 .or(d.no_final_response_secs)
                 .unwrap_or(built_in.no_final_response_sec),
@@ -3037,18 +3299,22 @@ impl Cli {
         let d = &config.diagnosis;
         crate::rtp::diagnosis::AsymmetryThresholds {
             duration_pct_delta: self
+                .mcp_args
                 .duration_asymmetry_pct
                 .or(d.duration_asymmetry_pct)
                 .unwrap_or(built_in.duration_pct_delta),
             duration_min_delta_sec: self
+                .mcp_args
                 .duration_asymmetry_secs
                 .or(d.duration_asymmetry_secs)
                 .unwrap_or(built_in.duration_min_delta_sec),
             late_media_threshold_ms: self
+                .mcp_args
                 .late_media_ms
                 .or(d.late_media_ms)
                 .unwrap_or(built_in.late_media_threshold_ms),
             cn_suppression_ratio: self
+                .mcp_args
                 .cn_suppression_ratio
                 .or(d.cn_suppression_ratio)
                 .unwrap_or(built_in.cn_suppression_ratio),
@@ -3075,28 +3341,42 @@ impl Cli {
         let q = &config.quality;
         crate::rtp::bands::QualityBands {
             jitter_warn_ms: self
+                .mcp_args
                 .jitter_warn_ms
                 .or(q.jitter_warn_ms)
                 .unwrap_or(built_in.jitter_warn_ms),
             jitter_bad_ms: self
+                .mcp_args
                 .jitter_bad_ms
                 .or(q.jitter_bad_ms)
                 .unwrap_or(built_in.jitter_bad_ms),
             loss_warn_pct: self
+                .mcp_args
                 .loss_warn_pct
                 .or(q.loss_warn_pct)
                 .unwrap_or(built_in.loss_warn_pct),
             loss_bad_pct: self
+                .mcp_args
                 .loss_bad_pct
                 .or(q.loss_bad_pct)
                 .unwrap_or(built_in.loss_bad_pct),
-            mos_warn: self.mos_warn.or(q.mos_warn).unwrap_or(built_in.mos_warn),
-            mos_bad: self.mos_bad.or(q.mos_bad).unwrap_or(built_in.mos_bad),
+            mos_warn: self
+                .mcp_args
+                .mos_warn
+                .or(q.mos_warn)
+                .unwrap_or(built_in.mos_warn),
+            mos_bad: self
+                .mcp_args
+                .mos_bad
+                .or(q.mos_bad)
+                .unwrap_or(built_in.mos_bad),
             rtt_warn_ms: self
+                .mcp_args
                 .rtt_warn_ms
                 .or(q.rtt_warn_ms)
                 .unwrap_or(built_in.rtt_warn_ms),
             rtt_bad_ms: self
+                .mcp_args
                 .rtt_bad_ms
                 .or(q.rtt_bad_ms)
                 .unwrap_or(built_in.rtt_bad_ms),
@@ -3106,7 +3386,7 @@ impl Cli {
     /// Whether any `-I` was given.
     #[must_use]
     pub fn has_input(&self) -> bool {
-        !self.input.is_empty()
+        !self.capture_args.input.is_empty()
     }
 
     /// The first `-I` argument, for labelling and for the single-file paths
@@ -3119,7 +3399,7 @@ impl Cli {
     /// one concrete file by nature.
     #[must_use]
     pub fn primary_input(&self) -> Option<&str> {
-        self.input.first().map(String::as_str)
+        self.capture_args.input.first().map(String::as_str)
     }
 
     /// How `-I` arguments should be expanded.
@@ -3131,8 +3411,8 @@ impl Cli {
     #[must_use]
     pub fn input_resolve_options(&self) -> crate::capture::input_set::ResolveOptions {
         crate::capture::input_set::ResolveOptions {
-            recursive: self.recursive,
-            name_glob: self.input_name.clone(),
+            recursive: self.capture_args.recursive,
+            name_glob: self.capture_args.input_name.clone(),
         }
     }
 
@@ -3166,15 +3446,15 @@ impl Cli {
     /// discarded it. Six published invocations used that spelling.
     ///
     /// Normalizing here rather than at each reader is deliberate: the next
-    /// output gate added to `app::batch` will be written `&& cli.no_tui` like
+    /// output gate added to `app::batch` will be written `&& cli.mode_args.no_tui` like
     /// the three before it, and that is only correct if `no_tui` already means
     /// "non-interactive" rather than "the user typed `-N`".
     ///
     /// `validate` still carries its own `call_report.is_none()` guard, because
     /// a `Cli` built directly in a test never passes through here.
     fn normalize(&mut self) {
-        if self.call_report.is_some() {
-            self.no_tui = true;
+        if self.output_args.call_report.is_some() {
+            self.mode_args.no_tui = true;
         }
     }
 
@@ -3182,7 +3462,7 @@ impl Cli {
     /// Defaults to `true` (SNB-0004): a privileged sniffer must bound dialog
     /// state safely without dropping new legitimate calls. `--no-rotate` opts out.
     pub fn rotate_enabled(&self) -> bool {
-        !self.no_rotate
+        !self.dialog_args.no_rotate
     }
 
     /// Parse CLI arguments from an iterator (for testing).
@@ -3223,24 +3503,27 @@ impl Cli {
         // is the failure mode this whole change exists to remove. `[security]
         // business_hours` is checked by `SecurityConfig::validate` for the
         // same reason; clap cannot check a range spec by itself.
-        if let Some(spec) = self.business_hours.as_deref() {
+        if let Some(spec) = self.security_args.business_hours.as_deref() {
             crate::config::parse_business_hours(spec)?;
         }
         let output_flags_used: Vec<&str> = [
-            (self.json, "--json"),
-            (self.json_dialogs, "--json-dialogs"),
-            (self.json_pretty, "--json-pretty"),
-            (self.report, "--report"),
-            (self.hexdump, "--hexdump"),
-            (self.fail2ban, "--fail2ban"),
-            (self.group_by.is_some(), "--group-by"),
+            (self.output_args.json, "--json"),
+            (self.output_args.json_dialogs, "--json-dialogs"),
+            (self.output_args.json_pretty, "--json-pretty"),
+            (self.output_args.report, "--report"),
+            (self.output_args.hexdump, "--hexdump"),
+            (self.output_args.fail2ban, "--fail2ban"),
+            (self.output_args.group_by.is_some(), "--group-by"),
         ]
         .iter()
         .filter(|(active, _)| *active)
         .map(|(_, name)| *name)
         .collect();
 
-        if !output_flags_used.is_empty() && !self.no_tui && self.call_report.is_none() {
+        if !output_flags_used.is_empty()
+            && !self.mode_args.no_tui
+            && self.output_args.call_report.is_none()
+        {
             return Err(crate::Error::CliValidation(format!(
                 "Output flags ({}) require -N/--no-tui mode (or --call-report)",
                 output_flags_used.join(", ")
@@ -3250,26 +3533,26 @@ impl Cli {
         // Reject an unknown --group-by field at startup. This flag previously
         // parsed into the struct and was never read, so any value — including a
         // typo — was accepted and silently produced ungrouped output.
-        if let Some(ref field) = self.group_by {
+        if let Some(ref field) = self.output_args.group_by {
             crate::output::group::GroupField::parse(field).map_err(crate::Error::CliValidation)?;
         }
 
         // MCP mode owns stdout (JSON-RPC wire); reject any flag
         // combination that would also try to write to stdout.
-        if self.mcp {
-            if !self.no_tui {
+        if self.mcp_args.mcp {
+            if !self.mode_args.no_tui {
                 return Err(crate::Error::CliValidation(
                     "--mcp implies non-interactive mode; pass -N/--no-tui as well".to_string(),
                 ));
             }
             let stdout_flags: Vec<&str> = [
-                (self.json, "--json"),
-                (self.json_pretty, "--json-pretty"),
-                (self.report, "--report"),
-                (self.hexdump, "--hexdump"),
-                (self.wireshark, "--wireshark"),
-                (self.call_report.is_some(), "--call-report"),
-                (self.tshark_filter.is_some(), "--tshark-filter"),
+                (self.output_args.json, "--json"),
+                (self.output_args.json_pretty, "--json-pretty"),
+                (self.output_args.report, "--report"),
+                (self.output_args.hexdump, "--hexdump"),
+                (self.output_args.wireshark, "--wireshark"),
+                (self.output_args.call_report.is_some(), "--call-report"),
+                (self.output_args.tshark_filter.is_some(), "--tshark-filter"),
             ]
             .iter()
             .filter(|(active, _)| *active)
@@ -3285,17 +3568,17 @@ impl Cli {
             // Token + bind validation for non-loopback HTTP transport happens
             // in the http transport module; for stdio there is no
             // network surface to validate.
-            if self.mcp_transport != "stdio" && self.mcp_transport != "http" {
+            if self.mcp_args.mcp_transport != "stdio" && self.mcp_args.mcp_transport != "http" {
                 return Err(crate::Error::CliValidation(format!(
                     "--mcp-transport must be 'stdio' or 'http', got '{}'",
-                    self.mcp_transport
+                    self.mcp_args.mcp_transport
                 )));
             }
         }
 
         // Fail fast on a malformed --kill-target so a typo can't silently leave
         // an attacker unblocked.
-        for spec in &self.kill_target {
+        for spec in &self.security_args.kill_target {
             crate::security::scanner_kill::KillTarget::parse(spec)
                 .map_err(|e| crate::Error::CliValidation(format!("--kill-target '{spec}': {e}")))?;
         }
@@ -3312,8 +3595,8 @@ impl Cli {
     /// semantics.
     pub fn resolve_metrics_auth(&self) -> Result<Option<String>, String> {
         resolve_file_or_inline_secret(
-            self.metrics_auth.as_deref(),
-            self.metrics_auth_file.as_deref(),
+            self.listener_args.metrics_auth.as_deref(),
+            self.listener_args.metrics_auth_file.as_deref(),
             "--metrics-auth-file",
         )
     }
@@ -3328,8 +3611,8 @@ impl Cli {
     /// semantics.
     pub fn resolve_hep_auth(&self) -> Result<Option<String>, String> {
         resolve_file_or_inline_secret(
-            self.hep_auth.as_deref(),
-            self.hep_auth_file.as_deref(),
+            self.hep_args.hep_auth.as_deref(),
+            self.hep_args.hep_auth_file.as_deref(),
             "--hep-auth-file",
         )
     }
@@ -3480,7 +3763,7 @@ mod tests {
 
     /// With no flag and no config key, the resolved colour mode is `auto`.
     ///
-    /// Asserts the RESOLVER, not the field. `cli.color == "auto"` was the old
+    /// Asserts the RESOLVER, not the field. `cli.output_args.color == "auto"` was the old
     /// assertion and it passed for the wrong reason: clap filled the field
     /// from a `default_value`, which is precisely what made `[display] color`
     /// unreachable. A test that reads the field cannot tell a working key from
@@ -3489,7 +3772,10 @@ mod tests {
     fn color_default_is_auto() {
         let cli = Cli::try_parse_from(["sipnab"]).unwrap();
         let cfg = crate::config::Config::default();
-        assert_eq!(cli.color, None, "no flag given, so the field stays empty");
+        assert_eq!(
+            cli.output_args.color, None,
+            "no flag given, so the field stays empty"
+        );
         assert_eq!(cli.color_mode(&cfg), "auto");
     }
 
@@ -3612,7 +3898,7 @@ mod tests {
         for v in ["stdio", "http"] {
             let cli = Cli::try_parse_from(["sipnab", "--mcp-transport", v])
                 .unwrap_or_else(|e| panic!("--mcp-transport {v} must parse: {e}"));
-            assert_eq!(cli.mcp_transport, v);
+            assert_eq!(cli.mcp_args.mcp_transport, v);
         }
     }
 
@@ -3691,7 +3977,7 @@ mod tests {
     fn cores_flag_parses() {
         // `--cores N` selects the multi-core offline reconstruction core count.
         let cli = Cli::parse_from_args(["sipnab", "--cores", "4", "-I", "x.pcap"]);
-        assert_eq!(cli.cores, 4);
+        assert_eq!(cli.limits_args.cores, 4);
     }
 
     /// HEP auth-file, per-peer rate limit, HEP-kill opt-in, and metrics
@@ -3713,16 +3999,19 @@ mod tests {
             "/etc/sipnab/metrics.cred",
         ]);
         assert_eq!(
-            cli.hep_auth_file.as_deref(),
+            cli.hep_args.hep_auth_file.as_deref(),
             Some(std::path::Path::new("/etc/sipnab/hep.key"))
         );
-        assert_eq!(cli.hep_rate_limit_per_peer, PerPeerLimit::Fixed(5000));
+        assert_eq!(
+            cli.hep_args.hep_rate_limit_per_peer,
+            PerPeerLimit::Fixed(5000)
+        );
         assert!(
-            cli.hep_allow_kill,
+            cli.security_args.hep_allow_kill,
             "--hep-allow-kill opts into HEP scanner-kill"
         );
         assert_eq!(
-            cli.metrics_auth_file.as_deref(),
+            cli.listener_args.metrics_auth_file.as_deref(),
             Some(std::path::Path::new("/etc/sipnab/metrics.cred"))
         );
     }
@@ -3732,11 +4021,11 @@ mod tests {
     fn hep_allow_kill_defaults_off() {
         let cli = Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060"]);
         assert!(
-            !cli.hep_allow_kill,
+            !cli.security_args.hep_allow_kill,
             "HEP-origin scanner-kill must be opt-in (SN-01)"
         );
         assert_eq!(
-            cli.hep_rate_limit_per_peer,
+            cli.hep_args.hep_rate_limit_per_peer,
             PerPeerLimit::Off,
             "per-peer cap off by default"
         );
@@ -3752,7 +4041,7 @@ mod tests {
             "--hep-rate-limit-per-peer",
             "auto",
         ]);
-        assert_eq!(cli.hep_rate_limit_per_peer, PerPeerLimit::Auto);
+        assert_eq!(cli.hep_args.hep_rate_limit_per_peer, PerPeerLimit::Auto);
     }
 
     /// A non-numeric, non-keyword per-peer value is rejected at parse time.
@@ -3829,10 +4118,10 @@ mod tests {
     fn hep_auth_mode_flag_parses() {
         let cli =
             Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060", "--hep-auth-mode", "hmac"]);
-        assert_eq!(cli.hep_auth_mode, HepAuthMode::Hmac);
+        assert_eq!(cli.hep_args.hep_auth_mode, HepAuthMode::Hmac);
         let default = Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060"]);
         assert_eq!(
-            default.hep_auth_mode,
+            default.hep_args.hep_auth_mode,
             HepAuthMode::Plain,
             "plain is the default mode"
         );
@@ -3844,33 +4133,33 @@ mod tests {
     fn defaults_are_sane() {
         let cli = Cli::parse_from_args(["sipnab"]);
         assert_eq!(
-            cli.portrange, None,
+            cli.capture_args.portrange, None,
             "portrange is an Option so an explicit default beats config"
         );
         // The three caps are Options for the same reason portrange is: with a
         // clap `default_value` the field is filled whether or not the operator
         // passed anything, so `[limits]` had nothing to override and was dead.
         // Unset on the CLI; the default now comes from the resolver.
-        assert_eq!(cli.limit, None);
-        assert_eq!(cli.max_streams, None);
+        assert_eq!(cli.dialog_args.limit, None);
+        assert_eq!(cli.rtp_args.max_streams, None);
         let cfg = crate::config::Config::default();
         assert_eq!(cli.dialog_limit(&cfg), 100_000);
         assert_eq!(cli.max_streams_limit(&cfg), 50_000);
-        assert!((cli.quality_threshold - 3.0).abs() < f64::EPSILON);
+        assert!((cli.rtp_args.quality_threshold - 3.0).abs() < f64::EPSILON);
         assert_eq!(cli.kill_response_code(&cfg), 200);
-        assert_eq!(cli.exec_rate_limit, 10);
-        assert_eq!(cli.api_max_conn, 100);
-        assert_eq!(cli.mcp_max_concurrent, 100);
-        assert_eq!(cli.mcp_rate_limit_per_peer, 100);
-        assert_eq!(cli.hep_rate_limit, None);
+        assert_eq!(cli.exec_args.exec_rate_limit, 10);
+        assert_eq!(cli.listener_args.api_max_conn, 100);
+        assert_eq!(cli.mcp_args.mcp_max_concurrent, 100);
+        assert_eq!(cli.mcp_args.mcp_rate_limit_per_peer, 100);
+        assert_eq!(cli.hep_args.hep_rate_limit, None);
         assert_eq!(cli.hep_rate_limit_resolved(&cfg), 50_000);
-        assert_eq!(cli.pcap_export_mode, "decrypted");
-        assert_eq!(cli.max_reassembly, None);
+        assert_eq!(cli.tls_args.pcap_export_mode, "decrypted");
+        assert_eq!(cli.limits_args.max_reassembly, None);
         assert_eq!(cli.max_reassembly_limit(&cfg), 10_000);
-        assert_eq!(cli.cores, 1, "single-threaded by default");
+        assert_eq!(cli.limits_args.cores, 1, "single-threaded by default");
         assert_eq!(cli.color_mode(&cfg), "auto");
-        assert!(!cli.no_tui);
-        assert!(!cli.setup_caps);
+        assert!(!cli.mode_args.no_tui);
+        assert!(!cli.privilege_args.setup_caps);
         // Dialog rotation is ON by default (SNB-0004): at --limit capacity the
         // store evicts the oldest dialog rather than dropping new legitimate
         // calls — a privileged sniffer must bound dialog state safely by default.
@@ -3883,10 +4172,10 @@ mod tests {
     #[test]
     fn mcp_max_concurrent_parses_including_the_unlimited_zero() {
         let capped = Cli::parse_from_args(["sipnab", "--mcp-max-concurrent", "5"]);
-        assert_eq!(capped.mcp_max_concurrent, 5);
+        assert_eq!(capped.mcp_args.mcp_max_concurrent, 5);
         let unlimited = Cli::parse_from_args(["sipnab", "--mcp-max-concurrent", "0"]);
         assert_eq!(
-            unlimited.mcp_max_concurrent, 0,
+            unlimited.mcp_args.mcp_max_concurrent, 0,
             "0 must parse as the unlimited spelling, not be rejected"
         );
     }
@@ -3898,10 +4187,10 @@ mod tests {
     #[test]
     fn mcp_rate_limit_per_peer_parses_including_the_unlimited_zero() {
         let capped = Cli::parse_from_args(["sipnab", "--mcp-rate-limit-per-peer", "5"]);
-        assert_eq!(capped.mcp_rate_limit_per_peer, 5);
+        assert_eq!(capped.mcp_args.mcp_rate_limit_per_peer, 5);
         let unlimited = Cli::parse_from_args(["sipnab", "--mcp-rate-limit-per-peer", "0"]);
         assert_eq!(
-            unlimited.mcp_rate_limit_per_peer, 0,
+            unlimited.mcp_args.mcp_rate_limit_per_peer, 0,
             "0 must parse as the unlimited spelling, not be rejected"
         );
     }
@@ -3917,7 +4206,7 @@ mod tests {
     fn call_report_normalizes_to_non_interactive() {
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--call-report", "a@b"]);
         assert!(
-            cli.no_tui,
+            cli.mode_args.no_tui,
             "--call-report must imply -N, or the run-mode selector and the \
              app::batch output gates disagree about whether a TUI is running"
         );
@@ -3927,16 +4216,19 @@ mod tests {
         // non-interactive -- this is the combination validate() waives.
         let cli =
             Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--call-report", "a@b", "--json"]);
-        assert!(cli.no_tui);
+        assert!(cli.mode_args.no_tui);
         assert!(cli.validate().is_ok());
 
         // Without it, nothing is implied and the TUI remains the default.
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
-        assert!(!cli.no_tui, "no --call-report must leave the TUI default");
+        assert!(
+            !cli.mode_args.no_tui,
+            "no --call-report must leave the TUI default"
+        );
 
         // An explicit -N is unchanged, not doubly applied.
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "-N"]);
-        assert!(cli.no_tui);
+        assert!(cli.mode_args.no_tui);
     }
 
     /// Rotation defaults on; `--no-rotate` opts out; when both flags are
@@ -3959,7 +4251,7 @@ mod tests {
     #[test]
     fn setup_caps_flag_parses() {
         let cli = Cli::parse_from_args(["sipnab", "--setup-caps"]);
-        assert!(cli.setup_caps);
+        assert!(cli.privilege_args.setup_caps);
     }
 
     /// `--resolve`, `--reverse-dns`, and repeatable `--names` files parse.
@@ -3974,10 +4266,10 @@ mod tests {
             "--names",
             "/tmp/names",
         ]);
-        assert!(cli.resolve);
-        assert!(cli.reverse_dns);
+        assert!(cli.name_args.resolve);
+        assert!(cli.name_args.reverse_dns);
         assert_eq!(
-            cli.names,
+            cli.name_args.names,
             vec!["/etc/hosts".to_string(), "/tmp/names".to_string()]
         );
     }
@@ -3988,17 +4280,24 @@ mod tests {
     fn buffer_flags_parse_and_reject_invalid() {
         // Kernel capture buffer (--buffer / -B).
         assert_eq!(
-            Cli::parse_from_args(["sipnab", "--buffer", "32"]).buffer,
+            Cli::parse_from_args(["sipnab", "--buffer", "32"])
+                .capture_args
+                .buffer,
             Some(32)
         );
         assert_eq!(
-            Cli::parse_from_args(["sipnab", "-B", "16"]).buffer,
+            Cli::parse_from_args(["sipnab", "-B", "16"])
+                .capture_args
+                .buffer,
             Some(16)
         );
         // In-flight queue memory budget (--buffer-budget).
         let cli = Cli::parse_from_args(["sipnab", "--buffer-budget", "128"]);
-        assert_eq!(cli.buffer_budget, Some(128));
-        assert_eq!(Cli::parse_from_args(["sipnab"]).buffer_budget, None);
+        assert_eq!(cli.capture_args.buffer_budget, Some(128));
+        assert_eq!(
+            Cli::parse_from_args(["sipnab"]).capture_args.buffer_budget,
+            None
+        );
         // Non-numeric values are rejected by clap.
         assert!(Cli::try_parse_from(["sipnab", "--buffer-budget", "huge"]).is_err());
         assert!(Cli::try_parse_from(["sipnab", "--buffer", "huge"]).is_err());
@@ -4009,11 +4308,17 @@ mod tests {
     #[test]
     fn from_to_mode_flag_parses_and_rejects_invalid() {
         let cli = Cli::parse_from_args(["sipnab", "--from-to-mode", "host-port"]);
-        assert_eq!(cli.from_to_mode, Some(FromToModeArg::HostPort));
+        assert_eq!(cli.name_args.from_to_mode, Some(FromToModeArg::HostPort));
         let cli = Cli::parse_from_args(["sipnab", "--from-to-mode", "user-host-port"]);
-        assert_eq!(cli.from_to_mode, Some(FromToModeArg::UserHostPort));
+        assert_eq!(
+            cli.name_args.from_to_mode,
+            Some(FromToModeArg::UserHostPort)
+        );
         // Absent → None (falls back to config/default).
-        assert_eq!(Cli::parse_from_args(["sipnab"]).from_to_mode, None);
+        assert_eq!(
+            Cli::parse_from_args(["sipnab"]).name_args.from_to_mode,
+            None
+        );
         // Invalid value is rejected by clap (I4).
         assert!(Cli::try_parse_from(["sipnab", "--from-to-mode", "bogus"]).is_err());
     }
@@ -4023,7 +4328,7 @@ mod tests {
     fn strip_secrets_flag_parses() {
         let cli =
             Cli::parse_from_args(["sipnab", "-I", "in.pcapng", "--strip-secrets", "out.pcapng"]);
-        assert_eq!(cli.strip_secrets.as_deref(), Some("out.pcapng"));
+        assert_eq!(cli.name_args.strip_secrets.as_deref(), Some("out.pcapng"));
     }
 
     /// Device, input/output pcap, `--no-rtp`, and `--multi-device` parse.
@@ -4040,11 +4345,11 @@ mod tests {
             "--no-rtp",
             "--multi-device",
         ]);
-        assert_eq!(cli.device.as_deref(), Some("eth0"));
+        assert_eq!(cli.capture_args.device.as_deref(), Some("eth0"));
         assert_eq!(cli.primary_input(), Some("in.pcap"));
-        assert_eq!(cli.output.as_deref(), Some("out.pcap"));
-        assert!(cli.no_rtp);
-        assert!(cli.multi_device);
+        assert_eq!(cli.capture_args.output.as_deref(), Some("out.pcap"));
+        assert!(cli.capture_args.no_rtp);
+        assert!(cli.capture_args.multi_device);
     }
 
     /// Header filters (`--from`/`--to`/`--ua`) and the `-i`/`-v`/`-w`
@@ -4054,12 +4359,12 @@ mod tests {
         let cli = Cli::parse_from_args([
             "sipnab", "--from", "alice", "--to", "bob", "--ua", "friendly", "-i", "-v", "-w",
         ]);
-        assert_eq!(cli.from.as_deref(), Some("alice"));
-        assert_eq!(cli.to.as_deref(), Some("bob"));
-        assert_eq!(cli.ua.as_deref(), Some("friendly"));
-        assert!(cli.ignore_case);
-        assert!(cli.invert);
-        assert!(cli.word);
+        assert_eq!(cli.matching_args.from.as_deref(), Some("alice"));
+        assert_eq!(cli.matching_args.to.as_deref(), Some("bob"));
+        assert_eq!(cli.matching_args.ua.as_deref(), Some("friendly"));
+        assert!(cli.matching_args.ignore_case);
+        assert!(cli.matching_args.invert);
+        assert!(cli.matching_args.word);
     }
 
     /// `validate` rejects `--json` without `-N` and accepts it with `-N`.
@@ -4092,9 +4397,9 @@ mod tests {
             "--alert",
             "json",
         ]);
-        assert!(cli.kill_scanner);
-        assert!(cli.fraud_detect);
-        assert_eq!(cli.alert, vec!["syslog", "json"]);
+        assert!(cli.security_args.kill_scanner);
+        assert!(cli.security_args.fraud_detect);
+        assert_eq!(cli.security_args.alert, vec!["syslog", "json"]);
     }
 
     /// Trailing positional words are collected verbatim as the BPF filter.
@@ -4112,33 +4417,41 @@ mod tests {
     fn limitlen_and_no_reassembly_flags_parse() {
         // Short form.
         let cli = Cli::parse_from_args(["sipnab", "-S", "512", "--no-reassembly"]);
-        assert_eq!(cli.limitlen, Some(512));
-        assert!(cli.no_reassembly);
+        assert_eq!(cli.capture_args.limitlen, Some(512));
+        assert!(cli.capture_args.no_reassembly);
         // Long form (`--limitlen`).
         let long = Cli::parse_from_args(["sipnab", "--limitlen", "256"]);
-        assert_eq!(long.limitlen, Some(256));
+        assert_eq!(long.capture_args.limitlen, Some(256));
         let d = Cli::parse_from_args(["sipnab"]);
-        assert_eq!(d.limitlen, None);
-        assert!(!d.no_reassembly);
+        assert_eq!(d.capture_args.limitlen, None);
+        assert!(!d.capture_args.no_reassembly);
     }
 
     /// `--hep-id` and `--hep-auth` parse; both are `None` when absent.
     #[test]
     fn hep_id_and_auth_flags_parse() {
         let cli = Cli::parse_from_args(["sipnab", "--hep-id", "7", "--hep-auth", "secret"]);
-        assert_eq!(cli.hep_id, Some(7));
-        assert_eq!(cli.hep_auth.as_deref(), Some("secret"));
+        assert_eq!(cli.hep_args.hep_id, Some(7));
+        assert_eq!(cli.hep_args.hep_auth.as_deref(), Some("secret"));
         let none = Cli::parse_from_args(["sipnab"]);
-        assert_eq!(none.hep_id, None);
-        assert_eq!(none.hep_auth, None);
+        assert_eq!(none.hep_args.hep_id, None);
+        assert_eq!(none.hep_args.hep_auth, None);
     }
 
     /// `-p` and `--no-promisc` both set the flag; it defaults off.
     #[test]
     fn no_promisc_short_and_long_flags() {
-        assert!(Cli::parse_from_args(["sipnab", "-p"]).no_promisc);
-        assert!(Cli::parse_from_args(["sipnab", "--no-promisc"]).no_promisc);
-        assert!(!Cli::parse_from_args(["sipnab"]).no_promisc);
+        assert!(
+            Cli::parse_from_args(["sipnab", "-p"])
+                .capture_args
+                .no_promisc
+        );
+        assert!(
+            Cli::parse_from_args(["sipnab", "--no-promisc"])
+                .capture_args
+                .no_promisc
+        );
+        assert!(!Cli::parse_from_args(["sipnab"]).capture_args.no_promisc);
     }
 
     /// `--capture-tunnels` takes an optional value: bare it means the three
@@ -4152,18 +4465,23 @@ mod tests {
     fn capture_tunnels_optional_value() {
         assert_eq!(
             Cli::parse_from_args(["sipnab", "--capture-tunnels"])
+                .capture_args
                 .capture_tunnels
                 .as_deref(),
             Some(crate::app::bootstrap::TUNNEL_PORTS_DEFAULT_LIST)
         );
         assert_eq!(
             Cli::parse_from_args(["sipnab", "--capture-tunnels=8472"])
+                .capture_args
                 .capture_tunnels
                 .as_deref(),
             Some("8472")
         );
         assert_eq!(
-            Cli::parse_from_args(["sipnab"]).capture_tunnels.as_deref(),
+            Cli::parse_from_args(["sipnab"])
+                .capture_args
+                .capture_tunnels
+                .as_deref(),
             None
         );
     }
@@ -4172,13 +4490,20 @@ mod tests {
     /// unknown modes.
     #[test]
     fn kill_spoof_flag_parses_with_auto_default() {
-        assert_eq!(Cli::parse_from_args(["sipnab"]).kill_spoof, KillSpoof::Auto);
         assert_eq!(
-            Cli::parse_from_args(["sipnab", "--kill-spoof", "raw"]).kill_spoof,
+            Cli::parse_from_args(["sipnab"]).security_args.kill_spoof,
+            KillSpoof::Auto
+        );
+        assert_eq!(
+            Cli::parse_from_args(["sipnab", "--kill-spoof", "raw"])
+                .security_args
+                .kill_spoof,
             KillSpoof::Raw
         );
         assert_eq!(
-            Cli::parse_from_args(["sipnab", "--kill-spoof", "ephemeral"]).kill_spoof,
+            Cli::parse_from_args(["sipnab", "--kill-spoof", "ephemeral"])
+                .security_args
+                .kill_spoof,
             KillSpoof::Ephemeral
         );
         // Unknown mode is rejected by clap's value-enum parsing.
@@ -4197,7 +4522,10 @@ mod tests {
             "192.168.1.5",
             "host 10.0.0.1",
         ]);
-        assert_eq!(cli.kill_target, vec!["10.0.0.1:5060-5090", "192.168.1.5"]);
+        assert_eq!(
+            cli.security_args.kill_target,
+            vec!["10.0.0.1:5060-5090", "192.168.1.5"]
+        );
         assert_eq!(cli.bpf_filter, vec!["host 10.0.0.1"]);
     }
 
@@ -4220,38 +4548,65 @@ mod tests {
     #[test]
     fn match_expr_short_and_long_flags() {
         let short = Cli::parse_from_args(["sipnab", "-e", "INVITE sip:"]);
-        assert_eq!(short.match_expr.as_deref(), Some("INVITE sip:"));
+        assert_eq!(
+            short.matching_args.match_expr.as_deref(),
+            Some("INVITE sip:")
+        );
 
         let long = Cli::parse_from_args(["sipnab", "--match", "sipsak"]);
-        assert_eq!(long.match_expr.as_deref(), Some("sipsak"));
+        assert_eq!(long.matching_args.match_expr.as_deref(), Some("sipsak"));
 
         let none = Cli::parse_from_args(["sipnab"]);
-        assert_eq!(none.match_expr, None);
+        assert_eq!(none.matching_args.match_expr, None);
     }
 
     /// `--proto-number` (long-only) parses; defaults off.
     #[test]
     fn proto_number_flag_parses() {
         // Long-only: `-N` is already taken by `--no-tui`.
-        assert!(Cli::parse_from_args(["sipnab", "--proto-number"]).proto_number);
-        assert!(!Cli::parse_from_args(["sipnab"]).proto_number);
+        assert!(
+            Cli::parse_from_args(["sipnab", "--proto-number"])
+                .output_args
+                .proto_number
+        );
+        assert!(!Cli::parse_from_args(["sipnab"]).output_args.proto_number);
     }
 
     /// `--show-empty` and its `--full` alias both set the flag.
     #[test]
     fn show_empty_flag_and_full_alias_parse() {
-        assert!(Cli::parse_from_args(["sipnab", "--show-empty"]).show_empty);
+        assert!(
+            Cli::parse_from_args(["sipnab", "--show-empty"])
+                .output_args
+                .show_empty
+        );
         // `--full` is a visible alias of --show-empty.
-        assert!(Cli::parse_from_args(["sipnab", "--full"]).show_empty);
-        assert!(!Cli::parse_from_args(["sipnab"]).show_empty);
+        assert!(
+            Cli::parse_from_args(["sipnab", "--full"])
+                .output_args
+                .show_empty
+        );
+        assert!(!Cli::parse_from_args(["sipnab"]).output_args.show_empty);
     }
 
     /// `-x` and `--quiet-bad-parse` both set the flag; defaults off.
     #[test]
     fn quiet_bad_parse_short_and_long_flags() {
-        assert!(Cli::parse_from_args(["sipnab", "-x"]).quiet_bad_parse);
-        assert!(Cli::parse_from_args(["sipnab", "--quiet-bad-parse"]).quiet_bad_parse);
-        assert!(!Cli::parse_from_args(["sipnab"]).quiet_bad_parse);
+        assert!(
+            Cli::parse_from_args(["sipnab", "-x"])
+                .capture_args
+                .quiet_bad_parse
+        );
+        assert!(
+            Cli::parse_from_args(["sipnab", "--quiet-bad-parse"])
+                .capture_args
+                .quiet_bad_parse
+        );
+        assert!(
+            !Cli::parse_from_args(["sipnab"])
+                .capture_args
+                .quiet_bad_parse
+        );
     }
 
     /// The `-e` payload expression and the trailing BPF positional stay
@@ -4261,7 +4616,10 @@ mod tests {
         // The payload match-expression (-e) and the trailing BPF positional
         // are independent: neither steals the other's tokens.
         let cli = Cli::parse_from_args(["sipnab", "-e", "friendly-scanner", "host", "10.0.0.1"]);
-        assert_eq!(cli.match_expr.as_deref(), Some("friendly-scanner"));
+        assert_eq!(
+            cli.matching_args.match_expr.as_deref(),
+            Some("friendly-scanner")
+        );
         assert_eq!(cli.bpf_filter, vec!["host", "10.0.0.1"]);
     }
 

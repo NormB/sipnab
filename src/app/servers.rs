@@ -228,7 +228,7 @@ pub fn start_servers(
     // it must come up whether or not any async server was selected.
     #[cfg(feature = "metrics")]
     if selection.metrics
-        && let Some(addr_str) = cli.metrics.as_deref()
+        && let Some(addr_str) = cli.listener_args.metrics.as_deref()
     {
         let bind_addr = crate::output::prometheus_server::parse_metrics_addr(addr_str)?;
         let auth = cli.resolve_metrics_auth().unwrap_or_else(|e| {
@@ -277,7 +277,7 @@ pub fn start_servers(
 
     #[cfg(feature = "api")]
     if selection.api
-        && let Some(addr_str) = cli.api.as_ref()
+        && let Some(addr_str) = cli.listener_args.api.as_ref()
     {
         use crate::output::api::{self, ApiServerConfig, ApiState, RateLimiter};
         let bind = api::parse_bind_addr(addr_str)
@@ -295,9 +295,9 @@ pub fn start_servers(
             max_rows: selection.api_row_cap,
         };
         let config = ApiServerConfig {
-            max_conn: cli.api_max_conn,
-            tls_cert: cli.api_tls_cert.clone(),
-            tls_key: cli.api_tls_key.clone(),
+            max_conn: cli.listener_args.api_max_conn,
+            tls_cert: cli.listener_args.api_tls_cert.clone(),
+            tls_key: cli.listener_args.api_tls_key.clone(),
         };
         // Vet the config and bind NOW, on the caller's thread: a bind failure
         // (port already in use) logged from the detached servers thread is
@@ -311,14 +311,14 @@ pub fn start_servers(
     }
 
     #[cfg(feature = "mcp")]
-    if selection.mcp && cli.mcp {
+    if selection.mcp && cli.mcp_args.mcp {
         let exhausted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         source_exhausted = Some(Arc::clone(&exhausted));
         // Describe the capture source so `capture_status` reports fact rather
         // than "unknown". Derived from the same flags the capture path uses,
         // not restated — `-I` beats `-d`, exactly as bootstrap resolves it.
         let capture_ctx = {
-            let (live, name) = match (cli.primary_input(), cli.device.as_deref()) {
+            let (live, name) = match (cli.primary_input(), cli.capture_args.device.as_deref()) {
                 (Some(path), _) => (false, path.to_string()),
                 (None, Some(dev)) => (true, dev.to_string()),
                 // No -d and no -I: the capture layer picks a default. On
@@ -340,7 +340,7 @@ pub fn start_servers(
                 live,
                 name,
                 started: std::time::Instant::now(),
-                writing_to: cli.output.clone(),
+                writing_to: cli.capture_args.output.clone(),
             }
         };
         // What this run is reading, so the file tools cannot write over it.
@@ -348,33 +348,39 @@ pub fn start_servers(
         // opens every candidate through libpcap and has already run once in
         // `bootstrap::plan`, and the specs already name every file and
         // directory that matters here.
-        let protected_inputs =
-            crate::capture::output_guard::ProtectedInputs::new(&cli.input, &[], cli.recursive);
+        let protected_inputs = crate::capture::output_guard::ProtectedInputs::new(
+            &cli.capture_args.input,
+            &[],
+            cli.capture_args.recursive,
+        );
         let new_server = || {
             let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
                 .with_source_exhausted(Arc::clone(&exhausted))
                 .with_capture_context(capture_ctx.clone())
                 .with_protected_inputs(protected_inputs.clone())
-                .with_max_concurrent(cli.mcp_max_concurrent as usize)
-                .with_rate_limit_per_peer(cli.mcp_rate_limit_per_peer, selection.max_tracked_peers)
+                .with_max_concurrent(cli.mcp_args.mcp_max_concurrent as usize)
+                .with_rate_limit_per_peer(
+                    cli.mcp_args.mcp_rate_limit_per_peer,
+                    selection.max_tracked_peers,
+                )
                 .with_row_cap(selection.mcp_row_cap)
                 .with_body_cap(selection.mcp_body_cap)
                 .with_findings_cap(selection.mcp_max_findings);
-            let s = match cli.mcp_file_root.as_ref() {
+            let s = match cli.mcp_args.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
                 None => s,
             };
-            let s = if cli.mcp_allow_shutdown {
+            let s = if cli.mcp_args.mcp_allow_shutdown {
                 s.with_shutdown()
             } else {
                 s
             };
-            let s = if cli.mcp_allow_open_capture {
+            let s = if cli.mcp_args.mcp_allow_open_capture {
                 s.with_open_capture()
             } else {
                 s
             };
-            let s = if cli.mcp_allow_save_findings {
+            let s = if cli.mcp_args.mcp_allow_save_findings {
                 s.with_save_findings()
             } else {
                 s
@@ -385,7 +391,7 @@ pub fn start_servers(
                 None => s,
             }
         };
-        match cli.mcp_transport.as_str() {
+        match cli.mcp_args.mcp_transport.as_str() {
             "stdio" => {
                 let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 mcp_stdio_done = Some(Arc::clone(&done));
@@ -396,14 +402,14 @@ pub fn start_servers(
             }
             #[cfg(feature = "mcp-http")]
             "http" => {
-                let bind_str = cli.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
+                let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
                 let bind = crate::output::api::parse_bind_addr(bind_str)
                     .map_err(|e| anyhow::anyhow!("Invalid --mcp-bind address: {e}"))?;
                 prepared.push(Prepared::McpHttp {
                     server: Box::new(new_server()),
                     bind,
                     auth: resolve_mcp_verifier_config(cli),
-                    extra_allowed_hosts: cli.mcp_allowed_host.clone(),
+                    extra_allowed_hosts: cli.mcp_args.mcp_allowed_host.clone(),
                 });
             }
             #[cfg(not(feature = "mcp-http"))]
@@ -491,15 +497,16 @@ fn read_signing_key_file(path: &str, flag: &str) -> Vec<u8> {
 pub fn resolve_api_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
     let mut signing_keys: Vec<Vec<u8>> = Vec::new();
     // File key first so it is the minting key.
-    if let Some(ref path) = cli.api_signing_key_file {
+    if let Some(ref path) = cli.listener_args.api_signing_key_file {
         signing_keys.push(read_signing_key_file(path, "--api-signing-key-file"));
     }
-    for k in &cli.api_signing_key {
+    for k in &cli.listener_args.api_signing_key {
         if !k.is_empty() {
             signing_keys.push(k.as_bytes().to_vec());
         }
     }
     let static_keys: Vec<String> = cli
+        .listener_args
         .api_key
         .iter()
         .filter(|k| !k.is_empty())
@@ -508,7 +515,11 @@ pub fn resolve_api_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
     crate::auth::VerifierConfig {
         signing_keys,
         static_keys,
-        revoked_file: cli.api_revoked_file.as_ref().map(std::path::PathBuf::from),
+        revoked_file: cli
+            .listener_args
+            .api_revoked_file
+            .as_ref()
+            .map(std::path::PathBuf::from),
         audience: crate::auth::AUDIENCE_API.to_string(),
     }
 }
@@ -524,10 +535,10 @@ pub fn resolve_api_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
 #[cfg(feature = "mcp")]
 pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
     let mut signing_keys: Vec<Vec<u8>> = Vec::new();
-    if let Some(ref path) = cli.mcp_signing_key_file {
+    if let Some(ref path) = cli.mcp_args.mcp_signing_key_file {
         signing_keys.push(read_signing_key_file(path, "--mcp-signing-key-file"));
     }
-    for k in &cli.mcp_signing_key {
+    for k in &cli.mcp_args.mcp_signing_key {
         if !k.is_empty() {
             signing_keys.push(k.as_bytes().to_vec());
         }
@@ -536,12 +547,12 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
     // Static secret: --mcp-token > --mcp-token-file > SIPNAB_MCP_TOKEN (env is
     // folded into --mcp-token by clap). Trim file contents.
     let mut static_keys: Vec<String> = Vec::new();
-    if let Some(t) = cli.mcp_token.as_ref() {
+    if let Some(t) = cli.mcp_args.mcp_token.as_ref() {
         let t = t.trim();
         if !t.is_empty() {
             static_keys.push(t.to_string());
         }
-    } else if let Some(path) = cli.mcp_token_file.as_ref() {
+    } else if let Some(path) = cli.mcp_args.mcp_token_file.as_ref() {
         match std::fs::read_to_string(path) {
             Ok(s) => {
                 let s = s.trim();
@@ -559,7 +570,11 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
     crate::auth::VerifierConfig {
         signing_keys,
         static_keys,
-        revoked_file: cli.mcp_revoked_file.as_ref().map(std::path::PathBuf::from),
+        revoked_file: cli
+            .mcp_args
+            .mcp_revoked_file
+            .as_ref()
+            .map(std::path::PathBuf::from),
         audience: crate::auth::AUDIENCE_MCP.to_string(),
     }
 }

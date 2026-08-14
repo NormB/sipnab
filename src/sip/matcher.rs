@@ -55,9 +55,9 @@ pub struct SipMatcher {
 impl SipMatcher {
     /// Build a matcher from CLI flags and an optional positional payload pattern.
     ///
-    /// Each pattern is compiled with case-insensitive mode if `cli.ignore_case`
-    /// is set. If `cli.word` is set, patterns are wrapped in `\b...\b` for
-    /// whole-word matching. If `cli.single_line` is false (the default), the
+    /// Each pattern is compiled with case-insensitive mode if `cli.matching_args.ignore_case`
+    /// is set. If `cli.matching_args.word` is set, patterns are wrapped in `\b...\b` for
+    /// whole-word matching. If `cli.matching_args.single_line` is false (the default), the
     /// payload regex is compiled with `dot_matches_new_line(true)` so `.`
     /// matches across header lines; when true, `.` only matches within a
     /// single line.
@@ -70,25 +70,30 @@ impl SipMatcher {
     /// Returns an error if any user-provided pattern fails to compile or
     /// exceeds the regex size limit (1 MB).
     pub fn new(cli: &Cli, payload_pattern: Option<&str>) -> Result<Self> {
-        Self::new_with_overrides(cli, payload_pattern, cli.from.as_deref(), cli.to.as_deref())
+        Self::new_with_overrides(
+            cli,
+            payload_pattern,
+            cli.matching_args.from.as_deref(),
+            cli.matching_args.to.as_deref(),
+        )
     }
 
     /// Build a matcher with explicit from/to overrides (for config fallback).
     ///
     /// `effective_from` and `effective_to` should already reflect the
-    /// CLI-over-config priority (i.e., `cli.from.or(config.filter.from)`).
+    /// CLI-over-config priority (i.e., `cli.matching_args.from.or(config.filter.from)`).
     pub fn new_with_overrides(
         cli: &Cli,
         payload_pattern: Option<&str>,
         effective_from: Option<&str>,
         effective_to: Option<&str>,
     ) -> Result<Self> {
-        let case_insensitive = cli.ignore_case;
-        let word = cli.word;
+        let case_insensitive = cli.matching_args.ignore_case;
+        let word = cli.matching_args.word;
         // When single_line is false (default), `.` matches newlines so
         // patterns can span across SIP header lines. When true, `.` does
         // NOT match `\n` (standard regex default).
-        let dot_matches_new_line = !cli.single_line;
+        let dot_matches_new_line = !cli.matching_args.single_line;
 
         let payload_regex = payload_pattern
             .map(|p| compile_pattern_bytes(p, case_insensitive, word, dot_matches_new_line))
@@ -106,6 +111,7 @@ impl SipMatcher {
             .context("invalid --to pattern")?;
 
         let contact_regex = cli
+            .matching_args
             .contact
             .as_deref()
             .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
@@ -113,6 +119,7 @@ impl SipMatcher {
             .context("invalid --contact pattern")?;
 
         let ua_regex = cli
+            .matching_args
             .ua
             .as_deref()
             .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
@@ -125,8 +132,8 @@ impl SipMatcher {
             to_regex,
             contact_regex,
             ua_regex,
-            invert: cli.invert,
-            calls_only: cli.calls_only,
+            invert: cli.matching_args.invert,
+            calls_only: cli.mode_args.calls_only,
         })
     }
 
@@ -807,7 +814,8 @@ mod tests {
         // `-e REGISTER` should match REGISTER but not INVITE, exactly like a
         // positional payload pattern.
         let cli = Cli::parse_from_args(["sipnab", "-e", "REGISTER"]);
-        let matcher = SipMatcher::new(&cli, cli.match_expr.as_deref()).expect("should build");
+        let matcher =
+            SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref()).expect("should build");
         assert!(matcher.is_active());
 
         let register = make_test_register("1001");
@@ -823,7 +831,7 @@ mod tests {
         // A malformed `-e` pattern must fail to build the matcher (not panic or
         // silently match nothing).
         let cli = Cli::parse_from_args(["sipnab", "-e", "[unterminated"]);
-        let result = SipMatcher::new(&cli, cli.match_expr.as_deref());
+        let result = SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref());
         assert!(
             result.is_err(),
             "-e with invalid regex must return an error"
@@ -836,7 +844,7 @@ mod tests {
         // A >1 MB `-e` pattern trips the compiled-program size limit.
         let huge = "a".repeat(2_000_000);
         let cli = Cli::parse_from_args(["sipnab", "-e", &huge]);
-        assert!(SipMatcher::new(&cli, cli.match_expr.as_deref()).is_err());
+        assert!(SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref()).is_err());
     }
 
     /// `-e` composes with `-i` (case-insensitive) and `-v` (invert).
@@ -844,7 +852,8 @@ mod tests {
     fn match_expr_honors_ignore_case_and_invert() {
         // -i makes the expression case-insensitive; -v inverts the result.
         let cli = Cli::parse_from_args(["sipnab", "-i", "-v", "-e", "register"]);
-        let matcher = SipMatcher::new(&cli, cli.match_expr.as_deref()).expect("should build");
+        let matcher =
+            SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref()).expect("should build");
 
         // REGISTER matches case-insensitively, then invert flips it out.
         let register = make_test_register("1001");
