@@ -2028,8 +2028,35 @@ program. And array fetch arguments are size-bounded: 24 bytes was verified, a
 SIP-message-sized read was not, so **measure the ceiling before designing
 around it**.
 
+**Confirmed against a real SIP daemon, not just `openssl s_client`.** The same
+probe, pointed at a live OpenSIPS speaking SIP over TLS on
+`opensips-1.goes.com:5063`, returned both directions of a real transaction out
+of the daemon's own `libssl`:
+
+```
+OPTIONS sip:probe@127.0.0.1 SIP/2.0..Via: SIP/2.
+SIP/2.0 200 OK..Via: SIP/2.0/TLS 127.0.0.1:44444
+```
+
+No certificate, no daemon restart, no keylog, and no BPF program. That is
+sngrep#447's request satisfied against the exact software class it was filed
+about. The first line the probe returned on that run was pointer garbage from a
+zero-length write, which is the content filter earning its place rather than a
+curiosity.
+
 Unchanged by this result: plaintext still arrives with no 5-tuple, which is
 `TK7`'s hard half and the reason `MessageOrigin` exists.
+
+**The test listener that made this possible, and why it is a second instance.**
+`opensips-1.goes.com` runs a packaged OpenSIPS on `10.0.0.40:5060` whose
+installed core corresponds to **neither** source tree on the box, so TLS modules
+built from either are rejected with a version-control type mismatch. Replacing
+the core to fix that rejects every other module too and needs config changes —
+`proto_udp` is inside the core in 4.1.0-dev rather than a module — so it is an
+OpenSIPS upgrade, not a listener. The TLS listener therefore runs as a
+self-contained second instance from the source tree's own binary and modules on
+`127.0.0.1:5063`, documented in `/home/gator/sipnab-tls-test/README` on that
+host. The packaged instance is untouched.
 
 - [ ] **TK6 — sipnab cannot extract the secrets itself.** Every path above needs
   a second tool installed on the SBC. **Do:** a non-default Linux-only `ebpf`
