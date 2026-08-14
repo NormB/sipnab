@@ -2044,6 +2044,33 @@ about. The first line the probe returned on that run was pointer garbage from a
 zero-length write, which is the content filter earning its place rather than a
 curiosity.
 
+### The fetch ceiling, measured — and the over-read it exposes
+
+Measured on `opensips-1.goes.com` 2026-08-14, because the earlier note said the
+ceiling was unverified and that designing around an unmeasured limit is how this
+goes wrong.
+
+- **64 bytes per fetch argument**, and that is a hard wall: `x8[65]` is refused.
+- **Arguments compose.** 32 of them reach **2048 bytes per event**, which covers
+  an ordinary `INVITE` with SDP.
+- **A fixed-size fetch reads past the write.** With an 8×64 = 512-byte fetch
+  against a 128-byte SIP message, the 384 bytes beyond `len` came back as
+  **adjacent process heap** — repeating 8-byte pointers, not zeros. On a SIP
+  proxy that heap can hold other calls' plaintext. This is the finding that
+  shapes the design: a naive maximum-size fetch turns a capture tool into an
+  arbitrary-memory reader.
+- **Per-event filters suppress delivery.** A probe fetching 64 bytes with
+  `len > 0 && len <= 64` delivered **nothing** for a 128-byte write, so the
+  kernel evaluates the filter before recording the event.
+
+**Therefore: length-banded probes.** Install several probes over the same
+symbol, each fetching one band and filtered to it (`<=64`, `<=256`, `<=1024`,
+`<=2048`), so the bytes that ever reach sipnab exceed the true length by at most
+one band rather than by the maximum. Then truncate to `len` on receipt and
+zeroize the remainder, because the band is a bound and not a guarantee. A write
+larger than the top band is reported as truncated rather than silently clipped —
+a SIP message sipnab only half-read must never look like a complete one.
+
 Unchanged by this result: plaintext still arrives with no 5-tuple, which is
 `TK7`'s hard half and the reason `MessageOrigin` exists.
 
