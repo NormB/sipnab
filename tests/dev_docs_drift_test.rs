@@ -1933,11 +1933,35 @@ fn line_citations_point_at_the_code_they_name() {
                 .ok()
         })
         .expect("the checker must report how many citations it checked");
-    assert!(
-        checked >= 40,
-        "the drift checker examined only {checked} citations, so it is proving \
-         almost nothing. Its symbol-extraction narrowed — fix that rather than \
-         lowering this floor.\n{report}"
+    // Exact, not a floor — the same rule `linked_code_targets_exist` learned
+    // above, and for the same reason. A floor of 40 sat so far under the truth
+    // that it could not see the checker go blind: it read 59 while 296
+    // citations existed. The other 237 were not all uncheckable — 138 were
+    // dropped because the LABEL is a basename (`dialog_store.rs:595`) or a
+    // path relative to `src/` (`tui/mod.rs:145`), neither of which resolves
+    // from the repo root. Nothing else covered them: `linked_code_targets_exist`
+    // skips any `http` target and these are absolute `blob/` URLs. Resolving a
+    // citation through its LINK instead (`source_for` in
+    // scripts/check-line-drift.py) took this 59 -> 140 and immediately found 63
+    // drifted citations across eleven design pages — `export_capture` cited at
+    // server.rs:2136 while it lives at 5018 — all repaired in the same change.
+    //
+    // Two attribution bugs had to be fixed before any of that could be trusted,
+    // and both were found by re-reading what the fixer had written rather than
+    // by the gate going red. Ranking candidate symbols by raw distance let the
+    // NEXT citation's subject win and rewrote correct citations; the subject
+    // always precedes its citation, so `before` now wins outright. And reading
+    // only the first segment of `Type::member` pointed the fix at the type —
+    // `HepSender::send` would have moved from a wrong 1741 to a wrong 1860
+    // instead of 2035. Bump when the corpus grows; never lower it to make a
+    // build pass.
+    assert_eq!(
+        checked, 140,
+        "the drift checker examined {checked} citations, not the 140 this tree \
+         holds. FEWER means its resolution or symbol-extraction narrowed and the \
+         gate is proving less than it claims — fix that rather than moving this \
+         number. MORE means the corpus grew: attribute the new citations, then \
+         raise it.\n{report}"
     );
 
     assert!(

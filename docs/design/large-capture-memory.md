@@ -164,7 +164,7 @@ exactly: measured 221,056 KB with dialogs on, predicted
 `9,088 + 1.83×18,948 + 2.072×84,836 = 219,542 KB`. Within 0.7%.
 
 **What the coefficients mean.** `SipDialog` holds
-`pub messages: Vec<SipMessage>` ([`src/sip/dialog.rs:111`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L111)), and `SipMessage`
+`pub messages: Vec<SipMessage>` ([`src/sip/dialog.rs:87`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L87)), and `SipMessage`
 ([`src/sip/message.rs:34`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L34)) holds both the raw bytes —
 
 ```rust

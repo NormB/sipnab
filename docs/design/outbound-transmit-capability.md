@@ -46,7 +46,7 @@ it is not the same guarantee:
    ([`process_isolation.rs:156`, `:193`, `:229`, `:242`](../../src/process_isolation.rs))
    and `KillUdpSocket::send_to` ([`:273`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L273)) — plus
    `spawn_scanner_kill_worker` ([`:1009`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1009)) and
-   `BatchRunner::new` ([`batch.rs:593`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L593)) by value, and the
+   `BatchRunner::new` ([`batch.rs:1460`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1460)) by value, and the
    worker holds one in a field ([`:801`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L801)). A new
    send that forgets it does not compile.
 3. **A refusal the operator can read.** `offline_refusal`
@@ -101,7 +101,7 @@ capture file.
 
 The chain, verified:
 
-- `HepSender::send` ([`hep.rs:1741`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1741)) builds a HEP v3
+- `HepSender::send` ([`hep.rs:2035`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2035)) builds a HEP v3
   packet around `msg.raw` and calls `self.socket.send(&pkt)`
   ([`:1759`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1759)). No permit parameter.
 - It is constructed unconditionally from `cli.hep_send` inside `BatchRunner::new`
@@ -172,7 +172,7 @@ because HEP export is its only caller today, which is recommendation 2 of
 section 7. Promote it when a second capability needs it.
 
 **A related, smaller one.** `--reverse-dns` calls `reverse_dns`
-([`names.rs:530`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L530)), whose own doc comment says *"Emits DNS
+([`names.rs:637`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L637)), whose own doc comment says *"Emits DNS
 queries on the network"*. On a file source the addresses queried are the
 capture's, so the analyst's resolver — and its upstream — learn the address set
 of a customer capture. It is off by default

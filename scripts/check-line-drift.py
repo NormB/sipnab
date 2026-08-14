@@ -38,10 +38,18 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-# [`src/foo.rs:123`](url#L123)
-CITE = re.compile(r"\[`([A-Za-z0-9_./-]+\.rs):(\d+)`\]\((?:[^)]*)\)")
-# A backticked identifier, optionally with a call/gener1c suffix.
-IDENT = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)")
+# [`src/foo.rs:123`](url#L123) -- the link is captured because the label alone
+# does not say which file is meant. See `source_for`.
+CITE = re.compile(r"\[`([A-Za-z0-9_./-]+\.rs):(\d+)`\]\(([^)]*)\)")
+# https://github.com/OWNER/REPO/blob/REF/the/path.rs
+BLOB = re.compile(r"https?://[^/]*github\.com/[^/]+/[^/]+/blob/[^/]+/(.+)$")
+# A markdown link whose label is backticked: [`whatever`](target). See
+# `symbol_near` for why these are masked on the trailing side of a citation.
+LINKED = re.compile(r"\[`[^`\n]+`\]\([^)\n]*\)")
+# A backticked identifier, optionally path-qualified: `merge`, `Store::merge`.
+# The qualifier is captured because the prose is usually citing the MEMBER --
+# `resolve_symbol` decides which segment the sentence is actually about.
+IDENT = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)")
 # Deliberately NOT `let`. A local binding is not a documentable symbol, and
 # including it made `cli`, `rtp`, `src` and `guard` look like definitions --
 # every one of those is a variable name someone wrote near a citation, and the
@@ -63,27 +71,66 @@ NOT_SYMBOLS = {
 
 def symbol_near(text: str, start: int, end: int) -> str | None:
     """The identifier this citation is about, or None if the prose names none."""
-    # NEAREST wins, not "after wins". Both forms occur — "`foo` ([src/x.rs:12])"
-    # and "([src/x.rs:12]) — `foo` does X" — and a fixed preference reads the
-    # wrong one whenever the other is closer. It picked `process_parsed_packet`
-    # 75 characters after a citation whose subject, `processor.process`, sat two
-    # characters before it, and then reported drift against a symbol the
-    # sentence was not citing.
-    after = text[end : end + CONTEXT_CHARS]
+    # BEFORE wins. The subject precedes its citation in every form these pages
+    # use — "`foo` ([`x.rs:12`](url))" and "[`foo`](path) at [`x.rs:12`](url)" —
+    # so an identifier AFTER a citation is the subject of the NEXT one.
+    #
+    # Nearest-wins-either-side was tried and is wrong, and the case it was
+    # added for is one "before" already settles: it had picked
+    # `process_parsed_packet` 75 characters after a citation whose subject,
+    # `processor.process`, sat two characters before it. Ranking by raw distance
+    # then mis-attributed silently wherever the next subject sat closer than the
+    # current one. Measured, when resolving citations through their links made
+    # these visible for the first time: it re-pointed `list_captures` and
+    # `shutdown_server` at `resolve_in_root`'s definition — both one line
+    # further on — and rewrote a CORRECT `dialog_store.rs:43` for
+    # `CorrelationReason` to `find_correlated_scored`'s line 1187. A fixer that
+    # damages correct citations is worse than the drift it repairs.
+    #
+    # "After" survives only as a fallback for a citation with nothing usable
+    # before it, and even then the next "[`...`](...)" is masked out: that
+    # label belongs to its own reference. Masked rather than truncated so
+    # distances stay measured against the original text.
     before = text[max(0, start - CONTEXT_CHARS) : start]
+    after = LINKED.sub(lambda m: " " * len(m.group(0)), text[end : end + CONTEXT_CHARS])
 
     def usable(name: str) -> bool:
         return name not in NOT_SYMBOLS and len(name) > 2
 
     best, best_dist = None, CONTEXT_CHARS + 1
-    for m in IDENT.finditer(after):
-        if usable(m.group(1)) and m.start() < best_dist:
-            best, best_dist = m.group(1), m.start()
     for m in IDENT.finditer(before):
         dist = len(before) - m.end()
         if usable(m.group(1)) and dist < best_dist:
             best, best_dist = m.group(1), dist
+    if best is not None:
+        return best
+    for m in IDENT.finditer(after):
+        if usable(m.group(1)) and m.start() < best_dist:
+            best, best_dist = m.group(1), m.start()
     return best
+
+
+def resolve_symbol(lines: list[str], qualified: str):
+    """Which segment of `Type::member` the prose is citing, or `None`.
+
+    The MEMBER is tried first. A sentence that says `HepSender::send` is about
+    `send`, and pointing it at `struct HepSender` is a different line with a
+    different meaning. Measured on this tree: `HepSender::send` was cited at
+    hep.rs:1741 and lives at 2035, but the type is at 1860 — so resolving to
+    the type would have swapped one wrong line for another wrong line while
+    reporting the citation repaired. The same held for `DialogStore::merge`
+    (986, type at 190), `StreamStore::reassociate_all` (1326, type at 294) and
+    four others.
+
+    The type is the fallback, for `DialogStore` used on its own and for a
+    member this file does not define (an inherent method on a foreign type).
+    """
+    for cand in dict.fromkeys(reversed(qualified.split("::"))):
+        if cand in NOT_SYMBOLS or len(cand) <= 2:
+            continue
+        if definition_lines(lines, cand):
+            return cand
+    return None
 
 
 def definition_lines(lines: list[str], sym: str) -> list[int]:
@@ -100,6 +147,50 @@ def definition_lines(lines: list[str], sym: str) -> list[int]:
     hits = [(i + 1, l) for i, l in enumerate(lines) if pat.search(l)]
     real = [n for n, l in hits if not re.match(r"\s*(?:pub\s+)?impl\b", l)]
     return real if real else [n for n, _ in hits]
+
+
+def source_for(page: pathlib.Path, path: str, target: str):
+    """The file a citation is actually about, or `None` if it cannot be told.
+
+    The label is not a repo path and was never required to be one. Most of them
+    are a bare basename (`dialog_store.rs:595`) or a path relative to `src/`
+    (`tui/mod.rs:145`), and resolving the LABEL from the repo root makes both
+    of those miss. Measured before this existed: of 296 citations only 158
+    resolved, so 138 -- near half the corpus -- were dropped by the `is_file`
+    test below and never checked for drift at all. They were not covered
+    elsewhere either: `linked_code_targets_exist` skips any `http` target, and
+    these are absolute `blob/` URLs.
+
+    The LINK says which file is meant, so it is the fallback. `_repoint`
+    already treats the two as one citation -- it rewrites the label's `:NNN`
+    and the link's `#LNNN` together -- so reading the file out of the link is
+    the same rule this script already applies in the other direction.
+    """
+    direct = REPO / path
+    if direct.is_file():
+        return direct
+
+    href = target.split("#", 1)[0].strip()
+    if not href:
+        return None
+
+    blob = BLOB.match(href)
+    if blob:
+        cand = REPO / blob.group(1)
+        return cand if cand.is_file() else None
+
+    if href.startswith(("http://", "https://")):
+        return None  # some other host; nothing to resolve against
+
+    # A relative link, resolved from the page that carries it. Confined to the
+    # repo: `../../../etc/passwd` is not a source file, and a gate that reads
+    # outside the tree is a gate reading someone else's code.
+    cand = (page.parent / href).resolve()
+    try:
+        cand.relative_to(REPO)
+    except ValueError:
+        return None
+    return cand if cand.is_file() else None
 
 
 def check(apply: bool) -> int:
@@ -123,12 +214,17 @@ def check(apply: bool) -> int:
         edits: list[tuple[int, int, str]] = []
 
         for m in CITE.finditer(text):
-            path, line = m.group(1), int(m.group(2))
-            src = REPO / path
-            if not src.is_file():
+            path, line, target = m.group(1), int(m.group(2)), m.group(3)
+            src = source_for(md, path, target)
+            if src is None:
                 continue  # linked_code_targets_exist owns missing files
+            # Name the file that was actually read. When the label is a
+            # basename it does not identify the file, and a report that echoes
+            # the label sends the reader looking for `file.rs` in the root.
+            shown = src.relative_to(REPO).as_posix()
             lines = src.read_text().splitlines()
-            sym = symbol_near(text, m.start(), m.end())
+            qual = symbol_near(text, m.start(), m.end())
+            sym = resolve_symbol(lines, qual) if qual else None
 
             # Out of range is wrong whether or not a symbol is named.
             if line > len(lines):
@@ -138,7 +234,7 @@ def check(apply: bool) -> int:
                     fixed += 1
                 else:
                     problems.append(
-                        f"{rel}: cites {path}:{line} but that file has "
+                        f"{rel}: cites {shown}:{line} but that file has "
                         f"{len(lines)} lines"
                         + (f" ({sym} is at {where})" if where else "")
                     )
@@ -167,7 +263,7 @@ def check(apply: bool) -> int:
                 fixed += 1
             else:
                 problems.append(
-                    f"{rel}: cites {path}:{line} for `{sym}`, which is not "
+                    f"{rel}: cites {shown}:{line} for `{sym}`, which is not "
                     f"within {TOLERANCE} lines of there"
                     + (f" (defined at {where})" if where else " (no unique definition found)")
                 )

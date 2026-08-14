@@ -1671,28 +1671,28 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:194`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L194)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:322`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L322)) + `expand_alias` ([`src/sip/dsl.rs:322`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L322)) |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:939`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L939)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:500`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L500)) + `expand_alias` ([`src/sip/dsl.rs:322`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L322)) |
 | `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:184`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L184)) + iterate `dialog.messages` + `output::json::message_to_json` |
-| `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:34`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L34)) with `ReportFormat::Json/Markdown/Text` |
-| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:150`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L150)) |
+| `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
+| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:508`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L508)) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
-| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:207`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L207)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
+| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:1220`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1220)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
 | `search_messages` | Same iteration the `--filter` CLI path uses; `FilterExpr` covers most of it |
 | `find_problems` | `list_dialogs` with each `expand_alias` result OR'd |
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:538`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L538)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:952`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L952)) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:171`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L171)) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:261`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L261)) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:279`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L279), `:309`) |
 | Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:72`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L72)) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:525`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L525)) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:229`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L229)) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|
@@ -1731,7 +1731,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Phase 8.7 surface (★) | Wraps |
 |---|---|
 | `codec_asymmetry` | Compares `RtpStream::codec` (`src/rtp/stream.rs:309 codec_from_pt`) across the two streams of a dialog |
-| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:222`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L222)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
+| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:697`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L697)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
 | `payload_asymmetry` | Compares payload types across streams; data already in `RtpStream` |
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |

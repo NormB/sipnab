@@ -194,7 +194,7 @@ Tiers:
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:1537`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1537)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:1693`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1693)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -1021,7 +1021,7 @@ output path.
     exist and that *"lint findings are the only facts that cite their bytes
     today"*. That was true of the MCP surface only, and it is not true of the
     tree. `SipMessage.frame` ([`src/sip/message.rs:84`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L84)) and
-    `SipDialog.first_frame` ([`src/sip/dialog.rs:148`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L148)) both carry a `FrameRef`;
+    `SipDialog.first_frame` ([`src/sip/dialog.rs:87`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L87)) both carry a `FrameRef`;
     `--json` emits it per message and per dialog ([`src/output/json.rs:90`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L90),
     `:402`, populated at `:454` and `:662`), `call_report` carries the dialog's
     ([`src/output/call_report.rs:773`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L773)), and `--show-frame` ([`src/cli.rs:519`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L519))

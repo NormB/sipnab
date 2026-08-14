@@ -554,11 +554,17 @@ run)
 	CORPUS_OUTPUT=$(cargo test "$@" 2>&1)
 	CORPUS_RC=$?
 	set -e
+	CORPUS_LOG="$CORPUS_LOG_DIR/sipnab-pre-push-corpus.log"
 	if [ "$CORPUS_RC" -eq 0 ]; then
 		printf '%bVALIDATED%b\n' "$GREEN" "$NC"
+		# This log describes the LAST run, not every run that ever failed.
+		# Left in place it outlives the failure it records: the gitdir goes
+		# on asserting a regression that is already fixed, and the next
+		# reader has no way to date it. Two readers took exactly such a
+		# stale copy for a live failure before this line existed.
+		rm -f "$CORPUS_LOG"
 	else
 		printf '%bFAIL%b\n' "$RED" "$NC"
-		CORPUS_LOG="$CORPUS_LOG_DIR/sipnab-pre-push-corpus.log"
 		printf '%s\n' "$CORPUS_OUTPUT" > "$CORPUS_LOG"
 		# Extractions from here on are greps that may legitimately match
 		# nothing, and `set -eu` would turn "matched nothing" into an aborted

@@ -60,7 +60,7 @@ keyed on Call-ID. That works only if a Call-ID identifies at most one call in
 the combined view. It does not.
 
 The clearest statement of this is in the code that had to cope with it.
-`DialogStore::merge` ([`dialog_store.rs:595`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L595))
+`DialogStore::merge` ([`dialog_store.rs:986`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L986))
 carries a doc section headed *"Same-Call-ID collisions are the normal case, not
 the rare one"* ([`:554`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L554)), and explains that a
 call through a proxy or SBC reconstructs as two fragments keyed on the same
@@ -83,7 +83,7 @@ generators and proxies — where operators most want to compare two captures.
 `-I` now accepts a file, a directory, a glob, or a repeated set
 ([`cli.rs:234-247`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L234-L247)), resolves it into one chronologically
 ordered list (`input_set::resolve`,
-[`input_set.rs:106`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L106)), and streams every file
+[`input_set.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L216)), and streams every file
 into **one** `DialogStore` through one channel
 (`capture_files`, [`file.rs:203`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L203)). It is tempting to
 read that as "sipnab now has a cross-capture story, so the comparison request is
@@ -91,7 +91,7 @@ satisfied."
 
 It is the opposite operation, and the module that implements it says so in as
 many words. `warn_on_overlap`
-([`input_set.rs:395`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L395)) exists precisely to warn
+([`input_set.rs:585`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L585)) exists precisely to warn
 an operator away from the comparison use case:
 
 ```
@@ -126,7 +126,7 @@ produce — silently, with `--problems` adding nothing.
 The `same instant` warning did fire, which is the design working. But the
 warning detects overlap in *time*, not overlap in *identity*: `same_instant_pairs`
 compares consecutive files' first-packet timestamps against `SAME_INSTANT_SECS`
-(1 ms, [`input_set.rs:420`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L420)) and
+(1 ms, [`input_set.rs:610`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L610)) and
 `overlap_message` compares the previous file's end against the next one's start.
 Two captures that share Call-IDs without overlapping in time trip neither — and
 that population is not exotic, since a load generator reuses Call-IDs across
@@ -191,7 +191,7 @@ The cheap version — load both captures into one store and add a "capture A / B
 column — cannot work, because the column has nothing to read. There is no field
 to populate. Adding one means touching `Packet`, `ParsedPacket`, `SipMessage`
 and `SipDialog`, which is the zero-copy payload spine (D3) and the hot path;
-`process_message` ([`dialog_store.rs:353`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L353)) is
+`process_message` ([`dialog_store.rs:734`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L734)) is
 written to avoid even a single owned-key allocation per message. A per-message
 `String` source label is a straightforward regression of that work.
 
@@ -278,10 +278,10 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:2136`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2136)) writes a pcap, `export_audio`
-([`server.rs:2177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2177)) writes a WAV, `list_captures`
-([`server.rs:2096`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2096)) reads a directory, and
-`shutdown_server` ([`server.rs:2222`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2222)) ends the process.
+([`server.rs:5018`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5018)) writes a pcap, `export_audio`
+([`server.rs:5066`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5066)) writes a WAV, `list_captures`
+([`server.rs:4966`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4966)) reads a directory, and
+`shutdown_server` ([`server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
@@ -328,8 +328,8 @@ guards, each visible in the code:
 
 1. **Off unless armed.** `allow_shutdown: bool`
    ([`server.rs:57`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L57)) is `false` in `new()`
-   ([`server.rs:98`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L98)) and only set by `with_shutdown()`
-   ([`server.rs:134`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L134)), which `servers.rs` calls only
+   ([`server.rs:426`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L426)) and only set by `with_shutdown()`
+   ([`server.rs:426`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L426)), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
    ([`servers.rs:258-262`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L258-L262)). Refusal is the first
    statement of the handler ([`server.rs:2226`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2226)).
@@ -350,7 +350,7 @@ and the first has already told the agent what to send. And there is no
 observable "it happened" from outside: the process is still running, the counts
 still look plausible, and the operator reading `/v1/dialogs` has no way to tell
 a mutated store from a merely-changed one, because `DialogStore::generation`
-([`dialog_store.rs:163`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L163)) is internal to
+([`dialog_store.rs:573`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L573)) is internal to
 cache invalidation and appears on no wire format.
 
 ### The prompt-injection chain, grounded
@@ -361,9 +361,9 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:1135`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1135)) returns the parsed
+- `get_message` ([`server.rs:3124`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3124)) returns the parsed
   message through `message_to_json_value`, headers and body included.
-- `search_messages` ([`server.rs:1306`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1306)) returns
+- `search_messages` ([`server.rs:3416`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3416)) returns
   `snippet`, built as
   `truncate_string(&String::from_utf8_lossy(&msg.raw), MAX_BODY_BYTES)` — the
   raw bytes off the wire.
@@ -390,7 +390,7 @@ agent reads it verbatim through any of the three tools above; and with a
 write-back tool present, the text it reads can reach a verb that changes what
 the operator sees. Today the worst that text can reach is a read, a file write
 confined to `--mcp-file-root` by `resolve_in_root`
-([`server.rs:150`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L150)), or — only if armed, only on a
+([`server.rs:463`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L463)), or — only if armed, only on a
 second call, only having named the discard — a process stop. That is a
 qualitative gap, not a matter of degree.
 
@@ -441,7 +441,7 @@ requirement to satisfy rather than a reason to stop.
 1. **A wire-visible store identity** — a generation or etag on REST and MCP
    responses — so a consumer can detect that the thing it is reading changed
    underneath it. `DialogStore::generation` already exists internally
-   ([`dialog_store.rs:163`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L163)) and is bumped by every
+   ([`dialog_store.rs:573`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L573)) and is bumped by every
    mutating method; exposing it is small. Without it, "who changed this" has no
    answer at any layer. §4 needs the same primitive, so it is built once.
 2. **The write-back state is separate from the analysis** — an annotation store
@@ -499,7 +499,7 @@ decisions as *"Fully implemented (P1–P5)"*, and the code matches claim for
 claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 ([`kill_packet.rs:34`, `:98`](../../src/security/kill_packet.rs)), the raw
 socket opened in the privileged window and handed to the worker
-(`RawKillSocket::open`, [`process_isolation.rs:90`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L90)),
+(`RawKillSocket::open`, [`process_isolation.rs:111`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L111)),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
 ([`bootstrap.rs:554-562`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L554-L562)), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
@@ -581,7 +581,7 @@ Nothing persists. `fail2ban.rs`'s own doc says *"the caller is responsible for
 emitting it — nothing is written here"*
 ([`fail2ban.rs:99-100`](https://github.com/NormB/sipnab/blob/main/src/output/fail2ban.rs#L99-L100)); the alert engine's
 findings ring buffer is annotated *"In-memory only"*
-([`alerting.rs:175`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L175)) and holds the *alert*, not
+([`alerting.rs:387`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L387)) and holds the *alert*, not
 the *action* — a `Finding` has no field saying whether a kill went out. The only
 durable-ish signal is two success counters,
 `sipnab_kill_responses_sent_total{mode}`
@@ -672,9 +672,9 @@ nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
 `list_captures`, was filed with *"needs a path allowlist or it is an
-arbitrary-file-read"*. It shipped ([`server.rs:2415`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2415))
+arbitrary-file-read"*. It shipped ([`server.rs:463`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L463))
 with `--mcp-file-root` and `resolve_in_root`
-([`server.rs:230`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L230)), which accepts a bare filename and
+([`server.rs:463`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L463)), which accepts a bare filename and
 rejects anything with a separator, a `..`, a root prefix or a drive letter before
 touching the filesystem. So an agent can already *see* the corpus, safely, and
 `open_capture` would need no new security machinery.
@@ -719,13 +719,13 @@ documents *"the tool server; cloned per HTTP session"* and
 built once at startup ([`servers.rs:224-249`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L224-L249)) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
 argument ([`cli.rs:1363-1365`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1363-L1365)). So after an `open_capture`,
-`capture_status` ([`server.rs:1829`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1829)) would keep naming
+`capture_status` ([`server.rs:3761`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3761)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
 
 **Nothing on the wire would reveal the swap.** `DialogStore::generation`
-([`dialog_store.rs:164`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L164)) is bumped by every
+([`dialog_store.rs:573`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L573)) is bumped by every
 mutating method and is exposed nowhere: not in `DialogSummary`
 ([`model.rs`](../../src/output/model.rs)), not in any REST response
 ([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L211), all `GET`), not in any MCP payload.
@@ -795,10 +795,10 @@ decision was taken, not as it stands now:
    a `SipnabMcp` cloned per HTTP session
    ([`transport.rs:192`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:1829`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1829)) naming the old file in the
+   ([`server.rs:3761`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3761)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
-   ([`dialog_store.rs:164`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L164)) is bumped by every
+   ([`dialog_store.rs:573`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L573)) is bumped by every
    mutating method and exposed nowhere, so a `/v1/dialogs` poller cannot tell the
    dataset changed underneath it. This is the same primitive §2 requires;
    building it once settles both.
@@ -809,8 +809,8 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:2734`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2734)), and `--mcp-file-root` with
-`resolve_in_root` ([`server.rs:230`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L230)).
+([`server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531)), and `--mcp-file-root` with
+`resolve_in_root` ([`server.rs:463`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L463)).
 
 **What shipped**, against those three:
 

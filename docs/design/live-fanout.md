@@ -63,13 +63,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:1875`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1875)),
+- `cores_ignored_warning` ([`bootstrap.rs:2031`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2031)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_parallel_path`
-  ([`bootstrap.rs:2496`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2496)), which asserts the warning
+  ([`bootstrap.rs:2711`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2711)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -107,7 +107,7 @@ that is a log line and a help-text sentence, not a second noun.
    thread either way, live".
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
-   ([`bootstrap.rs:1880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1880)) stays true; see §2.1.
+   ([`bootstrap.rs:2711`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2711)) stays true; see §2.1.
    `cores_warning_is_the_exact_complement_of_the_parallel_path` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
@@ -119,7 +119,7 @@ that is a log line and a help-text sentence, not a second noun.
 
 `RunMode` gains nothing. Fanout is not a run mode — it is how the `Live` arm of
 `start_capture` constructs its thread. `RunMode::CoresFile`
-([`bootstrap.rs:519`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L519)) stays exactly as it is, still
+([`bootstrap.rs:71`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L71)) stays exactly as it is, still
 requiring `-I`, because it selects the *offline parallel engine*, which live
 capture is not getting.
 
@@ -163,7 +163,7 @@ claim — `--cores` with `--multi-device` must keep its existing refusal.
 ## 3. What widening CAPTURE buys, exactly
 
 `capture_live_fanout` gives every socket the same `tx`
-([`live.rs:261`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L261)), and there is one receiver: the
+([`live.rs:224`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L224)), and there is one receiver: the
 `rx.recv_timeout` at [`batch.rs:2121`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2121). So the shape is
 N producers, one consumer, one pair of stores, one sweep.
 
@@ -201,7 +201,7 @@ from a headless run — `start_servers` is called with `metrics: true` and the
 real meter from [`batch.rs:1861-1879`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1861-L1879).
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:1712`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1712)),
+`capture_health` MCP response ([`server.rs:5660`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5660)),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports
@@ -226,7 +226,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
    fragments in capture-timestamp order and re-runs the state machine. Live,
    there is no moment at which a dialog is finished arriving.
 2. **`StreamStore::reassociate_all` links streams to dialogs globally**
-   ([`stream_store.rs:1201`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1201)), because SDP and RTP
+   ([`stream_store.rs:1326`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1326)), because SDP and RTP
    routinely land on different workers when the carrier advertises a separate
    media IP.
 3. **`final_sweep` runs exactly ONCE, after the merge, at the capture's final
@@ -266,7 +266,7 @@ to answer is what replaces `final_sweep`'s single well-defined moment.
 ### Instruments
 
 `KERNEL_DROPPED` / `IFACE_DROPPED`
-([`live.rs:714`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L714)) are the loss counters;
+([`live.rs:761`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L761)) are the loss counters;
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total` are the regime discriminator (§3).
 Both are read from the same process under test, which is why the controls below
@@ -403,6 +403,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:1537`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1537)) returns true only for the
+  ([`bootstrap.rs:1693`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1693)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

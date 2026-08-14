@@ -103,19 +103,71 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// One run of the extracted gate: its exit status, its combined output, and
+/// the gitdir it was pointed at.
+///
+/// `_tmp` owns that gitdir. Dropping the `TempDir` deletes it, so a caller
+/// that inspected [`Self::corpus_log`] after the struct died would be reading
+/// a path that no longer exists — and an `!exists()` assertion would pass for
+/// the wrong reason.
+struct GateRun {
+    code: Option<i32>,
+    text: String,
+    gitdir: PathBuf,
+    _tmp: tempfile::TempDir,
+}
+
+impl GateRun {
+    /// The log the gate writes when the corpus fails.
+    fn corpus_log(&self) -> PathBuf {
+        self.gitdir.join("sipnab-pre-push-corpus.log")
+    }
+}
+
 /// Run the extracted gate with a stubbed `cargo` and a corpus directory that
 /// exists, so the gate takes its `run)` arm.
+fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> GateRun {
+    run_gate_seeded(cargo_exit, cargo_stdout, None)
+}
+
+/// As [`run_gate`], first seeding `seed_log` into the gitdir as a stale log.
 ///
-/// # Returns
+/// The gate resolves its log directory with `git rev-parse --git-dir`, so this
+/// harness hands it a throwaway `GIT_DIR`. Without that it resolves the REAL
+/// `.git` of this repository and writes its synthetic failure there: a fully
+/// GREEN run of this file left `.git/sipnab-pre-push-corpus.log` holding a
+/// `... FAILED` line, and two readers took that stale copy for a live
+/// regression before the cause was traced back to here.
 ///
-/// `(exit code, stdout + stderr)`.
-fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> (Option<i32>, String) {
+/// The throwaway must be a real repository. `git rev-parse --git-dir` exits
+/// 128 on a `GIT_DIR` that is merely an empty directory, and the gate falls
+/// back to `.` on a non-zero rev-parse — which, with the cwd below, would put
+/// the log in the WORKING TREE. That is worse than the bug this replaces, so
+/// the directory is initialised rather than just created.
+fn run_gate_seeded(cargo_exit: i32, cargo_stdout: &str, seed_log: Option<&str>) -> GateRun {
     let tmp = tempfile::tempdir().expect("tempdir");
     let bindir = tmp.path().join("bin");
     let corpus = tmp.path().join("corpus");
+    let gitdir = tmp.path().join("gitdir");
     std::fs::create_dir_all(&bindir).expect("mkdir bin");
     std::fs::create_dir_all(&corpus).expect("mkdir corpus");
     stub_cargo(&bindir, cargo_exit, cargo_stdout);
+
+    let init = Command::new("git")
+        .args(["init", "--bare", "-q"])
+        .arg(&gitdir)
+        .output()
+        .expect("git init the throwaway gitdir");
+    assert!(
+        init.status.success(),
+        "could not initialise a throwaway gitdir, so this run would write its log \
+         into the real repository: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    if let Some(body) = seed_log {
+        std::fs::write(gitdir.join("sipnab-pre-push-corpus.log"), body).expect("seed stale log");
+    }
 
     let script = tmp.path().join("gate.sh");
     std::fs::write(&script, runnable_gate()).expect("write gate");
@@ -129,8 +181,10 @@ fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> (Option<i32>, String) {
     let out = Command::new("sh")
         .arg(&script)
         // The block derives its target list from `tests/*.rs`, so it must run
-        // where those live.
+        // where those live ...
         .current_dir(repo_root())
+        // ... but its log must NOT land there. See the note above.
+        .env("GIT_DIR", &gitdir)
         .env("PATH", path)
         .env("SIPNAB_CORPUS", &corpus)
         .env_remove("SKIP_CORPUS_HOOK")
@@ -139,7 +193,12 @@ fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> (Option<i32>, String) {
 
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    (out.status.code(), text)
+    GateRun {
+        code: out.status.code(),
+        text,
+        gitdir,
+        _tmp: tmp,
+    }
 }
 
 /// A failing corpus run blocks the push.
@@ -149,13 +208,14 @@ fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> (Option<i32>, String) {
 /// of an `exit 1` in the source, which survives being commented out.
 #[test]
 fn a_failing_corpus_run_blocks_the_push() {
-    let (code, text) = run_gate(
+    let run = run_gate(
         101,
         "test corpus_diagnosis::every_dialog_diagnoses ... FAILED\n\
          test result: FAILED. 0 passed; 1 failed; 0 ignored",
     );
+    let text = &run.text;
     assert_ne!(
-        code,
+        run.code,
         Some(0),
         "the corpus gate let a FAILING corpus run through. Anything short of 100% \
          against the corpus is a critical failure and must not reach a push. \
@@ -167,15 +227,78 @@ fn a_failing_corpus_run_blocks_the_push() {
     );
 }
 
+/// The failure log lands in the gitdir the gate was GIVEN, never this repo's.
+///
+/// The mutation that matters is dropping the `GIT_DIR` line from
+/// `run_gate_seeded`: the gate then resolves the real `.git`, the file below
+/// never appears in the throwaway, and this fails. That is the whole point —
+/// a self-test for a gate must not write into the tree it is gating, and for
+/// one release this one did.
+#[test]
+fn a_failing_run_writes_its_log_into_the_gitdir_it_was_given() {
+    let run = run_gate(
+        101,
+        "test corpus_diagnosis::every_dialog_diagnoses ... FAILED\n\
+         test result: FAILED. 0 passed; 1 failed; 0 ignored",
+    );
+    let log = run.corpus_log();
+    assert!(
+        log.is_file(),
+        "the gate did not write its log to the gitdir it was pointed at ({}). \
+         It resolved somewhere else — most likely the real .git of this \
+         repository. Gate output was:\n{}",
+        log.display(),
+        run.text
+    );
+    let body = std::fs::read_to_string(&log).expect("read corpus log");
+    assert!(
+        body.contains("every_dialog_diagnoses"),
+        "the log exists but does not hold the run's output: {body}"
+    );
+}
+
+/// A clean run leaves NO failure log behind.
+///
+/// The log records the LAST run, not every run that ever failed. Without this
+/// a failure written weeks ago outlives every green push after it, and the
+/// gitdir goes on asserting a regression that is already fixed.
+#[test]
+fn a_clean_corpus_run_clears_a_stale_failure_log() {
+    let run = run_gate_seeded(
+        0,
+        "test result: ok. 25 passed; 0 failed; 0 ignored",
+        Some(
+            "test corpus_diagnosis::every_dialog_diagnoses ... FAILED\n\
+             test result: FAILED. 0 passed; 1 failed; 0 ignored\n",
+        ),
+    );
+    assert_eq!(
+        run.code,
+        Some(0),
+        "a clean corpus run must not block the push: {}",
+        run.text
+    );
+    let log = run.corpus_log();
+    assert!(
+        !log.exists(),
+        "a VALIDATED corpus run left a stale failure log at {}, so the next \
+         reader finds a `... FAILED` line describing a run that passed. \
+         Contents:\n{}",
+        log.display(),
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+}
+
 /// A clean corpus run does not block, and says so.
 ///
 /// The other half of the mutation: a gate hard-wired to `exit 1` would pass
 /// the test above and fail this one, so neither alone is enough.
 #[test]
 fn a_clean_corpus_run_passes_and_reports_validated() {
-    let (code, text) = run_gate(0, "test result: ok. 25 passed; 0 failed; 0 ignored");
+    let run = run_gate(0, "test result: ok. 25 passed; 0 failed; 0 ignored");
+    let text = &run.text;
     assert_eq!(
-        code,
+        run.code,
         Some(0),
         "a clean corpus run must not block the push. Gate output was:\n{text}"
     );
@@ -189,7 +312,7 @@ fn a_clean_corpus_run_passes_and_reports_validated() {
 /// The gate names every corpus binary it will drive, and the count is real.
 #[test]
 fn the_gate_reports_the_number_of_binaries_it_drives() {
-    let (_, text) = run_gate(0, "test result: ok. 25 passed; 0 failed; 0 ignored");
+    let text = run_gate(0, "test result: ok. 25 passed; 0 failed; 0 ignored").text;
     let expected = corpus_binaries().len();
     assert!(
         text.contains(&format!("corpus: {expected} test binaries")),

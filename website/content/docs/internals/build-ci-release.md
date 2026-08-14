@@ -416,6 +416,13 @@ caps the terminal at ten names and twelve lines of panic. It also prints a
 single-test reproduce command, because the alternative costs whoever hit it
 another full pass over 8.8 GB just to learn which test broke.
 
+That log describes the **last** run and nothing before it: a validated run
+deletes it. So a file present in `.git/` always means the most recent corpus
+gate failed, and its absence means the most recent one passed. Without that
+removal a failure written weeks ago outlives every green push after it, and a
+reader who finds it has no way to date it — which happened, twice, with a
+`... FAILED` line that no run of the real corpus had ever produced.
+
 **Why the `profiling` profile.** Measured on a 14-core machine against an 8.8 GB
 corpus of 137 files with a warm page cache:
 

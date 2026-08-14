@@ -167,7 +167,7 @@ Two tiers, and the boundary is not about detector confidence. It is about
 Every detection reaches `tracing::warn!` under the `sipnab::alert` target
 ([`alerting.rs:323`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L323)), optionally a JSON line on
 stderr, optionally syslog, and the in-memory findings ring buffer
-(`DEFAULT_FINDINGS_HISTORY = 1000`, [`alerting.rs:138`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L138)).
+(`DEFAULT_FINDINGS_HISTORY = 1000`, [`alerting.rs:268`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L268)).
 Being wrong here costs a log line.
 
 **Everything belongs in tier 1 unless it meets every condition in tier 2.**
@@ -188,7 +188,7 @@ behavioural detector is not.
 **(c) The action is proportionate and self-limiting.** The kill path already
 does this and the numbers are the model: a global limiter at
 `DEFAULT_RATE_LIMIT = 10` per second
-([`process_isolation.rs:971`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L971)) and a
+([`process_isolation.rs:990`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L990)) and a
 per-destination limiter at `MAX_PER_DST_PER_MINUTE = 3`
 ([`:712`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L712)), both applied before any send. The
 per-destination cap is the one that matters: it bounds the damage to *one* peer
