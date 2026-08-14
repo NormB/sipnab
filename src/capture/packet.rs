@@ -116,7 +116,7 @@ impl FrameLocator {
         FrameRef {
             source: source_arc(self.source),
             origin: self.origin,
-            kind: FrameSource::Wire,
+            kind: FrameSource::from_source_name(self.source),
         }
     }
 }
@@ -197,6 +197,40 @@ pub enum FrameSource {
         /// The process it was read from.
         pid: u32,
     },
+}
+
+impl FrameSource {
+    /// Recover the kind from a source name.
+    ///
+    /// One rule, in one place, used both when a pointer is MINTED from a
+    /// capture source and when one is read back from text. Two functions here
+    /// would be two chances to disagree about the same string, and the
+    /// disagreement would be silent.
+    ///
+    /// `uprobe:<comm>/<pid>` is minted only by
+    /// [`FrameRef::uprobe`] and by the uprobe capture path; anything that does
+    /// not parse as that exact shape is a wire source, including a path that
+    /// merely starts with the word. The pid must be there and must be a number.
+    ///
+    /// Misclassifying in the unlikely direction — a capture file genuinely
+    /// named `uprobe:x/1` — costs a refusal to resolve, not a fabricated
+    /// answer, which is the safe way round.
+    #[must_use]
+    pub fn from_source_name(source: &str) -> Self {
+        let Some(rest) = source.strip_prefix("uprobe:") else {
+            return Self::Wire;
+        };
+        let Some((comm, pid)) = rest.rsplit_once('/') else {
+            return Self::Wire;
+        };
+        match pid.parse::<u32>() {
+            Ok(pid) if !comm.is_empty() => Self::Uprobe {
+                comm: Arc::from(comm),
+                pid,
+            },
+            _ => Self::Wire,
+        }
+    }
 }
 
 /// A resolvable pointer to the bytes a fact came from.
@@ -327,10 +361,11 @@ impl Packet {
     /// either alone is unresolvable, and returning it would be the fabrication
     /// this whole mechanism exists to prevent.
     pub fn frame_ref(&self) -> Option<FrameRef> {
+        let source = Arc::clone(self.interface.as_ref()?);
         Some(FrameRef {
-            source: Arc::clone(self.interface.as_ref()?),
+            kind: FrameSource::from_source_name(&source),
+            source,
             origin: (self.origin)?,
-            kind: crate::capture::packet::FrameSource::Wire,
         })
     }
 
@@ -512,5 +547,55 @@ impl Packet {
             pre_parsed: Some(pre_parsed),
             origin: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a packet with the given source name.
+    fn packet_from(source: &str) -> Packet {
+        Packet {
+            timestamp: chrono::Utc::now(),
+            data: bytes::Bytes::from_static(b"INVITE sip:x SIP/2.0\r\n\r\n"),
+            caplen: 24,
+            origlen: 24,
+            interface: Some(std::sync::Arc::from(source)),
+            link_type: 1,
+            pre_parsed: None,
+            origin: Some(FrameOrigin {
+                ordinal: 3,
+                digest: None,
+            }),
+        }
+    }
+
+    /// A uprobe-sourced packet must mint a pointer that KNOWS it is not a
+    /// frame. The kind is recovered from the source name by the same function
+    /// that recovers it from a written-down pointer, so there is one rule
+    /// rather than two that can disagree.
+    #[test]
+    fn a_uprobe_source_name_mints_a_uprobe_pointer() {
+        let r = packet_from("uprobe:opensips/1234")
+            .frame_ref()
+            .expect("a source name and an origin make a pointer");
+        assert!(
+            matches!(r.source_kind(), FrameSource::Uprobe { pid: 1234, .. }),
+            "a uprobe packet must not mint a Wire pointer: {:?}",
+            r.source_kind()
+        );
+    }
+
+    /// An ordinary capture source is still Wire, so the recovery cannot
+    /// quietly reclassify real frames as something with no bytes behind them.
+    #[test]
+    fn an_ordinary_source_name_still_mints_a_wire_pointer() {
+        let r = packet_from("eth0").frame_ref().expect("pointer");
+        assert!(matches!(r.source_kind(), FrameSource::Wire));
+        let r = packet_from("/pcaps/calls.pcap")
+            .frame_ref()
+            .expect("pointer");
+        assert!(matches!(r.source_kind(), FrameSource::Wire));
     }
 }

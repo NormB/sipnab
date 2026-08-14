@@ -1036,7 +1036,7 @@ output path.
   - **In progress — the resolver end exists; the threading is partial (status
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
-    ([`src/capture/resolve.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L216)); the `show_evidence` MCP tool
+    ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
     (`#[tool(` at [`src/mcp/server.rs:4818`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4818), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
