@@ -598,6 +598,9 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         policy: CapturePolicy {
             split_bytes,
             split_duration,
+            // 0 disables the bound rather than naming the open file among the
+            // things to remove; see `PcapWriter::keep_last_splits`.
+            split_keep: cli.split_keep.filter(|&n| n > 0),
             autostop_duration,
             autostop_filesize_mb,
             portrange,

@@ -424,6 +424,18 @@ pub struct Cli {
     #[arg(help_heading = "Capture", long, value_name = "CONDITION")]
     pub split: Option<String>,
 
+    /// Keep only the newest N split files: sipnab DELETES the older ones as
+    /// rotation creates new ones. Turns `-O` into a ring buffer.
+    ///
+    /// Off unless you pass it, and off at 0 — a capture is very often the only
+    /// copy of the evidence, so nothing is deleted until you ask. Only files
+    /// this run itself created and named are eligible; a file left by an
+    /// earlier run, another tool, or you stays where it is however closely its
+    /// name resembles a rotation. A run killed mid-capture leaves behind
+    /// whatever it had not yet deleted, and the next run will not adopt it.
+    #[arg(help_heading = "Capture", long, value_name = "N")]
+    pub split_keep: Option<u32>,
+
     /// Replay packets from a pcap file at original timing.
     #[arg(help_heading = "Capture", long)]
     pub replay: bool,

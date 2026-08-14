@@ -1524,3 +1524,124 @@ fn retain_audio_without_mcp_is_refused_with_the_remedy_named() {
         "the refusal must name --mcp so the operator learns the remedy: {stderr}"
     );
 }
+
+/// A capture big enough to rotate several times at `--split filesize:1`
+/// (1 MB), so a retention bound has older files to remove.
+const BIG_FIXTURE: &str = "tests/pcap-samples/sipp-branch-scenario.pcapng";
+
+/// Every file the run wrote into its output directory, sorted by name.
+///
+/// # Arguments
+/// * `dir` — the directory the run was pointed at.
+///
+/// # Returns
+/// The file names in `dir`, sorted.
+fn split_family(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("read output dir")
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// `--split` with no `--split-keep` writes every rotation and deletes none of
+/// them.
+///
+/// This is the property a future refactor is most likely to break, and the
+/// one whose failure destroys evidence: a capture is very often the only copy
+/// there will ever be, so an operator who never asked for a ring buffer keeps
+/// every file the run produced.
+#[test]
+fn split_without_a_bound_keeps_every_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("out.pcap");
+    let (_stdout, stderr, code) = run_support::run(
+        &[
+            "-N",
+            "--no-cli-print",
+            "-I",
+            BIG_FIXTURE,
+            "-O",
+            out.to_str().unwrap(),
+            "--split",
+            "filesize:1",
+        ],
+        Some("info"),
+    );
+    assert_eq!(code, Some(0), "run failed: {stderr}");
+
+    let family = split_family(dir.path());
+    assert!(
+        family.len() >= 4,
+        "the fixture must rotate at least three times for this to prove \
+         anything; got {family:?}"
+    );
+    let expected: Vec<String> = std::iter::once("out.pcap".to_string())
+        .chain((1..family.len()).map(|n| format!("out_{n:05}.pcap")))
+        .collect();
+    assert_eq!(
+        family, expected,
+        "every rotation survives when no bound was asked for"
+    );
+    assert!(
+        !stderr.contains("deleted by --split-keep"),
+        "an unbounded run must not report a deletion: {stderr}"
+    );
+}
+
+/// `--split-keep 2` leaves exactly the two newest files and reports what it
+/// removed.
+///
+/// The count it reports is checked against the disk rather than taken on
+/// trust: the run created `deleted + 2` files, so the survivors must be the
+/// last two sequence numbers of that set. A bound that kept the right NUMBER
+/// of files while deleting the wrong ones fails here.
+#[test]
+fn split_keep_leaves_the_newest_files_and_reports_the_deletions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("out.pcap");
+    let (_stdout, stderr, code) = run_support::run(
+        &[
+            "-N",
+            "--no-cli-print",
+            "-I",
+            BIG_FIXTURE,
+            "-O",
+            out.to_str().unwrap(),
+            "--split",
+            "filesize:1",
+            "--split-keep",
+            "2",
+        ],
+        Some("info"),
+    );
+    assert_eq!(code, Some(0), "run failed: {stderr}");
+
+    let deleted: usize = stderr
+        .split_once(" older split file(s) deleted by --split-keep")
+        .and_then(|(before, _)| before.rsplit(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("the run must say what it deleted: {stderr}"));
+    assert!(
+        deleted >= 2,
+        "the fixture must produce more than two files, or the bound proves \
+         nothing; deleted {deleted}"
+    );
+
+    // `deleted + 2` files were created, numbered 0 (`out.pcap`) upward, so the
+    // survivors are the last two of that run.
+    assert_eq!(
+        split_family(dir.path()),
+        vec![
+            format!("out_{deleted:05}.pcap"),
+            format!("out_{:05}.pcap", deleted + 1),
+        ],
+        "the survivors are the newest two files the run wrote"
+    );
+}

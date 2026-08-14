@@ -276,6 +276,60 @@ fn policy_autostop_and_split() {
     assert!(err.message.contains("--autostop"), "got: {}", err.message);
 }
 
+/// `--split-keep` reaches the capture policy, and reaches it as `None` unless
+/// the operator asked for it.
+///
+/// The bound DELETES capture files, so the absent case is the one worth
+/// pinning: a plan that defaulted it to any number would silently turn every
+/// split capture into a ring buffer. Zero arrives as `None` too — it names the
+/// file being written among the things it would remove, so it turns the bound
+/// off rather than emptying the directory.
+#[test]
+fn split_keep_reaches_the_capture_policy_only_when_asked_for() {
+    let p = bootstrap::plan(
+        &cli(&[
+            "-N",
+            "--split",
+            "filesize:1",
+            "--split-keep",
+            "3",
+            "-I",
+            FIXTURE,
+        ]),
+        &Config::default(),
+    )
+    .expect("plan");
+    assert_eq!(p.policy.split_keep, Some(3));
+
+    let p = bootstrap::plan(
+        &cli(&["-N", "--split", "filesize:1", "-I", FIXTURE]),
+        &Config::default(),
+    )
+    .expect("plan");
+    assert_eq!(
+        p.policy.split_keep, None,
+        "no --split-keep must mean no deletion"
+    );
+
+    let p = bootstrap::plan(
+        &cli(&[
+            "-N",
+            "--split",
+            "filesize:1",
+            "--split-keep",
+            "0",
+            "-I",
+            FIXTURE,
+        ]),
+        &Config::default(),
+    )
+    .expect("plan");
+    assert_eq!(
+        p.policy.split_keep, None,
+        "--split-keep 0 turns the bound off"
+    );
+}
+
 /// The hook-command queue depth reaches the engine the plan builds, and
 /// decides how many slow hooks may be in flight before events are dropped.
 ///

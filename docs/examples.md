@@ -1032,6 +1032,19 @@ Capture SIP+RTP to rotating pcapng files, 50 MiB chunks:
 sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50
 ```
 
+Run that capture forever inside 400 MiB, keeping the newest eight chunks:
+
+```bash
+sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng \
+     --split filesize:50 --split-keep 8
+```
+
+`--split-keep` **deletes** capture files — the older chunks, as rotation
+creates new ones. sipnab deletes nothing without the flag, and deletes only
+the files that running process created and named, so anything else in
+`/var/capture` stays. Leave it off whenever the capture is evidence you cannot
+retake.
+
 Decrypt SIPS signaling with a TLS key log and export decryptable pcapng. `--keylog` is the SIP/TLS NSS keylog — signaling only, and it does not decrypt media.
 
 ```bash

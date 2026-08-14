@@ -337,7 +337,9 @@ pub fn run_tui_mode(
                         cli_clone.pcapng,
                         tui_export_mode,
                         capture_source,
-                    ) {
+                    )
+                    .map(|w| w.keep_last_splits(policy.split_keep))
+                    {
                         Ok(mut w) => {
                             // Write DSB with keylog content if mode requires it
                             if let Some(ref keylog_path) = cli_clone.keylog

@@ -589,6 +589,12 @@ pub struct CapturePolicy {
     pub split_bytes: Option<u64>,
     /// Rotate the output file after this duration (`--split-time`).
     pub split_duration: Option<std::time::Duration>,
+    /// Keep only the newest N split files, deleting the rest (`--split-keep`).
+    ///
+    /// `None` — the default, and what `--split-keep 0` resolves to — keeps
+    /// every file. Nothing this run wrote is deleted unless an operator asked
+    /// for a ring buffer in so many words.
+    pub split_keep: Option<u32>,
     /// Stop capturing after this duration (`--autostop duration:N`).
     pub autostop_duration: Option<std::time::Duration>,
     /// Stop after the output file reaches this size (`--autostop filesize:N`).
@@ -2089,6 +2095,7 @@ impl BatchRunner {
         let mut capture_failed = false;
         let split_bytes = policy.split_bytes;
         let split_duration = policy.split_duration;
+        let split_keep = policy.split_keep;
         let portrange = policy.portrange;
         let autostop_duration = policy.autostop_duration;
         let autostop_filesize_mb = policy.autostop_filesize_mb;
@@ -2255,7 +2262,9 @@ impl BatchRunner {
                     use_pcapng,
                     export_mode,
                     capture_source,
-                ) {
+                )
+                .map(|w| w.keep_last_splits(split_keep))
+                {
                     Ok(mut w) => {
                         // Write DSB with keylog content if mode requires it
                         if let Some(ref keylog_path) = cli.keylog
@@ -2621,6 +2630,17 @@ impl BatchRunner {
                 counters.sip_count,
                 counters.rtp_count,
             );
+
+            // What `--split-keep` removed, counted beside what the run kept.
+            // A run that deleted capture files says so in its closing line,
+            // not only in the per-file log an operator may have scrolled past.
+            let deleted = writer.as_ref().map_or(0, PcapWriter::splits_deleted);
+            if deleted > 0 {
+                tracing::info!(
+                    "sipnab: {deleted} older split file(s) deleted by --split-keep \
+                     (each one written by this run)"
+                );
+            }
 
             // What `--portrange` discarded, beside the totals it reduced.
             // Without this the counts above read as complete.

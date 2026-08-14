@@ -12,6 +12,24 @@ entry that carries them.
 
 ### Added
 
+- **`--split-keep N`** bounds what `--split` leaves on disk: sipnab keeps the
+  newest N files and DELETES the older ones as rotation creates new ones,
+  turning `-O` into a ring buffer. Rotation was unbounded — a long capture with
+  `--split` filled the volume and there was no way to say "the last hour is
+  enough" short of a cron job racing the writer.
+
+  This flag deletes capture files, so it fails safe in four ways. It is off
+  unless you pass it, and off at `0`, because a capture is very often the only
+  copy of the evidence. sipnab deletes only the files the running process
+  created and named, remembered as it creates them — the directory is never
+  listed and no name pattern is ever matched against it, so a file left by an
+  earlier run, another tool, or an operator survives however closely its name
+  resembles a rotation. Deletion happens after the previous file is closed,
+  never to the file being written. A run killed mid-capture leaves behind
+  whatever it had not yet deleted, and the next run starts an empty list rather
+  than adopting them. sipnab names each deleted file in the log and counts them
+  in the closing summary.
+
 - **`--api-max-rows` / `[limits] api_max_rows`** sets the row ceiling on one
   list-style REST response, which was a hard-coded 1000. The MCP surface
   documents the identical policy — the right ceiling is a property of the

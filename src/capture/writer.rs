@@ -204,6 +204,20 @@ pub struct PcapWriter {
     /// Starts EMPTY, even when the constructor was told a capture source:
     /// see [`default_source`](Self::default_source).
     interfaces: Vec<InterfaceEntry>,
+    /// How many split files to keep, or `None` for "keep every one".
+    ///
+    /// `None` is the default and the only state that reaches a writer nobody
+    /// configured. See [`keep_last_splits`](Self::keep_last_splits).
+    keep_last: Option<u32>,
+    /// Split files THIS writer created, oldest first, capped at `keep_last`.
+    ///
+    /// The deletion list. It is populated only while a bound is set, so a
+    /// writer with no bound has nothing it could delete even if the eviction
+    /// were called, and a long unbounded run does not accumulate a path per
+    /// rotation for no reason.
+    created: std::collections::VecDeque<PathBuf>,
+    /// Split files this writer deleted to stay inside `keep_last`.
+    splits_deleted: u64,
     /// The capture source the constructor was told about (`--interface`, or
     /// the `-I` argument), used to name the FIRST interface when the first
     /// packet carries no source of its own.
@@ -396,8 +410,76 @@ impl PcapWriter {
             truncated_written: 0,
             next_truncation_warn: 1,
             interfaces,
+            keep_last: None,
+            created: std::collections::VecDeque::new(),
+            splits_deleted: 0,
             default_source,
         })
+    }
+
+    /// Keep only the newest `keep` split files, DELETING the rest as rotation
+    /// creates them.
+    ///
+    /// Off unless a caller asks for it: a writer nobody configured keeps every
+    /// file it writes, because a capture is very often the only copy of the
+    /// evidence that will ever exist, and no output is worth the input it
+    /// destroys (the reasoning of [`crate::capture::output_guard`], applied to
+    /// this run's own files).
+    ///
+    /// # Arguments
+    ///
+    /// * `keep` — how many files to keep, counting the one being written.
+    ///   `None` keeps every file. `Some(0)` also keeps every file: zero names
+    ///   the open file among the things it would remove, so it turns the bound
+    ///   off rather than emptying the directory — the reading the sibling
+    ///   capacity flags already use.
+    ///
+    /// # What is eligible for deletion
+    ///
+    /// Only files THIS writer created and named, remembered as it creates
+    /// them: the path given to the constructor and every rotation after it.
+    /// The directory is never enumerated and no pattern is ever matched
+    /// against it, so a file another sipnab, another tool, or the operator put
+    /// there is not deletable however exactly its name resembles a rotation.
+    ///
+    /// # After a crash
+    ///
+    /// The list lives in memory. A run killed by SIGKILL (or a power loss)
+    /// leaves behind every file it had not yet deleted, and the next run
+    /// starts with an empty list — it cannot adopt those files, so it will
+    /// never delete them. Clearing them is the operator's, deliberately: a
+    /// tool that deleted capture files it did not create would be a worse
+    /// failure than the disk space it recovered.
+    ///
+    /// Note that a re-run against the same `-O` path reuses the same
+    /// sequence numbers and OVERWRITES what it collides with, exactly as it
+    /// did before this bound existed.
+    #[must_use]
+    pub fn keep_last_splits(mut self, keep: Option<u32>) -> Self {
+        self.keep_last = keep.filter(|&n| n > 0);
+        self.created.clear();
+        if self.keep_last.is_some() {
+            self.created.push_back(self.current_path());
+        }
+        self
+    }
+
+    /// The file this writer has open: the constructor's path until the first
+    /// rotation, and the sequenced name after each one.
+    fn current_path(&self) -> PathBuf {
+        if self.sequence == 0 {
+            self.base_path.clone()
+        } else {
+            rotated_path(&self.base_path, self.sequence)
+        }
+    }
+
+    /// How many split files this writer deleted to stay inside the bound.
+    ///
+    /// Zero whenever no bound was set, which is what an operator who never
+    /// asked for a ring buffer must be able to rely on.
+    pub fn splits_deleted(&self) -> u64 {
+        self.splits_deleted
     }
 
     /// Write a packet to the output file.
@@ -843,7 +925,57 @@ impl PcapWriter {
         self.dsb_written = false;
         self.file_opened_at = std::time::Instant::now();
 
+        // Only now, with the previous backend dropped — which is what flushes
+        // and closes its file — may anything be considered for deletion.
+        // Unlinking a file whose writer is still open succeeds on Unix and
+        // silently discards every byte still buffered for it.
+        self.enforce_retention(new_path);
+
         Ok(())
+    }
+
+    /// Record the file just opened, then delete the oldest files THIS writer
+    /// created until at most `keep_last` remain.
+    ///
+    /// A no-op without a bound, structurally: nothing is ever recorded, so
+    /// there is nothing that could be popped and deleted.
+    ///
+    /// # Arguments
+    ///
+    /// * `opened` — the file rotation has just created, now the newest.
+    ///
+    /// # Side effects
+    ///
+    /// Removes files from disk and names each one at info level. A removal
+    /// that fails is reported and the file left in place: the bound is a
+    /// target this run holds where it can, never a reason to escalate against
+    /// the operator's filesystem.
+    fn enforce_retention(&mut self, opened: PathBuf) {
+        let Some(keep) = self.keep_last else {
+            return;
+        };
+        self.created.push_back(opened);
+        while self.created.len() > keep as usize {
+            let Some(oldest) = self.created.pop_front() else {
+                break;
+            };
+            match std::fs::remove_file(&oldest) {
+                Ok(()) => {
+                    self.splits_deleted += 1;
+                    tracing::info!(
+                        "Deleted '{}' to keep the last {keep} split file(s) \
+                         (--split-keep): {} deleted so far this run",
+                        oldest.display(),
+                        self.splits_deleted,
+                    );
+                }
+                Err(e) => tracing::warn!(
+                    "Could not delete '{}' under --split-keep {keep}: {e}. \
+                     The file stays, so this run keeps more than {keep}.",
+                    oldest.display(),
+                ),
+            }
+        }
     }
 
     /// Check whether any rotation condition is met: a pending SIGUSR1
@@ -2315,6 +2447,244 @@ mod tests {
                 rot_bytes,
                 std::fs::metadata(&rot).unwrap().len(),
                 "rotated file: bytes_written == on-disk size"
+            );
+        }
+    }
+
+    // ── Bounded on-disk retention (`--split-keep`) ───────────────────────
+    /// What is left on disk after rotation, when the operator asked for a
+    /// ring buffer and — the half that matters more — when they did not.
+    ///
+    /// A capture is very often the only copy of the evidence, so these tests
+    /// are written around the deletions that must NOT happen: no bound
+    /// deletes nothing, a zero bound deletes nothing, a file this run did not
+    /// create is never deleted however exactly its name matches the rotation
+    /// pattern, and the file currently open is never deleted.
+    mod retention {
+        use super::*;
+        use crate::capture::packet::Packet;
+
+        /// A 50-byte packet whose every byte is `stamp`, so a file read back
+        /// says which rotation wrote it.
+        fn stamped(stamp: u8) -> Packet {
+            Packet::new(chrono::Utc::now(), vec![stamp; 50], 50, 50, None, 1)
+        }
+
+        /// The stamp carried by the first packet of a classic-pcap file.
+        ///
+        /// Survivors are identified by their CONTENT rather than their name:
+        /// a bound that kept the right number of files but the wrong ones
+        /// would pass a count-only assertion.
+        fn stamp_of(path: &Path) -> u8 {
+            let mut cap = pcap::Capture::from_file(path).expect("reopen split file");
+            let pkt = cap.next_packet().expect("split file holds a packet");
+            pkt.data[0]
+        }
+
+        /// Every file name in `dir`, sorted — so a test can state the whole
+        /// directory rather than probe one path at a time.
+        fn on_disk(dir: &Path) -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .expect("read temp dir")
+                .map(|e| {
+                    e.expect("dir entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            names.sort();
+            names
+        }
+
+        /// Write one stamped packet into the file that is open, then rotate,
+        /// so `stamp` identifies the file the rotation just closed.
+        fn write_then_rotate(w: &mut PcapWriter, stamp: u8) {
+            w.write(&stamped(stamp)).expect("write");
+            w.rotate().expect("rotate");
+        }
+
+        /// A bound of 2 across four files leaves exactly the newest two, and
+        /// the survivors are identified by the packets inside them.
+        #[test]
+        fn keeping_the_last_two_leaves_the_two_newest_files() {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path().join("ring.pcap");
+
+            let mut w = PcapWriter::new(&base, 1, None, None)
+                .unwrap()
+                .keep_last_splits(Some(2));
+            // Four files: ring.pcap(0), ring_00001(1), ring_00002(2), and the
+            // open ring_00003(3) — two more than the bound.
+            for stamp in 0..3u8 {
+                write_then_rotate(&mut w, stamp);
+            }
+            w.write(&stamped(3)).expect("write");
+            w.finish().expect("finish");
+
+            assert_eq!(
+                on_disk(dir.path()),
+                vec!["ring_00002.pcap", "ring_00003.pcap"],
+                "a bound of 2 leaves the newest two files and nothing else"
+            );
+            assert_eq!(
+                stamp_of(&dir.path().join("ring_00002.pcap")),
+                2,
+                "the older survivor holds the third rotation's packet"
+            );
+            assert_eq!(
+                stamp_of(&dir.path().join("ring_00003.pcap")),
+                3,
+                "the newer survivor holds the packets written last"
+            );
+            assert_eq!(w.splits_deleted(), 2, "two files removed, and it says so");
+        }
+
+        /// No bound deletes nothing. This is the safety property: a run that
+        /// never asked for a ring buffer keeps every file it wrote.
+        #[test]
+        fn an_unset_bound_deletes_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path().join("all.pcap");
+
+            let mut w = PcapWriter::new(&base, 1, None, None).unwrap();
+            for stamp in 0..3u8 {
+                write_then_rotate(&mut w, stamp);
+            }
+            w.write(&stamped(3)).expect("write");
+            w.finish().expect("finish");
+
+            assert_eq!(
+                on_disk(dir.path()),
+                vec![
+                    "all.pcap",
+                    "all_00001.pcap",
+                    "all_00002.pcap",
+                    "all_00003.pcap"
+                ],
+                "with no --split-keep every split file survives"
+            );
+            assert_eq!(w.splits_deleted(), 0, "nothing was deleted");
+        }
+
+        /// A bound of zero disables the bound rather than deleting everything.
+        ///
+        /// Zero reads as "keep nothing", and the file being written is one of
+        /// the things it would name — so the only safe reading is the one the
+        /// sibling capacity flags already use: 0 turns the cap off.
+        #[test]
+        fn a_zero_bound_deletes_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path().join("zero.pcap");
+
+            let mut w = PcapWriter::new(&base, 1, None, None)
+                .unwrap()
+                .keep_last_splits(Some(0));
+            for stamp in 0..2u8 {
+                write_then_rotate(&mut w, stamp);
+            }
+            w.write(&stamped(2)).expect("write");
+            w.finish().expect("finish");
+
+            assert_eq!(
+                on_disk(dir.path()),
+                vec!["zero.pcap", "zero_00001.pcap", "zero_00002.pcap"],
+                "--split-keep 0 disables the bound; it does not delete the run"
+            );
+            assert_eq!(w.splits_deleted(), 0, "nothing was deleted");
+        }
+
+        /// Files this run did not create are never deleted, however exactly
+        /// their names match the rotation pattern.
+        ///
+        /// A killed run leaves its own `out_000NN.pcap` behind (see
+        /// [`PcapWriter::keep_last_splits`]), and an operator's directory can
+        /// hold anything. The bound deletes from a list of paths this writer
+        /// created; it never enumerates the directory.
+        #[test]
+        fn files_this_run_did_not_create_are_never_deleted() {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path().join("ring.pcap");
+
+            // Left behind by an earlier run that was killed, plus a file that
+            // is simply the operator's. The sequence numbers are ones this run
+            // will not reach, and they sit on BOTH sides of the run's own
+            // names: an implementation that enumerated the directory and took
+            // the first or the oldest match would reach `ring_00000.pcap`
+            // before it reached anything this run wrote.
+            for orphan in [
+                "ring_00000.pcap",
+                "ring_00007.pcap",
+                "ring_00008.pcap",
+                "evidence.pcap",
+            ] {
+                std::fs::write(dir.path().join(orphan), b"not ours").unwrap();
+            }
+
+            let mut w = PcapWriter::new(&base, 1, None, None)
+                .unwrap()
+                .keep_last_splits(Some(1));
+            for stamp in 0..2u8 {
+                write_then_rotate(&mut w, stamp);
+            }
+            w.write(&stamped(2)).expect("write");
+            w.finish().expect("finish");
+
+            assert_eq!(
+                on_disk(dir.path()),
+                vec![
+                    "evidence.pcap",
+                    "ring_00000.pcap",
+                    "ring_00002.pcap",
+                    "ring_00007.pcap",
+                    "ring_00008.pcap"
+                ],
+                "only this run's own older files go; the orphans and the \
+                 operator's file stay"
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join("ring_00007.pcap")).unwrap(),
+                b"not ours",
+                "an adopted file would have been rewritten as well as deleted"
+            );
+        }
+
+        /// The tightest bound still never deletes the file being written: it
+        /// survives with the packets that went into it after the last
+        /// rotation.
+        ///
+        /// Unlinking an open file succeeds on Unix and loses every byte still
+        /// buffered, so "the file exists" is not enough — the test reads the
+        /// last packet back out of it.
+        #[test]
+        fn the_open_file_survives_the_tightest_bound() {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path().join("one.pcap");
+
+            let mut w = PcapWriter::new(&base, 1, None, None)
+                .unwrap()
+                .keep_last_splits(Some(1));
+            for stamp in 0..3u8 {
+                write_then_rotate(&mut w, stamp);
+                let current = rotated_path(&base, u32::from(stamp) + 1);
+                assert!(
+                    current.exists(),
+                    "the file just opened must still be there after the bound ran"
+                );
+            }
+            w.write(&stamped(9)).expect("write");
+            w.finish().expect("finish");
+
+            let current = dir.path().join("one_00003.pcap");
+            assert_eq!(
+                on_disk(dir.path()),
+                vec!["one_00003.pcap"],
+                "a bound of 1 keeps exactly the open file"
+            );
+            assert_eq!(
+                stamp_of(&current),
+                9,
+                "the surviving file holds the packets written after the last rotation"
             );
         }
     }
