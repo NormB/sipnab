@@ -115,9 +115,258 @@ pub fn is_interesting(bytes: &[u8]) -> bool {
     crate::sip::is_sip_message(bytes)
 }
 
+/// The tracefs directory every probe operation goes through.
+pub const TRACEFS: &str = "/sys/kernel/tracing";
+
+/// Registers holding `SSL_write(SSL *ssl, const void *buf, int num)`'s second
+/// and third arguments, named the way tracefs wants them.
+///
+/// Arch-specific because the kernel gave no choice: `$arg2`/`$arg3`, which
+/// would have been portable, are rejected outright on a 6.12 kernel — measured,
+/// not assumed. So the calling convention is written down per architecture and
+/// an unknown one refuses rather than guessing at a register that would read
+/// whatever happens to be there.
+#[must_use]
+pub fn arg_registers() -> Option<(&'static str, &'static str)> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SysV AMD64: rdi, rsi, rdx.
+        Some(("%si", "%dx"))
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // AAPCS64: x0, x1, x2.
+        Some(("%x1", "%x2"))
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        None
+    }
+}
+
+/// The probe name sipnab uses for one band.
+///
+/// Carries the pid because `uprobe_events` is a **system-wide** namespace: two
+/// sipnabs on one host, or a sipnab beside another tracer, must not collide.
+#[must_use]
+pub fn probe_name(pid: u32, band: usize) -> String {
+    format!("sipnab_{pid}_b{band}")
+}
+
+/// The line that installs one banded probe.
+///
+/// Returns `None` on an architecture whose argument registers are unknown,
+/// because a probe built from guessed registers would read arbitrary memory and
+/// report it as a SIP message.
+#[must_use]
+pub fn install_line(name: &str, library: &str, offset: u64, band: usize) -> Option<String> {
+    let (buf_reg, len_reg) = arg_registers()?;
+    let mut line = format!("p:{name} {library}:0x{offset:x}");
+    // 64 bytes is the ceiling for ONE fetch argument, so a band above it is
+    // several side by side rather than one larger read.
+    let mut at = 0usize;
+    while at < band {
+        let chunk = BANDS[0].min(band - at);
+        line.push_str(&format!(" b{at}=+{at}({buf_reg}):x8[{chunk}]"));
+        at += chunk;
+    }
+    line.push_str(&format!(" len={len_reg}:s32"));
+    Some(line)
+}
+
+/// The line that removes one probe, and only that probe.
+///
+/// `-:<name>`, appended. Never a truncation of `uprobe_events`: that file is
+/// shared, and emptying it removes every other tracer's probes on the host.
+/// Verified both halves on a live box — removing `-:mine` left a second probe
+/// standing.
+#[must_use]
+pub fn remove_line(name: &str) -> String {
+    format!("-:{name}")
+}
+
+/// Probes sipnab installed, removed when this drops.
+///
+/// The guard is the point. `uprobe_events` is kernel state that outlives the
+/// process that wrote it: a sipnab that exits without removing its probes
+/// leaves them attached to a production `libssl`, costing every process on the
+/// host that maps it, with nothing left running to explain why.
+pub struct InstalledProbes {
+    /// Probe names, in installation order.
+    names: Vec<String>,
+    /// Where tracefs is mounted, so tests can point somewhere writable.
+    root: std::path::PathBuf,
+}
+
+impl InstalledProbes {
+    /// Install one banded probe per band over `library` at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failure, after removing anything already installed —
+    /// a half-installed set would capture some lengths and silently miss
+    /// others, which reads as "that traffic did not happen".
+    pub fn install(
+        root: &std::path::Path,
+        pid: u32,
+        library: &str,
+        offset: u64,
+    ) -> std::io::Result<Self> {
+        let mut held = Self {
+            names: Vec::new(),
+            root: root.to_path_buf(),
+        };
+        for band in BANDS {
+            let name = probe_name(pid, band);
+            let Some(line) = install_line(&name, library, offset, band) else {
+                return Err(std::io::Error::other(
+                    "no known argument registers for this architecture, so a \
+                     probe here would read whatever happens to be in them",
+                ));
+            };
+            held.append("uprobe_events", &line)?;
+            held.names.push(name.clone());
+            held.write(&format!("events/uprobes/{name}/filter"), &filter_for(band))?;
+            held.write(&format!("events/uprobes/{name}/enable"), "1")?;
+        }
+        Ok(held)
+    }
+
+    /// Names of the probes currently held, for tests and diagnostics.
+    #[must_use]
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Append a line to a tracefs control file.
+    fn append(&self, rel: &str, line: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(self.root.join(rel))?;
+        writeln!(f, "{line}")
+    }
+
+    /// Overwrite a tracefs control file.
+    fn write(&self, rel: &str, value: &str) -> std::io::Result<()> {
+        std::fs::write(self.root.join(rel), value)
+    }
+}
+
+impl Drop for InstalledProbes {
+    fn drop(&mut self) {
+        // Take the list first: draining in place holds a mutable borrow while
+        // the writes below need an immutable one.
+        let names = std::mem::take(&mut self.names);
+        for name in names.into_iter().rev() {
+            // Disable first: removing an enabled probe is refused, and the
+            // failure would leave it attached.
+            let _ = self.write(&format!("events/uprobes/{name}/enable"), "0");
+            // `-:name`, never a truncation of the shared file.
+            let _ = self.append("uprobe_events", &remove_line(&name));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_probe_name_is_unique_per_process_and_band() {
+        assert_eq!(probe_name(42, 64), "sipnab_42_b64");
+        assert_ne!(
+            probe_name(42, 64),
+            probe_name(43, 64),
+            "two sipnabs must not collide"
+        );
+        assert_ne!(probe_name(42, 64), probe_name(42, 256), "nor two bands");
+    }
+
+    /// Removal must name the probe. Truncating `uprobe_events` would remove
+    /// every other tracer's probes on the host.
+    #[test]
+    fn removal_names_one_probe_and_is_an_append() {
+        let line = remove_line("sipnab_42_b64");
+        assert_eq!(line, "-:sipnab_42_b64");
+        assert!(
+            !line.is_empty(),
+            "an empty write would truncate the shared file"
+        );
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn a_band_is_built_from_64_byte_fetches_because_that_is_the_ceiling() {
+        let line = install_line("t", "/lib/libssl.so.3", 0x3e110, 256).expect("known arch");
+        assert_eq!(
+            line.matches(":x8[64]").count(),
+            4,
+            "256 = four 64-byte fetches"
+        );
+        assert!(line.contains("p:t /lib/libssl.so.3:0x3e110"));
+        assert!(line.ends_with(":s32"), "the length argument comes last");
+        assert!(
+            line.contains("b0=+0(") && line.contains("b64=+64("),
+            "each fetch reads its own offset: {line}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_uses_the_sysv_argument_registers() {
+        let line = install_line("t", "/l", 0, 64).expect("x86_64 is known");
+        assert!(line.contains("(%si)"), "second argument is rsi: {line}");
+        assert!(line.contains("len=%dx"), "third argument is rdx: {line}");
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_uses_the_aapcs64_argument_registers() {
+        let line = install_line("t", "/l", 0, 64).expect("aarch64 is known");
+        assert!(line.contains("(%x1)"), "second argument is x1: {line}");
+        assert!(line.contains("len=%x2"), "third argument is x2: {line}");
+    }
+
+    /// The guard is the safety property: probes are kernel state that outlives
+    /// the process, so dropping must remove every one it installed.
+    #[test]
+    fn dropping_the_guard_removes_every_probe_it_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("uprobe_events"), "").unwrap();
+        for band in BANDS {
+            let d = root.join(format!("events/uprobes/{}", probe_name(7, band)));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("filter"), "").unwrap();
+            std::fs::write(d.join("enable"), "").unwrap();
+        }
+
+        let held = InstalledProbes::install(root, 7, "/lib/libssl.so.3", 0x1000)
+            .expect("install into the fake tracefs");
+        assert_eq!(held.names().len(), BANDS.len(), "one probe per band");
+        let installed = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
+        assert_eq!(
+            installed.lines().filter(|l| l.starts_with("p:")).count(),
+            BANDS.len()
+        );
+
+        drop(held);
+
+        let after = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
+        for band in BANDS {
+            let name = probe_name(7, band);
+            assert!(
+                after.contains(&format!("-:{name}")),
+                "drop must remove {name}: {after}"
+            );
+        }
+        assert!(
+            !after.trim().is_empty(),
+            "removal is an APPEND of -:name; an empty file would mean sipnab \
+             truncated shared kernel state and took other tracers with it"
+        );
+    }
 
     /// THE rule. A short write inside a long fetch must yield the message and
     /// nothing else — the padding measured on a live proxy was adjacent heap.
