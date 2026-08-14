@@ -22,7 +22,18 @@ RUN strip target/release/sipnab
 FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 # trixie renamed these runtime libs in the 64-bit time_t transition
 # (libpcap0.8 -> libpcap0.8t64, libasound2 -> libasound2t64).
-RUN apt-get update && apt-get install -y libpcap0.8t64 libasound2t64 && rm -rf /var/lib/apt/lists/*
+# `upgrade` before `install`, in the same layer: the base image is pinned by
+# digest for reproducibility, which also means it never picks up Debian security
+# updates published after that digest was built. util-linux 2.41-5 in this
+# digest carries CVE-2026-53613 and CVE-2026-53614, both fixed in
+# 2.41.5-0+deb13u1 — verified: the pinned base ships 2.41-5 and this line
+# produces 2.41.5-0+deb13u1. Trivy runs with `ignore-unfixed: true`, so it fails
+# the build only for vulnerabilities Debian has ALREADY fixed, which is exactly
+# the set an upgrade resolves. Bumping the base digest would not have helped
+# here: it was already the newest published one.
+RUN apt-get update && apt-get upgrade -y \
+ && apt-get install -y libpcap0.8t64 libasound2t64 \
+ && rm -rf /var/lib/apt/lists/*
 RUN useradd -r -s /usr/sbin/nologin sipnab
 COPY --from=builder /build/target/release/sipnab /usr/local/bin/sipnab
 USER sipnab
