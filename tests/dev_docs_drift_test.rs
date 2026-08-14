@@ -1955,9 +1955,16 @@ fn line_citations_point_at_the_code_they_name() {
     // `HepSender::send` would have moved from a wrong 1741 to a wrong 1860
     // instead of 2035. Bump when the corpus grows; never lower it to make a
     // build pass.
+    //
+    // 140 -> 141 on 2026-08-14, attributed per file before moving: the whole
+    // increase is ONE citation in docs/design/backlog.md, from the new `TK`
+    // section (TLS key acquisition without the daemon's cooperation) and its
+    // `CFG1` neighbour. No other file's count changed, and the checker resolves
+    // the new citation cleanly — measured by running scripts/check-line-drift.py
+    // with and without that edit stashed: 141 against 140.
     assert_eq!(
-        checked, 140,
-        "the drift checker examined {checked} citations, not the 140 this tree \
+        checked, 141,
+        "the drift checker examined {checked} citations, not the 141 this tree \
          holds. FEWER means its resolution or symbol-extraction narrowed and the \
          gate is proving less than it claims — fix that rather than moving this \
          number. MORE means the corpus grew: attribute the new citations, then \

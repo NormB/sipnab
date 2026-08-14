@@ -27,6 +27,10 @@ pub mod file;
 pub mod hep;
 #[cfg(feature = "native")]
 pub mod input_set;
+
+/// Where TLS keylog bytes arrive from: a file, a FIFO, or an inherited fd.
+#[cfg(feature = "tls")]
+pub mod keylog_source;
 #[cfg(feature = "native")]
 pub mod live;
 #[cfg(feature = "native")]

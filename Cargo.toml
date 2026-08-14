@@ -220,7 +220,7 @@ default = ["native", "tui", "audio", "metrics"]
 # Native platform deps (not available in WASM)
 native = ["dep:pcap", "dep:clap", "dep:clap_complete", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log", "dep:tempfile"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width", "dep:base64"]
-tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64", "dep:rsa"]
+tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64", "dep:rsa", "dep:libc"]
 hep = ["native", "dep:hmac", "dep:sha2"]
 # Standalone Prometheus /metrics server (raw TCP + threads; no axum/tokio,
 # so it is independent of the `api` feature). Needs base64 for Basic-auth.

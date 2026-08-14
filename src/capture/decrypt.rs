@@ -489,8 +489,14 @@ pub struct TlsDecryptor {
     pub decrypted_count: u64,
     /// Path to the keylog file (for --keylog-watch polling).
     keylog_path: Option<std::path::PathBuf>,
-    /// Last known size of the keylog file (for change detection).
-    last_keylog_size: u64,
+    /// Where `--keylog-watch` reads from.
+    ///
+    /// This replaced a bare `last_keylog_size: u64`. Resuming by size alone
+    /// could not survive a producer that truncates or replaces the file, and
+    /// could not read a FIFO at all — a pipe stats as zero length however much
+    /// is queued, so the freshness check returned "nothing new" forever. See
+    /// [`super::keylog_source`].
+    keylog_source: Option<super::keylog_source::KeylogSource>,
     /// All ServerHello infos (server_random + cipher) observed on the wire, in
     /// arrival order. Each is paired with the `client_random` of the oldest
     /// still-unanswered ClientHello (wire order), so TLS 1.2 `CLIENT_RANDOM`
@@ -517,11 +523,26 @@ impl TlsDecryptor {
     /// If `keylog_path` is `None`, the decryptor is created with no keys
     /// and will not be able to decrypt any records.
     pub fn new(keylog_path: Option<&Path>, crypto: Box<dyn CryptoBackend>) -> Result<Self> {
-        let keylog_entries = if let Some(path) = keylog_path {
-            parse_keylog_file(path)
-                .with_context(|| format!("Loading keylog from {}", path.display()))?
-        } else {
-            Vec::new()
+        use super::keylog_source::KeylogSource;
+
+        // A FIFO is never read eagerly: opening one `O_RDONLY` blocks until a
+        // writer appears, so parsing "what is already there" would hang the
+        // process rather than return empty. Its contents arrive through the
+        // streaming source instead.
+        let streaming = keylog_path.is_some_and(KeylogSource::is_fifo);
+
+        let keylog_entries = match keylog_path {
+            Some(path) if !streaming => parse_keylog_file(path)
+                .with_context(|| format!("Loading keylog from {}", path.display()))?,
+            _ => Vec::new(),
+        };
+
+        // A regular file was just parsed in full, so resume at its end rather
+        // than delivering every entry a second time on the first poll.
+        let keylog_source = match keylog_path {
+            Some(path) if streaming => Some(KeylogSource::open_auto(path)?),
+            Some(path) => Some(KeylogSource::open_file_at_end(path)?),
+            None => None,
         };
 
         let entry_count = keylog_entries.len();
@@ -529,18 +550,13 @@ impl TlsDecryptor {
             tracing::info!("Loaded {} keylog entries", entry_count);
         }
 
-        let last_keylog_size = keylog_path
-            .and_then(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len())
-            .unwrap_or(0);
-
         Ok(Self {
             keylog_entries,
             sessions: HashMap::new(),
             crypto,
             decrypted_count: 0,
             keylog_path: keylog_path.map(|p| p.to_path_buf()),
-            last_keylog_size,
+            keylog_source,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
@@ -589,58 +605,51 @@ impl TlsDecryptor {
         self.keylog_entries.len() - before
     }
 
-    /// Poll the keylog file for new entries (for --keylog-watch).
+    /// Poll the keylog source for new entries (for `--keylog-watch`).
     ///
-    /// Checks if the file has grown since the last poll. If so, reads
-    /// the new lines and parses them as keylog entries. Returns the
-    /// number of new keys loaded.
+    /// Returns the number of new keys loaded. Never blocks, so it is safe on
+    /// the sweep loop that also drives dialog expiry and output flushing.
     ///
     /// Should be called periodically (e.g., every 5 seconds).
+    ///
+    /// The reading lives in [`super::keylog_source::KeylogSource`]. This used
+    /// to resume by comparing the file's size against the size last seen, which
+    /// failed three ways: a truncating or rotating producer left the comparison
+    /// permanently false so no key ever loaded again; a FIFO stats as zero
+    /// length however much is queued, so a pipe loaded nothing while reporting
+    /// nothing wrong; and the read ran to EOF past the size it had stat'd, so
+    /// overlapping bytes were parsed twice into an unbounded `Vec`.
     pub fn poll_keylog_file(&mut self) -> Result<usize> {
-        let Some(ref path) = self.keylog_path else {
+        // Named before the mutable borrow below, and named at all because an
+        // operator reading "the keylog was replaced" needs to know which one.
+        let which = self
+            .keylog_path
+            .as_ref()
+            .map_or_else(|| "keylog".to_string(), |p| p.display().to_string());
+
+        let Some(ref mut source) = self.keylog_source else {
             return Ok(0);
         };
 
-        // Open the file FIRST, then stat the fd — prevents TOCTOU symlink race
-        // where an attacker could swap the file between stat() and open().
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file = match std::fs::File::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::debug!("Failed to open keylog file: {e}");
-                return Ok(0);
-            }
-        };
+        let outcome = source.poll()?;
 
-        let current_size = file.metadata()?.len();
-        if current_size <= self.last_keylog_size {
+        if let Some(cause) = outcome.reset {
+            // Say it. A capture that silently stopped loading keys is the
+            // defect this replaced; one that reloaded them reports the fact.
+            tracing::warn!(
+                "{which} {} by its producer — reloading it from the beginning",
+                match cause {
+                    super::keylog_source::ResetCause::Truncated => "was truncated",
+                    super::keylog_source::ResetCause::Replaced => "was replaced",
+                }
+            );
+        }
+
+        if outcome.lines.is_empty() {
             return Ok(0);
         }
 
-        // Read from where we left off
-        file.seek(SeekFrom::Start(self.last_keylog_size))?;
-
-        let mut new_data = String::new();
-        file.read_to_string(&mut new_data)?;
-
-        let mut new_count = 0;
-        for line in new_data.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            match super::tls::parse_keylog_line(line) {
-                Ok(entry) => {
-                    self.keylog_entries.push(entry);
-                    new_count += 1;
-                }
-                Err(e) => {
-                    tracing::debug!("Skipping invalid keylog line: {e}");
-                }
-            }
-        }
-
-        self.last_keylog_size = current_size;
+        let new_count = self.add_keylog_text(&outcome.lines);
 
         if new_count > 0 {
             // Clear sessions cache so new entries are picked up
@@ -1445,7 +1454,7 @@ mod tests {
             }),
             decrypted_count: 0,
             keylog_path: None,
-            last_keylog_size: 0,
+            keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
@@ -1474,7 +1483,7 @@ mod tests {
             }),
             decrypted_count: 0,
             keylog_path: None,
-            last_keylog_size: 0,
+            keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
@@ -1512,7 +1521,7 @@ mod tests {
             }),
             decrypted_count: 0,
             keylog_path: None,
-            last_keylog_size: 0,
+            keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
@@ -1548,7 +1557,7 @@ mod tests {
             }),
             decrypted_count: 0,
             keylog_path: None,
-            last_keylog_size: 0,
+            keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
@@ -1769,7 +1778,7 @@ mod tests {
             }),
             decrypted_count: 0,
             keylog_path: None,
-            last_keylog_size: 0,
+            keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
@@ -1816,7 +1825,7 @@ mod tests {
             }),
             decrypted_count: 0,
             keylog_path: None,
-            last_keylog_size: 0,
+            keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
@@ -1870,7 +1879,7 @@ mod tests {
             crypto,
             decrypted_count: 0,
             keylog_path: None,
-            last_keylog_size: 0,
+            keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,

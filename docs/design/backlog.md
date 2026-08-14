@@ -18,6 +18,12 @@ Tiers:
   MCP, and the hardening that has to precede pointing a hosted model at
   production traffic. Cross-referenced to PA where the two overlap rather than
   merged, because they were written from different vantage points.
+- **TK — TLS key acquisition program**: the 2026-08-14 answer to
+  [sngrep#447](https://github.com/irontec/sngrep/issues/447), reading
+  SIP-over-TLS with no certificate and no daemon restart. Ranked `TK1`..`TK7` by
+  dependency order, outside the P0-P5 scale for the same reason `PA` is — but
+  `TK1`–`TK3` are P0/P1-severity defects that exist today, and the section says
+  so rather than letting the placement quietly downgrade them.
 - **P0 — panics & security**: crashes reachable from real input,
   injection, auth/limit bypass, key-material hygiene.
 - **P1 — wrong results in real use**: incorrect exports/metrics/state,
@@ -1761,9 +1767,232 @@ authoritative; the PB text above adds only what they do not already say.
   releases stale, and nothing in CI measures throughput. A perf gate would have
   caught a 40% drop the day it landed.
 
+## TK — TLS key acquisition without the daemon's cooperation (added 2026-08-14)
+
+<!-- Added 2026-08-14. Design: docs/superpowers/specs/2026-08-14-ebpf-tls-capture-design.md -->
+
+Origin: [irontec/sngrep#447](https://github.com/irontec/sngrep/issues/447), "TLS
+capture using eBPF" — read SIP-over-TLS on a live host **without the server
+certificate and without restarting the SIP daemon**.
+
+sipnab already decrypts. `TlsDecryptor` ingests NSS `SSLKEYLOGFILE` material
+from a file, from memory (`add_keylog_text`), and from a pcapng DSB. What is
+missing is **key acquisition on a host whose daemon you cannot reconfigure** —
+`SSLKEYLOGFILE` needs an environment variable and a restart, which on a
+production SBC is the whole problem. eBPF reads the secrets out of the running
+TLS library instead.
+
+**This does not reopen `CT12`/`CT13`.** Those decline XDP-as-a-filter and
+AF_XDP, on the **network** side of the tap, and `CT12` says "does not reopen".
+A uprobe on userspace `libssl` is a different hook at a different layer: it does
+not touch the capture path, steals no packets, and drops no direction.
+
+### Prior art: sngrep shipped this on 2026-08-12, and its design decides ours
+
+[`c9d872c`](https://github.com/irontec/sngrep/commit/c9d872c3e64a45bad0888751a919bfdcea20b33a)
+("capture: add eBPF based capture of SIP over TLS") and
+[`f2bbde9`](https://github.com/irontec/sngrep/commit/f2bbde973c3011cdbced534b1fdfb9972483d348)
+are the reference implementation of the request this section answers. Read the
+first commit message before starting `TK6` or `TK7`; four of its decisions are
+load-bearing and two of them retire work planned here.
+
+1. **Addresses do not come from the `SSL` object.** Applications that hand
+   OpenSSL a memory BIO — **Kamailio among them** — keep no socket there, so
+   reading the descriptor out of the BIO by struct offset captures nothing for
+   them, and needs an offset table maintained per OpenSSL release besides.
+   sngrep reads addresses from `struct sock` in `tcp_sendmsg`/`tcp_recvmsg` and
+   matches them to the plaintext **per thread**. That works for both styles of
+   application and survives OpenSSL upgrades untouched. **This retires the
+   version-keyed offset table in `TK6` and the `(pid, fd)` map in `TK7`** — do
+   not build either; adopt this instead.
+2. **A kernel-space prefilter discards non-SIP payloads** before they cost a
+   ring-buffer round trip. Uprobes attach to *every* `libssl` on the host, so
+   this is not an optimisation, it is what makes the feature affordable.
+3. **eBPF supplements ordinary capture rather than replacing it.** Network
+   capture continues alongside, so RTP and cleartext signalling stay visible and
+   reading a file still works with the probes attached.
+4. **Libraries are found by scanning `/proc` once at startup and deduplicated by
+   device and inode**, so one uprobe attaches per distinct library however many
+   processes map it.
+
+Two further notes. sngrep marks packets as TLS **before** the WebSocket check so
+SIP over WSS is reported as WSS. And its C build has to keep the libbpf and
+libpcap halves in separate translation units, because both define `struct
+bpf_insn` and neither guards against the other — a hazard `aya` removes, since
+sipnab links no libbpf at all.
+
+**What sipnab already has, verified in this tree — do not rebuild it:**
+
+| sngrep's change | sipnab |
+|---|---|
+| eBPF source adopts the capture devices' link type instead of claiming Ethernet | Not needed as posed. The pcapng writer already gives **each source and link type its own IDB** (`pcapng_two_sources_same_link_type_get_their_own_idbs`, `pcapng_same_interface_new_link_type_gets_its_own_idb`), so sources need not agree at all; plain pcap refuses a foreign link type with an error rather than silently writing nothing (`plain_pcap_refuses_a_foreign_link_type`) |
+| Frame builder learns the two Linux cooked headers from the `any` device, picked at runtime | Already handled: `DLT_LINUX_SLL` (16) and `DLT_LINUX_SLL2` (20), including the `pcap_compile` differences between cooked v1 and v2 ([`bootstrap.rs:1718-1825`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1718-L1825)) |
+| Saving refused whenever more than one capture source existed | Not a sipnab defect; `--multi-device` writes through the per-source IDB path above |
+| Plaintext wrapped in a synthetic frame and fed to the ordinary parser | This is `TK7`, and sipnab adds what sngrep does not: an explicit origin, so frame-pointer evidence never cites an offset that does not exist |
+
+`TK1`–`TK3` are **P0/P1-severity defects** kept here rather than in the severity
+sections so the program reads as one piece — the same reason `PA` and `PB` sit
+outside the scale. Their severity is not reduced by their placement: `TK1` hangs
+the packet loop and `TK2`/`TK3` are the silent-wrong-answer class this repo
+treats as critical.
+
+- [x] **TK1 — A FIFO keylog hung the packet loop.** `poll_keylog_file` opened
+  the path with a plain blocking open, and opening a FIFO `O_RDONLY` blocks
+  until a writer appears. **Measured:** `mkfifo kl.fifo && timeout 2 cat
+  kl.fifo` exits 124. The call runs inside the sweep loop that also drives
+  dialog expiry and output flushing, so `--keylog <fifo> --keylog-watch` did not
+  degrade — it **stalled capture** until something opened the other end. The
+  same blocking read sat in `TlsDecryptor::new`, which eagerly parsed the whole
+  keylog before any poll. **Fixed:** FIFOs open `O_RDONLY | O_NONBLOCK`, which
+  returns immediately with no writer present, and a FIFO path is never parsed
+  eagerly.
+
+- [x] **TK2 — A FIFO keylog could never load a key.** The freshness test was a
+  size comparison — `if current_size <= self.last_keylog_size { return Ok(0); }`
+  — and a FIFO stats as zero length however much data is queued. **Measured:**
+  `stat -c %s kl.fifo` returns `0`. The guard therefore held forever and every
+  pipe-based producer loaded **zero keys while reporting nothing wrong**,
+  indistinguishable from a capture that carried no encrypted traffic. **Fixed:**
+  stream mode never consults `metadata().len()`.
+
+- [x] **TK3 — Truncation or rotation stopped key loading permanently.** The same
+  comparison ended the file's useful life the moment a producer truncated or
+  replaced it: `current_size` small, `last_keylog_size` large, so `Ok(0)` for
+  the rest of the run. If the file later grew past the old size, the `seek`
+  landed at a stale offset in new content and read from the middle of a line.
+  Three more faults in the same function: the size was stat'd *before* a
+  `read_to_string` that ran to EOF, so bytes written during the read were parsed
+  now and re-read next poll into a `keylog_entries` `Vec` that has `push` and no
+  dedup — unbounded growth, each duplicate also forcing a session group-map
+  rebuild that learns nothing; and a line straddling the poll boundary was
+  parsed incomplete and discarded.
+
+  **Fixed** in [`src/capture/keylog_source.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/keylog_source.rs): resume by identity and offset,
+  reset on shrink or inode change with one `warn` naming the cause and the path,
+  read bounded to the byte count observed at stat time, and stop at the last
+  newline while retaining the partial tail (zeroized, since it holds key
+  material).
+
+  **The subtlety that made the first attempt wrong, and its test intermittent:**
+  comparing `(dev, ino)` from a fresh `stat` is not enough, because a producer
+  that deletes and recreates can be handed **the same inode number back**, which
+  then reads as an append and gets the replacement file read at the old file's
+  offset. The source now **holds the file handle open across polls**. An open
+  descriptor pins the inode, so the replacement cannot reuse it, and comparing
+  the held handle against the path is a reliable rotation signal. Verified by
+  running the replacement test 40 times: 0 failures, where the stat-only version
+  failed intermittently on the same machine.
+
+- [ ] **TK4 — No way to feed secrets in without writing them to disk.**
+  `--keylog` takes a path and nothing else, so a sibling eBPF producer must
+  persist master secrets to a file that then has to be protected and deleted.
+  **Do:** `--keylog-fd <N>` reading NSS keylog lines from an inherited
+  descriptor, plus FIFO autodetect on `--keylog`. **Constraint:** sipnab
+  **cannot spawn the producer.** `PR_SET_NO_NEW_PRIVS` is set unconditionally at
+  startup ([`src/privilege.rs:531`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L531)) and every child inherits it, so a spawned
+  loader can never acquire `CAP_BPF` — the doctrine already written down for
+  hooks in [`cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md). The producer is a sibling started
+  independently. A FIFO path must be opened **before** the privilege drop,
+  alongside capture devices, or a `--chroot`ed run cannot reach `/run`.
+
+- [ ] **TK5 — The zero-code interop path is undocumented, so nobody uses it.**
+  Two modes work against the shipped binary. `ecapture tls -m keylog
+  --keylogfile=…` into `--keylog … --keylog-watch` gives decrypted signalling
+  with real wire frames; `ecapture tls -m pcap --pcapfile=x.pcapng` writes
+  **decrypted traffic as pcapng** that `sipnab -I x.pcapng` already reads with
+  no new code at all. **Do:** a task-first section in [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md) beside the
+  existing SSLKEYLOGFILE recipe, troubleshooting entries for the failures
+  `TK1`–`TK3` used to cause silently, and an **end-to-end measurement on a real
+  TLS SIP session** — cheap to do, so the live-NIC caveat does not extend here.
+  Interop facts verified 2026-08-14: ecapture is Apache-2.0 at v2.5.2, covers
+  openssl/libressl/boringssl/gnutls/nspr(nss)/GoTLS, needs x86\_64 kernel 4.18+
+  or aarch64 5.5+ and root, and since 0.7.0 its `-m text` no longer emits keylog
+  data — so this must use `-m keylog`. **rtcagent is AGPL-3.0**: interoperate
+  over a pipe, never vendor or link it into an MIT-OR-Apache-2.0 tree.
+
+- [ ] **TK6 — sipnab cannot extract the secrets itself.** Every path above needs
+  a second tool installed on the SBC. **Do:** a non-default Linux-only `ebpf`
+  feature on [`aya`](https://aya-rs.dev) (pure Rust, no libbpf or clang at build
+  time), with `--ebpf-tls-pid` / `--ebpf-tls-lib`, attaching a uretprobe to
+  `SSL_do_handshake`/`SSL_connect`/`SSL_accept` and reading the master secret and
+  client random from the `SSL` struct. Not in `full`: it needs a kernel and root
+  to exercise, so CI builds it and cannot run it. Find libraries by scanning
+  `/proc` once at startup, deduplicated by device and inode, so one uprobe
+  attaches per distinct library however many processes map it. Prefilter
+  non-SIP payloads **in kernel space**, because these probes see every `libssl`
+  on the host. **The differentiator:** sipnab holds the decryptor in the same
+  process, so an extracted secret is **validated by attempting a decryption
+  before it is accepted**, and a bad read produces a named error instead of a
+  capture that silently decrypts nothing — a check a standalone extractor cannot
+  make, having no decryptor to check against.
+
+  **No struct-offset table.** An earlier draft of this entry planned one, keyed
+  by OpenSSL version. sngrep's implementation shows it is both fragile and
+  avoidable — see the prior-art section above. Take the addresses from
+  `struct sock` in `tcp_sendmsg`/`tcp_recvmsg`, matched per thread.
+
+- [ ] **TK7 — Plaintext-from-uprobe has no honest provenance.** `SSL_read`/
+  `SSL_write` yield SIP bytes with no packet behind them: no frame number, no
+  byte offset, no capture timestamp. sipnab's frame-pointer evidence is a stated
+  differentiator, and passing uprobe bytes off as wire frames would make that
+  evidence lie. **Do:** make origin explicit — `MessageOrigin::Wire { frame,
+  offset }` versus `Uprobe { pid, comm, fd, direction }` — have frame-pointer
+  evidence **refuse** to cite a frame or offset for uprobe origin and say why,
+  and label the message in every output format and in the TUI. Phased last on
+  purpose: `TK5`'s pcapng mode already delivers plaintext **with** real
+  5-tuples, so this is the deeper option rather than the only one.
+
+  **The 5-tuple comes from `struct sock`, not from `(pid, fd)`.** An earlier
+  draft planned a companion probe keyed by `(pid, fd)`. That fails for exactly
+  the applications that matter — Kamailio hands OpenSSL a memory BIO, so there
+  is no descriptor to key on. Probe `tcp_sendmsg`/`tcp_recvmsg` and match to the
+  plaintext per thread. Wrap the result in a synthetic frame and feed the
+  ordinary parser so reassembly, WebSocket detection, filtering, output and the
+  TUI are reused rather than reimplemented, and mark the packet as TLS **before**
+  the WebSocket check so SIP over WSS is reported as WSS. The probes supplement
+  capture rather than replacing it: the network path keeps running, so RTP and
+  cleartext stay visible and `-I` still works with the probes attached.
+
+**Order:** `TK1`-`TK3` first, in a new [`src/capture/keylog_source.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/keylog_source.rs) — they are
+live defects and ship value whether or not anything after them lands. Then
+`TK4`, then `TK5`, then `TK6`, then `TK7`.
+
+**Two build constraints, both verified against [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) and `ci.yml`, and
+neither visible to `--features full`:**
+
+1. `keylog_source` is gated on `tls`, because `zeroize` is optional and reached
+   only through it. The CI matrix builds **`tls` on its own**
+   (`cargo check --no-default-features --features tls --tests`), and `tls` does
+   not pull `libc`, which the non-blocking path needs for `O_NONBLOCK`, `open`,
+   `fcntl` and `read`. `libc` is an unconditional *dev*-dependency, so the tests
+   compile while the non-test code does not. Fix: add `dep:libc` to `tls`. It is
+   already optional under `native` and `audio`, so no new crate enters any build
+   that has either.
+2. `TK6`'s `ebpf` feature sits **outside `full`**, and
+   `no_test_hides_behind_a_feature_outside_full`
+   ([`tests/site_journey_test.rs:4795`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L4795)) fails on any `#[test]` or
+   `mod tests` gated on such a feature. So the offset table and version parsing
+   are **ungated** pure logic and only the aya attachment is gated. This is
+   architecture, not style.
+
+There is no `hex` crate in this tree — neither a regular nor a dev dependency —
+so tests that need hex encode it by hand.
+
 ## P5 — features & long-term / exploratory
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
+
+- [ ] **CFG1 — Config values do not expand environment variables.** `config.rs`
+  reads `SIPNAB_CONFIG` and `HOME` from the environment
+  ([`config.rs:1660`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1660), [`:1928`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1928)) but never expands `${VAR}` **inside a
+  config value**, so a path cannot be written relative to whoever is running.
+  Prior art: [sngrep PR 539](https://github.com/irontec/sngrep/pull/539) (open,
+  unmerged), whose motivating case is `set savepath /home/${SUDO_USER}` — after
+  `sudo -i`, saving to the invoking user's directory rather than root's.
+  Unrelated to the `TK` program; recorded here because it arrived with those
+  links. **Do:** expand `${VAR}` in string-valued settings at load time, decide
+  explicitly what an unset variable does (empty or refuse — refuse is safer for
+  a path), and cover the escape for a literal `$`.
 
 - [ ] **G5 — No seccomp and no Landlock, on a process whose whole job is
   parsing hostile input.** [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) does real work — `setgid`,
