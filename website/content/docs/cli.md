@@ -178,6 +178,24 @@ too large to open.
 sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50
 ```
 
+Keep only the newest four of those files, so a long capture fits a fixed
+amount of disk. `--split-keep` **deletes** the older files as rotation creates
+new ones, and it deletes only the files this run wrote.
+
+```bash
+sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --split-keep 4
+```
+
+> **`--split-keep` deletes capture files.** sipnab deletes nothing unless you
+> pass the flag, and nothing at `--split-keep 0`, because a capture is very
+> often the only copy of the evidence. sipnab deletes only the files the
+> running process created and named — it never lists the directory, so a file
+> an earlier run, another tool, or you left beside them stays where it is,
+> however closely its name resembles a rotation. A run that dies mid-capture
+> leaves behind whatever it had not yet deleted; the next run starts its own
+> list and never adopts those files. sipnab names each file it deletes in the
+> log and counts them in the closing summary.
+
 Capture across every interface at once, timestamping each message relative to
 the one before it. On Linux the `any` pseudo-device is what makes this every
 interface — `--multi-device` is for naming a specific list, as below.
@@ -222,6 +240,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--duration` | `<DURATION>` | -- | Stop after duration (e.g., `30s`, `5m`, `1h`) |
 | `--autostop` | `<CONDITION>` | -- | Autostop condition (e.g., `filesize:100`, `duration:60`) |
 | `--split` | `<CONDITION>` | -- | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
+| `--split-keep` | `<N>` | -- | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
 | `--replay` | -- | off | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
 | `<BPF_FILTER>...` | positional | -- | BPF display filter expression (trailing positional args) |
