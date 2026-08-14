@@ -876,6 +876,15 @@ fn cli_max_reassembly_overrides_config() {
 /// no-op placeholder below and simply goes unguarded — the guard is insurance
 /// against a machine slow enough to spill a 14 ms burst past 1 s, not something
 /// the probe depends on.
+///
+/// `allow(dead_code)`: whether anything CALLS this depends on the feature
+/// combination, not on whether it can compile. Its two callers are the `api`
+/// burst probe and the unix-only `hep` one, so the matrix builds combinations
+/// -- `tls`, `native`, `metrics`, `mcp` alone -- where the function is
+/// perfectly valid and simply unused. CI denies warnings, so that is an error
+/// there and not here; spelling the caller set out as a `cfg` expression would
+/// be longer than this comment and wrong the next time a probe moves.
+#[allow(dead_code)]
 #[cfg(any(feature = "hep", feature = "mcp"))]
 fn assert_premise_inside_window(which: &str, elapsed: std::time::Duration, refused: usize) {
     if refused > 0 {
@@ -896,6 +905,7 @@ fn assert_premise_inside_window(which: &str, elapsed: std::time::Duration, refus
 /// Placeholder for builds without `sipnab::rate_limit` (neither `hep` nor
 /// `mcp`). The bound it would check lives in that module, so there is nothing
 /// to check against; the probes still run, they just go unguarded.
+#[allow(dead_code)]
 #[cfg(not(any(feature = "hep", feature = "mcp")))]
 fn assert_premise_inside_window(_which: &str, _elapsed: std::time::Duration, _refused: usize) {}
 
