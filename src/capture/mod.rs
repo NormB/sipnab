@@ -31,6 +31,7 @@ pub mod input_set;
 /// Where TLS keylog bytes arrive from: a file, a FIFO, or an inherited fd.
 #[cfg(feature = "tls")]
 pub mod keylog_source;
+
 #[cfg(feature = "native")]
 pub mod live;
 #[cfg(feature = "native")]
@@ -41,6 +42,9 @@ pub mod pcap_reader;
 #[cfg(feature = "native")]
 pub mod pcapng_meta;
 pub mod reassembly;
+/// Deciding what a kernel uprobe delivered may be used for.
+#[cfg(target_os = "linux")]
+pub mod uprobe;
 // Following a frame pointer means re-reading a capture file, which is
 // libpcap's job, so this shares `file`'s gate rather than inventing its own.
 #[cfg(feature = "native")]
