@@ -1875,15 +1875,34 @@ authoritative; the PB text above adds only what they do not already say.
   individually and the supply-chain one measured (+1.56 MB, 15 crates) rather
   than argued. A plugin has no imports at all, so the sandbox is an empty
   import table rather than an allowlist.
-- [ ] **Machine-learning anomaly detection over SIP/RTP patterns** —
-  **researched and specced 2026-07-30**, see
-  [`ml-anomaly-detection.md`](./ml-anomaly-detection.md). Recommendation: do
-  not build the obvious version. A scoring model breaks the evidence rule every
-  other detection follows, cannot be reproduced from a pcap, has no ground
-  truth to train on, and costs more supply chain than D7 rejected Lua over. The
-  real gap is *population* questions — "is this hour unlike the last hundred" —
-  answered by statistical baselining with named evidence, not by a model.
-  Blocked regardless on persistence across runs, which sipnab has none of.
+- [x] **Machine-learning anomaly detection over SIP/RTP patterns — DECLINED as
+  specified, and RE-SCOPED.** Decided 2026-08-13 against
+  [`positioning.md`](./positioning.md); the argument is recorded in
+  [`ml-anomaly-detection.md`](./ml-anomaly-detection.md), which was researched
+  and specced 2026-07-30 and is no longer a plan awaiting execution.
+
+  The model is declined permanently. It breaks the evidence rule every other
+  detection follows, cannot be reproduced from a pcap, has no ground truth to
+  train on, costs more supply chain than D7 rejected Lua over, and — the
+  positioning objection the spec did not have — ships as a second versioned
+  artefact beside the binary, which fails "run, not operated" at the
+  distribution layer rather than the runtime one.
+
+  The spec's own replacement, cross-run population baselines, is declined too,
+  on its own objection: a rolling baseline puts the comparison set outside the
+  pcap exactly as a model's weights do, so two operators on the same file
+  legitimately disagree. Persistence across runs was listed as its prerequisite;
+  it is the disqualifier. Seasonality goes with it, at Homer's retention depth.
+
+  What survives is bounded and in position: **peer comparison inside one
+  capture**, where the reference is the other endpoints in the same file. It
+  needs no store, no model and no training corpus, and the tree already
+  contains a working example of within-capture baselining in `FraudDetector`.
+  Smallest first component: per-source failure-mix divergence over one
+  capture's dialogs, printing both distributions and the dialogs behind them,
+  carrying a `mos_grounded`-style flag and the peer count so a small sample
+  cannot read as a significance claim, and printing no p-value. It sits behind
+  the three items positioning §5 ranks.
 - [ ] Distributed capture cluster management.
 - [ ] Interactive pcap annotation and sharing.
 - [ ] YANG/NETCONF machine-readable diagnosis export.
