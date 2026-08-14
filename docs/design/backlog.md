@@ -1917,6 +1917,14 @@ treats as critical.
   without it `s_client` closes before sending, and the capture contains a
   handshake and no application data, which looks like the same bug and is not.
 
+  **Confirmed against Wireshark, so this is sipnab's defect and not a defect in
+  the capture.** Given the *identical* pcap and the *identical* keylog,
+  `tshark -r tls.pcap -o tls.keylog_file:keys.log -Y sip` decrypts and reports
+  `INVITE` with `Call-ID: tk8-crosscheck@sipnab` on frame 9. The capture and the
+  secrets are therefore sufficient to read the call, and sipnab does not read
+  it. Run that cross-check first on any future report here: it separates "our
+  decryptor is wrong" from "the keylog is incomplete" in one command.
+
   **Candidate cause, from reading the code rather than from instrumenting it —
   treat as a lead, not a diagnosis.** `try_decrypt` knows only
   `CLIENT_TRAFFIC_SECRET_0` and `SERVER_TRAFFIC_SECRET_0`, and tries exactly one
