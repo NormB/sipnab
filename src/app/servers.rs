@@ -38,6 +38,19 @@ pub struct Selection {
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
     /// for the same reason `mcp_row_cap` is.
     pub mcp_body_cap: usize,
+    /// Ceiling on rows in one list-style REST response.
+    ///
+    /// Resolved by the caller with `cli.api_row_cap(config)`, and carried here
+    /// for the same reason `mcp_row_cap` is.
+    pub api_row_cap: usize,
+    /// REST requests one client IP may make per second (`0` = uncapped).
+    ///
+    /// Resolved by the caller with `cli.api_peer_rate_limit(config)`, and
+    /// carried here for the same reason `mcp_row_cap` is.
+    pub api_rate_limit_per_peer: u32,
+    /// Distinct peers one rate-limit window may hold, for the MCP per-peer
+    /// limiter. Resolved by the caller with `cli.tracked_peer_capacity(config)`.
+    pub max_tracked_peers: usize,
     /// Start the REST API server when `--api` is configured.
     pub api: bool,
     /// Start the MCP server when `--mcp` is configured.
@@ -264,7 +277,10 @@ pub fn start_servers(
             dialog_store: Arc::clone(dialog_store),
             stream_store: Arc::clone(stream_store),
             verifier,
-            rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(100))),
+            rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(
+                selection.api_rate_limit_per_peer,
+            ))),
+            max_rows: selection.api_row_cap,
         };
         let config = ApiServerConfig {
             max_conn: cli.api_max_conn,
@@ -328,7 +344,7 @@ pub fn start_servers(
                 .with_capture_context(capture_ctx.clone())
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_max_concurrent as usize)
-                .with_rate_limit_per_peer(cli.mcp_rate_limit_per_peer)
+                .with_rate_limit_per_peer(cli.mcp_rate_limit_per_peer, selection.max_tracked_peers)
                 .with_row_cap(selection.mcp_row_cap)
                 .with_body_cap(selection.mcp_body_cap);
             let s = match cli.mcp_file_root.as_ref() {

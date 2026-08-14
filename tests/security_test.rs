@@ -1293,6 +1293,7 @@ fn constant_time_eq_different_lengths_still_compares() {
             },
         )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+        max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
     };
 
     // Build a request with wrong-length key
@@ -1332,6 +1333,7 @@ fn constant_time_eq_matching_strings() {
             },
         )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+        max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
     };
 
     let app = build_router(state);
@@ -1381,6 +1383,7 @@ fn constant_time_eq_different_strings_same_length() {
             },
         )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+        max_rows: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
     };
 
     let app = build_router(state);

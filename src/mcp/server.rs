@@ -307,13 +307,21 @@ impl SipnabMcp {
     /// "unlimited" [`Self::with_max_concurrent`] uses — a positive value
     /// installs a shared limiter and a call over the cap is refused with a
     /// retry-shortly error, not queued. See the `rate_limiter` field.
-    pub fn with_rate_limit_per_peer(mut self, per_second: u32) -> Self {
+    ///
+    /// `max_tracked_peers` bounds how many distinct callers one window holds
+    /// (`[limits] max_tracked_peers`); past it a caller this server has not
+    /// already answered this second is refused.
+    pub fn with_rate_limit_per_peer(mut self, per_second: u32, max_tracked_peers: usize) -> Self {
         self.rate_limiter = (per_second > 0).then(|| {
             Arc::new(parking_lot::Mutex::new(
                 // No global ceiling: the server-wide bound on MCP work is the
                 // concurrency cap, and a second server-wide knob metering the
                 // same calls would be two answers to one question.
-                crate::rate_limit::FixedWindowLimiter::new(0, u64::from(per_second)),
+                crate::rate_limit::FixedWindowLimiter::new(
+                    0,
+                    u64::from(per_second),
+                    max_tracked_peers,
+                ),
             ))
         });
         self
@@ -10142,13 +10150,14 @@ mod tests {
         }
     }
 
-    /// `with_rate_limit_per_peer(0)` is the documented spelling of "unlimited"
+    /// A `per_second` of `0` is the documented spelling of "unlimited"
     /// and must leave the limit off — not install a zero-per-second limiter
     /// that refuses the very first call and wedges the server shut, which is
     /// the failure `--mcp-max-concurrent` documents for its own zero.
     #[test]
     fn a_zero_rate_limit_means_unlimited_not_a_dead_server() {
-        let server = empty_server().with_rate_limit_per_peer(0);
+        let server = empty_server()
+            .with_rate_limit_per_peer(0, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         assert!(
             server.rate_limiter.is_none(),
             "0 must mean unlimited, not a 0/s limiter that refuses everything"
@@ -10169,7 +10178,8 @@ mod tests {
     /// whose test sleeps for a second is a limiter nobody runs.
     #[test]
     fn the_rate_limit_refuses_the_call_that_exceeds_it() {
-        let server = empty_server().with_rate_limit_per_peer(3);
+        let server = empty_server()
+            .with_rate_limit_per_peer(3, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         assert!(
             server.rate_limiter.is_some(),
             "a positive rate limit must install a limiter"
@@ -10234,9 +10244,10 @@ mod tests {
     /// one sentence.
     #[test]
     fn a_full_peer_table_refuses_with_its_own_reason() {
-        let server = empty_server().with_rate_limit_per_peer(1);
+        let server = empty_server()
+            .with_rate_limit_per_peer(1, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         let now = std::time::Instant::now();
-        for i in 0..crate::rate_limit::MAX_TRACKED_PEERS as u32 {
+        for i in 0..crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS as u32 {
             let peer: PeerKey = Some(IpAddr::V4(Ipv4Addr::from(i)));
             assert!(
                 rate_limit_refusal(&server.rate_limiter, peer, now).is_none(),

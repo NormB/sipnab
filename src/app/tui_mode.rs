@@ -433,6 +433,9 @@ pub fn run_tui_mode(
         crate::app::servers::Selection {
             mcp_row_cap: cli.mcp_row_cap(&config),
             mcp_body_cap: cli.mcp_body_cap(&config),
+            api_row_cap: cli.api_row_cap(&config),
+            api_rate_limit_per_peer: cli.api_peer_rate_limit(&config),
+            max_tracked_peers: cli.tracked_peer_capacity(&config),
             api: true,
             mcp: false,
             metrics: true,

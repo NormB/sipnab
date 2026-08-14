@@ -49,6 +49,9 @@ pub enum CaptureSource {
         /// Maximum HEP packets per second from any single source IP
         /// (0 = disabled; global ceiling still applies).
         per_peer_rate_limit: u64,
+        /// Distinct source IPs one counting window may hold at once
+        /// (`[limits] max_tracked_peers`).
+        max_tracked_peers: usize,
         /// Receiver-side shared secret. When set, incoming HEP packets must
         /// carry a matching 0x000e auth-key chunk or they are dropped.
         auth_key: Option<String>,
@@ -273,6 +276,7 @@ pub fn start_capture(
             allowlist,
             rate_limit,
             per_peer_rate_limit,
+            max_tracked_peers,
             auth_key,
             auth_mode,
         } => {
@@ -280,6 +284,7 @@ pub fn start_capture(
             let allow = allowlist.clone();
             let rate = *rate_limit;
             let per_peer = *per_peer_rate_limit;
+            let peer_capacity = *max_tracked_peers;
             let auth = auth_key.clone();
             let mode = *auth_mode;
             thread::Builder::new()
@@ -289,6 +294,7 @@ pub fn start_capture(
                         allowlist: &allow,
                         rate_limit: rate,
                         per_peer_rate_limit: per_peer,
+                        max_tracked_peers: peer_capacity,
                         auth_key: auth.as_deref(),
                         auth_mode: mode,
                     };

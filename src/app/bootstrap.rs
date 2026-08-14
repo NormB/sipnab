@@ -262,6 +262,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             per_peer_rate_limit: cli
                 .hep_rate_limit_per_peer
                 .resolve(cli.hep_rate_limit_resolved(config), cli.hep_allow.len()),
+            max_tracked_peers: cli.tracked_peer_capacity(config),
             auth_key: hep_auth,
             #[cfg(feature = "hep")]
             auth_mode: cli.hep_auth_mode,

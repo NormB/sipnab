@@ -40,10 +40,30 @@ use crate::sip::message::SipMessage;
 /// Shipped maximum of distinct group keys retained. Matches the store default
 /// so a grouped run cannot outgrow an ordinary capture.
 ///
+/// DERIVED from `crate::cli::Cli::DEFAULT_DIALOG_LIMIT` rather than restated,
+/// because the sentence above was written as the justification for the number
+/// and was false: this shipped at 10,000 against a store default of 100,000,
+/// so the shipped configuration dropped groups on a capture the store held
+/// comfortably, and a `--group-by call-id` run over 20,000 calls reported an
+/// incomplete grouping of a complete capture. Reading the store's figure makes
+/// the claim structural — the two cannot drift apart again.
+///
+/// The SHIPPED figure, not the resolved one: `-l`/`--limit` still moves no cap
+/// here. Tying the group cap to a run's dialog limit would tighten grouping for
+/// an operator who set `-l` for an unrelated reason, and the message stream
+/// this buffer sees is not bounded by the store in the first place — an evicted
+/// dialog's messages still arrive.
+///
+/// The memory this releases is bounded by [`DEFAULT_MAX_BUFFERED`], which is
+/// the cap that actually holds rendered output: a run with 100,000 keys under
+/// a 200,000-message ceiling averages two messages per group, so raising the
+/// key cap to the store's figure buys completeness rather than an unbounded
+/// buffer.
+///
 /// Raise it with `--max-groups` or `[limits] max_groups` for a capture that
 /// genuinely holds more calls than this — the warning says the output is
 /// incomplete, but nothing short of the setting can complete it.
-pub const DEFAULT_MAX_GROUPS: usize = 10_000;
+pub const DEFAULT_MAX_GROUPS: usize = crate::cli::Cli::DEFAULT_DIALOG_LIMIT as usize;
 
 /// Shipped maximum of messages buffered across all groups. Raise it with
 /// `--max-grouped-messages` or `[limits] max_grouped_messages`.
@@ -394,6 +414,57 @@ mod tests {
             "a buffer at its configured message cap must refuse the push"
         );
         assert!(b.truncated(), "and report it rather than dropping silently");
+    }
+
+    /// At the SHIPPED caps a run holding more keys than the old 10,000-key
+    /// default still groups every one of them.
+    ///
+    /// The behaviour the doc comment on [`DEFAULT_MAX_GROUPS`] always claimed
+    /// and did not have: it shipped an order of magnitude below the store
+    /// default, so a `--group-by` run over a capture the store held whole
+    /// reported an incomplete grouping. 20,000 distinct keys is past the old
+    /// figure and inside the store's, which is exactly the band that used to
+    /// be lost.
+    ///
+    /// Driven through `push` rather than the buffer's fields, so it is the
+    /// admission path that is proved and not the constant: one parsed message
+    /// is cloned with a fresh source address per key, which `GroupField::Src`
+    /// reads.
+    #[test]
+    fn the_shipped_caps_group_a_capture_the_store_would_hold_whole() {
+        const KEYS: u32 = 20_000;
+        assert!(
+            KEYS as usize > 10_000,
+            "the case must sit above the old default, or it proves nothing"
+        );
+        let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let template = crate::sip::parser::parse_sip(
+            b"INVITE sip:b@example.com SIP/2.0\r\nCall-ID: c1\r\n\r\n",
+            chrono::Utc::now(),
+            local,
+            local,
+            5060,
+            5060,
+            crate::capture::parse::TransportProto::Udp,
+        )
+        .expect("fixture parses");
+
+        let mut b = GroupBuffer::new(GroupField::Src, GroupCaps::default());
+        for i in 0..KEYS {
+            let mut msg = template.clone();
+            msg.src_addr = std::net::IpAddr::V4(std::net::Ipv4Addr::from(i));
+            assert!(
+                b.push(&msg, String::new()),
+                "key {i} must be admitted at the shipped caps"
+            );
+        }
+        assert_eq!(b.group_count(), KEYS as usize);
+        assert!(
+            !b.truncated(),
+            "the shipped caps must not report an incomplete grouping of a \
+             capture the shipped store holds whole: {}",
+            b.truncation_note()
+        );
     }
 
     /// Drain yields groups in first-seen order with the ungrouped tail last.

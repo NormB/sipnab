@@ -87,8 +87,8 @@ struct Inner {
 /// in-flight `dns_requested` set is held to the same cap. At capacity the
 /// oldest-inserted entry is evicted (`IndexMap::shift_remove_index(0)` — the
 /// same oldest-out pattern as `StreamStore::sdp_endpoints`). Sized to the
-/// same order as `rate_limit::MAX_TRACKED_PEERS`: a few thousand IP→name entries
-/// covers any realistic active-host set.
+/// same order as `rate_limit::DEFAULT_MAX_TRACKED_PEERS`: a few thousand
+/// IP→name entries covers any realistic active-host set.
 const MAX_DNS_CACHE_ENTRIES: usize = 4096;
 
 /// Capacity of the queue feeding the reverse-DNS worker. Lookups are enqueued
