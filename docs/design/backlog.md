@@ -1895,6 +1895,45 @@ treats as critical.
   independently. A FIFO path must be opened **before** the privilege drop,
   alongside capture devices, or a `--chroot`ed run cannot reach `/run`.
 
+- [ ] **TK8 — TLS 1.3 SIP is not surfaced even with the correct secrets loaded.**
+  Found 2026-08-14 while measuring `TK4`, and **reproducible in about a minute**
+  with no eBPF involved. Generate a real TLS 1.3 exchange carrying a SIP
+  `INVITE`, keeping OpenSSL's own keylog:
+
+  ```sh
+  openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 1 -nodes -subj /CN=t
+  tcpdump -i lo -w tls.pcap -U 'tcp port 5061' &
+  openssl s_server -quiet -ign_eof -accept 5061 -cert cert.pem -key key.pem \
+      -keylogfile keys.log -naccept 1 > server-saw.txt &
+  ( printf 'INVITE sip:b@example.net SIP/2.0\r\nCall-ID: t@x\r\nCSeq: 1 INVITE\r\n\r\n'; sleep 4 ) \
+    | openssl s_client -quiet -ign_eof -connect 127.0.0.1:5061
+  sipnab -N -I tls.pcap --keylog keys.log
+  ```
+
+  `server-saw.txt` proves the `INVITE` crossed the wire. sipnab loads all five
+  secrets and logs `TLS session ready [cipher=TLS_AES_256_GCM_SHA384]` — so the
+  secrets are not merely parsed, they are *correct*, since the session derived
+  from them — and then reports **`0 SIP messages`**. The `-ign_eof` matters:
+  without it `s_client` closes before sending, and the capture contains a
+  handshake and no application data, which looks like the same bug and is not.
+
+  **Candidate cause, from reading the code rather than from instrumenting it —
+  treat as a lead, not a diagnosis.** `try_decrypt` knows only
+  `CLIENT_TRAFFIC_SECRET_0` and `SERVER_TRAFFIC_SECRET_0`, and tries exactly one
+  sequence number per direction. In TLS 1.3 the `Finished` messages travel as
+  **`ApplicationData`-typed records encrypted under the *handshake* traffic
+  secret**, which sipnab never loads, so those records reach `try_decrypt` and
+  fail. That alone should be survivable, because a failed record does not
+  advance the counter — which is why this needs measuring at the record level
+  before anything is changed.
+
+  Not fixed here: it is squarely inside `decrypt.rs`, which had concurrent
+  uncommitted work on `main` on the day this was found, and it is a
+  pre-existing limitation rather than anything the `TK` program introduced.
+  **It does bound what `TK5` and `TK6` can claim** — delivering correct secrets
+  is not the same as reading the call, and no eBPF work should be reported as
+  "reads SIP over TLS" until this is closed.
+
 - [ ] **TK5 — The zero-code interop path is undocumented, so nobody uses it.**
   Two modes work against the shipped binary. `ecapture tls -m keylog
   --keylogfile=…` into `--keylog … --keylog-watch` gives decrypted signalling
@@ -1904,6 +1943,17 @@ treats as critical.
   existing SSLKEYLOGFILE recipe, troubleshooting entries for the failures
   `TK1`–`TK3` used to cause silently, and an **end-to-end measurement on a real
   TLS SIP session** — cheap to do, so the live-NIC caveat does not extend here.
+  **ecapture cannot run on thor-02, measured 2026-08-14.** `/sys/kernel/btf/`
+  does not exist on `6.8.12-rt-tegra` and `CONFIG_DEBUG_INFO_BTF` is absent from
+  the kernel config, while `CONFIG_BPF_SYSCALL=y`, `CONFIG_UPROBES=y` and
+  `CONFIG_UPROBE_EVENTS=y` are all set. So BPF and uprobes work on this host and
+  everything needing **runtime BTF** does not — which covers ecapture, and
+  covers any `struct sock` field access done through CO-RE rather than through
+  hardcoded offsets. Mode A and mode B therefore cannot be measured here, and
+  `TK6` cannot be verified here either; both need a host with a BTF-enabled
+  kernel, or an ecapture built against explicit offsets. Say which of those was
+  used when the measurement is finally taken.
+
   Interop facts verified 2026-08-14: ecapture is Apache-2.0 at v2.5.2, covers
   openssl/libressl/boringssl/gnutls/nspr(nss)/GoTLS, needs x86\_64 kernel 4.18+
   or aarch64 5.5+ and root, and since 0.7.0 its `-m text` no longer emits keylog

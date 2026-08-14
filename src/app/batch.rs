@@ -1847,6 +1847,21 @@ impl BatchRunner {
                     Ok(mut d) => {
                         if let Some(source) = preopened {
                             d.set_keylog_source(source);
+                            // Drain once, HERE, before a single packet is
+                            // processed. The sweep loop below also polls, but
+                            // an offline replay (`-I`) can read the whole file
+                            // and finish before the first sweep ever runs — so
+                            // relying on the sweep alone made `--keylog-fd`
+                            // load zero keys and decrypt nothing, while
+                            // reporting only that the descriptor was adopted.
+                            match d.poll_keylog_file() {
+                                Ok(0) => {}
+                                Ok(n) => tracing::info!(
+                                    "sipnab: TLS decryption active ({n} key(s) from the keylog \
+                                     stream). Decrypted traffic visible in output."
+                                ),
+                                Err(e) => tracing::warn!("Keylog stream read failed: {e}"),
+                            }
                         }
                         if d.keylog_entry_count() > 0 {
                             tracing::info!(
