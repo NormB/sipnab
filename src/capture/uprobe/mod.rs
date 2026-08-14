@@ -19,6 +19,12 @@
 //! is why the truncation below still happens.
 
 pub mod elf;
+/// Reading records through `perf_event_open`, which needs `libc`.
+///
+/// Gated on `native` rather than the whole module being gated: `elf` and
+/// `record` are pure byte arithmetic and stay testable in feature
+/// combinations that carry no `libc` at all.
+#[cfg(feature = "native")]
 pub mod perf;
 pub mod record;
 
@@ -329,9 +335,156 @@ impl Drop for InstalledProbes {
     }
 }
 
+/// Why accepted plaintext did not become a message.
+#[derive(Debug)]
+pub enum IngestError {
+    /// The write was longer than the largest band, so only a prefix arrived.
+    ///
+    /// Refused rather than parsed: a half-read `INVITE` that parses is worse
+    /// than one that does not, because the result looks like a whole message
+    /// with headers missing.
+    Truncated {
+        /// What the application actually wrote.
+        wrote: usize,
+        /// What reached sipnab.
+        got: usize,
+    },
+    /// The bytes did not parse as SIP.
+    NotSip(crate::error::ParseError),
+}
+
+impl std::fmt::Display for IngestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated { wrote, got } => write!(
+                f,
+                "the process wrote {wrote} bytes and only {got} reached the \
+                 probe, so this is a fragment. Parsing it would produce a \
+                 message that looks whole and is missing headers"
+            ),
+            Self::NotSip(e) => write!(f, "not a SIP message: {e}"),
+        }
+    }
+}
+
+/// Turn accepted plaintext into a SIP message attributed to its process.
+///
+/// **The peer addresses are not known and are not invented.** A uprobe sees the
+/// bytes an application handed its TLS library and nothing about the socket
+/// underneath, so the 5-tuple that a captured packet carries simply is not
+/// available here. The addresses are left unspecified and the ports zero, and
+/// the message carries a
+/// [`FrameSource::Uprobe`](crate::capture::packet::FrameSource::Uprobe) pointer
+/// naming the process instead — which is the honest attribution, and which a
+/// resolver refuses to follow rather than pretending there are bytes behind it.
+///
+/// # Errors
+///
+/// [`IngestError::Truncated`] for a fragment, and [`IngestError::NotSip`] when
+/// the plaintext is something else — these probes see every process on the host
+/// that maps the library.
+pub fn to_message(
+    accepted: &Delivered,
+    pid: u32,
+    comm: &str,
+    ordinal: u64,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<crate::sip::SipMessage, IngestError> {
+    if accepted.truncated {
+        return Err(IngestError::Truncated {
+            wrote: accepted.bytes.len(),
+            got: accepted.bytes.len(),
+        });
+    }
+    let data = bytes::Bytes::copy_from_slice(&accepted.bytes);
+    let mut msg = crate::sip::parser::parse_sip_bytes(
+        &data,
+        timestamp,
+        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+        0,
+        0,
+        crate::net::TransportProto::Tls,
+    )
+    .map_err(IngestError::NotSip)?;
+    msg.frame = Some(crate::capture::packet::FrameRef::uprobe(comm, pid, ordinal));
+    Ok(msg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn delivered(bytes: &[u8]) -> Delivered {
+        Delivered {
+            bytes: bytes.to_vec(),
+            truncated: false,
+        }
+    }
+
+    /// The join: plaintext from a probe becomes a message whose provenance
+    /// says where it came from and refuses to claim a frame.
+    #[test]
+    fn accepted_plaintext_becomes_a_message_attributed_to_its_process() {
+        let d = delivered(
+            b"INVITE sip:b@example.net SIP/2.0\r\nCall-ID: u@x\r\nCSeq: 1 INVITE\r\n\r\n",
+        );
+        let msg = to_message(&d, 4321, "opensips", 9, chrono::Utc::now()).expect("parses");
+
+        let frame = msg
+            .frame
+            .as_ref()
+            .expect("a uprobe message still carries provenance");
+        assert!(
+            matches!(
+                frame.source_kind(),
+                crate::capture::packet::FrameSource::Uprobe { pid: 4321, .. }
+            ),
+            "the pointer names the process it was read from"
+        );
+        // Gated on the item, not the file: `capture::resolve` needs `native`,
+        // and the rest of this test is true without it.
+        #[cfg(feature = "native")]
+        {
+            let err = crate::capture::resolve::resolve(frame)
+                .expect_err("there is no frame behind uprobe bytes");
+            assert!(err.to_string().contains("opensips"), "and says so: {err}");
+        }
+    }
+
+    /// Addresses are absent, not zero-as-a-value. A uprobe sees no socket.
+    #[test]
+    fn peer_addresses_are_left_unspecified_rather_than_invented() {
+        let d = delivered(
+            b"INVITE sip:b@example.net SIP/2.0\r\nCall-ID: u@x\r\nCSeq: 1 INVITE\r\n\r\n",
+        );
+        let msg = to_message(&d, 1, "p", 0, chrono::Utc::now()).unwrap();
+        assert!(msg.src_addr.is_unspecified(), "no socket was observed");
+        assert_eq!(msg.src_port, 0);
+        assert_eq!(msg.transport, crate::net::TransportProto::Tls);
+    }
+
+    /// A fragment must not parse into something that looks whole.
+    #[test]
+    fn a_truncated_read_is_refused_rather_than_parsed() {
+        let d = Delivered {
+            bytes: b"INVITE sip:b@x SIP/2.0\r\n".to_vec(),
+            truncated: true,
+        };
+        let err =
+            to_message(&d, 1, "p", 0, chrono::Utc::now()).expect_err("a fragment is not a message");
+        assert!(matches!(err, IngestError::Truncated { .. }), "{err}");
+    }
+
+    /// These probes see every process mapping the library.
+    #[test]
+    fn non_sip_plaintext_does_not_become_a_message() {
+        let d = delivered(b"GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(matches!(
+            to_message(&d, 1, "curl", 0, chrono::Utc::now()),
+            Err(IngestError::NotSip(_))
+        ));
+    }
 
     #[test]
     fn a_probe_name_is_unique_per_process_and_band() {

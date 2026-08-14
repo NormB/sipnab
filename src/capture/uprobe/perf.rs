@@ -4,13 +4,13 @@
 //! ASCII and userspace parses it back. That is fine for a measurement by hand
 //! and unfit for a host under load, which is where this feature is meant to
 //! run. Perf hands over the record's own bytes instead, and the layout to read
-//! them with comes from the kernel itself (see [`super::record`]).
+//! them with comes from the kernel itself (see [`crate::capture::uprobe::record`]).
 //!
 //! `libc` does not declare `perf_event_attr`, so it is declared here. That is
 //! hand-written kernel ABI, which is worth being nervous about — but the kernel
 //! validates `attr.size` against the layouts it knows and returns `E2BIG` when
 //! the caller claims a size it does not understand, so a mismatch is loud
-//! rather than a silent misread. [`PerfRing::open`] uses that: it offers the
+//! rather than a silent misread. [`crate::capture::uprobe::perf::PerfRing::open`] uses that: it offers the
 //! sizes the ABI has actually had, newest first, and takes the first the
 //! running kernel accepts.
 
@@ -36,7 +36,7 @@ const ATTR_SIZES: [u32; 5] = [136, 128, 112, 96, 64];
 /// `perf_event_attr`, as much of it as sipnab sets.
 ///
 /// Field order is kernel ABI and must not be reordered. `flags` is the
-/// bitfield word. sipnab sets none of it: see [`PerfRing::open`] for why
+/// bitfield word. sipnab sets none of it: see [`crate::capture::uprobe::perf::PerfRing::open`] for why
 /// `exclude_kernel` in particular must stay clear for a tracepoint.
 #[repr(C)]
 #[derive(Default)]
