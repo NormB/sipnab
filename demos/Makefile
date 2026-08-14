@@ -64,7 +64,7 @@ ifdef SIPNAB_BIN
 	@test -x "$(BIN)" || { echo "demos: SIPNAB_BIN=$(BIN) is not executable"; exit 1; }
 	@echo "demos: using prebuilt $(BIN) (no cargo build)"
 else
-	@cd $(ROOT) && cargo build --release --features tui --bin sipnab
+	@cd $(ROOT) && cargo build --release --features tui,mcp --bin sipnab
 endif
 	@got=$$("$(BIN)" --version | awk '{print $$2}'); \
 	if [ "$$got" != "$(CRATE_VERSION)" ]; then \
@@ -74,7 +74,11 @@ endif
 	fi; \
 	case "$$("$(BIN)" --version)" in \
 		*tui*) ;; \
-		*) echo "demos: refusing to render -- $(BIN) has no tui feature; every tape drives the TUI."; exit 1 ;; \
+		*) echo "demos: refusing to render -- $(BIN) has no tui feature; the 01-10 tapes drive the TUI."; exit 1 ;; \
+	esac; \
+	case "$$("$(BIN)" --version)" in \
+		*mcp*) ;; \
+		*) echo "demos: refusing to render -- $(BIN) has no mcp feature; gen-mcp-examples.sh drives the MCP server."; exit 1 ;; \
 	esac; \
 	echo "demos: rendering against $(BIN) ($$got)"
 
@@ -99,8 +103,25 @@ $(addprefix force-,$(TAPES)): force-%:
 	@touch $(CURDIR)/$*.tape
 	@$(MAKE) --no-print-directory -C $(CURDIR) $(STATIC)/$*.webp
 
+POSTERS := $(addprefix $(STATIC)/,$(addsuffix -poster.png,$(TAPES)))
+
+# The homepage's MCP examples are TEXT, not tapes, so they are not in $(TAPES).
+#
+# They show JSON, which a recording cannot be pasted from and no test can
+# compare against; and VHS needs a headless Chromium through go-rod that this
+# box does not have. `mcp-examples` rewrites both the .json files and the
+# blocks in index.html from one run of the real server; `check-mcp-examples`
+# re-runs all four and fails on any difference. Both need the mcp feature,
+# which is why check-bin now demands it.
+.PHONY: mcp-examples check-mcp-examples
+mcp-examples: check-bin
+	@SIPNAB_BIN="$(BIN)" $(CURDIR)/gen-mcp-examples.sh
+
+check-mcp-examples: check-bin
+	@SIPNAB_BIN="$(BIN)" $(CURDIR)/gen-mcp-examples.sh --check
+
 .PHONY: all hero clean-tmp
-all: $(WEBPS) hero
+all: $(WEBPS) $(POSTERS) hero mcp-examples
 
 # Each served WebP depends on its tape and the shared style preamble: VHS
 # renders the GIF, ffmpeg converts it losslessly, and the GIF goes away.
@@ -112,6 +133,17 @@ $(STATIC)/%.webp: %.tape common.tape check-bin
 	$(FFMPEG) -y -loglevel error -i $(STATIC)/$*.gif \
 		-c:v libwebp_anim -lossless 1 -compression_level 6 -loop 0 $@
 	@rm -f $(STATIC)/$*.gif
+
+# The first frame of each animated demo, shipped beside it.
+#
+# The homepage serves this still to visitors with prefers-reduced-motion, who
+# then opt into the animation with a click, and site_journey_test refuses any
+# demo .webp whose poster is missing. Until 2026-08-13 no rule produced them:
+# all seven were made by hand, so the test demanded a file the build could not
+# generate and the next person to add a demo would have hit a gate with no
+# fixer behind it. A gate and its fixer must come from one rule.
+$(STATIC)/%-poster.png: $(STATIC)/%.webp
+	$(FFMPEG) -y -loglevel error -i $< -frames:v 1 -update 1 $@
 
 # The hero tape emits a PNG screenshot (not a GIF), plus a throwaway .gif;
 # the screenshot is converted to the WebP still the homepage ships.

@@ -32,40 +32,160 @@
       <h2>See It In Action</h2>
     </header>
     <div class="demo-tabs" role="tablist" aria-label="Demo videos">
-      <button class="demo-tab active" role="tab" aria-selected="true" id="demo-tab-0" aria-controls="demo-panel-0">Interactive TUI</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-1" aria-controls="demo-panel-1">Detail Pane</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-2" aria-controls="demo-panel-2">Mark + Delta</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-3" aria-controls="demo-panel-3">Search</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-4" aria-controls="demo-panel-4">Multi-Leg</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-5" aria-controls="demo-panel-5">RTP Quality</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-6" aria-controls="demo-panel-6">CLI &amp; JSON</button>
+      <button class="demo-tab active" role="tab" aria-selected="true" id="demo-tab-0" aria-controls="demo-panel-0">Why did it fail?</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-1" aria-controls="demo-panel-1">Which RFC?</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-2" aria-controls="demo-panel-2">Show me the bytes</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-3" aria-controls="demo-panel-3">Same call?</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-4" aria-controls="demo-panel-4">Interactive TUI</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-5" aria-controls="demo-panel-5">Detail Pane</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-6" aria-controls="demo-panel-6">Mark + Delta</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-7" aria-controls="demo-panel-7">Search</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-8" aria-controls="demo-panel-8">Multi-Leg</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-9" aria-controls="demo-panel-9">RTP Quality</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-10" aria-controls="demo-panel-10">CLI &amp; JSON</button>
     </div>
     <div class="demo-panels">
+      <!-- MCP first: the four answers no local capture tool can give an agent.
+           Each JSON block below is REAL output from the sipnab in this tree,
+           written by demos/gen-mcp-examples.sh. Do not hand-edit a block --
+           `demos/gen-mcp-examples.sh --check` re-runs all four against the
+           binary and fails on any difference, and a Rust test compares these
+           blocks against website/data/mcp-examples/*.json. Edit the tool, then
+           regenerate. -->
       <div class="demo-panel active" data-demo="0" role="tabpanel" id="demo-panel-0" aria-labelledby="demo-tab-0">
+        <p class="demo-desc">An agent asks why a call failed and gets a <strong>verdict</strong>, not a packet list: signalling rather than media, the 486 that ended it, and media explicitly ruled out. Over MCP on stdio — no daemon, no port, no database.</p>
+        <pre class="demo-cmd"><code>demos/mcp-stdio.sh tests/pcap-samples/sip-problem-call.pcap \
+  triage_call '{"call_id":"busy-3a2b1c@192.0.2.30"}'</code></pre>
+        <pre class="demo-json"><code><!-- mcp-example:triage BEGIN -->
+{
+  "call_id": "busy-3a2b1c@192.0.2.30",
+  "final_status_code": 486,
+  "media": {
+    "hints": [],
+    "nat_mismatch": false,
+    "no_media": false,
+    "one_way_audio": false,
+    "problem": false,
+    "stream_count": 0
+  },
+  "schema_version": 1,
+  "signalling": {
+    "hints": [
+      "Call failed: 486 Busy Here."
+    ],
+    "problem": true
+  },
+  "state": "Failed",
+  "verdict": "signalling"
+}
+<!-- mcp-example:triage END --></code></pre>
+      </div>
+      <div class="demo-panel" data-demo="1" role="tabpanel" id="demo-panel-1" aria-labelledby="demo-tab-1">
+        <p class="demo-desc">Every finding cites the RFC section it comes from, says what the message should have carried and what it actually carried, and explains the consequence — so an agent can act on it instead of guessing what a lint code meant.</p>
+        <pre class="demo-cmd"><code>demos/mcp-stdio.sh tests/pcap-samples/sip-lint-findings.pcap \
+  lint_dialog '{"call_id":"lint-maxfwd@192.0.2.10"}' \
+  | jq '.findings[] | select(.severity == "error")'</code></pre>
+        <pre class="demo-json"><code><!-- mcp-example:lint BEGIN -->
+{
+  "basis": "must",
+  "expected": "Contact: &lt;sip:user@host&gt;",
+  "explanation": "§12.1.1 makes the UAS add a Contact to the response. It is the remote target for the dialog the 2xx creates, so without it the caller has nowhere to send the ACK and nowhere to send the BYE. The call answers and then cannot be hung up cleanly.",
+  "frame_ref": "tests/pcap-samples/sip-lint-findings.pcap#1@ad0e14efbbab6ffa",
+  "message_index": 1,
+  "observed": "2xx to INVITE with no Contact header field",
+  "rfc": 3261,
+  "rule_id": "SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX",
+  "section": "12.1.1",
+  "severity": "error"
+}
+<!-- mcp-example:lint END --></code></pre>
+      </div>
+      <div class="demo-panel" data-demo="2" role="tabpanel" id="demo-panel-2" aria-labelledby="demo-tab-2">
+        <p class="demo-desc">Any answer can be taken back to the bytes it came from. The pointer carries a digest, and <code>verified</code> means sipnab re-read that frame and it still hashes to what it hashed to when the answer was made. File access stays off until you name a root.</p>
+        <pre class="demo-cmd"><code>MCP_FILE_ROOT=tests/pcap-samples demos/mcp-stdio.sh \
+  tests/pcap-samples/sip-problem-call.pcap show_evidence \
+  '{"refs":["…/sip-problem-call.pcap#5@884d4525ec86f71b"],"max_bytes":64}'</code></pre>
+        <pre class="demo-json"><code><!-- mcp-example:evidence BEGIN -->
+{
+  "frames": [
+    {
+      "frame_bytes": 540,
+      "hex": "02 00 00 00 00 01 02 00 00 00 00 02 08 00 45 00 02 0e 00 00 40 00 40 11 b4 98 c0 00 02 1e c0 00 02 28 13 c4 13 c4 01 fa 00 00 49 4e 56 49 54 45 20 73 69 70 3a 64 61 76 65 40 31 39 32 2e 30 2e",
+      "hex_bytes_shown": 64,
+      "ordinal": 5,
+      "pointer": "tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b",
+      "source": "sip-problem-call.pcap",
+      "status": "verified",
+      "truncated": true
+    }
+  ],
+  "requested": 1,
+  "resolved": 1,
+  "schema_version": 1,
+  "summary": "1 of 1 pointer(s) resolved; 1 verified against a recorded digest",
+  "verified": 1
+}
+<!-- mcp-example:evidence END --></code></pre>
+      </div>
+      <div class="demo-panel" data-demo="3" role="tabpanel" id="demo-panel-3" aria-labelledby="demo-tab-3">
+        <p class="demo-desc">A B2BUA answers on one Call-ID and dials out on another, so the two halves of one conversation share no identifier. sipnab returns the matched leg <em>with the strategy that matched it</em> and flags <code>heuristic_only</code> when nothing but timing tied them together — an agent that is told how weak the match is can weigh it.</p>
+        <pre class="demo-cmd"><code>demos/mcp-stdio.sh tests/pcap-samples/b2bua-asterisk.pcapng \
+  find_correlated '{"call_id":"b2bua-caller-synth@203.0.113.1"}'</code></pre>
+        <pre class="demo-json"><code><!-- mcp-example:correlate BEGIN -->
+{
+  "schema_version": 1,
+  "source_call_id": "b2bua-caller-synth@203.0.113.1",
+  "legs": [
+    {
+      "call_id": "b2bua-leg-synth@203.0.113.101:5060",
+      "score": 50,
+      "strategy": "timing_heuristic",
+      "identifier_match": false,
+      "observed_gap_ms": 3
+    }
+  ],
+  "total_matched": 1,
+  "heuristic_only": true,
+  "capture_identity": {
+    "node": "sbc-edge-1",
+    "instance": "2e04f318cb8a43d2e9585d-1",
+    "dialog_generation": 64,
+    "stream_generation": 2
+  },
+  "timing_clock": {
+    "synchronised": true,
+    "max_error_us": 643000,
+    "est_error_us": 0,
+    "available": true
+  }
+}
+<!-- mcp-example:correlate END --></code></pre>
+      </div>
+      <div class="demo-panel" data-demo="4" role="tabpanel" id="demo-panel-4" aria-labelledby="demo-tab-4">
         <p class="demo-desc">Browse SIP dialogs, select one, and drill into the call-flow ladder diagram with parsed message detail. Open a different pcap any time with <kbd>o</kbd> — no restart.</p>
         <img src="{{ get_url(path='demos/01-intro.webp') }}?v=9" alt="sipnab TUI demo: browsing dialogs and the call-flow ladder" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="1" role="tabpanel" id="demo-panel-1" aria-labelledby="demo-tab-1">
+      <div class="demo-panel" data-demo="5" role="tabpanel" id="demo-panel-5" aria-labelledby="demo-tab-5">
         <p class="demo-desc">Read the parsed message beside the ladder — cycle SDP display with <kbd>d</kbd> and toggle wrapping with <kbd>w</kbd> for long headers.</p>
         <img src="{{ get_url(path='demos/09-detail.webp') }}?v=9" alt="sipnab detail pane demo: SDP display modes and wrap toggle" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="2" role="tabpanel" id="demo-panel-2" aria-labelledby="demo-tab-2">
+      <div class="demo-panel" data-demo="6" role="tabpanel" id="demo-panel-6" aria-labelledby="demo-tab-6">
         <p class="demo-desc">Press <kbd>m</kbd> to mark any message, then navigate — the <strong>Δ badge</strong> shows the exact millisecond delta.</p>
         <img src="{{ get_url(path='demos/02-mark-delta.webp') }}?v=9" alt="sipnab mark and delta demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="3" role="tabpanel" id="demo-panel-3" aria-labelledby="demo-tab-3">
+      <div class="demo-panel" data-demo="7" role="tabpanel" id="demo-panel-7" aria-labelledby="demo-tab-7">
         <p class="demo-desc">Press <kbd>/</kbd> to narrow the dialog list as you type, matching method, From, To, and Call-ID in real time.</p>
         <img src="{{ get_url(path='demos/04-filter.webp') }}?v=10" alt="sipnab live search demo narrowing the dialog list" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="4" role="tabpanel" id="demo-panel-4" aria-labelledby="demo-tab-4">
+      <div class="demo-panel" data-demo="8" role="tabpanel" id="demo-panel-8" aria-labelledby="demo-tab-8">
         <p class="demo-desc">Follow a B2BUA call end to end — press <kbd>x</kbd> for extended flow to stitch the correlated back-to-back-UA legs into one ladder.</p>
         <img src="{{ get_url(path='demos/10-multileg.webp') }}?v=10" alt="sipnab multi-leg B2BUA extended-flow demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="5" role="tabpanel" id="demo-panel-5" aria-labelledby="demo-tab-5">
+      <div class="demo-panel" data-demo="9" role="tabpanel" id="demo-panel-9" aria-labelledby="demo-tab-9">
         <p class="demo-desc">Press <kbd>Tab</kbd> for <strong>RTP Streams</strong>, then drill into per-stream detail — SSRC, codec, jitter, loss, and MOS with quality over time.</p>
         <img src="{{ get_url(path='demos/08-rtp-tui.webp') }}?v=9" alt="sipnab RTP streams and per-stream quality demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="6" role="tabpanel" id="demo-panel-6" aria-labelledby="demo-tab-6">
+      <div class="demo-panel" data-demo="10" role="tabpanel" id="demo-panel-10" aria-labelledby="demo-tab-10">
         <p class="demo-desc">Run sipnab headless: emit dialogs as <kbd>--json</kbd>, surface trouble calls with <kbd>--problems</kbd>, and print a full call report with <kbd>--report</kbd>.</p>
         <img src="{{ get_url(path='demos/07-rtp-cli.webp') }}?v=8" alt="sipnab CLI demo: JSON dialogs, --problems surfacing failed calls, and a call report" loading="lazy">
       </div>
@@ -164,7 +284,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td>REST API + Prometheus</td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
           <tr><td>MCP server</td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 31 tools cover dialogs, RTP, diagnostics, and security findings. 26 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
           <tr><td>Browser analysis</td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td>Built in Rust</td><td>Memory-safe by construction. 4870 automated tests. Under 12 MB static binary.</td></tr>
+          <tr><td>Built in Rust</td><td>Memory-safe by construction. 4872 automated tests. Under 12 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -243,7 +363,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Offline reconstruction, four cores (measured v0.5.91)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="4870" data-suffix="">4870</span>
+        <span class="arch-stat" data-count="4872" data-suffix="">4872</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

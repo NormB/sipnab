@@ -10,6 +10,29 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The homepage leads with MCP.** The demo strip opened on seven terminal
+  recordings, which argue "a better sngrep" — the local-tool position
+  `docs/design/positioning.md` declines. Four MCP examples now come first,
+  labelled by what an agent asks rather than by the tool it calls: why a call
+  failed, which RFC a dialog breaks, the captured bytes behind an answer, and
+  which other leg is the same call across a B2BUA.
+- **`demos/mcp-stdio.sh`** runs one MCP tool call over stdio against a capture
+  in the tree. Unlike `demos/mcp-call.sh`, which drives the HTTP transport, it
+  needs no harness, no port and no bearer token, so a reader who clones the
+  repo can reproduce any published example with one command.
+- **`demos/gen-mcp-examples.sh`** regenerates those four answers from the
+  binary and writes both `website/data/mcp-examples/*.json` and the blocks in
+  the homepage. `--check` re-runs all four and fails on any difference, so a
+  published answer cannot outlive the code that gave it. The examples are text
+  rather than a recording for exactly this reason: a recording cannot be
+  compared against anything, and JSON is what an agent actually receives.
+- **A poster rule in `demos/Makefile`.** Every animated demo ships a first
+  frame for `prefers-reduced-motion`, and `site_journey_test` refuses a demo
+  whose poster is missing — but nothing generated them. All seven had been made
+  by hand, so the gate demanded a file the build could not produce.
+
 ### Fixed
 
 - **`--stir-shaken` no longer marks every token in a stored capture `Expired`.**

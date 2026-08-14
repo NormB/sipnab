@@ -451,6 +451,98 @@ fn every_referenced_demo_asset_exists_and_none_are_orphaned() {
     );
 }
 
+/// The homepage's four MCP examples must be the answers the tool actually gave.
+///
+/// The chain is `live binary -> website/data/mcp-examples/*.json -> index.html`.
+/// `demos/gen-mcp-examples.sh --check` proves the first link and needs a built
+/// binary to do it; this proves the second, and needs nothing, so it runs in
+/// every CI job. Without it the page could be hand-edited to claim an answer no
+/// file backs -- which is the marketing-screenshot failure demos/Makefile was
+/// written to prevent, in the one medium a rendered recording cannot be
+/// compared against.
+///
+/// The blocks are HTML-escaped on the page because `Contact: <sip:user@host>`
+/// would otherwise close the `<code>` element early, so this unescapes before
+/// comparing. `&amp;` is undone LAST: doing it first would turn a literal
+/// `&amp;lt;` in the data into `<` and compare equal to the wrong thing.
+#[test]
+fn homepage_mcp_examples_match_their_generated_source() {
+    let page = read("website/templates/index.html");
+    for name in ["triage", "lint", "evidence", "correlate"] {
+        let generated = read(&format!("website/data/mcp-examples/{name}.json"));
+        let begin = format!("<!-- mcp-example:{name} BEGIN -->");
+        let end = format!("<!-- mcp-example:{name} END -->");
+
+        let open = page
+            .find(&begin)
+            .unwrap_or_else(|| panic!("index.html has no {begin} — run demos/gen-mcp-examples.sh"));
+        let close = page
+            .find(&end)
+            .unwrap_or_else(|| panic!("index.html has no {end} — run demos/gen-mcp-examples.sh"));
+        assert!(
+            close > open,
+            "{name}: END marker precedes BEGIN in index.html"
+        );
+
+        let published = page[open + begin.len()..close]
+            .trim_matches('\n')
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&");
+
+        assert_eq!(
+            published,
+            generated.trim_end_matches('\n'),
+            "the {name} block on the homepage is not website/data/mcp-examples/{name}.json. \
+             Regenerate with `demos/gen-mcp-examples.sh` rather than editing the page."
+        );
+
+        // Parsing is the point of publishing JSON: a block that a reader
+        // cannot paste into `jq` is not an example of anything.
+        serde_json::from_str::<serde_json::Value>(&published)
+            .unwrap_or_else(|e| panic!("the {name} block on the homepage is not valid JSON: {e}"));
+    }
+}
+
+/// Each MCP panel must still show the claim its prose makes about it.
+///
+/// Separate from the equality test above on purpose: that one proves the page
+/// matches the generated file, and would stay green if the tool started
+/// answering something else entirely and the file was regenerated to match. A
+/// verdict that stopped saying `signalling`, evidence that stopped reporting
+/// `verified`, or a correlation that stopped admitting `heuristic_only` would
+/// each make the surrounding copy false while every file agreed with every
+/// other file.
+#[test]
+fn each_mcp_example_still_carries_the_claim_the_page_makes_about_it() {
+    for (name, pointer, want) in [
+        ("triage", "/verdict", "signalling"),
+        ("lint", "/section", "12.1.1"),
+        ("evidence", "/frames/0/status", "verified"),
+        ("correlate", "/legs/0/strategy", "timing_heuristic"),
+    ] {
+        let v: serde_json::Value =
+            serde_json::from_str(&read(&format!("website/data/mcp-examples/{name}.json")))
+                .unwrap_or_else(|e| panic!("{name}.json is not valid JSON: {e}"));
+        let got = v.pointer(pointer).unwrap_or_else(|| {
+            panic!("{name}.json no longer has {pointer}, which the homepage describes")
+        });
+        assert_eq!(
+            got, want,
+            "{name}.json{pointer} is {got}, but the homepage copy says {want}"
+        );
+    }
+
+    // The one the page states outright: the match is timing-only, and saying so
+    // is the feature. A `false` here with the copy unchanged is a lie on the page.
+    let correlate: serde_json::Value =
+        serde_json::from_str(&read("website/data/mcp-examples/correlate.json")).expect("json");
+    assert_eq!(
+        correlate["heuristic_only"], true,
+        "correlate.json no longer flags heuristic_only, which the homepage promises it does"
+    );
+}
+
 /// Every tape Output/Screenshot landing in static/demos must map to a referenced asset (its .webp counterpart counts).
 #[test]
 fn every_tape_output_is_a_referenced_site_asset() {

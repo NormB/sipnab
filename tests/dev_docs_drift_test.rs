@@ -501,7 +501,15 @@ fn linked_code_targets_exist() {
     // it is not part of the +1. Attributed per file:
     // `docs/internals/domain-primer.md` +1, every other internals page
     // unchanged.
-    const EXPECTED_CODE_LINKS: usize = 342;
+    // Raised 342 -> 343 by #34: the gate roster's `site_journey_test` row
+    // gained one link, to `demos/gen-mcp-examples.sh`, because that test now
+    // holds the homepage's MCP examples to the files that script generates and
+    // a reader of the row needs to know which script regenerates them. The
+    // `site_journey_test` and `mockup_alignment_test` links in the same row
+    // were already there — the row was rewritten whole, so a diff shows all
+    // three as added, and only one of them is. Attributed per file:
+    // `docs/internals/testing.md` +1, every other internals page unchanged.
+    const EXPECTED_CODE_LINKS: usize = 343;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

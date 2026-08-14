@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source_call_id": "b2bua-caller-synth@203.0.113.1",
+  "legs": [
+    {
+      "call_id": "b2bua-leg-synth@203.0.113.101:5060",
+      "score": 50,
+      "strategy": "timing_heuristic",
+      "identifier_match": false,
+      "observed_gap_ms": 3
+    }
+  ],
+  "total_matched": 1,
+  "heuristic_only": true,
+  "capture_identity": {
+    "node": "sbc-edge-1",
+    "instance": "2e04f318cb8a43d2e9585d-1",
+    "dialog_generation": 64,
+    "stream_generation": 2
+  },
+  "timing_clock": {
+    "synchronised": true,
+    "max_error_us": 643000,
+    "est_error_us": 0,
+    "available": true
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "frames": [
+    {
+      "frame_bytes": 540,
+      "hex": "02 00 00 00 00 01 02 00 00 00 00 02 08 00 45 00 02 0e 00 00 40 00 40 11 b4 98 c0 00 02 1e c0 00 02 28 13 c4 13 c4 01 fa 00 00 49 4e 56 49 54 45 20 73 69 70 3a 64 61 76 65 40 31 39 32 2e 30 2e",
+      "hex_bytes_shown": 64,
+      "ordinal": 5,
+      "pointer": "tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b",
+      "source": "sip-problem-call.pcap",
+      "status": "verified",
+      "truncated": true
+    }
+  ],
+  "requested": 1,
+  "resolved": 1,
+  "schema_version": 1,
+  "summary": "1 of 1 pointer(s) resolved; 1 verified against a recorded digest",
+  "verified": 1
+}

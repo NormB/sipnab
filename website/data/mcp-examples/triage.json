@@ -1,0 +1,21 @@
+{
+  "call_id": "busy-3a2b1c@192.0.2.30",
+  "final_status_code": 486,
+  "media": {
+    "hints": [],
+    "nat_mismatch": false,
+    "no_media": false,
+    "one_way_audio": false,
+    "problem": false,
+    "stream_count": 0
+  },
+  "schema_version": 1,
+  "signalling": {
+    "hints": [
+      "Call failed: 486 Busy Here."
+    ],
+    "problem": true
+  },
+  "state": "Failed",
+  "verdict": "signalling"
+}

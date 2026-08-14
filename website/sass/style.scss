@@ -733,6 +733,43 @@ input:focus-visible,
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba($accent, 0.06);
 }
 
+// The MCP panels: a command, then the answer it produced.
+//
+// These are TEXT rather than a recording, which is the point -- a reader can
+// select the command, paste it, and get the block underneath. Both share the
+// image panels' frame so the tab strip does not change shape when the reader
+// moves between an MCP tab and a TUI one.
+.demo-cmd,
+.demo-json {
+  font-family: $font-mono;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid $border;
+  background: $surface;
+  padding: 0.9rem 1.1rem;
+  // Long pointers and hex runs must scroll INSIDE the block. Without this the
+  // page itself scrolls sideways on a phone, which moves every other section.
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.demo-cmd {
+  color: $accent;
+  margin-bottom: 0.6rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.demo-json {
+  color: $text;
+  // Tall enough for the longest published answer to read as a whole thought,
+  // bounded so a tab cannot push the rest of the page off the screen.
+  max-height: 30rem;
+  overflow-y: auto;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba($accent, 0.06);
+}
+
 // =============================================================================
 // Features (3 columns)
 // =============================================================================
