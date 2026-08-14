@@ -2063,6 +2063,23 @@ goes wrong.
   `len > 0 && len <= 64` delivered **nothing** for a 128-byte write, so the
   kernel evaluates the filter before recording the event.
 
+**Both architectures are measured, not inferred from one.** `$arg2`/`$arg3`
+would have been portable and the kernel refuses them (`EIO` on the write), so
+the registers are named per calling convention — and each was then driven with
+real traffic using the exact line sipnab generates. On x86\_64
+(`opensips-1`, 6.12) `%si`/`%dx` returned a SIP `INVITE` out of OpenSIPS. On
+aarch64 (thor-02, 6.8-rt) `%x1`/`%x2` returned `50 52 49 20 2a 20 48 54 54 50`
+— `PRI * HTTP`, curl's HTTP/2 preface — out of `libssl.so.3`. An architecture
+without a written-down convention refuses to build a probe rather than guessing
+at a register, because a guessed register reads whatever happens to be in it and
+reports the result as a message.
+
+**Removal names the probe: `-:<name>`, appended.** Verified by installing a
+second probe standing in for another tool and watching it survive. Truncating
+`uprobe_events` — the obvious shortcut, and what the throwaway experiments did —
+empties a **system-wide** namespace and takes every other tracer on the host
+with it.
+
 **Therefore: length-banded probes.** Install several probes over the same
 symbol, each fetching one band and filtered to it (`<=64`, `<=256`, `<=1024`,
 `<=2048`), so the bytes that ever reach sipnab exceed the true length by at most
