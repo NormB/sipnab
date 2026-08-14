@@ -626,6 +626,59 @@ pub struct Launched {
     /// privileged window when the kill feature is active and `--kill-spoof`
     /// permits it. `None` → the worker uses the ephemeral UDP send.
     pub raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
+    /// Streaming keylog source — a FIFO named by `--keylog`, or the descriptor
+    /// given to `--keylog-fd` — opened in the privileged window, before a
+    /// `--chroot` or a privilege drop could put it out of reach.
+    ///
+    /// `None` for a regular-file `--keylog`, which `TlsDecryptor` opens itself
+    /// so its eager first parse and its later polling agree on one offset.
+    #[cfg(feature = "tls")]
+    pub keylog_source: Option<crate::capture::keylog_source::KeylogSource>,
+}
+
+/// Open a streaming keylog source, if this run has one, while still privileged.
+///
+/// Returns `None` when `--keylog` names an ordinary file, which the decryptor
+/// opens for itself, or when no keylog was requested at all. A failure here is
+/// reported and downgraded to `None` rather than killed: the run can still
+/// capture, and the operator gets a named reason instead of a silent absence of
+/// decryption.
+#[cfg(feature = "tls")]
+fn open_privileged_keylog_source(cli: &Cli) -> Option<crate::capture::keylog_source::KeylogSource> {
+    use crate::capture::keylog_source::KeylogSource;
+
+    if let Some(fd) = cli.keylog_fd {
+        return match KeylogSource::from_fd(fd) {
+            Ok(s) => {
+                tracing::info!("TLS decryption: reading keylog lines from inherited fd {fd}");
+                Some(s)
+            }
+            Err(e) => {
+                tracing::error!("--keylog-fd {fd} is not a readable descriptor: {e}");
+                None
+            }
+        };
+    }
+
+    let path = cli.keylog.as_deref()?;
+    let path = std::path::Path::new(path);
+    if !KeylogSource::is_fifo(path) {
+        return None;
+    }
+
+    match KeylogSource::open_auto(path) {
+        Ok(s) => {
+            tracing::info!(
+                "TLS decryption: {} is a FIFO, reading it as a live stream",
+                path.display()
+            );
+            Some(s)
+        }
+        Err(e) => {
+            tracing::error!("Cannot open keylog FIFO {}: {e}", path.display());
+            None
+        }
+    }
 }
 
 /// Perform the side-effectful launch sequence exactly as main() did:
@@ -844,6 +897,26 @@ pub fn launch(
         None
     };
 
+    // 15b. Open the keylog source while still privileged, for the same reason
+    // the raw kill socket is opened above: after 16a this process may have
+    // dropped to an unprivileged user and chrooted, and the producer's pipe
+    // usually lives somewhere it can then no longer reach (`/run/...`).
+    //
+    // An inherited descriptor (`--keylog-fd`) needs no privilege at all, but is
+    // adopted here too so both spellings reach the decryptor by one path.
+    //
+    // A regular-file `--keylog` is deliberately NOT opened here: `TlsDecryptor`
+    // parses it eagerly at construction, and doing that twice would load every
+    // secret twice.
+    #[cfg(feature = "tls")]
+    let keylog_source = open_privileged_keylog_source(cli);
+    #[cfg(not(feature = "tls"))]
+    if cli.keylog_fd.is_some() {
+        tracing::error!("--keylog-fd requires the 'tls' feature (not compiled in)");
+        capture::stop_and_join(handle, rx);
+        std::process::exit(2);
+    }
+
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
     let effective_user = cli.user.as_deref().or(config.privilege.user.as_deref());
     let effective_no_priv_drop = cli.no_priv_drop || config.privilege.no_priv_drop.unwrap_or(false);
@@ -953,8 +1026,12 @@ pub fn launch(
     }
 
     // 17. Disable core dumps if any decryption keys are loaded (D19)
+    // `--keylog-fd` counts: the secrets arrive over a pipe instead of from a
+    // path, but they land in the same process memory, so a core file would
+    // expose exactly what this disables core dumps to protect.
     let has_decrypt_keys = cli.tls_key.is_some()
         || cli.keylog.is_some()
+        || cli.keylog_fd.is_some()
         || cli.srtp_keys.is_some()
         || cli.dtls_keylog.is_some();
     if has_decrypt_keys
@@ -970,6 +1047,8 @@ pub fn launch(
         handle,
         rx,
         raw_kill_sock,
+        #[cfg(feature = "tls")]
+        keylog_source,
     }
 }
 

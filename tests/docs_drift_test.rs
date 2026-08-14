@@ -33,6 +33,15 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `--keylogfile` belongs to ecapture (github.com/gojue/ecapture), the eBPF
+    // extractor the TLS recipes pipe secrets FROM. The CLI reference names it
+    // because a reader being shown `--keylog-fd` needs the other half of the
+    // command to be runnable. Scoped to those two pages: a bare `--keylogfile`
+    // written as though it were sipnab's must still fail this guard.
+    (
+        "keylogfile",
+        &["docs/cli-reference.md", "website/content/docs/cli.md"],
+    ),
     // `demos/gen-mcp-examples.sh --check` re-runs the homepage's four MCP
     // examples and fails on any difference. It is that script's flag, not
     // sipnab's, and the testing page names it because a reader who has just

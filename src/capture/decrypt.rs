@@ -605,6 +605,16 @@ impl TlsDecryptor {
         self.keylog_entries.len() - before
     }
 
+    /// Adopt a keylog source opened elsewhere.
+    ///
+    /// Used for sources that must be opened while the process is still
+    /// privileged — a FIFO under `/run`, or the descriptor handed to
+    /// `--keylog-fd` — since by the time the decryptor is built the process may
+    /// have chrooted and dropped privileges. Replaces any source already set.
+    pub fn set_keylog_source(&mut self, source: super::keylog_source::KeylogSource) {
+        self.keylog_source = Some(source);
+    }
+
     /// Poll the keylog source for new entries (for `--keylog-watch`).
     ///
     /// Returns the number of new keys loaded. Never blocks, so it is safe on

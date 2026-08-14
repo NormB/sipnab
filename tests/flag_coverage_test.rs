@@ -37,7 +37,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     // or your environment (root / syslogd / live NIC), not a sandbox test.
 
     // ── Crypto: need a TLS/SRTP/DTLS pcap + matching keys (M5/T5.1 fixtures) ──
-    "keylog",           // TLS SSLKEYLOGFILE decrypt — needs TLS-SIP pcap + keylog
     "keylog-watch",     // live keylog tailing — needs the same + a running source
     "dtls-keylog",      // DTLS-SRTP key extraction — needs a DTLS pcap
     "tls-key",          // TLS private-key decrypt — needs TLS-SIP pcap + the key

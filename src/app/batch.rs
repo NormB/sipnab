@@ -289,6 +289,15 @@ pub struct BatchProcessing {
     /// makes not the first file read, and which for `-I /pcaps` is a directory
     /// (#48).
     pub input_files: Vec<PathBuf>,
+    /// Streaming keylog source opened in the privileged window — a FIFO named
+    /// by `--keylog`, or the descriptor given to `--keylog-fd`.
+    ///
+    /// Carried from `Launched` rather than opened here, because by the time
+    /// this runs the process may have chrooted and dropped to an unprivileged
+    /// user, and the producer's pipe usually lives where it can no longer
+    /// reach.
+    #[cfg(feature = "tls")]
+    pub keylog_source: Option<crate::capture::keylog_source::KeylogSource>,
 }
 
 /// Immutable batch-mode configuration for packet processing.
@@ -1555,7 +1564,7 @@ impl BatchRunner {
     fn new(
         cli: Cli,
         config: &Config,
-        batch: BatchProcessing,
+        mut batch: BatchProcessing,
         policy: CapturePolicy,
         raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
         transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
@@ -1823,11 +1832,22 @@ impl BatchRunner {
         // 17c. Initialize TLS decryptor if --keylog and/or --tls-key is provided
         #[cfg(feature = "tls")]
         let mut tls_decryptor: Option<TlsDecryptor> =
-            if cli.keylog.is_some() || cli.tls_key.is_some() {
-                let keylog_path = cli.keylog.as_deref().map(std::path::Path::new);
+            if cli.keylog.is_some() || cli.tls_key.is_some() || cli.keylog_fd.is_some() {
+                // A source opened in the privileged window supersedes the path:
+                // it is already open, and for a FIFO the path must not be
+                // opened a second time. `--keylog-fd` has no path at all.
+                let preopened = batch.keylog_source.take();
+                let keylog_path = if preopened.is_some() {
+                    None
+                } else {
+                    cli.keylog.as_deref().map(std::path::Path::new)
+                };
                 let crypto = crate::crypto::default_backend();
                 match TlsDecryptor::new(keylog_path, crypto) {
                     Ok(mut d) => {
+                        if let Some(source) = preopened {
+                            d.set_keylog_source(source);
+                        }
                         if d.keylog_entry_count() > 0 {
                             tracing::info!(
                                 "sipnab: TLS decryption active (keylog loaded). \
@@ -2223,9 +2243,15 @@ impl BatchRunner {
                     det.sweep(security_max_age);
                 }
 
-                // --keylog-watch: poll for new keys in the keylog file
+                // --keylog-watch: poll for new keys in the keylog source.
+                //
+                // `--keylog-fd` implies the watch. A descriptor handed over by a
+                // live producer has nothing to read at startup and everything
+                // to read later, so requiring a second flag to look at it would
+                // make the obvious invocation load no keys at all and say
+                // nothing — the failure this area has already been bitten by.
                 #[cfg(feature = "tls")]
-                if cli.keylog_watch
+                if (cli.keylog_watch || cli.keylog_fd.is_some())
                     && let Some(ref mut decryptor) = tls_decryptor
                     && let Err(e) = decryptor.poll_keylog_file()
                 {

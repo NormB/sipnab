@@ -2058,6 +2058,17 @@ pub struct Cli {
     #[arg(help_heading = "TLS / Decryption", long, value_name = "FILE")]
     pub keylog: Option<String>,
 
+    /// Read NSS keylog lines from an already-open file descriptor, so a
+    /// privileged producer can hand over TLS secrets without writing them to
+    /// disk. Implies --keylog-watch.
+    ///
+    /// sipnab cannot start that producer itself: `PR_SET_NO_NEW_PRIVS` is set at
+    /// startup and inherited by every child, so a child can never acquire the
+    /// `CAP_BPF` an eBPF extractor needs. Start it from a supervisor and pass
+    /// the read end here.
+    #[arg(help_heading = "TLS / Decryption", long, value_name = "N")]
+    pub keylog_fd: Option<i32>,
+
     /// Watch key log file for new entries (live decryption).
     #[arg(help_heading = "TLS / Decryption", long)]
     pub keylog_watch: bool,
@@ -3217,6 +3228,24 @@ impl Cli {
     /// `crate::Error::CliValidation` with a user-facing message for each
     /// rejected combination. Pure — no side effects.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // Two keylog sources are ambiguous, and picking one silently is the
+        // failure this whole area exists to remove: the run would decrypt
+        // nothing the operator expected and report nothing wrong.
+        if let Some(fd) = self.keylog_fd {
+            if self.keylog.is_some() {
+                return Err(crate::Error::CliValidation(
+                    "--keylog and --keylog-fd name different sources of the same \
+                     secrets; pass one, not both"
+                        .to_string(),
+                ));
+            }
+            if fd < 0 {
+                return Err(crate::Error::CliValidation(format!(
+                    "--keylog-fd must be a descriptor sipnab inherited, got {fd}"
+                )));
+            }
+        }
+
         // Refused here rather than at the point of use, because the point of
         // use is inside the detector setup: a bad spec accepted at startup
         // becomes a fraud run with off-hours detection silently missing, which
@@ -4207,6 +4236,40 @@ mod tests {
         let cli = Cli::parse_from_args(["sipnab", "-K", "not-an-ip"]);
         let err = cli.validate().unwrap_err();
         assert!(err.to_string().contains("--kill-target"));
+    }
+
+    /// Two keylog sources are ambiguous, so `validate` refuses rather than
+    /// silently picking one and decrypting nothing the operator expected.
+    #[test]
+    fn validate_rejects_two_keylog_sources() {
+        let cli = Cli::parse_from_args(["sipnab", "--keylog", "/run/k", "--keylog-fd", "3"]);
+        let err = cli
+            .validate()
+            .expect_err("--keylog and --keylog-fd name different sources");
+        let msg = err.to_string();
+        assert!(msg.contains("--keylog-fd"), "names the flag: {msg}");
+        assert!(msg.contains("--keylog"), "names both flags: {msg}");
+    }
+
+    /// A descriptor must be one sipnab could actually have inherited.
+    ///
+    /// Written `--keylog-fd=-1`, because clap reads a bare `-1` as a flag and
+    /// rejects it at parse time — which never reaches the check under test.
+    #[test]
+    fn validate_rejects_a_negative_keylog_fd() {
+        let cli = Cli::parse_from_args(["sipnab", "--keylog-fd=-1"]);
+        let err = cli
+            .validate()
+            .expect_err("a negative descriptor is not one");
+        assert!(err.to_string().contains("--keylog-fd"));
+    }
+
+    /// `--keylog-fd` on its own is a complete, valid keylog configuration.
+    #[test]
+    fn validate_accepts_keylog_fd_alone() {
+        let cli = Cli::parse_from_args(["sipnab", "--keylog-fd", "3"]);
+        assert!(cli.validate().is_ok());
+        assert_eq!(cli.keylog_fd, Some(3));
     }
 
     /// `validate` accepts well-formed v4 port-range and bracketed v6 targets.

@@ -186,6 +186,8 @@ fn main() {
                     output_opts: plan.output_opts,
                     event_exec: plan.event_exec,
                     input_files: plan.input_files,
+                    #[cfg(feature = "tls")]
+                    keylog_source: launched.keylog_source,
                 },
                 plan.policy,
                 launched.raw_kill_sock,

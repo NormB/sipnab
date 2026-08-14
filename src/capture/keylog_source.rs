@@ -631,6 +631,57 @@ mod tests {
         );
     }
 
+    /// The whole point of `--keylog-fd`: a producer writes secrets into a pipe
+    /// and the DECRYPTOR ends up holding them, with nothing on disk.
+    ///
+    /// Asserts the effect — `keylog_entry_count` rises — rather than that some
+    /// bytes were read.
+    #[test]
+    #[cfg(unix)]
+    fn secrets_sent_down_a_pipe_reach_the_decryptor() {
+        use crate::capture::decrypt::TlsDecryptor;
+        use std::os::fd::AsRawFd;
+
+        let (read_fd, write_fd) = {
+            let mut fds = [0i32; 2];
+            // SAFETY: `fds` is a valid two-element array for `pipe` to fill.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            (fds[0], fds[1])
+        };
+
+        let mut decryptor =
+            TlsDecryptor::new(None, crate::crypto::default_backend()).expect("decryptor");
+        decryptor.set_keylog_source(KeylogSource::from_fd(read_fd).expect("adopt the read end"));
+        assert_eq!(decryptor.keylog_entry_count(), 0, "nothing yet");
+
+        // SAFETY: `read_fd` was duplicated by `from_fd`, so closing ours is safe.
+        unsafe { libc::close(read_fd) };
+
+        {
+            // SAFETY: `write_fd` is a fresh descriptor this scope owns.
+            let mut w = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(write_fd) };
+            w.write_all(line(3).as_bytes()).unwrap();
+            w.flush().unwrap();
+            let _ = w.as_raw_fd();
+        } // the writer closes here
+
+        let mut loaded = 0;
+        for _ in 0..50 {
+            loaded += decryptor.poll_keylog_file().expect("poll");
+            if loaded > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        assert_eq!(loaded, 1, "the secret written to the pipe was loaded");
+        assert_eq!(
+            decryptor.keylog_entry_count(),
+            1,
+            "and the decryptor holds it, with nothing written to disk"
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn a_stream_reports_exhaustion_when_the_producer_exits() {
