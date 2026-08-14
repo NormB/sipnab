@@ -254,6 +254,37 @@ pub fn render_stream_detail(
     );
     lines.push(Line::raw(flags));
 
+    // QoS marking. A terminal shows a value rather than a JSON key, so this
+    // renders the codepoint's standard name beside the number — an operator
+    // recognises "EF" faster than 46, and "not observed" is a finding rather
+    // than a missing row.
+    //
+    // Coloured because it is actionable at a glance: unmarked media on a
+    // congested link is a configuration fault, and a stream re-marked in
+    // flight is a policy boundary the operator may not know they crossed.
+    let (marking, marking_style) = match stream.dscp_first {
+        Some(v) => (
+            format!("{} ({})", v, crate::rtp::stream::dscp_name(v)),
+            if v == 0 {
+                Style::default().fg(theme.warning)
+            } else {
+                Style::default().fg(theme.good)
+            },
+        ),
+        None => ("not observed".to_string(), Style::default().fg(theme.muted)),
+    };
+    let mut dscp_line = vec![Span::raw("  DSCP: "), Span::styled(marking, marking_style)];
+    if stream.dscp_remarked()
+        && let Some(last) = stream.dscp_last
+    {
+        dscp_line.push(Span::raw("    Re-marked to: "));
+        dscp_line.push(Span::styled(
+            format!("{} ({})", last, crate::rtp::stream::dscp_name(last)),
+            Style::default().fg(theme.bad),
+        ));
+    }
+    lines.push(Line::from(dscp_line));
+
     lines.push(Line::raw(""));
 
     // ── Quality Over Time ───────────────────────────────────────────
@@ -913,6 +944,7 @@ mod tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            dscp: None,
             from_hep: false,
         }
     }

@@ -1722,7 +1722,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | Phase 8.6 expansion (★) | Wraps |
 |---|---|
-| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:117`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L117) — bump interval, add `status` field |
+| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:185`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L185) — bump interval, add `status` field |
 | OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` ([`src/rtp/quality.rs:83`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L83)) |
 | `.sipnab` project file | New module `src/project.rs`; reuses existing `output::json::dialog_to_json` for report content and `audio_export` for WAV files |
 | `--open <foo.sipnab>` | New CLI dispatch path that bypasses the capture pipeline and rehydrates `DialogStore`/`StreamStore` from `report.json` |

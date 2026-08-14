@@ -1921,6 +1921,11 @@ pub fn classify_packet(
                 // it. The parser carries a Copy locator precisely so the ~93%
                 // of frames that never reach a retention site pay no refcount.
                 sip_msg.frame = pp.frame.map(|l| l.to_frame_ref());
+                // The QoS marking rides across the same boundary and for the
+                // same reason: it is a fact about the packet, the parser never
+                // sees a packet, and every consumer downstream sees only the
+                // message. A `Copy` byte, so this costs nothing.
+                sip_msg.dscp = pp.dscp;
                 let mut sdp_links = Vec::new();
                 if !opts.no_dialog
                     && let Some(sdp) = sip_msg.sdp()
@@ -2165,6 +2170,7 @@ mod quiet_bad_parse_tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            dscp: None,
             from_hep: false,
         }
     }

@@ -51,6 +51,7 @@ fuzz_target!(|data: &[u8]| {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 6,
+            dscp: None,
             from_hep: false,
         };
         for flushed in reassembler.insert(&pkt) {

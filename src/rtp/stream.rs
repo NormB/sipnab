@@ -110,6 +110,60 @@ const DEFAULT_PTIME_MS: f64 = 20.0;
 /// capture, a stream of one talkspurt — and is discarded rather than believed.
 const PLAUSIBLE_PTIME_MS: std::ops::RangeInclusive<f64> = 5.0..=200.0;
 
+/// Expedited Forwarding ([RFC 3246](https://www.rfc-editor.org/rfc/rfc3246)),
+/// the conventional marking for a voice bearer.
+pub const DSCP_EF: u8 = 46;
+
+/// VOICE-ADMIT ([RFC 5865](https://www.rfc-editor.org/rfc/rfc5865)): EF for
+/// traffic that also passed capacity admission control.
+pub const DSCP_VOICE_ADMIT: u8 = 44;
+
+/// The standard name of a Differentiated Services codepoint.
+///
+/// Covers the codepoints [IANA's DSCP registry](https://www.iana.org/assignments/dscp-registry/dscp-registry.xhtml)
+/// names — the class selectors of
+/// [RFC 2474](https://www.rfc-editor.org/rfc/rfc2474) §4.2.2, the
+/// assured-forwarding classes of
+/// [RFC 2597](https://www.rfc-editor.org/rfc/rfc2597) §6, EF, VOICE-ADMIT and
+/// LE ([RFC 8622](https://www.rfc-editor.org/rfc/rfc8622)).
+///
+/// Everything else returns `"unassigned"` rather than a fabricated name. Half
+/// the 64-value space has no registered meaning and an operator is entitled to
+/// use it; inventing a label for `37` would tell a reader the network agreed
+/// on something it did not.
+///
+/// One function so no surface can name a codepoint differently from another —
+/// the same rule the MOS scorer is held to.
+#[must_use]
+pub fn dscp_name(v: u8) -> &'static str {
+    match v {
+        0 => "CS0 / default (best effort)",
+        8 => "CS1",
+        10 => "AF11",
+        12 => "AF12",
+        14 => "AF13",
+        16 => "CS2",
+        18 => "AF21",
+        20 => "AF22",
+        22 => "AF23",
+        24 => "CS3",
+        26 => "AF31",
+        28 => "AF32",
+        30 => "AF33",
+        32 => "CS4",
+        34 => "AF41",
+        36 => "AF42",
+        38 => "AF43",
+        40 => "CS5",
+        DSCP_VOICE_ADMIT => "VOICE-ADMIT",
+        DSCP_EF => "EF",
+        48 => "CS6",
+        56 => "CS7",
+        1 => "LE",
+        _ => "unassigned",
+    }
+}
+
 // ── Public types ─────────────────────────────────────────────────────
 
 /// Unique key for an RTP stream: SSRC combined with the 5-tuple direction.
@@ -315,6 +369,28 @@ pub struct RtpStream {
     /// [`burst_gap_analysis`](Self::burst_gap_analysis) when the stream is too
     /// short or too damaged to measure its own cadence.
     pub sdp_ptime_ms: Option<u32>,
+    /// DSCP of the FIRST packet of this stream
+    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), 0 to 63.
+    ///
+    /// First rather than latest, matching
+    /// [`first_frame`](Self::first_frame): "what was this stream marked with"
+    /// has one answer for a healthy stream, and when it has two the
+    /// interesting fact is that it CHANGED, which is what
+    /// [`dscp_last`](Self::dscp_last) records rather than overwriting the
+    /// original.
+    ///
+    /// `None` means no IP header was observed — a HEP-fed stream — and is not
+    /// the same as `Some(0)`, which is a real marking and the usual shape of
+    /// "nobody configured QoS for media".
+    pub dscp_first: Option<u8>,
+    /// DSCP of the most recent packet of this stream.
+    ///
+    /// Kept beside [`dscp_first`](Self::dscp_first) so a mid-stream re-marking
+    /// is visible rather than silently overwritten. A stream that crosses a
+    /// boundary where policy re-marks it — an SBC bleaching `EF` to `0`,
+    /// typically — reads as clean from either endpoint alone, and this pair is
+    /// the only place a capture can say so.
+    pub dscp_last: Option<u8>,
 
     // ── Private state for jitter/interval tracking ───────────────────
     /// Losses this stream retains, read from the process-wide declaration
@@ -364,6 +440,42 @@ impl RtpStream {
     #[must_use]
     pub fn orphaned(&self) -> bool {
         self.associated_dialog.is_none()
+    }
+
+    /// Is this stream marked for the queue voice is supposed to be in?
+    ///
+    /// `EF` ([RFC 3246](https://www.rfc-editor.org/rfc/rfc3246)) is the
+    /// expedited-forwarding PHB, and `VOICE-ADMIT`
+    /// ([RFC 5865](https://www.rfc-editor.org/rfc/rfc5865)) is the
+    /// capacity-admitted variant of it. Those two, and nothing else, are the
+    /// conventional marking for a bearer.
+    ///
+    /// `None` when no marking was observed, which is the only honest answer
+    /// for a HEP-fed stream: `false` there would read as "marked wrongly"
+    /// about a stream whose marking sipnab never saw.
+    ///
+    /// This is a CONVENTION and not a conformance rule. An operator is free to
+    /// run voice on `AF41` or on 0, and plenty do deliberately. Read it as
+    /// "does this match what most deployments do", never as a defect.
+    #[must_use]
+    pub fn dscp_is_expedited(&self) -> Option<bool> {
+        self.dscp_first
+            .map(|v| matches!(v, DSCP_EF | DSCP_VOICE_ADMIT))
+    }
+
+    /// Was this stream re-marked partway through?
+    ///
+    /// `true` only when both ends of the pair were observed AND they differ,
+    /// so an unobserved marking (HEP) reports `false` — "not known to have
+    /// changed" — rather than claiming a change nobody saw.
+    ///
+    /// Derived rather than stored, for the reason
+    /// [`orphaned`](Self::orphaned) spells out: a stored flag can drift from
+    /// the two values it summarises, and here the drift would be a re-marking
+    /// reported on a stream whose bytes say otherwise.
+    #[must_use]
+    pub fn dscp_remarked(&self) -> bool {
+        matches!((self.dscp_first, self.dscp_last), (Some(a), Some(b)) if a != b)
     }
 
     /// Returns `true` if the stream has been active within the last 30 seconds
@@ -542,6 +654,11 @@ impl RtpStream {
             silence_periods: Vec::new(),
             payload_buffer: std::collections::VecDeque::new(),
             sdp_ptime_ms: None,
+            // Same reason as `first_frame`: an RTP header carries no IP
+            // header. `StreamStore::process_rtp` holds the `ParsedPacket` and
+            // stamps both immediately after construction.
+            dscp_first: None,
+            dscp_last: None,
             lost_seq_cap: lost_seq_log_cap(),
             prev_arrival: Some(timestamp),
             prev_rtp_ts: Some(header.timestamp),

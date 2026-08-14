@@ -88,6 +88,17 @@ struct MessageJson<'a> {
     /// is always a real pointer.
     #[serde(skip_serializing_if = "Option::is_none")]
     frame: Option<String>,
+    /// The DSCP the frame carrying this message was marked with
+    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), 0 to 63 — the
+    /// queue the network was asked to put this signalling in.
+    ///
+    /// Omitted, never null, when no IP header was observed: a HEP-fed message
+    /// arrives with addressing its sender asserted and no marking at all. An
+    /// absent key therefore means "not observed" and `0` means "observed, and
+    /// it is best effort" — the distinction the whole field exists for, since
+    /// unmarked signalling is itself the common fault.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dscp: Option<u8>,
 }
 
 /// JSON representation of a parsed `CSeq` header.
@@ -209,6 +220,25 @@ struct StreamJson {
     /// always a real pointer.
     #[serde(skip_serializing_if = "Option::is_none")]
     frame: Option<String>,
+    /// DSCP of this stream's FIRST packet
+    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), 0 to 63.
+    ///
+    /// Voice is conventionally marked `EF` (46) and video `AF41` (34); 0 means
+    /// the media is competing with bulk traffic, which is the single most
+    /// common cause of jitter that no amount of bandwidth fixes.
+    ///
+    /// Omitted, never null, when no IP header was observed (a HEP-fed stream).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dscp: Option<u8>,
+    /// DSCP of this stream's MOST RECENT packet, when it differs from
+    /// [`dscp`](Self::dscp).
+    ///
+    /// Present only on a stream that was re-marked in flight — an SBC or a
+    /// policy boundary rewriting the codepoint partway through — because a
+    /// steady stream repeating one number on every row is noise. Its presence
+    /// IS the finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dscp_last: Option<u8>,
 }
 
 /// JSON representation of a quality interval.
@@ -467,6 +497,7 @@ fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
         response_context,
         malformed: msg.malformations(),
         frame: msg.frame.as_ref().map(ToString::to_string),
+        dscp: msg.dscp,
     }
 }
 
@@ -805,6 +836,12 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
         // The stream's own record of where it began, stamped at creation --
         // nothing downstream retains the packets it could be re-derived from.
         frame: stream.first_frame.as_ref().map(ToString::to_string),
+        dscp: stream.dscp_first,
+        // Emitted only when it actually differs. `dscp_remarked()` is the one
+        // predicate that decides this, here and everywhere else, so a reader
+        // cannot meet a `dscp_last` that agrees with `dscp` on one surface and
+        // not on another.
+        dscp_last: stream.dscp_remarked().then_some(stream.dscp_last).flatten(),
     }
 }
 

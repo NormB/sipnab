@@ -14,7 +14,7 @@ RTP Stream Detail  SSRC: 0xAAAABBBB  Codec: PCMU/8000  PT: 0
   Bitrate: 0.0 kbps    Clock: 8000 Hz    CN Frames: 0
   First: 22:13:20.000    Last: 22:13:20.000    Lost pkts: 0
   Orphaned: No    Heuristic: No
-
+  DSCP: 46 (EF)
 
 
 

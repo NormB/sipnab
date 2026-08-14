@@ -447,6 +447,14 @@ impl StreamStore {
 
         if let Some(stream) = self.streams.get_mut(&key) {
             stream.update(rtp, timestamp, payload_len);
+            // Latest marking, so a mid-stream re-marking becomes visible
+            // against `dscp_first`. Guarded on `is_some` rather than assigned
+            // unconditionally: a stream that mixes observed frames with
+            // HEP-fed ones must not have its last known marking erased by a
+            // packet that carried none.
+            if parsed.dscp.is_some() {
+                stream.dscp_last = parsed.dscp;
+            }
             // Capture G.711 payload for audio export (ring buffer, capped)
             if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
                 let payload_start = rtp.payload_offset;
@@ -478,6 +486,13 @@ impl StreamStore {
             // STREAM, not per packet -- and now the refcount is paid here
             // too, once per stream, rather than once per parsed frame.
             stream.first_frame = parsed.frame.map(|l| l.to_frame_ref());
+            // The marking this stream started with, stamped in the same branch
+            // and for the same reason as `first_frame`: this is by
+            // construction the first packet of the key. `dscp_last` starts
+            // equal, so `dscp_remarked()` is false for a one-packet stream
+            // rather than reading an absent second value as a change.
+            stream.dscp_first = parsed.dscp;
+            stream.dscp_last = parsed.dscp;
             // RFC 3551 knows the clock rate for twenty-four static payload
             // types; `RtpStream::new` knows eight of them and answers 8000 Hz
             // for the rest. Correct it here, before the first packet feeds the
@@ -1395,6 +1410,7 @@ mod tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            dscp: None,
             from_hep: false,
         }
     }

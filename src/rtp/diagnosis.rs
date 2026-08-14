@@ -1059,6 +1059,7 @@ mod tests {
             body: Default::default(),
             raw: Default::default(),
             parse_error: false,
+            dscp: None,
             is_retransmission: false,
         };
         let mut d = SipDialog::new(&invite).expect("dialog from INVITE");

@@ -43,6 +43,18 @@
     "frame": {
       "type": "string",
       "description": "Pointer to the frame this stream's first packet arrived in, as `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to retrieve the bytes, which either returns the frame or refuses because the capture changed. The media analogue of the dialog and message `frame`, and the only way to check an ORPHANED stream, which has no Call-ID to look a dialog up by. Optional, and absent rather than null when the stream has no frame (live capture). Not in `required` for that reason: an absent key means unknown, and a present one is always a real pointer."
+    },
+    "dscp": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63,
+      "description": "DSCP of this stream's FIRST packet (RFC 2474), the queue the network was asked to put the media in. Voice is conventionally EF (46); 0 is the default PHB and means the media competes with bulk traffic. Optional, and absent rather than null when no IP header was observed (a HEP-fed stream) — so an absent key means the marking is unknown and 0 means it was observed and is best effort."
+    },
+    "dscp_last": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63,
+      "description": "DSCP of this stream's most recent packet, present ONLY when it differs from `dscp` — a stream re-marked in flight, typically at a policy boundary. Its presence is the finding; a steady stream omits it."
     }
   },
   "$defs": {

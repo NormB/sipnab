@@ -683,6 +683,14 @@ pub struct GetDialogReportParams {
     pub format: Option<String>,
 }
 
+/// Parameters for `media_diagnostics`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct MediaDiagnosticsParams {
+    /// Call-ID identifying the dialog whose media to report on.
+    pub call_id: String,
+}
+
 /// Parameters for `find_problems`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -2331,6 +2339,179 @@ fn mos_is_grounded(s: &crate::rtp::stream::RtpStream) -> bool {
     )
 }
 
+/// The QoS marking block of a `media_diagnostics` stream.
+///
+/// `marking_observed` is the flag that keeps 0 honest. DSCP 0 is the default
+/// PHB and a real, frequently-wrong marking, so `dscp: 0` must not also be
+/// what a stream reports when no IP header was ever read — a HEP-fed stream
+/// would then accuse a correctly-marked trunk of being unmarked. When nothing
+/// was observed the numbers are omitted entirely and the flag says why.
+fn qos_json(s: &crate::rtp::stream::RtpStream) -> serde_json::Value {
+    let Some(dscp) = s.dscp_first else {
+        return serde_json::json!({
+            "marking_observed": false,
+            "note": "No IP header was observed for this stream, so no DSCP was \
+                     read. HEP delivers addressing its sender asserted and \
+                     carries no marking. This is not 'unmarked'.",
+        });
+    };
+    let mut v = serde_json::json!({
+        "marking_observed": true,
+        "dscp": dscp,
+        "name": crate::rtp::stream::dscp_name(dscp),
+        "expedited": s.dscp_is_expedited() == Some(true),
+    });
+    // Present only when it actually changed: repeating the same number on
+    // every steady stream would bury the one case that matters.
+    if s.dscp_remarked()
+        && let Some(last) = s.dscp_last
+        && let Some(obj) = v.as_object_mut()
+    {
+        obj.insert("remarked_to".into(), serde_json::json!(last));
+        obj.insert(
+            "remarked_to_name".into(),
+            serde_json::json!(crate::rtp::stream::dscp_name(last)),
+        );
+    }
+    v
+}
+
+/// The jitter block, carrying its grounding the way MOS carries `mos_grounded`.
+///
+/// Jitter is an RTP-timestamp difference divided by the clock rate. With a
+/// clock rate nobody stated the result is not an imprecise measurement, it is a
+/// different quantity — 11.25x out for a 90 kHz stream read at 8 kHz. So an
+/// ungrounded stream reports NO measured figure and says why, rather than a
+/// number that reads exactly like the grounded one beside it.
+fn jitter_json(
+    s: &crate::rtp::stream::RtpStream,
+    store: &crate::rtp::stream_store::StreamStore,
+) -> serde_json::Value {
+    use crate::rtp::stream_store::ClockGrounding;
+    let basis = store.clock_grounding(&s.key);
+    let measured = store.measured_jitter_ms(&s.key);
+    let basis_label = match basis {
+        Some(ClockGrounding::Rfc3551) => "rfc3551",
+        Some(ClockGrounding::Rtpmap) => "rtpmap",
+        Some(ClockGrounding::Assumed) => "assumed",
+        None => "unknown",
+    };
+    match measured.and_then(serde_json::Number::from_f64) {
+        Some(n) => serde_json::json!({
+            "grounded": true,
+            "clock_basis": basis_label,
+            "clock_rate_hz": s.clock_rate,
+            "measured_ms": n,
+        }),
+        None => serde_json::json!({
+            "grounded": false,
+            "clock_basis": basis_label,
+            "clock_rate_hz": s.clock_rate,
+            "note": "No measured jitter. Either this payload type has no \
+                     RFC 3551 clock rate and no SDP a=rtpmap supplied one, or \
+                     the rate was corrected after packets had been folded in \
+                     at the old one and the estimator has not re-converged. A \
+                     figure derived from an unstated clock rate is a different \
+                     quantity, not a rough one.",
+        }),
+    }
+}
+
+/// The one-way delay the published MOS was scored with, and where it came from.
+///
+/// The MOS itself already crosses the MCP boundary. Its delay term did not, so
+/// an agent could read `mos: 3.6` without learning that the `Id` impairment
+/// behind it rested on a default rather than on anything this capture showed.
+fn delay_json(
+    s: &crate::rtp::stream::RtpStream,
+    store: &crate::rtp::stream_store::StreamStore,
+) -> serde_json::Value {
+    let (one_way, source) = crate::rtp::quality::MosDelay::from_capture(store).resolve(s);
+    let mut v = serde_json::json!({
+        "source": source.label(),
+        "assumed": source.is_assumed(),
+    });
+    if let Some(n) = serde_json::Number::from_f64(one_way)
+        && let Some(obj) = v.as_object_mut()
+    {
+        obj.insert("one_way_ms".into(), serde_json::Value::Number(n));
+    }
+    v
+}
+
+/// Silence and comfort noise, which reached the TUI and stopped there.
+fn silence_json(s: &crate::rtp::stream::RtpStream) -> serde_json::Value {
+    let total_ms: u32 = s.silence_periods.iter().map(|p| p.duration_ms).sum();
+    serde_json::json!({
+        "cn_frames": s.cn_frames,
+        "periods": s.silence_periods.len(),
+        "total_ms": total_ms,
+    })
+}
+
+/// What the REMOTE endpoint said, kept apart from what sipnab measured.
+///
+/// RTCP is unauthenticated and trivially spoofable, and a report describes the
+/// path from the source to *the reporter*, which on a mid-path capture is a
+/// different segment than the one sipnab is watching. Merging these numbers
+/// with sipnab's own would make a claim indistinguishable from an observation.
+/// They live under one key whose name says whose they are, with a note saying
+/// what they are not.
+///
+/// `None` when nothing arrived — an empty object here would read as "the far
+/// end reported everything was fine", which is the opposite of "the far end
+/// reported nothing".
+fn endpoint_reported_json(
+    s: &crate::rtp::stream::RtpStream,
+    store: &crate::rtp::stream_store::StreamStore,
+) -> Option<serde_json::Value> {
+    let report = store.remote_report(&s.key);
+    let metrics = store.remote_voip_metrics(&s.key);
+    if report.is_none() && metrics.is_none() {
+        return None;
+    }
+    let mut v = serde_json::json!({
+        "note": "Asserted by the remote endpoint in unauthenticated RTCP, about \
+                 the path from the sender to THAT endpoint. sipnab did not \
+                 measure these and does not score its MOS from them. Where they \
+                 disagree with the measurements beside them, the two are \
+                 describing different path segments.",
+    });
+    let obj = v.as_object_mut()?;
+    if let Some(r) = report {
+        obj.insert(
+            "reception_report".into(),
+            serde_json::json!({
+                "reporter_ssrc": format!("0x{:08x}", r.reporter_ssrc),
+                "fraction_lost_pct": r.fraction_lost_pct(),
+                "cumulative_lost": r.cumulative_lost,
+                "jitter_ms": r.jitter_ms,
+                "round_trip_ms": r.round_trip_ms,
+                "reports_seen": r.reports_seen,
+            }),
+        );
+    }
+    if let Some(m) = metrics {
+        obj.insert(
+            "voip_metrics".into(),
+            serde_json::json!({
+                "reporter_ssrc": format!("0x{:08x}", m.reporter_ssrc),
+                "reports_seen": m.reports_seen,
+                "loss_rate_pct": m.metrics.loss_rate_pct(),
+                "discard_rate_pct": m.metrics.discard_rate_pct(),
+                "burst_duration_ms": m.metrics.burst_duration,
+                "gap_duration_ms": m.metrics.gap_duration,
+                "round_trip_delay_ms": m.metrics.round_trip_delay,
+                "end_system_delay_ms": m.metrics.end_system_delay,
+                "r_factor": m.metrics.r_factor,
+                "mos_lq": m.metrics.mos_lq(),
+                "mos_cq": m.metrics.mos_cq(),
+            }),
+        );
+    }
+    Some(v)
+}
+
 /// The tie-break half of a stream cursor: `0xSSRC@src>dst`.
 ///
 /// Unique per stream (the store keys on exactly these three values) and free
@@ -3039,6 +3220,108 @@ impl SipnabMcp {
                 "streams": stream_jsons,
                 "diagnosis": diag_json,
             })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Returns the media facts sipnab computes and `rtp_stats` does not carry:
+    /// QoS marking, jitter grounding, delay provenance, silence, and what the
+    /// remote endpoint reported over RTCP.
+    ///
+    /// Every figure here declares what kind of number it is. `qos` says
+    /// whether a marking was observed at all, `jitter` whether its clock rate
+    /// was grounded, `delay` whether it was assumed, and `endpoint_reported`
+    /// that the numbers under it are a remote claim rather than a measurement.
+    ///
+    /// # Returns
+    ///
+    /// `applicable: false` plus a `reason` for a dialog with no media, so a
+    /// call whose media was never seen cannot read as a call whose media was
+    /// fine. Otherwise a `streams` array, one entry per stream of the dialog.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `call_id` is not in the active store.
+    #[tool(
+        name = "media_diagnostics",
+        description = "Returns per-stream media facts beyond rtp_stats: QoS \
+                       marking (DSCP, its name, whether it is expedited, and \
+                       any re-marking in flight), jitter with the grounding of \
+                       the clock rate it was derived from, the one-way delay \
+                       behind the MOS and where that figure came from, silence \
+                       and comfort-noise counts, and any RTCP the remote \
+                       endpoint reported, kept separate from what sipnab \
+                       measured. Returns applicable=false for a dialog with no \
+                       media.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn media_diagnostics(
+        &self,
+        Parameters(params): Parameters<MediaDiagnosticsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let call_id = params.call_id.as_str();
+        let payload: serde_json::Value = {
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            if ds.get(call_id).is_none() {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("call_id '{call_id}' not found"),
+                    None,
+                ));
+            }
+            let ss = self.stream_store.read();
+            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
+            if streams.is_empty() {
+                let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+                drop(ss);
+                drop(ds);
+                drop(state);
+                serde_json::json!({
+                    "schema_version": 1,
+                    "call_id": call_id,
+                    "applicable": false,
+                    "reason": "no RTP stream is associated with this dialog, so \
+                               there is no media to diagnose. This is not a \
+                               clean bill of health: a call whose media never \
+                               reached the capture point looks the same here as \
+                               one that carried none.",
+                    "capture_identity": capture_identity,
+                })
+            } else {
+                let rows: Vec<serde_json::Value> = streams
+                    .iter()
+                    .map(|s| {
+                        let mut row = serde_json::json!({
+                            "ssrc": format!("0x{:08x}", s.key.ssrc),
+                            "src": s.key.src.to_string(),
+                            "dst": s.key.dst.to_string(),
+                            "codec": s.codec.clone(),
+                            "packets": s.packet_count,
+                            "qos": qos_json(s),
+                            "jitter": jitter_json(s, &ss),
+                            "delay": delay_json(s, &ss),
+                            "silence": silence_json(s),
+                        });
+                        if let Some(reported) = endpoint_reported_json(s, &ss)
+                            && let Some(obj) = row.as_object_mut()
+                        {
+                            obj.insert("endpoint_reported".into(), reported);
+                        }
+                        row
+                    })
+                    .collect();
+                let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+                drop(ss);
+                drop(ds);
+                drop(state);
+                serde_json::json!({
+                    "schema_version": 1,
+                    "call_id": call_id,
+                    "applicable": true,
+                    "streams": rows,
+                    "capture_identity": capture_identity,
+                })
+            }
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
@@ -8196,6 +8479,7 @@ mod tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 6,
+            dscp: None,
             from_hep: false,
         };
         let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();

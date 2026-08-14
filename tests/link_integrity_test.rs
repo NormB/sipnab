@@ -579,7 +579,9 @@ fn wiki_intra_docs_links_resolve() {
     // 384: `docs/benchmarks.md` +1. The reach argument added there points at
     // `--hep-rate-limit` in `cli-reference.md#network-listeners` rather than
     // restating the default packets-per-second ceiling a third time.
-    const EXPECTED_WIKI_LINKS: usize = 384;
+    // 385: `docs/mcp.md` +1. The tool table's new `media_diagnostics` row
+    // links into the section documenting it, exactly as every other row does.
+    const EXPECTED_WIKI_LINKS: usize = 385;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \
