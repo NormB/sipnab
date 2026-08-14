@@ -32,6 +32,7 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use super::CaptureConfig;
 use super::packet::{Packet, PreParsed};
+use crate::net::TransportProto;
 use crate::signals;
 
 // ── HEP v3 chunk type constants (vendor 0x0000) ─────────────────────
@@ -934,6 +935,29 @@ pub struct HepEndpoint {
     pub src_port: u16,
     /// Destination transport port.
     pub dst_port: u16,
+    /// Transport the original packet rode on.
+    ///
+    /// The fifth element of the 5-tuple this struct already models, and the
+    /// value HEP's `IP protocol` chunk carries. It was not a field: the chunk
+    /// was written as a literal 17, so SIP captured over TCP — and SIP
+    /// recovered from TLS, which the pipeline goes out of its way to stamp as
+    /// [`TransportProto::Tls`] "so the pipeline parses (and reports) the true
+    /// transport origin" — both reached the collector labelled UDP.
+    pub transport: TransportProto,
+}
+
+impl HepEndpoint {
+    /// The IANA IP protocol number for this endpoint's transport.
+    ///
+    /// TLS and WebSocket report 6: the chunk answers "what was on the wire",
+    /// and both ride TCP, so a collector filtering `proto=tcp` must find them.
+    fn ip_protocol(&self) -> u8 {
+        match self.transport {
+            TransportProto::Udp => 17,
+            TransportProto::Tcp | TransportProto::Tls | TransportProto::Ws => 6,
+            TransportProto::Sctp => 132,
+        }
+    }
 }
 
 /// Build a HEP v3 packet from components.
@@ -999,8 +1023,15 @@ pub fn build_hep_v3_bytes(
     };
     append_chunk(&mut chunks, 0x0000, CHUNK_IP_FAMILY, &[family]);
 
-    // IP protocol (assume UDP for SIP/RTP)
-    append_chunk(&mut chunks, 0x0000, CHUNK_IP_PROTO, &[17]);
+    // IP protocol, from the transport actually observed — not a literal 17.
+    // The address family two chunks up was already derived from the address;
+    // this one was pinned, so every TCP and TLS capture was forwarded as UDP.
+    append_chunk(
+        &mut chunks,
+        0x0000,
+        CHUNK_IP_PROTO,
+        &[endpoint.ip_protocol()],
+    );
 
     // Source/destination addresses
     match src_addr {
@@ -2038,6 +2069,7 @@ impl HepSender {
             dst_addr: msg.dst_addr,
             src_port: msg.src_port,
             dst_port: msg.dst_port,
+            transport: msg.transport,
         };
         self.send_payload(&endpoint, msg.timestamp, HepProtocol::Sip, &msg.raw)
     }
@@ -2153,6 +2185,7 @@ mod tests {
             dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
             src_port: 5000,
             dst_port: 5001,
+            transport: TransportProto::Udp,
         };
         sender
             .send_rtcp(&endpoint, Utc::now(), &rtcp)
@@ -2500,6 +2533,7 @@ mod tests {
             dst_addr: dst,
             src_port: 5060,
             dst_port: 5061,
+            transport: TransportProto::Udp,
         };
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 99, None, payload);
         let parsed = parse_hep(&built).expect("round-trip parse should succeed");
@@ -2515,6 +2549,45 @@ mod tests {
         assert_eq!(parsed.timestamp.timestamp(), 1700000000);
         // Microsecond precision: 500_000_000 ns = 500_000 us
         assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 500_000);
+    }
+
+    /// The `IP protocol` chunk reports the transport sipnab actually observed.
+    ///
+    /// It was a literal `17`. Every SIP captured over TCP — and every SIP
+    /// recovered from TLS, which `try_tls_decrypt` deliberately stamps as
+    /// `Tls` "so the pipeline parses (and reports) the true transport origin" —
+    /// reached the collector labelled UDP. A Homer filter on transport was
+    /// given a wrong answer with nothing to indicate it.
+    ///
+    /// Asserted against the wire bytes rather than through `parse_hep`: the
+    /// reader defaults a MISSING chunk to UDP, so round-tripping would report
+    /// success for a chunk that was never written.
+    #[test]
+    fn hep_ip_protocol_chunk_follows_the_observed_transport() {
+        for (transport, expected, why) in [
+            (TransportProto::Udp, 17u8, "UDP"),
+            (TransportProto::Tcp, 6, "TCP"),
+            (TransportProto::Tls, 6, "TLS rides TCP"),
+            (TransportProto::Ws, 6, "WebSocket rides TCP"),
+            (TransportProto::Sctp, 132, "SCTP"),
+        ] {
+            let endpoint = HepEndpoint {
+                src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+                src_port: 5060,
+                dst_port: 5060,
+                transport,
+            };
+            let pkt = build_hep_v3(&endpoint, Utc::now(), HepProtocol::Sip, 1, None, b"INVITE");
+            let proto = find_hep_chunk(&pkt, 0x0000, CHUNK_IP_PROTO)
+                .expect("a HEP packet must carry an IP protocol chunk");
+            assert_eq!(
+                proto,
+                vec![expected],
+                "{why}: the IP protocol chunk must report the transport observed, \
+                 not a constant"
+            );
+        }
     }
 
     /// Walk HEP3 chunks and return the data of the first (vendor,type) match.
@@ -2542,6 +2615,7 @@ mod tests {
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
             src_port: 5060,
             dst_port: 5060,
+            transport: TransportProto::Udp,
         }
     }
 
@@ -3062,6 +3136,7 @@ mod tests {
                 dst_addr: "10.0.0.2".parse::<IpAddr>().unwrap(),
                 src_port: 5060,
                 dst_port: 5060,
+                transport: TransportProto::Udp,
             };
             let pkt = build_hep_v3_bytes(
                 &endpoint,
@@ -3271,6 +3346,7 @@ mod tests {
             dst_addr: dst,
             src_port: 6000,
             dst_port: 7000,
+            transport: TransportProto::Udp,
         };
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtp, 1, None, payload);
         let parsed = parse_hep(&built).expect("round-trip parse should succeed");
@@ -3766,6 +3842,7 @@ mod tests {
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
             src_port: 5060,
             dst_port: 5061,
+            transport: TransportProto::Udp,
         };
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 7, None, b"hello");
@@ -3804,6 +3881,7 @@ mod tests {
             dst_addr: "10.0.0.2".parse::<IpAddr>().unwrap(),
             src_port: 5060,
             dst_port: 5060,
+            transport: TransportProto::Udp,
         };
         let payload = vec![0x41u8; 70_000]; // > u16::MAX
         let pkt = build_hep_v3_bytes(
@@ -3854,6 +3932,7 @@ mod tests {
             dst_addr: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 6)),
             src_port: 40000,
             dst_port: 40001,
+            transport: TransportProto::Udp,
         };
         let ts = Utc.timestamp_opt(1234567890, 250_000_000).single().unwrap();
         let payload = &[0x80, 0xc8, 0x00, 0x06]; // RTCP SR header start

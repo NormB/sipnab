@@ -19,7 +19,7 @@ use indexmap::IndexMap;
 
 use super::tls::{KeyLogEntry, TlsContentType, TlsRecord, parse_keylog_file};
 use crate::capture::rsa_key::RsaKey;
-use crate::crypto::CryptoBackend;
+use crate::crypto::{CryptoBackend, HashAlg};
 
 /// Accumulated TLS 1.2 RSA-key-exchange handshake state for `--tls-key`.
 ///
@@ -100,17 +100,70 @@ impl CipherSuite {
         matches!(self, Self::Aes128CbcSha | Self::Aes256CbcSha256)
     }
 
+    /// The hash this suite derives its key material under.
+    ///
+    /// TLS names it in the suite itself, and every derivation for the suite —
+    /// the TLS 1.3 HKDF-Expand-Label and the TLS 1.2 PRF alike — must use it.
+    /// Deriving under any other hash is not an approximation: it produces key
+    /// material that decrypts nothing, and does so without an error.
+    fn hash(self) -> HashAlg {
+        match self {
+            // ..._SHA384
+            Self::Aes256Gcm => HashAlg::Sha384,
+            // ..._SHA256, and the TLS 1.2 default PRF for the SHA-1 suites
+            // (RFC 5246 §5: suites that predate the negotiated-PRF rule use
+            // P_SHA256, not P_SHA1).
+            Self::Aes128Gcm | Self::Aes128CbcSha | Self::Aes256CbcSha256 => HashAlg::Sha256,
+        }
+    }
+
     /// Try to identify a cipher suite from the TLS cipher suite code point.
+    ///
+    /// Only the record-layer cipher matters here — sipnab decrypts, it does not
+    /// perform a handshake — so suites that differ only in key exchange or
+    /// signature (RSA vs ECDHE vs DHE, RSA vs ECDSA) collapse onto the same
+    /// entry. What must be right is the AEAD and the hash.
+    ///
+    /// The static-RSA suites below were once the whole table, which meant the
+    /// suites that deployments actually negotiate were all unidentified: a
+    /// TLS 1.2 ServerHello offering `ECDHE-RSA-AES256-GCM-SHA384` (0xC030,
+    /// OpenSSL's default) returned `None`, so no session was built from a
+    /// `CLIENT_RANDOM` keylog entry and the capture stayed opaque.
     fn from_code_point(code: u16) -> Option<Self> {
         match code {
+            // TLS 1.3
+            0x1301 => Some(Self::Aes128Gcm), // TLS_AES_128_GCM_SHA256
+            0x1302 => Some(Self::Aes256Gcm), // TLS_AES_256_GCM_SHA384
+
+            // TLS 1.2, ECDHE — what a modern deployment negotiates
+            0xC02B => Some(Self::Aes128Gcm), // ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+            0xC02C => Some(Self::Aes256Gcm), // ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+            0xC02F => Some(Self::Aes128Gcm), // ECDHE_RSA_WITH_AES_128_GCM_SHA256
+            0xC030 => Some(Self::Aes256Gcm), // ECDHE_RSA_WITH_AES_256_GCM_SHA384
+
+            // TLS 1.2, DHE
+            0x009E => Some(Self::Aes128Gcm), // DHE_RSA_WITH_AES_128_GCM_SHA256
+            0x009F => Some(Self::Aes256Gcm), // DHE_RSA_WITH_AES_256_GCM_SHA384
+
+            // TLS 1.2, static RSA
             0x009C => Some(Self::Aes128Gcm), // TLS_RSA_WITH_AES_128_GCM_SHA256
             0x009D => Some(Self::Aes256Gcm), // TLS_RSA_WITH_AES_256_GCM_SHA384
-            0x1301 => Some(Self::Aes128Gcm), // TLS_AES_128_GCM_SHA256 (TLS 1.3)
-            0x1302 => Some(Self::Aes256Gcm), // TLS_AES_256_GCM_SHA384 (TLS 1.3)
+
+            // CBC. Parsed so the gate in `try_decrypt_with_session` can refuse
+            // them by name; sipnab does not verify the record MAC, so it will
+            // not emit unauthenticated plaintext.
             0x002F => Some(Self::Aes128CbcSha), // TLS_RSA_WITH_AES_128_CBC_SHA
             0x003C => Some(Self::Aes128CbcSha), // TLS_RSA_WITH_AES_128_CBC_SHA256
             0x003D => Some(Self::Aes256CbcSha256), // TLS_RSA_WITH_AES_256_CBC_SHA256
             0x0035 => Some(Self::Aes256CbcSha256), // TLS_RSA_WITH_AES_256_CBC_SHA
+            0xC013 => Some(Self::Aes128CbcSha), // ECDHE_RSA_WITH_AES_128_CBC_SHA
+            0xC014 => Some(Self::Aes256CbcSha256), // ECDHE_RSA_WITH_AES_256_CBC_SHA
+
+            // ChaCha20-Poly1305 (0x1303, 0xCCA8, 0xCCA9) is deliberately absent:
+            // the backend implements AES-GCM and AES-CBC only, so claiming the
+            // suite would mean deriving key material for an AEAD that cannot be
+            // opened. `None` here is reported by the caller as an unsupported
+            // suite, naming the code point.
             _ => None,
         }
     }
@@ -229,11 +282,13 @@ fn derive_key_iv(
     secret: &[u8],
     suite: CipherSuite,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
+    let hash = suite.hash();
+
     let key_info = hkdf_expand_label_info(b"key", &[], suite.key_len() as u16);
-    let key = crypto.hkdf_expand(secret, &key_info, suite.key_len())?;
+    let key = crypto.hkdf_expand(secret, &key_info, suite.key_len(), hash)?;
 
     let iv_info = hkdf_expand_label_info(b"iv", &[], suite.iv_len() as u16);
-    let iv = crypto.hkdf_expand(secret, &iv_info, suite.iv_len())?;
+    let iv = crypto.hkdf_expand(secret, &iv_info, suite.iv_len(), hash)?;
 
     Ok((key, iv))
 }
@@ -262,32 +317,42 @@ pub(crate) fn tls12_prf(
     label: &[u8],
     seed: &[u8],
     output_len: usize,
+    hash: HashAlg,
 ) -> Result<Vec<u8>> {
     let label_seed = [label, seed].concat();
     let mut result = Vec::with_capacity(output_len);
 
     // A(0) = seed (which is label + seed)
-    let mut a = hmac_sha256(secret, &label_seed)?;
+    let mut a = hmac_hash(secret, &label_seed, hash)?;
 
     while result.len() < output_len {
         // HMAC(secret, A(i) + seed)
         let input = [a.as_slice(), label_seed.as_slice()].concat();
-        let p = hmac_sha256(secret, &input)?;
+        let p = hmac_hash(secret, &input, hash)?;
         result.extend_from_slice(&p);
 
         // A(i+1) = HMAC(secret, A(i))
-        a = hmac_sha256(secret, &a)?;
+        a = hmac_hash(secret, &a, hash)?;
     }
 
     result.truncate(output_len);
     Ok(result)
 }
 
-/// HMAC-SHA256 using ring (the hmac_sha1 method on CryptoBackend uses SHA1,
-/// so we use ring directly here for SHA256).
-fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+/// HMAC under `hash`, using ring directly (the `hmac_sha1` method on
+/// `CryptoBackend` is SHA-1 only).
+///
+/// `hash` comes from the cipher suite, never from a constant. This was fixed at
+/// SHA-256, which silently derived the wrong key block for every `..._SHA384`
+/// suite — including `ECDHE-RSA-AES256-GCM-SHA384`, OpenSSL's default for
+/// TLS 1.2.
+fn hmac_hash(key: &[u8], data: &[u8], hash: HashAlg) -> Result<Vec<u8>> {
     use ring::hmac;
-    let signing_key = hmac::Key::new(hmac::HMAC_SHA256, key);
+    let algorithm = match hash {
+        HashAlg::Sha256 => hmac::HMAC_SHA256,
+        HashAlg::Sha384 => hmac::HMAC_SHA384,
+    };
+    let signing_key = hmac::Key::new(algorithm, key);
     let tag = hmac::sign(&signing_key, data);
     Ok(tag.as_ref().to_vec())
 }
@@ -323,7 +388,14 @@ fn derive_tls12_keys(
     let iv_len = suite.tls12_fixed_iv_len();
 
     let needed = 2 * mac_len + 2 * key_len + 2 * iv_len;
-    let key_block = tls12_prf(crypto, master_secret, b"key expansion", &seed, needed)?;
+    let key_block = tls12_prf(
+        crypto,
+        master_secret,
+        b"key expansion",
+        &seed,
+        needed,
+        suite.hash(),
+    )?;
 
     let mut off = 0;
     // Skip MAC keys (we don't verify MAC for decryption-only)
@@ -804,7 +876,15 @@ impl TlsDecryptor {
 
         // master_secret = PRF(pre_master, "master secret", client_random ‖ server_random)[..48]
         let seed = [cr.as_slice(), sr.as_slice()].concat();
-        let master = tls12_prf(self.crypto.as_ref(), &pm, b"master secret", &seed, 48).ok()?;
+        let master = tls12_prf(
+            self.crypto.as_ref(),
+            &pm,
+            b"master secret",
+            &seed,
+            48,
+            suite.hash(),
+        )
+        .ok()?;
         let (ck, sk, civ, siv) =
             derive_tls12_keys(self.crypto.as_ref(), &master, &cr, &sr, suite).ok()?;
 
@@ -1332,7 +1412,13 @@ mod tests {
         }
 
         /// Return `len` deterministic `0x42` bytes so key derivation is stable.
-        fn hkdf_expand(&self, _prk: &[u8], _info: &[u8], len: usize) -> Result<Vec<u8>> {
+        fn hkdf_expand(
+            &self,
+            _prk: &[u8],
+            _info: &[u8],
+            len: usize,
+            _hash: HashAlg,
+        ) -> Result<Vec<u8>> {
             // Return deterministic bytes for testing
             Ok(vec![0x42u8; len])
         }
@@ -1653,7 +1739,15 @@ mod tests {
         // mirroring what the decryptor will compute from the RSA ciphertext.
         let backend = RingCryptoBackend;
         let seed = [client_random.as_slice(), server_random.as_slice()].concat();
-        let master = tls12_prf(&backend, RSA_PREMASTER, b"master secret", &seed, 48).unwrap();
+        let master = tls12_prf(
+            &backend,
+            RSA_PREMASTER,
+            b"master secret",
+            &seed,
+            48,
+            HashAlg::Sha256,
+        )
+        .unwrap();
         let (client_write_key, _swk, client_write_iv, _swiv) =
             derive_tls12_keys(&backend, &master, &client_random, &server_random, suite).unwrap();
         assert_eq!(client_write_iv.len(), 4, "TLS 1.2 GCM fixed IV is 4 bytes");
@@ -1993,6 +2087,70 @@ mod tests {
         hs
     }
 
+    // ── Key derivation binds to the suite's hash ───────────────────────
+
+    /// `derive_key_iv` derives with the hash its SUITE names, not a fixed one.
+    ///
+    /// This pins VALUES, and it has to. HKDF-Expand returns the requested
+    /// length, is deterministic, and has the prefix property under *any* hash —
+    /// which is all the `crypto.rs` HKDF tests assert, so not one of them can
+    /// tell SHA-256 from SHA-384. The backend was pinned to `HKDF_SHA256` for
+    /// one release: every `TLS_AES_256_GCM_SHA384` session then derived a key
+    /// that decrypted nothing while still logging `TLS session ready`, and no
+    /// test could see it. That suite is OpenSSL's FIRST TLS 1.3 preference, so
+    /// it was the common case rather than an exotic one.
+    ///
+    /// Vectors computed independently from RFC 8446 §7.1 HKDF-Expand-Label.
+    #[test]
+    fn derive_key_iv_uses_the_hash_the_suite_names() {
+        let crypto = crate::crypto::default_backend();
+
+        // SHA-384 suite: 48-byte traffic secret 0x00..0x2f.
+        let secret384: Vec<u8> = (0u8..48).collect();
+        let (key, iv) = derive_key_iv(crypto.as_ref(), &secret384, CipherSuite::Aes256Gcm)
+            .expect("derive AES-256-GCM key material");
+        assert_eq!(
+            key,
+            vec![
+                0x68, 0x77, 0xd0, 0x22, 0xf1, 0xc6, 0x1d, 0x24, 0xeb, 0xb7, 0x48, 0x7c, 0x16, 0x75,
+                0x2d, 0x9a, 0x47, 0x98, 0xe4, 0x04, 0x31, 0xc7, 0x5b, 0x39, 0x32, 0x0e, 0x53, 0x7c,
+                0x90, 0xe2, 0x32, 0x25,
+            ],
+            "TLS_AES_256_GCM_SHA384 must derive its key with SHA-384. Deriving \
+             it with SHA-256 yields a key that never decrypts a record, and the \
+             failure is silent because the AEAD open is discarded with .ok()"
+        );
+        assert_eq!(
+            iv,
+            vec![
+                0x42, 0x82, 0x25, 0x31, 0xa0, 0xfe, 0x88, 0x64, 0x8f, 0xc0, 0x9e, 0x9f
+            ],
+            "TLS_AES_256_GCM_SHA384 must derive its IV with SHA-384"
+        );
+
+        // SHA-256 suite: 32-byte traffic secret 0x00..0x1f. The regression
+        // guard — a fix that simply swapped the constant would pass above and
+        // fail here.
+        let secret256: Vec<u8> = (0u8..32).collect();
+        let (key, iv) = derive_key_iv(crypto.as_ref(), &secret256, CipherSuite::Aes128Gcm)
+            .expect("derive AES-128-GCM key material");
+        assert_eq!(
+            key,
+            vec![
+                0x9c, 0x97, 0x83, 0xcf, 0x77, 0xea, 0x32, 0xd4, 0x4f, 0x36, 0x9d, 0xa4, 0x1f, 0x19,
+                0xf3, 0xcc,
+            ],
+            "TLS_AES_128_GCM_SHA256 must still derive its key with SHA-256"
+        );
+        assert_eq!(
+            iv,
+            vec![
+                0x2f, 0x41, 0xc8, 0x46, 0xa4, 0x31, 0xa1, 0x63, 0x81, 0x4b, 0xcd, 0x71
+            ],
+            "TLS_AES_128_GCM_SHA256 must still derive its IV with SHA-256"
+        );
+    }
+
     // ── CipherSuite table ──────────────────────────────────────────────
 
     /// Every `CipherSuite` reports the expected key/IV/MAC lengths, CBC flag,
@@ -2043,12 +2201,52 @@ mod tests {
             (0x003C, Aes128CbcSha),
             (0x003D, Aes256CbcSha256),
             (0x0035, Aes256CbcSha256),
+            // ECDHE and DHE. Absent once, which made every ServerHello a real
+            // deployment sends unidentifiable — 0xC030 is OpenSSL's default
+            // TLS 1.2 suite.
+            (0xC02B, Aes128Gcm),
+            (0xC02C, Aes256Gcm),
+            (0xC02F, Aes128Gcm),
+            (0xC030, Aes256Gcm),
+            (0x009E, Aes128Gcm),
+            (0x009F, Aes256Gcm),
+            (0xC013, Aes128CbcSha),
+            (0xC014, Aes256CbcSha256),
         ];
         for (code, expected) in known {
-            assert_eq!(CipherSuite::from_code_point(code), Some(expected));
+            assert_eq!(
+                CipherSuite::from_code_point(code),
+                Some(expected),
+                "code point 0x{code:04X} must be identified"
+            );
         }
-        for code in [0x0000u16, 0x1303, 0xFFFF, 0x00FF] {
-            assert!(CipherSuite::from_code_point(code).is_none());
+
+        // Every AES-GCM suite must carry the hash its NAME carries. This is the
+        // assertion that distinguishes a real table from a plausible one: the
+        // key/IV lengths above are equal for 0xC02F and 0xC030, and only the
+        // hash separates them.
+        for code in [0x1302u16, 0xC02C, 0xC030, 0x009F, 0x009D] {
+            assert_eq!(
+                CipherSuite::from_code_point(code).map(CipherSuite::hash),
+                Some(HashAlg::Sha384),
+                "0x{code:04X} is a _SHA384 suite"
+            );
+        }
+        for code in [0x1301u16, 0xC02B, 0xC02F, 0x009E, 0x009C] {
+            assert_eq!(
+                CipherSuite::from_code_point(code).map(CipherSuite::hash),
+                Some(HashAlg::Sha256),
+                "0x{code:04X} is a _SHA256 suite"
+            );
+        }
+
+        // ChaCha20-Poly1305 stays unmapped: the backend has no such AEAD, so
+        // identifying it would derive key material that can never be opened.
+        for code in [0x0000u16, 0x1303, 0xCCA8, 0xCCA9, 0xFFFF, 0x00FF] {
+            assert!(
+                CipherSuite::from_code_point(code).is_none(),
+                "0x{code:04X} must stay unidentified"
+            );
         }
     }
 
@@ -2435,7 +2633,7 @@ mod tests {
             anyhow::bail!("n/a")
         }
         /// Returns `len` zero bytes for deterministic key derivation.
-        fn hkdf_expand(&self, _: &[u8], _: &[u8], len: usize) -> Result<Vec<u8>> {
+        fn hkdf_expand(&self, _: &[u8], _: &[u8], len: usize, _: HashAlg) -> Result<Vec<u8>> {
             Ok(vec![0u8; len])
         }
     }

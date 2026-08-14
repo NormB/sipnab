@@ -2266,6 +2266,7 @@ fn send_hep_invite(src: &str, port: u16, tag: &str) {
         dst_addr: "127.0.0.1".parse().unwrap(),
         src_port: 5060,
         dst_port: 5062,
+        transport: sipnab::net::TransportProto::Udp,
     };
     let invite = format!(
         "INVITE sip:bob@example.com SIP/2.0\r\n\

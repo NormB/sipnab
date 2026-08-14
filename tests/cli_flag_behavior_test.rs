@@ -583,6 +583,7 @@ fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
         dst_addr: "10.2.0.1".parse().unwrap(),
         src_port: 5060,
         dst_port: 5060,
+        transport: sipnab::net::TransportProto::Udp,
     };
     let hep = build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, sip.as_bytes());
 

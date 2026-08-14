@@ -59,6 +59,7 @@ fn hep3_sip(payload: &[u8]) -> Vec<u8> {
         dst_addr: "127.0.0.1".parse().unwrap(),
         src_port: 5060,
         dst_port: 5062,
+        transport: sipnab::net::TransportProto::Udp,
     };
     build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, payload)
 }
@@ -270,6 +271,7 @@ fn hep3_sip_hmac_skewed(key: &str, payload: &[u8], skew: u64, nonce_byte: u8) ->
         dst_addr: "127.0.0.1".parse().unwrap(),
         src_port: 5060,
         dst_port: 5062,
+        transport: sipnab::net::TransportProto::Udp,
     };
     let ts = (Utc::now().timestamp().max(0) as u64).saturating_sub(skew);
     let nonce = [nonce_byte; 16];

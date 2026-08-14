@@ -2430,6 +2430,7 @@ impl BatchRunner {
                             dst_addr: effective_pp.dst_addr,
                             src_port: effective_pp.src_port,
                             dst_port: effective_pp.dst_port,
+                            transport: effective_pp.transport,
                         },
                         effective_pp.timestamp,
                         &effective_pp.payload,
