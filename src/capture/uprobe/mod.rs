@@ -19,6 +19,7 @@
 //! is why the truncation below still happens.
 
 pub mod elf;
+pub mod perf;
 pub mod record;
 
 /// Fetch sizes, in bytes, for the banded probe set.
@@ -194,6 +195,13 @@ pub fn remove_line(name: &str) -> String {
 /// process that wrote it: a sipnab that exits without removing its probes
 /// leaves them attached to a production `libssl`, costing every process on the
 /// host that maps it, with nothing left running to explain why.
+///
+/// **Close every perf ring on these probes before dropping this.** The kernel
+/// refuses to remove a tracepoint that still has an open consumer, so dropping
+/// the guard first leaves all of it installed. Measured: an end-to-end run that
+/// dropped the guard while its rings were still open left four probes behind.
+/// Rust drops struct fields in declaration order, so a type owning both must
+/// declare the rings first.
 pub struct InstalledProbes {
     /// Probe names, in installation order.
     names: Vec<String>,
@@ -230,7 +238,16 @@ impl InstalledProbes {
             held.append("uprobe_events", &line)?;
             held.names.push(name.clone());
             held.write(&format!("events/uprobes/{name}/filter"), &filter_for(band))?;
-            held.write(&format!("events/uprobes/{name}/enable"), "1")?;
+            // Deliberately NOT written: events/uprobes/<name>/enable.
+            //
+            // That file switches the event on for tracefs's own text readers,
+            // and doing so makes the tracepoint UNOPENABLE by perf. Measured on
+            // a 6.8 kernel with an identical C program: against a disabled
+            // probe perf_event_open returns a descriptor, and against the same
+            // probe after `echo 1 > enable` it fails with EINTR — which reads
+            // as a spurious interruption and is really the two readers
+            // conflicting. perf enables the event itself when it opens it, so
+            // the only correct action here is to leave this alone.
         }
         Ok(held)
     }
@@ -256,17 +273,58 @@ impl InstalledProbes {
     }
 }
 
-impl Drop for InstalledProbes {
-    fn drop(&mut self) {
+impl InstalledProbes {
+    /// Remove every probe this installed.
+    ///
+    /// # Errors
+    ///
+    /// The first removal failure, with the names that remain left in place so a
+    /// caller can retry or report them. The common cause is a perf ring still
+    /// open on the tracepoint: the kernel refuses to remove a tracepoint that
+    /// still has a consumer.
+    pub fn remove(&mut self) -> std::io::Result<()> {
         // Take the list first: draining in place holds a mutable borrow while
         // the writes below need an immutable one.
         let names = std::mem::take(&mut self.names);
+        let mut failed = Vec::new();
+        let mut first_err = None;
         for name in names.into_iter().rev() {
             // Disable first: removing an enabled probe is refused, and the
-            // failure would leave it attached.
+            // failure would leave it attached. install() never enables, so
+            // this is a no-op for sipnab's own probes and a repair for one
+            // something else switched on.
             let _ = self.write(&format!("events/uprobes/{name}/enable"), "0");
             // `-:name`, never a truncation of the shared file.
-            let _ = self.append("uprobe_events", &remove_line(&name));
+            if let Err(e) = self.append("uprobe_events", &remove_line(&name)) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+                failed.push(name);
+            }
+        }
+        self.names = failed;
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for InstalledProbes {
+    fn drop(&mut self) {
+        if let Err(e) = self.remove() {
+            // Loud, because the alternative is kernel state left on a
+            // production library with nothing running to explain it. A silent
+            // `let _ =` here is what let an end-to-end run leak four probes
+            // without a word.
+            tracing::error!(
+                "failed to remove uprobe(s) {:?}: {e}. They are still attached \
+                 to the target library and cost every process that maps it. \
+                 Remove by hand: for each, append '-:<name>' to \
+                 {}/uprobe_events — never truncate that file, it is shared",
+                self.names,
+                self.root.display()
+            );
         }
     }
 }
@@ -331,6 +389,53 @@ mod tests {
         assert!(line.contains("len=%x2"), "third argument is x2: {line}");
     }
 
+    /// A removal that fails must leave the names behind, not pretend success.
+    /// The kernel refuses to remove a tracepoint with an open perf consumer,
+    /// and an end-to-end run really did leak four probes that way.
+    #[test]
+    fn a_failed_removal_is_reported_and_keeps_the_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("uprobe_events"), "").unwrap();
+        for band in BANDS {
+            let d = root.join(format!("events/uprobes/{}", probe_name(8, band)));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("filter"), "").unwrap();
+            std::fs::write(d.join("enable"), "").unwrap();
+        }
+        let mut held = InstalledProbes::install(root, 8, "/lib/libssl.so.3", 0x1000).unwrap();
+
+        // Stand in for the kernel refusing while a consumer is open.
+        let ev = root.join("uprobe_events");
+        let mut perms = std::fs::metadata(&ev).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o444);
+        }
+        std::fs::set_permissions(&ev, perms).unwrap();
+
+        let err = held
+            .remove()
+            .expect_err("an unwritable control file must fail");
+        let _ = err;
+        assert_eq!(
+            held.names().len(),
+            BANDS.len(),
+            "the names of probes still installed must survive, so the failure \
+             can be reported and retried rather than forgotten"
+        );
+
+        // Let the guard clean up for real.
+        let mut perms = std::fs::metadata(&ev).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o644);
+        }
+        std::fs::set_permissions(&ev, perms).unwrap();
+    }
+
     /// The guard is the safety property: probes are kernel state that outlives
     /// the process, so dropping must remove every one it installed.
     #[test]
@@ -347,6 +452,16 @@ mod tests {
 
         let held = InstalledProbes::install(root, 7, "/lib/libssl.so.3", 0x1000)
             .expect("install into the fake tracefs");
+        for band in BANDS {
+            let enable = root.join(format!("events/uprobes/{}/enable", probe_name(7, band)));
+            assert_eq!(
+                std::fs::read_to_string(&enable).unwrap(),
+                "",
+                "install must NOT write enable: a tracepoint switched on through \
+                 tracefs cannot then be opened by perf, which fails with a \
+                 misleading EINTR"
+            );
+        }
         assert_eq!(held.names().len(), BANDS.len(), "one probe per band");
         let installed = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
         assert_eq!(
