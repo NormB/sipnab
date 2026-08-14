@@ -172,3 +172,108 @@ fn a_non_loopback_bind_without_auth_is_still_refused_headless() {
          only a missing endpoint: {err}"
     );
 }
+
+/// Scrape `/metrics` from a headless run started with `extra`.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary against a HEP listener and kills it.
+fn scrape_with(extra: &[&str]) -> String {
+    let hep = free_port();
+    let metrics = free_port();
+    let addr = format!("127.0.0.1:{metrics}");
+
+    let mut args = vec![
+        "-N".to_string(),
+        "--hep-listen".to_string(),
+        format!("127.0.0.1:{hep}"),
+        "--metrics".to_string(),
+        addr.clone(),
+        "--quiet".to_string(),
+        "--no-config".to_string(),
+    ];
+    args.extend(extra.iter().map(|s| (*s).to_string()));
+
+    let mut child = Command::new(sipnab_bin())
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sipnab");
+
+    let mut body = String::new();
+    for _ in 0..60 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
+            use std::io::Write;
+            let _ = write!(
+                s,
+                "GET /metrics HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+            );
+            let mut r = BufReader::new(s);
+            let mut line = String::new();
+            while r.read_line(&mut line).unwrap_or(0) > 0 {
+                body.push_str(&line);
+                line.clear();
+            }
+            if !body.is_empty() {
+                break;
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(!body.is_empty(), "nothing answered on {addr}");
+    body
+}
+
+/// The published histogram buckets are DERIVED from the thresholds this run
+/// diagnoses and colours with, so every boundary sipnab reports on is a
+/// boundary Grafana can express.
+///
+/// The shipped sets could not express sipnab's own numbers. The PDD buckets
+/// stopped at 10 s while `[diagnosis] post_dial_delay_secs` defaults to 11, so
+/// no query over this endpoint could reproduce the SLA sipnab was itself
+/// applying, and on an international trunk every observation landed in `+Inf`
+/// carrying no information at all. The jitter buckets carried the 50 ms bad
+/// boundary and not the 30 ms warn boundary beneath it.
+#[test]
+fn the_published_buckets_are_derived_from_this_runs_thresholds() {
+    let shipped = scrape_with(&[]);
+    assert!(
+        shipped.contains(r#"sipnab_pdd_seconds_bucket{le="11"}"#),
+        "the shipped post-dial-delay threshold of 11 s must be a bucket \
+         boundary, or no query here can reproduce sipnab's own finding:\n{shipped}"
+    );
+    assert!(
+        shipped.contains(r#"sipnab_jitter_ms_bucket{le="30"}"#),
+        "the shipped 30 ms jitter warn boundary must be a bucket boundary:\n{shipped}"
+    );
+
+    let tuned = scrape_with(&[
+        "--pdd-threshold",
+        "4",
+        "--jitter-warn-ms",
+        "12",
+        "--loss-bad-pct",
+        "3",
+        "--mos-warn",
+        "4.2",
+    ]);
+    assert!(
+        tuned.contains(r#"sipnab_pdd_seconds_bucket{le="4"}"#),
+        "--pdd-threshold 4 must move the boundary the endpoint \
+         publishes:\n{tuned}"
+    );
+    assert!(
+        tuned.contains(r#"sipnab_jitter_ms_bucket{le="12"}"#),
+        "--jitter-warn-ms 12 must move the jitter boundary:\n{tuned}"
+    );
+    assert!(
+        tuned.contains(r#"sipnab_loss_percent_bucket{le="3"}"#),
+        "--loss-bad-pct 3 must move the loss boundary:\n{tuned}"
+    );
+    assert!(
+        tuned.contains(r#"sipnab_mos_bucket{le="4.2"}"#),
+        "--mos-warn 4.2 must move the MOS boundary:\n{tuned}"
+    );
+}

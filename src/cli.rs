@@ -1069,6 +1069,22 @@ pub struct Cli {
     )]
     pub fraud_volume_multiplier: Option<u32>,
 
+    /// How far apart, in milliseconds, two legs of one call may be created and
+    /// still correlate on timing alone.
+    ///
+    /// The B2BUA timing heuristic's whole content, and the only strategy left
+    /// once a B2BUA has rewritten every identifier the other six compare. The
+    /// shipped two seconds describes a PBX placing the outbound leg
+    /// immediately, not one doing an LNP or ENUM dip, or walking an LCR
+    /// cascade, before it places one.
+    #[arg(
+        help_heading = "Dialog",
+        long = "leg-correlation-window",
+        value_name = "MS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub leg_correlation_window_ms: Option<u64>,
+
     /// Calls a source must place inside the volume window before
     /// `--fraud-detect` will report a spike at all.
     #[arg(
@@ -1077,6 +1093,33 @@ pub struct Cli {
         value_name = "N"
     )]
     pub fraud_volume_min_calls: Option<u32>,
+
+    /// How much capture time one volume-spike window spans, in seconds.
+    ///
+    /// The count and the baseline are both measured over this window, so a
+    /// steady source reads the same at any width. The width alone decides how
+    /// concentrated a burst has to be: forty calls in one second average away
+    /// inside a minute of ordinary traffic.
+    #[arg(
+        help_heading = "Security",
+        long = "fraud-volume-window",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub fraud_volume_window_secs: Option<u64>,
+
+    /// How much capture time one wangiri window spans, in seconds.
+    ///
+    /// Short calls older than this are forgotten, so this is what decides how
+    /// slowly a lure may arrive and still count as one pattern. No setting of
+    /// `--fraud-wangiri-calls` reaches a lure paced wider than the window.
+    #[arg(
+        help_heading = "Security",
+        long = "fraud-wangiri-window",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub fraud_wangiri_window_secs: Option<u64>,
 
     /// Probes from one source inside the scanner window, above which
     /// `--kill-scanner` reports a rate detection.
@@ -1232,6 +1275,20 @@ pub struct Cli {
         default_value = "10"
     )]
     pub exec_rate_limit: u32,
+
+    /// Hook commands allowed to be running at once before events are dropped.
+    ///
+    /// The second ceiling above `--exec-rate-limit`, and the binding one for
+    /// any hook that takes longer than a second: its slot is still occupied
+    /// when the next second's budget arrives, so a busy trunk meets this
+    /// rather than the rate limit.
+    #[arg(
+        help_heading = "Event execution",
+        long = "exec-queue-depth",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub exec_queue_depth: Option<u64>,
 
     // ── Network listeners ────────────────────────────────────────────
     /// Enable Prometheus metrics endpoint (e.g., "127.0.0.1:9090"). A
@@ -2138,6 +2195,12 @@ impl Cli {
     pub const DEFAULT_LINT_MAX_PER_RULE: u64 = 25;
     /// Default number of security findings held in memory.
     pub const DEFAULT_FINDINGS_HISTORY: u64 = 1_000;
+    /// Floor under the derived detector-state sweep age, in seconds.
+    ///
+    /// The age this run shipped with before the age became derived. See
+    /// [`Self::security_sweep_max_age`] for why it stays a floor rather than
+    /// being replaced outright.
+    pub const SHIPPED_SWEEP_MAX_AGE: u64 = 120;
 
     /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
     ///
@@ -2435,7 +2498,39 @@ impl Cli {
                 .fraud_volume_min_calls
                 .or(sec.fraud_volume_min_calls)
                 .unwrap_or(built_in.volume_min_calls),
+            volume_window_secs: self
+                .fraud_volume_window_secs
+                .or(sec.fraud_volume_window_secs)
+                .unwrap_or(built_in.volume_window_secs),
+            wangiri_window_secs: self
+                .fraud_wangiri_window_secs
+                .or(sec.fraud_wangiri_window_secs)
+                .unwrap_or(built_in.wangiri_window_secs),
         }
+    }
+
+    /// How long detector state survives a sweep, derived from the widest
+    /// window this run's detectors reason over.
+    ///
+    /// Not a setting of its own, because it is not an independent choice: the
+    /// sweep is what ages a detector's memory out, so a sweep shorter than a
+    /// detector's window truncates that window to the sweep and the operator's
+    /// declared width silently stops applying. Twice the widest window, so
+    /// every detector sees a full window of history at every point in the
+    /// sweep cycle rather than only just after one.
+    ///
+    /// Floored at the shipped 120 seconds, so narrowing a window can only ever
+    /// leave detector memory where every deployment already has it. The
+    /// derivation reaches 120 on its own today — the sequential-scanning
+    /// window is a fixed 60 and counts toward the widest — and the floor is
+    /// what keeps that guarantee true whichever windows the set holds later.
+    #[must_use]
+    pub fn security_sweep_max_age(&self, config: &crate::config::Config) -> std::time::Duration {
+        let widest = self
+            .fraud_thresholds(config)
+            .widest_window_secs()
+            .max(self.scanner_thresholds(config).window_secs);
+        std::time::Duration::from_secs(widest.saturating_mul(2).max(Self::SHIPPED_SWEEP_MAX_AGE))
     }
 
     /// Scanner trigger points: each flag, else its `[security]` key, else the
@@ -2492,6 +2587,34 @@ impl Cli {
         self.findings_history
             .or(config.security.findings_history)
             .unwrap_or(Self::DEFAULT_FINDINGS_HISTORY) as usize
+    }
+
+    /// B2BUA timing-heuristic window: `--leg-correlation-window`, else
+    /// `[sip] leg_correlation_window_ms`, else the shipped width.
+    ///
+    /// The default is read from the store's own constant rather than restated
+    /// here, so the number an operator is told and the number the heuristic
+    /// applies cannot drift apart.
+    #[must_use]
+    pub fn leg_correlation_window_ms(&self, config: &crate::config::Config) -> u64 {
+        self.leg_correlation_window_ms
+            .or(config.sip.leg_correlation_window_ms)
+            .unwrap_or(crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS)
+    }
+
+    /// Hook-command queue depth: `--exec-queue-depth`, else
+    /// `[limits] exec_queue_depth`, else the shipped ceiling.
+    ///
+    /// The default is read from the enforcement site's own constant rather
+    /// than restated here, so the number an operator is told and the number
+    /// the engine applies cannot drift apart.
+    #[must_use]
+    pub fn exec_queue_depth(&self, config: &crate::config::Config) -> usize {
+        self.exec_queue_depth
+            .or(config.limits.exec_queue_depth)
+            .map_or(crate::output::event_exec::DEFAULT_QUEUE_DEPTH, |v| {
+                v as usize
+            })
     }
 
     /// Lint per-rule cap: `--lint-max-per-rule`, else
@@ -3968,6 +4091,67 @@ mod tests {
                 c.key
             );
         }
+    }
+
+    /// The detector-state sweep age outlasts every window it ages state for,
+    /// at every width those windows can be set to.
+    ///
+    /// The sweep is what discards a detector's memory, so an age that does not
+    /// clear a detector's window truncates that window to the age: an operator
+    /// who declares a fifteen-minute wangiri window gets a two-minute one, and
+    /// nothing says so. Asserted as the RELATION rather than as a number, so a
+    /// future window that is wider still cannot pass by arithmetic accident.
+    #[test]
+    fn the_sweep_age_outlasts_every_window_it_ages_state_for() {
+        let cases: [(&str, u64); 4] = [
+            ("fraud_wangiri_window_secs", 900),
+            ("fraud_volume_window_secs", 600),
+            ("scanner_window_secs", 1800),
+            ("fraud_wangiri_window_secs", 1),
+        ];
+        let bare = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        for (key, secs) in cases {
+            let mut config = crate::config::Config::default();
+            match key {
+                "fraud_wangiri_window_secs" => {
+                    config.security.fraud_wangiri_window_secs = Some(secs)
+                }
+                "fraud_volume_window_secs" => config.security.fraud_volume_window_secs = Some(secs),
+                _ => config.security.scanner_window_secs = Some(secs),
+            }
+            let age = bare.security_sweep_max_age(&config).as_secs();
+            let fraud = bare.fraud_thresholds(&config);
+            let widest = fraud
+                .widest_window_secs()
+                .max(bare.scanner_thresholds(&config).window_secs);
+            assert!(
+                age > widest,
+                "{key} = {secs} leaves a {widest}s window swept at {age}s, so the \
+                 window an operator declared is not the window they get"
+            );
+            assert!(
+                age >= Cli::SHIPPED_SWEEP_MAX_AGE,
+                "{key} = {secs} must not shorten the sweep below the shipped \
+                 {}s: narrowing one window must not move detector memory below \
+                 where every existing deployment has it, got {age}s",
+                Cli::SHIPPED_SWEEP_MAX_AGE
+            );
+        }
+    }
+
+    /// A run that declares nothing sweeps at exactly the age it always did.
+    ///
+    /// The derivation replaced a constant, so this is the anti-regression half:
+    /// deriving the age must not move it for the deployments that never set a
+    /// window.
+    #[test]
+    fn the_shipped_sweep_age_is_unchanged_by_the_derivation() {
+        let bare = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        assert_eq!(
+            bare.security_sweep_max_age(&crate::config::Config::default())
+                .as_secs(),
+            Cli::SHIPPED_SWEEP_MAX_AGE
+        );
     }
 
     /// Every truncation/refusal cap resolves flag over key over the SHIPPED

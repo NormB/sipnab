@@ -619,6 +619,7 @@ fn parallel_config(
         no_rtp,
         quiet_bad_parse: cli.quiet_bad_parse,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
+        leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
         reassembly: !cli.no_reassembly,
         parse_limit: cli.limitlen,
     }
@@ -1621,7 +1622,8 @@ impl BatchRunner {
                 ds.set_tracking(cli.dialog_track.unwrap_or_default());
                 ds
             }
-            .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
+            .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default())
+            .with_leg_correlation_window_ms(cli.leg_correlation_window_ms(config)),
         ));
         let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
         let stream_store: Arc<RwLock<StreamStore>> = {
@@ -2114,6 +2116,12 @@ impl BatchRunner {
         // See `SweepClock` for why the two cannot share one rule.
         let mut sweep_clock = SweepClock::new(cli.has_input());
         let sweep_interval = std::time::Duration::from_secs(5);
+        // How much detector state each sweep keeps. Derived from the widest
+        // window this run's detectors were given rather than fixed, because
+        // the sweep is what ages that state out: a constant here caps every
+        // detector window at the constant, so declaring a fifteen-minute
+        // wangiri window would buy a two-minute one.
+        let security_max_age = cli.security_sweep_max_age(&config);
 
         // Shared buffered stdout sink for every per-message emitter (JSON,
         // sipgrep-style text, fail2ban, hexdump). Flushed whenever the packet
@@ -2190,7 +2198,6 @@ impl BatchRunner {
                         compacted.dialogs_compacted
                     );
                 }
-                let security_max_age = std::time::Duration::from_secs(120);
                 if let Some(det) = engines.scanner.as_mut() {
                     det.sweep(security_max_age);
                 }
@@ -4354,7 +4361,13 @@ mod tests {
         let mut dialog_store = DialogStore::new(100, false);
         let mut stream_store = StreamStore::new(100);
         let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
-        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+        let mut event_exec = EventExecEngine::new(
+            None,
+            None,
+            0,
+            0.0,
+            crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
         let mut engines = DetectionEngines {
             scanner: None,
             fraud: None,
@@ -4670,7 +4683,13 @@ mod tests {
         let mut dialog_store = DialogStore::new(100, false);
         let mut stream_store = StreamStore::new(100);
         let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
-        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+        let mut event_exec = EventExecEngine::new(
+            None,
+            None,
+            0,
+            0.0,
+            crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
 
         let mut engines = DetectionEngines {
             scanner: None,
@@ -4740,7 +4759,13 @@ mod tests {
         let mut dialog_store = DialogStore::new(100, false);
         let mut stream_store = StreamStore::new(100);
         let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
-        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+        let mut event_exec = EventExecEngine::new(
+            None,
+            None,
+            0,
+            0.0,
+            crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
 
         let kill_targets = targets
             .iter()
@@ -4915,7 +4940,13 @@ mod tests {
         let stream_store = Arc::new(RwLock::new(StreamStore::new(100)));
         let alerts = Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None)));
         let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
-        let mut event_exec = EventExecEngine::new(Some(hook), None, 0, 3.0);
+        let mut event_exec = EventExecEngine::new(
+            Some(hook),
+            None,
+            0,
+            3.0,
+            crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
         let mut engines = DetectionEngines {
             scanner: None,
             fraud: None,
@@ -5107,7 +5138,13 @@ mod tests {
         let dialog_store = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let stream_store = Arc::new(RwLock::new(StreamStore::new(100)));
         let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
-        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+        let mut event_exec = EventExecEngine::new(
+            None,
+            None,
+            0,
+            0.0,
+            crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
         let mut engines = DetectionEngines {
             scanner: None,
             fraud: None,
@@ -5250,7 +5287,13 @@ mod tests {
         let mut dialog_store = DialogStore::new(100, false);
         let mut stream_store = StreamStore::new(100);
         let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
-        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+        let mut event_exec = EventExecEngine::new(
+            None,
+            None,
+            0,
+            0.0,
+            crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
         let mut engines = DetectionEngines {
             scanner: None,
             fraud: None,

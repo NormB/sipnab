@@ -604,6 +604,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `-R`, `--rotate` | -- | **on** | Evict the oldest dialog at `--limit` capacity (LRU). On by default; kept for back-compat/explicitness |
 | `--no-rotate` | -- | off | Disable rotation: drop *new* dialogs at capacity instead of evicting the oldest (inverts the safe default) |
 | `--dialog-track` | `<METHOD>` | `call-id` | Group messages by `call-id` (one unit per dialog) or `branch` (one per SIP transaction) |
+| `--leg-correlation-window` | `<MS>` | `2000` | How far apart one call's two legs may start and still correlate on TIMING alone. The B2BUA timing heuristic's whole content, and the only strategy left once a B2BUA has rewritten every identifier the other six strategies compare. The shipped two seconds describes a PBX placing the outbound leg immediately, not one doing an LNP or ENUM dip, or walking an LCR cascade, before it places one. Every correlation still reports the strategy that matched, so a widened window does not turn a guess into a claim. Config: `[sip] leg_correlation_window_ms` |
 | `--no-dialog` | -- | off | Disable dialog tracking entirely (message-only mode) |
 | `--tag` | `<TAG>` | -- | Filter dialogs by tag value |
 
@@ -623,6 +624,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -d eth0 --tag as7d60e14a --no-rotate` — live-follow dialogs matching a tag while refusing new dialogs once the tracker is full
 - `sipnab -N -I capture.pcap --no-dialog` — scan a capture message-by-message with dialog tracking disabled entirely
 - `sudo sipnab -d eth0 -N --no-dialog` — watch raw live SIP messages on an interface without keeping any per-dialog state
+- `sipnab -N -I sbc.pcap --leg-correlation-window 8000 --mcp` — correlate the two legs of a call across a B2BUA that dips an ENUM or LNP database before placing the outbound leg, which the shipped two seconds cannot reach
+- `sipnab -N -I gateway.pcap --leg-correlation-window 500 --report` — a PBX that places the outbound leg immediately, where a tighter window stops a busy server's unrelated calls turning into one
 
 
 ## RTP
@@ -737,6 +740,8 @@ report a healthy network in the middle of an outage.
 | `--fraud-sequential-calls` | `<N>` | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. Config: `[security] fraud_sequential_calls` |
 | `--fraud-volume-multiplier` | `<N>` | `5` | Multiple of a source's own baseline call rate that `--fraud-detect` reports as a volume spike. Config: `[security] fraud_volume_multiplier` |
 | `--fraud-volume-min-calls` | `<N>` | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. Config: `[security] fraud_volume_min_calls` |
+| `--fraud-volume-window` | `<SECS>` | `60` | How much capture time one volume-spike window spans. The count and the baseline are both measured over it, so a steady source reads the same at any width; the width alone decides how concentrated a burst has to be, since a burst shorter than the window averages into the traffic beside it. Config: `[security] fraud_volume_window_secs` |
+| `--fraud-wangiri-window` | `<SECS>` | `60` | How much capture time one wangiri window spans. The detector drops short calls older than this, so it decides how slowly a lure may arrive and still count as one pattern. No setting of `--fraud-wangiri-calls` reaches a lure paced wider than the window. Config: `[security] fraud_wangiri_window_secs` |
 | `--scanner-behavioral-probes` | `<N>` | `10` | Probes from one source inside the scanner window, above which `--kill-scanner` reports a rate detection. Behind an SBC every source collapses to one address, so ordinary aggregated traffic clears ten in five seconds and the whole site reads as one scanner. Config: `[security] scanner_behavioral_probes` |
 | `--scanner-enumeration-targets` | `<N>` | `5` | Distinct target extensions from one source inside the scanner window, above which `--kill-scanner` reports extension enumeration. Config: `[security] scanner_enumeration_targets` |
 | `--scanner-rejected-probes` | `<N>` | `5` | Rejected probes inside the scanner window at which a source reads as probing rather than operating. This is the evidence gate: neither behavioral signal reports anything until a source clears this or `--scanner-unanswered-probes`, which is what separates an enumeration sweep from a trunk running keepalives at the same rate. Config: `[security] scanner_rejected_probes` |
@@ -773,6 +778,9 @@ report a healthy network in the middle of an outage.
 - `sipnab -N -I trunk.pcap --fraud-detect --fraud-short-call 6 --fraud-wangiri-calls 5 --fraud-sequential-calls 6` — audit a wholesale trunk where short calls are ordinary, so a lure needs five of them and a dial-plan walk needs six consecutive dead numbers
 - `sipnab -N -I pbx.pcap --fraud-detect --fraud-wangiri-calls 2 --fraud-sequential-calls 2 --fraud-volume-multiplier 3 --fraud-volume-min-calls 4` — the sensitive form for a small PBX, where two short calls to one prefix and four calls in a minute are already unusual
 - `sipnab -N -I trunk.pcap --fraud-detect --fraud-volume-multiplier 20 --fraud-volume-min-calls 200` — a busy carrier trunk, where a spike has to be twenty times its own baseline and 200 calls a minute before it means anything
+- `sipnab -N -I trunk.pcap --fraud-detect --fraud-wangiri-window 900 --fraud-short-call 5` — hunt a paced lure: three short calls to one prefix over fifteen minutes, which the shipped sixty-second window forgets between calls
+- `sipnab -N -I pbx.pcap --fraud-detect --fraud-volume-window 5 --fraud-volume-min-calls 20` — catch a burst shorter than a minute, which a sixty-second window averages into the ordinary traffic around it
+- `sudo sipnab -N -d eth0 --fraud-detect --fraud-volume-window 300 --fraud-wangiri-window 300` — a low-volume site where five minutes is the shortest span that holds enough calls to say anything about either pattern
 - `sipnab -N -I sbc.pcap --kill-scanner --scanner-behavioral-probes 200 --scanner-enumeration-targets 60` — an SBC that fronts a whole site behind one address, where ordinary aggregated traffic clears the shipped ten probes and five extensions within seconds
 - `sipnab -N -I slow-sweep.pcap --kill-scanner --scanner-window 600 --scanner-enumeration-targets 8` — hunt a paced sweep across a ten-minute window: one probe every ten seconds never puts two inside the shipped five-second window, so widening the window is the only setting that reaches it
 - `sudo sipnab -N -d eth0 --kill-scanner --scanner-window 60 --scanner-behavioral-probes 40 --scanner-rejected-probes 20` — a busy registrar that refuses every unauthenticated first attempt, so refusals only count as evidence once there are twenty of them in a minute
@@ -790,6 +798,13 @@ report a healthy network in the middle of an outage.
 | `--on-dialog-exec` | `<CMD>` | -- | Execute command when a dialog state changes |
 | `--on-quality-exec` | `<CMD>` | -- | Execute command when RTP quality drops below threshold |
 | `--exec-rate-limit` | `<N>` | `10` | Maximum exec invocations per second |
+| `--exec-queue-depth` | `<N>` | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. Config: `[limits] exec_queue_depth` |
+
+**Examples**
+
+- `sudo sipnab -d eth0 --on-dialog-exec 'logger sipnab $SIPNAB_CALL_ID' --exec-rate-limit 5 --exec-queue-depth 20` — a slow syslog hook on a busy trunk, where twenty concurrent children is the ceiling events actually meet rather than the five-a-second budget
+- `sipnab -N -I trunk.pcap --on-quality-exec 'curl -m 30 -X POST http://hook/quality' --exec-queue-depth 4` — a webhook that may take thirty seconds, held to four in flight so a stalled endpoint cannot fork the box flat
+
 
 ## Network listeners
 
