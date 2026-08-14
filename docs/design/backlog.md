@@ -2129,6 +2129,26 @@ host. The packaged instance is untouched.
   avoidable — see the prior-art section above. Take the addresses from
   `struct sock` in `tcp_sendmsg`/`tcp_recvmsg`, matched per thread.
 
+- [ ] **TK9 — Path B: rtcagent to HEP to `sipnab -L`, for when the wire cannot
+  be captured at all.** `TK7` reads plaintext out of a process on the host
+  sipnab runs on. That still assumes sipnab can run there. Where it cannot —
+  a container it has no place inside, a host whose traffic never reaches a
+  capturable interface — [rtcagent](https://github.com/sipcapture/rtcagent)
+  does the eBPF extraction and **emits HEP**, which
+  [`--hep-listen`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) already receives from Kamailio, OpenSIPS and
+  Asterisk. Nothing new is needed on the sipnab side for the transport; what is
+  unknown is whether rtcagent's HEP carries what sipnab's receiver expects.
+
+  **Unproven, and therefore undocumented.** No recipe ships until someone has
+  run it end to end, for the same reason `TK5`'s recipe waited for a measured
+  call: an interop recipe nobody has executed is a plausible-looking way to
+  waste an operator's incident.
+
+  **Licence, decided rather than deferred:** rtcagent is **AGPL-3.0** and sipnab
+  is MIT OR Apache-2.0. Interoperating over HEP is two processes exchanging
+  packets and is fine. Vendoring or linking any part of it is not, and this
+  entry exists partly so nobody reaches for it later.
+
 - [ ] **TK7 — Plaintext-from-uprobe has no honest provenance.** `SSL_read`/
   `SSL_write` yield SIP bytes with no packet behind them: no frame number, no
   byte offset, no capture timestamp. sipnab's frame-pointer evidence is a stated
