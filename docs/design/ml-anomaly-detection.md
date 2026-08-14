@@ -236,7 +236,7 @@ names is a peer set an operator can open and read.
 The strongest argument for it is that the tree already holds a working example.
 `FraudDetector` baselines within a capture today. It keeps a rolling call rate
 per source address, folded one window at a time by `sample_baseline`
-([`src/security/fraud_detect.rs:127`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L127))
+([`src/security/fraud_detect.rs:152`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L152))
 so the average stays slower than the burst it exists to catch. A volume spike
 is reported when a source exceeds the rate it established itself, and the alert
 prints both sides — "12 calls in 60s (baseline: 2.4/min)" — which is the
