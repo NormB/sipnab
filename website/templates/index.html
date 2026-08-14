@@ -11,7 +11,7 @@
   <div class="hero-inner">
     <h1 class="hero-title">sipnab <span class="version-badge" aria-hidden="true">v{{ config.extra.published_version }}</span></h1>
     <p class="hero-tagline">The <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">SIP</a> &amp; <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RTP</a> analysis tool for people who ship voice infrastructure.</p>
-    <p class="hero-sub">One static musl binary, zero dependencies &mdash; reads live traffic or a pcap and shows you the call flow, RTP quality, and security signals.</p>
+    <p class="hero-sub">One static musl binary, zero dependencies &mdash; reads live traffic, a pcap, or the HEP feed from every proxy in your estate, and shows you the call flow, RTP quality, and security signals.</p>
     <div class="hero-actions">
       <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get Started &rarr;</a>
       <a href="{{ config.extra.github_url }}" class="btn btn-secondary">View on GitHub &rarr;</a>
@@ -280,7 +280,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td>Security</td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
           <tr><td>TLS/SRTP decryption</td><td>TLS 1.2 + 1.3 via SSLKEYLOGFILE. SRTP auth verification (SDES key extraction).</td></tr>
           <tr><td>Export formats</td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML, RTP JSON.</td></tr>
-          <tr><td>HEP v2/v3</td><td>HEP v3 send + HEP v2/v3 receive, for Homer/SIPCAPTURE integration.</td></tr>
+          <tr><td>HEP v2/v3</td><td>HEP v3 send, HEP v2/v3 receive. Feed Homer/SIPCAPTURE, or point Kamailio, OpenSIPS and Asterisk at a sipnab listener and read a whole estate from one box &mdash; the proxies already speak HEP, so nothing goes on them.</td></tr>
           <tr><td>REST API + Prometheus</td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
           <tr><td>MCP server</td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 31 tools cover dialogs, RTP, diagnostics, and security findings. 26 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
           <tr><td>Browser analysis</td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
@@ -358,9 +358,16 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-stat" data-count="31" data-suffix=" MCP tools">31 MCP tools</span>
         <span class="arch-label">Agent-callable analysis: triage, conformance lint, evidence, correlation</span>
       </a>
+      {# The label argues REACH, not a benchmark win. Throughput is why one
+         listener can take the HEP feed from a whole estate instead of you
+         standing up a collector tier -- see docs/design/positioning.md. The
+         tile once carried "12.2x sngrep" beside this one, which advertised a
+         competitor on the most-visited page and framed sipnab as a faster
+         local tool. "Headroom", not a fan-in ceiling: the tables measure
+         offline pcap reconstruction, and the benchmarks page says so. #}
       <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/benchmarks.md') }}">
         <span class="arch-stat" data-count="2.32" data-suffix="M pkts/s">2.32M pkts/s</span>
-        <span class="arch-label">Offline reconstruction, four cores (measured v0.5.91)</span>
+        <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.91)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
         <span class="arch-stat" data-count="4886" data-suffix="">4886</span>

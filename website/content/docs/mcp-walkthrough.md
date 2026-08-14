@@ -1795,7 +1795,7 @@ Two distinct costs. Both are small, and you can cap both.
 
 **The capture path** dwarfs the MCP path and is the one to size. Reference
 numbers ([benchmarks](@/docs/benchmarks.md), modest 14-core aarch64 host):
-1.2M pkts/s single-core offline reconstruction on a ~93%-RTP corpus, 2.9M
+1.07M pkts/s single-core offline reconstruction on a 93.5%-RTP corpus, 2.21M
 at two cores. For scale: a proxy doing 100 CPS with ~10 SIP messages per
 call generates ~1k signaling packets/s — three orders of magnitude below
 one core's budget. What actually costs:

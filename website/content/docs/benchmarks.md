@@ -1,11 +1,14 @@
 +++
 title = "Benchmarks"
 weight = 17
-description = "Reproducible throughput and memory benchmarks: sipnab multi-core scaling, a controlled version A/B, and what full SIP + RTP reconstruction costs at carrier scale."
+description = "Reproducible throughput and memory benchmarks, and what the headroom buys: how much of an estate one sipnab can take at once, multi-core scaling, a controlled version A/B, and the cost of full SIP + RTP reconstruction at carrier scale."
 +++
 
-How fast sipnab is, measured honestly. **Every table on this page comes from
-one run on 0.5.91, on 2026-08-10.**
+How fast sipnab is, measured honestly — and what that speed is for. The number
+is not a race against the local capture tools. It is the headroom that decides
+how much of an estate one binary can take at once, and therefore whether you
+stand up a collector tier at all. **Every table on this page comes from one run
+on 0.5.91, on 2026-08-10.**
 
 Taken on the released 0.5.91 artifact, checksum-verified, 2026-08-10, on an
 idle host.
@@ -14,6 +17,35 @@ Every number is reproducible. The corpus generator and the timing harness ship
 in [`bench/`](https://github.com/NormB/sipnab/tree/main/bench), so you can
 rebuild the corpus — 535,000 packets: 35,000 SIP, 500,000 RTP (93.5%), 100
 Call-IDs, 200 streams — and re-run every table below on your own hardware.
+
+## What the throughput is for
+
+Reach, not a benchmark win. sipnab sits between a local capture tool and a
+capture platform: many nodes, no infrastructure behind it
+([the position](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md)).
+Kamailio, OpenSIPS and Asterisk already speak HEP, so they mirror their
+signalling to one sipnab listener and that single process answers for the whole
+estate — nothing goes on the production hosts. Throughput is what keeps that
+arrangement honest. A listener that falls behind the fan-in sends you back to
+capture agents feeding a collector, which is the deployment project sipnab
+exists to skip.
+
+Put the figures next to the load. A proxy running 100 calls per second at
+roughly ten SIP messages per call emits about 1,000 signalling packets per
+second. The tables below measure 1.07M packets per second on one core and 2.32M
+on four, on a corpus that is 93.5% RTP — media a signalling-only HEP feed never
+carries at all. Three orders of magnitude separate that proxy from a single
+core's budget.
+
+Two limits on the arithmetic, stated here rather than left for a reader to
+discover:
+
+- These tables measure offline pcap reconstruction, not the HEP receive path.
+  Read the ratio as a budget with room in it, not as a measured fan-in ceiling.
+- Reconstruction is not the first ceiling a fan-in meets anyway.
+  [`--hep-rate-limit`](@/docs/cli.md#network-listeners) caps what a listener
+  accepts, and its default sits far below these tables, so size a deployment
+  against that knob rather than against this page.
 
 ## Test host & method
 
