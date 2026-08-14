@@ -2507,9 +2507,19 @@ fn no_documentation_table_repeats_a_row() {
         // its table count. The "Four tools are exceptions" table in
         // `docs/mcp.md` lost two ROWS and stayed a table, which this gate does
         // not count either way.
+        // Raised 527 -> 528 by the syscall-sandbox posture table: §0 of
+        // docs/design/syscall-sandbox.md now tabulates the hardening that IS
+        // in place against what each control does not stop, so the page stops
+        // reading as "sipnab runs unhardened". ONE table, and one page —
+        // docs/design/ is deliberately not published to the wiki or the site
+        // (scripts/build-wiki.py), so there is no mirror to double it.
+        // Attributed against HEAD before the number moved: both staged .md
+        // files were diffed, and exactly one `|---|` separator was added.
+        // docs/design/backlog.md gained prose in the G5 entry and held its
+        // table count, so nothing here is a boundary that stopped matching.
         tables,
-        527,
-        "walked {tables} tables, expected 527. More is fine — bump this. FEWER \
+        528,
+        "walked {tables} tables, expected 528. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
