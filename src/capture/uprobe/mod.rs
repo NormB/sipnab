@@ -18,6 +18,8 @@
 //! largest message sipnab supports. The band is a bound, not a guarantee, which
 //! is why the truncation below still happens.
 
+pub mod elf;
+
 /// Fetch sizes, in bytes, for the banded probe set.
 ///
 /// 64 is the kernel's hard ceiling for a single fetch argument — `x8[65]` is
