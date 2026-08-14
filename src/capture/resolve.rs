@@ -82,6 +82,18 @@ pub enum ResolveError {
         /// How many frames the source actually holds.
         frames_present: u64,
     },
+    /// The pointer names plaintext lifted out of a process, which never was a
+    /// frame on any wire, so there is nothing to seek to — and saying "file not
+    /// found" here would be a wrong answer about evidence rather than a missing
+    /// one.
+    NeverOnTheWire {
+        /// The process's command name.
+        comm: String,
+        /// The process the bytes were read from.
+        pid: u32,
+        /// Which read from that process this pointer names.
+        ordinal: u64,
+    },
     /// The frame is there, and it is not the frame the pointer was made
     /// against.
     Changed {
@@ -112,6 +124,13 @@ impl std::fmt::Display for ResolveError {
                 "'{source}' holds {frames_present} frame(s), so there is no \
                  frame {ordinal}. The capture may have been truncated since \
                  the pointer was made"
+            ),
+            Self::NeverOnTheWire { comm, pid, ordinal } => write!(
+                f,
+                "read {ordinal} came from the TLS library inside {comm} \
+                 (pid {pid}); it was never a frame on any wire, so there is no \
+                 capture to seek into and no bytes to verify it against. This \
+                 is not a missing file"
             ),
             Self::Changed { source, ordinal } => write!(
                 f,
@@ -158,7 +177,33 @@ pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
     Ok(FrameRef {
         source: std::sync::Arc::from(source),
         origin: super::packet::FrameOrigin { ordinal, digest },
+        kind: source_kind_of(source),
     })
+}
+
+/// Recover what a pointer's source names, from the text form.
+///
+/// `uprobe:<comm>/<pid>` is minted by
+/// [`FrameRef::uprobe`](super::packet::FrameRef::uprobe) and never by a
+/// capture reader, so recognising it here is how the kind survives a pointer
+/// being written into JSON and read back. Anything that does not parse as that
+/// exact shape is a wire source, including a file that merely starts with the
+/// word — the pid must be there and must be a number.
+fn source_kind_of(source: &str) -> super::packet::FrameSource {
+    use super::packet::FrameSource;
+    let Some(rest) = source.strip_prefix("uprobe:") else {
+        return FrameSource::Wire;
+    };
+    let Some((comm, pid)) = rest.rsplit_once('/') else {
+        return FrameSource::Wire;
+    };
+    match pid.parse::<u32>() {
+        Ok(pid) if !comm.is_empty() => FrameSource::Uprobe {
+            comm: std::sync::Arc::from(comm),
+            pid,
+        },
+        _ => FrameSource::Wire,
+    }
 }
 
 /// Follow a pointer back to the frame's bytes.
@@ -169,6 +214,16 @@ pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
 /// guess: the source will not open, it is too short, or the frame there is
 /// not the frame the pointer was made against.
 pub fn resolve(pointer: &FrameRef) -> Result<Resolution, ResolveError> {
+    // Refuse before touching the filesystem. These bytes were read out of a
+    // process and never existed as a frame, so every filesystem answer below
+    // would be about the wrong question.
+    if let super::packet::FrameSource::Uprobe { comm, pid } = &pointer.kind {
+        return Err(ResolveError::NeverOnTheWire {
+            comm: comm.to_string(),
+            pid: *pid,
+            ordinal: pointer.origin.ordinal,
+        });
+    }
     let path = Path::new(&*pointer.source);
     let (mut cap, _guard) =
         super::file::open_offline(path).map_err(|e| ResolveError::Unreadable {
@@ -201,4 +256,70 @@ pub fn resolve(pointer: &FrameRef) -> Result<Resolution, ResolveError> {
         ordinal: pointer.origin.ordinal,
         frames_present: seen,
     })
+}
+
+#[cfg(test)]
+mod uprobe_origin_tests {
+    use super::*;
+    use crate::capture::packet::{FrameOrigin, FrameRef, FrameSource};
+
+    /// A pointer minted for plaintext lifted out of a process must survive
+    /// being written down, because a pointer is only useful once it has left
+    /// the process.
+    #[test]
+    fn a_uprobe_pointer_round_trips_through_its_text_form() {
+        let minted = FrameRef::uprobe("opensips", 1234, 7);
+        let text = minted.to_string();
+        assert_eq!(text, "uprobe:opensips/1234#7");
+
+        let parsed = parse_pointer(&text).expect("a minted pointer must parse");
+        assert_eq!(parsed.origin.ordinal, 7);
+        assert!(
+            matches!(parsed.source_kind(), FrameSource::Uprobe { .. }),
+            "the kind has to survive the text form, or a resolver cannot tell \
+             this apart from a capture file that happens to be named oddly"
+        );
+    }
+
+    /// The whole point of the type: following it must refuse, and the refusal
+    /// must say the bytes were never on the wire — not that a file is missing.
+    #[test]
+    fn following_a_uprobe_pointer_refuses_and_says_why() {
+        let pointer = FrameRef::uprobe("opensips", 1234, 7);
+        let err = resolve(&pointer).expect_err("there is no frame to resolve to");
+
+        let msg = err.to_string();
+        assert!(
+            matches!(err, ResolveError::NeverOnTheWire { .. }),
+            "must be its own refusal, not a missing-file error: {msg}"
+        );
+        assert!(msg.contains("opensips"), "names the process: {msg}");
+        assert!(msg.contains("1234"), "names the pid: {msg}");
+        assert!(
+            msg.contains("never") || msg.contains("no frame"),
+            "says the bytes were never a frame, rather than implying a lookup \
+             failed: {msg}"
+        );
+    }
+
+    /// A wire pointer must keep resolving exactly as before. This is the
+    /// mutation guard: if the new branch swallowed everything, this fails.
+    #[test]
+    fn a_wire_pointer_is_untouched_by_the_new_kind() {
+        let wire = FrameRef {
+            source: std::sync::Arc::from("capture.pcap"),
+            origin: FrameOrigin {
+                ordinal: 3,
+                digest: None,
+            },
+            kind: FrameSource::Wire,
+        };
+        assert_eq!(wire.to_string(), "capture.pcap#3");
+        let err = resolve(&wire).expect_err("no such file here");
+        assert!(
+            matches!(err, ResolveError::Unreadable { .. }),
+            "a wire pointer to a missing file is still Unreadable, not the \
+             uprobe refusal"
+        );
+    }
 }

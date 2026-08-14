@@ -1327,6 +1327,18 @@ fn show_frame(pointer: &str) -> i32 {
             print!("{}", crate::output::hexdump::hexdump(&bytes));
             0
         }
+        Err(ResolveError::NeverOnTheWire { comm, pid, ordinal }) => {
+            // Not an error the operator can fix by finding the capture: there
+            // is no capture. Say what these bytes were so the pointer is still
+            // useful as provenance, then refuse.
+            tracing::error!(
+                "refusing: read {ordinal} came from the TLS library inside \
+                 {comm} (pid {pid}). sipnab read it out of the process, so it \
+                 was never a frame on any wire — there is no capture to seek \
+                 into and nothing to verify these bytes against."
+            );
+            1
+        }
         Err(ResolveError::Changed { source, ordinal }) => {
             tracing::error!(
                 "refusing: {source} frame {ordinal} is not the frame this \

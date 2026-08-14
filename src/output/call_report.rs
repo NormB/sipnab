@@ -776,6 +776,7 @@ mod tests {
                 ordinal: 4212,
                 digest: Some(0x0123_4567_89ab_cdef),
             },
+            kind: crate::capture::packet::FrameSource::Wire,
         });
         let with = generate_call_report(&dialog, &streams, &diagnosis, ReportFormat::Text);
         assert!(

@@ -200,7 +200,7 @@ Tiers:
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:1772`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1772)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:1819`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1819)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -1008,7 +1008,7 @@ output path.
   - **In progress — the resolver end exists; the threading is partial (status
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
-    ([`src/capture/resolve.rs:171`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L171)); the `show_evidence` MCP tool
+    ([`src/capture/resolve.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L216)); the `show_evidence` MCP tool
     (`#[tool(` at [`src/mcp/server.rs:4818`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4818), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
@@ -1510,7 +1510,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:5882`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5882), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:5907`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5907), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the

@@ -54,6 +54,7 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
                 ordinal: 41,
                 digest: None
             },
+            kind: sipnab::capture::packet::FrameSource::Wire,
         }
     );
 
@@ -88,6 +89,7 @@ fn a_frame_ref_renders_as_source_hash_ordinal() {
             ordinal: 4211,
             digest: None,
         },
+        kind: sipnab::capture::packet::FrameSource::Wire,
     };
     assert_eq!(r.to_string(), "/captures/tg.pcap0#4211");
 }

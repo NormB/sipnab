@@ -4858,6 +4858,28 @@ impl SipnabMcp {
                     "status": "unresolvable",
                     "reason": e.to_string(),
                 }),
+                Ok(pointer)
+                    if matches!(
+                        pointer.kind,
+                        crate::capture::packet::FrameSource::Uprobe { .. }
+                    ) =>
+                {
+                    // Branch BEFORE the path logic below. `Path::file_name()`
+                    // on `uprobe:opensips/1234` returns "1234", which would
+                    // send this down the file-root check and answer with a
+                    // missing file — a wrong answer about evidence rather than
+                    // an honest refusal.
+                    serde_json::json!({
+                        "pointer": text,
+                        "status": "unresolvable",
+                        "reason": crate::capture::resolve::resolve(&pointer)
+                            .err()
+                            .map_or_else(
+                                || "pointer names a uprobe read".to_string(),
+                                |e| e.to_string(),
+                            ),
+                    })
+                }
                 Ok(pointer) => {
                     // The source names a file only for replay. Anything else —
                     // a device, a HEP listener — has no bytes on disk, and
@@ -4893,6 +4915,9 @@ impl SipnabMcp {
                                 let confined = crate::capture::packet::FrameRef {
                                     source: path.display().to_string().into(),
                                     origin: pointer.origin,
+                                    // Confining rewrites the PATH, never what
+                                    // kind of thing the pointer named.
+                                    kind: pointer.kind.clone(),
                                 };
                                 match crate::capture::resolve::resolve(&confined) {
                                     Err(e) => serde_json::json!({
@@ -6542,6 +6567,7 @@ mod tests {
                 ordinal: 41,
                 digest: Some(0x6d1f_4c0a_9b2e_7a53),
             },
+            kind: crate::capture::packet::FrameSource::Wire,
         });
         let mut unciteable = parse_at(&raw, ts);
         unciteable.frame = None;
@@ -6626,6 +6652,7 @@ mod tests {
                 ordinal: 41,
                 digest: Some(0x6d1f_4c0a_9b2e_7a53),
             },
+            kind: crate::capture::packet::FrameSource::Wire,
         });
 
         let empty = crate::rtp::stream_store::StreamStore::new(16);
@@ -9581,6 +9608,7 @@ mod tests {
                     ordinal,
                     digest: Some(digest),
                 },
+                kind: crate::capture::packet::FrameSource::Wire,
             });
             msg
         };

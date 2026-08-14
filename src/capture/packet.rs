@@ -116,6 +116,7 @@ impl FrameLocator {
         FrameRef {
             source: source_arc(self.source),
             origin: self.origin,
+            kind: FrameSource::Wire,
         }
     }
 }
@@ -171,6 +172,33 @@ fn source_arc(source: &'static str) -> Arc<str> {
     })
 }
 
+/// What kind of thing a pointer's source names.
+///
+/// The distinction exists because one of these has no bytes behind it, ever.
+/// Everything sipnab captured off a wire — a file, a device, a HEP listener —
+/// at least *had* a frame, so a resolver can talk about finding it, missing it,
+/// or finding it changed. Plaintext lifted out of a process's TLS library never
+/// was a frame: there is no ordinal on any wire, no byte offset in any capture,
+/// and nothing a resolver could seek to even in principle.
+///
+/// Keeping that in the type rather than in a naming convention is deliberate.
+/// A resolver that guessed from the source string would report a missing FILE
+/// for these, which reads as "your capture moved" — a confident wrong answer
+/// about evidence, which is the failure this whole pointer system exists to
+/// prevent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameSource {
+    /// Bytes that existed on a wire and were captured.
+    Wire,
+    /// Plaintext read out of a process's TLS library by a uprobe. Never a frame.
+    Uprobe {
+        /// The process's command name, as the kernel reports it.
+        comm: Arc<str>,
+        /// The process it was read from.
+        pid: u32,
+    },
+}
+
 /// A resolvable pointer to the bytes a fact came from.
 ///
 /// Produced by [`Packet::frame_ref`]. Rendered as `<source>#<ordinal>`, which
@@ -182,6 +210,42 @@ pub struct FrameRef {
     pub source: Arc<str>,
     /// Where in that source it sat.
     pub origin: FrameOrigin,
+    /// Whether there was ever a frame behind this pointer.
+    ///
+    /// Not derived from `source`: see [`FrameSource`].
+    pub kind: FrameSource,
+}
+
+impl FrameRef {
+    /// Mint a pointer for plaintext read out of a process, which never was a
+    /// frame on any wire.
+    ///
+    /// `ordinal` counts reads observed from that process, so the pointer still
+    /// says *which* message it means. It is honest about position without
+    /// implying a position in a capture.
+    #[must_use]
+    pub fn uprobe(comm: &str, pid: u32, ordinal: u64) -> Self {
+        Self {
+            source: Arc::from(format!("uprobe:{comm}/{pid}").as_str()),
+            origin: FrameOrigin {
+                ordinal,
+                // No digest, and none is possible: a digest exists so a
+                // resolver can prove it found the same bytes again, and these
+                // bytes cannot be read a second time.
+                digest: None,
+            },
+            kind: FrameSource::Uprobe {
+                comm: Arc::from(comm),
+                pid,
+            },
+        }
+    }
+
+    /// What kind of source this pointer names.
+    #[must_use]
+    pub fn source_kind(&self) -> &FrameSource {
+        &self.kind
+    }
 }
 
 impl std::fmt::Display for FrameRef {
@@ -266,6 +330,7 @@ impl Packet {
         Some(FrameRef {
             source: Arc::clone(self.interface.as_ref()?),
             origin: (self.origin)?,
+            kind: crate::capture::packet::FrameSource::Wire,
         })
     }
 

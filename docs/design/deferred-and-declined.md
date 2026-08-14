@@ -280,7 +280,7 @@ The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
 ([`server.rs:5018`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5018)) writes a pcap, `export_audio`
 ([`server.rs:5066`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5066)) writes a WAV, `list_captures`
-([`server.rs:4966`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4966)) reads a directory, and
+([`server.rs:4991`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4991)) reads a directory, and
 `shutdown_server` ([`server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and

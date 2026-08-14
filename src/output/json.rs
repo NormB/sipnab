@@ -1011,6 +1011,7 @@ mod tests {
                 ordinal: 4212,
                 digest: Some(0x0123_4567_89ab_cdef),
             },
+            kind: crate::capture::packet::FrameSource::Wire,
         });
         assert_eq!(
             message_to_json_value(&msg)
