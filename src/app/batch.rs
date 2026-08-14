@@ -1565,13 +1565,19 @@ impl BatchRunner {
     fn new(
         cli: Cli,
         config: &Config,
-        mut batch: BatchProcessing,
+        batch: BatchProcessing,
         policy: CapturePolicy,
         raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
         transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
         #[cfg(feature = "metrics")] capture_meter: crate::capture::channel::CaptureMeter,
     ) -> Result<Self, crate::app::bootstrap::PlanError> {
         let matcher = batch.matcher;
+        // Moved here with its siblings rather than taken later from a `mut`
+        // binding. The field is gated on `tls`, so a `mut` on the parameter is
+        // an unused-mut error in every combination without it -- which
+        // `--features full` cannot see, because full includes tls.
+        #[cfg(feature = "tls")]
+        let preopened_keylog = batch.keylog_source;
         let input_files = batch.input_files;
         let filter_expr = batch.filter_expr;
         let output_opts = batch.output_opts;
@@ -1845,7 +1851,7 @@ impl BatchRunner {
             // A source opened in the privileged window supersedes the path:
             // it is already open, and for a FIFO the path must not be
             // opened a second time. `--keylog-fd` has no path at all.
-            let preopened = batch.keylog_source.take();
+            let preopened = preopened_keylog;
             let keylog_path = if preopened.is_some() {
                 None
             } else {
