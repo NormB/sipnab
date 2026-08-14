@@ -20,15 +20,36 @@ By participating in this project you agree to abide by the
 
 ## Contributor License Agreement
 
-Before your first pull request can be merged, you must sign the sipnab
-[Contributor License Agreement](CLA.md) (also readable at
-<https://sipnab.com/cla/>). It is a one-time step covering all of your
-contributions; you keep full ownership of your work.
+Sign the sipnab [Contributor License Agreement](CLA.md) before your first pull
+request merges. It is a one-time step covering all of your contributions, and
+you keep full ownership of your work. `CLA.md` holds the text;
+<https://sipnab.com/cla/> republishes it, and
+[CLA Assistant](https://cla-assistant.io/NormB/sipnab) shows the same words to
+signers. A gate keeps the first two copies identical, and
+[MAINTAINERS.md](MAINTAINERS.md#the-contributor-agreement) records who
+re-checks the third.
 
-Signing is automated by [CLA Assistant](https://cla-assistant.io/): open your
-pull request as normal, and if you have not signed, a bot comments with a link
-to sign in the browser with your GitHub account. The `license/cla` check must be
-green before a maintainer can merge.
+Open your pull request as normal. If anyone who committed to it has not signed,
+the `CLAassistant` bot comments within a minute or so, and you have two ways to
+answer it: follow its link and authorize CLA Assistant with your GitHub account,
+or post this exact sentence as a pull request comment.
+
+> I have read the CLA Document and I hereby sign the CLA
+
+Post it verbatim -- the bot matches the whole sentence, so a reworded version
+reads as an ordinary comment and signs nothing. The bot then reports a
+`license/cla` status on the pull request, and turns it green once everyone who
+committed to that branch has signed.
+
+**What that status does not do yet.** Branch protection on `main` requires one
+check, `CI success`, so GitHub does not block a merge on `license/cla`; the
+maintainer reads it instead. Two steps stand between that and real enforcement,
+and only the repository owner can take either: allowlist bot accounts in the
+CLA Assistant settings, then add `license/cla` to the required checks. The order
+matters, because Dependabot cannot sign an agreement -- requiring the check
+first would stall every dependency pull request behind a signature nobody can
+give. Until both land, treat a `license/cla` that is not green as a blocker by
+convention rather than by enforcement.
 
 ## Prerequisites
 

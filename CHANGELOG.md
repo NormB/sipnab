@@ -35,6 +35,25 @@ entry that carries them.
 
 ### Fixed
 
+- **`CONTRIBUTING.md` no longer claims `license/cla` blocks a merge.** The CLA
+  Assistant bot is real and does run — it has commented on every pull request
+  since 2026-08-06 and posts a `license/cla` status — but that status is not on
+  the branch-protection required list, so nothing enforces it. All nine
+  Dependabot pull requests opened since the bot went live still carry a pending
+  `license/cla`, and five of them merged that way. The contributing guide now
+  quotes the exact sentence the bot accepts as a signature, and states which two
+  steps only the repository owner can take to make the check binding.
+  `MAINTAINERS.md` gained the owner-side half: the gist that holds the words a
+  signer agrees to, and why editing `CLA.md` means editing that gist in the same
+  sitting.
+- **Two gates over the Contributor License Agreement.**
+  `cla_page_reproduces_the_agreement` pins `website/content/cla.md` to `CLA.md`
+  byte for byte — the site page is hand-written, not generated, because the
+  page generator writes only into `website/content/docs/` and would move it off
+  the `/cla/` URL. `the_signing_route_names_this_repository_and_quotes_the_bot_verbatim`
+  takes the owner and repository from `Cargo.toml` and checks every
+  cla-assistant.io link against it, so a fork or a copied badge cannot send a
+  contributor to sign against a different project.
 - **`--stir-shaken` no longer marks every token in a stored capture `Expired`.**
   The RFC 8224 Section 4.4 `iat` freshness window was measured against the wall
   clock, so the answer depended on when you opened the file rather than on

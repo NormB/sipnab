@@ -24,6 +24,43 @@ has to satisfy. Two things save the most time on both sides:
 - Run the suite before pushing. The pre-commit hook runs the same gates CI does,
   so a green local run is usually a green pull request.
 
+## The contributor agreement
+
+[CLA Assistant](https://cla-assistant.io/NormB/sipnab) runs the signing flow, and
+[CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement) tells a
+contributor how to use it. Two parts of that flow sit outside every gate in this
+repository, because they live in a hosted service and a gist. Only the
+repository owner can reach either, so this section states them rather than
+leaving them to memory.
+
+**A gist holds the words a signer agrees to.** CLA Assistant serves
+<https://gist.github.com/NormB/a26df8a470a426dda140822ca4050a8e>, which matches
+[CLA.md](CLA.md) byte for byte as of 2026-08-13.
+`cla_page_reproduces_the_agreement` in `tests/site_journey_test.rs` keeps
+`CLA.md` and the published page identical, and no test can reach the gist.
+Editing `CLA.md` therefore means editing the gist in the same sitting.
+Otherwise the bot records agreement to text this repository no longer contains,
+which is worse than recording none. Budget for the other half of that edit:
+CLA Assistant binds every signature to the gist revision current when the
+contributor signed, so a new revision asks each previous signer again.
+
+**Nothing enforces `license/cla` yet.** Branch protection on `main` requires
+`CI success` and nothing else, so the status the bot posts informs a merge
+rather than blocking one. Turning it into a real gate takes two owner actions,
+in this order:
+
+1. Add bot accounts to the allowlist in the CLA Assistant settings for this
+   repository. Dependabot opens most pull requests here and cannot sign an
+   agreement, so a required check without that allowlist stalls every dependency
+   update. All nine Dependabot pull requests opened since the bot went live on
+   2026-08-06 still carry a pending `license/cla`, and five of them merged that
+   way.
+2. Add `license/cla` to the required status checks for `main`.
+
+The order matters: step 2 before step 1 blocks the routine pull requests on a
+signature nobody can give. When step 2 lands, drop the caveat that ends the
+[CLA section of CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement).
+
 ## How releases happen
 
 The maintainer cuts them. The procedure lives in
