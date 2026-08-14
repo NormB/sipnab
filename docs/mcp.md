@@ -2622,10 +2622,12 @@ sipnab runs.
 It is irrelevant to a single capture, where one clock stamped every packet and a
 constant offset cancels out of every interval. It matters the moment you
 correlate across NODES: `find_correlated`'s `timing_heuristic` matches dialogs
-created within two seconds of each other, and two seconds is smaller than the
+that started within the leg-correlation window of each other — two seconds
+unless `--leg-correlation-window` says otherwise — and that is smaller than the
 skew an undisciplined host accumulates in a day. A clock three seconds fast
 fails to correlate legs that belong together, and a slow one pulls unrelated
-legs inside the window. Read `clock` from both servers before trusting a time-based
+legs inside the window. Widening the window to reach a B2BUA that dips a
+database before placing the outbound leg widens this exposure with it. Read `clock` from both servers before trusting a time-based
 match, and prefer any of the six identifier strategies — `session_id`,
 `x_call_id`, `charging_vector_related_icid`, `sdp_origin`,
 `charging_vector_icid` or `via_branch` — none of which care what time anyone

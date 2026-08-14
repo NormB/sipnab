@@ -84,7 +84,7 @@ Tiers:
   block with a `degraded` flag. **Corrected 2026-08-06:** this used to read
   *"all three counters travel together … with a single `degraded` flag"*, and
   there are four counters now. `CaptureQuality`
-  ([`src/output/prometheus.rs:107`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L107)) gained `undecodable_frames` — frames that
+  ([`src/output/prometheus.rs:250`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L250)) gained `undecodable_frames` — frames that
   arrived intact and produced nothing because no decoder here could read them —
   and its doc comment says it is deliberately **not** part of `degraded`. So the
   rollup no longer covers every counter in the block, and a dashboard reading
@@ -292,7 +292,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:1965`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1965)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:1982`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1982)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -444,7 +444,7 @@ Tiers:
   corrupt timestamp — with one `degraded` flag rolling them up for a dashboard.
   **Corrected 2026-08-06:** a fourth counter, `undecodable_frames`, has since
   joined the same `capture_quality` block and is deliberately outside
-  `degraded` ([`src/output/prometheus.rs:187`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L187) lists what the flag actually
+  `degraded` ([`src/output/prometheus.rs:327`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L327) lists what the flag actually
   covers). The prose above describes three because three is what this pass
   shipped; the block is no longer three wide, and `degraded` is no longer a
   rollup of all of it. See CT1.
@@ -460,7 +460,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2113`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2113),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2130`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2130),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -472,7 +472,7 @@ Tiers:
   a given capture was truncated.
 - [ ] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
   `grep -rn 'FANOUT\|fanout' src/` matches nothing. `--cores N` is offline-only
-  (`RunMode::CoresFile` requires `-I`, [`src/app/bootstrap.rs:519`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L519)), so on a busy
+  (`RunMode::CoresFile` requires `-I`, [`src/app/bootstrap.rs:540`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L540)), so on a busy
   server the live path is one `capture-<device>` thread feeding one processing
   loop — exactly the topology CT2 overflows. Linux `PACKET_FANOUT` is the
   standard answer: N sockets on one interface, kernel-side flow-hashed

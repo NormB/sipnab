@@ -275,3 +275,74 @@ fn policy_autostop_and_split() {
     assert_eq!(err.exit_code, 2);
     assert!(err.message.contains("--autostop"), "got: {}", err.message);
 }
+
+/// The hook-command queue depth reaches the engine the plan builds, and
+/// decides how many slow hooks may be in flight before events are dropped.
+///
+/// `--exec-rate-limit` is not the ceiling a slow hook meets. A hook taking
+/// longer than a second still holds its slot when the next second's budget
+/// arrives, so on a busy trunk the live-child cap is what events actually hit,
+/// and that cap used to be a compiled-in 100 with no way to say otherwise.
+/// Every run below leaves the rate limit at its default, so the only thing
+/// separating an event that ran from one that was dropped is the depth.
+#[test]
+fn the_exec_queue_depth_reaches_the_engine_the_plan_builds() {
+    /// A minimal dialog to fire hooks with.
+    fn dialog() -> sipnab::sip::dialog::SipDialog {
+        use std::net::{IpAddr, Ipv4Addr};
+        let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("timestamp");
+        let raw: &[u8] = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+             From: <sip:alice@example.com>;tag=t1\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: queue-depth@example.com\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Length: 0\r\n\r\n";
+        let msg = sipnab::sip::parse_sip(
+            raw,
+            ts,
+            localhost,
+            localhost,
+            5060,
+            5060,
+            sipnab::capture::parse::TransportProto::Udp,
+        )
+        .expect("parse");
+        sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog")
+    }
+
+    /// Fire four slow hooks through a plan built from `args` plus `config`,
+    /// and report `(spawned, dropped)`.
+    fn fire_four(args: &[&str], config: &Config) -> (u64, u64) {
+        let mut full = vec!["-N", "-I", FIXTURE, "--on-dialog-exec", "sleep 5"];
+        full.extend_from_slice(args);
+        let mut plan = bootstrap::plan(&cli(&full), config).expect("plan");
+        let d = dialog();
+        for _ in 0..4 {
+            plan.event_exec.fire_dialog_event(&d);
+        }
+        let counts = plan.event_exec.outcomes();
+        (counts.spawned, counts.queue_full)
+    }
+
+    let mut narrowed = Config::default();
+    narrowed.limits.exec_queue_depth = Some(2);
+    assert_eq!(
+        fire_four(&[], &narrowed),
+        (2, 2),
+        "[limits] exec_queue_depth = 2 must reach the engine the plan builds"
+    );
+
+    assert_eq!(
+        fire_four(&["--exec-queue-depth", "8"], &narrowed),
+        (4, 0),
+        "--exec-queue-depth must beat the config key"
+    );
+
+    assert_eq!(
+        fire_four(&[], &Config::default()),
+        (4, 0),
+        "the shipped depth must still admit four hooks, or the runs above \
+         prove nothing about the depth"
+    );
+}

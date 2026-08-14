@@ -18,8 +18,9 @@ use crate::rtp::stream::RtpStream;
 use crate::security::alerting::TumblingWindow;
 use crate::sip::dialog::SipDialog;
 
-/// Maximum number of pending child processes before dropping events.
-const MAX_QUEUE_DEPTH: usize = 100;
+/// Shipped ceiling on pending child processes before events are dropped.
+/// Reachable as `[limits] exec_queue_depth`.
+pub const DEFAULT_QUEUE_DEPTH: usize = 100;
 
 /// Engine for executing external commands on SIP/RTP events.
 ///
@@ -49,6 +50,13 @@ pub struct EventExecEngine {
     /// process-spawning surfaces cannot drift apart. This one runs on the wall
     /// clock; alerting runs on capture time. Same rule, different clock.
     rate_window: TumblingWindow<Instant>,
+    /// Live children this engine may hold before it starts dropping events.
+    ///
+    /// A second ceiling above the rate limit, and the binding one whenever a
+    /// hook outlives the one-second rate window: the slot is still occupied
+    /// when the next second's budget arrives, so a slow hook on a busy trunk
+    /// meets this rather than `rate_window`.
+    queue_depth: usize,
     /// Tracked child processes for reaping, each with the command that
     /// produced it so a failure can say which command failed.
     children: Vec<TrackedChild>,
@@ -133,8 +141,8 @@ pub struct ExecOutcomeCounts {
     /// Events whose command was not run because the per-second budget was
     /// already spent.
     pub rate_limited: u64,
-    /// Events whose command was not run because `MAX_QUEUE_DEPTH` children were
-    /// still pending.
+    /// Events whose command was not run because the configured queue depth of
+    /// children was still pending.
     pub queue_full: u64,
 }
 
@@ -254,6 +262,11 @@ impl EventExecEngine {
     /// * `on_quality_cmd` — Command template for quality events
     /// * `rate_limit` — Maximum executions per second (0 = unlimited)
     /// * `quality_threshold` — MOS score below which quality events fire
+    /// * `queue_depth` — Live children allowed before events are dropped
+    ///
+    /// `queue_depth` is a constructor argument rather than a setter because it
+    /// is the ceiling a slow hook actually meets, and a setter is the shape
+    /// that goes missing at the one call site that matters.
     ///
     /// Legacy `%variable` placeholders in both templates are rewritten to
     /// `$SIPNAB_*` references at construction time.
@@ -262,12 +275,14 @@ impl EventExecEngine {
         on_quality_cmd: Option<String>,
         rate_limit: u32,
         quality_threshold: f64,
+        queue_depth: usize,
     ) -> Self {
         Self {
             on_dialog_cmd: on_dialog_cmd.map(|c| Arc::from(migrate_template_vars(&c))),
             on_quality_cmd: on_quality_cmd.map(|c| Arc::from(migrate_template_vars(&c))),
             quality_threshold,
             rate_window: TumblingWindow::new(rate_limit, 1),
+            queue_depth,
             children: Vec::new(),
             outcomes: ExecOutcomeCounts::default(),
             pending: Vec::new(),
@@ -454,7 +469,7 @@ impl EventExecEngine {
     /// # Side effects
     ///
     /// For each queued request: reaps finished children (booking their exit
-    /// outcomes), drops the event if `MAX_QUEUE_DEPTH` children are still
+    /// outcomes), drops the event if the configured queue depth of children is still
     /// pending, and otherwise spawns `sh -c <cmd>` without waiting for it. All
     /// of it is booked in [`Self::outcomes`]. A no-op when nothing is queued,
     /// which is every packet of a run with no `--on-*` command.
@@ -544,7 +559,7 @@ impl EventExecEngine {
     ///
     /// Executes an external command: spawns `sh -c <cmd>` without waiting
     /// for it. First reaps finished children, booking their exit outcomes;
-    /// if the pending-child queue is at `MAX_QUEUE_DEPTH` the event is
+    /// if the pending-child queue is at its configured depth the event is
     /// dropped with a warning. On successful spawn the rate-limit exec count
     /// is incremented and the child is tracked (with its command) for later
     /// reaping; spawn failures are logged and swallowed. Every branch is
@@ -552,12 +567,12 @@ impl EventExecEngine {
     fn spawn_command(&mut self, cmd: &Arc<str>, env_vars: &[(&str, String)]) {
         self.reap_children();
 
-        if self.children.len() >= MAX_QUEUE_DEPTH {
+        if self.children.len() >= self.queue_depth {
             self.outcomes.queue_full = self.outcomes.queue_full.saturating_add(1);
             warn!(
                 "Event exec queue depth ({}) exceeds limit ({}), dropping event",
                 self.children.len(),
-                MAX_QUEUE_DEPTH
+                self.queue_depth
             );
             return;
         }
@@ -801,9 +816,21 @@ mod tests {
     /// ledgers. Before the fix both produced the same one: nothing.
     #[test]
     fn failing_hook_is_counted_separately_from_a_succeeding_one() {
-        let mut succeeding = EventExecEngine::new(Some("exit 0".to_string()), None, 0, 3.0);
+        let mut succeeding = EventExecEngine::new(
+            Some("exit 0".to_string()),
+            None,
+            0,
+            3.0,
+            DEFAULT_QUEUE_DEPTH,
+        );
         let good = fire_n(&mut succeeding, 3);
-        let mut failing = EventExecEngine::new(Some("exit 7".to_string()), None, 0, 3.0);
+        let mut failing = EventExecEngine::new(
+            Some("exit 7".to_string()),
+            None,
+            0,
+            3.0,
+            DEFAULT_QUEUE_DEPTH,
+        );
         let bad = fire_n(&mut failing, 3);
 
         assert_ne!(good, bad, "the two runs must be distinguishable");
@@ -822,7 +849,13 @@ mod tests {
     /// it does not stop later hooks from running.
     #[test]
     fn failing_hook_does_not_disarm_later_hooks() {
-        let mut engine = EventExecEngine::new(Some("exit 7".to_string()), None, 0, 3.0);
+        let mut engine = EventExecEngine::new(
+            Some("exit 7".to_string()),
+            None,
+            0,
+            3.0,
+            DEFAULT_QUEUE_DEPTH,
+        );
         let after_first = fire_n(&mut engine, 1);
         assert_eq!(after_first.failed, 1, "the first hook failed");
         let after_more = fire_n(&mut engine, 2);
@@ -880,7 +913,13 @@ mod tests {
     /// whether that is because none were needed or because all were suppressed.
     #[test]
     fn rate_limited_events_are_counted() {
-        let mut engine = EventExecEngine::new(Some("exit 0".to_string()), None, 2, 3.0);
+        let mut engine = EventExecEngine::new(
+            Some("exit 0".to_string()),
+            None,
+            2,
+            3.0,
+            DEFAULT_QUEUE_DEPTH,
+        );
         let dialog = make_dialog();
         for _ in 0..5 {
             engine.fire_dialog_event(&dialog);
@@ -900,9 +939,15 @@ mod tests {
     /// `quality_events_enabled` is true iff an `--on-quality` command is set.
     #[test]
     fn quality_events_enabled_tracks_command() {
-        let off = EventExecEngine::new(None, None, 0, 4.0);
+        let off = EventExecEngine::new(None, None, 0, 4.0, DEFAULT_QUEUE_DEPTH);
         assert!(!off.quality_events_enabled());
-        let on = EventExecEngine::new(None, Some("echo hi".to_string()), 0, 4.0);
+        let on = EventExecEngine::new(
+            None,
+            Some("echo hi".to_string()),
+            0,
+            4.0,
+            DEFAULT_QUEUE_DEPTH,
+        );
         assert!(on.quality_events_enabled());
     }
 
@@ -996,7 +1041,13 @@ mod tests {
     fn env_var_injection_prevents_command_injection() {
         // A malicious call-id with shell metacharacters should NOT be
         // interpolated into the command string. It is only passed as an env var.
-        let engine = EventExecEngine::new(Some("echo $SIPNAB_CALL_ID".to_string()), None, 10, 3.0);
+        let engine = EventExecEngine::new(
+            Some("echo $SIPNAB_CALL_ID".to_string()),
+            None,
+            10,
+            3.0,
+            DEFAULT_QUEUE_DEPTH,
+        );
         // The command template should be stored as-is (after migration)
         assert_eq!(
             engine.on_dialog_cmd.as_deref(),
@@ -1007,7 +1058,8 @@ mod tests {
     /// With rate_limit=10, exactly 10 of 15 exec attempts are allowed.
     #[test]
     fn rate_limiting_blocks_excess() {
-        let mut engine = EventExecEngine::new(Some("true".to_string()), None, 10, 3.0);
+        let mut engine =
+            EventExecEngine::new(Some("true".to_string()), None, 10, 3.0, DEFAULT_QUEUE_DEPTH);
 
         let _dialog = make_dialog();
         let mut fired = 0;
@@ -1044,7 +1096,7 @@ mod tests {
     /// Firing events with no commands configured neither panics nor spawns.
     #[test]
     fn no_cmd_configured_noop() {
-        let mut engine = EventExecEngine::new(None, None, 10, 3.0);
+        let mut engine = EventExecEngine::new(None, None, 10, 3.0, DEFAULT_QUEUE_DEPTH);
         // Should not panic or spawn anything
         engine.fire_dialog_event(&make_dialog());
 
@@ -1055,7 +1107,7 @@ mod tests {
     /// A fresh engine reports queue depth 0.
     #[test]
     fn queue_depth_tracking() {
-        let engine = EventExecEngine::new(None, None, 10, 3.0);
+        let engine = EventExecEngine::new(None, None, 10, 3.0, DEFAULT_QUEUE_DEPTH);
         assert_eq!(engine.queue_depth(), 0);
     }
 
@@ -1069,7 +1121,8 @@ mod tests {
     /// output of any capture.
     #[test]
     fn queueing_a_dialog_event_spawns_nothing_until_dispatch() {
-        let mut engine = EventExecEngine::new(Some("true".to_string()), None, 0, 3.0);
+        let mut engine =
+            EventExecEngine::new(Some("true".to_string()), None, 0, 3.0, DEFAULT_QUEUE_DEPTH);
         let dialog = make_dialog();
 
         engine.queue_dialog_event(&dialog);
@@ -1090,7 +1143,8 @@ mod tests {
     /// at queue time (they read the stream), the spawn does not.
     #[test]
     fn queueing_a_quality_event_spawns_nothing_until_dispatch() {
-        let mut engine = EventExecEngine::new(None, Some("true".to_string()), 0, 5.0);
+        let mut engine =
+            EventExecEngine::new(None, Some("true".to_string()), 0, 5.0, DEFAULT_QUEUE_DEPTH);
         let mut stream = make_stream();
         // Loss high enough that the E-model MOS lands below the 5.0 threshold.
         stream.packet_count = 100;
@@ -1121,7 +1175,8 @@ mod tests {
     /// denominator from the plausible wrong one.
     #[test]
     fn the_quality_hook_exports_the_shared_loss_figure() {
-        let mut engine = EventExecEngine::new(None, Some("true".to_string()), 0, 5.0);
+        let mut engine =
+            EventExecEngine::new(None, Some("true".to_string()), 0, 5.0, DEFAULT_QUEUE_DEPTH);
         let mut stream = make_stream();
         stream.packet_count = 90;
         stream.lost_packets = 10;
@@ -1157,13 +1212,14 @@ mod tests {
     #[test]
     fn a_suppressed_event_queues_nothing() {
         // No command configured at all.
-        let mut none = EventExecEngine::new(None, None, 0, 3.0);
+        let mut none = EventExecEngine::new(None, None, 0, 3.0, DEFAULT_QUEUE_DEPTH);
         none.queue_dialog_event(&make_dialog());
         assert_eq!(none.pending_depth(), 0);
 
         // Rate limit of 1/s: the second event in the same window is booked as
         // rate-limited and never queued.
-        let mut limited = EventExecEngine::new(Some("true".to_string()), None, 1, 3.0);
+        let mut limited =
+            EventExecEngine::new(Some("true".to_string()), None, 1, 3.0, DEFAULT_QUEUE_DEPTH);
         let dialog = make_dialog();
         limited.queue_dialog_event(&dialog);
         limited.queue_dialog_event(&dialog);
@@ -1178,17 +1234,58 @@ mod tests {
     /// and the two paths cannot drift apart.
     #[test]
     fn firing_directly_still_spawns_immediately() {
-        let mut engine = EventExecEngine::new(Some("true".to_string()), None, 0, 3.0);
+        let mut engine =
+            EventExecEngine::new(Some("true".to_string()), None, 0, 3.0, DEFAULT_QUEUE_DEPTH);
         engine.fire_dialog_event(&make_dialog());
         assert_eq!(engine.outcomes().spawned, 1);
         assert_eq!(engine.pending_depth(), 0, "nothing may be left parked");
+    }
+
+    /// The declared queue depth is what decides how many slow hooks may run at
+    /// once, and it can silently outrank `--exec-rate-limit`.
+    ///
+    /// A hook that outlives the one-second rate window is still occupying a
+    /// slot when the next second's budget arrives, so on a busy trunk the
+    /// live-child ceiling — not the rate limit — is what events actually hit.
+    /// Both runs below leave the rate limit unlimited, so the only thing
+    /// separating a dropped event from a spawned one is the depth.
+    #[test]
+    fn the_declared_queue_depth_decides_how_many_slow_hooks_run_at_once() {
+        let slow = || Some("sleep 5".to_string());
+        let dialog = make_dialog();
+
+        let mut shallow = EventExecEngine::new(slow(), None, 0, 3.0, 2);
+        for _ in 0..4 {
+            shallow.fire_dialog_event(&dialog);
+        }
+        assert_eq!(
+            shallow.outcomes().spawned,
+            2,
+            "a depth of two admits two children and no more"
+        );
+        assert_eq!(
+            shallow.outcomes().queue_full,
+            2,
+            "the other two events must be booked as dropped, not lost"
+        );
+
+        let mut deep = EventExecEngine::new(slow(), None, 0, 3.0, 8);
+        for _ in 0..4 {
+            deep.fire_dialog_event(&dialog);
+        }
+        assert_eq!(
+            deep.outcomes().spawned,
+            4,
+            "the same four events at a depth of eight must all run"
+        );
+        assert_eq!(deep.outcomes().queue_full, 0);
     }
 
     /// `dispatch_pending` on an empty queue is a no-op — the common case, once
     /// per packet, on every run with no `--on-*` command.
     #[test]
     fn dispatching_an_empty_queue_does_nothing() {
-        let mut engine = EventExecEngine::new(None, None, 0, 3.0);
+        let mut engine = EventExecEngine::new(None, None, 0, 3.0, DEFAULT_QUEUE_DEPTH);
         engine.dispatch_pending();
         assert_eq!(engine.outcomes(), ExecOutcomeCounts::default());
     }
@@ -1201,6 +1298,7 @@ mod tests {
             Some("alert %mos %jitter".to_string()),
             10,
             3.0,
+            DEFAULT_QUEUE_DEPTH,
         );
         assert_eq!(
             engine.on_dialog_cmd.as_deref(),

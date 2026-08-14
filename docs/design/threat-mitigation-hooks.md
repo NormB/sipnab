@@ -234,7 +234,8 @@ tests. Per-event attribution is still unavailable while a run is in progress.
 
 **Suppressed event-exec actions were completely silent — now fixed.**
 `check_rate_limit` returned `false` and both callers simply returned. No log, no
-counter, no finding. Only the queue-depth drop warned (`MAX_QUEUE_DEPTH = 100`).
+counter, no finding. Only the queue-depth drop warned (at the shipped depth of 100, now settable as
+`[limits] exec_queue_depth`).
 So with the default `--exec-rate-limit 10`, the eleventh event of a second
 vanished without trace — and a flood is exactly when the eleventh event matters.
 Both callers now book the suppression in `ExecOutcomeCounts::rate_limited`, the

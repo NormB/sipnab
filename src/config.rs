@@ -98,7 +98,10 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         .as_slice(),
     );
     m.insert("filter", ["from", "to", "expression"].as_slice());
-    m.insert("sip", ["xcid_headers"].as_slice());
+    m.insert(
+        "sip",
+        ["xcid_headers", "leg_correlation_window_ms"].as_slice(),
+    );
     m.insert(
         "security",
         [
@@ -115,6 +118,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "fraud_sequential_calls",
             "fraud_volume_multiplier",
             "fraud_volume_min_calls",
+            "fraud_volume_window_secs",
+            "fraud_wangiri_window_secs",
             "scanner_behavioral_probes",
             "scanner_enumeration_targets",
             "scanner_rejected_probes",
@@ -160,6 +165,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "mcp_max_rows",
             "mcp_max_body_bytes",
             "lint_max_per_rule",
+            "exec_queue_depth",
             "max_lost_sequences",
             "max_groups",
             "max_grouped_messages",
@@ -329,6 +335,37 @@ pub struct SipConfig {
     /// Defaults to `["X-Call-ID"]` when unset or empty. Set to add
     /// carrier-specific headers, e.g. `["X-Call-ID", "X-CID"]`.
     pub xcid_headers: Option<Vec<String>>,
+    /// How far apart, in milliseconds, two legs of one call may be created and
+    /// still correlate on timing alone (default: 2000).
+    ///
+    /// The B2BUA timing heuristic's whole content, and the only strategy left
+    /// once a B2BUA has rewritten every identifier. `--leg-correlation-window`
+    /// overrides this.
+    pub leg_correlation_window_ms: Option<u64>,
+}
+
+impl SipConfig {
+    /// Reject SIP values a run cannot honour.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key, when
+    /// `leg_correlation_window_ms` is `0`.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        // Zero is refused rather than read as "off": a zero window still
+        // correlates every pair of legs created in the same millisecond, so it
+        // silences the heuristic almost but not quite, which is the worst of
+        // both answers. To ignore the guess, read the strategy it is reported
+        // under.
+        if let Some(0) = self.leg_correlation_window_ms {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] leg_correlation_window_ms must be > 0 (0 still correlates \
+                 legs created in the same millisecond; to ignore the guess, read \
+                 the strategy each correlation is reported under)"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Packet capture configuration.
@@ -498,6 +535,19 @@ pub struct SecurityConfig {
     /// Calls a source must place inside the window before a volume spike can
     /// be reported at all (default: 6).
     pub fraud_volume_min_calls: Option<u32>,
+    /// How much capture time one volume-spike window spans, in seconds
+    /// (default: 60).
+    ///
+    /// The count and the baseline are both measured over this window, so the
+    /// width alone decides how concentrated a burst has to be rather than how
+    /// big.
+    pub fraud_volume_window_secs: Option<u64>,
+    /// How much capture time one wangiri window spans, in seconds
+    /// (default: 60).
+    ///
+    /// Short calls older than this are forgotten, so no setting of
+    /// `fraud_wangiri_calls` reaches a lure paced wider than this.
+    pub fraud_wangiri_window_secs: Option<u64>,
     /// Probes from one source inside the scanner window, above which the rate
     /// signal reports (default: 10).
     ///
@@ -597,6 +647,8 @@ impl SecurityConfig {
                 "scanner_enumeration_targets",
                 self.scanner_enumeration_targets,
             ),
+            ("fraud_volume_window_secs", self.fraud_volume_window_secs),
+            ("fraud_wangiri_window_secs", self.fraud_wangiri_window_secs),
             ("scanner_window_secs", self.scanner_window_secs),
             ("scanner_answer_grace_ms", self.scanner_answer_grace_ms),
         ] {
@@ -880,6 +932,13 @@ pub struct LimitsConfig {
     /// eleven times and every one of them is true, so this is the knob that
     /// decides whether the other rules are still readable underneath.
     pub lint_max_per_rule: Option<u64>,
+    /// Hook commands allowed to be running at once before `--on-dialog-exec`
+    /// and `--on-quality-exec` events are dropped (default: 100).
+    ///
+    /// The second ceiling above `exec_rate_limit`, and the binding one for any
+    /// hook that takes longer than a second: its slot is still occupied when
+    /// the next second's budget arrives.
+    pub exec_queue_depth: Option<u64>,
     /// Bytes of SIP body or matched snippet one MCP response may carry
     /// (default: 4096).
     ///
@@ -988,6 +1047,15 @@ impl LimitsConfig {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] lint_max_per_rule must be > 0 (0 would print every repeat \
                  of one rule and bury the others)"
+                    .into(),
+            ));
+        }
+        // Zero is refused rather than read as "unlimited": the depth bounds
+        // PROCESSES sipnab forks, so a typo read permissively is an unbounded
+        // fork bomb pointed at the box doing the capturing.
+        if let Some(0) = self.exec_queue_depth {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] exec_queue_depth must be > 0 (it bounds child processes,                  so there is no unlimited setting; to run no hooks, drop                  --on-dialog-exec and --on-quality-exec)"
                     .into(),
             ));
         }
@@ -2313,6 +2381,7 @@ column_selector = "F10"
             max_audio_frames: Some(1500),
             mcp_max_rows: Some(1000),
             lint_max_per_rule: Some(25),
+            exec_queue_depth: Some(100),
             mcp_max_body_bytes: Some(4096),
             max_lost_sequences: Some(1000),
             max_groups: Some(10_000),
@@ -2394,6 +2463,61 @@ column_selector = "F10"
                 "the refusal must name {key}, got: {err}"
             );
         }
+    }
+
+    /// Both `[security]` fraud WINDOWS parse, are REGISTERED, and refuse 0 by
+    /// name.
+    ///
+    /// The counts were registered by #68 and the windows were not, which is
+    /// the half that fails silently: an unregistered key still parses, still
+    /// deserializes, and still reaches the detector, warning only "Unknown
+    /// config key" on every start.
+    #[test]
+    fn fraud_windows_parse_are_registered_and_reject_zero() {
+        for key in ["fraud_volume_window_secs", "fraud_wangiri_window_secs"] {
+            let set = format!("[security]\n{key} = 900\n");
+            let cfg: Config = toml::from_str(&set).expect("valid");
+            assert!(
+                Config::unknown_keys(&set).expect("scan").is_empty(),
+                "{key} must be registered in KNOWN_KEYS, or a file that sets it \
+                 warns on every start"
+            );
+            assert!(cfg.security.validate().is_ok(), "{key} = 900 must validate");
+            let zeroed = format!("[security]\n{key} = 0\n");
+            let zero: Config = toml::from_str(&zeroed).expect("parses");
+            let err = zero.security.validate().expect_err("0 must be rejected");
+            assert!(
+                err.to_string().contains(key),
+                "the refusal must name {key}, got: {err}"
+            );
+        }
+    }
+
+    /// `[sip] leg_correlation_window_ms` parses, is REGISTERED, and refuses 0
+    /// by name.
+    ///
+    /// `--leg-correlation-window` refuses 0 through clap, so the file has to
+    /// refuse it too or it becomes the lenient way in — the rule
+    /// `kill_rate_limit` already follows.
+    #[test]
+    fn leg_correlation_window_parses_is_registered_and_rejects_zero() {
+        let set = "[sip]\nleg_correlation_window_ms = 8000\n";
+        let cfg: Config = toml::from_str(set).expect("valid");
+        assert_eq!(cfg.sip.leg_correlation_window_ms, Some(8000));
+        assert!(
+            Config::unknown_keys(set).expect("scan").is_empty(),
+            "leg_correlation_window_ms must be registered in KNOWN_KEYS, or a \
+             file that sets it warns on every start"
+        );
+        assert!(cfg.sip.validate().is_ok(), "8000 must validate");
+
+        let zero: Config =
+            toml::from_str("[sip]\nleg_correlation_window_ms = 0\n").expect("parses");
+        let err = zero.sip.validate().expect_err("0 must be rejected");
+        assert!(
+            err.to_string().contains("leg_correlation_window_ms"),
+            "the refusal must name the key, got: {err}"
+        );
     }
 
     /// `dialog_limit = 0` is rejected, naming the key.

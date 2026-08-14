@@ -174,7 +174,13 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
 
         // ── The failing hook ────────────────────────────────────────────
         let failing_start = capture.len();
-        let mut failing = EventExecEngine::new(Some("exit 7".to_string()), None, 0, 3.0);
+        let mut failing = EventExecEngine::new(
+            Some("exit 7".to_string()),
+            None,
+            0,
+            3.0,
+            sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
         let saw_failure = fire_until(&mut failing, &dialog, || {
             capture
                 .since(failing_start)
@@ -214,7 +220,13 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
         // — or that reported a total of nothing — would pass the assertions
         // above while telling an operator exactly as little as before.
         let ok_start = capture.len();
-        let mut succeeding = EventExecEngine::new(Some("exit 0".to_string()), None, 0, 3.0);
+        let mut succeeding = EventExecEngine::new(
+            Some("exit 0".to_string()),
+            None,
+            0,
+            3.0,
+            sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
         fire_n(&mut succeeding, &dialog, 10);
         drop(succeeding);
         let ok_events = capture.since(ok_start);

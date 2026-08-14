@@ -949,8 +949,9 @@ every leg matched on an identifier — a clock reading beside an identifier matc
 invites you to weigh one against the other, and they do not trade off.
 
 **Check the clock before believing a `timing_heuristic` match across nodes.**
-The window is two seconds, and the failure is silent in both directions: a fast
-clock misses legs that belong together, a slow one pulls unrelated calls in.
+The window is two seconds unless `--leg-correlation-window` says otherwise, and
+the failure is silent in both directions: a fast clock misses legs that belong
+together, a slow one pulls unrelated calls in.
 `timing_clock` reports the answering node's NTP discipline at the moment of the
 query (`synchronised`, `max_error_us`, `est_error_us`, `available`), and
 `capture_health` reports the same under `clock` for any node you want to check
@@ -993,8 +994,8 @@ from a 3 ms gap and a shared endpoint — no identifier crossed the box:
 Read the second one carefully, because it is the case operators act on wrongly.
 A leg came back. It has a Call-ID, a score, and a plausible-looking 3 ms gap. It
 is still a guess: `identifier_match` is `false` and `heuristic_only` is `true`.
-Two unrelated calls through the same SBC inside the same two seconds produce
-output that looks exactly like this.
+Two unrelated calls through the same SBC inside the same window produce output
+that looks exactly like this.
 
 Now read `max_error_us`, and do not read it once. It is a live reading, not a
 constant, and on this one host it has reported **0.295 s** (the run above),

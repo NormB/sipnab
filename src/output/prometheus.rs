@@ -14,6 +14,151 @@ use std::fmt::Write;
 
 // ── Public types ─────────────────────────────────────────────────────
 
+/// The `le` boundaries the four histogram families publish.
+///
+/// Derived from the thresholds this run already resolved rather than written
+/// again here, and that is the whole point of the type. The shipped sets were
+/// literals beside the diagnosis thresholds and the quality bands, and they
+/// disagreed with them: the post-dial-delay buckets stopped at 10 s while the
+/// shipped `[diagnosis] post_dial_delay_secs` is 11, so no query over this
+/// endpoint could reproduce the finding sipnab itself raised, and on an
+/// international trunk — where a PDD past ten seconds is ordinary — every
+/// observation landed in `+Inf` and carried no information at all. The jitter
+/// buckets carried the 50 ms bad boundary and not the 30 ms warn boundary
+/// under it.
+///
+/// Prometheus buckets are `le`, "at or below", and each sipnab boundary is the
+/// point at which a value stops being acceptable. So the bucket AT a boundary
+/// counts the observations that met it, and the ratio of that bucket to
+/// `_count` is the compliance figure — the same question sipnab answers, asked
+/// of the same number.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistogramBuckets {
+    /// Post-dial delay boundaries, in seconds.
+    pub pdd_seconds: Vec<f64>,
+    /// Mean Opinion Score boundaries.
+    pub mos: Vec<f64>,
+    /// Jitter boundaries, in milliseconds.
+    pub jitter_ms: Vec<f64>,
+    /// Packet loss boundaries, as a percentage.
+    pub loss_percent: Vec<f64>,
+}
+
+/// Resolution below the shipped post-dial-delay threshold: a ladder over the
+/// range where answering is still fast, which no threshold names.
+const PDD_HEALTHY_LADDER: &[f64] = &[0.5, 1.0, 2.0, 3.0, 5.0];
+/// Resolution below the shipped jitter boundaries, for the same reason.
+const JITTER_HEALTHY_LADDER: &[f64] = &[5.0, 10.0, 20.0];
+/// Resolution below the shipped loss boundaries.
+const LOSS_HEALTHY_LADDER: &[f64] = &[0.1, 0.5];
+/// Half-steps up the MOS scale. Unlike the three above, MOS is a bounded
+/// 1..=5 score, so its ladder spans the whole scale rather than only the
+/// healthy end of it, and 5.0 closes it: a score cannot exceed 5, so nothing
+/// belongs in `+Inf` at all.
+const MOS_SCALE: &[f64] = &[1.0, 2.0, 2.5, 3.5, 4.5, 5.0];
+
+impl HistogramBuckets {
+    /// Compose the boundaries from thresholds that were already resolved.
+    ///
+    /// Takes the resolved sets rather than a `Cli` and a `Config` so no fourth
+    /// precedence chain exists here — the same reason
+    /// `crate::sip::dsl::AliasThresholds::from_parts` takes its parts.
+    ///
+    /// Each family is its own resolution ladder — fixed rungs describing how
+    /// finely the range is measured, which no threshold names — plus every
+    /// boundary this run will actually report on, plus multiples above the
+    /// worst of those so a value past the last threshold still lands somewhere
+    /// countable rather than in `+Inf`. At the shipped settings the result is
+    /// the set this endpoint always published, with the boundaries it could
+    /// not express added.
+    #[must_use]
+    pub fn from_parts(
+        signaling: &crate::sip::diagnosis::SignalingThresholds,
+        bands: &crate::rtp::bands::QualityBands,
+    ) -> Self {
+        let pdd = signaling.post_dial_delay_sec;
+        Self {
+            pdd_seconds: ladder(PDD_HEALTHY_LADDER, &[pdd, pdd * 2.0]),
+            // MOS runs the other way — higher is better — so the headroom
+            // bucket belongs BELOW the worst boundary, not above the best.
+            mos: ladder(MOS_SCALE, &[bands.mos_bad, bands.mos_warn]),
+            jitter_ms: ladder(
+                JITTER_HEALTHY_LADDER,
+                &[
+                    bands.jitter_warn_ms,
+                    bands.jitter_bad_ms,
+                    bands.jitter_bad_ms * 2.0,
+                    bands.jitter_bad_ms * 4.0,
+                ],
+            ),
+            loss_percent: ladder(
+                LOSS_HEALTHY_LADDER,
+                &[
+                    bands.loss_warn_pct,
+                    bands.loss_warn_pct * 2.0,
+                    bands.loss_bad_pct,
+                    bands.loss_bad_pct * 2.0,
+                    bands.loss_bad_pct * 4.0,
+                ],
+            ),
+        }
+    }
+}
+
+impl Default for HistogramBuckets {
+    fn default() -> Self {
+        Self::from_parts(
+            &crate::sip::diagnosis::SignalingThresholds::BUILT_IN,
+            &crate::rtp::bands::QualityBands::default(),
+        )
+    }
+}
+
+/// One family's boundaries: the healthy-range ladder and the run's own
+/// boundaries, sorted, with duplicates and non-finite values dropped.
+///
+/// De-duplication is not cosmetic. Prometheus requires strictly increasing
+/// `le` values, and a run whose warn boundary lands exactly on a ladder rung
+/// (30 ms of jitter against a 30 ms rung, say) would otherwise publish the
+/// same boundary twice and produce a histogram no scraper will accept.
+fn ladder(healthy: &[f64], boundaries: &[f64]) -> Vec<f64> {
+    let mut all: Vec<f64> = healthy
+        .iter()
+        .chain(boundaries)
+        .copied()
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .collect();
+    all.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    all.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+    all
+}
+
+/// The buckets `[diagnosis]` and `[quality]` declared, once the run has read
+/// its config.
+///
+/// Process-global and written once at startup, the same shape as
+/// `crate::sip::diagnosis::set_signaling_thresholds`: the value is a property
+/// of the run, and both metrics surfaces have to agree on it.
+static CONFIGURED_BUCKETS: std::sync::OnceLock<HistogramBuckets> = std::sync::OnceLock::new();
+
+/// Declare the histogram boundaries for this process. Call once, at startup.
+///
+/// # Side effects
+///
+/// Writes a process-global `OnceLock`; the first writer wins, so a later call
+/// is ignored rather than moving the boundaries mid-run — which would break
+/// every counter a scraper had already accumulated.
+pub fn set_histogram_buckets(buckets: HistogramBuckets) {
+    let _ = CONFIGURED_BUCKETS.set(buckets);
+}
+
+/// The boundaries this run publishes: what the config declared, else the
+/// boundaries derived from the shipped thresholds.
+#[must_use]
+pub fn configured_buckets() -> HistogramBuckets {
+    CONFIGURED_BUCKETS.get().cloned().unwrap_or_default()
+}
+
 /// Collected metrics for Prometheus exposition.
 ///
 /// All counters use monotonically increasing values. Histograms store
@@ -70,6 +215,12 @@ pub struct PrometheusMetrics {
     pub jitter_histogram: Vec<f64>,
     /// Packet loss percentage observations for histogram bucketing.
     pub loss_histogram: Vec<f64>,
+    /// The `le` boundaries the four histogram families above are bucketed at.
+    ///
+    /// Carried on the metrics rather than read from the process global inside
+    /// the formatter, so `format_metrics` stays a pure function of its input
+    /// and a test can publish any boundaries it likes.
+    pub buckets: HistogramBuckets,
     /// TCP/SIP reassembly timeout count.
     pub reassembly_timeouts_total: u64,
     /// Media diagnosis counts by type (e.g., `"one_way_audio"`, `"nat_mismatch"`).
@@ -223,6 +374,7 @@ impl PrometheusMetrics {
             capture_undecodable_total: undecodable.frames,
             reassembly_timeouts_total: crate::capture::reassembly::reassembly_timeouts(),
             capture_quality: CaptureQuality::current(),
+            buckets: configured_buckets(),
             ..Self::default()
         };
         for t in &undecodable.reasons {
@@ -605,7 +757,7 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         "sipnab_pdd_seconds",
         "Post-dial delay in seconds",
         &metrics.pdd_histogram,
-        &[0.5, 1.0, 2.0, 3.0, 5.0, 10.0],
+        &metrics.buckets.pdd_seconds,
     );
 
     format_histogram(
@@ -613,7 +765,7 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         "sipnab_mos",
         "Mean Opinion Score",
         &metrics.mos_histogram,
-        &[1.0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5],
+        &metrics.buckets.mos,
     );
 
     format_histogram(
@@ -621,7 +773,7 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         "sipnab_jitter_ms",
         "RTP jitter in milliseconds",
         &metrics.jitter_histogram,
-        &[5.0, 10.0, 20.0, 50.0, 100.0, 200.0],
+        &metrics.buckets.jitter_ms,
     );
 
     format_histogram(
@@ -629,7 +781,7 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         "sipnab_loss_percent",
         "RTP packet loss percentage",
         &metrics.loss_histogram,
-        &[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0],
+        &metrics.buckets.loss_percent,
     );
 
     out

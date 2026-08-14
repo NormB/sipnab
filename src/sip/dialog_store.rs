@@ -223,7 +223,20 @@ pub struct DialogStore {
     /// another dialog's Call-ID (or vice versa) is correlated at score 100.
     /// Defaults to `["X-Call-ID"]`.
     xcid_headers: Vec<String>,
+    /// How far apart, in milliseconds, two `INVITE`s from overlapping
+    /// endpoints may be created and still be reported as legs of one call by
+    /// the timing heuristic.
+    ///
+    /// The heuristic's whole content. It is the only strategy left once a
+    /// B2BUA has rewritten every identifier, and the shipped two seconds
+    /// describes a PBX that places the outbound leg immediately — not one
+    /// doing an LNP or ENUM dip, or an LCR cascade, before it places one.
+    leg_correlation_window_ms: u64,
 }
+
+/// Shipped width of the B2BUA timing-heuristic window, in milliseconds.
+/// Reachable as `[sip] leg_correlation_window_ms`.
+pub const DEFAULT_LEG_CORRELATION_WINDOW_MS: u64 = 2000;
 
 /// Default idle window before a dialog's stored messages are compacted.
 ///
@@ -473,7 +486,17 @@ impl DialogStore {
             capacity_dialogs_evicted: 0,
             generation: 0,
             xcid_headers: vec!["X-Call-ID".to_string()],
+            leg_correlation_window_ms: DEFAULT_LEG_CORRELATION_WINDOW_MS,
         }
+    }
+
+    /// Set how far apart two legs may be created and still correlate on
+    /// timing alone. Builder-style: returns `self` for chaining after
+    /// [`new`](Self::new).
+    #[must_use]
+    pub fn with_leg_correlation_window_ms(mut self, window_ms: u64) -> Self {
+        self.leg_correlation_window_ms = window_ms;
+        self
     }
 
     /// Override the correlation header names (sngrep `sip.xcid`). An empty list
@@ -1107,8 +1130,10 @@ impl DialogStore {
     ///    identifier.
     /// 6. **Via branch** (80): INVITE messages share a Via branch parameter.
     /// 7. **Timing heuristic** (50): both INVITE dialogs share an endpoint IP
-    ///    and were created within 2 seconds of each other. The only one of the
-    ///    seven that is a guess rather than an identifier comparison.
+    ///    and started within the configured leg-correlation window of each
+    ///    other — two seconds unless `[sip] leg_correlation_window_ms` or
+    ///    `--leg-correlation-window` says otherwise. The only one of the seven
+    ///    that is a guess rather than an identifier comparison.
     ///
     /// Results are sorted by score descending.
     ///
@@ -1349,7 +1374,7 @@ impl DialogStore {
                     let time_diff = (dialog.created_at - candidate.created_at)
                         .num_milliseconds()
                         .unsigned_abs();
-                    if time_diff <= 2000 {
+                    if time_diff <= self.leg_correlation_window_ms {
                         results.push(CorrelationResult {
                             dialog: candidate,
                             score: 50,

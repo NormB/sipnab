@@ -127,10 +127,12 @@ SIP protocol handling.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `xcid_headers` | array | `["X-Call-ID"]` | Header names used to correlate B2BUA call legs (sngrep `sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID joins that dialog. Add carrier-specific headers here; an empty/unset list keeps the `X-Call-ID` default |
+| `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. This is the B2BUA timing heuristic's whole content, and the only strategy left once a B2BUA has rewritten every identifier the other six compare. The shipped two seconds describes a PBX placing the outbound leg immediately, not one doing an LNP or ENUM dip, or walking an LCR cascade, before it places one. Widen it on such a hop; every correlation still reports the strategy that matched, so a guess stays labelled as one. `--leg-correlation-window` overrides it |
 
 ```toml
 [sip]
 xcid_headers = ["X-Call-ID", "X-CID"]
+leg_correlation_window_ms = 8000
 ```
 
 ### [security]
@@ -152,6 +154,8 @@ Security detection defaults.
 | `fraud_sequential_calls` | integer | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. `--fraud-sequential-calls` overrides it |
 | `fraud_volume_multiplier` | integer | `5` | Multiple of a source's own baseline call rate that `--fraud-detect` reports as a volume spike. `--fraud-volume-multiplier` overrides it |
 | `fraud_volume_min_calls` | integer | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. `--fraud-volume-min-calls` overrides it |
+| `fraud_volume_window_secs` | integer | `60` | How much capture time one volume-spike window spans, in seconds. The count and the source's own baseline are both measured over this window, so a steady source reads the same at any width; what the width alone decides is how CONCENTRATED a burst has to be, since a burst shorter than the window averages into the ordinary traffic beside it. `--fraud-volume-window` overrides it |
+| `fraud_wangiri_window_secs` | integer | `60` | How much capture time one wangiri window spans, in seconds. The detector drops short calls older than this, so it decides how slowly a lure may arrive and still count as one pattern. No setting of `fraud_wangiri_calls` reaches a lure paced wider than the window: the only count that reports anything is one, which reports every ordinary short call as a lure too. `--fraud-wangiri-window` overrides it |
 | `scanner_behavioral_probes` | integer | `10` | Probes from one source inside the scanner window, above which `--kill-scanner` reports a rate detection. Behind an SBC every source collapses to one address, so ordinary aggregated traffic clears ten in five seconds and the whole site reads as one scanner. `--scanner-behavioral-probes` overrides it |
 | `scanner_enumeration_targets` | integer | `5` | Distinct target extensions from one source inside the scanner window, above which `--kill-scanner` reports extension enumeration. `--scanner-enumeration-targets` overrides it |
 | `scanner_rejected_probes` | integer | `5` | Rejected probes inside the scanner window at which a source reads as probing rather than operating. This is the evidence gate: neither behavioral signal reports anything until a source clears this or `scanner_unanswered_probes`, which is what separates an enumeration sweep from a trunk running keepalives at the same rate. `--scanner-rejected-probes` overrides it |
@@ -174,6 +178,7 @@ kill_rate_limit = 10
 fraud_detect = true
 business_hours = "8-18"
 fraud_short_call_secs = 2
+fraud_wangiri_window_secs = 900
 reg_flood_threshold = 10
 scanner_window_secs = 60
 scanner_behavioral_probes = 40
@@ -284,6 +289,7 @@ Resource limits to prevent unbounded memory growth.
 | `keep_messages_per_idle_dialog` | integer | `20` | Messages an idle dialog keeps after compaction |
 | `max_audio_frames` | integer | `1500` | Maximum RTP payload frames stored per stream for WAV export (~30s at G.711 50pps) |
 | `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
+| `exec_queue_depth` | integer | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. `--exec-queue-depth` overrides it. `0` fails validation and names the key |
 | `mcp_max_body_bytes` | integer | `4096` | Bytes of SIP body or matched snippet in ONE MCP response. `mcp_max_rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. `--mcp-max-body-bytes` overrides it. `0` fails validation and names the key |
 | `max_lost_sequences` | integer | `1000` | Lost RTP sequence numbers retained per stream. This is the window the Packet Loss Map draws and the burst/gap analysis reasons over, so a 30-minute call losing 1 % shows only its last minute at the default. The burst/gap window widens with it. `--max-lost-sequences` overrides it. `0` fails validation and names the key |
 | `max_groups` | integer | `10000` | Distinct `--group-by` keys one run retains. Past it sipnab refuses new keys and warns that the output is incomplete. `--max-groups` overrides it |
@@ -509,6 +515,7 @@ kill_rate_limit = 10               # Kill responses/sec sipnab may transmit
 business_hours = "8-18"            # Enables off-hours fraud detection (UTC hours)
 scanner_window_secs = 60           # Wide enough to hold a sweep paced at one probe/10s
 scanner_behavioral_probes = 40     # Raised: this site aggregates behind one SBC address
+fraud_wangiri_window_secs = 900    # A lure paced over fifteen minutes is still one lure
 
 # -- Diagnosis thresholds --
 [diagnosis]
@@ -523,6 +530,7 @@ max_streams = 25000                # Max RTP streams
 max_reassembly = 5000              # Max TCP reassembly sessions
 hep_rate_limit = 25000             # Max HEP packets/sec
 lint_max_per_rule = 25             # Repeats of one lint finding per dialog
+exec_queue_depth = 20              # Hook commands allowed to run at once
 
 # -- Privilege separation (Linux) --
 [privilege]

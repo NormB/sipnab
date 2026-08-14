@@ -959,6 +959,11 @@ fn limit_probes() -> Vec<LimitProbe> {
             observe: probe_lint_max_per_rule,
         },
         LimitProbe {
+            key: "exec_queue_depth",
+            enabled: true,
+            observe: probe_exec_queue_depth,
+        },
+        LimitProbe {
             key: "mcp_max_body_bytes",
             enabled: cfg!(feature = "mcp"),
             observe: probe_mcp_max_body_bytes,
@@ -1153,6 +1158,55 @@ fn probe_lint_max_per_rule() -> (String, String) {
             )
         },
     )
+}
+
+/// `exec_queue_depth`: eight calls firing a hook that outlives the run,
+/// against a depth of one.
+///
+/// The observation is how many events were DROPPED, which is the only thing
+/// the depth decides. The hook sleeps so that every child is still live when
+/// the next event arrives — a hook that returned immediately would be reaped
+/// between events and the queue would never fill, whatever the depth.
+///
+/// Observed on stderr rather than stdout: the drop is a warning, because an
+/// event whose command never ran is the thing an operator has to be told
+/// about.
+fn probe_exec_queue_depth() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 8);
+    let cfg_dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(&cfg_dir, "[limits]\nexec_queue_depth = 1\n");
+    let pcap = pcap.to_str().unwrap().to_string();
+
+    let count = |err: &str| {
+        format!(
+            "dropped={}",
+            err.lines().filter(|l| l.contains("dropping event")).count()
+        )
+    };
+
+    let (_, plain, code) = run(&[
+        "-N",
+        "-I",
+        &pcap,
+        "--on-dialog-exec",
+        "sleep 5",
+        "--no-config",
+    ]);
+    assert_eq!(code, 0, "uncapped run should exit cleanly");
+
+    let (_, limited, code) = run(&[
+        "-N",
+        "-I",
+        &pcap,
+        "--on-dialog-exec",
+        "sleep 5",
+        "--config",
+        cfg.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "capped run should exit cleanly");
+
+    (count(&plain), count(&limited))
 }
 
 /// `max_lost_sequences`: 1200 losses retained against a cap of 100.

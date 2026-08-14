@@ -166,6 +166,19 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     crate::sip::diagnosis::set_signaling_thresholds(cli.signaling_thresholds(config));
     crate::rtp::diagnosis::set_asymmetry_thresholds(cli.asymmetry_thresholds(config));
 
+    // The Prometheus histogram boundaries are COMPOSED from the two sets just
+    // declared, never written again. A literal bucket list beside a threshold
+    // is a second copy of the same number, and the two had already parted
+    // company: the post-dial-delay buckets stopped at 10 s while the threshold
+    // they are meant to make queryable is 11.
+    #[cfg(feature = "metrics")]
+    crate::output::prometheus::set_histogram_buckets(
+        crate::output::prometheus::HistogramBuckets::from_parts(
+            &cli.signaling_thresholds(config),
+            &cli.quality_bands(config),
+        ),
+    );
+
     // Capture source precedence: -I file > -d device > config device >
     // --hep-listen > auto-detect (deferred to launch()).
     // manual_map: without the `hep` feature the --hep-listen arm cfg-shrinks
@@ -423,6 +436,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         cli.on_quality_exec.clone(),
         cli.exec_rate_limit,
         cli.quality_threshold,
+        cli.exec_queue_depth(config),
     );
 
     // Parsed --metrics bind address, validated here so a bad address fails at
@@ -1301,6 +1315,16 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // [security] is validated for the same reason [limits] is: a key that
     // reaches the wire must not be accepted here and refused as a flag.
     if let Err(e) = loaded.config.security.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
+    // [sip] carries the leg-correlation window, which decides which dialogs
+    // are reported as one call. Refused here for the same reason as the two
+    // above: `--leg-correlation-window` refuses 0, so the file must too.
+    if let Err(e) = loaded.config.sip.validate() {
         return Err(PlanError {
             exit_code: 1,
             message: e.to_string(),

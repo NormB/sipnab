@@ -16,7 +16,8 @@ use chrono::{DateTime, TimeDelta, Timelike, Utc};
 use crate::sip::SipMessage;
 use crate::sip::dialog::{DialogState, SipDialog};
 
-/// Window for volume spike detection (seconds).
+/// Shipped width of the volume-spike window, in seconds. Reachable as
+/// `FraudThresholds::volume_window_secs`.
 const VOLUME_WINDOW_SECS: u64 = 60;
 
 /// Multiplier for volume spike detection: >5x the baseline rate.
@@ -28,9 +29,19 @@ const VOLUME_SPIKE_MIN_CALLS: u32 = 6;
 /// Weight the rolling baseline keeps on its previous value when a new window
 /// is folded in. Ten windows of history, so a minute of traffic moves it a
 /// little and an hour of it moves it entirely.
+///
+/// Fixed, while the window beside it is settable, and the reason is that this
+/// number is denominated in WINDOWS rather than in seconds. The baseline folds
+/// once per window, so "ten windows of history" holds at every width an
+/// operator can declare: the baseline stays an order of magnitude slower than
+/// the thing it baselines whether that thing spans five seconds or fifteen
+/// minutes. Expose it and the two numbers become one calibration with two
+/// halves, where widening the window and forgetting the decay leaves a
+/// baseline that chases the burst it exists to measure.
 const BASELINE_DECAY: f64 = 0.9;
 
-/// Window for wangiri pattern detection (seconds).
+/// Shipped width of the wangiri window, in seconds. Reachable as
+/// `FraudThresholds::wangiri_window_secs`.
 const WANGIRI_WINDOW_SECS: u64 = 60;
 
 /// Minimum short calls to same prefix for wangiri detection.
@@ -42,9 +53,24 @@ const SHORT_CALL_SECS: u64 = 3;
 /// Minimum sequential numbers to trigger sequential scanning detection.
 const SEQUENTIAL_THRESHOLD: usize = 3;
 
-/// Cap on short calls remembered per source. The map is already pruned to
-/// `WANGIRI_WINDOW_SECS`, so this only bounds a source completing thousands of
-/// calls inside one minute.
+/// How much capture time a run of refused numbers may span, in seconds.
+///
+/// Its own constant rather than the volume window, which is what the refused
+/// calls were pruned to before that window became settable. The two shared a
+/// helper and therefore shared a number, which was harmless while both were 60
+/// — and would have become a silent coupling the moment an operator narrowed
+/// the volume window to catch a short burst and, without being told, narrowed
+/// the run a dial-plan walk has to make.
+///
+/// Fixed, because a dial-plan walk is defined by the CONSECUTIVENESS of the
+/// numbers rather than by any rate: `sequential_calls` already says how long
+/// the run must be, and there is no second question here for a window to
+/// answer.
+const SEQUENTIAL_WINDOW_SECS: u64 = 60;
+
+/// Cap on short calls remembered per source. The map is already pruned to the
+/// configured wangiri window, so this only bounds a source completing thousands
+/// of calls inside one window.
 const MAX_SHORT_CALLS_PER_SOURCE: usize = 1024;
 
 /// Per-source call tracking state.
@@ -74,9 +100,8 @@ struct CallPattern {
     /// eleven-second trunk capture. Keyed for the same reason as
     /// [`Self::short_calls`]: a terminal dialog keeps receiving messages.
     refused_calls: HashMap<String, (DateTime<Utc>, String)>,
-    /// This source's ordinary call rate, in calls per
-    /// [`VOLUME_WINDOW_SECS`]-second window: a rolling average over the
-    /// windows it has completed.
+    /// This source's ordinary call rate, in calls per configured volume
+    /// window: a rolling average over the windows it has completed.
     ///
     /// `None` until it has completed one. It used to start at 1.0 — a number
     /// the constructor guessed rather than one the source established — so the
@@ -124,8 +149,8 @@ impl CallPattern {
     /// a source raised froze its baseline at the value that produced it — and
     /// with the baseline frozen, every call it placed afterwards raised the
     /// alert again.
-    fn sample_baseline(&mut self, now: DateTime<Utc>) {
-        if now.signed_duration_since(self.baseline_sampled_at) < volume_window() {
+    fn sample_baseline(&mut self, now: DateTime<Utc>, window: TimeDelta) {
+        if now.signed_duration_since(self.baseline_sampled_at) < window {
             return;
         }
         let observed = self.calls.len() as f64;
@@ -174,12 +199,17 @@ const MAX_PATTERN_ENTRIES: usize = 10_000;
 /// network whose PBX places six calls a minute at shift change reported the
 /// shift change as a volume spike.
 ///
-/// Windows are deliberately NOT here. The volume window and the baseline decay
-/// are one calibration — the baseline has to be slower than the thing it
-/// baselines — so moving the window without moving the decay changes what a
-/// "spike" means rather than tuning it. The memory caps
-/// (`MAX_PATTERN_ENTRIES`, `MAX_SHORT_CALLS_PER_SOURCE`) are not here either:
-/// they bound sipnab's footprint, not the network's behaviour.
+/// The two windows are here for the same reason the counts are: they are
+/// deployment properties, and a count is measured inside a window it cannot
+/// reach past. Wangiri arriving as three short calls over ten minutes is
+/// invisible at every setting of [`Self::wangiri_calls`] but one, and that one
+/// reports every short call anywhere as a lure.
+///
+/// The baseline decay stays fixed beside them, and `BASELINE_DECAY` says why:
+/// it is denominated in windows, so it holds its relationship to the window at
+/// every width. The memory caps (`MAX_PATTERN_ENTRIES`,
+/// `MAX_SHORT_CALLS_PER_SOURCE`) are not here either: they bound sipnab's
+/// footprint, not the network's behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FraudThresholds {
     /// Measured duration below which a completed call counts as "short".
@@ -192,6 +222,18 @@ pub struct FraudThresholds {
     pub volume_multiplier: u32,
     /// Calls a source must place in the window before a spike can be reported.
     pub volume_min_calls: u32,
+    /// Capture time one volume-spike window spans, in seconds.
+    ///
+    /// The count and the baseline are both measured over this, so a steady
+    /// source reads the same at any width. What the width alone decides is how
+    /// concentrated a burst has to be: a burst shorter than the window is
+    /// averaged into the ordinary traffic beside it.
+    pub volume_window_secs: u64,
+    /// Capture time one wangiri window spans, in seconds.
+    ///
+    /// Short calls older than this are forgotten, so this is the outer bound on
+    /// how slowly a lure may arrive and still be counted as one pattern.
+    pub wangiri_window_secs: u64,
 }
 
 impl FraudThresholds {
@@ -202,7 +244,34 @@ impl FraudThresholds {
         sequential_calls: SEQUENTIAL_THRESHOLD,
         volume_multiplier: VOLUME_SPIKE_MULTIPLIER,
         volume_min_calls: VOLUME_SPIKE_MIN_CALLS,
+        volume_window_secs: VOLUME_WINDOW_SECS,
+        wangiri_window_secs: WANGIRI_WINDOW_SECS,
     };
+
+    /// The volume-spike window as a capture-time span.
+    #[must_use]
+    pub fn volume_window(&self) -> TimeDelta {
+        TimeDelta::seconds(self.volume_window_secs as i64)
+    }
+
+    /// The wangiri window as a capture-time span.
+    #[must_use]
+    pub fn wangiri_window(&self) -> TimeDelta {
+        TimeDelta::seconds(self.wangiri_window_secs as i64)
+    }
+
+    /// The widest window any of these detections reasons over.
+    ///
+    /// The caller that sweeps detector state ages it against this: state swept
+    /// sooner than the widest window truncates that window to the sweep age,
+    /// which would make the two settable windows above settable only up to a
+    /// constant somewhere else.
+    #[must_use]
+    pub fn widest_window_secs(&self) -> u64 {
+        self.volume_window_secs
+            .max(self.wangiri_window_secs)
+            .max(SEQUENTIAL_WINDOW_SECS)
+    }
 }
 
 impl Default for FraudThresholds {
@@ -348,7 +417,7 @@ impl FraudDetector {
         let pattern = self.pattern_for(src, now);
         pattern
             .short_calls
-            .retain(|_, (t, _)| now.signed_duration_since(*t) < wangiri_window());
+            .retain(|_, (t, _)| now.signed_duration_since(*t) < thresholds.wangiri_window());
         if pattern.short_calls.contains_key(call_id) {
             return None; // already counted: a later message of a finished call
         }
@@ -359,7 +428,7 @@ impl FraudDetector {
             .short_calls
             .insert(call_id.to_string(), (now, destination));
 
-        check_wangiri(src, pattern, now, thresholds.wangiri_calls)
+        check_wangiri(src, pattern, now, &thresholds)
     }
 
     /// Record a call the network refused, and report sequential scanning if
@@ -393,9 +462,9 @@ impl FraudDetector {
         let destination = dialog.to_user.clone().unwrap_or_default();
 
         let pattern = self.pattern_for(src, now);
-        pattern
-            .refused_calls
-            .retain(|_, (t, _)| now.signed_duration_since(*t) < volume_window());
+        pattern.refused_calls.retain(|_, (t, _)| {
+            now.signed_duration_since(*t) < TimeDelta::seconds(SEQUENTIAL_WINDOW_SECS as i64)
+        });
         if pattern.refused_calls.contains_key(call_id)
             || pattern.refused_calls.len() >= MAX_SHORT_CALLS_PER_SOURCE
         {
@@ -453,13 +522,13 @@ impl FraudDetector {
         // seconds wide while every alert it produced said 60.
         pattern
             .calls
-            .retain(|(t, _)| now.signed_duration_since(*t) < volume_window());
+            .retain(|(t, _)| now.signed_duration_since(*t) < thresholds.volume_window());
         pattern
             .short_calls
-            .retain(|_, (t, _)| now.signed_duration_since(*t) < wangiri_window());
+            .retain(|_, (t, _)| now.signed_duration_since(*t) < thresholds.wangiri_window());
 
         // Whatever this call turns out to raise, the baseline moves first.
-        pattern.sample_baseline(now);
+        pattern.sample_baseline(now, thresholds.volume_window());
 
         // Off-hours detection
         if let Some((start, end)) = business_hours {
@@ -496,14 +565,15 @@ impl FraudDetector {
                     src_ip: msg.src_addr,
                     alert_type: FraudType::VolumeSpike,
                     detail: format!(
-                        "{current_count} calls in {VOLUME_WINDOW_SECS}s (baseline: {baseline:.1}/min)"
+                        "{current_count} calls in {}s (baseline: {baseline:.1}/window)",
+                        thresholds.volume_window_secs
                     ),
                 });
             }
         }
 
         // Wangiri detection: short calls to same prefix
-        check_wangiri(msg.src_addr, pattern, now, thresholds.wangiri_calls)
+        check_wangiri(msg.src_addr, pattern, now, &thresholds)
     }
 
     /// Remove call pattern entries whose calls are older than `max_age` **in
@@ -541,16 +611,6 @@ impl FraudDetector {
     }
 }
 
-/// The volume-spike window as a capture-time span.
-fn volume_window() -> TimeDelta {
-    TimeDelta::seconds(VOLUME_WINDOW_SECS as i64)
-}
-
-/// The wangiri window as a capture-time span.
-fn wangiri_window() -> TimeDelta {
-    TimeDelta::seconds(WANGIRI_WINDOW_SECS as i64)
-}
-
 /// Check for wangiri pattern: multiple short calls to the same number prefix.
 ///
 /// The tally walks `short_calls` — the calls whose measured duration came in
@@ -572,8 +632,9 @@ fn check_wangiri(
     src_ip: IpAddr,
     pattern: &CallPattern,
     now: DateTime<Utc>,
-    wangiri_calls: u32,
+    thresholds: &FraudThresholds,
 ) -> Option<FraudAlert> {
+    let wangiri_calls = thresholds.wangiri_calls;
     if (pattern.short_calls.len() as u32) < wangiri_calls {
         return None;
     }
@@ -581,7 +642,7 @@ fn check_wangiri(
     // Group recent short calls by prefix (first 6 characters of the number).
     let mut prefix_counts: HashMap<&str, u32> = HashMap::new();
     for (t, dest) in pattern.short_calls.values() {
-        if now.signed_duration_since(*t) >= wangiri_window() {
+        if now.signed_duration_since(*t) >= thresholds.wangiri_window() {
             continue;
         }
         // Slice on a character boundary: a destination is normally digits, but
@@ -604,7 +665,10 @@ fn check_wangiri(
     Some(FraudAlert {
         src_ip,
         alert_type: FraudType::Wangiri,
-        detail: format!("{count} short calls to prefix '{prefix}' in {WANGIRI_WINDOW_SECS}s"),
+        detail: format!(
+            "{count} short calls to prefix '{prefix}' in {}s",
+            thresholds.wangiri_window_secs
+        ),
     })
 }
 

@@ -492,6 +492,53 @@ fn fraud_sequential_calls_decides_how_long_a_scan_must_be() {
     );
 }
 
+/// Narrowing the VOLUME window must not narrow sequential scanning with it.
+///
+/// The refused calls a dial-plan walk is read from were pruned by the volume
+/// window, which was invisible while both were compiled-in 60-second figures
+/// and shared one helper. Making the volume window settable would have made
+/// that sharing a live coupling: an operator narrowing the window to catch a
+/// burst shorter than a minute would, without being told, have shortened the
+/// run a dial-plan walk has to make. The two questions are unrelated — a walk
+/// is defined by the numbers being consecutive, not by any rate — so they now
+/// have separate windows and this pins them apart.
+#[test]
+fn a_narrow_volume_window_leaves_sequential_scanning_alone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = Vec::new();
+    for i in 0..3u64 {
+        frames.extend(refused_call(
+            &format!("wide-seq-{i}"),
+            &format!("w{i}"),
+            &format!("1555300{}", i + 1),
+            i * 15_000_000,
+        ));
+    }
+    let pcap = arg(&write_capture(&dir, "widescan", &frames));
+
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    assert!(
+        alerted(&shipped, "SequentialScanning"),
+        "three consecutive dead numbers over 30s is the shipped detection, or \
+         this test proves nothing:\n{shipped}"
+    );
+
+    let (_, narrowed) = run(&[
+        "-N",
+        "-I",
+        &pcap,
+        "--fraud-detect",
+        "--fraud-volume-window",
+        "5",
+        "--no-config",
+    ]);
+    assert!(
+        alerted(&narrowed, "SequentialScanning"),
+        "--fraud-volume-window 5 asks a question about bursts and must not \
+         shorten the run a dial-plan walk has to make:\n{narrowed}"
+    );
+}
+
 /// A capture that establishes a baseline of two calls a minute and then places
 /// fifteen in the next one.
 ///
@@ -595,6 +642,136 @@ fn fraud_volume_min_calls_decides_the_floor_under_a_spike() {
     assert!(
         alerted(&overridden, "VolumeSpike"),
         "--fraud-volume-min-calls must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared wangiri window decides whether a PACED lure is visible at all.
+///
+/// Three short calls to one prefix, five minutes apart. That spacing is the
+/// pattern's real shape on a trunk — a lure firing three times a minute is one
+/// somebody has already blocked — and the shipped sixty-second window holds
+/// exactly one of the three at a time. The count cannot rescue it: the only
+/// setting that reports anything here is one short call, which reports every
+/// ordinary short call anywhere in the capture as a lure too.
+///
+/// This test also pins the sweep age, which is the coupling that makes the
+/// window settable rather than merely declared. Detector state is swept on a
+/// fixed schedule, and a sweep that ages short calls out at 120 seconds
+/// truncates a 900-second window to 120 whatever the operator declared — so a
+/// run whose sweep age is a constant reports nothing here even with the window
+/// wired. The sweep age is derived from the widest configured window instead.
+#[test]
+fn fraud_wangiri_window_secs_decides_whether_a_paced_lure_is_visible() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = Vec::new();
+    for i in 0..3u64 {
+        frames.extend(answered_call(
+            &format!("paced-{i}"),
+            &format!("p{i}"),
+            &format!("1555200{i}"),
+            i * 300_000_000,
+            1_000_000,
+        ));
+    }
+    let pcap = arg(&write_capture(&dir, "pacedlure", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nfraud_wangiri_window_secs = 900\n",
+    ));
+
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    assert!(
+        !alerted(&shipped, "Wangiri"),
+        "five minutes apart, the shipped sixty-second window never holds two \
+         of these at once:\n{shipped}"
+    );
+
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    assert!(
+        alerted(&declared, "Wangiri"),
+        "[security] fraud_wangiri_window_secs = 900 must both reach the \
+         detector and outlast the state sweep:\n{declared}"
+    );
+
+    let (_, overridden) = run(&[
+        "-N",
+        "-I",
+        &pcap,
+        "--fraud-detect",
+        "--fraud-wangiri-window",
+        "60",
+        "--config",
+        &cfg,
+    ]);
+    assert!(
+        !alerted(&overridden, "Wangiri"),
+        "--fraud-wangiri-window must beat the config key:\n{overridden}"
+    );
+}
+
+/// The declared volume window decides how concentrated a burst has to be.
+///
+/// A spike is a count measured against a baseline sampled over the same
+/// window, so widening or narrowing the window moves both together and a
+/// steady source reads the same at any width. What the width alone decides is
+/// how short a burst can be and still stand out: forty calls in one second sit
+/// inside a minute of ordinary one-a-second traffic and average away to
+/// nothing, and only a window shorter than the burst separates them.
+#[test]
+fn fraud_volume_window_secs_decides_how_concentrated_a_burst_must_be() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut frames = Vec::new();
+    let mut n = 0usize;
+    // Seventy seconds of ordinary traffic at one call a second, which is what
+    // the source's baseline is built from.
+    for secs in 0u64..70 {
+        frames.push((
+            invite(&format!("steady-{n}"), &format!("s{n}"), "2000", None),
+            secs * 1_000_000,
+        ));
+        n += 1;
+    }
+    // Forty calls inside one second, five seconds later.
+    for i in 0u64..40 {
+        frames.push((
+            invite(&format!("burst-{n}"), &format!("b{n}"), "2000", None),
+            75_000_000 + i * 20_000,
+        ));
+        n += 1;
+    }
+    let pcap = arg(&write_capture(&dir, "microburst", &frames));
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nfraud_volume_window_secs = 5\n",
+    ));
+
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    assert!(
+        !alerted(&shipped, "VolumeSpike"),
+        "the shipped sixty-second window already holds sixty ordinary calls, \
+         so forty more inside one second is not five times anything:\n{shipped}"
+    );
+
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    assert!(
+        alerted(&declared, "VolumeSpike"),
+        "[security] fraud_volume_window_secs = 5 measures the burst against \
+         five seconds of ordinary traffic, not sixty:\n{declared}"
+    );
+
+    let (_, overridden) = run(&[
+        "-N",
+        "-I",
+        &pcap,
+        "--fraud-detect",
+        "--fraud-volume-window",
+        "60",
+        "--config",
+        &cfg,
+    ]);
+    assert!(
+        !alerted(&overridden, "VolumeSpike"),
+        "--fraud-volume-window must beat the config key:\n{overridden}"
     );
 }
 

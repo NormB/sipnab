@@ -227,7 +227,13 @@ fn exec_template_no_command_injection_via_call_id() {
     let tmp_path = tmp.path().to_str().unwrap().to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
-    let mut engine = EventExecEngine::new(Some(cmd), None, 100, 3.0);
+    let mut engine = EventExecEngine::new(
+        Some(cmd),
+        None,
+        100,
+        3.0,
+        sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+    );
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
@@ -276,7 +282,13 @@ fn exec_template_no_injection_via_from_header() {
     let tmp_path = tmp.path().to_str().unwrap().to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_FROM\" > {tmp_path}");
 
-    let mut engine = EventExecEngine::new(Some(cmd), None, 100, 3.0);
+    let mut engine = EventExecEngine::new(
+        Some(cmd),
+        None,
+        100,
+        3.0,
+        sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+    );
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
@@ -319,7 +331,13 @@ fn exec_template_no_injection_via_backticks() {
     let tmp_path = tmp.path().to_str().unwrap().to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
-    let mut engine = EventExecEngine::new(Some(cmd), None, 100, 3.0);
+    let mut engine = EventExecEngine::new(
+        Some(cmd),
+        None,
+        100,
+        3.0,
+        sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+    );
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
@@ -359,7 +377,13 @@ fn exec_template_no_injection_via_semicolon() {
     let tmp_path = tmp.path().to_str().unwrap().to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
-    let mut engine = EventExecEngine::new(Some(cmd), None, 100, 3.0);
+    let mut engine = EventExecEngine::new(
+        Some(cmd),
+        None,
+        100,
+        3.0,
+        sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+    );
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
@@ -399,7 +423,13 @@ fn exec_template_no_injection_via_pipe() {
     let tmp_path = tmp.path().to_str().unwrap().to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
-    let mut engine = EventExecEngine::new(Some(cmd), None, 100, 3.0);
+    let mut engine = EventExecEngine::new(
+        Some(cmd),
+        None,
+        100,
+        3.0,
+        sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+    );
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
@@ -476,7 +506,13 @@ fn template_migration_converts_percent_to_env_vars() {
 
     // Pass the template with legacy %call_id -- the engine migrates it
     let legacy_cmd = cmd.replace("$SIPNAB_CALL_ID", "%call_id");
-    let mut engine = EventExecEngine::new(Some(legacy_cmd), None, 100, 3.0);
+    let mut engine = EventExecEngine::new(
+        Some(legacy_cmd),
+        None,
+        100,
+        3.0,
+        sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+    );
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
@@ -906,7 +942,13 @@ fn alert_engine_caps_cooldown_entries() {
 /// H5: EventExecEngine reaps completed children, preventing zombies.
 #[test]
 fn event_exec_reaps_completed_children() {
-    let mut engine = EventExecEngine::new(Some("true".to_string()), None, 100, 3.0);
+    let mut engine = EventExecEngine::new(
+        Some("true".to_string()),
+        None,
+        100,
+        3.0,
+        sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+    );
 
     // Build and fire a dialog event that spawns "true" (exits immediately)
     let raw = build_sip(
@@ -953,7 +995,13 @@ fn event_exec_reaps_completed_children() {
 /// new commands to be spawned.
 #[test]
 fn event_exec_queue_depth_recovers_after_reaping() {
-    let mut engine = EventExecEngine::new(Some("true".to_string()), None, 1000, 3.0);
+    let mut engine = EventExecEngine::new(
+        Some("true".to_string()),
+        None,
+        1000,
+        3.0,
+        sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
+    );
 
     let raw = build_sip(
         "INVITE sip:bob@example.com SIP/2.0",

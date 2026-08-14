@@ -158,6 +158,12 @@ pub struct ParallelConfig {
     /// Correlation header names for B2BUA leg matching (sngrep `sip.xcid`).
     /// Empty falls back to the `DialogStore` default (`["X-Call-ID"]`).
     pub xcid_headers: Vec<String>,
+    /// How far apart, in milliseconds, two legs of one call may be created and
+    /// still correlate on timing alone (`--leg-correlation-window`). Carried
+    /// through for the same reason `xcid_headers` is: each worker builds its
+    /// own store, and without it the parallel path would silently apply the
+    /// shipped window the single-core path was told to replace.
+    pub leg_correlation_window_ms: u64,
     /// Reassemble IP fragments / TCP segments (`--no-reassembly` sets false).
     pub reassembly: bool,
     /// Cap on parsed bytes per packet (`-S`/`--limitlen`).
@@ -424,7 +430,8 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                     ds.set_tracking(cfg.dialog_tracking);
                     ds
                 }
-                .with_xcid_headers(cfg.xcid_headers.clone());
+                .with_xcid_headers(cfg.xcid_headers.clone())
+                .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false); // batch mode never reads audio buffers
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
@@ -493,7 +500,8 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
         ds.set_tracking(cfg.dialog_tracking);
         ds
     }
-    .with_xcid_headers(cfg.xcid_headers.clone());
+    .with_xcid_headers(cfg.xcid_headers.clone())
+    .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
     let mut ss = StreamStore::new(cfg.max_streams);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
@@ -891,7 +899,8 @@ pub fn run_offline_parallel_file(
                     ds.set_tracking(cfg.dialog_tracking);
                     ds
                 }
-                .with_xcid_headers(cfg.xcid_headers.clone());
+                .with_xcid_headers(cfg.xcid_headers.clone())
+                .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false);
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
@@ -973,7 +982,8 @@ pub fn run_offline_parallel_file(
         ds.set_tracking(cfg.dialog_tracking);
         ds
     }
-    .with_xcid_headers(cfg.xcid_headers.clone());
+    .with_xcid_headers(cfg.xcid_headers.clone())
+    .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
     let mut ss = StreamStore::new(cfg.max_streams);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
@@ -1512,6 +1522,7 @@ mod tests {
             no_rtp: false,
             quiet_bad_parse: false,
             xcid_headers: Vec::new(),
+            leg_correlation_window_ms: crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
             reassembly: true,
             parse_limit: None,
         }
