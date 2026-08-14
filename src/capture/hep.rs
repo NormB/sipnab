@@ -274,9 +274,23 @@ const HMAC_TOKEN_VERSION: u8 = 1;
 /// Token length: version(1) + timestamp(8) + nonce(16) + HMAC-SHA256(32).
 #[cfg(feature = "hep")]
 const HMAC_TOKEN_LEN: usize = 1 + 8 + 16 + 32;
-/// Acceptance window (seconds) for a token timestamp, each side of `now`.
+/// Default acceptance window (seconds) for a token timestamp, each side of
+/// `now`.
+///
+/// Thirty seconds is generous for a pair of hosts running NTP and useless for a
+/// pair that are not: on an agent/collector pair with a drifted clock EVERY
+/// packet is rejected as out-of-window, and what the operator sees is a
+/// collector receiving nothing — a symptom they will attribute to routing, to a
+/// firewall, or to a dead agent long before they suspect a clock.
+///
+/// So the window is settable, with `--hep-hmac-window` or
+/// `[security] hep_hmac_window_secs`, and it is capped: widening it is a
+/// SECURITY trade, because the window is exactly how long a packet an on-path
+/// attacker captured stays acceptable, and it is also how far back the nonce
+/// cache must remember. [`crate::config::MAX_HEP_HMAC_WINDOW_SECS`] holds the
+/// ceiling and the reasoning for where it sits.
 #[cfg(feature = "hep")]
-pub const HMAC_WINDOW_SECS: u64 = 30;
+pub const DEFAULT_HMAC_WINDOW_SECS: u64 = 30;
 
 /// Why an HMAC auth token was rejected.
 #[cfg(feature = "hep")]
@@ -491,6 +505,8 @@ impl HmacNonceCache {
 /// * `expected` — the configured shared HMAC key, if any.
 /// * `token` — the packet's `0x000e` chunk bytes, if present.
 /// * `payload` — the packet payload the token must authenticate.
+/// * `window_secs` — acceptance window each side of now, from
+///   [`HepListenerOpts::hmac_window_secs`].
 /// * `cache` — mutable per-listener replay cache.
 ///
 /// # Returns
@@ -507,6 +523,7 @@ fn hmac_auth_ok(
     expected: Option<&str>,
     token: Option<&[u8]>,
     payload: &[u8],
+    window_secs: u64,
     cache: &mut HmacNonceCache,
 ) -> bool {
     match (expected, token) {
@@ -514,14 +531,7 @@ fn hmac_auth_ok(
         (Some(_), None) => false,
         (Some(key), Some(token)) => {
             let now = chrono::Utc::now().timestamp().max(0) as u64;
-            match verify_hmac_auth_token(
-                key.as_bytes(),
-                token,
-                payload,
-                now,
-                HMAC_WINDOW_SECS,
-                cache,
-            ) {
+            match verify_hmac_auth_token(key.as_bytes(), token, payload, now, window_secs, cache) {
                 Ok(()) => true,
                 Err(e) => {
                     // A skew rejection drops EVERY packet from that sender and
@@ -540,10 +550,11 @@ fn hmac_auth_ok(
                         if !SKEW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                             tracing::warn!(
                                 "HEP HMAC auth is rejecting packets because the \
-                                 sender's timestamp is outside the {HMAC_WINDOW_SECS}s \
-                                 acceptance window — check NTP on the sender. Every \
-                                 packet from a clock-drifted peer is dropped, so this \
-                                 looks like a collector that receives nothing."
+                                 sender's timestamp is outside the {window_secs}s \
+                                 acceptance window — check NTP on the sender, or \
+                                 widen it with --hep-hmac-window. Every packet from \
+                                 a clock-drifted peer is dropped, so this looks like \
+                                 a collector that receives nothing."
                             );
                         }
                     }
@@ -1377,6 +1388,10 @@ pub struct HepListenerOpts<'a> {
     /// How the 0x000e chunk is interpreted: a verbatim shared secret
     /// (`Plain`) or a per-message HMAC token (`Hmac`).
     pub auth_mode: HepAuthMode,
+    /// Seconds either side of now a `Hmac` token's timestamp may fall
+    /// (`[security] hep_hmac_window_secs`). Ignored in `Plain` mode, which
+    /// carries no timestamp at all.
+    pub hmac_window_secs: u64,
 }
 
 /// HEP listener: binds a UDP socket and receives HEP packets.
@@ -1441,6 +1456,7 @@ pub fn capture_hep(
         max_tracked_peers,
         auth_key,
         auth_mode,
+        hmac_window_secs,
     } = *opts;
 
     // Fail closed on an unguarded non-loopback bind before touching the
@@ -1615,6 +1631,7 @@ pub fn capture_hep(
                 auth_key,
                 hep.auth_key.as_deref(),
                 &hep.payload,
+                hmac_window_secs,
                 &mut hmac_nonce_cache,
             ),
         };
@@ -2892,7 +2909,14 @@ mod tests {
             assert_eq!(token.len(), 1 + 8 + 16 + 32);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_auth_token(KEY, &token, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &token,
+                    payload,
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Ok(())
             );
         }
@@ -2902,13 +2926,27 @@ mod tests {
         fn verify_rejects_bad_length_and_version() {
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_auth_token(KEY, b"short", b"p", NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    b"short",
+                    b"p",
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Err(HmacAuthError::BadFormat)
             );
             let mut token = build_hmac_auth_token(KEY, NOW, &NONCE, b"p");
             token[0] = 9; // unknown version
             assert_eq!(
-                verify_hmac_auth_token(KEY, &token, b"p", NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &token,
+                    b"p",
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Err(HmacAuthError::BadFormat)
             );
         }
@@ -2921,12 +2959,26 @@ mod tests {
             let mut cache = HmacNonceCache::new();
             let stale = build_hmac_auth_token(KEY, NOW - 100, &NONCE, payload);
             assert_eq!(
-                verify_hmac_auth_token(KEY, &stale, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &stale,
+                    payload,
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Err(HmacAuthError::TimestampOutOfWindow)
             );
             let future = build_hmac_auth_token(KEY, NOW + 100, &NONCE, payload);
             assert_eq!(
-                verify_hmac_auth_token(KEY, &future, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &future,
+                    payload,
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Err(HmacAuthError::TimestampOutOfWindow)
             );
         }
@@ -2944,7 +2996,7 @@ mod tests {
                     &token,
                     b"tampered-payload",
                     NOW,
-                    HMAC_WINDOW_SECS,
+                    DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
                 ),
                 Err(HmacAuthError::BadMac)
@@ -2956,7 +3008,7 @@ mod tests {
                     &token,
                     b"original-payload",
                     NOW,
-                    HMAC_WINDOW_SECS,
+                    DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
                 ),
                 Err(HmacAuthError::BadMac)
@@ -2970,12 +3022,26 @@ mod tests {
             let token = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_auth_token(KEY, &token, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &token,
+                    payload,
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Ok(()),
                 "first use accepted"
             );
             assert_eq!(
-                verify_hmac_auth_token(KEY, &token, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &token,
+                    payload,
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Err(HmacAuthError::Replay),
                 "identical replay rejected"
             );
@@ -3015,7 +3081,7 @@ mod tests {
                     &token,
                     &parsed.payload,
                     NOW,
-                    HMAC_WINDOW_SECS,
+                    DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
                 ),
                 Ok(())
@@ -3057,14 +3123,28 @@ mod tests {
             // Accept a token now, seeding its nonce into the cache.
             let token = build_hmac_auth_token(KEY, NOW, &NONCE, b"p");
             assert_eq!(
-                verify_hmac_auth_token(KEY, &token, b"p", NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &token,
+                    b"p",
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Ok(())
             );
             // Far in the future the same token is out of window — rejected as
             // stale regardless of whether its nonce is still cached.
-            let later = NOW + HMAC_WINDOW_SECS + 100;
+            let later = NOW + DEFAULT_HMAC_WINDOW_SECS + 100;
             assert_eq!(
-                verify_hmac_auth_token(KEY, &token, b"p", later, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &token,
+                    b"p",
+                    later,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Err(HmacAuthError::TimestampOutOfWindow)
             );
         }
@@ -3082,12 +3162,26 @@ mod tests {
             forged[last] ^= 0xFF; // ensure MAC is wrong even if keys collide
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_auth_token(KEY, &forged, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &forged,
+                    payload,
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Err(HmacAuthError::BadMac)
             );
             let authentic = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
             assert_eq!(
-                verify_hmac_auth_token(KEY, &authentic, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                verify_hmac_auth_token(
+                    KEY,
+                    &authentic,
+                    payload,
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
                 Ok(()),
                 "authentic token with the same nonce still accepted"
             );
@@ -3825,6 +3919,7 @@ mod tests {
                 max_tracked_peers: crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS,
                 auth_key: None,
                 auth_mode: HepAuthMode::Plain,
+                hmac_window_secs: DEFAULT_HMAC_WINDOW_SECS,
             };
             let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.is_ok());

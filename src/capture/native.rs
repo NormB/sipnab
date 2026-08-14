@@ -58,6 +58,10 @@ pub enum CaptureSource {
         /// How the 0x000e chunk is interpreted (verbatim secret vs HMAC token).
         #[cfg(feature = "hep")]
         auth_mode: crate::cli::HepAuthMode,
+        /// Seconds either side of now an HMAC token's timestamp may fall
+        /// (`[security] hep_hmac_window_secs`).
+        #[cfg(feature = "hep")]
+        hmac_window_secs: u64,
     },
 }
 
@@ -279,6 +283,7 @@ pub fn start_capture(
             max_tracked_peers,
             auth_key,
             auth_mode,
+            hmac_window_secs,
         } => {
             let addr = bind_addr.clone();
             let allow = allowlist.clone();
@@ -287,6 +292,7 @@ pub fn start_capture(
             let peer_capacity = *max_tracked_peers;
             let auth = auth_key.clone();
             let mode = *auth_mode;
+            let window = *hmac_window_secs;
             thread::Builder::new()
                 .name("capture-hep".to_string())
                 .spawn(move || {
@@ -297,6 +303,7 @@ pub fn start_capture(
                         max_tracked_peers: peer_capacity,
                         auth_key: auth.as_deref(),
                         auth_mode: mode,
+                        hmac_window_secs: window,
                     };
                     hep::capture_hep(&addr, &config, tx, &opts, ready_tx)
                 })

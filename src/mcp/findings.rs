@@ -59,7 +59,7 @@ pub(in crate::mcp) const MAX_SUMMARY_CHARS: usize = 500;
 /// other.
 pub(in crate::mcp) const MAX_DETAIL_CHARS: usize = 4096;
 
-/// How many findings one process will accept.
+/// How many findings one process will accept by default.
 ///
 /// Not a memory bound — nothing is retained. It bounds how much an agent can
 /// write into the operator's journal. A caller in a loop is otherwise an
@@ -70,7 +70,22 @@ pub(in crate::mcp) const MAX_DETAIL_CHARS: usize = 4096;
 /// Past the cap the write is REFUSED and says so. It is not silently dropped:
 /// an agent that believes it recorded a conclusion, on a server that discarded
 /// it, is worse off than one told plainly that it did not.
-pub(in crate::mcp) const MAX_FINDINGS_PER_PROCESS: u64 = 1000;
+///
+/// **Refusal is the design, not the ceiling being in the wrong place.** There
+/// is no eviction to prefer over it, because there is nothing to evict — see
+/// the module documentation. A finding is a log line and is gone from this
+/// process the moment it is written, so "drop the oldest to make room" would
+/// mean unwriting a line the operator's journal already has. The budget is what
+/// is settable: a long agent session on a large capture legitimately reaches a
+/// thousand annotations, so raise it with `--mcp-max-findings` or
+/// `[limits] mcp_max_findings` on the deployments where the journal can take
+/// it.
+///
+/// Read from [`crate::cli::Cli::DEFAULT_MCP_MAX_FINDINGS`] rather than stated
+/// here, because these types are `pub(in crate::mcp)` and the resolver that
+/// answers for the budget is compiled into every native build.
+pub(in crate::mcp) const DEFAULT_MAX_FINDINGS_PER_PROCESS: u64 =
+    crate::cli::Cli::DEFAULT_MCP_MAX_FINDINGS;
 
 /// What a single [`FindingsLog::record`] did, so the response can say it
 /// plainly instead of implying everything was kept verbatim.
@@ -92,11 +107,28 @@ pub(in crate::mcp) struct Recorded {
 
 /// Counts what has been written. Holds no findings, by design — see the module
 /// documentation.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(in crate::mcp) struct FindingsLog {
     /// Findings accepted so far. Doubles as the next sequence number, which is
     /// why it never decreases: a seq is a name, not an index into anything.
     recorded: u64,
+    /// Findings this log will accept before refusing.
+    ///
+    /// A field rather than the constant it used to read, so one server's budget
+    /// is the operator's to set. Held per log rather than in a process global
+    /// because a `FindingsLog` belongs to one MCP server and the budget is that
+    /// server's — there is no second surface to keep in step.
+    cap: u64,
+}
+
+impl Default for FindingsLog {
+    /// A log that has accepted nothing and carries the shipped budget.
+    fn default() -> Self {
+        Self {
+            recorded: 0,
+            cap: DEFAULT_MAX_FINDINGS_PER_PROCESS,
+        }
+    }
 }
 
 /// Clip to `max` CHARACTERS, never bytes.
@@ -115,14 +147,36 @@ fn clip(s: &str, max: usize) -> (String, usize) {
 }
 
 impl FindingsLog {
-    /// A log that has accepted nothing yet.
+    /// A log that has accepted nothing yet, with the shipped budget.
     pub(in crate::mcp) fn new() -> Self {
         Self::default()
     }
 
+    /// A log with an operator-set budget.
+    ///
+    /// `0` is treated as the shipped default rather than as "accept nothing":
+    /// a server that refuses the first write is indistinguishable from one
+    /// where `--mcp-allow-save-findings` was never passed, and the config layer
+    /// already refuses 0 by name.
+    pub(in crate::mcp) fn with_cap(cap: u64) -> Self {
+        Self {
+            recorded: 0,
+            cap: if cap == 0 {
+                DEFAULT_MAX_FINDINGS_PER_PROCESS
+            } else {
+                cap
+            },
+        }
+    }
+
+    /// The budget this log was built with, for the refusal message.
+    pub(in crate::mcp) fn cap(&self) -> u64 {
+        self.cap
+    }
+
     /// True once this process has taken all the findings it will.
     pub(in crate::mcp) fn is_full(&self) -> bool {
-        self.recorded >= MAX_FINDINGS_PER_PROCESS
+        self.recorded >= self.cap
     }
 
     /// Record one finding by writing it to the log. The only way in, and there
@@ -180,7 +234,7 @@ impl FindingsLog {
             detail_chars_submitted,
             truncated,
             recorded_total: self.recorded,
-            remaining: MAX_FINDINGS_PER_PROCESS.saturating_sub(self.recorded),
+            remaining: self.cap.saturating_sub(self.recorded),
         })
     }
 }
@@ -202,7 +256,7 @@ mod tests {
     #[test]
     fn the_process_cap_refuses_rather_than_dropping_silently() {
         let mut log = FindingsLog::new();
-        for i in 0..MAX_FINDINGS_PER_PROCESS {
+        for i in 0..DEFAULT_MAX_FINDINGS_PER_PROCESS {
             assert!(
                 rec(&mut log, &format!("f{i}")).is_some(),
                 "everything under the cap must be accepted"
@@ -222,9 +276,9 @@ mod tests {
         let mut log = FindingsLog::new();
         let first = rec(&mut log, "first").expect("accepted");
         assert_eq!(first.recorded_total, 1);
-        assert_eq!(first.remaining, MAX_FINDINGS_PER_PROCESS - 1);
+        assert_eq!(first.remaining, DEFAULT_MAX_FINDINGS_PER_PROCESS - 1);
         let second = rec(&mut log, "second").expect("accepted");
-        assert_eq!(second.remaining, MAX_FINDINGS_PER_PROCESS - 2);
+        assert_eq!(second.remaining, DEFAULT_MAX_FINDINGS_PER_PROCESS - 2);
     }
 
     #[test]

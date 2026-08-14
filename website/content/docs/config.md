@@ -129,10 +129,13 @@ SIP protocol handling.
 | `xcid_headers` | array | `["X-Call-ID"]` | Header names used to correlate B2BUA call legs (sngrep `sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID joins that dialog. Add carrier-specific headers here; an empty/unset list keeps the `X-Call-ID` default |
 | `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. This is the B2BUA timing heuristic's whole content, and the only strategy left once a B2BUA has rewritten every identifier the other six compare. The shipped two seconds describes a PBX placing the outbound leg immediately, not one doing an LNP or ENUM dip, or walking an LCR cascade, before it places one. Widen it on such a hop; every correlation still reports the strategy that matched, so a guess stays labelled as one. `--leg-correlation-window` overrides it |
 
+| `active_idle_window_secs` | integer | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The shipped hour is twice RFC 4028's default `Session-Expires`, which grounds it for a trunk carrying session timers and not for a contact centre, where a caller parked on hold past an hour is a channel in use the gauge stops counting. Widening it widens the opposite error -- a call that never sent its BYE keeps counting for longer, and that one never recovers on its own -- so raise it for traffic that genuinely goes quiet. `--active-idle-window` overrides it. `0` fails validation and names the key |
+
 ```toml
 [sip]
 xcid_headers = ["X-Call-ID", "X-CID"]
 leg_correlation_window_ms = 8000
+active_idle_window_secs = 7200
 ```
 
 ### [security]
@@ -164,6 +167,7 @@ Security detection defaults.
 | `scanner_established_factor` | integer | `4` | How much more evidence `--kill-scanner` needs from a source that has completed a registration or a call. A registered endpoint that starts probing is a compromised phone worth reporting, but it is also the peer whose ordinary working traffic looks most like probing, and the peer a false positive costs most. `--scanner-established-factor` overrides it |
 | `scanner_answer_grace_ms` | integer | `500` | How long a probe may go without a response before `--kill-scanner` counts it as unanswered, in milliseconds. The default is [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)'s Timer T1, the round-trip estimate at which SIP itself gives up waiting and retransmits. Raise it on a link whose round trip runs longer than that, where the default reports every probe still in flight as one nobody answered. `--scanner-answer-grace` overrides it |
 | `findings_history` | integer | `1000` | Security findings kept in memory for later retrieval. `0` keeps none, which is a real setting rather than a mistake. `--findings-history` overrides it |
+| `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honours a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and it is how far back the receiver's nonce cache must remember. Range 1-300. Past 300 the sender has no working time daemon, which is what to repair, so sipnab refuses the value and names the key. `--hep-hmac-window` overrides it |
 
 Every `scanner_*` key above rejects `0` and names the key. A zero count reports
 the first probe of any kind as a scanner, a zero window resets the counters on
@@ -226,6 +230,17 @@ itself.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire directly: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; that beats the round trip sipnab derives from a sender-report echo carried in a receiver report, which anchors on the capture point and so reads as a lower bound; with none of the three, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured |
+| `codec_ie` | table | -- | Equipment impairment factors (ITU-T G.107 `Ie`) for codecs sipnab has no published value for, written as a `[media.codec_ie]` sub-table of `"CODEC" = <Ie>` pairs. sipnab knows G.711, G.729 and Opus; every other codec -- G.722, G.726, iLBC, AMR, EVS -- falls to a placeholder and scores identically to a stream whose codec was never identified. A declared codec comes back as `mos_grounding = "operator_declared"` rather than as published, so a figure from this file is never presented as an ITU-T citation, and a codec nobody declared still says its MOS is a placeholder. Keys match case-insensitively. Values must sit in `0.0` to just under `95.0`: at 95 the E-model's loss term vanishes, and above it more packet loss would RAISE the score, so sipnab fails validation on such a value and names the codec |
+
+```toml
+[media]
+one_way_delay_ms = 45.0
+
+# Impairment factors for codecs sipnab has no published value for.
+[media.codec_ie]
+G722 = 12.0
+iLBC = 11.0
+```
 
 ### [quality]
 
@@ -281,6 +296,7 @@ Resource limits to prevent unbounded memory growth.
 | `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key |
 | `max_streams` | integer | `50000` | Maximum RTP streams |
 | `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions |
+| `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initialises mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second |
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
 | `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
@@ -291,6 +307,7 @@ Resource limits to prevent unbounded memory growth.
 | `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
 | `exec_queue_depth` | integer | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. `--exec-queue-depth` overrides it. `0` fails validation and names the key |
 | `mcp_max_body_bytes` | integer | `4096` | Bytes of SIP body or matched snippet in ONE MCP response. `mcp_max_rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. `--mcp-max-body-bytes` overrides it. `0` fails validation and names the key |
+| `mcp_max_findings` | integer | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `mcp_max_rows` and `mcp_max_body_bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture, where a thousand annotations is a session doing its job. `--mcp-max-findings` overrides it. `0` fails validation and names the key |
 | `max_lost_sequences` | integer | `1000` | Lost RTP sequence numbers retained per stream. This is the window the Packet Loss Map draws and the burst/gap analysis reasons over, so a 30-minute call losing 1 % shows only its last minute at the default. The burst/gap window widens with it. `--max-lost-sequences` overrides it. `0` fails validation and names the key |
 | `max_groups` | integer | `100000` | Distinct `--group-by` keys one run retains, the same figure `dialog_limit` ships so a grouped run cannot outgrow an ordinary capture. Past it sipnab refuses new keys and warns that the output is incomplete. `--max-groups` overrides it |
 | `max_grouped_messages` | integer | `200000` | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory held until the capture ends. `--max-grouped-messages` overrides it |
@@ -299,6 +316,7 @@ Resource limits to prevent unbounded memory growth.
 | `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message so both halves parse as malformed — the peer that sent a valid message is the one reported broken. Raise it on such a trunk. The floor is one SIP header line (8192); below that no message survives, and sipnab refuses the value by name. `--max-tcp-buffer` overrides it |
 | `api_max_rows` | integer | `1000` | Rows one list-style REST response returns. The REST counterpart of `mcp_max_rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. `--api-max-rows` overrides it. `0` fails validation and names the key |
 | `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. `--api-rate-limit-per-peer` overrides it |
+| `metrics_max_conn` | integer | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint, so raise it where several collectors share one sipnab. `--metrics-max-conn` overrides it. `0` fails validation and names the key: the gate would then refuse every scrape |
 | `max_tracked_peers` | integer | `4096` | Distinct peers one rate-limit window holds, across every surface sipnab meters: HEP source addresses and MCP callers. Past it sipnab REFUSES a peer it has not already seen this second rather than waving it through, so on a collector aggregating from more agents than this the surplus never enters the capture. Raise it there. The floor is 2, and sipnab refuses a smaller value by name: at 1 the first peer to send in a window takes the only slot and sipnab turns every other peer away for the rest of it |
 
 ```toml
@@ -359,6 +377,7 @@ Address name-resolution settings (display `host:port` instead of `ip:port`).
 | `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups |
 | `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload |
 | `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, preserving the rest of this file |
+| `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once. Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. `--dns-cache-entries` overrides it |
 | `manual` | table | -- | Inline `"IP" = "name"` mappings, loaded at startup (highest-priority manual layer) |
 
 ```toml

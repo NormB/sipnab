@@ -106,66 +106,64 @@ fn portrange_resolution_and_error() {
 /// through libpcap. Here the question is only which runs get one.
 #[test]
 fn bpf_autogeneration_rules() {
-    let p = bootstrap::plan(&cli(&["-d", "eth0"]), &Config::default()).expect("plan");
+    /// The BPF filter `args` plans to, with the plan itself dropped here.
+    ///
+    /// Extracted so each case's `Cli` and `RunPlan` live in THIS frame and are
+    /// gone before the next case runs. Written inline, the seven cases held
+    /// seven of each at once — a debug build gives every lexical binding its
+    /// own stack slot and never reuses them — and the accumulation put the test
+    /// over the 2 MiB libtest thread stack, on top of what clap's generated
+    /// `augment_args` already needs for ~250 flags. Measured: the inline form
+    /// aborted with `has overflowed its stack` at the default size and passed
+    /// at `RUST_MIN_STACK=2129920`. Keep new cases going through here.
+    fn bpf_for(args: &[&str]) -> Option<String> {
+        bootstrap::plan(&cli(args), &Config::default())
+            .expect("plan")
+            .capture_config
+            .bpf_filter
+    }
+
+    let f = bpf_for(&["-d", "eth0"]);
     assert_eq!(
-        p.capture_config.bpf_filter.as_deref(),
+        f.as_deref(),
         Some(bootstrap::auto_bpf_filter(5060, 5061, &[]).as_str()),
         "live capture with no explicit filter gets the auto-generated BPF"
     );
     assert!(
-        p.capture_config
-            .bpf_filter
-            .as_deref()
+        f.as_deref()
             .is_some_and(|f| f.starts_with("portrange 5060-5061 or ")),
         "the untagged portrange must still lead the expression"
     );
 
-    let p = bootstrap::plan(
-        &cli(&["-d", "eth0", "--portrange", "5080-5080"]),
-        &Config::default(),
-    )
-    .expect("plan");
     assert_eq!(
-        p.capture_config.bpf_filter.as_deref(),
+        bpf_for(&["-d", "eth0", "--portrange", "5080-5080"]).as_deref(),
         Some(bootstrap::auto_bpf_filter(5080, 5080, &[]).as_str()),
         "degenerate range uses the single-port form"
     );
 
     // Opt-in UDP tunnel coverage reaches the generated filter, and only when
     // asked for: it captures whole ports, so it can never be a default.
-    let p = bootstrap::plan(
-        &cli(&["-d", "eth0", "--capture-tunnels"]),
-        &Config::default(),
-    )
-    .expect("plan");
     assert_eq!(
-        p.capture_config.bpf_filter.as_deref(),
+        bpf_for(&["-d", "eth0", "--capture-tunnels"]).as_deref(),
         Some(bootstrap::auto_bpf_filter(5060, 5061, bootstrap::TUNNEL_PORTS_DEFAULT).as_str()),
         "--capture-tunnels adds the tunnel ports"
     );
 
-    let p = bootstrap::plan(
-        &cli(&["-d", "eth0", "--capture-tunnels=8472"]),
-        &Config::default(),
-    )
-    .expect("plan");
     assert_eq!(
-        p.capture_config.bpf_filter.as_deref(),
+        bpf_for(&["-d", "eth0", "--capture-tunnels=8472"]).as_deref(),
         Some(bootstrap::auto_bpf_filter(5060, 5061, &[8472]).as_str()),
         "a custom tunnel port list is honoured verbatim"
     );
 
     // Positional trailing args are the explicit BPF filter (tcpdump-style).
-    let p = bootstrap::plan(&cli(&["-d", "eth0", "udp"]), &Config::default()).expect("plan");
     assert_eq!(
-        p.capture_config.bpf_filter.as_deref(),
+        bpf_for(&["-d", "eth0", "udp"]).as_deref(),
         Some("udp"),
         "an explicit filter is never overridden"
     );
 
-    let p = bootstrap::plan(&cli(&["-I", FIXTURE]), &Config::default()).expect("plan");
     assert!(
-        p.capture_config.bpf_filter.is_none(),
+        bpf_for(&["-I", FIXTURE]).is_none(),
         "offline input gets no auto BPF"
     );
 }
@@ -263,7 +261,7 @@ fn policy_autostop_and_split() {
         p.policy.autostop_duration,
         Some(std::time::Duration::from_secs(30))
     );
-    assert_eq!(p.policy.autostop_filesize_mb, None);
+    assert_eq!(p.policy.autostop_filesize_bytes, None);
 
     let err = match bootstrap::plan(
         &cli(&["-N", "--autostop", "bogus:1", "-I", FIXTURE]),

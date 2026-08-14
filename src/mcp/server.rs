@@ -277,6 +277,21 @@ impl SipnabMcp {
         self
     }
 
+    /// Cap the findings `save_findings` will accept before refusing.
+    ///
+    /// `0` is treated as the default rather than as "accept nothing", for the
+    /// reason `crate::mcp::findings::FindingsLog::with_cap` records. Past the
+    /// budget the write is refused out loud and nothing is evicted, because
+    /// nothing is retained to evict — the annotation is a log line the
+    /// operator's journal already has.
+    #[must_use]
+    pub fn with_findings_cap(mut self, findings: u64) -> Self {
+        self.findings = Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::with_cap(
+            findings,
+        )));
+        self
+    }
+
     /// Set the thresholds the diagnostic filter aliases compare against.
     ///
     /// Without this the server answers `find_problems` from the shipped
@@ -2252,17 +2267,45 @@ fn stream_json(
         if let Some(n) = serde_json::Number::from_f64(stream_mos(s, delay)) {
             obj.insert("mos".into(), serde_json::Value::Number(n));
         }
-        let grounded = mos_is_grounded(s);
-        obj.insert("mos_grounded".into(), serde_json::Value::Bool(grounded));
-        if !grounded {
-            obj.insert(
-                "mos_note".into(),
-                serde_json::Value::String(
-                    "No published ITU-T G.113 impairment value for this codec. \
-                     The MOS is a placeholder meaning 'unknown', not an estimate."
-                        .into(),
-                ),
-            );
+        // Resolved ONCE and matched, so the boolean, the label and the note
+        // cannot describe three different groundings of the same stream.
+        let grounding = crate::rtp::quality::mos_grounding(s.codec.as_deref());
+        obj.insert(
+            "mos_grounded".into(),
+            serde_json::Value::Bool(grounding != crate::rtp::quality::MosGrounding::Unpublished),
+        );
+        obj.insert(
+            "mos_grounding".into(),
+            serde_json::Value::String(mos_grounding_label(grounding).into()),
+        );
+        match grounding {
+            crate::rtp::quality::MosGrounding::Published => {}
+            // Said out loud, because the number now looks exactly like a
+            // grounded G.711 score and did not come from a standard. An agent
+            // that cites it should cite the operator, not ITU-T G.113.
+            crate::rtp::quality::MosGrounding::OperatorDeclared => {
+                obj.insert(
+                    "mos_note".into(),
+                    serde_json::Value::String(
+                        "ITU-T G.113 publishes no impairment value for this codec; \
+                         this deployment declared the one used, in \
+                         [media.codec_ie]. The MOS is an estimate on the \
+                         operator's figure, not on a published one."
+                            .into(),
+                    ),
+                );
+            }
+            crate::rtp::quality::MosGrounding::Unpublished => {
+                obj.insert(
+                    "mos_note".into(),
+                    serde_json::Value::String(
+                        "No published ITU-T G.113 impairment value for this codec, \
+                         and none declared in [media.codec_ie]. The MOS is a \
+                         placeholder meaning 'unknown', not an estimate."
+                            .into(),
+                    ),
+                );
+            }
         }
 
         // Latency, the third of the three numbers that decide whether a call
@@ -2331,11 +2374,19 @@ fn stream_mos(s: &crate::rtp::stream::RtpStream, delay: crate::rtp::quality::Mos
     delay.score(s)
 }
 
-/// Whether ITU-T G.113 publishes an impairment value for this stream's codec.
+/// Whether this stream's MOS rests on a real impairment value rather than the
+/// placeholder.
+///
+/// Phrased as "not a placeholder", not as "G.113 publishes it", because those
+/// stopped being the same question when `[media.codec_ie]` arrived. An operator
+/// who declared their network's `Ie` for G.722 gets a number computed from a
+/// real figure, and reporting it as ungrounded would tell an agent the exact
+/// opposite of what happened. WHICH of the two grounded it is the separate
+/// question `mos_grounding` answers below.
 fn mos_is_grounded(s: &crate::rtp::stream::RtpStream) -> bool {
-    matches!(
+    !matches!(
         crate::rtp::quality::mos_grounding(s.codec.as_deref()),
-        crate::rtp::quality::MosGrounding::Published
+        crate::rtp::quality::MosGrounding::Unpublished
     )
 }
 
@@ -2511,7 +2562,19 @@ fn endpoint_reported_json(
     }
     Some(v)
 }
-
+/// The name `rtp_stats` publishes for where this stream's `Ie` came from.
+///
+/// A separate field from `mos_grounded` because the remedies differ: a
+/// `published` score that looks wrong means suspecting sipnab's vantage point,
+/// an `operator_declared` one means suspecting a file on the operator's own
+/// disk, and an `unpublished` one means the number was never an estimate.
+fn mos_grounding_label(grounding: crate::rtp::quality::MosGrounding) -> &'static str {
+    match grounding {
+        crate::rtp::quality::MosGrounding::Published => "published",
+        crate::rtp::quality::MosGrounding::OperatorDeclared => "operator_declared",
+        crate::rtp::quality::MosGrounding::Unpublished => "unpublished",
+    }
+}
 /// The tie-break half of a stream cursor: `0xSSRC@src>dst`.
 ///
 /// Unique per stream (the store keys on exactly these three values) and free
@@ -5423,7 +5486,7 @@ impl SipnabMcp {
                      and will accept no more. Nothing was written. Restart \
                      sipnab to reset the count; the findings already recorded \
                      are in the log.",
-                    crate::mcp::findings::MAX_FINDINGS_PER_PROCESS
+                    self.findings.read().cap()
                 ),
                 None,
             ));

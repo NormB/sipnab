@@ -25,8 +25,38 @@ The short version:
 
 Anything in the last three rows scores **4.216 at 10 ms jitter — the same value
 an unidentified stream gets.** That is a placeholder, not a measurement. Tools
-that publish it say so: the `rtp_stats` MCP tool carries `mos_grounded: false`
-and a note.
+that publish it say so: the `rtp_stats` MCP tool carries `mos_grounded: false`,
+`mos_grounding: "unpublished"` and a note.
+
+## Declaring an impairment factor sipnab does not have
+
+If you know the `Ie` for a codec on your own network, declare it and sipnab
+scores with it:
+
+```toml
+[media.codec_ie]
+G722 = 12.0
+iLBC = 11.0
+```
+
+Keys match case-insensitively, and a declared value must be `>= 0` and `< 95`
+(at 95 the E-model's loss term vanishes, and above it more packet loss would
+*raise* the score, so sipnab refuses the value and names the codec).
+
+**A declaration is never reported as a citation.** A declared codec comes back
+as `mos_grounded: true` with `mos_grounding: "operator_declared"` and a note
+saying the figure came from this deployment rather than from ITU-T G.113. The
+distinction is worth keeping because the remedies differ: a `published` score
+that looks wrong means suspecting sipnab's vantage point, and a declared one
+means suspecting a file on your own disk.
+
+A codec nobody declared keeps its old answer. It still scores as the placeholder and
+still says so, which is the point — `[media.codec_ie]` makes *some* unknown
+codecs knowable and must not make the rest look confident.
+
+Declaring one does not rescue AMR-WB. Its published values are on the wideband
+scale and the narrowband model cannot carry them — see [AMR-WB — published, and
+mode-dependent](#amr-wb-published-and-mode-dependent) below.
 
 ## MOS comes from what sipnab measured, never from what the far end claimed
 

@@ -2528,9 +2528,15 @@ fn no_documentation_table_repeats_a_row() {
         // separators are in docs/mcp.md and the two matching ones in
         // website/content/docs/mcp.md, which scripts/build-site-pages.py
         // regenerates. No other page changed a table boundary.
+        // Raised 532 -> 534 by the `mos_grounding` table in docs/mcp.md, which
+        // `[media.codec_ie]` made necessary: "grounded" now covers a published
+        // G.113 value AND an operator-declared one, and a bare boolean cannot
+        // say which. ONE table, doubled by the site mirror. The two increments
+        // landed in separate branches, each correctly recording +4 and +2
+        // against 528; merged, both apply.
         tables,
-        532,
-        "walked {tables} tables, expected 532. More is fine — bump this. FEWER \
+        534,
+        "walked {tables} tables, expected 534. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

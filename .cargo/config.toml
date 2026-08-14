@@ -7,3 +7,23 @@
 # feature (enabled in Cargo.toml's wasm32 target dependencies).
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+bulk-memory,+mutable-globals", "--cfg", "getrandom_backend=\"wasm_js\""]
+
+# libtest gives each test its own thread, and that thread's stack is
+# RUST_MIN_STACK (2 MiB by default). Clap's GENERATED parser for `Cli` --
+# `augment_args` and `from_arg_matches` -- has a frame that grows with every
+# flag, and in a DEBUG build (no slot reuse, no inlining) it now sits just under
+# 2 MiB on its own. Twelve test files parse a `Cli`, so all of them ride that
+# edge: two tests overflowed the moment two branches of new flags merged, though
+# neither branch crossed the line alone.
+#
+# This is a TEST-HARNESS limit, not a product one. The shipped binary parses on
+# the main thread, whose stack the kernel sizes at 8 MiB, and a release build
+# reuses slots besides. Measured before choosing this: the failing tests need
+# between 2 and 3 MiB, and `Cli`, `Config` and `RunPlan` are 2744, 2072 and 760
+# bytes, so the tests' own locals are not the cost -- the generated parser is.
+#
+# Revisit if `Cli` keeps growing: the durable fix is to flatten it into
+# `#[command(flatten)]` sub-structs so no single generated function carries
+# every flag. See the backlog item on the CLI's stack headroom.
+[env]
+RUST_MIN_STACK = "8388608"

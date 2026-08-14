@@ -66,7 +66,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
     // [media] describes the PATH being observed, which is neither a capture
     // setting nor a display one. Today it holds the one figure a passive tap
     // cannot measure for itself.
-    m.insert("media", ["one_way_delay_ms"].as_slice());
+    m.insert("media", ["one_way_delay_ms", "codec_ie"].as_slice());
     m.insert(
         "crash",
         ["reports", "backtrace", "report_dir", "core"].as_slice(),
@@ -100,7 +100,12 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
     m.insert("filter", ["from", "to", "expression"].as_slice());
     m.insert(
         "sip",
-        ["xcid_headers", "leg_correlation_window_ms"].as_slice(),
+        [
+            "xcid_headers",
+            "leg_correlation_window_ms",
+            "active_idle_window_secs",
+        ]
+        .as_slice(),
     );
     m.insert(
         "security",
@@ -128,6 +133,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "scanner_established_factor",
             "scanner_answer_grace_ms",
             "findings_history",
+            "hep_hmac_window_secs",
         ]
         .as_slice(),
     );
@@ -155,6 +161,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "dialog_limit",
             "max_streams",
             "max_reassembly",
+            "reassembly_ttl_secs",
             "hep_rate_limit",
             "max_header_line",
             "max_headers_per_message",
@@ -164,6 +171,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_audio_frames",
             "mcp_max_rows",
             "mcp_max_body_bytes",
+            "mcp_max_findings",
             "lint_max_per_rule",
             "exec_queue_depth",
             "max_lost_sequences",
@@ -175,6 +183,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "api_max_rows",
             "api_rate_limit_per_peer",
             "max_tracked_peers",
+            "metrics_max_conn",
         ]
         .as_slice(),
     );
@@ -187,6 +196,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "hosts_file",
             "manual",
             "persist_to_config",
+            "dns_cache_entries",
         ]
         .as_slice(),
     );
@@ -345,6 +355,17 @@ pub struct SipConfig {
     /// once a B2BUA has rewritten every identifier. `--leg-correlation-window`
     /// overrides this.
     pub leg_correlation_window_ms: Option<u64>,
+    /// Seconds a dialog may go untouched and still count toward the
+    /// active-dialog and active-call gauges (default: 3600).
+    ///
+    /// The shipped hour is twice RFC 4028's default `Session-Expires`, which
+    /// grounds it for a trunk carrying session timers. It does not describe a
+    /// contact centre, where a caller parked on hold past an hour is a channel
+    /// in use that the gauge stops counting. Widening it also widens the
+    /// opposite error — a call whose BYE was lost is counted for longer — so
+    /// this is the trade an operator makes for their own traffic.
+    /// `--active-idle-window` overrides this.
+    pub active_idle_window_secs: Option<u64>,
 }
 
 impl SipConfig {
@@ -352,7 +373,7 @@ impl SipConfig {
     ///
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the key, when
-    /// `leg_correlation_window_ms` is `0`.
+    /// `leg_correlation_window_ms` or `active_idle_window_secs` is `0`.
     pub fn validate(&self) -> Result<(), crate::Error> {
         // Zero is refused rather than read as "off": a zero window still
         // correlates every pair of legs created in the same millisecond, so it
@@ -364,6 +385,18 @@ impl SipConfig {
                 "[sip] leg_correlation_window_ms must be > 0 (0 still correlates \
                  legs created in the same millisecond; to ignore the guess, read \
                  the strategy each correlation is reported under)"
+                    .into(),
+            ));
+        }
+        // Zero would report every gauge as 0 the instant a dialog's own
+        // message stopped being the newest, which is not "no window" but a
+        // permanently empty active-call figure — and an empty gauge reads as a
+        // quiet trunk, not as a setting.
+        if let Some(0) = self.active_idle_window_secs {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] active_idle_window_secs must be > 0 (0 leaves the \
+                 active-dialog and active-call gauges permanently at zero, \
+                 which reads as a quiet trunk rather than as a setting)"
                     .into(),
             ));
         }
@@ -582,6 +615,17 @@ pub struct SecurityConfig {
     /// `0` keeps none, which is a real setting rather than a mistake: an
     /// operator who does not want detections held in memory can say so.
     pub findings_history: Option<u64>,
+    /// Seconds either side of now that a `--hep-auth-mode hmac` token's
+    /// timestamp may fall and still be accepted (default: 30).
+    ///
+    /// On an agent/collector pair with poor NTP every packet is rejected as
+    /// out-of-window, and the symptom is a collector that receives NOTHING —
+    /// which reads as routing, a firewall, or a dead agent long before it reads
+    /// as a clock. Widening it is a security trade, not a convenience: the
+    /// window is exactly how long a captured packet stays replayable, and it is
+    /// what the receiver's nonce cache must remember. Capped at
+    /// [`MAX_HEP_HMAC_WINDOW_SECS`].
+    pub hep_hmac_window_secs: Option<u64>,
 }
 
 impl SecurityConfig {
@@ -596,8 +640,26 @@ impl SecurityConfig {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the offending key, when
     /// `kill_response` is outside 100-699, when a detection threshold is `0`,
-    /// or when `business_hours` is not two whole hours in `0..=23`.
+    /// when `hep_hmac_window_secs` is `0` or above
+    /// [`MAX_HEP_HMAC_WINDOW_SECS`], or when `business_hours` is not two whole
+    /// hours in `0..=23`.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // Bounded at BOTH ends, and the two ends fail differently. At 0 only a
+        // token stamped in the same second as the receiver's clock is accepted,
+        // which is the outage the key exists to fix rather than a strict
+        // setting. Past the ceiling the window is no longer describing skew —
+        // see `MAX_HEP_HMAC_WINDOW_SECS`.
+        if let Some(v) = self.hep_hmac_window_secs
+            && (v == 0 || v > MAX_HEP_HMAC_WINDOW_SECS)
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[security] hep_hmac_window_secs must be 1-{MAX_HEP_HMAC_WINDOW_SECS} \
+                 (the window is how long a captured packet stays replayable and \
+                 how many nonces the receiver must remember; a sender more than \
+                 {MAX_HEP_HMAC_WINDOW_SECS}s adrift has no working time daemon, \
+                 which is what to fix), got {v}"
+            )));
+        }
         if let Some(code) = self.kill_response
             && !(100..=699).contains(&code)
         {
@@ -852,6 +914,62 @@ pub struct MediaConfig {
     /// beats an RTCP-reported round trip, because a config file cannot be
     /// changed by a packet on the wire.
     pub one_way_delay_ms: Option<f64>,
+    /// Equipment impairment factors (ITU-T G.107 `Ie`) for codecs sipnab has
+    /// no published value for, as a `"CODEC" = <Ie>` sub-table.
+    ///
+    /// ```toml
+    /// [media.codec_ie]
+    /// G722 = 12.0
+    /// iLBC = 11.0
+    /// ```
+    ///
+    /// **This is the one input to MOS that cannot be a scalar.** sipnab knows
+    /// G.711, G.729 and Opus; every other codec — G.722, G.726, iLBC, AMR, EVS
+    /// — falls to a placeholder and scores identically to a stream whose codec
+    /// was never identified at all. One number could not fix that, because the
+    /// answer is per codec.
+    ///
+    /// A declared codec is reported as
+    /// [`OperatorDeclared`](crate::rtp::quality::MosGrounding::OperatorDeclared)
+    /// rather than as published, so a figure from this file is never presented
+    /// as an ITU-T citation, and a codec nobody declared still says its MOS is
+    /// a placeholder. Values must be in `0.0..95.0`; see
+    /// [`crate::rtp::quality::MAX_CODEC_IE`] for why 95 is not a policy choice.
+    ///
+    /// Keys are matched case-insensitively, so `G722` and `g722` are one entry.
+    ///
+    /// Last field of this struct because TOML puts a sub-table after every
+    /// scalar of its parent, and `Config::dump` writes this struct out
+    /// verbatim.
+    pub codec_ie: Option<BTreeMap<String, f64>>,
+}
+
+impl MediaConfig {
+    /// Reject impairment factors the E-model cannot carry.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the codec, when a `codec_ie` value
+    /// is not finite or is outside `0.0..95.0`.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        let Some(table) = &self.codec_ie else {
+            return Ok(());
+        };
+        for (codec, ie) in table {
+            // Refused rather than clamped. A clamped impairment is a number the
+            // operator did not write, reported afterwards as grounded in their
+            // declaration — which is worse than the typo, because nothing says
+            // it happened.
+            if !ie.is_finite() || *ie < 0.0 || *ie >= crate::rtp::quality::MAX_CODEC_IE {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[media.codec_ie] {codec} must be >= 0 and < {} (at or above \
+                     that the E-model's loss term goes negative and MORE packet \
+                     loss would RAISE the score), got {ie}",
+                    crate::rtp::quality::MAX_CODEC_IE
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Where the quality colour column turns yellow, and where it turns red.
@@ -915,6 +1033,28 @@ pub struct QualityConfig {
 /// clamps to cannot disagree.
 pub const MIN_TRACKED_PEERS: u64 = 2;
 
+/// Widest `[security] hep_hmac_window_secs` an operator may configure.
+///
+/// The window is a REPLAY window: every packet an on-path attacker captures
+/// stays acceptable for exactly this long, so widening it to tolerate a bad
+/// clock trades away the property `--hep-auth-mode hmac` exists to provide.
+/// It is also what the receiver's nonce cache has to remember — at the shipped
+/// `hep_rate_limit` of 50 000 packets a second, five minutes is fifteen million
+/// nonces held on the box that is also carrying a live capture, and the cache is
+/// bounded by nothing else.
+///
+/// Five minutes because past it the problem is not skew. `chronyd` and `ntpd`
+/// both step a clock that far out rather than slew it, so a sender still 300 s
+/// adrift has no working time daemon at all — and the repair for that is the
+/// daemon, not a wider window on the collector. Refused by
+/// [`SecurityConfig::validate`] and by clap, from this one number.
+///
+/// Lives here rather than in `crate::capture::hep` because `config` is compiled
+/// in builds that have no HEP feature at all, and a key whose ceiling is
+/// enforced in some builds and not others is worse than one with no ceiling —
+/// the same judgement [`MIN_TRACKED_PEERS`] records.
+pub const MAX_HEP_HMAC_WINDOW_SECS: u64 = 300;
+
 /// Resource limits.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -927,6 +1067,16 @@ pub struct LimitsConfig {
     pub max_streams: Option<u64>,
     /// Maximum TCP reassembly sessions.
     pub max_reassembly: Option<u64>,
+    /// Seconds an incomplete IP datagram or half-read TCP stream is held
+    /// before a sweep evicts it (default: 30).
+    ///
+    /// `max_reassembly` above bounds how MANY entries are held and says
+    /// nothing about how long. Thirty seconds describes fragments in flight;
+    /// a persistent SIP/TCP trunk to a carrier goes quiet for far longer on
+    /// any ordinary night, and sweeping its half-read stream means the next
+    /// segment re-initialises mid-message — so the peer that sent a valid
+    /// message is the one reported broken.
+    pub reassembly_ttl_secs: Option<u64>,
     /// HEP rate limit.
     pub hep_rate_limit: Option<u64>,
     /// Maximum bytes in a single unfolded SIP header line (default: 8192).
@@ -967,6 +1117,16 @@ pub struct LimitsConfig {
     /// their number, and the tighter of the two on a body question: a caller
     /// may ask for one dialog and still be answered with a clipped `INVITE`.
     pub mcp_max_body_bytes: Option<u64>,
+    /// Findings the MCP `save_findings` tool accepts before refusing further
+    /// writes (default: 1000).
+    ///
+    /// The one WRITE budget on the MCP surface: it bounds what an agent puts
+    /// into the operator's journal, where `mcp_max_rows` and
+    /// `mcp_max_body_bytes` bound what it may read. Past it the write is
+    /// refused and says so; nothing is evicted, because a finding is a log line
+    /// the journal already holds and sipnab retains no copy for a newer one to
+    /// displace.
+    pub mcp_max_findings: Option<u64>,
     /// Lost RTP sequence numbers retained per stream (default: 1000).
     ///
     /// The window the Packet Loss Map and the burst/gap analysis reason over.
@@ -1020,6 +1180,15 @@ pub struct LimitsConfig {
     /// or several collectors behind one NAT, share a single allowance because
     /// the limiter counts by source address.
     pub api_rate_limit_per_peer: Option<u64>,
+    /// Metrics scrapes served at once before further ones get `503`
+    /// (default: 16).
+    ///
+    /// An HA pair of Prometheus servers, a federating parent, a
+    /// `remote_write` shard and one engineer's `curl` are five clients before
+    /// anything unusual has happened, and a refused scrape leaves a gap in the
+    /// series that reads as a dead capture. The floor is 1: at 0 the gate
+    /// refuses every connection and the endpoint is permanently unavailable.
+    pub metrics_max_conn: Option<u64>,
     /// Distinct peers one rate-limit window may hold (default: 4096).
     ///
     /// Applies to every surface `crate::rate_limit` meters: HEP source
@@ -1062,6 +1231,19 @@ impl LimitsConfig {
         if let Some(0) = self.max_reassembly {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] max_reassembly must be > 0".into(),
+            ));
+        }
+        // Zero is refused rather than read as "never hold anything": a zero
+        // TTL evicts every partial on the first sweep after it arrives, which
+        // is reassembly switched off while sipnab still reports each half as a
+        // malformed message. `--no-reassembly` is the setting that means off,
+        // and it says so.
+        if let Some(0) = self.reassembly_ttl_secs {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] reassembly_ttl_secs must be > 0 (0 evicts every \
+                 partial on the next sweep and reports both halves as \
+                 malformed; to turn reassembly off, use --no-reassembly)"
+                    .into(),
             ));
         }
         if let Some(v) = self.max_header_line
@@ -1186,6 +1368,30 @@ impl LimitsConfig {
                     .into(),
             ));
         }
+        // Zero is refused rather than read as "no writes": a server that
+        // refuses the first annotation is indistinguishable from one started
+        // without --mcp-allow-save-findings, and that flag is how an operator
+        // says they want none.
+        if let Some(0) = self.mcp_max_findings {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] mcp_max_findings must be > 0 (0 refuses every write; \
+                 to accept no findings, drop --mcp-allow-save-findings)"
+                    .into(),
+            ));
+        }
+        // Zero is refused rather than read as "unlimited": the gate answers
+        // `503` once the count is AT the cap, so a gate of 0 turns every
+        // scrape away and the endpoint is permanently unavailable — the
+        // monitoring outage this ceiling exists to prevent, reached by typing
+        // the value an operator would guess means "no limit".
+        if let Some(0) = self.metrics_max_conn {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] metrics_max_conn must be > 0 (0 refuses every scrape \
+                 and the /metrics endpoint answers 503 forever; to serve no \
+                 metrics, drop --metrics)"
+                    .into(),
+            ));
+        }
         // `api_rate_limit_per_peer` is deliberately absent: 0 DISABLES the cap
         // there, the reading every per-peer rate knob in this tree gives it.
         //
@@ -1240,6 +1446,16 @@ pub struct NamesConfig {
     /// into the `[names.manual]` table of the user's sipnabrc, preserving the
     /// rest of the file. Defaults to off (mappings persist to the hosts file).
     pub persist_to_config: Option<bool>,
+    /// Reverse-DNS results (positive and negative) held at once
+    /// (default: 4096).
+    ///
+    /// Past the cap the oldest entry is evicted, so a capture touching more
+    /// hosts than this — a carrier edge, a peering point, or any long
+    /// `--reverse-dns` window — re-looks-up addresses it already resolved. The
+    /// symptom is names that flicker rather than an error, because a dropped
+    /// lookup only shows as an unresolved address. The worker queue's depth is
+    /// derived from this rather than set separately.
+    pub dns_cache_entries: Option<u64>,
 }
 
 /// TUI theme configuration — semantic color slots.
@@ -2444,6 +2660,7 @@ column_selector = "F10"
             dialog_limit: Some(50000),
             max_streams: Some(10000),
             max_reassembly: Some(5000),
+            reassembly_ttl_secs: Some(30),
             hep_rate_limit: Some(25000),
             max_header_line: Some(8192),
             max_headers_per_message: Some(200),
@@ -2455,6 +2672,7 @@ column_selector = "F10"
             lint_max_per_rule: Some(25),
             exec_queue_depth: Some(100),
             mcp_max_body_bytes: Some(4096),
+            mcp_max_findings: Some(1000),
             max_lost_sequences: Some(1000),
             max_groups: Some(10_000),
             max_grouped_messages: Some(200_000),
@@ -2464,6 +2682,7 @@ column_selector = "F10"
             api_max_rows: Some(1000),
             api_rate_limit_per_peer: Some(100),
             max_tracked_peers: Some(4096),
+            metrics_max_conn: Some(16),
         };
         assert!(limits.validate().is_ok());
     }

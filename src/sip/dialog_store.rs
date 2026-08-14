@@ -311,6 +311,61 @@ pub fn set_keep_messages_per_idle_dialog(keep: usize) {
     KEEP_MESSAGES_PER_IDLE_DIALOG.store(keep, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Default window a dialog may go untouched and still count as active.
+///
+/// Twice RFC 4028's default `Session-Expires` of 1800 s. A call using session
+/// timers refreshes at half its interval, so a healthy one is seen again inside
+/// 900 s and never approaches this; a call that is genuinely up but silent for
+/// a full hour is indistinguishable, from signalling alone, from one whose BYE
+/// was lost.
+///
+/// Both errors are possible and they are not symmetric. Counting a dead dialog
+/// forever makes the number grow with UPTIME and useless for the alert it
+/// exists for — measured at 38,509 "active calls" against 100 RTP streams on a
+/// five-day capture. Dropping a silent-for-an-hour call under-reports one call
+/// until it speaks again. The second is recoverable; the first is not, because
+/// nothing ever brings the figure back down.
+///
+/// That reasoning grounds the DEFAULT, not a fixed number. A contact centre
+/// parks callers on hold past an hour and its gauge then under-reports every
+/// one of them, so the window is settable with `--active-idle-window` or
+/// `[sip] active_idle_window_secs`; widening it moves the figure back toward
+/// the first error above, which is why it is not widened by default.
+pub const DEFAULT_ACTIVE_IDLE_WINDOW: chrono::TimeDelta = chrono::TimeDelta::seconds(3600);
+
+/// Runtime-configurable active-dialog idle window, in seconds (set once at
+/// startup).
+static ACTIVE_IDLE_WINDOW_SECS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(DEFAULT_ACTIVE_IDLE_WINDOW.num_seconds());
+
+/// How long a dialog may go untouched and still count as active.
+///
+/// Read by [`DialogStore::active_dialog_count_at`] and
+/// [`DialogStore::active_call_count_at`], the two gauges the window bounds.
+#[must_use]
+pub fn active_idle_window() -> chrono::TimeDelta {
+    chrono::TimeDelta::seconds(ACTIVE_IDLE_WINDOW_SECS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Set the active-dialog idle window from configuration. Call once at startup.
+///
+/// Process-wide for the reason its two neighbours above are: a `DialogStore` is
+/// built by the batch runner, the TUI and every `--cores` shard, and a window
+/// threaded to some of them is a setting honoured on some surfaces and ignored
+/// on others — while every one of those surfaces publishes the same gauge.
+///
+/// # Arguments
+///
+/// * `secs` — seconds of silence a dialog may have and still count as active.
+///
+/// # Side effects
+///
+/// Stores `secs` into a process-wide atomic (relaxed ordering), affecting every
+/// active-count read in the process from the next call onward.
+pub fn set_active_idle_window_secs(secs: i64) {
+    ACTIVE_IDLE_WINDOW_SECS.store(secs, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Whether a message states something about the dialog that its POSITION in
 /// the ladder does not.
 ///
@@ -1060,29 +1115,13 @@ impl DialogStore {
             .count()
     }
 
-    /// How long a dialog may go untouched and still count as active.
-    ///
-    /// Twice RFC 4028's default `Session-Expires` of 1800 s. A call using
-    /// session timers refreshes at half its interval, so a healthy one is seen
-    /// again inside 900 s and never approaches this; a call that is genuinely up
-    /// but silent for a full hour is indistinguishable, from signalling alone,
-    /// from one whose BYE was lost.
-    ///
-    /// Both errors are possible and they are not symmetric. Counting a dead
-    /// dialog forever makes the number grow with UPTIME and useless for the
-    /// alert it exists for — measured at 38,509 "active calls" against 100 RTP
-    /// streams on a five-day capture. Dropping a silent-for-an-hour call
-    /// under-reports one call until it speaks again. The second is recoverable;
-    /// the first is not, because nothing ever brings the figure back down.
-    pub const ACTIVE_IDLE_WINDOW: chrono::TimeDelta = chrono::TimeDelta::seconds(3600);
-
-    /// Whether a dialog has been touched inside [`Self::ACTIVE_IDLE_WINDOW`].
+    /// Whether a dialog has been touched inside [`active_idle_window`].
     ///
     /// A capture read from a file is dated by its packets, so `now` must be the
     /// caller's clock rather than the wall clock, or every offline dialog ages
     /// out at once.
     fn recently_seen(dialog: &SipDialog, now: chrono::DateTime<chrono::Utc>) -> bool {
-        now.signed_duration_since(dialog.updated_at) <= Self::ACTIVE_IDLE_WINDOW
+        now.signed_duration_since(dialog.updated_at) <= active_idle_window()
     }
 
     /// Count calls that are up: dialogs in `InCall`, and nothing else.
@@ -1104,7 +1143,7 @@ impl DialogStore {
     /// restarted, a tap that sees one direction, a caller that vanishes: each
     /// leaves a dialog `InCall` forever. Counting those made the figure track
     /// uptime rather than concurrency, so it is bounded by
-    /// [`Self::ACTIVE_IDLE_WINDOW`] and the window is stated wherever the number
+    /// [`active_idle_window`] and the window is stated wherever the number
     /// is published, because a concurrency figure nobody can interpret is not
     /// better than none.
     pub fn active_call_count_at(&self, now: chrono::DateTime<chrono::Utc>) -> usize {
@@ -3224,13 +3263,13 @@ mod tests {
         store.process_message(make_invite_msg("quiet@test", t0));
         store.process_message(make_200_ok("quiet@test", t0 + TimeDelta::seconds(1)));
 
-        let just_inside = t0 + DialogStore::ACTIVE_IDLE_WINDOW - TimeDelta::seconds(60);
+        let just_inside = t0 + DEFAULT_ACTIVE_IDLE_WINDOW - TimeDelta::seconds(60);
         assert_eq!(
             store.active_call_count_at(just_inside),
             1,
             "a call silent for less than the window is still up"
         );
-        let just_outside = t0 + DialogStore::ACTIVE_IDLE_WINDOW + TimeDelta::seconds(60);
+        let just_outside = t0 + DEFAULT_ACTIVE_IDLE_WINDOW + TimeDelta::seconds(60);
         assert_eq!(
             store.active_call_count_at(just_outside),
             0,
@@ -3245,7 +3284,7 @@ mod tests {
         let t0 = base_ts();
         store.process_message(make_invite_msg("stale@test", t0));
         store.process_message(make_200_ok("stale@test", t0 + TimeDelta::seconds(1)));
-        let now = t0 + DialogStore::ACTIVE_IDLE_WINDOW + TimeDelta::hours(1);
+        let now = t0 + DEFAULT_ACTIVE_IDLE_WINDOW + TimeDelta::hours(1);
         assert_eq!(
             store.active_dialog_count_at(now),
             0,

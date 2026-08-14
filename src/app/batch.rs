@@ -597,8 +597,14 @@ pub struct CapturePolicy {
     pub split_keep: Option<u32>,
     /// Stop capturing after this duration (`--autostop duration:N`).
     pub autostop_duration: Option<std::time::Duration>,
-    /// Stop after the output file reaches this size (`--autostop filesize:N`).
-    pub autostop_filesize_mb: Option<u64>,
+    /// Stop after the output file reaches this many BYTES
+    /// (`--autostop filesize:N`, N mebibytes).
+    ///
+    /// Bytes, matching `split_bytes` above: both are compared against
+    /// `PcapWriter::bytes_written`, and the megabyte figure this used to hold
+    /// left the comparison site converting — with a different multiplier than
+    /// `--split filesize` used for the same word.
+    pub autostop_filesize_bytes: Option<u64>,
     /// SIP signaling port range (`--portrange`); media is never gated.
     pub portrange: (u16, u16),
 }
@@ -1967,6 +1973,8 @@ impl BatchRunner {
                 api_row_cap: cli.api_row_cap(config),
                 api_rate_limit_per_peer: cli.api_peer_rate_limit(config),
                 max_tracked_peers: cli.tracked_peer_capacity(config),
+                metrics_max_conn: cli.metrics_conn_cap(config),
+                mcp_max_findings: cli.mcp_findings_cap(config),
                 api: true,
                 mcp: true,
                 // The whole point of #159: headless is where --metrics is
@@ -2098,7 +2106,7 @@ impl BatchRunner {
         let split_keep = policy.split_keep;
         let portrange = policy.portrange;
         let autostop_duration = policy.autostop_duration;
-        let autostop_filesize_mb = policy.autostop_filesize_mb;
+        let autostop_filesize_bytes = policy.autostop_filesize_bytes;
 
         // --after / -A trailing context counter
         let after_count = cli.after.unwrap_or(0);
@@ -2157,9 +2165,6 @@ impl BatchRunner {
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
         };
-
-        // Autostop filesize in bytes (input is in MB)
-        let autostop_filesize_bytes = autostop_filesize_mb.map(|mb| mb * 1_000_000);
 
         loop {
             if signals::shutdown_requested() {
@@ -2462,8 +2467,8 @@ impl BatchRunner {
                 && w.bytes_written() >= max_bytes
             {
                 tracing::info!(
-                    "Autostop: filesize limit reached ({} MB)",
-                    autostop_filesize_mb.unwrap_or(0)
+                    "Autostop: filesize limit reached ({} MiB)",
+                    max_bytes / crate::capture::writer::BYTES_PER_MIB
                 );
                 break;
             }

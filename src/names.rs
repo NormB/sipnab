@@ -59,7 +59,7 @@ impl NameMode {
 /// Shared mutable state behind the resolver's lock: the three name
 /// sources in precedence order, the reverse-DNS caches, and the
 /// generation counter.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Inner {
     /// Operator-entered mappings (highest priority).
     manual: HashMap<IpAddr, String>,
@@ -81,30 +81,104 @@ struct Inner {
     /// label (manual/hosts/file edits, DNS results landing). Cache
     /// invalidation signal — see [`NameResolver::generation`].
     generation: u64,
+    /// Entries `dns_cache` and `dns_requested` may each hold.
+    ///
+    /// A field rather than the constant it used to read, so the cap belongs to
+    /// the resolver an operator configured. Per resolver rather than a process
+    /// global because there is exactly one production `NameResolver` per run
+    /// (`crate::app::run`) and a global would make every test in a binary share
+    /// one number.
+    cache_entries: usize,
 }
 
-/// Maximum reverse-DNS cache entries (positive and negative) retained; the
+impl Default for Inner {
+    /// Empty tables with the shipped cache cap.
+    fn default() -> Self {
+        Self::with_cache_entries(MAX_DNS_CACHE_ENTRIES)
+    }
+}
+
+impl Inner {
+    /// Empty tables bounded at `cache_entries` (`0` reads as the default: an
+    /// unbounded map is not a thing an operator can want by accident, and a
+    /// zero-capacity one would evict every entry as it landed).
+    fn with_cache_entries(cache_entries: usize) -> Self {
+        Self {
+            manual: HashMap::new(),
+            hosts: HashMap::new(),
+            file: HashMap::new(),
+            dns_cache: IndexMap::default(),
+            dns_requested: IndexSet::default(),
+            generation: 0,
+            cache_entries: if cache_entries == 0 {
+                MAX_DNS_CACHE_ENTRIES
+            } else {
+                cache_entries
+            },
+        }
+    }
+}
+
+/// Default reverse-DNS cache entries (positive and negative) retained; the
 /// in-flight `dns_requested` set is held to the same cap. At capacity the
 /// oldest-inserted entry is evicted (`IndexMap::shift_remove_index(0)` — the
 /// same oldest-out pattern as `StreamStore::sdp_endpoints`). Sized to the
 /// same order as `rate_limit::DEFAULT_MAX_TRACKED_PEERS`: a few thousand
 /// IP→name entries covers any realistic active-host set.
-const MAX_DNS_CACHE_ENTRIES: usize = 4096;
+///
+/// "Any realistic active-host set" is a claim about a deployment, not a fact
+/// about DNS. A carrier edge, a peering point, or a capture with
+/// `--reverse-dns` over a long window touches far more than four thousand
+/// addresses, and past the cap every eviction is a PTR lookup that has to be
+/// made again — the resolver thrashes, and because a dropped lookup only shows
+/// as an unresolved address, the symptom is names that flicker rather than an
+/// error. Raise it with `--dns-cache-entries` or `[names] dns_cache_entries`.
+pub const MAX_DNS_CACHE_ENTRIES: usize = 4096;
 
-/// Capacity of the queue feeding the reverse-DNS worker. Lookups are enqueued
-/// with `try_send` and DROPPED when the queue is full — the capture/render
-/// path must never block on a slow resolver, and a dropped request is
-/// harmless: the IP just displays unresolved and is re-requested on a later
-/// lookup. PTR lookups can block for seconds each, so queueing more than this
-/// buys nothing.
-const DNS_QUEUE_CAPACITY: usize = 1024;
+/// Default capacity of the queue feeding the reverse-DNS worker. Lookups are
+/// enqueued with `try_send` and DROPPED when the queue is full — the
+/// capture/render path must never block on a slow resolver, and a dropped
+/// request is harmless: the IP just displays unresolved and is re-requested on
+/// a later lookup. PTR lookups can block for seconds each, so queueing more
+/// than this buys nothing.
+///
+/// Test-only, and deliberately so: no production path names it, because every
+/// resolver derives its own depth from the cache it was built with. It stays
+/// as the figure the shipped-default overflow test measures against.
+#[cfg(test)]
+const DNS_QUEUE_CAPACITY: usize = MAX_DNS_CACHE_ENTRIES / DNS_QUEUE_DIVISOR;
+
+/// How much smaller the work queue is than the cache it fills.
+///
+/// The shipped pair was 4096 and 1024, and the ratio is what the second number
+/// meant: the queue is in-flight work for a cache of that size, not a capacity
+/// question of its own.
+const DNS_QUEUE_DIVISOR: usize = 4;
+
+/// Depth of the worker queue for a cache of `cache_entries`.
+///
+/// **Not a setting of its own**, for the reason
+/// [`crate::cli::Cli::security_sweep_max_age`] records about the detector
+/// sweep: the queue exists only to feed the cache, so a depth that does not
+/// follow the cache is a second number an operator has to keep in step by
+/// hand — and the failure when they do not is silent, because an overflowed
+/// queue drops a lookup and the address simply displays unresolved.
+///
+/// Floored at one. A `sync_channel(0)` is a RENDEZVOUS channel, whose
+/// `try_send` fails unless a receiver is already parked in `recv` — so a
+/// derived depth of zero would drop almost every lookup on a busy capture
+/// while looking like a queue.
+#[must_use]
+pub fn dns_queue_capacity(cache_entries: usize) -> usize {
+    (cache_entries / DNS_QUEUE_DIVISOR).max(1)
+}
 
 impl Inner {
     /// Record a completed reverse-DNS lookup, evicting the oldest cache entry
     /// at capacity, and clear the in-flight marker so the set stays in step
     /// with the cache. Bumps the generation counter (a label may change).
     fn cache_dns_result(&mut self, ip: IpAddr, name: Option<String>) {
-        if self.dns_cache.len() >= MAX_DNS_CACHE_ENTRIES && !self.dns_cache.contains_key(&ip) {
+        if self.dns_cache.len() >= self.cache_entries && !self.dns_cache.contains_key(&ip) {
             self.dns_cache.shift_remove_index(0);
         }
         self.dns_cache.insert(ip, name);
@@ -120,7 +194,7 @@ impl Inner {
         if self.dns_cache.contains_key(&ip) {
             return false;
         }
-        if self.dns_requested.len() >= MAX_DNS_CACHE_ENTRIES && !self.dns_requested.contains(&ip) {
+        if self.dns_requested.len() >= self.cache_entries && !self.dns_requested.contains(&ip) {
             self.dns_requested.shift_remove_index(0);
         }
         self.dns_requested.insert(ip)
@@ -146,7 +220,7 @@ pub fn is_valid_name(name: &str) -> bool {
 pub struct NameResolver {
     /// Shared name tables and caches, behind a read-write lock.
     inner: Arc<RwLock<Inner>>,
-    /// Bounded channel to the reverse-DNS worker ([`DNS_QUEUE_CAPACITY`]
+    /// Bounded channel to the reverse-DNS worker ([`dns_queue_capacity`]
     /// pending lookups); `None` when reverse DNS is disabled.
     dns_tx: Option<SyncSender<IpAddr>>,
 }
@@ -166,14 +240,30 @@ impl NameResolver {
     /// serves PTR lookups until the resolver (the channel sender) is
     /// dropped; each completed lookup writes the (bounded) DNS cache and
     /// bumps the generation counter. The work queue holds at most
-    /// `DNS_QUEUE_CAPACITY` pending lookups; overflow is dropped, never
+    /// [`dns_queue_capacity`] pending lookups; overflow is dropped, never
     /// queued unbounded (see `enqueue_dns`).
     pub fn with_reverse_dns(enabled: bool) -> Self {
+        Self::with_limits(enabled, MAX_DNS_CACHE_ENTRIES)
+    }
+
+    /// [`NameResolver::with_reverse_dns`], with the cache cap supplied.
+    ///
+    /// The worker queue's depth is DERIVED from `cache_entries` rather than
+    /// taken separately — see [`dns_queue_capacity`].
+    ///
+    /// # Side effects
+    /// Identical to [`NameResolver::with_reverse_dns`]: when enabled, spawns a
+    /// detached `sipnab-dns` worker thread.
+    pub fn with_limits(enabled: bool, cache_entries: usize) -> Self {
         if !enabled {
-            return Self::new();
+            return Self {
+                inner: Arc::new(RwLock::new(Inner::with_cache_entries(cache_entries))),
+                dns_tx: None,
+            };
         }
-        let inner: Arc<RwLock<Inner>> = Arc::default();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<IpAddr>(DNS_QUEUE_CAPACITY);
+        let inner: Arc<RwLock<Inner>> =
+            Arc::new(RwLock::new(Inner::with_cache_entries(cache_entries)));
+        let (tx, rx) = std::sync::mpsc::sync_channel::<IpAddr>(dns_queue_capacity(cache_entries));
         let worker_inner = Arc::clone(&inner);
         // Detached worker: it exits when the sender is dropped (resolver gone).
         let _ = std::thread::Builder::new()
@@ -266,9 +356,12 @@ impl NameResolver {
         if let Err(err) = tx.try_send(ip) {
             self.inner.write().dns_requested.shift_remove(&ip);
             if matches!(err, std::sync::mpsc::TrySendError::Full(_)) {
-                tracing::debug!(
-                    "reverse-DNS queue full ({DNS_QUEUE_CAPACITY}); dropping lookup for {ip}"
-                );
+                // The depth THIS resolver was built with, not the shipped
+                // constant. A message quoting a figure the run is not enforcing
+                // sends an operator to check the wrong number — the same defect
+                // the HEP skew warning had before `--hep-hmac-window`.
+                let depth = dns_queue_capacity(self.inner.read().cache_entries);
+                tracing::debug!("reverse-DNS queue full ({depth}); dropping lookup for {ip}");
             }
         }
     }
@@ -293,6 +386,20 @@ impl NameResolver {
             inner.generation += 1;
         }
         removed
+    }
+
+    /// Reverse-DNS results this resolver will hold at once.
+    ///
+    /// Exists so the setting is observable from outside the module. The cap
+    /// lives on private state and the only way to reach it otherwise is to land
+    /// enough real PTR results to trip an eviction — which needs a working
+    /// resolver and thousands of lookups, so nothing outside `names` could
+    /// check that an operator's figure had arrived. A key that is parsed and
+    /// never passed to the constructor is indistinguishable from a wired one
+    /// without this.
+    #[must_use]
+    pub fn dns_cache_capacity(&self) -> usize {
+        self.inner.read().cache_entries
     }
 
     /// Monotonic mutation counter: bumped by every change that can alter a
@@ -1034,6 +1141,72 @@ mod tests {
         );
         // A cached IP is never re-marked for lookup.
         assert!(!inner.mark_requested(ip));
+    }
+
+    /// The cache cap an operator set is the cap the cache enforces.
+    ///
+    /// The observation is the size of the map after more results land than it
+    /// may hold, under two different settings — a capture touching more hosts
+    /// than the shipped 4096 thrashes, and re-looks-up the same addresses for
+    /// the rest of the run. Asserting the configured number back would pass
+    /// against a resolver that stored it and kept evicting at 4096.
+    #[test]
+    fn the_configured_cache_cap_is_the_one_the_cache_enforces() {
+        fn held_after(cap: usize, landed: u32) -> usize {
+            let r = NameResolver::with_limits(false, cap);
+            let mut inner = r.inner.write();
+            for i in 0..landed {
+                inner.cache_dns_result(nth_ip(i), Some(format!("host-{i}")));
+            }
+            inner.dns_cache.len()
+        }
+
+        assert_eq!(held_after(8, 40), 8, "a cap of 8 must hold 8");
+        assert_eq!(
+            held_after(24, 40),
+            24,
+            "raising the cap must raise what the cache holds, or the setting \
+             is stored and ignored"
+        );
+    }
+
+    /// The in-flight set follows the same cap, so tracking cannot starve the
+    /// cache under a narrowed setting either.
+    #[test]
+    fn the_configured_cap_also_bounds_the_in_flight_set() {
+        let r = NameResolver::with_limits(false, 6);
+        let mut inner = r.inner.write();
+        for i in 0..40 {
+            inner.mark_requested(nth_ip(i));
+        }
+        assert_eq!(inner.dns_requested.len(), 6);
+    }
+
+    /// The queue depth follows the cache cap rather than being set apart.
+    ///
+    /// Observed as the number of lookups a full queue accepts before dropping
+    /// the rest, which is what the depth means — not as the number itself.
+    #[test]
+    fn the_queue_depth_follows_the_cache_cap() {
+        fn accepted_with(cache_entries: usize) -> usize {
+            let depth = dns_queue_capacity(cache_entries);
+            let (tx, rx) = std::sync::mpsc::sync_channel::<IpAddr>(depth);
+            let r = NameResolver {
+                inner: Arc::new(RwLock::new(Inner::with_cache_entries(cache_entries))),
+                dns_tx: Some(tx),
+            };
+            for i in 0..(depth as u32 + 32) {
+                let _ = r.name(nth_ip(i), NameMode::Dns);
+            }
+            rx.try_iter().count()
+        }
+
+        let shipped = accepted_with(MAX_DNS_CACHE_ENTRIES);
+        let widened = accepted_with(MAX_DNS_CACHE_ENTRIES * 2);
+        assert!(
+            widened > shipped,
+            "a wider cache must widen the queue feeding it: {shipped} then {widened}"
+        );
     }
 
     /// A burst of unique IPs beyond the DNS queue capacity must not block

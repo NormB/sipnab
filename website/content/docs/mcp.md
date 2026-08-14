@@ -937,6 +937,7 @@ NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
       "jitter_ms": 0.0054046519599899685,
       "mos": 4.358100599599484,
       "mos_grounded": true,
+      "mos_grounding": "published",
       "orphaned": false,
       "first_seen": "2016-11-26T14:52:59.689083+00:00",
       "last_seen": "2016-11-26T14:53:08.169060+00:00",
@@ -971,11 +972,21 @@ holds every stream it holds, so there is nothing to page. `quality_intervals`
 holds one entry per completed sampling window, so a short call legitimately
 returns an empty array while this eight-second one returns a single row.
 
-Each stream carries **`mos_grounded`**. `estimate_mos` returns the same number
-— 4.216 at 10 ms jitter — for AMR, AMR-WB, EVS, G.722 *and* for a stream whose
-codec was never identified, because sipnab only has published ITU-T G.113
-impairment values for G.711, G.729 and Opus. When `mos_grounded` is `false` the
-MOS means **unknown**, not "about 4.2", and a `mos_note` says so.
+Each stream carries **`mos_grounded`** and **`mos_grounding`**. `estimate_mos`
+returns the same number — 4.216 at 10 ms jitter — for AMR, AMR-WB, EVS, G.722
+*and* for a stream whose codec was never identified, because sipnab only has
+published ITU-T G.113 impairment values for G.711, G.729 and Opus. When
+`mos_grounded` is `false` the MOS means **unknown**, not "about 4.2", and a
+`mos_note` says so.
+
+`mos_grounding` names which basis the number rests on, because "grounded" now
+covers two of them:
+
+| `mos_grounding` | `mos_grounded` | What the number rests on |
+|---|---|---|
+| `published` | `true` | An ITU-T G.113 impairment value sipnab implements. |
+| `operator_declared` | `true` | An `Ie` this deployment supplied in `[media.codec_ie]`. A `mos_note` says so, so an agent citing the figure cites the operator rather than a standard. |
+| `unpublished` | `false` | Nothing published and nothing declared. Placeholder. |
 
 For AMR-WB specifically the placeholder is wrong by roughly a full MOS point in
 either direction: its nine modes genuinely span about 4.49 down to 3.51. Do not
@@ -999,8 +1010,10 @@ it is what a NAT or one-way-audio fault looks like from the media side.
 | `truncated` | bool | `true` when matches remain after this page. |
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
 
-**A MOS bound only judges codecs G.113 publishes a value for.** `min_mos` and
-`max_mos` skip every ungrounded stream and count it in `ungrounded_excluded`,
+**A MOS bound only judges codecs sipnab has a real impairment value for** —
+one G.113 publishes, or one this deployment declared in `[media.codec_ie]`.
+`min_mos` and `max_mos` skip every ungrounded stream and count it in
+`ungrounded_excluded`,
 because a bound on a placeholder picks calls out of a guess — and it goes
 wrong in both directions. A healthy AMR-WB stream never appears in a `max_mos`
 sweep, while a degraded one turns up on a figure that never described it.
@@ -1028,6 +1041,7 @@ carries four streams — two PCMU, two G722 — and no dialogs at all:
       "loss_pct": 0.0,
       "mos": 4.357953149337916,
       "mos_grounded": true,
+      "mos_grounding": "published",
       "octets": 24160,
       "orphaned": true,
       "packets": 151,
