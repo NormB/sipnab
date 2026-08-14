@@ -1,7 +1,10 @@
 # Benchmarks
 
-How fast sipnab is, measured honestly. **Every table on this page comes from
-one run on 0.5.91, on 2026-08-10.**
+How fast sipnab is, measured honestly — and what that speed is for. The number
+is not a race against the local capture tools. It is the headroom that decides
+how much of an estate one binary can take at once, and therefore whether you
+stand up a collector tier at all. **Every table on this page comes from one run
+on 0.5.91, on 2026-08-10.**
 
 Every number here is reproducible, and has been a checked claim rather than an
 asserted one since 0.5.47 — the release that put the corpus generator and the
@@ -25,6 +28,35 @@ the corpus generator still reproduces the same composition
 reproduced its published tables within noise twelve days on. Neither set is
 comparable to the pre-0.5.47 figures, which came from an unpublished corpus
 nobody can rebuild.
+
+## What the throughput is for
+
+Reach, not a benchmark win. sipnab sits between a local capture tool and a
+capture platform: many nodes, no infrastructure behind it
+([the position](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md)).
+Kamailio, OpenSIPS and Asterisk already speak HEP, so they mirror their
+signalling to one sipnab listener and that single process answers for the whole
+estate — nothing goes on the production hosts. Throughput is what keeps that
+arrangement honest. A listener that falls behind the fan-in sends you back to
+capture agents feeding a collector, which is the deployment project sipnab
+exists to skip.
+
+Put the figures next to the load. A proxy running 100 calls per second at
+roughly ten SIP messages per call emits about 1,000 signalling packets per
+second. The tables below measure 1.07M packets per second on one core and 2.32M
+on four, on a corpus that is 93.5% RTP — media a signalling-only HEP feed never
+carries at all. Three orders of magnitude separate that proxy from a single
+core's budget.
+
+Two limits on the arithmetic, stated here rather than left for a reader to
+discover:
+
+- These tables measure offline pcap reconstruction, not the HEP receive path.
+  Read the ratio as a budget with room in it, not as a measured fan-in ceiling.
+- Reconstruction is not the first ceiling a fan-in meets anyway.
+  [`--hep-rate-limit`](cli-reference.md#network-listeners) caps what a listener
+  accepts, and its default sits far below these tables, so size a deployment
+  against that knob rather than against this page.
 
 ## Test host & method
 

@@ -9,10 +9,17 @@
 
 SIP & RTP capture, analysis, and security tool.
 
-sipnab unifies [sngrep](https://github.com/irontec/sngrep) (TUI) and
-[sipgrep](https://github.com/sipcapture/sipgrep) (CLI) into a single Rust
-binary with first-class RTP quality monitoring, VoIP diagnostic aliases, and
-security analysis.
+**One static binary that reads a whole estate.** Kamailio, OpenSIPS and
+Asterisk already speak HEP, so they mirror their signalling to a single sipnab
+listener and that one process answers for every node — nothing goes on the
+production hosts, and there is no collector, no database and no web UI to
+operate.
+
+On one box it still does what you expect. sipnab honours every
+[sngrep](https://github.com/irontec/sngrep) keybinding and accepts the
+[sipgrep](https://github.com/sipcapture/sipgrep) flags, in one Rust binary that
+adds first-class RTP quality monitoring, VoIP diagnostic aliases, security
+analysis, and an MCP server an AI agent can drive.
 
 ## Features
 

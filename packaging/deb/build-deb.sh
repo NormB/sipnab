@@ -105,8 +105,10 @@ Depends: libpcap0.8 | libpcap0.8t64${RECOMMENDS_LINE:+
 $RECOMMENDS_LINE}
 Maintainer: Norm Brandinger <n.brandinger@gmail.com>
 Description: SIP & RTP capture, analysis, and security
- sipnab unifies sngrep and sipgrep into a single Rust binary with
- first-class RTP support, VoIP diagnosis, security analysis, and
+ One static binary that reads a whole estate: Kamailio, OpenSIPS and
+ Asterisk mirror their signalling to a sipnab HEP listener, so one
+ process covers every node with no collector, no database and no web UI.
+ Adds first-class RTP support, VoIP diagnosis, security analysis, and
  a declarative filter DSL.
 Homepage: https://sipnab.com
 CTRL

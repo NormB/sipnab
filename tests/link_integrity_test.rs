@@ -576,7 +576,10 @@ fn wiki_intra_docs_links_resolve() {
     // counterpart to get_dialog's unfenced `messages[]`, and `#list_captures`
     // 3 because export_capture, export_audio and open_capture all write names
     // into a directory it is the only tool that reads back.
-    const EXPECTED_WIKI_LINKS: usize = 383;
+    // 384: `docs/benchmarks.md` +1. The reach argument added there points at
+    // `--hep-rate-limit` in `cli-reference.md#network-listeners` rather than
+    // restating the default packets-per-second ceiling a third time.
+    const EXPECTED_WIKI_LINKS: usize = 384;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \
