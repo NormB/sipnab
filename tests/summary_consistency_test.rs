@@ -146,6 +146,7 @@ fn stream_summary_canonical_keys() {
         fragment_offset: None,
         more_fragments: false,
         ip_protocol: 17,
+        dscp: None,
         from_hep: false,
     };
     ss.process_rtp(&pp, &hdr, pp.timestamp);

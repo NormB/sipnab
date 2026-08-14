@@ -327,7 +327,7 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:3312`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3312)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:3601`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3601)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -391,7 +391,7 @@ Tiers:
 - [x] src/sip/dialog.rs (update_register_state) — [missed-edge-case] 401/407 challenge marks REGISTER dialog Failed; challenge-only capture reads as failure rather than auth-pending. **Done:** 401/407 leave the state unchanged (auth pending); only a genuine 4xx-6xx marks Failed, a later 2xx marks Registered.
 - [x] src/sip/timing.rs:135 — [edge-case] `answered_at` matches any 200-to-INVITE without CSeq check; re-INVITE 200 can be recorded as answer time. **Done:** `DialogTiming` records the initial INVITE's CSeq; the 100/180/200 INVITE-response milestones are pinned to it (fallback to first-match when the INVITE wasn't captured).
 - [x] src/sip/message.rs:117 — [edge-case] `cseq()` keeps trailing garbage in method (`"INVITE extra"`), defeating comparisons in timing.rs; untested. **Done:** `cseq()` returns only the single method token via `split_whitespace`.
-- [ ] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed ([`src/sip/message.rs:276`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L276)): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` ([`src/sip/message.rs:309`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L309)) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function.
+- [ ] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed ([`src/sip/message.rs:276`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L276)): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` ([`src/sip/message.rs:375`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L375)) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function.
 - [x] src/sip/siprec.rs:66 — [adversarial] `split_multipart` splits on `--boundary` anywhere, not line-anchored per [RFC 2046](https://www.rfc-editor.org/rfc/rfc2046). **Done:** the split is a manual scan that only accepts `--boundary` at the start of a line (body start or preceded by `\n`, covering CRLF and the parser's existing bare-LF tolerance); mid-line occurrences inside part content are literal text. Preamble, missing-terminator, and `--boundary--` handling unchanged.
 - [x] src/sip/sdp_timeline.rs:184 — [bug-risk] repeated T.38 re-INVITEs re-emit T38Switch every other exchange (suppression checks only previous event). **Done:** `SdpExchange` now records `is_t38` and suppression compares the previous exchange's media *state* (`is_t38 && !prev.is_t38`), matching how hold/resume compare `prev.mode` — one T38Switch per genuine audio→T.38 transition, re-emitted only after a real return to audio.
 - [x] src/sip/dsl.rs:1069 — [correctness] `compare_num` absolute-epsilon equality is effectively exact for values ≥2; `duration == 5.0` ~never matches. **Done:** `==`/`!=` use `NUM_EQ_TOLERANCE = 5e-4` — half the finest domain step, since every numeric field is integral (ports, counts) or millisecond-derived (duration/pdd/setup, jitter, MOS/loss to ≥0.1) — absorbing float noise while keeping adjacent domain values (5.001 vs 5.0) distinct.
@@ -435,7 +435,7 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3392`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3392),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3698`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3698),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -1001,11 +1001,11 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:171`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L171)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:4466`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4466), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:4755`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4755), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1117`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1117)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1133`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1133)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -1398,6 +1398,36 @@ production traffic.
   that pushes when a dialog matches, changes what sipnab *is* rather than how
   it is called: an agent can sit on a live capture instead of asking again.
   The most transformative item in this section and the largest.
+
+  **Scoped down 2026-08-14, and the entry above is what is being declined.**
+  `subscribe(filter)` and `notifications/resources/updated` both put the MCP
+  server into a long-lived, stateful relationship with a client: a
+  subscription registry, per-client filters, delivery state, and a lifecycle
+  for what happens when a subscriber goes away without saying so.
+  [`positioning.md`](positioning.md) §4 gives the test as a verb — *if a
+  feature requires sipnab to be **operated** rather than **run**, it is out of
+  position* — and a subscription service is the thing that has to be operated.
+  It is also the same slope §7 names as falsifying: the entry's own words,
+  "changes what sipnab *is*", are the argument against it rather than for it.
+
+  **What survives is the bounded form:** ONE tool call that returns when a
+  condition is met OR a deadline passes, whichever comes first. It solves the
+  actual complaint — an agent burning calls re-asking a live capture whether
+  anything happened yet — while keeping the request/response shape. No
+  registry, no per-client state, no delivery guarantees to honour, and nothing
+  that outlives the call. The deadline is not a detail; it is the whole reason
+  this version fits, because it is what makes the server's obligation end.
+
+  Shape, for whoever builds it:
+  `await_condition { filter, timeout_seconds, poll_interval_ms? }` → the
+  matching dialogs plus `matched: true|false` and the elapsed time, with
+  `matched: false` on deadline being an ordinary answer rather than an error.
+  Bound `timeout_seconds` by an operator-set ceiling for the same reason
+  `--mcp-max-rows` exists: the right value belongs to the consumer, and an
+  unbounded wait is a held connection by another name.
+
+  **Not built.** The judgement is recorded here so the next agent does not
+  build the subscription version by default; the bounded tool is still open.
 - [ ] **PB5 — Progress and logging.** `notifications/progress` for the
   capture-wide sweeps, and the MCP logging capability
   (`logging/setLevel` → `notifications/message`) so stderr diagnostics reach
@@ -1421,7 +1451,7 @@ implementation.
 
 | Item | Verified state | Proposed |
 |---|---|---|
-| DTMF / telephone-event | [`src/rtp/dtmf.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/dtmf.rs) decodes digits; nothing in [`src/output/json.rs`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs) carries them | `get_dtmf_digits(call_id?)` → digit, duration, SSRC, timestamp. **Gate on PA5:** IVR digits are card numbers and PINs |
+| DTMF / telephone-event | [`src/rtp/dtmf.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/dtmf.rs) decodes digits; nothing in [`src/output/json.rs`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs) carries them | `get_dtmf_digits(call_id?)` → digit, duration, SSRC, timestamp. **Gate on PA5:** IVR digits are card numbers and PINs. **Corrected 2026-08-14 — this row's "the engine exists, the work is a tool wrapper" framing is wrong for DTMF, and it is the only row in this table where it is wrong.** Nothing RETAINS a decoded digit. `extract_dtmf_with_clock` is called on the batch path, its result is logged and increments a `dtmf_count` counter, and the `DtmfEvent` is then dropped — no store, no stream field, nothing to wrap. A tool needs retention plumbing first (a capped `Vec<DtmfEvent>` on `RtpStream`, fed from the same site), and it must carry the existing masking discipline onto the new surface: `MASKED_DIGIT` unless `--dtmf-cleartext`, since the whole reason to gate on PA5 is that the value is the PIN. Note also that `dtmf` is already a tracked metric in [`tests/surface_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/surface_parity_test.rs), currently absent from all three surfaces — so MCP cannot gain it alone |
 | STIR/SHAKEN | [`src/sip/stir_shaken.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/stir_shaken.rs) exists; `--stir-shaken` REPORTS the PASSporT claims and **verifies no signature** — corrected 2026-08-05, it never did | `report_stir_shaken(call_id)` → passport claims, attestation, `iat` freshness. NOT a cert-chain result: verifying means fetching the certificate the token references, and sipnab makes no outbound request to analyse a capture. A forged Identity header reports exactly like a genuine one. |
 | Wireshark / tshark filter | [`src/output/wireshark.rs`](https://github.com/NormB/sipnab/blob/main/src/output/wireshark.rs) exists; both flags refused under `--mcp` because they write to stdout | `generate_display_filter(call_id\|filter)`. The stdout invariant does not apply to a return value — this one is a pure oversight |
 | fail2ban | format exists in tree | `ban_candidates(kinds?, since?)` → structured src_ip, rule, count, plus the jail line |
@@ -1467,7 +1497,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:5530`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5530), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:5820`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5820), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -2011,7 +2041,7 @@ authoritative; the PB text above adds only what they do not already say.
   unfragmented DATA chunk per packet. Enables SIGTRAN/Diameter (3GPP IMS).
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
-  `SctpReassembler` ([`src/capture/parse.rs:1730`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1730)), constructed on every
+  `SctpReassembler` ([`src/capture/parse.rs:1752`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1752)), constructed on every
   `PacketProcessor` ([`src/capture/mod.rs:609`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L609), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to

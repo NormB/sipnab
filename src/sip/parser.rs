@@ -311,6 +311,10 @@ pub fn parse_sip_bytes(
 
     Ok(SipMessage {
         frame: None,
+        // Same reason as `frame`: the parser sees bytes and addressing, never
+        // an IP header. The capture pipeline stamps both where it holds the
+        // `ParsedPacket` and the message together.
+        dscp: None,
         raw: data.clone(),
         is_request: first.is_request,
         method: first.method,

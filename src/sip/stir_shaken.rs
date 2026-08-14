@@ -562,6 +562,7 @@ mod tests {
             src_port: 5060,
             dst_port: 5060,
             transport: TransportProto::Udp,
+            dscp: None,
             is_retransmission: false,
         };
 
@@ -640,6 +641,7 @@ mod tests {
             src_port: 5060,
             dst_port: 5060,
             transport: TransportProto::Udp,
+            dscp: None,
             is_retransmission: false,
         }
     }

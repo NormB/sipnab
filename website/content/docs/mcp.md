@@ -338,6 +338,7 @@ ordinary update.
 | [`get_message`](#get-message) | `call_id`, `index` | Single SIP message at a given index |
 | [`render_ladder`](#render-ladder) | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
 | [`rtp_stats`](#rtp-stats) | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
+| [`media_diagnostics`](#media-diagnostics) | `call_id` | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
 | [`search_messages`](#search-messages) | `query`, `limit?`, `cursor?` | A page of substring matches across method/From/To/UA/body, with the total behind it |
 | [`tail_dialogs`](#tail-dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
 | [`security_findings`](#security-findings) | `kinds?`, `since?`, `limit?` | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |
@@ -1070,6 +1071,95 @@ reached the flag. If you have a client that works around this by reading
 `total_matched: 2` and `ungrounded_excluded: 2` account for all four streams.
 The two G722 streams score 4.22 from the placeholder arm, which would have put
 them under a 4.5 bound on a number that means nothing.
+
+### `media_diagnostics`
+
+"The MOS is 3.6 — why?" `rtp_stats` gives the score. This gives the facts
+underneath it, and each one says what kind of number it is.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | A Call-ID the store holds. | Required — the call fails. |
+
+**Read `applicable` first.** It is `false` when no RTP stream belongs to the
+dialog, and the response then holds only `call_id`, `reason`,
+`capture_identity` and `schema_version`. An empty `streams` array would read as
+"sipnab checked the media and it was fine", which is a different claim from "no
+media reached the capture point".
+
+Otherwise `streams` carries one entry per stream, each with five blocks:
+
+| Block | Answers | The honesty flag |
+|---|---|---|
+| `qos` | Which queue the sender asked the network to put this media in | `marking_observed` — `false` for a HEP-fed stream, where sipnab saw no IP header. `dscp: 0` means observed best effort, a real and frequently wrong marking |
+| `jitter` | The interarrival jitter, and whether it is a measurement | `grounded` — `false` when the stream supplied no clock rate and sipnab fell back to a default. Jitter is an RTP-timestamp difference divided by that rate, so a wrong divisor gives a different quantity, not a rough one. An ungrounded stream reports no `measured_ms` at all |
+| `delay` | The one-way delay behind the published MOS | `assumed` — `true` when neither the operator nor any RTCP supplied one |
+| `silence` | Comfort-noise frames and detected silence periods | -- (counts, not estimates) |
+| `endpoint_reported` | What the far end said over RTCP | The whole block is the flag. Omitted entirely when no RTCP arrived |
+
+`endpoint_reported` sits apart from everything beside it on purpose. Nobody
+authenticates RTCP and anyone can forge it, and a report describes the path
+from the sender to *the reporter* — on a mid-path capture, a different segment
+from the one sipnab watches. The two disagreeing is normal and informative, and
+merging them would destroy exactly that signal. Nothing under this key feeds the
+MOS.
+
+`qos.remarked_to` appears only when the stream's last packet carries a different
+code point from its first — an SBC or a policy boundary rewriting the marking in
+flight. Its presence is the finding, and a steady stream omits it rather than
+repeating the same number.
+
+The example runs against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// media_diagnostics { "call_id": "1-1966@10.0.2.20" }
+{
+  "schema_version": 1,
+  "call_id": "1-1966@10.0.2.20",
+  "applicable": true,
+  "streams": [
+    {
+      "ssrc": "0x343da99b",
+      "src": "10.0.2.15:27942",
+      "dst": "10.0.2.20:6000",
+      "codec": "PCMU",
+      "packets": 425,
+      "qos": {
+        "marking_observed": true,
+        "dscp": 0,
+        "name": "CS0 / default (best effort)",
+        "expedited": false
+      },
+      "jitter": {
+        "grounded": true,
+        "clock_basis": "rfc3551",
+        "clock_rate_hz": 8000,
+        "measured_ms": 0.0054046519599899685
+      },
+      "delay": { "source": "assumed", "assumed": true, "one_way_ms": 100.0 },
+      "silence": { "cn_frames": 0, "periods": 0, "total_ms": 0 }
+    }
+  ],
+  "capture_identity": {
+    "instance": "6dac718cb96d767d0f490-1",
+    "node": "sbc-1",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
+}
+```
+
+Three things in that answer are worth reading together. The media is in the
+default queue, so it competes with bulk traffic — the most common cause of
+jitter that adding bandwidth does not fix. The jitter figure IS a measurement,
+because payload type 0 has a clock rate [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551)
+Table 4 fixes. And the delay behind the MOS is a default, not anything this
+capture showed, so a MOS built on it is only as good as that assumption.
+
+`clock_basis` has three values: `rfc3551` (a static payload type), `rtpmap` (a
+dynamic one an SDP named), and `assumed` (neither, and the reason `grounded` is
+`false`).
 
 ### `search_messages`
 
@@ -2765,7 +2855,7 @@ it, so any number it gave would describe a moment that has passed.
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
 - **Every tool declares what it does.** All 31 carry MCP annotations, so a host
-  can decide what to call without asking. Twenty-six are `readOnlyHint: true`.
+  can decide what to call without asking. Twenty-seven are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. No tool sets `openWorldHint`, because sipnab answers from the loaded
   capture and contacts no external service.
@@ -2819,7 +2909,7 @@ it, so any number it gave would describe a moment that has passed.
 
 ## What the write verbs do
 
-Twenty-six of the 31 tools are `readOnlyHint: true`. These five are not, and
+Twenty-seven of the 32 tools are `readOnlyHint: true`. These five are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 

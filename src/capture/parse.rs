@@ -114,6 +114,24 @@ pub struct ParsedPacket {
     pub more_fragments: bool,
     /// The IP protocol number of the payload (for fragment reassembly key).
     pub ip_protocol: u8,
+    /// The six-bit Differentiated Services Code Point of the innermost IP
+    /// header ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474) §3): the
+    /// IPv4 `TOS` byte or the IPv6 `Traffic Class` byte, shifted past the two
+    /// ECN bits.
+    ///
+    /// Read from the header the packet actually carried, and read innermost,
+    /// so a tunnelled call reports the marking its own operator set rather
+    /// than the carrier's outer marking.
+    ///
+    /// `None` is not "unmarked" — 0 is unmarked, and it is the default PHB
+    /// that most misconfigurations produce, so the two must not collapse into
+    /// one value. `None` means NO IP HEADER WAS OBSERVED: the HEP path, whose
+    /// addressing arrives in chunks a remote sender asserted rather than from
+    /// a header sipnab read, and synthetic packets built by hand. Reporting 0
+    /// there would state "this call is unmarked" about a call sipnab never saw
+    /// the marking of, which is the failure this feature exists to prevent in
+    /// the other direction.
+    pub dscp: Option<u8>,
     /// Whether this packet originated from the HEP listener (its addressing
     /// came from HEP chunks a remote sender asserted, not from an observed
     /// IP header). Active responses such as scanner-kill treat HEP-origin
@@ -2241,6 +2259,11 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: meta.ip_protocol,
+            // No IP header was observed. HEP delivers addressing in chunks a
+            // remote sender asserted, and carries no DSCP chunk at all, so
+            // there is nothing to read and nothing honest to guess. `Some(0)`
+            // here would tell an operator their HEP-fed trunk is unmarked.
+            dscp: None,
             from_hep: true,
         });
     }
@@ -2878,6 +2901,27 @@ fn extract_parsed_packet(
         NetSlice::Arp(_) => return Err(CaptureError::NotIp { what: "ARP packet" }),
     };
 
+    // The DSCP the network was asked to honour for this packet.
+    //
+    // Read here rather than in the tuple above because it is the only field
+    // whose IPv4 and IPv6 accessors carry different names for the same six
+    // bits — etherparse spells the IPv4 one `dcp` — and burying that in a
+    // six-element tuple hides the asymmetry a reader has to know about.
+    //
+    // `net` is the INNERMOST network slice: `parse_inner_ip` re-slices and
+    // re-enters this function per encapsulation layer, so every tunnel
+    // (IP-in-IP, GRE, MPLS-in-IP, AH tunnel mode, VXLAN, GTP-U, Geneve,
+    // Teredo, L2TP) records the marking of the packet the operator sent, not
+    // the carrier's outer wrapper. That is the answer an operator wants: the
+    // outer marking is the transit provider's business and the inner one is
+    // theirs.
+    let dscp = Some(match net {
+        NetSlice::Ipv4(v4) => v4.header().dcp().value(),
+        NetSlice::Ipv6(v6) => v6.header().dscp().value(),
+        // Unreachable: the IP-address match above already bails on ARP.
+        NetSlice::Arp(_) => 0,
+    });
+
     // Check if this is a fragment (non-first fragment has no transport header)
     let is_fragment = match net {
         NetSlice::Ipv4(v4) => v4.header().is_fragmenting_payload(),
@@ -2911,6 +2955,7 @@ fn extract_parsed_packet(
             fragment_offset,
             more_fragments,
             ip_protocol,
+            dscp,
             from_hep: false,
         });
     }
@@ -2941,6 +2986,7 @@ fn extract_parsed_packet(
             fragment_offset,
             more_fragments,
             ip_protocol,
+            dscp,
             from_hep: false,
         });
     }
@@ -2989,6 +3035,7 @@ fn extract_parsed_packet(
             fragment_offset,
             more_fragments,
             ip_protocol,
+            dscp,
             from_hep: false,
         }),
         TransportSlice::Tcp(tcp) => Ok(ParsedPacket {
@@ -3012,6 +3059,7 @@ fn extract_parsed_packet(
             fragment_offset,
             more_fragments,
             ip_protocol,
+            dscp,
             from_hep: false,
         }),
         // ICMP is still not a `ParsedPacket` — it carries no message, and

@@ -773,6 +773,7 @@ mod tests {
             fragment_offset: Some(offset),
             more_fragments,
             ip_protocol: 17, // UDP
+            dscp: None,
             from_hep: false,
         }
     }
@@ -802,6 +803,7 @@ mod tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 6, // TCP
+            dscp: None,
             from_hep: false,
         }
     }

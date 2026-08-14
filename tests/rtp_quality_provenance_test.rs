@@ -585,6 +585,7 @@ fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
         fragment_offset: None,
         more_fragments: false,
         ip_protocol: 17,
+        dscp: None,
         from_hep: false,
     };
     let hdr = RtpHeader {

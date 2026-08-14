@@ -82,6 +82,22 @@ pub struct SipMessage {
     /// naming the wrong bytes is the failure this whole mechanism exists to
     /// prevent.
     pub frame: Option<crate::capture::packet::FrameRef>,
+    /// The DSCP the frame carrying this message was marked with.
+    ///
+    /// Signalling and media are marked separately and frequently disagree —
+    /// the classic fault is media marked `EF` while `INVITE`s go out
+    /// unmarked, so call setup queues behind bulk traffic on a congested link
+    /// and post-dial delay climbs while every media metric stays clean. That
+    /// question is unanswerable without the byte, and until this field existed
+    /// sipnab discarded it at the parse.
+    ///
+    /// Attached by the capture pipeline, not by the parser: `parse_sip_bytes`
+    /// takes bytes and addressing and has no business knowing about IP
+    /// headers, exactly as with [`frame`](Self::frame). `None` means no IP
+    /// header was observed (a HEP-fed message, or one built by hand), which is
+    /// a different fact from `Some(0)` — 0 is the default PHB, a real and
+    /// frequently wrong marking.
+    pub dscp: Option<u8>,
 }
 
 impl SipMessage {

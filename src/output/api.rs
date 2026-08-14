@@ -1935,6 +1935,7 @@ mod tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            dscp: None,
             from_hep: false,
         };
         let rtp = RtpHeader {
@@ -2104,6 +2105,7 @@ mod tests {
                     fragment_offset: None,
                     more_fragments: false,
                     ip_protocol: 17,
+                    dscp: None,
                     from_hep: false,
                 };
                 let rtp = RtpHeader {

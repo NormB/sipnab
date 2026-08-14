@@ -59,6 +59,7 @@ fn parsed(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
         fragment_offset: None,
         more_fragments: false,
         ip_protocol: 17,
+        dscp: None,
         from_hep: false,
     }
 }

@@ -130,6 +130,11 @@ pub const MESSAGE_VERBATIM_FIELDS: &[&str] = &[
     // agent passes back to `--show-frame`/`show_evidence`, so it must survive
     // verbatim, not be wrapped as untrusted text.
     "frame",
+    // A six-bit integer sipnab read out of the IP header. The sender chose the
+    // value, which is why it is worth reporting, but the range is 0..=63 and
+    // the field is a number — there is no string for instruction-shaped text
+    // to hide in, and fencing an integer would only make it unusable as one.
+    "dscp",
 ];
 
 /// Fence the free-text fields of one per-message JSON object in place.

@@ -38,6 +38,14 @@ fn repo() -> &'static Path {
 /// comment reading "round_trip holds it to that contract", which would have
 /// reported latency as present on a surface that has never exposed it. A gate
 /// that reads prose is a gate that agrees with whatever the prose says.
+///
+/// `#[cfg(test)]` modules go for the same reason, one level up, and this was
+/// measured too. Deleting the TUI's whole DSCP row left this gate GREEN,
+/// because two `#[cfg(test)]` fixtures in `src/tui` construct a `ParsedPacket`
+/// and name its `dscp` field while setting it to `None`. A gate that reads
+/// test code is a gate that agrees with whatever the tests happen to build —
+/// and it would have reported a metric as reachable in an interface that had
+/// stopped drawing it, which is the exact drift this file exists to catch.
 fn code(rel: &str) -> String {
     let root = repo().join(rel);
     let mut files = Vec::new();
@@ -58,9 +66,43 @@ fn code(rel: &str) -> String {
     }
     let mut out = String::new();
     for f in files {
+        // Depth of the `#[cfg(test)]` module currently being skipped, counted
+        // in braces. `None` while reading real code. Brace counting is crude
+        // and cannot see a `{` inside a string literal — which is why it is
+        // used to SKIP rather than to select: the worst a miscount can do here
+        // is drop a few extra lines, and the vacuity floors below
+        // (`both >= 2`, `checked >= 2`) fail loudly if it ever drops enough to
+        // matter.
+        let mut skipping: Option<i32> = None;
+        let mut pending_test_mod = false;
         for line in std::fs::read_to_string(&f).expect("read").lines() {
             let t = line.trim_start();
+            if let Some(depth) = skipping.as_mut() {
+                *depth += i32::try_from(line.matches('{').count()).unwrap_or(0);
+                *depth -= i32::try_from(line.matches('}').count()).unwrap_or(0);
+                if *depth <= 0 {
+                    skipping = None;
+                }
+                continue;
+            }
             if t.starts_with("//") {
+                continue;
+            }
+            if pending_test_mod {
+                let opens = i32::try_from(line.matches('{').count()).unwrap_or(0);
+                let closes = i32::try_from(line.matches('}').count()).unwrap_or(0);
+                if opens > 0 {
+                    pending_test_mod = false;
+                    if opens - closes > 0 {
+                        skipping = Some(opens - closes);
+                    }
+                    continue;
+                }
+                // Still between the attribute and the `mod … {` it guards.
+                continue;
+            }
+            if t.starts_with("#[cfg(test)]") {
+                pending_test_mod = true;
                 continue;
             }
             out.push_str(line);
@@ -158,6 +200,24 @@ const QUALITY_METRICS: &[Metric] = &[
         aliases: &["burst_gap_analysis"],
     },
     Metric::named("dtmf"),
+    // QoS marking. Tracked here DELIBERATELY rather than left off the list:
+    // it is one of the numbers that decides whether a call was acceptable —
+    // unmarked media on a congested link is jitter no amount of bandwidth
+    // fixes — so a surface that reports jitter without saying which queue the
+    // packets were in is reporting the symptom and withholding the cause.
+    //
+    // It needs an alias list for the same reason latency does. `dscp` is the
+    // JSON key both APIs serialise; the stream carries the pair
+    // `dscp_first`/`dscp_last` because a re-marking is the finding and
+    // overwriting the original would hide it; and the TUI renders through
+    // those and through `dscp_remarked`, since a terminal shows "46 (EF)"
+    // rather than a key. Whole-identifier matching sees none of those in
+    // `dscp`, so tracking the key alone would report the marking as
+    // unreachable in an interface that draws it.
+    Metric {
+        name: "dscp",
+        aliases: &["dscp_first", "dscp_last", "dscp_remarked"],
+    },
 ];
 
 /// A quality metric and every identifier that carries it.

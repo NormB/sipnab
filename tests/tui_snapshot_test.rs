@@ -187,6 +187,11 @@ mod tui_snapshots {
                 fragment_offset: None,
                 more_fragments: false,
                 ip_protocol: 17,
+                // Marked EF, the conventional voice codepoint, so the
+                // snapshot proves the detail view RENDERS a marking and names
+                // it. A fixture left unmarked would pin the "not observed"
+                // branch and let the naming break silently.
+                dscp: Some(46),
                 from_hep: false,
             };
             let rtp1 = RtpHeader {
@@ -220,6 +225,7 @@ mod tui_snapshots {
                 fragment_offset: None,
                 more_fragments: false,
                 ip_protocol: 17,
+                dscp: None,
                 from_hep: false,
             };
             let rtp2 = RtpHeader {
@@ -267,6 +273,11 @@ mod tui_snapshots {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            // Marked EF, the conventional voice codepoint, so the snapshot
+            // proves the detail view RENDERS a marking and names it — a
+            // fixture left unmarked would pin the "not observed" branch and
+            // let the naming break silently.
+            dscp: Some(46),
             from_hep: false,
         };
         let rtp = RtpHeader {

@@ -582,7 +582,9 @@ fn wiki_intra_docs_links_resolve() {
     // 385: `docs/cli-reference.md` +1. The `--split-keep` table row points at
     // the deletion warning in the same page's capture section rather than
     // restating in a table cell which files the flag will and will not remove.
-    const EXPECTED_WIKI_LINKS: usize = 385;
+    // 385: `docs/mcp.md` +1. The tool table's new `media_diagnostics` row
+    // links into the section documenting it, exactly as every other row does.
+    const EXPECTED_WIKI_LINKS: usize = 386;
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
         "extractor found {seen} wiki links, expected {EXPECTED_WIKI_LINKS}. \

@@ -1815,9 +1815,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // LOWERED 32 -> 31 by folding `stats` into `capture_status`: the two shared
     // six identical fields, so orienting cost two calls for the same numbers.
     // A DECREASE here is normally suspicious; this one is a deliberate merge.
+    // Raised 31 -> 32 by `media_diagnostics`, which reaches the media facts
+    // sipnab already computed and no MCP caller could read: the QoS marking,
+    // the grounding of the clock rate the jitter was derived from, the
+    // provenance of the delay term behind the published MOS, silence and
+    // comfort noise, and the RTCP a remote endpoint asserted.
     assert_eq!(
         registered.len(),
-        31,
+        32,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -1849,7 +1854,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // an extractor that matched everything would report none — assert it saw
     // a plausible number of rows before trusting the comparison below.
     assert!(
-        documented.len() >= 31,
+        documented.len() >= 32,
         "the tool-table extractor found only {} rows — its pattern no longer \
          matches the table's markup, so the comparison below is meaningless: \
          {documented:?}",
@@ -2517,9 +2522,15 @@ fn no_documentation_table_repeats_a_row() {
         // files were diffed, and exactly one `|---|` separator was added.
         // docs/design/backlog.md gained prose in the G5 entry and held its
         // table count, so nothing here is a boundary that stopped matching.
+        // Raised 528 -> 532 by the `media_diagnostics` section: its parameter
+        // table and its five-block table, each doubled by the site mirror.
+        // Attributed per file against HEAD before the number moved — the two
+        // separators are in docs/mcp.md and the two matching ones in
+        // website/content/docs/mcp.md, which scripts/build-site-pages.py
+        // regenerates. No other page changed a table boundary.
         tables,
-        528,
-        "walked {tables} tables, expected 528. More is fine — bump this. FEWER \
+        532,
+        "walked {tables} tables, expected 532. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

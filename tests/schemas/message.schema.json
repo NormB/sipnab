@@ -48,6 +48,12 @@
       "type": "string",
       "description": "Pointer to the frame this message was parsed from, as `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to retrieve the bytes, which either returns the frame or refuses because the capture changed. The per-message analogue of the dialog `frame`. Optional, and absent rather than null when the message has no frame (live capture). Not in `required` for that reason: an absent key means unknown, and a present one is always a real pointer.",
       "pattern": "^.+#[0-9]+(@[0-9a-f]{16})?$"
+    },
+    "dscp": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63,
+      "description": "DSCP of the frame that carried this message (RFC 2474), the queue the network was asked to put this signalling in. Optional, and absent rather than null when no IP header was observed (a HEP-fed message) — so an absent key means the marking is unknown and 0 means it was observed and is best effort, which is itself a frequent fault."
     }
   }
 }
