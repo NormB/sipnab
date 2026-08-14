@@ -199,6 +199,22 @@ pub fn extract_srtp_keys(crypto: &SdpCrypto) -> Result<SrtpKeyMaterial> {
 /// # Errors
 ///
 /// Fails if `material` is shorter than the expected key+salt length.
+///
+/// # Why the fallback lengths stay fixed
+///
+/// 16 and 14 are what RFC 3711's default AES-CM transform defines — a 128-bit
+/// master key and a 112-bit master salt — and every suite RFC 4568 registers
+/// except the AES-256 pair uses exactly them. Guessing differently does not
+/// fail cleanly: the split feeds the key-derivation PRF, so wrong lengths
+/// derive wrong session keys, decryption then produces plausible-looking bytes,
+/// and every RTP metric computed downstream describes audio nobody sent. A
+/// clean refusal an operator can act on is the good outcome here; confident
+/// garbage is the bad one, and only these lengths keep the common case in the
+/// first category.
+///
+/// A deployment running a suite with different lengths wants a new `SrtpSuite`
+/// variant carrying its real key and salt sizes. Widening the fallback instead
+/// moves every unknown suite onto one more guess.
 fn split_key_salt(suite: &SrtpSuite, material: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let key_len = suite.expected_key_len();
     let salt_len = suite.expected_salt_len();
@@ -335,6 +351,19 @@ fn parse_srtp_key_line(line: &str) -> Result<SrtpKeyMaterial> {
 ///
 /// AES_CM_128_HMAC_SHA1_80 uses 10 bytes (80 bits).
 /// AES_CM_128_HMAC_SHA1_32 uses 4 bytes (32 bits).
+///
+/// An unrecognized suite falls back to 10, and that 10 stays fixed for a
+/// correctness reason rather than a policy one. This length decides where the
+/// payload ends, so a wrong answer does not raise anything — it hands the
+/// caller a payload with tag bytes still attached, or four bytes of real audio
+/// thrown away, and the jitter, loss and MOS numbers computed from it then
+/// describe a stream the sender never produced. 10 covers both 80-bit suites,
+/// which is what an unknown name most often turns out to be; guessing 4 would
+/// misread the common case instead of the rare one.
+///
+/// A deployment running a suite this function does not recognize wants a new
+/// `SrtpSuite` variant carrying its real tag length. Changing the fallback
+/// moves the guess rather than removing it.
 pub fn auth_tag_len(suite: &SrtpSuite) -> usize {
     match suite {
         SrtpSuite::AesCm128HmacSha1_80 | SrtpSuite::AesCm256HmacSha1_80 => 10,

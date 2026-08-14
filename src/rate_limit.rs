@@ -52,6 +52,19 @@ pub const MAX_TRACKED_PEERS: usize = 4096;
 /// the unit every operator-facing knob that feeds this type uses
 /// (`--hep-rate-limit`, `--hep-rate-limit-per-peer`,
 /// `--mcp-rate-limit-per-peer`).
+///
+/// That sentence is why this stays one second. The caps carry a count and this
+/// constant supplies the "per what", so changing it redefines every one of
+/// those flags at once and in silence: `--hep-rate-limit 100` keeps its name,
+/// its value and its help text while meaning a fifth of the rate it meant
+/// before. Raising it lets a burst five times the documented size through
+/// before anything refuses; lowering it starves a deployment that sized its
+/// number against the old meaning. Neither shows up as a flag that changed,
+/// because no flag did.
+///
+/// An operator who wants a different rate changes the cap. A surface that
+/// genuinely needs a different window wants its own limiter, with the window
+/// named in its own knob, so the flag and the behaviour still agree.
 const WINDOW: Duration = Duration::from_secs(1);
 
 /// Why a limiter refused, so the caller can say so in its own words.

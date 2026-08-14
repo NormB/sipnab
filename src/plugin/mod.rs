@@ -54,10 +54,37 @@ pub const ABI_VERSION: u32 = 1;
 /// the machine was, so the same pcap could analyse differently twice. Fuel is
 /// deterministic, which keeps a plugin's findings reproducible — the property
 /// the whole tool is built around.
+///
+/// The number stays fixed because it is the sandbox boundary, not a tuning
+/// dial. Raising it lets an untrusted plugin hold the dialog for longer every
+/// time it runs, and on a live interface that shows up as dropped packets
+/// rather than as a slow report — the plugin stalls the thing sipnab exists to
+/// do, and the packets it misses never come back. Lowering it cuts an honest
+/// plugin off mid-analysis, and a plugin cut off reports nothing, which reads
+/// exactly like a plugin that found nothing.
+///
+/// A plugin that genuinely needs a bigger budget wants a PER-PLUGIN allowance
+/// the operator grants to that one plugin. Raising this global lifts the
+/// ceiling for every plugin the host loads afterwards, including whichever one
+/// arrives next.
 const FUEL_PER_DIALOG: u64 = 50_000_000;
 
 /// Linear-memory ceiling per plugin instance, in 64 KiB pages. 256 pages =
 /// 16 MiB, ample for a JSON document and a few findings.
+///
+/// Fixed, because this is the boundary that makes the word "sandboxed" true of
+/// memory. `wasmi` refuses the growth at the point the plugin asks for it, so
+/// the host never has to reclaim anything afterwards — but that only holds
+/// while the ceiling stays low enough to matter. Raising it lets a plugin take
+/// that much memory away from the capture buffers on a machine already sized
+/// for the wire it watches, and a capture that runs out of buffer loses
+/// packets it will never see again. Lowering it makes an honest plugin fail at
+/// instantiation with an allocation error that names no plugin fault, sending
+/// the operator hunting through the host instead of the plugin.
+///
+/// If one plugin needs more, grant that plugin a PER-PLUGIN budget. A global
+/// raise gives the same room to every plugin loaded afterwards, which is the
+/// opposite of what a sandbox is for.
 const MAX_MEMORY_PAGES: u32 = 256;
 
 /// Bytes in a WASM linear-memory page, fixed by the specification.
@@ -78,6 +105,16 @@ struct StoreState {
 /// Bounded because the length comes from the plugin, and an unbounded read of
 /// plugin-controlled length is how a "sandboxed" component takes the host's
 /// memory with it.
+///
+/// The 4 MiB stays fixed for that reason. Raising it raises exactly the
+/// allocation a hostile plugin controls, and the plugin picks the number, so
+/// the host allocates whatever the new ceiling permits on demand. Lowering it
+/// truncates an honest plugin's findings, and a truncated JSON document
+/// surfaces as a parse error rather than as a short report, so the operator
+/// reads "broken plugin" where the truth is "too much to say".
+///
+/// A plugin with more to report wants a PER-PLUGIN ceiling, never a larger
+/// global one.
 const MAX_OUTPUT_BYTES: u32 = 4 * 1024 * 1024;
 
 /// One finding reported by a plugin.
