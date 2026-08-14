@@ -185,6 +185,7 @@ DSBs
 dst
 Dst
 dtls
+eCapture
 elidable
 encryption_status
 endianness
@@ -643,6 +644,7 @@ UUID
 UUIDs
 uid
 Uid
+uprobes?
 unbuffered
 unbuilt
 Unbuilt

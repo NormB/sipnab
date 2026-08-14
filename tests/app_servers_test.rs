@@ -75,7 +75,7 @@ fn nothing_enabled_spawns_nothing() {
 #[test]
 fn selection_gates_configured_servers() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.mcp = true; // configured…
+    cli.mcp_args.mcp = true; // configured…
     let (ds, ss, alerts) = stores();
     let handle = servers::start_servers(
         &cli,
@@ -111,7 +111,7 @@ fn selection_gates_configured_servers() {
 #[test]
 fn invalid_api_addr_is_an_error() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.api = Some("not-a-bind-addr".into());
+    cli.listener_args.api = Some("not-a-bind-addr".into());
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -144,7 +144,7 @@ fn invalid_api_addr_is_an_error() {
 #[test]
 fn api_on_ephemeral_port_starts_servers_thread() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.api = Some("127.0.0.1:0".into());
+    cli.listener_args.api = Some("127.0.0.1:0".into());
     let (ds, ss, alerts) = stores();
     let handle = servers::start_servers(
         &cli,
@@ -184,7 +184,7 @@ fn api_port_in_use_is_a_startup_error() {
     let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe port");
     let port = occupied.local_addr().expect("local_addr").port();
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.api = Some(format!("127.0.0.1:{port}"));
+    cli.listener_args.api = Some(format!("127.0.0.1:{port}"));
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -225,7 +225,7 @@ fn api_port_in_use_is_a_startup_error() {
 #[test]
 fn api_non_loopback_without_auth_is_a_startup_error() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.api = Some("192.0.2.1:0".into()); // TEST-NET-1; policy fires before any bind
+    cli.listener_args.api = Some("192.0.2.1:0".into()); // TEST-NET-1; policy fires before any bind
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -265,9 +265,9 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
 #[test]
 fn api_tls_flags_are_a_startup_error() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.api = Some("127.0.0.1:0".into());
-    cli.api_tls_cert = Some("/tmp/none.pem".into());
-    cli.api_tls_key = Some("/tmp/none.pem".into());
+    cli.listener_args.api = Some("127.0.0.1:0".into());
+    cli.listener_args.api_tls_cert = Some("/tmp/none.pem".into());
+    cli.listener_args.api_tls_key = Some("/tmp/none.pem".into());
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -308,8 +308,8 @@ fn api_tls_flags_are_a_startup_error() {
 #[test]
 fn mcp_http_transport_without_feature_is_a_startup_error() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.mcp = true;
-    cli.mcp_transport = "http".into();
+    cli.mcp_args.mcp = true;
+    cli.mcp_args.mcp_transport = "http".into();
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -348,8 +348,8 @@ fn mcp_http_transport_without_feature_is_a_startup_error() {
 #[test]
 fn unknown_mcp_transport_is_a_startup_error() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.mcp = true;
-    cli.mcp_transport = "carrier-pigeon".into();
+    cli.mcp_args.mcp = true;
+    cli.mcp_args.mcp_transport = "carrier-pigeon".into();
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -388,9 +388,9 @@ fn unknown_mcp_transport_is_a_startup_error() {
 #[test]
 fn invalid_mcp_bind_is_a_startup_error() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.mcp = true;
-    cli.mcp_transport = "http".into();
-    cli.mcp_bind = Some("not-a-bind-addr".into());
+    cli.mcp_args.mcp = true;
+    cli.mcp_args.mcp_transport = "http".into();
+    cli.mcp_args.mcp_bind = Some("not-a-bind-addr".into());
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -427,9 +427,9 @@ fn invalid_mcp_bind_is_a_startup_error() {
 #[test]
 fn api_verifier_config_resolution_matrix() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.api_signing_key = vec!["k1".into(), "".into(), "k2".into()];
-    cli.api_key = Some("static1".into());
-    cli.api_revoked_file = Some("/tmp/revoked.txt".into());
+    cli.listener_args.api_signing_key = vec!["k1".into(), "".into(), "k2".into()];
+    cli.listener_args.api_key = Some("static1".into());
+    cli.listener_args.api_revoked_file = Some("/tmp/revoked.txt".into());
     let cfg = servers::resolve_api_verifier_config(&cli);
     assert_eq!(
         cfg.signing_keys,
@@ -454,22 +454,22 @@ fn mcp_verifier_token_precedence_and_trim() {
 
     // File only → trimmed file secret.
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.mcp_token = None;
-    cli.mcp_token_file = Some(token_file.to_string_lossy().into_owned());
+    cli.mcp_args.mcp_token = None;
+    cli.mcp_args.mcp_token_file = Some(token_file.to_string_lossy().into_owned());
     let cfg = servers::resolve_mcp_verifier_config(&cli);
     assert_eq!(cfg.static_keys, vec!["file-secret".to_string()]);
 
     // Inline token wins over the file.
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.mcp_token = Some(" inline-secret ".into());
-    cli.mcp_token_file = Some(token_file.to_string_lossy().into_owned());
+    cli.mcp_args.mcp_token = Some(" inline-secret ".into());
+    cli.mcp_args.mcp_token_file = Some(token_file.to_string_lossy().into_owned());
     let cfg = servers::resolve_mcp_verifier_config(&cli);
     assert_eq!(cfg.static_keys, vec!["inline-secret".to_string()]);
 
     // Whitespace-only inline token → no static key at all.
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.mcp_token = Some("   ".into());
-    cli.mcp_token_file = None;
+    cli.mcp_args.mcp_token = Some("   ".into());
+    cli.mcp_args.mcp_token_file = None;
     let cfg = servers::resolve_mcp_verifier_config(&cli);
     assert!(cfg.static_keys.is_empty());
 }
@@ -491,7 +491,7 @@ fn mcp_verifier_token_precedence_and_trim() {
 #[test]
 fn metrics_non_loopback_without_auth_is_a_startup_error() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.metrics = Some("192.0.2.1:0".into()); // TEST-NET-1; policy fires before any bind
+    cli.listener_args.metrics = Some("192.0.2.1:0".into()); // TEST-NET-1; policy fires before any bind
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -530,7 +530,7 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() {
 #[test]
 fn metrics_on_loopback_ephemeral_port_starts() {
     let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.metrics = Some("127.0.0.1:0".into());
+    cli.listener_args.metrics = Some("127.0.0.1:0".into());
     let (ds, ss, alerts) = stores();
     let out = servers::start_servers(
         &cli,

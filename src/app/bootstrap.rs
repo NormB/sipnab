@@ -149,7 +149,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // chain rather than an if/else so adding a third source cannot
     // accidentally invert it.
     for candidate in [
-        cli.node_name.as_deref(),
+        cli.mcp_args.node_name.as_deref(),
         config.capture.node_name.as_deref(),
     ]
     .into_iter()
@@ -196,7 +196,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     //
     // A warning rather than an error, because the precedence is long-standing
     // and someone may be relying on it deliberately.
-    if cli.has_input() && cli.device.is_some() {
+    if cli.has_input() && cli.capture_args.device.is_some() {
         tracing::warn!(
             "both --input/-I and --device/-d given: reading the FILE and ignoring the \
              interface. Drop -I to capture live traffic."
@@ -210,16 +210,18 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         // happens here rather than in the reader so a bad path fails before
         // any thread starts and the operator sees the count they are about to
         // analyse.
-        let resolved =
-            match crate::capture::input_set::resolve(&cli.input, &cli.input_resolve_options()) {
-                Ok(r) => r,
-                Err(e) => {
-                    return Err(PlanError {
-                        exit_code: 1,
-                        message: format!("{e:#}"),
-                    });
-                }
-            };
+        let resolved = match crate::capture::input_set::resolve(
+            &cli.capture_args.input,
+            &cli.input_resolve_options(),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(PlanError {
+                    exit_code: 1,
+                    message: format!("{e:#}"),
+                });
+            }
+        };
         if resolved.len() > 1 {
             tracing::info!(
                 "Reading {} capture files in timestamp order (first: '{}')",
@@ -235,17 +237,20 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         // and a capture is routinely the only copy of an incident. Checked
         // against the whole resolved SET and the directories `-I` named, since
         // `-I` takes a directory or a glob.
-        let protected =
-            crate::capture::output_guard::ProtectedInputs::new(&cli.input, &paths, cli.recursive);
-        if let Some(ref out) = cli.output {
-            let split_active = cli.split.is_some();
+        let protected = crate::capture::output_guard::ProtectedInputs::new(
+            &cli.capture_args.input,
+            &paths,
+            cli.capture_args.recursive,
+        );
+        if let Some(ref out) = cli.capture_args.output {
+            let split_active = cli.capture_args.split.is_some();
             protected
                 .check(std::path::Path::new(out), "-O/--output", split_active)
                 .map_err(PlanError::arg)?;
         }
 
         Some(CaptureSource::File { paths })
-    } else if let Some(ref device) = cli.device {
+    } else if let Some(ref device) = cli.capture_args.device {
         Some(CaptureSource::Live {
             device: device.clone(),
         })
@@ -253,11 +258,11 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         Some(CaptureSource::Live {
             device: device.clone(),
         })
-    } else if let Some(hep_addr) = cli.hep_listen.as_ref() {
+    } else if let Some(hep_addr) = cli.hep_args.hep_listen.as_ref() {
         #[cfg(feature = "hep")]
         let allowlist = {
             let mut v: Vec<crate::capture::hep::CidrRange> = Vec::new();
-            for cidr in &cli.hep_allow {
+            for cidr in &cli.hep_args.hep_allow {
                 v.push(crate::capture::hep::CidrRange::parse(cidr).map_err(|e| {
                     PlanError::arg(format!("Invalid --hep-allow CIDR '{cidr}': {e}"))
                 })?);
@@ -272,13 +277,14 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             #[cfg(feature = "hep")]
             allowlist,
             rate_limit: cli.hep_rate_limit_resolved(config),
-            per_peer_rate_limit: cli
-                .hep_rate_limit_per_peer
-                .resolve(cli.hep_rate_limit_resolved(config), cli.hep_allow.len()),
+            per_peer_rate_limit: cli.hep_args.hep_rate_limit_per_peer.resolve(
+                cli.hep_rate_limit_resolved(config),
+                cli.hep_args.hep_allow.len(),
+            ),
             max_tracked_peers: cli.tracked_peer_capacity(config),
             auth_key: hep_auth,
             #[cfg(feature = "hep")]
-            auth_mode: cli.hep_auth_mode,
+            auth_mode: cli.hep_args.hep_auth_mode,
             #[cfg(feature = "hep")]
             hmac_window_secs: cli.hep_hmac_window_secs(config),
         })
@@ -294,16 +300,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // someone believing their scanner defence is armed. Said in `plan` rather
     // than at the spawn site because `plan` runs for every mode, including
     // `--cores` and the TUI, which never reach the spawn site at all.
-    let kill_requested = cli.kill_scanner
-        || !cli.kill_target.is_empty()
+    let kill_requested = cli.security_args.kill_scanner
+        || !cli.security_args.kill_target.is_empty()
         || config.security.kill_scanner.unwrap_or(false);
     if kill_requested
         && let Some(ref s) = source
         && crate::security::transmit_guard::TransmitPermit::for_source(s).is_none()
     {
-        let flags = if cli.kill_target.is_empty() {
+        let flags = if cli.security_args.kill_target.is_empty() {
             "--kill-scanner"
-        } else if cli.kill_scanner {
+        } else if cli.security_args.kill_scanner {
             "--kill-scanner / -K"
         } else {
             "-K/--kill-target"
@@ -323,7 +329,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Emitted here, beside the refusal above, so the operator reads it before
     // the capture thread opens anything.
     #[cfg(feature = "hep")]
-    if let Some(ref addr) = cli.hep_send
+    if let Some(ref addr) = cli.hep_args.hep_send
         && let Some(CaptureSource::File { ref paths }) = source
         && let Some(notice) = crate::capture::hep::file_export_notice(
             &crate::capture::hep::OperatorDestination::from_cli_flag(
@@ -341,6 +347,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // Portrange: CLI > config file > default "5060-5061".
     let portrange_str = cli
+        .capture_args
         .portrange
         .as_deref()
         .or(config.capture.portrange.as_deref())
@@ -390,7 +397,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     }
 
     // --autostop condition.
-    let (autostop_duration, autostop_filesize_bytes) = match cli.autostop {
+    let (autostop_duration, autostop_filesize_bytes) = match cli.capture_args.autostop {
         Some(ref cond) => {
             parse_autostop(cond).map_err(|e| PlanError::arg(format!("Invalid --autostop: {e}")))?
         }
@@ -398,7 +405,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     };
 
     // --split output rotation.
-    let (split_bytes, split_duration) = match cli.split {
+    let (split_bytes, split_duration) = match cli.capture_args.split {
         Some(ref split) => {
             capture::writer::parse_split(split).map_err(|e| PlanError::arg(e.to_string()))?
         }
@@ -406,11 +413,19 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     };
 
     // SIP matcher from CLI filter flags, with config fallbacks.
-    let effective_from = cli.from.as_deref().or(config.filter.from.as_deref());
-    let effective_to = cli.to.as_deref().or(config.filter.to.as_deref());
+    let effective_from = cli
+        .matching_args
+        .from
+        .as_deref()
+        .or(config.filter.from.as_deref());
+    let effective_to = cli
+        .matching_args
+        .to
+        .as_deref()
+        .or(config.filter.to.as_deref());
     let matcher = SipMatcher::new_with_overrides(
         cli,
-        cli.match_expr.as_deref(),
+        cli.matching_args.match_expr.as_deref(),
         effective_from,
         effective_to,
     )
@@ -427,18 +442,21 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             "never" => ColorMode::Never,
             _ => ColorMode::Auto,
         },
-        delta_time: cli.delta_time || config.display.delta_time.unwrap_or(false),
-        payload_limit: cli.payload_limit.or(config.display.payload_limit),
-        show_empty: cli.show_empty,
-        show_proto_number: cli.proto_number,
+        delta_time: cli.output_args.delta_time || config.display.delta_time.unwrap_or(false),
+        payload_limit: cli
+            .output_args
+            .payload_limit
+            .or(config.display.payload_limit),
+        show_empty: cli.output_args.show_empty,
+        show_proto_number: cli.output_args.proto_number,
     };
 
     // Event exec engine.
     let event_exec = EventExecEngine::new(
-        cli.on_dialog_exec.clone(),
-        cli.on_quality_exec.clone(),
-        cli.exec_rate_limit,
-        cli.quality_threshold,
+        cli.exec_args.on_dialog_exec.clone(),
+        cli.exec_args.on_quality_exec.clone(),
+        cli.exec_args.exec_rate_limit,
+        cli.rtp_args.quality_threshold,
         cli.exec_queue_depth(config),
     );
 
@@ -452,7 +470,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // starts it for both modes, so the `feature = "tui"` coupling below is
     // gone too.
     #[cfg(feature = "metrics")]
-    let metrics_bind = match cli.metrics.as_deref() {
+    let metrics_bind = match cli.listener_args.metrics.as_deref() {
         Some(addr_str) => Some(
             crate::output::prometheus_server::parse_metrics_addr(addr_str)
                 .map_err(|e| PlanError::arg(format!("Invalid --metrics address: {e}")))?,
@@ -482,18 +500,18 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Refusing is not the whole answer — these could be implemented, and #82
     // records what that would take. It is the honest answer until then, because
     // the alternative is a silent wrong result.
-    if cli.cores > 1 && cli.has_input() && !cli.multi_device {
+    if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device {
         let mut unsupported: Vec<&str> = Vec::new();
-        if cli.json || cli.json_pretty {
+        if cli.output_args.json || cli.output_args.json_pretty {
             unsupported.push("--json");
         }
-        if cli.text_dump {
+        if cli.output_args.text_dump {
             unsupported.push("--text-dump");
         }
-        if cli.fail2ban {
+        if cli.output_args.fail2ban {
             unsupported.push("--fail2ban");
         }
-        if cli.output.is_some() {
+        if cli.capture_args.output.is_some() {
             unsupported.push("-O/--output");
         }
         if !unsupported.is_empty() {
@@ -504,7 +522,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
                  --cores for these, or keep --cores and ask for a whole-capture \
                  view instead (--json-dialogs, --report, --call-report), which \
                  the parallel path does produce.",
-                cli.cores,
+                cli.limits_args.cores,
                 unsupported.join(", ")
             );
             std::process::exit(2);
@@ -540,13 +558,13 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         tracing::warn!("{msg}");
     }
 
-    let mode = if cli.cores > 1 && cli.has_input() && !cli.multi_device {
+    let mode = if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device {
         RunMode::CoresFile
     } else {
         #[cfg(feature = "mcp")]
-        let use_tui = !cli.no_tui && !cli.mcp;
+        let use_tui = !cli.mode_args.no_tui && !cli.mcp_args.mcp;
         #[cfg(all(feature = "tui", not(feature = "mcp")))]
-        let use_tui = !cli.no_tui;
+        let use_tui = !cli.mode_args.no_tui;
         #[cfg(not(any(feature = "tui", feature = "mcp")))]
         let use_tui = false;
         if use_tui {
@@ -602,7 +620,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             split_duration,
             // 0 disables the bound rather than naming the open file among the
             // things to remove; see `PcapWriter::keep_last_splits`.
-            split_keep: cli.split_keep.filter(|&n| n > 0),
+            split_keep: cli.capture_args.split_keep.filter(|&n| n > 0),
             autostop_duration,
             autostop_filesize_bytes,
             portrange,
@@ -647,7 +665,7 @@ pub struct Launched {
 fn open_privileged_keylog_source(cli: &Cli) -> Option<crate::capture::keylog_source::KeylogSource> {
     use crate::capture::keylog_source::KeylogSource;
 
-    if let Some(fd) = cli.keylog_fd {
+    if let Some(fd) = cli.tls_args.keylog_fd {
         return match KeylogSource::from_fd(fd) {
             Ok(s) => {
                 tracing::info!("TLS decryption: reading keylog lines from inherited fd {fd}");
@@ -660,7 +678,7 @@ fn open_privileged_keylog_source(cli: &Cli) -> Option<crate::capture::keylog_sou
         };
     }
 
-    let path = cli.keylog.as_deref()?;
+    let path = cli.tls_args.keylog.as_deref()?;
     let path = std::path::Path::new(path);
     if !KeylogSource::is_fifo(path) {
         return None;
@@ -723,12 +741,12 @@ pub fn launch(
     // plain batch capture with no server; --hep-listen used to error late at
     // capture spawn with a generic failure and exit 1).
     #[cfg(not(feature = "mcp"))]
-    if cli.mcp {
+    if cli.mcp_args.mcp {
         tracing::error!("--mcp requires the 'mcp' feature (not compiled in)");
         std::process::exit(2);
     }
     #[cfg(not(feature = "hep"))]
-    if cli.hep_listen.is_some() {
+    if cli.hep_args.hep_listen.is_some() {
         tracing::error!("--hep-listen requires the 'hep' feature (not compiled in)");
         std::process::exit(2);
     }
@@ -779,7 +797,7 @@ pub fn launch(
     //     device/file/socket is open before we drop privileges.
     let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
 
-    let handle = if cli.multi_device {
+    let handle = if cli.capture_args.multi_device {
         let device_str = match &source {
             CaptureSource::Live { device } => device.clone(),
             _ => {
@@ -843,7 +861,11 @@ pub fn launch(
 
     // 16. Chroot BEFORE dropping privileges (chroot requires root).
     // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
-    let effective_chroot = cli.chroot.as_ref().or(config.privilege.chroot.as_ref());
+    let effective_chroot = cli
+        .privilege_args
+        .chroot
+        .as_ref()
+        .or(config.privilege.chroot.as_ref());
     if let Some(ref chroot_dir) = effective_chroot
         && let Err(e) = privilege::do_chroot(std::path::Path::new(chroot_dir))
     {
@@ -863,13 +885,13 @@ pub fn launch(
     //         use — the operator has already been told (in `plan`) that the
     //         kill response is off for this run. Debug-level here: one warning
     //         per run, not one per decision point.
-    let kill_active = cli.kill_scanner || !cli.kill_target.is_empty();
+    let kill_active = cli.security_args.kill_scanner || !cli.security_args.kill_target.is_empty();
     if kill_active && !may_transmit {
         tracing::debug!("Scanner-kill: offline run, not opening a raw send socket");
     }
     let raw_kill_sock = if kill_active
         && may_transmit
-        && cli.kill_spoof != crate::cli::KillSpoof::Ephemeral
+        && cli.security_args.kill_spoof != crate::cli::KillSpoof::Ephemeral
     {
         match crate::process_isolation::RawKillSocket::open() {
             Ok(sock) => {
@@ -877,7 +899,7 @@ pub fn launch(
                 Some(sock)
             }
             Err(e) => {
-                if cli.kill_spoof == crate::cli::KillSpoof::Raw {
+                if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw {
                     tracing::error!(
                         "--kill-spoof raw requires a raw socket but it could not be opened: {e}. \
                          Grant CAP_NET_RAW (sipnab --setup-caps / run under sudo) or use \
@@ -911,15 +933,20 @@ pub fn launch(
     #[cfg(feature = "tls")]
     let keylog_source = open_privileged_keylog_source(cli);
     #[cfg(not(feature = "tls"))]
-    if cli.keylog_fd.is_some() {
+    if cli.tls_args.keylog_fd.is_some() {
         tracing::error!("--keylog-fd requires the 'tls' feature (not compiled in)");
         capture::stop_and_join(handle, rx);
         std::process::exit(2);
     }
 
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
-    let effective_user = cli.user.as_deref().or(config.privilege.user.as_deref());
-    let effective_no_priv_drop = cli.no_priv_drop || config.privilege.no_priv_drop.unwrap_or(false);
+    let effective_user = cli
+        .privilege_args
+        .user
+        .as_deref()
+        .or(config.privilege.user.as_deref());
+    let effective_no_priv_drop =
+        cli.privilege_args.no_priv_drop || config.privilege.no_priv_drop.unwrap_or(false);
     if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
         tracing::error!("Failed to drop privileges: {e}");
         capture::stop_and_join(handle, rx);
@@ -927,13 +954,13 @@ pub fn launch(
     }
 
     // 16b. Initialize syslog if --syslog is set
-    if cli.syslog {
+    if cli.security_args.syslog {
         crate::security::alerting::init_syslog();
     }
 
     // 16c. Validate --hep-send requires hep feature
     #[cfg(not(feature = "hep"))]
-    if cli.hep_send.is_some() {
+    if cli.hep_args.hep_send.is_some() {
         tracing::error!("HEP support requires --features hep");
         capture::stop_and_join(handle, rx);
         std::process::exit(2);
@@ -941,7 +968,7 @@ pub fn launch(
 
     // 16d. Validate --hep-parse requires hep feature
     #[cfg(not(feature = "hep"))]
-    if cli.hep_parse {
+    if cli.hep_args.hep_parse {
         tracing::error!("HEP support requires --features hep");
         capture::stop_and_join(handle, rx);
         std::process::exit(2);
@@ -950,22 +977,22 @@ pub fn launch(
     // 16d2. Validate TLS flags require tls feature
     #[cfg(not(feature = "tls"))]
     {
-        if cli.tls_key.is_some() {
+        if cli.tls_args.tls_key.is_some() {
             tracing::error!("--tls-key requires the 'tls' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
-        if cli.keylog.is_some() {
+        if cli.tls_args.keylog.is_some() {
             tracing::error!("--keylog requires the 'tls' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
-        if cli.keylog_watch {
+        if cli.tls_args.keylog_watch {
             tracing::error!("--keylog-watch requires the 'tls' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
-        if cli.srtp_keys.is_some() {
+        if cli.tls_args.srtp_keys.is_some() {
             tracing::error!("--srtp-keys requires the 'tls' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
             std::process::exit(2);
@@ -975,22 +1002,22 @@ pub fn launch(
     // 16d3. Validate API flags require api feature
     #[cfg(not(feature = "api"))]
     {
-        if cli.api.is_some() {
+        if cli.listener_args.api.is_some() {
             tracing::error!("--api requires the 'api' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
-        if cli.api_key.is_some() {
+        if cli.listener_args.api_key.is_some() {
             tracing::error!("--api-key requires the 'api' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
-        if cli.api_tls_cert.is_some() {
+        if cli.listener_args.api_tls_cert.is_some() {
             tracing::error!("--api-tls-cert requires the 'api' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
             std::process::exit(2);
         }
-        if cli.api_tls_key.is_some() {
+        if cli.listener_args.api_tls_key.is_some() {
             tracing::error!("--api-tls-key requires the 'api' feature (not compiled in)");
             capture::stop_and_join(handle, rx);
             std::process::exit(2);
@@ -998,7 +1025,7 @@ pub fn launch(
     }
 
     // 16e. Validate --pcap-export-mode
-    match cli.pcap_export_mode.as_str() {
+    match cli.tls_args.pcap_export_mode.as_str() {
         "decrypted" | "encrypted+dsb" | "raw" => {}
         other => {
             tracing::error!(
@@ -1012,14 +1039,14 @@ pub fn launch(
     // 16f. --dtls-keylog: the DTLS-SRTP extractor is constructed later (alongside
     // the SRTP context); here we only enforce the feature gate.
     #[cfg(not(feature = "tls"))]
-    if cli.dtls_keylog.is_some() {
+    if cli.tls_args.dtls_keylog.is_some() {
         tracing::error!("--dtls-keylog requires the 'tls' feature (not compiled in)");
         capture::stop_and_join(handle, rx);
         std::process::exit(2);
     }
 
     // 16g. Validate --api-tls-cert/--api-tls-key consistency
-    if cli.api_tls_cert.is_some() != cli.api_tls_key.is_some() {
+    if cli.listener_args.api_tls_cert.is_some() != cli.listener_args.api_tls_key.is_some() {
         tracing::error!("--api-tls-cert and --api-tls-key must both be specified together");
         capture::stop_and_join(handle, rx);
         std::process::exit(2);
@@ -1029,13 +1056,13 @@ pub fn launch(
     // `--keylog-fd` counts: the secrets arrive over a pipe instead of from a
     // path, but they land in the same process memory, so a core file would
     // expose exactly what this disables core dumps to protect.
-    let has_decrypt_keys = cli.tls_key.is_some()
-        || cli.keylog.is_some()
-        || cli.keylog_fd.is_some()
-        || cli.srtp_keys.is_some()
-        || cli.dtls_keylog.is_some();
+    let has_decrypt_keys = cli.tls_args.tls_key.is_some()
+        || cli.tls_args.keylog.is_some()
+        || cli.tls_args.keylog_fd.is_some()
+        || cli.tls_args.srtp_keys.is_some()
+        || cli.tls_args.dtls_keylog.is_some();
     if has_decrypt_keys
-        && !cli.allow_coredump
+        && !cli.tls_args.allow_coredump
         && let Err(e) = privilege::disable_core_dumps()
     {
         tracing::error!("Failed to disable core dumps: {e}");
@@ -1065,8 +1092,8 @@ pub fn launch(
 pub fn init_logging(cli: &Cli) {
     // TUI mode: suppress log output to avoid corruption of the alternate screen.
     // Logs are only visible in CLI mode (-N) or when SIPNAB_LOG is explicitly set.
-    let tui_active = !cli.no_tui;
-    let default_level = if cli.quiet {
+    let tui_active = !cli.mode_args.no_tui;
+    let default_level = if cli.mode_args.quiet {
         "warn"
     } else if tui_active && std::env::var("SIPNAB_LOG").is_err() {
         "error"
@@ -1108,7 +1135,7 @@ pub fn init_logging(cli: &Cli) {
 pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // --completions <shell>: print a completion script and exit. Needs no
     // config, capture, or privileges.
-    if let Some(shell) = cli.completions {
+    if let Some(shell) = cli.config_args.completions {
         use clap::CommandFactory;
         let mut cmd = crate::cli::Cli::command();
         clap_complete::generate(shell, &mut cmd, "sipnab", &mut std::io::stdout());
@@ -1118,7 +1145,7 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // --setup-caps: grant this binary the capabilities needed for live
     // capture. Handled before any config/capture setup so it works right
     // after a fresh `cargo install` with no config present.
-    if cli.setup_caps {
+    if cli.privilege_args.setup_caps {
         return Some(match privilege::setup_capabilities() {
             Ok(()) => 0,
             Err(e) => {
@@ -1131,13 +1158,13 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // --show-frame <pointer>: follow a pointer a previous run emitted and print
     // that frame. Needs no config, no capture and no privileges -- it reads one
     // frame out of one file.
-    if let Some(ref pointer) = cli.show_frame {
+    if let Some(ref pointer) = cli.name_args.show_frame {
         return Some(show_frame(pointer));
     }
 
     // --strip-secrets: write a DSB-free copy of the input pcapng. The input
     // is never modified; the output is written atomically.
-    if let Some(ref out) = cli.strip_secrets {
+    if let Some(ref out) = cli.name_args.strip_secrets {
         if !cli.has_input() {
             tracing::error!("--strip-secrets requires an input file (-I <file>)");
             return Some(1);
@@ -1163,14 +1190,16 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         // cannot read as a capture is now named in an error rather than handed
         // to the stripper. That is the same standard every other `-I` path
         // holds, and the operator learns which file rather than which errno.
-        let resolved =
-            match crate::capture::input_set::resolve(&cli.input, &cli.input_resolve_options()) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("--strip-secrets: {e:#}");
-                    return Some(1);
-                }
-            };
+        let resolved = match crate::capture::input_set::resolve(
+            &cli.capture_args.input,
+            &cli.input_resolve_options(),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("--strip-secrets: {e:#}");
+                return Some(1);
+            }
+        };
 
         // More than one resolved file is refused, not partly handled.
         //
@@ -1205,9 +1234,9 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         // taking the only copy of the decryption secrets with it, which is
         // precisely the material this flag exists to preserve a copy without.
         let protected = crate::capture::output_guard::ProtectedInputs::new(
-            &cli.input,
+            &cli.capture_args.input,
             &resolved.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
-            cli.recursive,
+            cli.capture_args.recursive,
         );
         if let Err(msg) = protected.check(std::path::Path::new(out), "--strip-secrets", false) {
             tracing::error!("{msg}");
@@ -1338,7 +1367,7 @@ fn show_frame(pointer: &str) -> i32 {
 /// misconfiguration (or when neither the `api` nor `mcp` feature is
 /// compiled in), `None` when `--mint-token` was not given.
 pub fn run_mint_token(cli: &Cli) -> Option<i32> {
-    if !cli.mint_token {
+    if !cli.token_args.mint_token {
         return None;
     }
     #[cfg(any(feature = "api", feature = "mcp"))]
@@ -1375,7 +1404,7 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 /// mutates process-global parser and dialog-store limits via
 /// `set_parser_limits` / `set_max_messages_per_dialog`.
 pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
-    let loaded = match Config::load(cli.config.as_deref(), cli.no_config) {
+    let loaded = match Config::load(cli.config_args.config.as_deref(), cli.config_args.no_config) {
         Ok(loaded) => {
             if let Some(ref source) = loaded.source {
                 tracing::info!("Loaded config from {}", source.display());
@@ -1612,7 +1641,7 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
     // Explicit --filter takes precedence. Try alias expansion first
     // (so `--filter codec-asym` works the same as MCP find_problems'
     // kinds shorthand); fall back to raw DSL parsing.
-    if let Some(ref expr) = cli.filter {
+    if let Some(ref expr) = cli.matching_args.filter {
         let thresholds = cli.alias_thresholds(config);
         let resolved =
             crate::sip::dsl::expand_alias(expr, &thresholds).unwrap_or_else(|| expr.clone());
@@ -1633,11 +1662,11 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
     let thresholds = cli.alias_thresholds(config);
     let mut parts: Vec<String> = Vec::new();
     for (enabled, alias) in [
-        (cli.problems, "problems"),
-        (cli.slow_setup, "slow-setup"),
-        (cli.short_calls, "short-calls"),
-        (cli.one_way, "one-way"),
-        (cli.nat_issues, "nat-issues"),
+        (cli.alias_args.problems, "problems"),
+        (cli.alias_args.slow_setup, "slow-setup"),
+        (cli.alias_args.short_calls, "short-calls"),
+        (cli.alias_args.one_way, "one-way"),
+        (cli.alias_args.nat_issues, "nat-issues"),
     ] {
         if enabled && let Some(expansion) = crate::sip::dsl::expand_alias(alias, &thresholds) {
             parts.push(expansion);
@@ -1688,21 +1717,27 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
 /// invalid `--duration`. Returning (rather than exiting) keeps planning
 /// testable and composable.
 fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, PlanError> {
-    let snaplen = cli.snaplen.or(config.capture.snaplen).unwrap_or(65535);
+    let snaplen = cli
+        .capture_args
+        .snaplen
+        .or(config.capture.snaplen)
+        .unwrap_or(65535);
 
     let buffer_mb = cli
+        .capture_args
         .buffer
         .or(config.capture.buffer)
         .unwrap_or(crate::capture::DEFAULT_BUFFER_MB);
 
     // Memory budget for the in-flight packet queue (capture→processing).
     let buffer_budget_mb = cli
+        .capture_args
         .buffer_budget
         .or(config.capture.buffer_budget_mb)
         .unwrap_or(64);
 
     // BPF filter: --bpf-file takes precedence, then positional args
-    let bpf_filter = if let Some(ref bpf_file) = cli.bpf_file {
+    let bpf_filter = if let Some(ref bpf_file) = cli.capture_args.bpf_file {
         match std::fs::read_to_string(bpf_file) {
             Ok(content) => Some(content.trim().to_string()),
             Err(e) => {
@@ -1717,9 +1752,9 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         None
     };
 
-    let count = cli.count;
+    let count = cli.capture_args.count;
 
-    let duration = match cli.duration.as_ref() {
+    let duration = match cli.capture_args.duration.as_ref() {
         Some(d) => Some(
             capture::parse_duration(d)
                 .map_err(|e| PlanError::arg(format!("Invalid --duration: {e}")))?,
@@ -1729,7 +1764,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
 
     // Promiscuous mode: on by default; `--no-promisc` (or `[capture] promisc`)
     // turns it off. The CLI flag wins over the config value.
-    let promisc = if cli.no_promisc {
+    let promisc = if cli.capture_args.no_promisc {
         false
     } else {
         config.capture.promisc.unwrap_or(true)
@@ -1741,7 +1776,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         bpf_filter,
         count,
         duration,
-        replay: cli.replay,
+        replay: cli.capture_args.replay,
         buffer_budget_mb,
         promisc,
         // Finalised by `plan` once the run mode is known — see
@@ -1999,7 +2034,7 @@ pub fn auto_bpf_filter(lo: u16, hi: u16, tunnel_ports: &[u16]) -> String {
 /// silently produced no coverage would leave the operator believing tunnelled
 /// SIP was captured, which is the failure this flag exists to prevent.
 fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
-    let Some(ref list) = cli.capture_tunnels else {
+    let Some(ref list) = cli.capture_args.capture_tunnels else {
         return Ok(Vec::new());
     };
     let mut ports: Vec<u16> = Vec::new();
@@ -2108,10 +2143,10 @@ fn explicit_filter_encap_notice(filter: &str) -> Option<String> {
 /// (a wrapper script that passes `--cores` uniformly and sometimes points at a
 /// device) to fix a problem that one sentence fixes.
 fn cores_ignored_warning(cli: &Cli) -> Option<String> {
-    if cli.cores <= 1 {
+    if cli.limits_args.cores <= 1 {
         return None;
     }
-    let reason = if cli.multi_device {
+    let reason = if cli.capture_args.multi_device {
         "--multi-device opens one capture per interface"
     } else if !cli.has_input() {
         "this run captures live rather than reading a saved file"
@@ -2125,7 +2160,7 @@ fn cores_ignored_warning(cli: &Cli) -> Option<String> {
          whole capture up front. This run continues on ONE core; its output is \
          complete, just slower. Point --cores at a saved capture \
          (-I/--input <file>, without --multi-device) to actually use {n} of them.",
-        n = cli.cores,
+        n = cli.limits_args.cores,
     ))
 }
 
@@ -2147,7 +2182,9 @@ fn cores_ignored_warning(cli: &Cli) -> Option<String> {
 /// Returns the message rather than logging it, so it can be asserted on.
 #[cfg(feature = "metrics")]
 fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
-    if cli.metrics.is_none() || !(cli.cores > 1 && cli.has_input() && !cli.multi_device) {
+    if cli.listener_args.metrics.is_none()
+        || !(cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device)
+    {
         return None;
     }
     Some(format!(
@@ -2155,7 +2192,7 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
          shards, merges and exits without starting the metrics server, so \
          nothing would answer a scrape. Drop --cores to serve metrics from \
          this run; a parallel offline run is too short to scrape in any case.",
-        n = cli.cores,
+        n = cli.limits_args.cores,
     ))
 }
 
@@ -2213,16 +2250,19 @@ fn security_detection_unarmed_refusal(
     // report a flag as ignored that the headless run would have ignored too.
     let asked: Vec<&str> = [
         (
-            cli.kill_scanner || config.security.kill_scanner.unwrap_or(false),
+            cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false),
             "--kill-scanner",
         ),
-        (!cli.kill_target.is_empty(), "-K/--kill-target"),
         (
-            cli.fraud_detect || config.security.fraud_detect.unwrap_or(false),
+            !cli.security_args.kill_target.is_empty(),
+            "-K/--kill-target",
+        ),
+        (
+            cli.security_args.fraud_detect || config.security.fraud_detect.unwrap_or(false),
             "--fraud-detect",
         ),
-        (cli.digest_leak, "--digest-leak"),
-        (cli.reg_flood, "--reg-flood"),
+        (cli.security_args.digest_leak, "--digest-leak"),
+        (cli.security_args.reg_flood, "--reg-flood"),
     ]
     .iter()
     .filter(|(asked_for, _)| *asked_for)
@@ -2256,10 +2296,14 @@ fn security_detection_unarmed_refusal(
 /// never shortens a file read. Returns the message rather than logging it, so
 /// it can be asserted on, matching [`cores_ignored_warning`].
 fn snaplen_truncation_warning(cli: &Cli, config: &Config) -> Option<String> {
-    let snaplen = cli.snaplen.or(config.capture.snaplen).unwrap_or(65535);
+    let snaplen = cli
+        .capture_args
+        .snaplen
+        .or(config.capture.snaplen)
+        .unwrap_or(65535);
     // `has_input()` is a saved-file read, where snaplen does not truncate; no
     // `-O`, nothing is re-emitted; the full default keeps whole frames.
-    if snaplen >= 65535 || cli.output.is_none() || cli.has_input() {
+    if snaplen >= 65535 || cli.capture_args.output.is_none() || cli.has_input() {
         return None;
     }
     Some(format!(
@@ -2288,7 +2332,11 @@ fn snaplen_truncation_warning(cli: &Cli, config: &Config) -> Option<String> {
 /// never shortens a file read. Returns the message rather than logging it,
 /// matching [`snaplen_truncation_warning`].
 fn snaplen_audio_retention_warning(cli: &Cli, config: &Config) -> Option<String> {
-    let snaplen = cli.snaplen.or(config.capture.snaplen).unwrap_or(65535);
+    let snaplen = cli
+        .capture_args
+        .snaplen
+        .or(config.capture.snaplen)
+        .unwrap_or(65535);
     if snaplen >= 65535 || !audio_retention_wanted(cli) || cli.has_input() {
         return None;
     }
@@ -2334,20 +2382,22 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
 
     #[cfg(feature = "api")]
     {
-        if cli.api_signing_key_file.is_some() || !cli.api_signing_key.is_empty() {
+        if cli.listener_args.api_signing_key_file.is_some()
+            || !cli.listener_args.api_signing_key.is_empty()
+        {
             let cfg = crate::app::servers::resolve_api_verifier_config(cli);
             first_key = cfg.signing_keys.into_iter().next();
-            ttl = cli.api_token_ttl;
+            ttl = cli.listener_args.api_token_ttl;
             audience = crate::auth::AUDIENCE_API;
         }
     }
     #[cfg(feature = "mcp")]
     if first_key.is_none()
-        && (cli.mcp_signing_key_file.is_some() || !cli.mcp_signing_key.is_empty())
+        && (cli.mcp_args.mcp_signing_key_file.is_some() || !cli.mcp_args.mcp_signing_key.is_empty())
     {
         let cfg = crate::app::servers::resolve_mcp_verifier_config(cli);
         first_key = cfg.signing_keys.into_iter().next();
-        ttl = cli.mcp_token_ttl;
+        ttl = cli.mcp_args.mcp_token_ttl;
         audience = crate::auth::AUDIENCE_MCP;
     }
 
@@ -2364,6 +2414,7 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
     let now = chrono::Utc::now().timestamp();
     let exp = now.saturating_add(ttl);
     let id = cli
+        .token_args
         .token_id
         .clone()
         .unwrap_or_else(|| format!("tok-{}", chrono::Utc::now().timestamp_micros()));
@@ -2374,7 +2425,9 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
     //
     // MCP has no metrics surface: a scrape-only MCP token would name a route
     // that does not exist there.
-    if cli.token_scope == crate::auth::SCOPE_METRICS && audience == crate::auth::AUDIENCE_MCP {
+    if cli.token_args.token_scope == crate::auth::SCOPE_METRICS
+        && audience == crate::auth::AUDIENCE_MCP
+    {
         return Err(
             "--token-scope metrics applies to the REST API only; the MCP surface has no \
              /metrics endpoint"
@@ -2385,7 +2438,9 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
     // domain apart from /metrics, so a `read` API token would verify and then
     // be refused by every scope check — worse than failing at mint time,
     // because the operator would ship it before learning it opens nothing.
-    if cli.token_scope == crate::auth::SCOPE_READ && audience == crate::auth::AUDIENCE_API {
+    if cli.token_args.token_scope == crate::auth::SCOPE_READ
+        && audience == crate::auth::AUDIENCE_API
+    {
         return Err(
             "--token-scope read applies to the MCP surface only; the REST API has no \
              read-only scope — use `full`, or `metrics` for a scrape-only token"
@@ -2398,7 +2453,7 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
         &id,
         exp,
         audience,
-        &cli.token_scope,
+        &cli.token_args.token_scope,
     ))
 }
 
@@ -2416,7 +2471,7 @@ mod tests {
     /// Baseline non-interactive CLI; mutate the pub fields per test.
     fn base_cli() -> Cli {
         let mut cli = Cli::parse_from_args(["sipnab"]);
-        cli.no_tui = true;
+        cli.mode_args.no_tui = true;
         cli
     }
 
@@ -2452,7 +2507,7 @@ mod tests {
     #[test]
     fn build_filter_expr_explicit_flag_wins() {
         let mut cli = base_cli();
-        cli.filter = Some("retransmits > 0".to_string());
+        cli.matching_args.filter = Some("retransmits > 0".to_string());
         let config = Config::default();
         assert!(build_filter_expr(&cli, &config).unwrap().is_some());
     }
@@ -2463,7 +2518,7 @@ mod tests {
     fn build_filter_expr_invalid_filter_returns_err() {
         let mut cli = base_cli();
         // `from.user ==` is the documented invalid-DSL example.
-        cli.filter = Some("from.user ==".to_string());
+        cli.matching_args.filter = Some("from.user ==".to_string());
         let err = build_filter_expr(&cli, &Config::default())
             .expect_err("a malformed --filter must return Err, not exit");
         assert_eq!(err.exit_code, 2);
@@ -2495,11 +2550,11 @@ mod tests {
         let config = Config::default();
         // Each diagnostic flag on its own produces a filter.
         let flags: [fn(&mut Cli); 5] = [
-            |c| c.problems = true,
-            |c| c.slow_setup = true,
-            |c| c.short_calls = true,
-            |c| c.one_way = true,
-            |c| c.nat_issues = true,
+            |c| c.alias_args.problems = true,
+            |c| c.alias_args.slow_setup = true,
+            |c| c.alias_args.short_calls = true,
+            |c| c.alias_args.one_way = true,
+            |c| c.alias_args.nat_issues = true,
         ];
         for set in flags {
             let mut cli = base_cli();
@@ -2508,8 +2563,8 @@ mod tests {
         }
         // Multiple flags combine with OR.
         let mut cli = base_cli();
-        cli.problems = true;
-        cli.one_way = true;
+        cli.alias_args.problems = true;
+        cli.alias_args.one_way = true;
         assert!(build_filter_expr(&cli, &config).unwrap().is_some());
     }
 
@@ -2554,7 +2609,7 @@ mod tests {
     #[test]
     fn build_capture_config_no_promisc_flag_disables() {
         let mut cli = base_cli();
-        cli.no_promisc = true;
+        cli.capture_args.no_promisc = true;
         let cc = build_capture_config(&cli, &Config::default()).unwrap();
         assert!(!cc.promisc, "--no-promisc should disable promiscuous mode");
     }
@@ -2578,7 +2633,7 @@ mod tests {
         let mut config = Config::default();
         config.capture.promisc = Some(true);
         let mut cli = base_cli();
-        cli.no_promisc = true;
+        cli.capture_args.no_promisc = true;
         let cc = build_capture_config(&cli, &config).unwrap();
         assert!(
             !cc.promisc,
@@ -2590,10 +2645,10 @@ mod tests {
     #[test]
     fn build_capture_config_cli_overrides() {
         let mut cli = base_cli();
-        cli.snaplen = Some(1500);
-        cli.buffer = Some(8);
-        cli.count = Some(42);
-        cli.replay = true;
+        cli.capture_args.snaplen = Some(1500);
+        cli.capture_args.buffer = Some(8);
+        cli.capture_args.count = Some(42);
+        cli.capture_args.replay = true;
         cli.bpf_filter = vec!["udp".to_string(), "port".to_string(), "5060".to_string()];
         let cc = build_capture_config(&cli, &Config::default()).unwrap();
         assert_eq!(cc.snaplen, 1500);
@@ -2619,7 +2674,7 @@ mod tests {
         let path = dir.path().join("bpf_filter.txt");
         std::fs::write(&path, "  udp and port 5060\n").unwrap();
         let mut cli = base_cli();
-        cli.bpf_file = Some(path.to_string_lossy().into_owned());
+        cli.capture_args.bpf_file = Some(path.to_string_lossy().into_owned());
         // positional filter present but --bpf-file wins
         cli.bpf_filter = vec!["tcp".to_string()];
         let cc = build_capture_config(&cli, &Config::default()).unwrap();
@@ -2644,7 +2699,7 @@ mod tests {
     #[test]
     fn build_capture_config_bad_duration_returns_err() {
         let mut cli = base_cli();
-        cli.duration = Some("abc".to_string());
+        cli.capture_args.duration = Some("abc".to_string());
         let err = build_capture_config(&cli, &Config::default())
             .expect_err("a malformed --duration must return Err, not exit");
         assert_eq!(err.exit_code, 2);
@@ -2678,7 +2733,7 @@ mod tests {
     #[test]
     fn plan_turns_immediate_mode_off_for_headless_capture() {
         let mut cli = base_cli(); // -N
-        cli.device = Some("eth0".to_string());
+        cli.capture_args.device = Some("eth0".to_string());
         let p = plan(&cli, &Config::default()).expect("plan must succeed");
         assert!(matches!(p.mode, RunMode::Batch));
         assert!(
@@ -2694,7 +2749,7 @@ mod tests {
     #[test]
     fn plan_keeps_immediate_mode_for_the_tui() {
         let mut cli = Cli::parse_from_args(["sipnab"]); // no -N: interactive
-        cli.device = Some("eth0".to_string());
+        cli.capture_args.device = Some("eth0".to_string());
         let p = plan(&cli, &Config::default()).expect("plan must succeed");
         assert!(matches!(p.mode, RunMode::Tui));
         assert!(
@@ -2709,8 +2764,8 @@ mod tests {
     fn plan_immediate_mode_always_matches_the_run_mode() {
         for headless in [true, false] {
             let mut cli = Cli::parse_from_args(["sipnab"]);
-            cli.no_tui = headless;
-            cli.device = Some("eth0".to_string());
+            cli.mode_args.no_tui = headless;
+            cli.capture_args.device = Some("eth0".to_string());
             let p = plan(&cli, &Config::default()).expect("plan must succeed");
             assert_eq!(
                 p.capture_config.immediate_mode,
@@ -2727,8 +2782,8 @@ mod tests {
     #[test]
     fn cores_warning_silent_when_cores_are_actually_used() {
         let mut cli = base_cli();
-        cli.cores = 8;
-        cli.input = vec!["capture.pcap".to_string()];
+        cli.limits_args.cores = 8;
+        cli.capture_args.input = vec!["capture.pcap".to_string()];
         assert!(cores_ignored_warning(&cli).is_none());
     }
 
@@ -2737,10 +2792,10 @@ mod tests {
     #[test]
     fn cores_warning_silent_at_the_default_core_count() {
         let mut cli = base_cli();
-        cli.cores = 1;
-        cli.device = Some("eth0".to_string());
+        cli.limits_args.cores = 1;
+        cli.capture_args.device = Some("eth0".to_string());
         assert!(cores_ignored_warning(&cli).is_none());
-        cli.multi_device = true;
+        cli.capture_args.multi_device = true;
         assert!(cores_ignored_warning(&cli).is_none());
     }
 
@@ -2750,8 +2805,8 @@ mod tests {
     #[test]
     fn cores_warning_fires_on_a_live_device() {
         let mut cli = base_cli();
-        cli.cores = 8;
-        cli.device = Some("eth0".to_string());
+        cli.limits_args.cores = 8;
+        cli.capture_args.device = Some("eth0".to_string());
         let msg = cores_ignored_warning(&cli).expect("--cores on a live device must be reported");
         assert!(msg.contains("--cores 8"), "names the request: {msg}");
         assert!(msg.contains("-I"), "names the flag that works: {msg}");
@@ -2766,7 +2821,7 @@ mod tests {
     #[test]
     fn cores_warning_fires_on_auto_detected_capture() {
         let mut cli = base_cli();
-        cli.cores = 4;
+        cli.limits_args.cores = 4;
         assert!(cores_ignored_warning(&cli).is_some());
     }
 
@@ -2776,9 +2831,9 @@ mod tests {
     #[test]
     fn cores_warning_fires_on_multi_device_even_with_input() {
         let mut cli = base_cli();
-        cli.cores = 4;
-        cli.input = vec!["capture.pcap".to_string()];
-        cli.multi_device = true;
+        cli.limits_args.cores = 4;
+        cli.capture_args.input = vec!["capture.pcap".to_string()];
+        cli.capture_args.multi_device = true;
         let msg = cores_ignored_warning(&cli).expect("--multi-device must be reported");
         assert!(msg.contains("--multi-device"), "got: {msg}");
     }
@@ -2792,14 +2847,15 @@ mod tests {
             [(false, false), (false, true), (true, false), (true, true)]
         {
             let mut cli = base_cli();
-            cli.cores = 4;
-            cli.multi_device = multi_device;
+            cli.limits_args.cores = 4;
+            cli.capture_args.multi_device = multi_device;
             if has_input {
-                cli.input = vec!["capture.pcap".to_string()];
+                cli.capture_args.input = vec!["capture.pcap".to_string()];
             } else {
-                cli.device = Some("eth0".to_string());
+                cli.capture_args.device = Some("eth0".to_string());
             }
-            let takes_parallel_path = cli.cores > 1 && cli.has_input() && !cli.multi_device;
+            let takes_parallel_path =
+                cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device;
             assert_eq!(
                 cores_ignored_warning(&cli).is_none(),
                 takes_parallel_path,
@@ -2818,9 +2874,9 @@ mod tests {
     #[test]
     fn metrics_warns_when_the_parallel_path_will_not_serve_it() {
         let mut cli = base_cli();
-        cli.cores = 4;
-        cli.input = vec!["capture.pcap".to_string()];
-        cli.metrics = Some("127.0.0.1:9090".to_string());
+        cli.limits_args.cores = 4;
+        cli.capture_args.input = vec!["capture.pcap".to_string()];
+        cli.listener_args.metrics = Some("127.0.0.1:9090".to_string());
         let msg = metrics_ignored_on_cores_warning(&cli)
             .expect("--metrics on the parallel path must be reported");
         assert!(
@@ -2840,8 +2896,8 @@ mod tests {
     fn metrics_warning_is_silent_wherever_metrics_are_actually_served() {
         // Asked for, and the single-threaded headless path serves it.
         let mut served = base_cli();
-        served.input = vec!["capture.pcap".to_string()];
-        served.metrics = Some("127.0.0.1:9090".to_string());
+        served.capture_args.input = vec!["capture.pcap".to_string()];
+        served.listener_args.metrics = Some("127.0.0.1:9090".to_string());
         assert!(
             metrics_ignored_on_cores_warning(&served).is_none(),
             "--cores 1 serves metrics; warning here would be false"
@@ -2849,8 +2905,8 @@ mod tests {
 
         // Parallel path, but no metrics were requested.
         let mut unasked = base_cli();
-        unasked.cores = 4;
-        unasked.input = vec!["capture.pcap".to_string()];
+        unasked.limits_args.cores = 4;
+        unasked.capture_args.input = vec!["capture.pcap".to_string()];
         assert!(
             metrics_ignored_on_cores_warning(&unasked).is_none(),
             "nothing was asked for, so nothing is being ignored"
@@ -2859,9 +2915,9 @@ mod tests {
         // `--cores` present but NOT taken (live device): that run is
         // single-threaded and does serve metrics.
         let mut live = base_cli();
-        live.cores = 4;
-        live.device = Some("eth0".to_string());
-        live.metrics = Some("127.0.0.1:9090".to_string());
+        live.limits_args.cores = 4;
+        live.capture_args.device = Some("eth0".to_string());
+        live.listener_args.metrics = Some("127.0.0.1:9090".to_string());
         assert!(
             metrics_ignored_on_cores_warning(&live).is_none(),
             "a live run falls back to one core and starts the metrics server"
@@ -2884,11 +2940,11 @@ mod tests {
     #[test]
     fn detection_flags_are_refused_when_the_tui_will_not_run_them() {
         let mut cli = base_cli();
-        cli.no_tui = false;
-        cli.device = Some("eth0".to_string());
-        cli.kill_scanner = true;
-        cli.fraud_detect = true;
-        cli.reg_flood = true;
+        cli.mode_args.no_tui = false;
+        cli.capture_args.device = Some("eth0".to_string());
+        cli.security_args.kill_scanner = true;
+        cli.security_args.fraud_detect = true;
+        cli.security_args.reg_flood = true;
         let msg = security_detection_unarmed_refusal(&cli, &Config::default(), &RunMode::Tui)
             .expect("detection flags the TUI cannot honour must be reported");
         for flag in ["--kill-scanner", "--fraud-detect", "--reg-flood"] {
@@ -2915,9 +2971,9 @@ mod tests {
     #[test]
     fn detection_flags_are_refused_on_the_parallel_offline_reader_too() {
         let mut cli = base_cli();
-        cli.cores = 8;
-        cli.input = vec!["capture.pcap".to_string()];
-        cli.kill_scanner = true;
+        cli.limits_args.cores = 8;
+        cli.capture_args.input = vec!["capture.pcap".to_string()];
+        cli.security_args.kill_scanner = true;
         let msg = security_detection_unarmed_refusal(&cli, &Config::default(), &RunMode::CoresFile)
             .expect("detection flags on the parallel path must be reported");
         assert!(
@@ -2935,11 +2991,11 @@ mod tests {
     #[test]
     fn detection_refusal_is_silent_where_the_detectors_actually_run() {
         let mut headless = base_cli();
-        headless.device = Some("eth0".to_string());
-        headless.kill_scanner = true;
-        headless.fraud_detect = true;
-        headless.reg_flood = true;
-        headless.digest_leak = true;
+        headless.capture_args.device = Some("eth0".to_string());
+        headless.security_args.kill_scanner = true;
+        headless.security_args.fraud_detect = true;
+        headless.security_args.reg_flood = true;
+        headless.security_args.digest_leak = true;
         assert!(
             security_detection_unarmed_refusal(&headless, &Config::default(), &RunMode::Batch)
                 .is_none(),
@@ -2947,8 +3003,8 @@ mod tests {
         );
 
         let mut watching = base_cli();
-        watching.no_tui = false;
-        watching.device = Some("eth0".to_string());
+        watching.mode_args.no_tui = false;
+        watching.capture_args.device = Some("eth0".to_string());
         assert!(
             security_detection_unarmed_refusal(&watching, &Config::default(), &RunMode::Tui)
                 .is_none(),
@@ -2967,8 +3023,8 @@ mod tests {
         let mut config = Config::default();
         config.security.kill_scanner = Some(true);
         let mut cli = base_cli();
-        cli.no_tui = false;
-        cli.device = Some("eth0".to_string());
+        cli.mode_args.no_tui = false;
+        cli.capture_args.device = Some("eth0".to_string());
         let msg = security_detection_unarmed_refusal(&cli, &config, &RunMode::Tui)
             .expect("a config-armed detector must be reported like a flag-armed one");
         assert!(msg.contains("--kill-scanner"), "{msg}");
@@ -2994,10 +3050,10 @@ mod tests {
     #[test]
     fn plan_refuses_a_run_whose_detection_flags_would_arm_nothing() {
         let mut cli = base_cli();
-        cli.input = vec!["tests/fixtures/sip_call.pcap".to_string()];
-        cli.no_tui = true;
-        cli.fraud_detect = true;
-        cli.cores = 2;
+        cli.capture_args.input = vec!["tests/fixtures/sip_call.pcap".to_string()];
+        cli.mode_args.no_tui = true;
+        cli.security_args.fraud_detect = true;
+        cli.limits_args.cores = 2;
 
         let err = plan(&cli, &Config::default())
             .err()
@@ -3016,9 +3072,9 @@ mod tests {
         // Anti-vacuity: the SAME cli without --cores plans successfully, so the
         // refusal is about the mode and not about the fixture or the flags.
         let mut ok = base_cli();
-        ok.input = vec!["tests/fixtures/sip_call.pcap".to_string()];
-        ok.no_tui = true;
-        ok.fraud_detect = true;
+        ok.capture_args.input = vec!["tests/fixtures/sip_call.pcap".to_string()];
+        ok.mode_args.no_tui = true;
+        ok.security_args.fraud_detect = true;
         assert!(
             plan(&ok, &Config::default()).is_ok(),
             "headless detection must still plan — this refusal is scoped to the \
@@ -3067,9 +3123,9 @@ mod tests {
     #[test]
     fn snaplen_truncation_warning_fires_on_live_capture_writing_output() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".to_string());
-        cli.snaplen = Some(262);
-        cli.output = Some("out.pcap".to_string());
+        cli.capture_args.device = Some("eth0".to_string());
+        cli.capture_args.snaplen = Some(262);
+        cli.capture_args.output = Some("out.pcap".to_string());
         let msg = snaplen_truncation_warning(&cli, &Config::default())
             .expect("a truncating snaplen feeding -O must be reported");
         assert!(msg.contains("262"), "names the snaplen: {msg}");
@@ -3087,8 +3143,8 @@ mod tests {
     #[test]
     fn snaplen_truncation_warning_silent_without_output() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".to_string());
-        cli.snaplen = Some(262);
+        cli.capture_args.device = Some("eth0".to_string());
+        cli.capture_args.snaplen = Some(262);
         assert!(snaplen_truncation_warning(&cli, &Config::default()).is_none());
     }
 
@@ -3097,13 +3153,13 @@ mod tests {
     #[test]
     fn snaplen_truncation_warning_silent_at_the_full_frame_default() {
         let mut unset = base_cli();
-        unset.device = Some("eth0".to_string());
-        unset.output = Some("out.pcap".to_string());
+        unset.capture_args.device = Some("eth0".to_string());
+        unset.capture_args.output = Some("out.pcap".to_string());
         assert!(
             snaplen_truncation_warning(&unset, &Config::default()).is_none(),
             "the unset default is 65535 — whole frames"
         );
-        unset.snaplen = Some(65535);
+        unset.capture_args.snaplen = Some(65535);
         assert!(
             snaplen_truncation_warning(&unset, &Config::default()).is_none(),
             "an explicit 65535 truncates nothing"
@@ -3116,9 +3172,9 @@ mod tests {
     #[test]
     fn snaplen_truncation_warning_silent_on_file_input() {
         let mut cli = base_cli();
-        cli.input = vec!["capture.pcap".to_string()];
-        cli.snaplen = Some(262);
-        cli.output = Some("out.pcap".to_string());
+        cli.capture_args.input = vec!["capture.pcap".to_string()];
+        cli.capture_args.snaplen = Some(262);
+        cli.capture_args.output = Some("out.pcap".to_string());
         assert!(snaplen_truncation_warning(&cli, &Config::default()).is_none());
     }
 
@@ -3128,8 +3184,8 @@ mod tests {
     #[test]
     fn snaplen_truncation_warning_catches_a_config_file_snaplen() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".to_string());
-        cli.output = Some("out.pcap".to_string());
+        cli.capture_args.device = Some("eth0".to_string());
+        cli.capture_args.output = Some("out.pcap".to_string());
         let mut config = Config::default();
         config.capture.snaplen = Some(320);
         let msg = snaplen_truncation_warning(&cli, &config)
@@ -3146,10 +3202,10 @@ mod tests {
     #[test]
     fn snaplen_audio_retention_warning_fires_on_live_capture_with_retain_audio() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".to_string());
-        cli.snaplen = Some(262);
-        cli.mcp = true;
-        cli.retain_audio = true;
+        cli.capture_args.device = Some("eth0".to_string());
+        cli.capture_args.snaplen = Some(262);
+        cli.mcp_args.mcp = true;
+        cli.mcp_args.retain_audio = true;
         let msg = snaplen_audio_retention_warning(&cli, &Config::default())
             .expect("a truncating snaplen feeding retained audio must be reported");
         assert!(msg.contains("262"), "names the snaplen: {msg}");
@@ -3169,8 +3225,8 @@ mod tests {
     #[test]
     fn snaplen_audio_retention_warning_silent_without_retain_audio() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".to_string());
-        cli.snaplen = Some(262);
+        cli.capture_args.device = Some("eth0".to_string());
+        cli.capture_args.snaplen = Some(262);
         assert!(snaplen_audio_retention_warning(&cli, &Config::default()).is_none());
     }
 
@@ -3180,14 +3236,14 @@ mod tests {
     #[test]
     fn snaplen_audio_retention_warning_silent_at_the_full_frame_default() {
         let mut unset = base_cli();
-        unset.device = Some("eth0".to_string());
-        unset.mcp = true;
-        unset.retain_audio = true;
+        unset.capture_args.device = Some("eth0".to_string());
+        unset.mcp_args.mcp = true;
+        unset.mcp_args.retain_audio = true;
         assert!(
             snaplen_audio_retention_warning(&unset, &Config::default()).is_none(),
             "the unset default is 65535 — whole frames"
         );
-        unset.snaplen = Some(65535);
+        unset.capture_args.snaplen = Some(65535);
         assert!(
             snaplen_audio_retention_warning(&unset, &Config::default()).is_none(),
             "an explicit 65535 truncates nothing"
@@ -3200,10 +3256,10 @@ mod tests {
     #[test]
     fn snaplen_audio_retention_warning_silent_on_file_input() {
         let mut cli = base_cli();
-        cli.input = vec!["capture.pcap".to_string()];
-        cli.snaplen = Some(262);
-        cli.mcp = true;
-        cli.retain_audio = true;
+        cli.capture_args.input = vec!["capture.pcap".to_string()];
+        cli.capture_args.snaplen = Some(262);
+        cli.mcp_args.mcp = true;
+        cli.mcp_args.retain_audio = true;
         assert!(snaplen_audio_retention_warning(&cli, &Config::default()).is_none());
     }
 
@@ -3214,9 +3270,9 @@ mod tests {
     #[test]
     fn snaplen_audio_retention_warning_catches_a_config_file_snaplen() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".to_string());
-        cli.mcp = true;
-        cli.retain_audio = true;
+        cli.capture_args.device = Some("eth0".to_string());
+        cli.mcp_args.mcp = true;
+        cli.mcp_args.retain_audio = true;
         let mut config = Config::default();
         config.capture.snaplen = Some(320);
         let msg = snaplen_audio_retention_warning(&cli, &config)
@@ -3228,7 +3284,7 @@ mod tests {
     #[test]
     fn build_capture_config_unreadable_bpf_file_returns_err() {
         let mut cli = base_cli();
-        cli.bpf_file = Some(
+        cli.capture_args.bpf_file = Some(
             std::env::temp_dir()
                 .join("sipnab_no_such_bpf_file_xyzzy.txt")
                 .to_string_lossy()
@@ -4231,13 +4287,13 @@ mod tests {
             Vec::<u16>::new()
         );
 
-        cli.capture_tunnels = Some(TUNNEL_PORTS_DEFAULT_LIST.to_string());
+        cli.capture_args.capture_tunnels = Some(TUNNEL_PORTS_DEFAULT_LIST.to_string());
         assert_eq!(
             resolve_tunnel_ports(&cli).expect("bare flag"),
             TUNNEL_PORTS_DEFAULT.to_vec()
         );
 
-        cli.capture_tunnels = Some("8472, 4789 ,8472".to_string());
+        cli.capture_args.capture_tunnels = Some("8472, 4789 ,8472".to_string());
         assert_eq!(
             resolve_tunnel_ports(&cli).expect("explicit list"),
             vec![8472u16, 4789],
@@ -4250,7 +4306,7 @@ mod tests {
     fn capture_tunnels_rejects_a_malformed_port_list() {
         let mut cli = base_cli();
         for bad in ["", "http", "70000", "2152,", "0"] {
-            cli.capture_tunnels = Some(bad.to_string());
+            cli.capture_args.capture_tunnels = Some(bad.to_string());
             let err = resolve_tunnel_ports(&cli)
                 .err()
                 .unwrap_or_else(|| panic!("'{bad}' must be refused"));
@@ -4310,7 +4366,7 @@ mod tests {
     #[test]
     fn plan_generates_the_encapsulation_aware_filter_for_a_live_capture() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".into());
+        cli.capture_args.device = Some("eth0".into());
         let plan = plan(&cli, &Config::default()).expect("plan");
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
@@ -4322,8 +4378,8 @@ mod tests {
     #[test]
     fn plan_adds_requested_tunnel_ports_to_the_generated_filter() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".into());
-        cli.capture_tunnels = Some(TUNNEL_PORTS_DEFAULT_LIST.to_string());
+        cli.capture_args.device = Some("eth0".into());
+        cli.capture_args.capture_tunnels = Some(TUNNEL_PORTS_DEFAULT_LIST.to_string());
         let plan = plan(&cli, &Config::default()).expect("plan");
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
@@ -4335,8 +4391,8 @@ mod tests {
     #[test]
     fn plan_generates_the_filter_for_a_custom_portrange() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".into());
-        cli.portrange = Some("5080-5090".into());
+        cli.capture_args.device = Some("eth0".into());
+        cli.capture_args.portrange = Some("5080-5090".into());
         let plan = plan(&cli, &Config::default()).expect("plan");
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
@@ -4349,7 +4405,7 @@ mod tests {
     #[test]
     fn plan_never_rewrites_an_explicit_filter() {
         let mut cli = base_cli();
-        cli.device = Some("eth0".into());
+        cli.capture_args.device = Some("eth0".into());
         cli.bpf_filter = vec!["udp".into(), "port".into(), "5060".into()];
         let plan = plan(&cli, &Config::default()).expect("plan");
         assert_eq!(
@@ -4363,7 +4419,7 @@ mod tests {
     #[test]
     fn plan_generates_no_filter_when_reading_a_file() {
         let mut cli = base_cli();
-        cli.input = vec![FIXTURE_FILE.to_string()];
+        cli.capture_args.input = vec![FIXTURE_FILE.to_string()];
         let plan = plan(&cli, &Config::default()).expect("plan");
         assert_eq!(plan.capture_config.bpf_filter, None);
     }

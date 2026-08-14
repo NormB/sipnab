@@ -502,8 +502,8 @@ fn contrib_example_config_parses_with_real_loader() {
 //     explicit CLI flag  >  config file  >  built-in default
 //
 // the same order every other CLI-vs-config pair in this repo resolves in
-// (`cli.portrange.or(config.capture.portrange)` in `bootstrap::plan`,
-// `cli.snaplen.or(config.capture.snaplen)`, `cli.from.or(config.filter.from)`).
+// (`cli.capture_args.portrange.or(config.capture.portrange)` in `bootstrap::plan`,
+// `cli.capture_args.snaplen.or(config.capture.snaplen)`, `cli.matching_args.from.or(config.filter.from)`).
 
 /// Run sipnab with owned arguments, adapting to the `&[&str]` [`run`] takes.
 fn run_owned(args: &[String]) -> (String, String, i32) {
@@ -850,6 +850,54 @@ fn cli_max_reassembly_overrides_config() {
 // which runs sipnab twice — once without the key, once with it — and returns
 // two DIFFERENT observations. A registered probe that changes nothing fails
 // as loudly as a missing one, so a parsing assertion cannot satisfy this.
+
+/// Fail loudly when a burst probe's PREMISE did not hold.
+///
+/// The rate-limit probes send a burst and read the refusals. That reading only
+/// means something if the whole burst landed inside ONE limiter window: if it
+/// spilled over, the window reset mid-burst, the limiter allowed its quota
+/// again, and `refused == 0` describes the machine rather than the key.
+///
+/// The bound is [`sipnab::rate_limit::WINDOW`], read from the limiter itself
+/// rather than restated here — a second copy of `1s` would agree today and
+/// drift the moment the limiter changes.
+///
+/// Measured on this tree, this has ~70x of headroom and has never fired: the
+/// 40-request API burst takes 13.7 ms idle and 14.8 ms at three times CPU
+/// oversubscription (load average 19), against a 1 s window. It exists because
+/// of what the failure would SAY, not because it is likely — without it, a
+/// machine slow enough to spill the burst makes both observations agree, and
+/// the gate below then tells the reader to delete a key that works perfectly.
+/// A gate must not give advice it cannot support.
+///
+/// Gated where `sipnab::rate_limit` is compiled (`hep` or `mcp`), because that
+/// is where the bound lives and reading it from anywhere else would mean
+/// copying the value. `api` implies neither, so an api-only build gets the
+/// no-op placeholder below and simply goes unguarded — the guard is insurance
+/// against a machine slow enough to spill a 14 ms burst past 1 s, not something
+/// the probe depends on.
+#[cfg(any(feature = "hep", feature = "mcp"))]
+fn assert_premise_inside_window(which: &str, elapsed: std::time::Duration, refused: usize) {
+    if refused > 0 {
+        return; // the limiter did refuse, so the window plainly held
+    }
+    assert!(
+        elapsed < sipnab::rate_limit::WINDOW,
+        "the {which} burst took {elapsed:?}, which is not inside the \
+         {:?} rate-limit window, so `refused == 0` is not evidence about the \
+         key -- the window reset mid-burst and the limiter allowed its quota \
+         again. This machine was too slow to OBSERVE the key; that is not the \
+         same as the key being dead, and the {which} limit must not be deleted \
+         on the strength of it.",
+        sipnab::rate_limit::WINDOW
+    );
+}
+
+/// Placeholder for builds without `sipnab::rate_limit` (neither `hep` nor
+/// `mcp`). The bound it would check lives in that module, so there is nothing
+/// to check against; the probes still run, they just go unguarded.
+#[cfg(not(any(feature = "hep", feature = "mcp")))]
+fn assert_premise_inside_window(_which: &str, _elapsed: std::time::Duration, _refused: usize) {}
 
 /// One documented `[limits]` key and the pair of runs that proves it bites.
 struct LimitProbe {
@@ -1903,11 +1951,13 @@ fn probe_api_max_rows() -> (String, String) {
 fn probe_api_rate_limit_per_peer() -> (String, String) {
     fn burst_verdict(extra: &[&str]) -> String {
         let srv = server::ApiServer::spawn(extra);
+        let started = std::time::Instant::now();
         let refused = (0..40)
             // 503, not 429: the limiter runs BEFORE auth, so a refusal here
             // says nothing about the credential — see `guard_scoped`.
             .filter(|_| srv.get("/v1/stats").status == 503)
             .count();
+        assert_premise_inside_window("api", started.elapsed(), refused);
         if refused > 0 {
             "burst-refused".into()
         } else {
@@ -2266,6 +2316,7 @@ fn send_hep_invite(src: &str, port: u16, tag: &str) {
         dst_addr: "127.0.0.1".parse().unwrap(),
         src_port: 5060,
         dst_port: 5062,
+        transport: sipnab::net::TransportProto::Udp,
     };
     let invite = format!(
         "INVITE sip:bob@example.com SIP/2.0\r\n\
@@ -2296,10 +2347,14 @@ fn hep_burst_verdict(extra_args: &[&str]) -> String {
     let mut args = vec!["--hep-allow", "127.0.0.1/32"];
     args.extend_from_slice(extra_args);
     let listener = HepProbeListener::spawn(&args);
+    let started = std::time::Instant::now();
     for _ in 0..40 {
         send_hep_invite("127.0.0.1", listener.port, "hep1");
     }
-    if listener.saw("rate limit exceeded") {
+    let sent_in = started.elapsed();
+    let dropped = listener.saw("rate limit exceeded");
+    assert_premise_inside_window("hep", sent_in, usize::from(dropped));
+    if dropped {
         "burst-dropped".into()
     } else {
         "burst-accepted".into()
@@ -2396,10 +2451,18 @@ fn every_documented_limits_key_changes_observable_behaviour() {
         let (without, with) = (probe.observe)();
         assert_ne!(
             without, with,
-            "[limits] {} does not change observable behaviour: sipnab \
-             reported {without:?} without it and {with:?} with it. The key \
-             is parsed, validated and documented, so operators believe it \
-             works — wire it to its enforcement point or delete it.",
+            "[limits] {} did not change what sipnab reported: {without:?} \
+             without it and {with:?} with it. The key is parsed, validated and \
+             documented, so operators believe it works.\n\
+             \n\
+             Two different things produce this, and they need opposite fixes. \
+             Either the key reaches no enforcement point -- then wire it up, or \
+             remove it and its documentation -- or this probe cannot see the \
+             effect it is looking for, in which case the key may be perfectly \
+             sound and the PROBE is what needs fixing. Establish which before \
+             deleting anything: the probes that spawn a server and time a burst \
+             have a premise about the machine, and `assert_premise_inside_window` \
+             guards the one that is checkable.",
             probe.key
         );
     }

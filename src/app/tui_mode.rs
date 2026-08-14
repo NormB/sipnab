@@ -166,7 +166,7 @@ fn build_stores(
             let mut ds = DialogStore::new(cli.dialog_limit(config), cli.rotate_enabled());
             // The wiring whose absence made the old --dialog-track a dead
             // flag: declared, parsed, and never handed to anything.
-            ds.set_tracking(cli.dialog_track.unwrap_or_default());
+            ds.set_tracking(cli.dialog_args.dialog_track.unwrap_or_default());
             ds
         }
         .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
@@ -221,7 +221,7 @@ pub fn run_tui_mode(
     policy: CapturePolicy,
     #[cfg(feature = "metrics")] _metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
-    let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
+    let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
     // Read before the capture config moves into the processing thread below.
     let bpf_filter = bpf_status_text(&capture_config);
@@ -251,15 +251,15 @@ pub fn run_tui_mode(
         .name("tui-processor".to_string())
         .spawn(move || {
             let mut processor = capture::PacketProcessor::with_max_sessions(reassembly_cap)
-                .with_reassembly(!cli_clone.no_reassembly)
-                .with_parse_limit(cli_clone.limitlen);
+                .with_reassembly(!cli_clone.capture_args.no_reassembly)
+                .with_parse_limit(cli_clone.capture_args.limitlen);
             let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
             // SRTP/DTLS-SRTP media-decryption state for the live pipeline.
             #[cfg(feature = "tls")]
             let mut srtp_context: Option<crate::rtp::srtp::SrtpContext> = {
                 let backend = crate::crypto::default_backend();
-                match cli_clone.srtp_keys.as_deref() {
+                match cli_clone.tls_args.srtp_keys.as_deref() {
                     Some(keyfile) => crate::rtp::srtp::SrtpContext::from_key_file(
                         std::path::Path::new(keyfile),
                         backend,
@@ -271,8 +271,11 @@ pub fn run_tui_mode(
                 }
             };
             #[cfg(feature = "tls")]
-            let mut dtls_extractor: Option<crate::capture::dtls::DtlsSrtpExtractor> =
-                cli_clone.dtls_keylog.as_deref().and_then(|keylog| {
+            let mut dtls_extractor: Option<crate::capture::dtls::DtlsSrtpExtractor> = cli_clone
+                .tls_args
+                .dtls_keylog
+                .as_deref()
+                .and_then(|keylog| {
                     crate::capture::dtls::DtlsSrtpExtractor::from_keylog_file(
                         std::path::Path::new(keylog),
                         crate::crypto::default_backend(),
@@ -281,7 +284,7 @@ pub fn run_tui_mode(
                     .ok()
                 });
             let mut writer: Option<PcapWriter> = None;
-            let tui_export_mode = PcapExportMode::parse_mode(&cli_clone.pcap_export_mode)
+            let tui_export_mode = PcapExportMode::parse_mode(&cli_clone.tls_args.pcap_export_mode)
                 .unwrap_or(PcapExportMode::Decrypted);
             // Wall time for a live device, the capture's own timeline for
             // `-I`: the TUI reads files too, and there the packet clock and
@@ -324,17 +327,21 @@ pub fn run_tui_mode(
 
                 // Lazily initialize writer
                 if writer.is_none()
-                    && let Some(ref output_path) = cli_clone.output
+                    && let Some(ref output_path) = cli_clone.capture_args.output
                 {
                     // Record the capture source as the pcapng interface name
                     // (SNB-0001): the capture device for live, input for replay.
-                    let capture_source = cli_clone.device.as_deref().or(cli_clone.primary_input());
+                    let capture_source = cli_clone
+                        .capture_args
+                        .device
+                        .as_deref()
+                        .or(cli_clone.primary_input());
                     match PcapWriter::with_interface(
                         &PathBuf::from(output_path),
                         packet.link_type,
                         policy.split_bytes,
                         policy.split_duration,
-                        cli_clone.pcapng,
+                        cli_clone.capture_args.pcapng,
                         tui_export_mode,
                         capture_source,
                     )
@@ -342,7 +349,7 @@ pub fn run_tui_mode(
                     {
                         Ok(mut w) => {
                             // Write DSB with keylog content if mode requires it
-                            if let Some(ref keylog_path) = cli_clone.keylog
+                            if let Some(ref keylog_path) = cli_clone.tls_args.keylog
                                 && let Err(e) =
                                     w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
                             {
@@ -386,12 +393,12 @@ pub fn run_tui_mode(
                             &ss,
                             &mut rtp_heuristic,
                             &crate::pipeline::PipelineOptions {
-                                no_dialog: cli_clone.no_dialog,
+                                no_dialog: cli_clone.dialog_args.no_dialog,
                                 no_rtp,
                                 // Live capture: BPF (auto-generated from
                                 // --portrange) already filtered; no SIP port gate.
                                 sip_portrange: None,
-                                quiet_bad_parse: cli_clone.quiet_bad_parse,
+                                quiet_bad_parse: cli_clone.capture_args.quiet_bad_parse,
                             },
                             &mut media_decrypt,
                         );
@@ -463,6 +470,7 @@ pub fn run_tui_mode(
     // From/To column default: CLI flag wins, then the [display] from_to config
     // value (warned + ignored if invalid), else the built-in Default.
     let from_to_mode = cli
+        .name_args
         .from_to_mode
         .map(|a| crate::tui::FromToMode::parse(a.as_str()).unwrap_or_default())
         .or_else(|| {
@@ -499,9 +507,9 @@ pub fn run_tui_mode(
             // The save dialog writes wherever the analyst types, and the
             // capture on screen is the obvious name to reach for.
             protected_inputs: crate::capture::output_guard::ProtectedInputs::new(
-                &cli.input,
+                &cli.capture_args.input,
                 &[],
-                cli.recursive,
+                cli.capture_args.recursive,
             ),
             bpf_filter,
         },
@@ -742,7 +750,7 @@ mod tests {
     fn dialog_track_branch_reaches_the_store_and_splits_a_reused_call_id() {
         let cli = cli_from(&["--dialog-track", "branch"]);
         assert_eq!(
-            cli.dialog_track,
+            cli.dialog_args.dialog_track,
             Some(DialogTracking::Branch),
             "precondition: the flag parsed"
         );
@@ -769,7 +777,10 @@ mod tests {
     #[test]
     fn the_default_tracking_mode_keeps_one_call_id_in_a_single_unit() {
         let cli = cli_from(&[]);
-        assert_eq!(cli.dialog_track, None, "precondition: the flag is unset");
+        assert_eq!(
+            cli.dialog_args.dialog_track, None,
+            "precondition: the flag is unset"
+        );
         let (dialogs, _streams) = build_stores(&cli, &Config::default());
         {
             let mut ds = dialogs.write();

@@ -8,22 +8,23 @@
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+bulk-memory,+mutable-globals", "--cfg", "getrandom_backend=\"wasm_js\""]
 
-# libtest gives each test its own thread, and that thread's stack is
-# RUST_MIN_STACK (2 MiB by default). Clap's GENERATED parser for `Cli` --
-# `augment_args` and `from_arg_matches` -- has a frame that grows with every
-# flag, and in a DEBUG build (no slot reuse, no inlining) it now sits just under
-# 2 MiB on its own. Twelve test files parse a `Cli`, so all of them ride that
-# edge: two tests overflowed the moment two branches of new flags merged, though
-# neither branch crossed the line alone.
+# There is deliberately no `[env] RUST_MIN_STACK` here any more.
 #
-# This is a TEST-HARNESS limit, not a product one. The shipped binary parses on
-# the main thread, whose stack the kernel sizes at 8 MiB, and a release build
-# reuses slots besides. Measured before choosing this: the failing tests need
-# between 2 and 3 MiB, and `Cli`, `Config` and `RunPlan` are 2744, 2072 and 760
-# bytes, so the tests' own locals are not the cost -- the generated parser is.
+# libtest gives each test its own thread with a 2 MiB stack, and clap's
+# GENERATED parser for `Cli` -- `augment_args` and `from_arg_matches` -- had a
+# frame that grew with every flag until, in a debug build, it crossed that line.
+# Two tests overflowed: `bootstrap_test::portrange_resolution_and_error` and
+# `app::batch::tests::dispatch_sip_output_all_modes`. Measured then: the frame
+# needed between 2048 and 2560 KiB, while `Cli`, `Config` and `RunPlan` are
+# 2744, 2072 and 760 bytes -- so the tests' own locals were never the cost.
 #
-# Revisit if `Cli` keeps growing: the durable fix is to flatten it into
-# `#[command(flatten)]` sub-structs so no single generated function carries
-# every flag. See the backlog item on the CLI's stack headroom.
-[env]
-RUST_MIN_STACK = "8388608"
+# Raising the stack to 8 MiB hid that, and hid how close the next flag would
+# come. `Cli` is now split into `#[command(flatten)]` sub-structs (see
+# `src/cli.rs`), so no single generated function carries every flag: the largest
+# group is 37 fields rather than 215. Re-measured with RUST_MIN_STACK REMOVED,
+# which is the only way the measurement means anything: 0 of 139 test binaries
+# overflow, against a baseline of 2.
+#
+# If a future flag pushes a group over again, split that group -- do not put the
+# override back. A green suite under an 8 MiB override says nothing about the
+# frame.

@@ -49,11 +49,11 @@ pub fn build_resolver(
     use crate::names::{NameMode, NameResolver};
 
     let cfg = &config.names;
-    let reverse = cli.reverse_dns || cfg.reverse_dns.unwrap_or(false);
-    let resolve = cli.resolve
+    let reverse = cli.name_args.reverse_dns || cfg.reverse_dns.unwrap_or(false);
+    let resolve = cli.name_args.resolve
         || reverse
         || cfg.enabled.unwrap_or(false)
-        || !cli.names.is_empty()
+        || !cli.name_args.names.is_empty()
         || cfg.hosts_file.is_some()
         || cfg.manual.as_ref().is_some_and(|m| !m.is_empty());
 
@@ -64,7 +64,7 @@ pub fn build_resolver(
     // System hosts table (offline, cheap).
     let _ = resolver.load_hosts_file(std::path::Path::new("/etc/hosts"));
     // Operator-provided mapping files (manual layer, highest priority).
-    for f in &cli.names {
+    for f in &cli.name_args.names {
         if let Err(e) = resolver.load_manual_file(std::path::Path::new(f)) {
             tracing::warn!("could not load names file {f}: {e}");
         }

@@ -298,7 +298,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2110`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2110)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2145`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2145)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -468,7 +468,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2258`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2258),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2298`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2298),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -480,7 +480,7 @@ Tiers:
   a given capture was truncated.
 - [ ] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
   `grep -rn 'FANOUT\|fanout' src/` matches nothing. `--cores N` is offline-only
-  (`RunMode::CoresFile` requires `-I`, [`src/app/bootstrap.rs:540`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L540)), so on a busy
+  (`RunMode::CoresFile` requires `-I`, [`src/app/bootstrap.rs:71`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L71)), so on a busy
   server the live path is one `capture-<device>` thread feeding one processing
   loop — exactly the topology CT2 overflows. Linux `PACKET_FANOUT` is the
   standard answer: N sockets on one interface, kernel-side flow-hashed
@@ -1895,7 +1895,23 @@ treats as critical.
   independently. A FIFO path must be opened **before** the privilege drop,
   alongside capture devices, or a `--chroot`ed run cannot reach `/run`.
 
-- [ ] **TK8 — TLS 1.3 SIP is not surfaced even with the correct secrets loaded.**
+- [x] **TK8 — TLS 1.3 SIP was not surfaced even with the correct secrets loaded.**
+  **Fixed by [`42b464d6`](https://github.com/NormB/sipnab/blob/main/src/crypto.rs) ("Derive the TLS hash and the HEP transport instead of
+  pinning them"), which landed on `main` independently while this was being
+  found. Verified against the repro below after merging: the same capture now
+  reports `127.0.0.1:56398 -> 127.0.0.1:5061 INVITE TLS` and `1 SIP messages`.**
+
+  The cause was one line of the shape this backlog keeps meeting: [`src/crypto.rs`](https://github.com/NormB/sipnab/blob/main/src/crypto.rs)
+  pinned `hkdf::HKDF_SHA256` while the **cipher suite** is what selects the hash,
+  so `TLS_AES_256_GCM_SHA384` derived its key and IV under the wrong hash, every
+  AEAD open failed, and the TLS 1.3 arm discards that with `.ok()` — leaving the
+  session reported ready and nothing logged. That suite is OpenSSL's first TLS
+  1.3 preference, so it was the common case, not an edge one. The rule now: the
+  hash is always a parameter, never a constant, and `CipherSuite::hash()` is the
+  only place that decides.
+
+  Kept below because the repro and the cross-check are worth having, and because
+  the investigation's two dead ends cost real time.
   Found 2026-08-14 while measuring `TK4`, and **reproducible in about a minute**
   with no eBPF involved. Generate a real TLS 1.3 exchange carrying a SIP
   `INVITE`, keeping OpenSSL's own keylog:
@@ -1951,16 +1967,21 @@ treats as critical.
   existing SSLKEYLOGFILE recipe, troubleshooting entries for the failures
   `TK1`–`TK3` used to cause silently, and an **end-to-end measurement on a real
   TLS SIP session** — cheap to do, so the live-NIC caveat does not extend here.
-  **ecapture cannot run on thor-02, measured 2026-08-14.** `/sys/kernel/btf/`
-  does not exist on `6.8.12-rt-tegra` and `CONFIG_DEBUG_INFO_BTF` is absent from
-  the kernel config, while `CONFIG_BPF_SYSCALL=y`, `CONFIG_UPROBES=y` and
-  `CONFIG_UPROBE_EVENTS=y` are all set. So BPF and uprobes work on this host and
-  everything needing **runtime BTF** does not — which covers ecapture, and
-  covers any `struct sock` field access done through CO-RE rather than through
-  hardcoded offsets. Mode A and mode B therefore cannot be measured here, and
-  `TK6` cannot be verified here either; both need a host with a BTF-enabled
-  kernel, or an ecapture built against explicit offsets. Say which of those was
-  used when the measurement is finally taken.
+  **Mode A is DONE**, shipped as [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md) §7e "Decrypt traffic from a
+  daemon you cannot restart", and measured before it was written: a TLS 1.3
+  `REGISTER` over `TLS_AES_256_GCM_SHA384`, keys taken from a process with no
+  `SSLKEYLOGFILE` anywhere. `--keylog-fd` (`TK4`) is the streaming variant of
+  that recipe, for operators who would rather the secrets never reached a file.
+
+  **A correction, recorded because it was asserted here first and was wrong.**
+  This entry previously claimed ecapture could not run on thor-02, reasoning
+  from `/sys/kernel/btf/` being absent on `6.8.12-rt-tegra` with
+  `CONFIG_DEBUG_INFO_BTF` unset. The kernel facts are right — and the conclusion
+  did not follow: **eCapture falls back to its own non-CO-RE bytecode when BTF
+  is missing**, and was confirmed working on exactly this kernel. The lesson is
+  the one this repo keeps paying for: a missing capability is a reason to test,
+  not a licence to conclude. What genuinely does need BTF is *sipnab's own*
+  `struct sock` access in `TK7`, unless it carries explicit offsets.
 
   Interop facts verified 2026-08-14: ecapture is Apache-2.0 at v2.5.2, covers
   openssl/libressl/boringssl/gnutls/nspr(nss)/GoTLS, needs x86\_64 kernel 4.18+

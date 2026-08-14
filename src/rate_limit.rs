@@ -91,7 +91,13 @@ pub const MIN_TRACKED_PEERS: usize = crate::config::MIN_TRACKED_PEERS as usize;
 /// An operator who wants a different rate changes the cap. A surface that
 /// genuinely needs a different window wants its own limiter, with the window
 /// named in its own knob, so the flag and the behaviour still agree.
-const WINDOW: Duration = Duration::from_secs(1);
+///
+/// Public so the `[limits]` wiring probes in `tests/config_wiring_test.rs` can
+/// assert their own premise against it — those probes send a burst and read the
+/// refusals, which only means anything if the burst lands inside ONE window.
+/// They must derive that bound from here rather than restate it: a second copy
+/// would agree today and drift the moment this changes.
+pub const WINDOW: Duration = Duration::from_secs(1);
 
 /// Why a limiter refused, so the caller can say so in its own words.
 ///

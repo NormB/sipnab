@@ -10,6 +10,27 @@
 
 use anyhow::Result;
 
+/// The hash a key-derivation step runs under.
+///
+/// TLS binds this to the negotiated cipher suite and says so in the suite's own
+/// name — `TLS_AES_128_GCM_SHA256` derives with SHA-256, `TLS_AES_256_GCM_SHA384`
+/// with SHA-384 — so it is a parameter of each derivation, never a property of
+/// the backend.
+///
+/// It was a property of the backend for one release, fixed at SHA-256. Every
+/// SHA-384 suite then derived a key and IV that could not decrypt a single
+/// record, and nothing said so: the session was still reported ready and the
+/// AEAD failure was discarded. `TLS_AES_256_GCM_SHA384` is OpenSSL's first
+/// TLS 1.3 preference, so this was the common case, not an edge one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HashAlg {
+    /// SHA-256 — the `*_SHA256` suites.
+    Sha256,
+    /// SHA-384 — the `*_SHA384` suites.
+    Sha384,
+}
+
 /// Trait abstracting cryptographic operations for TLS and SRTP decryption.
 ///
 /// Two implementations exist:
@@ -41,12 +62,16 @@ pub trait CryptoBackend: Send + Sync {
     /// Used for SRTP authentication tag computation and verification.
     fn hmac_sha1(&self, key: &[u8], data: &[u8]) -> Result<Vec<u8>>;
 
-    /// HKDF-Expand (RFC 5869) using SHA-256 as the hash function.
+    /// HKDF-Expand (RFC 5869) under `hash`.
     ///
     /// Expands the PRK (pseudo-random key) with the given info context
     /// to produce `len` bytes of output key material. Used for TLS 1.3
     /// key derivation.
-    fn hkdf_expand(&self, prk: &[u8], info: &[u8], len: usize) -> Result<Vec<u8>>;
+    ///
+    /// `hash` MUST be the hash of the cipher suite the material belongs to —
+    /// see [`HashAlg`]. Expanding with any other hash succeeds, returns the
+    /// right number of bytes, and yields a key that never decrypts anything.
+    fn hkdf_expand(&self, prk: &[u8], info: &[u8], len: usize, hash: HashAlg) -> Result<Vec<u8>>;
 }
 
 /// Stub crypto backend that returns errors for all operations.
@@ -74,7 +99,13 @@ impl CryptoBackend for StubCryptoBackend {
         anyhow::bail!("No crypto backend compiled. Build with --features tls")
     }
 
-    fn hkdf_expand(&self, _prk: &[u8], _info: &[u8], _len: usize) -> Result<Vec<u8>> {
+    fn hkdf_expand(
+        &self,
+        _prk: &[u8],
+        _info: &[u8],
+        _len: usize,
+        _hash: HashAlg,
+    ) -> Result<Vec<u8>> {
         anyhow::bail!("No crypto backend compiled. Build with --features tls")
     }
 }
@@ -87,7 +118,8 @@ impl CryptoBackend for StubCryptoBackend {
 /// RustCrypto `aes`+`cbc` crates (AES-CBC for TLS 1.2 CBC cipher suites).
 ///
 /// Supports AES-128-GCM, AES-256-GCM, AES-128-CBC, AES-256-CBC,
-/// HMAC-SHA1, and HKDF-SHA256.
+/// HMAC-SHA1, and HKDF under either SHA-256 or SHA-384 (see [`HashAlg`] —
+/// the caller picks, because the cipher suite is what decides).
 #[cfg(feature = "tls")]
 pub struct RingCryptoBackend;
 
@@ -171,10 +203,14 @@ impl CryptoBackend for RingCryptoBackend {
         Ok(tag.as_ref().to_vec())
     }
 
-    fn hkdf_expand(&self, prk: &[u8], info: &[u8], len: usize) -> Result<Vec<u8>> {
+    fn hkdf_expand(&self, prk: &[u8], info: &[u8], len: usize, hash: HashAlg) -> Result<Vec<u8>> {
         use ring::hkdf;
 
-        let prk = hkdf::Prk::new_less_safe(hkdf::HKDF_SHA256, prk);
+        let algorithm = match hash {
+            HashAlg::Sha256 => hkdf::HKDF_SHA256,
+            HashAlg::Sha384 => hkdf::HKDF_SHA384,
+        };
+        let prk = hkdf::Prk::new_less_safe(algorithm, prk);
         let info_refs: &[&[u8]] = &[info];
         let okm = prk
             .expand(info_refs, HkdfLen(len))
@@ -275,7 +311,7 @@ mod tests {
     #[test]
     fn stub_hkdf_expand_returns_error() {
         let stub = StubCryptoBackend;
-        let result = stub.hkdf_expand(b"prk", b"info", 32);
+        let result = stub.hkdf_expand(b"prk", b"info", 32, HashAlg::Sha256);
         assert!(result.is_err());
     }
 
@@ -401,10 +437,14 @@ mod tests {
             let prk = [0x07u8; 32];
             let info = b"tls13 key";
 
-            let out16 = backend.hkdf_expand(&prk, info, 16).unwrap();
+            let out16 = backend
+                .hkdf_expand(&prk, info, 16, HashAlg::Sha256)
+                .unwrap();
             assert_eq!(out16.len(), 16);
 
-            let out32 = backend.hkdf_expand(&prk, info, 32).unwrap();
+            let out32 = backend
+                .hkdf_expand(&prk, info, 32, HashAlg::Sha256)
+                .unwrap();
             assert_eq!(out32.len(), 32);
 
             // HKDF-Expand with the same PRK and info: shorter output is a prefix
@@ -412,7 +452,9 @@ mod tests {
             assert_eq!(out16[..], out32[..16]);
 
             // Different info produces different output
-            let out_diff = backend.hkdf_expand(&prk, b"tls13 iv", 16).unwrap();
+            let out_diff = backend
+                .hkdf_expand(&prk, b"tls13 iv", 16, HashAlg::Sha256)
+                .unwrap();
             assert_ne!(
                 out16, out_diff,
                 "Different info should produce different keys"
@@ -426,8 +468,12 @@ mod tests {
             let prk = [0x42u8; 32];
             let info = b"test info";
 
-            let a = backend.hkdf_expand(&prk, info, 16).unwrap();
-            let b = backend.hkdf_expand(&prk, info, 16).unwrap();
+            let a = backend
+                .hkdf_expand(&prk, info, 16, HashAlg::Sha256)
+                .unwrap();
+            let b = backend
+                .hkdf_expand(&prk, info, 16, HashAlg::Sha256)
+                .unwrap();
             assert_eq!(a, b, "HKDF-Expand must be deterministic");
         }
 

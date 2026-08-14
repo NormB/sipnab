@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use super::tls::{KeyLogEntry, parse_keylog_file};
-use crate::crypto::CryptoBackend;
+use crate::crypto::{CryptoBackend, HashAlg};
 use crate::rtp::srtp::{SrtpKeyMaterial, SrtpSuite};
 
 /// RFC 5705 exporter label for DTLS-SRTP (RFC 5764 §4.2).
@@ -175,7 +175,22 @@ pub fn derive_srtp_keys(
 
     // RFC 5705: seed = client_random ‖ server_random (no context for dtls_srtp).
     let seed = [client_random.as_slice(), server_random.as_slice()].concat();
-    let block = super::decrypt::tls12_prf(crypto, master_secret, EXPORTER_LABEL, &seed, total)?;
+    // SHA-256 is an ASSUMPTION here, not a fact. RFC 5705 runs the exporter
+    // under the PRF of the handshake's negotiated cipher suite, and this path
+    // never observes it -- `profile` is the SRTP protection profile, a
+    // different thing. Every DTLS-SRTP suite in common use (the AES-GCM and
+    // AES-CM profiles negotiated by WebRTC stacks) is a SHA-256 suite, so this
+    // is right today; it becomes wrong the moment a SHA-384 suite appears.
+    // Named explicitly so the next reader sees an assumption rather than a
+    // constant. Fix by threading the DTLS ServerHello's cipher suite to here.
+    let block = super::decrypt::tls12_prf(
+        crypto,
+        master_secret,
+        EXPORTER_LABEL,
+        &seed,
+        total,
+        HashAlg::Sha256,
+    )?;
 
     // Layout: client_key ‖ server_key ‖ client_salt ‖ server_salt.
     let ck = block[0..key_len].to_vec();

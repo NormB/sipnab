@@ -629,20 +629,20 @@ fn parallel_config(
     no_rtp: bool,
 ) -> crate::parallel::ParallelConfig {
     crate::parallel::ParallelConfig {
-        cores: cli.cores,
+        cores: cli.limits_args.cores,
         max_streams: cli.max_streams_limit(config),
         max_dialogs: cli.dialog_limit(config),
         rotate: cli.rotate_enabled(),
         max_reassembly: cli.max_reassembly_limit(config),
         portrange,
-        no_dialog: cli.no_dialog,
-        dialog_tracking: cli.dialog_track.unwrap_or_default(),
+        no_dialog: cli.dialog_args.no_dialog,
+        dialog_tracking: cli.dialog_args.dialog_track.unwrap_or_default(),
         no_rtp,
-        quiet_bad_parse: cli.quiet_bad_parse,
+        quiet_bad_parse: cli.capture_args.quiet_bad_parse,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
-        reassembly: !cli.no_reassembly,
-        parse_limit: cli.limitlen,
+        reassembly: !cli.capture_args.no_reassembly,
+        parse_limit: cli.capture_args.limitlen,
     }
 }
 
@@ -680,7 +680,7 @@ fn spawn_kill_worker(
 /// used to be constructed as `FraudDetector::new(None)`, so it shipped with
 /// its own constants and one whole detection unreachable.
 fn build_fraud_detector(cli: &Cli, config: &Config) -> Option<FraudDetector> {
-    if !(cli.fraud_detect || config.security.fraud_detect.unwrap_or(false)) {
+    if !(cli.security_args.fraud_detect || config.security.fraud_detect.unwrap_or(false)) {
         return None;
     }
     // Already refused by `Cli::validate` and `SecurityConfig::validate`, so
@@ -711,7 +711,7 @@ fn build_alert_engine(
     // Without this the global budget sits at its default and --exec-rate-limit
     // is silently inert on the alert path -- the same shape as #35, #55, #63
     // and #83, where a flag parsed, validated, and did nothing.
-    engine.set_exec_rate_limit(cli.exec_rate_limit);
+    engine.set_exec_rate_limit(cli.exec_args.exec_rate_limit);
     // Same shape: the ring buffer sat at its compiled-in depth and
     // `set_findings_capacity` was reachable only from the module's own tests,
     // so an operator polling `security_findings` on a busy registrar silently
@@ -735,10 +735,11 @@ fn build_alert_engine(
 /// worse blast radius, because the whole point of the gate is that its verdict
 /// is trustworthy.
 fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::DialogStore) -> bool {
-    if !cli.lint {
+    if !cli.output_args.lint {
         return false;
     }
     let threshold = cli
+        .output_args
         .lint_fail_on
         .as_deref()
         .and_then(crate::sip::lint::Severity::from_name);
@@ -781,7 +782,7 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
 ///
 /// # Arguments
 ///
-/// * `cli` — parsed flags; `cli.cores` gives the worker count.
+/// * `cli` — parsed flags; `cli.limits_args.cores` gives the worker count.
 /// * `config` — loaded configuration for `no_rtp` / X-CID fallbacks.
 /// * `capture_config` — capture parameters forwarded to the file reader.
 /// * `portrange` — SIP signaling port range for classification.
@@ -823,7 +824,7 @@ pub fn run_cores_file(
         tracing::error!("--cores: no capture files to read");
         std::process::exit(1);
     }
-    let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
+    let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
     match crate::parallel::run_offline_parallel_file(paths, capture_config, pcfg) {
         Ok(r) => {
@@ -831,14 +832,14 @@ pub fn run_cores_file(
             // was dropped here, so an unknown --call-report id or an unwritable
             // stdout exited 0 on the --cores path while exiting 1 elsewhere.
             let reports_ok = generate_reports(cli, &r.dialog_store, &r.stream_store, filter);
-            if !cli.quiet {
+            if !cli.mode_args.quiet {
                 tracing::info!(
                     "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
                     r.total_count,
                     r.sip_count,
                     r.rtp_count,
                     r.stream_store.len(),
-                    cli.cores,
+                    cli.limits_args.cores,
                 );
                 report_undecodable(r.total_count);
                 report_icmp_summary(&r.stream_store);
@@ -887,7 +888,7 @@ pub fn run_cores_file(
 /// The TUI keeps its own retention decision in `tui_mode.rs`, which is why its
 /// F2 WAV export always worked against the same decoder.
 pub(crate) fn audio_retention_wanted(cli: &Cli) -> bool {
-    cli.mcp && cli.retain_audio
+    cli.mcp_args.mcp && cli.mcp_args.retain_audio
 }
 
 /// Arm the store's retention from that decision, and report what was decided.
@@ -1390,14 +1391,14 @@ pub fn run(
     raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
 ) {
     let portrange = policy.portrange;
-    let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
+    let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
     // 17p. Offline multi-core reconstruction (`--cores N`, N>1). Shard parsed
     // packets by host pair across N workers with thread-local stores, merge, and
     // report — covers dialog + RTP-stream reconstruction and `--report`/`--json`.
     // Advanced features (live, per-message output ordering, security detectors,
     // SRTP) use the single-threaded path below; this branch only triggers for an
     // offline input file.
-    if cli.cores > 1 && cli.has_input() {
+    if cli.limits_args.cores > 1 && cli.has_input() {
         let pcfg = parallel_config(&cli, config, portrange, no_rtp);
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
@@ -1407,14 +1408,14 @@ pub fn run(
             &result.stream_store,
             batch.filter_expr.as_ref(),
         );
-        if !cli.quiet {
+        if !cli.mode_args.quiet {
             tracing::info!(
                 "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
                 result.total_count,
                 result.sip_count,
                 result.rtp_count,
                 result.stream_store.len(),
-                cli.cores,
+                cli.limits_args.cores,
             );
             report_undecodable(result.total_count);
             report_icmp_summary(&result.stream_store);
@@ -1578,15 +1579,15 @@ impl BatchRunner {
         // 16. Output writer placeholder for -O — opened lazily on the first
         //     packet in run_loop, once the link type is known.
         let writer: Option<PcapWriter> = None;
-        let use_pcapng = cli.pcapng;
-        let export_mode =
-            PcapExportMode::parse_mode(&cli.pcap_export_mode).unwrap_or(PcapExportMode::Decrypted);
+        let use_pcapng = cli.capture_args.pcapng;
+        let export_mode = PcapExportMode::parse_mode(&cli.tls_args.pcap_export_mode)
+            .unwrap_or(PcapExportMode::Decrypted);
 
         // 16a. Initialize HEP sender if --hep-send is set
         #[cfg(feature = "hep")]
         let hep_sender: Option<crate::capture::hep::HepSender> =
-            if let Some(ref addr) = cli.hep_send {
-                let capture_id = cli.hep_id.unwrap_or(1);
+            if let Some(ref addr) = cli.hep_args.hep_send {
+                let capture_id = cli.hep_args.hep_id.unwrap_or(1);
                 let hep_auth = match cli.resolve_hep_auth() {
                     Ok(a) => a,
                     Err(e) => {
@@ -1607,7 +1608,7 @@ impl BatchRunner {
                     &destination,
                     capture_id,
                     hep_auth,
-                    cli.hep_auth_mode,
+                    cli.hep_args.hep_auth_mode,
                 ) {
                     Ok(sender) => {
                         tracing::info!(
@@ -1633,20 +1634,20 @@ impl BatchRunner {
         // common single-writer batch case the locks are uncontested.
         let processor =
             capture::PacketProcessor::with_max_sessions(cli.max_reassembly_limit(config))
-                .with_reassembly(!cli.no_reassembly)
-                .with_parse_limit(cli.limitlen);
+                .with_reassembly(!cli.capture_args.no_reassembly)
+                .with_parse_limit(cli.capture_args.limitlen);
         let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(
             {
                 let mut ds = DialogStore::new(cli.dialog_limit(config), cli.rotate_enabled());
                 // The wiring whose absence made the old --dialog-track a dead
                 // flag: declared, parsed, and never handed to anything.
-                ds.set_tracking(cli.dialog_track.unwrap_or_default());
+                ds.set_tracking(cli.dialog_args.dialog_track.unwrap_or_default());
                 ds
             }
             .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default())
             .with_leg_correlation_window_ms(cli.leg_correlation_window_ms(config)),
         ));
-        let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
+        let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
         let stream_store: Arc<RwLock<StreamStore>> = {
             let mut ss = StreamStore::new(cli.max_streams_limit(config));
             if let Some(max_frames) = config.limits.max_audio_frames {
@@ -1668,12 +1669,14 @@ impl BatchRunner {
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
         // 17a. Initialize security detectors
-        let kill_scanner_active = cli.kill_scanner || config.security.kill_scanner.unwrap_or(false);
+        let kill_scanner_active =
+            cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false);
 
         // Targeted-kill directives (-K). Already validated in Cli::validate();
         // reparse here and skip (loudly) any that somehow fail so a bad entry
         // can't take the whole run down mid-capture.
         let kill_targets: Vec<sec::scanner_kill::KillTarget> = cli
+            .security_args
             .kill_target
             .iter()
             .filter_map(|spec| match sec::scanner_kill::KillTarget::parse(spec) {
@@ -1705,6 +1708,7 @@ impl BatchRunner {
         // enumeration; until then `--fail2ban` warns rather than lying.
         let scanner_detector = if kill_scanner_active {
             let custom = cli
+                .security_args
                 .kill_ua
                 .as_deref()
                 .map(|s| vec![s.to_string()])
@@ -1725,7 +1729,7 @@ impl BatchRunner {
         // An operator who asked for fail2ban output and gets an empty file will
         // read it as "nothing attacked me", which is the most dangerous way for
         // a security tool to be silent. Say so once, at the start.
-        if cli.fail2ban && scanner_detector.is_none() {
+        if cli.output_args.fail2ban && scanner_detector.is_none() {
             tracing::warn!(
                 "--fail2ban writes scanner detections, but no detector is running, so this \
                  run will emit nothing. An empty jail log means 'nothing was detected', not \
@@ -1744,13 +1748,13 @@ impl BatchRunner {
 
         let fraud_detector = build_fraud_detector(&cli, config);
 
-        let digest_detector = if cli.digest_leak {
+        let digest_detector = if cli.security_args.digest_leak {
             Some(DigestLeakDetector::new())
         } else {
             None
         };
 
-        let reg_flood_detector = if cli.reg_flood {
+        let reg_flood_detector = if cli.security_args.reg_flood {
             Some(RegFloodDetector::new(cli.reg_flood_threshold(config)))
         } else {
             None
@@ -1758,10 +1762,10 @@ impl BatchRunner {
 
         // 17b. Initialize alert engine from --alert rules and --alert-exec,
         //      falling back to config.security.alert and config.security.alert_exec
-        let effective_alert_sources: &[String] = if cli.alert.is_empty() {
+        let effective_alert_sources: &[String] = if cli.security_args.alert.is_empty() {
             config.security.alert.as_deref().unwrap_or(&[])
         } else {
-            &cli.alert
+            &cli.security_args.alert
         };
         // `--alert` is declared as a CHANNEL flag — "syslog", "json", "exec" —
         // and every documented example passes a channel name. It used to be fed
@@ -1793,7 +1797,9 @@ impl BatchRunner {
                 // here is accepted so the documented triple all work, but it
                 // cannot invent a command.
                 "exec" => {
-                    if cli.alert_exec.is_none() && config.security.alert_exec.is_none() {
+                    if cli.security_args.alert_exec.is_none()
+                        && config.security.alert_exec.is_none()
+                    {
                         tracing::warn!(
                             "--alert exec given without --alert-exec <CMD>; no command to run"
                         );
@@ -1806,14 +1812,15 @@ impl BatchRunner {
             }
         }
         let effective_alert_exec = cli
+            .security_args
             .alert_exec
             .clone()
             .or(config.security.alert_exec.clone());
         let mut alert_engine = build_alert_engine(&cli, config, alert_rules, effective_alert_exec);
-        if cli.syslog || alert_channel_syslog {
+        if cli.security_args.syslog || alert_channel_syslog {
             alert_engine.set_syslog(true);
         }
-        if cli.alert_json || alert_channel_json {
+        if cli.security_args.alert_json || alert_channel_json {
             alert_engine.set_json_output(true);
         }
         let alert_engine = Arc::new(RwLock::new(alert_engine));
@@ -1831,74 +1838,76 @@ impl BatchRunner {
 
         // 17c. Initialize TLS decryptor if --keylog and/or --tls-key is provided
         #[cfg(feature = "tls")]
-        let mut tls_decryptor: Option<TlsDecryptor> =
-            if cli.keylog.is_some() || cli.tls_key.is_some() || cli.keylog_fd.is_some() {
-                // A source opened in the privileged window supersedes the path:
-                // it is already open, and for a FIFO the path must not be
-                // opened a second time. `--keylog-fd` has no path at all.
-                let preopened = batch.keylog_source.take();
-                let keylog_path = if preopened.is_some() {
-                    None
-                } else {
-                    cli.keylog.as_deref().map(std::path::Path::new)
-                };
-                let crypto = crate::crypto::default_backend();
-                match TlsDecryptor::new(keylog_path, crypto) {
-                    Ok(mut d) => {
-                        if let Some(source) = preopened {
-                            d.set_keylog_source(source);
-                            // Drain once, HERE, before a single packet is
-                            // processed. The sweep loop below also polls, but
-                            // an offline replay (`-I`) can read the whole file
-                            // and finish before the first sweep ever runs — so
-                            // relying on the sweep alone made `--keylog-fd`
-                            // load zero keys and decrypt nothing, while
-                            // reporting only that the descriptor was adopted.
-                            match d.poll_keylog_file() {
-                                Ok(0) => {}
-                                Ok(n) => tracing::info!(
-                                    "sipnab: TLS decryption active ({n} key(s) from the keylog \
-                                     stream). Decrypted traffic visible in output."
-                                ),
-                                Err(e) => tracing::warn!("Keylog stream read failed: {e}"),
-                            }
-                        }
-                        if d.keylog_entry_count() > 0 {
-                            tracing::info!(
-                                "sipnab: TLS decryption active (keylog loaded). \
-                         Decrypted traffic visible in output."
-                            );
-                        }
-                        // Load the RSA private key for TLS 1.2 RSA-key-exchange decryption.
-                        if let Some(ref keyfile) = cli.tls_key {
-                            match crate::capture::rsa_key::RsaKey::from_pem_file(
-                                std::path::Path::new(keyfile),
-                            ) {
-                                Ok(k) => {
-                                    d.set_rsa_key(k);
-                                    tracing::info!(
-                                        "sipnab: TLS decryption active (--tls-key loaded; \
-                                 decrypts TLS 1.2 RSA-key-exchange handshakes only)."
-                                    );
-                                }
-                                Err(e) => {
-                                    return Err(crate::app::bootstrap::PlanError {
-                                        exit_code: 1,
-                                        message: format!("Failed to load --tls-key {keyfile}: {e}"),
-                                    });
-                                }
-                            }
-                        }
-                        Some(d)
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to initialize TLS decryptor: {e}");
-                        None
-                    }
-                }
-            } else {
+        let mut tls_decryptor: Option<TlsDecryptor> = if cli.tls_args.keylog.is_some()
+            || cli.tls_args.tls_key.is_some()
+            || cli.tls_args.keylog_fd.is_some()
+        {
+            // A source opened in the privileged window supersedes the path:
+            // it is already open, and for a FIFO the path must not be
+            // opened a second time. `--keylog-fd` has no path at all.
+            let preopened = batch.keylog_source.take();
+            let keylog_path = if preopened.is_some() {
                 None
+            } else {
+                cli.tls_args.keylog.as_deref().map(std::path::Path::new)
             };
+            let crypto = crate::crypto::default_backend();
+            match TlsDecryptor::new(keylog_path, crypto) {
+                Ok(mut d) => {
+                    if let Some(source) = preopened {
+                        d.set_keylog_source(source);
+                        // Drain once, HERE, before a single packet is
+                        // processed. The sweep loop below also polls, but
+                        // an offline replay (`-I`) can read the whole file
+                        // and finish before the first sweep ever runs — so
+                        // relying on the sweep alone made `--keylog-fd`
+                        // load zero keys and decrypt nothing, while
+                        // reporting only that the descriptor was adopted.
+                        match d.poll_keylog_file() {
+                            Ok(0) => {}
+                            Ok(n) => tracing::info!(
+                                "sipnab: TLS decryption active ({n} key(s) from the keylog \
+                                     stream). Decrypted traffic visible in output."
+                            ),
+                            Err(e) => tracing::warn!("Keylog stream read failed: {e}"),
+                        }
+                    }
+                    if d.keylog_entry_count() > 0 {
+                        tracing::info!(
+                            "sipnab: TLS decryption active (keylog loaded). \
+                         Decrypted traffic visible in output."
+                        );
+                    }
+                    // Load the RSA private key for TLS 1.2 RSA-key-exchange decryption.
+                    if let Some(ref keyfile) = cli.tls_args.tls_key {
+                        match crate::capture::rsa_key::RsaKey::from_pem_file(std::path::Path::new(
+                            keyfile,
+                        )) {
+                            Ok(k) => {
+                                d.set_rsa_key(k);
+                                tracing::info!(
+                                    "sipnab: TLS decryption active (--tls-key loaded; \
+                                 decrypts TLS 1.2 RSA-key-exchange handshakes only)."
+                                );
+                            }
+                            Err(e) => {
+                                return Err(crate::app::bootstrap::PlanError {
+                                    exit_code: 1,
+                                    message: format!("Failed to load --tls-key {keyfile}: {e}"),
+                                });
+                            }
+                        }
+                    }
+                    Some(d)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize TLS decryptor: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // 17d. Feed TLS secrets embedded in a pcapng (Decryption Secrets Block) into
         // the decryptor, so a self-contained capture decrypts without an external
@@ -1937,7 +1946,7 @@ impl BatchRunner {
         // are decrypted in place before stream/audio analysis.
         #[cfg(feature = "tls")]
         let srtp_context: Option<crate::rtp::srtp::SrtpContext> =
-            if let Some(ref keyfile) = cli.srtp_keys {
+            if let Some(ref keyfile) = cli.tls_args.srtp_keys {
                 match crate::rtp::srtp::SrtpContext::from_key_file(
                     std::path::Path::new(keyfile),
                     crate::crypto::default_backend(),
@@ -1970,7 +1979,7 @@ impl BatchRunner {
         // them into the SRTP context as handshakes are observed.
         #[cfg(feature = "tls")]
         let dtls_extractor: Option<crate::capture::dtls::DtlsSrtpExtractor> =
-            if let Some(ref keylog) = cli.dtls_keylog {
+            if let Some(ref keylog) = cli.tls_args.dtls_keylog {
                 match crate::capture::dtls::DtlsSrtpExtractor::from_keylog_file(
                     std::path::Path::new(keylog),
                     crate::crypto::default_backend(),
@@ -2144,7 +2153,7 @@ impl BatchRunner {
         let autostop_filesize_bytes = policy.autostop_filesize_bytes;
 
         // --after / -A trailing context counter
-        let after_count = cli.after.unwrap_or(0);
+        let after_count = cli.output_args.after.unwrap_or(0);
 
         let batch_ctx = BatchContext {
             matcher: &matcher,
@@ -2160,6 +2169,7 @@ impl BatchRunner {
         // capture ends (see output::group for why it cannot stream, and for the
         // caps that keep an attacker-keyed map bounded). None = stream as usual.
         let mut group_buf = cli
+            .output_args
             .group_by
             .as_deref()
             .and_then(|f| output::group::GroupField::parse(f).ok())
@@ -2180,7 +2190,7 @@ impl BatchRunner {
         // sipgrep-style text, fail2ban, hexdump). Flushed whenever the packet
         // channel goes idle — live output stays real-time — and at end of
         // capture; `--line-buffer` flushes after every message.
-        let mut sink = output::BatchSink::stdout(cli.line_buffer);
+        let mut sink = output::BatchSink::stdout(cli.output_args.line_buffer);
 
         // Carries a packet's output, alerts and hook commands OUT of the
         // section that holds both store write locks, so the syscalls they
@@ -2266,7 +2276,7 @@ impl BatchRunner {
                 // make the obvious invocation load no keys at all and say
                 // nothing — the failure this area has already been bitten by.
                 #[cfg(feature = "tls")]
-                if (cli.keylog_watch || cli.keylog_fd.is_some())
+                if (cli.tls_args.keylog_watch || cli.tls_args.keylog_fd.is_some())
                     && let Some(ref mut decryptor) = tls_decryptor
                     && let Err(e) = decryptor.poll_keylog_file()
                 {
@@ -2295,11 +2305,11 @@ impl BatchRunner {
 
             // Lazily initialize the writer on first packet (we need link_type)
             if writer.is_none()
-                && let Some(ref output_path) = cli.output
+                && let Some(ref output_path) = cli.capture_args.output
             {
                 // Record the capture source as the pcapng interface name (SNB-0001):
                 // the capture device for live, the input file for replay.
-                let capture_source = cli.device.as_deref().or(cli.primary_input());
+                let capture_source = cli.capture_args.device.as_deref().or(cli.primary_input());
                 match PcapWriter::with_interface(
                     &PathBuf::from(output_path),
                     packet.link_type,
@@ -2313,7 +2323,7 @@ impl BatchRunner {
                 {
                     Ok(mut w) => {
                         // Write DSB with keylog content if mode requires it
-                        if let Some(ref keylog_path) = cli.keylog
+                        if let Some(ref keylog_path) = cli.tls_args.keylog
                             && let Err(e) =
                                 w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
                         {
@@ -2360,7 +2370,8 @@ impl BatchRunner {
             for pp in &parsed_packets {
                 // --hep-parse: try to unwrap HEP-encapsulated packets
                 #[cfg(feature = "hep")]
-                let hep_unwrapped = if cli.hep_parse && pp.transport == TransportProto::Udp {
+                let hep_unwrapped = if cli.hep_args.hep_parse && pp.transport == TransportProto::Udp
+                {
                     crate::capture::hep::parse_hep(&pp.payload).ok().map(|hep| {
                         let mut unwrapped = pp.clone();
                         unwrapped.payload = hep.payload.into();
@@ -2471,6 +2482,7 @@ impl BatchRunner {
                             dst_addr: effective_pp.dst_addr,
                             src_port: effective_pp.src_port,
                             dst_port: effective_pp.dst_port,
+                            transport: effective_pp.transport,
                         },
                         effective_pp.timestamp,
                         &effective_pp.payload,
@@ -2528,7 +2540,8 @@ impl BatchRunner {
             if buf.truncated() {
                 tracing::warn!("{}", buf.truncation_note());
             }
-            let machine_readable = cli.json || cli.json_pretty || cli.fail2ban;
+            let machine_readable =
+                cli.output_args.json || cli.output_args.json_pretty || cli.output_args.fail2ban;
             for (header, chunks) in buf.drain() {
                 // Headers are for humans; machine formats stay parseable, where
                 // the grouping is the contiguity of the records themselves.
@@ -2626,7 +2639,7 @@ impl BatchRunner {
         let lint_gate_tripped = run_lint_stage(&cli, &config, &dialog_store.read());
 
         // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
-        if cli.wireshark {
+        if cli.output_args.wireshark {
             let ds_guard = dialog_store.read();
             let call_ids: Vec<String> = ds_guard.iter().map(|d| d.call_id.clone()).collect();
             if call_ids.is_empty() {
@@ -2645,9 +2658,10 @@ impl BatchRunner {
         // exists: the input file (`-I`), or the file the live capture was
         // saved to (`-O`). A live capture with neither has no pcap for tshark
         // to read, so emit a clear error instead of a bogus `capture.pcap`.
-        if cli.tshark_filter.is_some() || (cli.wireshark && cli.has_input()) {
-            let input_file = tshark_input_file(&input_files, cli.output.as_deref());
-            if let Some(ref tshark_expr) = cli.tshark_filter {
+        if cli.output_args.tshark_filter.is_some() || (cli.output_args.wireshark && cli.has_input())
+        {
+            let input_file = tshark_input_file(&input_files, cli.capture_args.output.as_deref());
+            if let Some(ref tshark_expr) = cli.output_args.tshark_filter {
                 // User provided a custom tshark filter expression.
                 match &input_file {
                     Ok(file) => println!("tshark -r {file} -Y '{tshark_expr}' -V"),
@@ -2669,7 +2683,7 @@ impl BatchRunner {
         }
 
         // 22. Summary
-        if !cli.quiet {
+        if !cli.mode_args.quiet {
             let stream_count = stream_store.read().len();
             tracing::info!(
                 "sipnab: {total_count} packets captured, {} SIP messages, {} RTP packets across {stream_count} streams",
@@ -2763,11 +2777,11 @@ impl BatchRunner {
         // exits cleanly instead of blocking on a thread that never returns.
         if let Some(servers) = servers {
             #[cfg(feature = "api")]
-            if cli.api.is_some() {
+            if cli.listener_args.api.is_some() {
                 tracing::info!("API server active — press Ctrl-C to stop");
             }
             #[cfg(feature = "mcp")]
-            if cli.mcp {
+            if cli.mcp_args.mcp {
                 tracing::info!("MCP server active — press Ctrl-C to stop");
             }
             while !signals::shutdown_requested() {
@@ -2952,7 +2966,7 @@ fn process_parsed_packet(
         alerts: pending_alerts,
     } = effects;
     // Hexdump output (applies to all packets)
-    if cli.hexdump && cli.no_tui {
+    if cli.output_args.hexdump && cli.mode_args.no_tui {
         let dump = output::hexdump(&pp.payload);
         write!(
             out,
@@ -2972,10 +2986,10 @@ fn process_parsed_packet(
     // apply the action with the batch extras: counters, matcher/DSL filter,
     // output dispatch, security detectors, events, DTMF.
     let opts = crate::pipeline::PipelineOptions {
-        no_dialog: cli.no_dialog,
+        no_dialog: cli.dialog_args.no_dialog,
         no_rtp,
         sip_portrange: Some(portrange),
-        quiet_bad_parse: cli.quiet_bad_parse,
+        quiet_bad_parse: cli.capture_args.quiet_bad_parse,
     };
     #[cfg(feature = "tls")]
     let mut decrypt = crate::pipeline::MediaDecrypt {
@@ -2995,7 +3009,7 @@ fn process_parsed_packet(
             let matcher_pass = matcher.matches(&sip_msg);
 
             // Track dialog regardless of filter (needed for filter DSL evaluation)
-            if !cli.no_dialog {
+            if !cli.dialog_args.no_dialog {
                 // Fire event exec before updating state (captures state change)
                 let prev_state = sip_msg
                     .call_id()
@@ -3005,7 +3019,7 @@ fn process_parsed_packet(
                 dialog_store.process_message(sip_msg.clone());
 
                 // Apply --tag to the dialog
-                if let Some(ref tag_label) = cli.tag
+                if let Some(ref tag_label) = cli.dialog_args.tag
                     && let Some(call_id) = sip_msg.call_id()
                     && let Some(dialog) = dialog_store.get_mut(call_id)
                     && !dialog.tags.contains(tag_label)
@@ -3067,7 +3081,7 @@ fn process_parsed_packet(
                     ),
                     at: sip_msg.timestamp,
                 });
-                if cli.fail2ban {
+                if cli.output_args.fail2ban {
                     let event = output::format_scanner_event(
                         &alert.src_ip.to_string(),
                         alert.ua.as_deref(),
@@ -3082,7 +3096,10 @@ fn process_parsed_packet(
                 // opted in (--hep-allow-kill), since their src/dst are
                 // sender-asserted and unauthenticated absent --hep-auth.
                 if let Some(handle) = &scanner_kill_handle
-                    && sec::scanner_kill::kill_response_eligible(pp.from_hep, cli.hep_allow_kill)
+                    && sec::scanner_kill::kill_response_eligible(
+                        pp.from_hep,
+                        cli.security_args.hep_allow_kill,
+                    )
                     && let Some(response_bytes) =
                         sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
                 {
@@ -3116,7 +3133,7 @@ fn process_parsed_packet(
                     ),
                     at: sip_msg.timestamp,
                 });
-                if cli.fail2ban {
+                if cli.output_args.fail2ban {
                     let event =
                         output::format_scanner_event(&sip_msg.src_addr.to_string(), ua, method);
                     out.write_str(&event);
@@ -3124,7 +3141,10 @@ fn process_parsed_packet(
                 }
                 // SN-01: same HEP-origin ineligibility as behavioral kill above.
                 if let Some(handle) = &scanner_kill_handle
-                    && sec::scanner_kill::kill_response_eligible(pp.from_hep, cli.hep_allow_kill)
+                    && sec::scanner_kill::kill_response_eligible(
+                        pp.from_hep,
+                        cli.security_args.hep_allow_kill,
+                    )
                     && let Some(response_bytes) =
                         sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
                 {
@@ -3178,7 +3198,7 @@ fn process_parsed_packet(
                     ),
                     at: sip_msg.timestamp,
                 });
-                if cli.fail2ban {
+                if cli.output_args.fail2ban {
                     let event = output::format_reg_flood_event(
                         &alert.src_ip.to_string(),
                         alert.register_count,
@@ -3190,7 +3210,7 @@ fn process_parsed_packet(
 
             // STIR/SHAKEN extraction (I1)
             #[cfg(feature = "tls")]
-            if cli.stir_shaken
+            if cli.security_args.stir_shaken
                 && let Some(result) = sip_msg.stir_shaken()
             {
                 match result {
@@ -3210,7 +3230,7 @@ fn process_parsed_packet(
             }
 
             // I5: --calls-only: skip non-INVITE dialogs from output
-            let calls_only_pass = if cli.calls_only {
+            let calls_only_pass = if cli.mode_args.calls_only {
                 if let Some(call_id) = sip_msg.call_id()
                     && let Some(dialog) = dialog_store.get(call_id)
                 {
@@ -3227,7 +3247,7 @@ fn process_parsed_packet(
             // armed by a `-e` payload match (dialog-following), or if trailing
             // context (`-A`) is still active.
             let direct_match = matcher_pass && filter_pass && calls_only_pass;
-            let follow_dialogs = cli.match_expr.is_some();
+            let follow_dialogs = cli.matching_args.match_expr.is_some();
             let emit = decide_emit(
                 direct_match,
                 sip_msg.call_id(),
@@ -3237,7 +3257,7 @@ fn process_parsed_packet(
                 after_count,
             );
 
-            if emit && cli.no_tui {
+            if emit && cli.mode_args.no_tui {
                 dispatch_sip_output(
                     &sip_msg,
                     output_opts,
@@ -3288,7 +3308,7 @@ fn process_parsed_packet(
             // so when the codec is telephone-event we use the stream's
             // negotiated PT and clock; otherwise fall back to the conventions
             // (e.g. a DTMF-only stream with no observed SDP).
-            if cli.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
+            if cli.mode_args.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
                 let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
                 let key = crate::rtp::stream::StreamKey {
                     ssrc: rtp_hdr.ssrc,
@@ -3332,7 +3352,7 @@ fn process_parsed_packet(
                     // SIPNAB_LOG to debug. Emitting it as a separate line also
                     // means turning the flag on never *removes* the diagnostic
                     // the default level already gave you.
-                    if cli.dtmf_cleartext {
+                    if cli.mode_args.dtmf_cleartext {
                         tracing::debug!(
                             "DTMF cleartext digit='{}' duration={}ms ssrc=0x{:08x}",
                             dtmf.digit,
@@ -3450,12 +3470,12 @@ fn dispatch_sip_output(
 ) {
     // MCP mode owns stdout (JSON-RPC wire); no per-packet text/JSON output.
     #[cfg(feature = "mcp")]
-    if cli.mcp {
+    if cli.mcp_args.mcp {
         return;
     }
     // --no-cli-print suppresses every per-message dump (text/JSON/fail2ban/raw)
     // so post-capture reports (--call-report, --report) aren't drowned out.
-    if cli.no_cli_print {
+    if cli.output_args.no_cli_print {
         return;
     }
     // --group-by cannot stream: the last packet may belong to the first group,
@@ -3469,10 +3489,10 @@ fn dispatch_sip_output(
         out.end_message();
         return;
     }
-    if cli.json_pretty {
+    if cli.output_args.json_pretty {
         let json = output::json::message_to_json_pretty(msg);
         out.write_str(&json);
-    } else if cli.json {
+    } else if cli.output_args.json {
         // Hot path: serialize straight into the deferred buffer — no
         // per-message String, no per-message write(2). The buffer is reused
         // across packets, so this stays allocation-free after the first few
@@ -3486,14 +3506,14 @@ fn dispatch_sip_output(
         // supposed to exit 0 exits 1.
         let r = output::json::write_message_json(msg, out.writer());
         out.record(r);
-    } else if cli.fail2ban {
+    } else if cli.output_args.fail2ban {
         // Detections only. The detector paths above write to this same buffer;
         // nothing is emitted per message here. This used to print a line for
         // every SIP request, which on a real carrier trunk named 180 distinct
         // peers — the trunk, the SBCs and the PBX — to a tool whose whole job
         // is to ban what it is handed. The branch stays so `--fail2ban` still
         // suppresses ordinary per-message output.
-    } else if cli.text_dump {
+    } else if cli.output_args.text_dump {
         // Raw SIP message text dump
         let raw = String::from_utf8_lossy(&msg.raw);
         out.write_str(&raw);
@@ -3521,17 +3541,17 @@ fn render_sip_output(
     cli: &Cli,
     prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Option<String> {
-    if cli.json_pretty {
+    if cli.output_args.json_pretty {
         Some(output::json::message_to_json_pretty(msg))
-    } else if cli.json {
+    } else if cli.output_args.json {
         let mut bytes: Vec<u8> = Vec::new();
         output::json::write_message_json(msg, &mut bytes).ok()?;
         Some(String::from_utf8_lossy(&bytes).into_owned())
-    } else if cli.fail2ban {
+    } else if cli.output_args.fail2ban {
         // Detections only — see `dispatch_sip_output`. A request is not a
         // detection, and this is the `--group-by` twin of the same defect.
         None
-    } else if cli.text_dump {
+    } else if cli.output_args.text_dump {
         Some(format!("{}\n", String::from_utf8_lossy(&msg.raw)))
     } else {
         Some(output::cli_print::format_sip_message(
@@ -3603,7 +3623,7 @@ pub fn generate_reports(
     }
 
     // --report: dialog summary table
-    if cli.report && cli.no_tui {
+    if cli.output_args.report && cli.mode_args.no_tui {
         // Filtered: the matching dialogs and the streams linked to them. With
         // no filter this is every dialog and every stream, orphans included —
         // an unfiltered report is unchanged.
@@ -3616,7 +3636,7 @@ pub fn generate_reports(
         let report = output::print_dialog_report_as(
             &dialogs,
             &selection.streams,
-            if cli.markdown {
+            if cli.output_args.markdown {
                 output::ReportFormat::Markdown
             } else {
                 output::ReportFormat::Text
@@ -3637,6 +3657,7 @@ pub fn generate_reports(
     // misconfigured would lose real data over a configuration error.
     #[cfg(feature = "plugins")]
     let plugins: Vec<crate::plugin::Plugin> = cli
+        .output_args
         .plugin
         .iter()
         .filter_map(|path| match crate::plugin::Plugin::load(path) {
@@ -3652,7 +3673,7 @@ pub fn generate_reports(
         .collect();
 
     // --json-dialogs: one NDJSON object per dialog
-    if cli.json_dialogs && cli.no_tui {
+    if cli.output_args.json_dialogs && cli.mode_args.no_tui {
         // Groups the streams by Call-ID once, where the loop below used to
         // rescan the whole stream store per dialog.
         let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
@@ -3683,7 +3704,7 @@ pub fn generate_reports(
     }
 
     // --call-report <call-id>: detailed single-call report
-    if let Some(ref call_id) = cli.call_report {
+    if let Some(ref call_id) = cli.output_args.call_report {
         if let Some(dialog) = dialog_store.get(call_id) {
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 stream_store.streams_for(call_id).collect();
@@ -3698,9 +3719,9 @@ pub fn generate_reports(
                 &dialog_streams,
                 &crate::rtp::diagnosis::AsymmetryThresholds::default(),
             );
-            let format = if cli.json || cli.json_pretty {
+            let format = if cli.output_args.json || cli.output_args.json_pretty {
                 ReportFormat::Json
-            } else if cli.markdown {
+            } else if cli.output_args.markdown {
                 ReportFormat::Markdown
             } else {
                 ReportFormat::Text
@@ -4171,23 +4192,23 @@ mod tests {
     fn audio_payload_is_retained_exactly_when_asked_and_readable() {
         let mut cli = base_cli();
 
-        cli.mcp = false;
-        cli.retain_audio = false;
+        cli.mcp_args.mcp = false;
+        cli.mcp_args.retain_audio = false;
         assert!(
             !audio_retention_wanted(&cli),
             "a plain batch run has no reader, so it must not pay the clone"
         );
 
-        cli.mcp = true;
-        cli.retain_audio = false;
+        cli.mcp_args.mcp = true;
+        cli.mcp_args.retain_audio = false;
         assert!(
             !audio_retention_wanted(&cli),
             "enabling an MCP server is not consent to hold call audio in \
              memory — this is the arming-by-default the opt-in exists to end"
         );
 
-        cli.mcp = false;
-        cli.retain_audio = true;
+        cli.mcp_args.mcp = false;
+        cli.mcp_args.retain_audio = true;
         assert!(
             !audio_retention_wanted(&cli),
             "clap refuses this combination at parse time (--retain-audio \
@@ -4195,8 +4216,8 @@ mod tests {
              retaining with no reader spends memory nothing can read back"
         );
 
-        cli.mcp = true;
-        cli.retain_audio = true;
+        cli.mcp_args.mcp = true;
+        cli.mcp_args.retain_audio = true;
         assert!(
             audio_retention_wanted(&cli),
             "export_audio decodes these buffers; with retention off it cannot succeed"
@@ -4235,7 +4256,7 @@ mod tests {
     fn a_batch_run_leaves_the_store_in_the_state_the_predicate_asked_for() {
         let mut cli = base_cli();
 
-        cli.mcp = false;
+        cli.mcp_args.mcp = false;
         let mut ss = StreamStore::new(16);
         assert!(
             ss.audio_capture(),
@@ -4250,8 +4271,8 @@ mod tests {
              in this run can read"
         );
 
-        cli.mcp = true;
-        cli.retain_audio = true;
+        cli.mcp_args.mcp = true;
+        cli.mcp_args.retain_audio = true;
         let mut ss = StreamStore::new(16);
         assert!(apply_audio_retention(&mut ss, &cli));
         assert!(
@@ -4262,7 +4283,7 @@ mod tests {
         // The middle state — MCP on, consent absent — is the arming-by-default
         // this ticket removed, and it must land OFF on the store, not just in
         // the predicate.
-        cli.retain_audio = false;
+        cli.mcp_args.retain_audio = false;
         let mut ss = StreamStore::new(16);
         assert!(!apply_audio_retention(&mut ss, &cli));
         assert!(
@@ -4273,7 +4294,7 @@ mod tests {
 
     fn base_cli() -> Cli {
         let mut cli = Cli::parse_from_args(["sipnab"]);
-        cli.no_tui = true;
+        cli.mode_args.no_tui = true;
         cli
     }
 
@@ -4501,7 +4522,7 @@ mod tests {
     #[test]
     fn dtmf_honors_negotiated_non_101_payload_type() {
         let mut cli = base_cli();
-        cli.telephone_event = true;
+        cli.mode_args.telephone_event = true;
         let packets = [
             parsed_sip_packet(invite_with_te_sdp("dtmf-96@x", 40000, 96, 8000), 5060, 5060),
             rtp_dtmf_packet(40000, 96, 0x1111_2222, 5, 800),
@@ -4517,7 +4538,7 @@ mod tests {
     #[test]
     fn dtmf_honors_negotiated_wideband_clock() {
         let mut cli = base_cli();
-        cli.telephone_event = true;
+        cli.mode_args.telephone_event = true;
         let packets = [
             parsed_sip_packet(
                 invite_with_te_sdp("dtmf-wb@x", 40000, 100, 16000),
@@ -4535,7 +4556,7 @@ mod tests {
     #[test]
     fn dtmf_falls_back_to_pt_101_without_sdp() {
         let mut cli = base_cli();
-        cli.telephone_event = true;
+        cli.mode_args.telephone_event = true;
         let packets = [rtp_dtmf_packet(40000, 101, 0x5555_6666, 9, 800)];
         let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061));
         assert_eq!(dtmf, 1, "PT 101 fallback must decode when no SDP is seen");
@@ -4638,7 +4659,7 @@ mod tests {
             // bytes an operator receives rather than on the deferred buffer.
             let mut out = DeferredOutput::new();
             dispatch_sip_output(&msg, &opts, cli, prev, &mut out, None);
-            let mut sink = output::BatchSink::new(Vec::new(), cli.line_buffer);
+            let mut sink = output::BatchSink::new(Vec::new(), cli.output_args.line_buffer);
             out.drain_into(&mut sink);
             sink.flush();
             sink.into_inner()
@@ -4653,7 +4674,7 @@ mod tests {
 
         // JSON: byte-identical to message_to_json (NDJSON line + newline).
         let mut cli = base_cli();
-        cli.json = true;
+        cli.output_args.json = true;
         assert_eq!(
             String::from_utf8(sink_bytes(&cli, None)).expect("utf8"),
             output::json::message_to_json(&msg),
@@ -4661,7 +4682,7 @@ mod tests {
 
         // Pretty JSON: byte-identical to message_to_json_pretty.
         let mut cli = base_cli();
-        cli.json_pretty = true;
+        cli.output_args.json_pretty = true;
         assert_eq!(
             String::from_utf8(sink_bytes(&cli, None)).expect("utf8"),
             output::json::message_to_json_pretty(&msg),
@@ -4673,7 +4694,7 @@ mod tests {
         // on a trunk sends requests. Detections reach the sink from the
         // detector paths, not from here.
         let mut cli = base_cli();
-        cli.fail2ban = true;
+        cli.output_args.fail2ban = true;
         let out = String::from_utf8(sink_bytes(&cli, None)).expect("utf8");
         assert!(
             out.is_empty(),
@@ -4682,19 +4703,19 @@ mod tests {
 
         // raw text dump: raw message + newline.
         let mut cli = base_cli();
-        cli.text_dump = true;
+        cli.output_args.text_dump = true;
         let out = String::from_utf8(sink_bytes(&cli, None)).expect("utf8");
         assert!(out.starts_with("INVITE sip:bob@example.com SIP/2.0"));
         assert!(out.ends_with('\n'));
 
         // suppressed entirely.
         let mut cli = base_cli();
-        cli.no_cli_print = true;
+        cli.output_args.no_cli_print = true;
         assert!(sink_bytes(&cli, None).is_empty());
 
         // line-buffer flush branch still writes the message.
         let mut cli = base_cli();
-        cli.line_buffer = true;
+        cli.output_args.line_buffer = true;
         assert!(!sink_bytes(&cli, Some(chrono::Utc::now())).is_empty());
     }
 
@@ -4709,12 +4730,12 @@ mod tests {
 
         // Empty --report summary path.
         let mut cli = base_cli();
-        cli.report = true;
+        cli.output_args.report = true;
         generate_reports(&cli, &dialog_store, &stream_store, None);
 
         // --call-report for an unknown Call-ID hits the "not found" warn arm.
         let mut cli = base_cli();
-        cli.call_report = Some("does-not-exist".to_string());
+        cli.output_args.call_report = Some("does-not-exist".to_string());
         generate_reports(&cli, &dialog_store, &stream_store, None);
 
         // Insert a dialog, then --call-report finds it across all formats.
@@ -4733,10 +4754,14 @@ mod tests {
         dialog_store.process_message(msg);
         assert!(dialog_store.get(call_id).is_some());
 
-        let formats: [fn(&mut Cli); 3] = [|_c| {}, |c| c.json = true, |c| c.markdown = true];
+        let formats: [fn(&mut Cli); 3] = [
+            |_c| {},
+            |c| c.output_args.json = true,
+            |c| c.output_args.markdown = true,
+        ];
         for setup in formats {
             let mut cli = base_cli();
-            cli.call_report = Some(call_id.to_string());
+            cli.output_args.call_report = Some(call_id.to_string());
             setup(&mut cli);
             generate_reports(&cli, &dialog_store, &stream_store, None);
         }
@@ -4914,7 +4939,7 @@ mod tests {
         // parsed_sip_packet sources from 10.0.0.1; src_port 5075 is inside the
         // target's 5060-5090 range → the targeted kill must fire.
         let mut cli = base_cli();
-        cli.no_cli_print = true;
+        cli.output_args.no_cli_print = true;
         let pp = parsed_sip_packet(invite_bytes("kt-hit@example.com"), 5075, 5060);
         let details = drive_kill_targets(&cli, &pp, &["10.0.0.1:5060-5090"]);
         assert!(
@@ -4928,7 +4953,7 @@ mod tests {
     fn kill_target_out_of_range_port_does_not_fire() {
         // src_port 6000 is outside 5060-5090 → no targeted kill.
         let mut cli = base_cli();
-        cli.no_cli_print = true;
+        cli.output_args.no_cli_print = true;
         let pp = parsed_sip_packet(invite_bytes("kt-miss@example.com"), 6000, 5060);
         let details = drive_kill_targets(&cli, &pp, &["10.0.0.1:5060-5090"]);
         assert!(
@@ -4942,7 +4967,7 @@ mod tests {
     fn kill_target_wrong_ip_does_not_fire() {
         // Target a different IP than the packet's source (10.0.0.1) → no kill.
         let mut cli = base_cli();
-        cli.no_cli_print = true;
+        cli.output_args.no_cli_print = true;
         let pp = parsed_sip_packet(invite_bytes("kt-ip@example.com"), 5075, 5060);
         let details = drive_kill_targets(&cli, &pp, &["10.0.0.99:5060-5090"]);
         assert!(
@@ -4990,7 +5015,7 @@ mod tests {
         let hook = format!("printf x >> {}", marker.display());
 
         let mut cli = base_cli();
-        cli.no_cli_print = true;
+        cli.output_args.no_cli_print = true;
 
         let matcher = SipMatcher::new(&cli, None).expect("matcher");
         let filter_expr: Option<FilterExpr> = None;
@@ -5151,8 +5176,8 @@ mod tests {
         let mut cli = base_cli();
         // Two emitters in one packet: the hexdump block first, then the raw
         // message dump. Their relative order is the intra-packet assertion.
-        cli.hexdump = true;
-        cli.text_dump = true;
+        cli.output_args.hexdump = true;
+        cli.output_args.text_dump = true;
 
         let first = parsed_sip_packet(invite_bytes("ord-1@example.com"), 5060, 5060);
         let second = parsed_sip_packet(invite_bytes("ord-2@example.com"), 5060, 5060);
@@ -5235,7 +5260,7 @@ mod tests {
             dtmf_count: 0,
         };
         let mut effects = DeferredEffects::new();
-        let mut sink = output::BatchSink::new(Vec::new(), cli.line_buffer);
+        let mut sink = output::BatchSink::new(Vec::new(), cli.output_args.line_buffer);
         for pp in packets {
             {
                 let mut ds_guard = dialog_store.write();
@@ -5450,7 +5475,7 @@ mod tests {
         };
 
         let mut cli = base_cli();
-        cli.no_cli_print = true;
+        cli.output_args.no_cli_print = true;
         let rtp = drive_packet_with_srtp(&cli, &pp, (5060, 5061), &mut srtp);
         assert_eq!(rtp, 1, "the RTP packet must still be counted/processed");
         assert_eq!(
@@ -5463,7 +5488,7 @@ mod tests {
     #[test]
     fn process_parsed_packet_counts_sip() {
         let mut cli = base_cli();
-        cli.no_cli_print = true; // keep test output quiet
+        cli.output_args.no_cli_print = true; // keep test output quiet
         let pp = parsed_sip_packet(invite_bytes("ppp-1@example.com"), 5060, 5060);
         let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061));
         assert_eq!(sip, 1, "one SIP message should be counted");
@@ -5474,7 +5499,7 @@ mod tests {
     #[test]
     fn process_parsed_packet_ignores_non_sip_and_out_of_range() {
         let mut cli = base_cli();
-        cli.no_cli_print = true;
+        cli.output_args.no_cli_print = true;
 
         // Garbage payload on the SIP port: not a SIP message -> no count.
         let pp = parsed_sip_packet(b"\x00\x01\x02not-sip-at-all".to_vec(), 5060, 5060);

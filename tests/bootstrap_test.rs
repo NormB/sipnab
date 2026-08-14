@@ -207,7 +207,7 @@ fn mcp_forces_batch_mode() {
 /// `Cli::validate` waives the `-N` requirement for `--call-report` and its
 /// doc comment states the flag "implies non-interactive output" — but the
 /// run-mode selector never consulted `call_report`, so the documented
-/// invocation started the TUI instead. `cli.call_report` is read in exactly
+/// invocation started the TUI instead. `cli.output_args.call_report` is read in exactly
 /// one place (`app::batch`), so in TUI mode the flag was silently ignored:
 /// `sipnab -I capture.pcap --call-report <id> --markdown > report.md`
 /// wrote 122 bytes of alt-screen and mouse-tracking escapes where the docs
