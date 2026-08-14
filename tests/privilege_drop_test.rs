@@ -397,9 +397,11 @@ fn chroot_confines_the_process_to_the_new_root() {
 ///
 /// This one is about key material: with dumpability left on, a crash while
 /// TLS/SRTP keys are resident writes them to a file on disk nobody asked for.
-/// The flag is read back out of the kernel because the function deliberately
-/// swallows its own failures — it warns and returns `Ok(())` — so its return
-/// value proves nothing whatsoever.
+/// The flag is read back out of the kernel rather than inferred from the return
+/// value. `Ok(())` is now a real claim — the function used to warn and return
+/// it whatever the syscall did — but a return value is still a statement about
+/// what a function believes, and this is a security property, so the child asks
+/// the kernel.
 ///
 /// Needs no privileges, but still runs in a child: `PR_SET_DUMPABLE(0)` is
 /// process-wide, irreversible for the runner, and reparents `/proc/self` to
@@ -454,6 +456,119 @@ fn drop_privileges_touches_no_credential_when_the_process_is_not_root() {
         credentials(),
         before,
         "a non-root drop must leave (uid, gid, euid, egid) untouched"
+    );
+}
+
+/// `PR_SET_NO_NEW_PRIVS` is set on the path an unprivileged sipnab takes.
+///
+/// This is the gate for the install the documentation recommends. `sipnab
+/// --setup-caps` writes `cap_net_raw,cap_net_admin+ep` onto the binary so
+/// capture runs WITHOUT root, and on that path there is no uid to shed — but
+/// no-new-privs has no uid precondition either, and skipping it with the drop
+/// left the recommended deployment able to exec its way back to privilege.
+///
+/// Run in a child because the flag is one-way: a process that sets it cannot
+/// clear it, so setting it here would silently alter every test that follows
+/// in this binary.
+#[test]
+#[cfg(target_os = "linux")]
+fn no_new_privs_is_set_even_when_there_is_nothing_to_drop() {
+    if credentials().2 == 0 {
+        announce_skip(
+            "no_new_privs_is_set_even_when_there_is_nothing_to_drop",
+            "this runner IS root, and the child would inherit that; the case this \
+             gate is about is the unprivileged process that has nothing to drop. \
+             The end-to-end gate on the shipped binary still covers both",
+        );
+        return;
+    }
+    let exe = std::env::current_exe().expect("path of this test binary");
+    let out = Command::new(exe)
+        .args([
+            "child_no_new_privs_is_set_without_root",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD_ENV, "1")
+        .output()
+        .expect("spawn the child role");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains(CHILD_COMPLETE),
+        "child role `child_no_new_privs_is_set_without_root` did not complete: \
+         {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The shipped binary hardens itself, observed from a process it spawned.
+///
+/// The unit gate above proves the function sets the flag; this one proves the
+/// binary calls it, which is the half a deleted call site would leave green.
+/// `PR_SET_NO_NEW_PRIVS` is inherited across `fork`/`exec`, so an
+/// `--on-dialog-exec` hook reading its own `/proc/self/status` reports what
+/// sipnab's own process is carrying — the real kernel flag on a real run, not
+/// a log line saying so.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_shipped_binary_blocks_privilege_escalation_on_a_capture_run() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().expect("a directory for the hook's report");
+    // A root runner drops to `nobody` before the hook fires, and `nobody` has
+    // to be able to write the report; without this the test would report "the
+    // hook never ran" for a permission error.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777))
+        .expect("make the report directory writable by the dropped-to account");
+    let report = dir.path().join("no-new-privs");
+    let fixture = world_readable_fixture("no-new-privs");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-I",
+            fixture.to_str().expect("fixture path is UTF-8"),
+            "--on-dialog-exec",
+            &format!(
+                "grep '^NoNewPrivs' /proc/self/status > {}",
+                report.display()
+            ),
+        ])
+        .output()
+        .expect("spawn sipnab");
+    assert!(
+        out.status.success(),
+        "sipnab must process the fixture, got {:?}\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The hook engine deliberately never waits on a child (a hung hook must
+    // not hold up the process), so the report can land just after sipnab
+    // exits. Poll for it, and fail if it never arrives — an absent file is a
+    // failure here, never a pass.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let line = loop {
+        match std::fs::read_to_string(&report) {
+            Ok(s) if !s.trim().is_empty() => break s,
+            _ if std::time::Instant::now() >= deadline => panic!(
+                "the --on-dialog-exec hook never wrote {}, so nothing was measured",
+                report.display()
+            ),
+            _ => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
+
+    assert_eq!(
+        line.trim(),
+        "NoNewPrivs:\t1",
+        "sipnab ran the hook from a process that can still gain privileges \
+         through execve. On the `--setup-caps` install there is no uid to drop, \
+         so this flag is the only thing standing between a bug in the parser and \
+         a setuid binary"
     );
 }
 
@@ -562,16 +677,12 @@ fn child_drops_to_nobody_and_cannot_climb_back() {
         "the failed climb-back must not have moved anything either"
     );
 
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: PR_GET_NO_NEW_PRIVS reads a flag; trailing args are unused.
-        let nnp = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
-        assert_eq!(
-            nnp, 1,
-            "PR_SET_NO_NEW_PRIVS is not set, so exec'ing any setuid binary steps \
-             straight back out of the drop"
-        );
-    }
+    // PR_SET_NO_NEW_PRIVS is deliberately NOT asserted here any more. It is no
+    // longer part of the drop: it has no uid precondition, and setting it from
+    // inside a function with two early returns is what left the `--setup-caps`
+    // install unhardened. `no_new_privs_is_set_even_when_there_is_nothing_to_drop`
+    // and `the_shipped_binary_blocks_privilege_escalation_on_a_capture_run` own
+    // that property now, and the second of them covers this root path too.
     println!("{CHILD_COMPLETE}");
 }
 
@@ -665,6 +776,42 @@ fn child_chroots_and_loses_sight_of_the_real_root() {
     println!("{CHILD_COMPLETE}");
 }
 
+/// Set no-new-privs from an unprivileged process and read the flag back.
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore = "child role: spawned by no_new_privs_is_set_even_when_there_is_nothing_to_drop"]
+fn child_no_new_privs_is_set_without_root() {
+    if !spawned_by_parent("child_no_new_privs_is_set_without_root") {
+        return;
+    }
+    // SAFETY: PR_GET_NO_NEW_PRIVS reads a flag; the trailing args are unused.
+    let before = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
+    assert_eq!(
+        before, 0,
+        "precondition: a freshly spawned process has no-new-privs clear, so the \
+         assertion below measures the call rather than an inherited flag"
+    );
+
+    assert_ne!(
+        credentials().2,
+        0,
+        "precondition: this runner is unprivileged, which is the case the flag \
+         used to be skipped in"
+    );
+
+    sipnab::privilege::block_privilege_escalation()
+        .expect("setting a flag that needs no privilege must work for any process");
+
+    // SAFETY: as above.
+    let after = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
+    assert_eq!(
+        after, 1,
+        "no-new-privs is clear, so exec'ing any setuid binary steps straight past \
+         everything else this module does"
+    );
+    println!("{CHILD_COMPLETE}");
+}
+
 /// Read the dumpable flag back after asking for core dumps to be disabled.
 #[test]
 #[cfg(target_os = "linux")]
@@ -681,7 +828,8 @@ fn child_core_dumps_are_off_after_the_call() {
          below measures the call rather than the default"
     );
 
-    sipnab::privilege::disable_core_dumps().expect("the call reports Ok by design");
+    sipnab::privilege::disable_core_dumps()
+        .expect("an error here now means the syscall was refused, not that it was noisy");
 
     // SAFETY: as above.
     let after = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };

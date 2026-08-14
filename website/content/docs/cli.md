@@ -819,6 +819,16 @@ report a healthy network in the middle of an outage.
 | `--exec-rate-limit` | `<N>` | `10` | Maximum exec invocations per second |
 | `--exec-queue-depth` | `<N>` | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. Config: `[limits] exec_queue_depth` |
 
+**Hooks cannot gain privileges.** sipnab sets `PR_SET_NO_NEW_PRIVS` at startup
+on Linux, on every run and whether or not it is root, and every command it
+spawns inherits that flag. A hook may run anything you can already run. What it
+cannot do is get *more* than you have through a setuid or setgid helper:
+`sudo`, `pkexec` and `ping` start, then fail for want of the privilege they
+normally acquire. A hook that needs to act privileged should ask something that
+already is — a socket to a daemon, a `systemd` unit it triggers — rather than
+trying to become privileged itself. Root runs have always behaved this way.
+Unprivileged runs (`sipnab --setup-caps`) now do too.
+
 **Examples**
 
 - `sudo sipnab -d eth0 --on-dialog-exec 'logger sipnab $SIPNAB_CALL_ID' --exec-rate-limit 5 --exec-queue-depth 20` — a slow syslog hook on a busy trunk, where twenty concurrent children is the ceiling events actually meet rather than the five-a-second budget

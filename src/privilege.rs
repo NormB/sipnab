@@ -8,10 +8,12 @@
 //! packet-parsing code.
 //!
 //! Call sequence:
-//! 1. Open capture devices (requires root/`CAP_NET_RAW`)
-//! 2. Open key files, bind API/metrics ports
-//! 3. Call `drop_privileges()`
-//! 4. Begin packet processing (unprivileged)
+//! 1. Call [`block_privilege_escalation()`] — no preconditions, so it happens
+//!    once at the top of the run rather than as part of the drop
+//! 2. Open capture devices (requires root/`CAP_NET_RAW`)
+//! 3. Open key files, bind API/metrics ports
+//! 4. Call [`drop_privileges()`]
+//! 5. Begin packet processing (unprivileged)
 
 use anyhow::{Result, bail};
 
@@ -23,6 +25,11 @@ use anyhow::{Result, bail};
 ///
 /// When the process is not running as root, the call is a no-op since
 /// there are no elevated privileges to shed.
+///
+/// This drops uid, gid and the supplementary groups, and nothing else.
+/// `PR_SET_NO_NEW_PRIVS` is [`block_privilege_escalation()`]'s job and is not
+/// implied by calling this — precisely because both of the early returns above
+/// would otherwise skip it.
 ///
 /// # Errors
 ///
@@ -69,9 +76,9 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
     // refused, so their order relative to this one is not a preference.
     set_uid(uid)?;
 
-    // Prevent regaining privileges (Linux only)
-    #[cfg(target_os = "linux")]
-    set_no_new_privs()?;
+    // PR_SET_NO_NEW_PRIVS used to be set here, which meant it was set only on
+    // the branch that got this far. See `block_privilege_escalation` for why it
+    // is no longer part of the drop.
 
     tracing::info!(
         "Dropped privileges to user '{}' (uid={}, gid={})",
@@ -193,8 +200,27 @@ pub fn is_root() -> bool {
 /// Linux (`PR_SET_DUMPABLE`) or zeroing the core file size limit on macOS
 /// (`RLIMIT_CORE`).
 ///
-/// Failures are logged as warnings but do not cause an error return,
-/// because this is a defense-in-depth measure, not a hard requirement.
+/// # Why a failure here is fatal
+///
+/// It used to warn and return `Ok(())`, and then log "Core dumps disabled
+/// (decryption active)" whether or not the syscall had done anything — so a
+/// refused `PR_SET_DUMPABLE` produced a warning AND a confident success line,
+/// and the caller's `exit(1)` could never be reached. An operator reading that
+/// log could not tell hardening from its absence.
+///
+/// The caller already treats an error as fatal, and that is the right reading:
+/// this runs only when TLS/SRTP/DTLS key material has been loaded into this
+/// process, and only when the operator did NOT pass `--allow-coredump`. Both
+/// halves of that condition are explicit requests. Continuing anyway means a
+/// later crash writes those keys to a file on disk that any local user with
+/// the right permissions can read — silently, long after the run that failed
+/// to harden itself has been forgotten. `--allow-coredump` is the escape hatch
+/// for anyone who has decided that trade is fine.
+///
+/// # Errors
+///
+/// The `prctl` (Linux) or `setrlimit` (macOS) failing, or being built for a
+/// platform with neither.
 pub fn disable_core_dumps() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -202,8 +228,10 @@ pub fn disable_core_dumps() -> Result<()> {
         // the trailing arguments are unused but required by the syscall ABI.
         unsafe {
             if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
-                tracing::warn!(
-                    "prctl(PR_SET_DUMPABLE, 0) failed: {}",
+                bail!(
+                    "prctl(PR_SET_DUMPABLE, 0) failed: {}. Decryption keys are \
+                     resident in this process and a crash would write them to a \
+                     core file; pass --allow-coredump to run anyway",
                     std::io::Error::last_os_error()
                 );
             }
@@ -220,16 +248,29 @@ pub fn disable_core_dumps() -> Result<()> {
                 rlim_max: 0,
             };
             if libc::setrlimit(libc::RLIMIT_CORE, &rlimit) != 0 {
-                tracing::warn!(
-                    "setrlimit(RLIMIT_CORE, 0) failed: {}",
+                bail!(
+                    "setrlimit(RLIMIT_CORE, 0) failed: {}. Decryption keys are \
+                     resident in this process and a crash would write them to a \
+                     core file; pass --allow-coredump to run anyway",
                     std::io::Error::last_os_error()
                 );
             }
         }
     }
 
-    tracing::info!("Core dumps disabled (decryption active)");
-    Ok(())
+    // Neither arm compiled in: nothing was done, so nothing may be claimed.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    bail!(
+        "disabling core dumps is not implemented for this platform, so \
+         decryption keys resident in this process could still reach a core \
+         file; pass --allow-coredump to run anyway"
+    );
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        tracing::info!("Core dumps disabled (decryption active)");
+        Ok(())
+    }
 }
 
 /// Resolve a username to its UID and primary GID via the system password database.
@@ -420,20 +461,97 @@ fn set_uid(uid: u32) -> Result<()> {
     Ok(())
 }
 
+/// Give up, for the rest of this process's life, the ability to gain
+/// privileges through `execve` — Linux `PR_SET_NO_NEW_PRIVS`.
+///
+/// # Why this is not part of `drop_privileges`
+///
+/// It has no precondition. `drop_privileges` has two, and both are early
+/// returns: `--no-priv-drop`, and "this process is not root, so there is
+/// nothing to shed". Setting the flag from inside that function meant it was
+/// set only on the branch that reached the bottom — so `sipnab --setup-caps`,
+/// the install the documentation recommends, ran a whole capture without it.
+/// That install grants `cap_net_raw,cap_net_admin+ep` on the binary and runs
+/// as an ordinary user, so there is no uid to drop and this flag is the ONLY
+/// thing between a bug in the parser and a setuid binary on the filesystem.
+///
+/// So it is called once, unconditionally, from the top of the run, and the
+/// function that drops uids is left doing only that.
+///
+/// # What it does and does not stop
+///
+/// It stops `execve` GRANTING privilege: setuid and setgid bits are ignored,
+/// as are file capabilities, and the flag is inherited by every child. It does
+/// not block `execve` itself, does not affect this process's own capabilities
+/// (file capabilities are applied at the exec that started it, before this
+/// call), and cannot be undone.
+///
+/// Event hooks (`--on-dialog-exec`, `--on-quality-exec`, `--alert-exec`) run
+/// under it, so a hook that relies on a setuid helper — `sudo`, `ping` — will
+/// find that helper unprivileged. That was already true of every run started
+/// as root, which is the deployment those hooks were written against; this
+/// call extends it to the unprivileged install. A hook needing privilege must
+/// get it some other way (a socket to a privileged daemon, `systemd-run`,
+/// or a service the hook talks to rather than becomes).
+///
+/// # Errors
+///
+/// Returns an error when the flag could not be set. The caller decides what
+/// that is worth: sipnab's own startup warns and continues, because a `prctl`
+/// that old kernels lack is not a reason to refuse to capture. What it must
+/// not do — and what this function used to do — is report success.
+///
+/// On platforms other than Linux there is no equivalent mechanism, and this is
+/// a no-op that says so rather than claiming to have hardened anything.
+pub fn block_privilege_escalation() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        set_no_new_privs()?;
+        tracing::debug!("PR_SET_NO_NEW_PRIVS set: exec can no longer grant privileges");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    tracing::debug!(
+        "no execve privilege-escalation block on this platform \
+         (PR_SET_NO_NEW_PRIVS is Linux-only); a setuid binary exec'd from here \
+         still gains its owner's privileges"
+    );
+
+    Ok(())
+}
+
 /// Set the `PR_SET_NO_NEW_PRIVS` flag to prevent regaining privileges via
 /// exec of setuid/setgid binaries (Linux only).
+///
+/// Reads the flag back with `PR_GET_NO_NEW_PRIVS` rather than trusting the
+/// return code. The two are not the same claim: one says the syscall was
+/// accepted, the other says the process is actually carrying the flag, and it
+/// is the second that the rest of this module's guarantees rest on. One extra
+/// syscall, once per run.
+///
+/// # Errors
+///
+/// The `prctl` failing, or the flag reading back clear afterwards.
 #[cfg(target_os = "linux")]
 fn set_no_new_privs() -> Result<()> {
     // SAFETY: prctl with PR_SET_NO_NEW_PRIVS is a one-way flag —
     // once set, it cannot be unset. Trailing args are unused.
     unsafe {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            tracing::warn!(
-                "prctl(PR_SET_NO_NEW_PRIVS) failed: {}",
+            bail!(
+                "prctl(PR_SET_NO_NEW_PRIVS, 1) failed: {}",
                 std::io::Error::last_os_error()
             );
-            // Non-fatal — warn but continue
         }
+    }
+    // SAFETY: the read form takes no pointers and cannot fail for a flag the
+    // kernel just accepted; a negative return is treated as "not set" below.
+    let readback = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
+    if readback != 1 {
+        bail!(
+            "prctl(PR_SET_NO_NEW_PRIVS, 1) reported success but the flag reads \
+             back as {readback}, so exec can still grant privileges"
+        );
     }
     Ok(())
 }

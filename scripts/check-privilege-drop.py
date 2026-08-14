@@ -23,21 +23,30 @@ answers regardless of whether anything compiles.
 
 WHAT IT CHECKS, AND WHAT IT CANNOT
 ----------------------------------
-Three things: that each of the four controls is PRESENT, that none has been
-NEUTRALISED in place (a call left written down but unable to run), and that
-supplementary groups are surrendered BEFORE the GID.
+Four things: that each control is PRESENT, that none has been NEUTRALISED in
+place (a call left written down but unable to run), that supplementary groups
+are surrendered BEFORE the GID, and that the binary's entry point still calls
+`block_privilege_escalation()`.
 
-That last one is not stylistic. On Darwin the effective GID is element zero of
-the group vector (`#define cr_gid cr_groups[0]`), and `setgroups_internal()`
+That last one is here because presence in `privilege.rs` was not enough once.
+`set_no_new_privs()` sat inside `drop_privileges`, below an early return taken
+whenever the process is not root -- so `sipnab --setup-caps`, the install the
+documentation recommends, ran a whole capture without the flag while this gate
+reported the control present. Presence and REACHABILITY are different
+questions, and the first is worth nothing on its own.
+
+The ordering check is not stylistic either. On Darwin the effective GID is
+element zero of the group vector (`#define cr_gid cr_groups[0]`), and `setgroups_internal()`
 refuses to leave the vector empty -- `if (ngrp < 1) { ngrp = 1; newgroups[0] = 0; }`
 -- so `setgroups(0, NULL)` writes GID 0, wheel, and the following `setgid` is
 what clears it. Reversed, a macOS process finishes the drop holding egid 0 with a
 uid of `nobody`. A presence-only check passes against that happily, which is why
 position is read as well.
 
-It still cannot tell that these run on the path actually TAKEN at runtime, nor
-verify the syscalls succeed. Those belong in `src/privilege.rs`'s own tests,
-which assert the resulting credentials rather than the source text.
+Reading one call site is still not the same as knowing which branch runs, and
+this cannot verify that any syscall SUCCEEDED. Those belong in
+`tests/privilege_drop_test.rs`, which reads the process's credentials and the
+kernel's own flags back after the call rather than reading the source text.
 """
 
 import re
@@ -45,6 +54,12 @@ import sys
 from pathlib import Path
 
 TARGET = Path("src/privilege.rs")
+
+# The binary's entry point, which must still reach the hardening call. A
+# control that exists but is never called is the defect this line was added
+# for; see the module docstring.
+ENTRY = Path("src/main.rs")
+ENTRY_CALL = "privilege::block_privilege_escalation()"
 
 # (needle, human name, why it matters if it disappears)
 REQUIRED = [
@@ -71,8 +86,16 @@ REQUIRED = [
     (
         "set_no_new_privs()?",
         "set_no_new_privs (PR_SET_NO_NEW_PRIVS)",
-        "a setuid binary reachable after the drop can hand privileges straight "
-        "back, which is exactly what the drop was for",
+        "a setuid binary reachable from the running process can hand privileges "
+        "straight back, which on the capability install (`sipnab --setup-caps`, "
+        "no root, no uid to drop) is the only escalation route there is",
+    ),
+    (
+        "libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1",
+        "prctl(PR_SET_NO_NEW_PRIVS, 1)",
+        "the call would still be named and still be reached while setting "
+        "nothing -- the PR_GET_DUMPABLE mutation this gate already knows about, "
+        "wearing the other flag's name",
     ),
 ]
 
@@ -160,6 +183,23 @@ def main() -> int:
                 f"    if it is gone: {why}"
             )
 
+    # REACHABILITY. A control present in privilege.rs that nothing calls is
+    # exactly the state this repo shipped in until 2026-08-14.
+    if not ENTRY.exists():
+        failures.append(
+            f"  MISSING: {ENTRY} does not exist\n"
+            f"    Either the entry point moved and this gate must be repointed,\n"
+            f"    or nothing calls the hardening any more."
+        )
+    elif ENTRY_CALL not in strip_comments(ENTRY.read_text()):
+        failures.append(
+            f"  UNREACHABLE: {ENTRY} does not call {ENTRY_CALL}\n"
+            f"    PR_SET_NO_NEW_PRIVS has no precondition and is one-way, so it is\n"
+            f"    set once at the top of the run. Without that call every mode --\n"
+            f"    including the unprivileged `--setup-caps` install the docs\n"
+            f"    recommend -- captures with escalation through exec still open."
+        )
+
     for pattern, name in NEUTRALISERS:
         for m in re.finditer(pattern, code):
             line = code[: m.start()].count("\n") + 1
@@ -186,7 +226,10 @@ def main() -> int:
         )
         return 1
 
-    print(f"{len(REQUIRED)} controls present, none neutralised, groups before GID")
+    print(
+        f"{len(REQUIRED)} controls present and reached, none neutralised, "
+        f"groups before GID"
+    )
     return 0
 
 
