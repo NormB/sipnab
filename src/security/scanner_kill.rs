@@ -9,6 +9,7 @@
 
 use std::net::IpAddr;
 
+use crate::capture::parse::InputOrigin;
 use crate::sip::SipMessage;
 
 /// A targeted-kill directive (sipgrep `-K` / `--kill-target`): an IP address
@@ -130,16 +131,26 @@ fn reason_phrase(code: u16) -> &'static str {
 }
 
 /// Whether a scanner-kill active response may be sent for a packet, given
-/// whether it originated from the HEP listener and whether the operator
-/// opted in with `--hep-allow-kill`.
+/// where its addressing came from and whether the operator opted in with
+/// `--hep-allow-kill`.
 ///
 /// HEP-origin packets are ineligible by default (SN-01): a HEP sender
 /// asserts the inner src/dst addresses, so absent receiver-side
 /// authentication an attacker could steer the kill response at a chosen
 /// victim (SSRF-style). Live/pcap traffic, whose addressing comes from an
 /// observed IP header, is always eligible.
-pub fn kill_response_eligible(from_hep: bool, hep_allow_kill: bool) -> bool {
-    !from_hep || hep_allow_kill
+pub fn kill_response_eligible(origin: InputOrigin, hep_allow_kill: bool) -> bool {
+    match origin {
+        // sipnab read the addressing off the wire itself.
+        InputOrigin::Wire => true,
+        // A remote sender asserted it; trust it only on explicit opt-in.
+        InputOrigin::Hep => hep_allow_kill,
+        // There is no addressing. Bytes lifted out of a process carry no
+        // socket, so any response would be aimed at a guess — and NO opt-in is
+        // offered, because an opt-in here would be an invitation to transmit at
+        // one. `--hep-allow-kill` deliberately does not reach this arm.
+        InputOrigin::Uprobe => false,
+    }
 }
 
 /// Build a minimal SIP response to send back to a scanner.
@@ -243,16 +254,34 @@ mod tests {
     #[test]
     fn kill_eligibility_blocks_unauthed_hep_by_default() {
         // Live/pcap traffic is always eligible.
-        assert!(kill_response_eligible(false, false));
-        assert!(kill_response_eligible(false, true));
+        assert!(kill_response_eligible(InputOrigin::Wire, false));
+        assert!(kill_response_eligible(InputOrigin::Wire, true));
         // HEP-origin traffic is blocked unless the operator opts in.
         assert!(
-            !kill_response_eligible(true, false),
+            !kill_response_eligible(InputOrigin::Hep, false),
             "HEP kill blocked by default"
         );
         assert!(
-            kill_response_eligible(true, true),
+            kill_response_eligible(InputOrigin::Hep, true),
             "opt-in re-enables HEP kill"
+        );
+    }
+
+    /// The third case, and the strictest. A uprobe read carries NO addressing:
+    /// sipnab never saw a socket, so there is nowhere honest to send a
+    /// response. Unlike HEP this has no opt-in, and `--hep-allow-kill` must
+    /// not reach it — an opt-in here would be an invitation to transmit at a
+    /// guess.
+    #[test]
+    fn uprobe_origin_is_never_kill_eligible_and_has_no_opt_in() {
+        assert!(
+            !kill_response_eligible(InputOrigin::Uprobe, false),
+            "uprobe reads carry no address to respond to"
+        );
+        assert!(
+            !kill_response_eligible(InputOrigin::Uprobe, true),
+            "--hep-allow-kill must NOT re-enable transmission for uprobe input; \
+             it is an opt-in about HEP, and uprobe input has no address at all"
         );
     }
 

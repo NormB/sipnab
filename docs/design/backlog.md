@@ -2523,7 +2523,7 @@ so tests that need hex encode it by hand.
   unfragmented DATA chunk per packet. Enables SIGTRAN/Diameter (3GPP IMS).
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
-  `SctpReassembler` ([`src/capture/parse.rs:1752`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1752)), constructed on every
+  `SctpReassembler` ([`src/capture/parse.rs:1782`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1782)), constructed on every
   `PacketProcessor` ([`src/capture/mod.rs:609`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L609), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to

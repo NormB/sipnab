@@ -2171,7 +2171,7 @@ mod quiet_bad_parse_tests {
             more_fragments: false,
             ip_protocol: 17,
             dscp: None,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         }
     }
 

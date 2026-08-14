@@ -586,7 +586,7 @@ fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
         more_fragments: false,
         ip_protocol: 17,
         dscp: None,
-        from_hep: false,
+        input_origin: sipnab::capture::parse::InputOrigin::Wire,
     };
     let hdr = RtpHeader {
         version: 2,

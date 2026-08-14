@@ -147,7 +147,7 @@ fn stream_summary_canonical_keys() {
         more_fragments: false,
         ip_protocol: 17,
         dscp: None,
-        from_hep: false,
+        input_origin: sipnab::capture::parse::InputOrigin::Wire,
     };
     ss.process_rtp(&pp, &hdr, pp.timestamp);
     let stream = ss.iter().next().expect("stream tracked");

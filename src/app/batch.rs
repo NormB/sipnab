@@ -3103,7 +3103,7 @@ fn process_parsed_packet(
                 // sender-asserted and unauthenticated absent --hep-auth.
                 if let Some(handle) = &scanner_kill_handle
                     && sec::scanner_kill::kill_response_eligible(
-                        pp.from_hep,
+                        pp.input_origin,
                         cli.security_args.hep_allow_kill,
                     )
                     && let Some(response_bytes) =
@@ -3148,7 +3148,7 @@ fn process_parsed_packet(
                 // SN-01: same HEP-origin ineligibility as behavioral kill above.
                 if let Some(handle) = &scanner_kill_handle
                     && sec::scanner_kill::kill_response_eligible(
-                        pp.from_hep,
+                        pp.input_origin,
                         cli.security_args.hep_allow_kill,
                     )
                     && let Some(response_bytes) =
@@ -4367,7 +4367,7 @@ mod tests {
             more_fragments: false,
             ip_protocol: 17,
             dscp: None,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         }
     }
 
@@ -4445,7 +4445,7 @@ mod tests {
             more_fragments: false,
             ip_protocol: 17,
             dscp: None,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         }
     }
 
