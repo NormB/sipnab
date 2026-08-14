@@ -1,6 +1,6 @@
 //! Where TLS keylog bytes come from, and nothing about what they mean.
 //!
-//! [`TlsDecryptor`](super::decrypt::TlsDecryptor) used to reach for the keylog
+//! [`TlsDecryptor`](crate::capture::decrypt::TlsDecryptor) used to reach for the keylog
 //! file itself, with a stat-size-and-seek that could not survive a producer
 //! which truncates or replaces the file, and could not read a FIFO at all. That
 //! logic lives here now, behind one type, so a live secrets producer — an eBPF
