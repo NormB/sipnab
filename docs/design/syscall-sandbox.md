@@ -5,7 +5,7 @@ own opening evidence and is still true. What sipnab *does* have is weaker and is
 not nothing — §0 tabulates it. A reader who stops at this line will re-implement
 hardening that already ships.
 **Check:** `grep -rniE 'seccomp|landlock|\bunshare\(' src/` exits 1 — no syscall filter and no path sandbox.
-**Check:** `grep -c 'libc::prctl\|libc::setrlimit\|libc::chroot\|libc::setuid\|libc::setgroups' src/privilege.rs` returns 6 — the calls §0 tabulates; the gate running this line proves the set is non-empty, and the 6 was counted by hand.
+**Check:** `grep -c 'libc::prctl\|libc::setrlimit\|libc::chroot\|libc::setuid\|libc::setgroups' src/privilege.rs` returns 7 — the calls §0 tabulates; the gate running this line proves the set is non-empty, and the 7 was counted by hand. It was 6 until `set_no_new_privs` began reading its own flag back with `PR_GET_NO_NEW_PRIVS`.
 The first check's original wording was `grep -rn 'seccomp\|landlock\|unshare'`,
 which matched one hit — the prose "(unshared)" in the TUI, added months before
 this document. The verdict was right and the evidence was too broad, so the
@@ -38,10 +38,10 @@ Every row below was read at the SHA in the header.
 
 | In place | Where | Stops | Does not stop |
 |---|---|---|---|
-| Privilege drop: `setgroups(0, NULL)` → `setgid` → `setuid`, then a `getuid`/`getgid` readback | [`src/privilege.rs:66-70`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L66-L70), verified by `verify_dropped` ([`src/privilege.rs:480`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L480)) | Reaching other users' files, signalling their processes, opening a new privileged socket | Anything this process does as itself — its own memory, its own descriptors, `execve` |
-| `PR_SET_NO_NEW_PRIVS` | `set_no_new_privs` ([`src/privilege.rs:426`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L426)), called from [`src/privilege.rs:74`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L74) | Regaining privilege through a setuid or setgid binary | `execve` itself, of anything already runnable |
-| Core dumps off: `prctl(PR_SET_DUMPABLE, 0)`, or `setrlimit(RLIMIT_CORE, 0)` on macOS | `disable_core_dumps` ([`src/privilege.rs:198`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L198)), called from [`src/app/bootstrap.rs:942`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L942) | Key material landing in a core file after a crash | Any live read of that key material |
-| `chroot` + `chdir("/")`, opt-in via `--chroot` | `do_chroot` ([`src/privilege.rs:450`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L450)), called from [`src/app/bootstrap.rs:775`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L775) | Naming a path outside the new root | Everything inside the new root, and every already-open descriptor |
+| Privilege drop: `setgroups(0, NULL)` → `setgid` → `setuid`, then a `getuid`/`getgid` readback | [`src/privilege.rs:66-70`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L66-L70), verified by `verify_dropped` ([`src/privilege.rs:593`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L593)) | Reaching other users' files, signalling their processes, opening a new privileged socket | Anything this process does as itself — its own memory, its own descriptors, `execve` |
+| `PR_SET_NO_NEW_PRIVS` | `set_no_new_privs` ([`src/privilege.rs:531`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L531)) behind `block_privilege_escalation` ([`src/privilege.rs:501`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L501)), called unconditionally from [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b | Regaining privilege through a setuid or setgid binary, on every run mode whether or not the process is root | `execve` itself, of anything already runnable |
+| Core dumps off: `prctl(PR_SET_DUMPABLE, 0)`, or `setrlimit(RLIMIT_CORE, 0)` on macOS | `disable_core_dumps` ([`src/privilege.rs:219`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L219)), called from [`src/app/bootstrap.rs:942`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L942) | Key material landing in a core file after a crash | Any live read of that key material |
+| `chroot` + `chdir("/")`, opt-in via `--chroot` | `do_chroot` ([`src/privilege.rs:563`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L563)), called from [`src/app/bootstrap.rs:775`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L775) | Naming a path outside the new root | Everything inside the new root, and every already-open descriptor |
 | WASM plugin host: no imports registered at all, plus fuel, memory and output caps | [`src/plugin/mod.rs:238`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L238), caps at [`:57`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L57), [`:61`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L61), [`:81`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L81) | A third-party plugin doing anything but returning findings | Anything in the host process, libpcap included |
 
 The plugin row is the one most likely to be mistaken for this page's subject.
@@ -54,19 +54,32 @@ owns that argument and states its own limits.
 
 ### 0.1 Four caveats, because the table above is the optimistic reading
 
-**The privilege drop and `PR_SET_NO_NEW_PRIVS` both require starting as root.**
+**The privilege drop requires starting as root. `PR_SET_NO_NEW_PRIVS` no
+longer does.** *Corrected 2026-08-14 — the no-new-privs half of this caveat is
+fixed; the capability half is not, and is the reason the rest of the paragraph
+survives.*
+
 `drop_privileges` returns early when `getuid()` is not 0
-([`src/privilege.rs:37-40`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L37-L40)), and `set_no_new_privs` is
-called from inside it, past that return. The install path this project
+([`src/privilege.rs:40-43`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L40-L43)), and `set_no_new_privs` used
+to be called from inside it, past that return. The install path this project
 recommends is `sipnab --setup-caps`, which writes
 `cap_net_raw,cap_net_admin+ep` onto the binary
-(`CAPTURE_CAPS`, [`src/privilege.rs:93`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L93)) so capture needs no
-root at all.
-**On that path there is no drop, no no-new-privs, and both capabilities stay in
-the effective set for the life of the run** — so a compromised libpcap can open
-further raw sockets, not merely keep the one it was handed. The recommended
-install is therefore the *least* hardened of the two, which is worth stating
-plainly rather than leaving a reader to infer it from a `getuid` check.
+(`CAPTURE_CAPS`, [`src/privilege.rs:95`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L95)) so capture needs no
+root at all — so on the recommended install the flag was never set, for the
+whole life of the run.
+
+It is now set from `block_privilege_escalation`
+([`src/privilege.rs:501`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L501)), called unconditionally at
+[`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b, before any input is read and after `--setup-caps` (which
+runs `sudo setcap`, and sudo is a setuid binary the flag would break). The
+placement is the whole point: the control has no precondition, so it does not
+belong inside a function with two early returns.
+
+**What is still true on that path: there is no drop, and both capabilities stay
+in the effective set for the life of the run** — so a compromised libpcap can
+open further raw sockets, not merely keep the one it was handed. The
+recommended install remains the *less* hardened of the two, which is worth
+stating plainly rather than leaving a reader to infer it from a `getuid` check.
 
 Note what does the capability clearing on the root path: `setuid(2)` away from
 root empties the permitted and effective sets as a kernel side effect. sipnab
@@ -76,10 +89,12 @@ sets. So "capabilities are gone after the drop" is true, inherited from
 `setuid` semantics rather than asserted by this code, and it is one more thing
 the readback in §4 could cover and does not.
 
-**`--no-priv-drop` turns off rows one and two by request**
-([`src/privilege.rs:32-35`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L32-L35)), and on macOS a root run without
-`--user` skips them too, deliberately
-([`src/privilege.rs:49-57`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L49-L57)).
+**`--no-priv-drop` turns off row one by request**
+([`src/privilege.rs:34-37`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L34-L37)), and on macOS a root run without
+`--user` skips it too, deliberately
+([`src/privilege.rs:51-59`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L51-L59)). Row two is not affected by
+either: no-new-privs costs nothing to keep, is not what those two escapes are
+asking to be spared, and cannot be undone once set.
 
 **Core dumps stay on unless decryption keys are loaded.**
 `disable_core_dumps` runs only when one of `--tls-key`, `--keylog`,
@@ -87,17 +102,33 @@ the readback in §4 could cover and does not.
 ([`src/app/bootstrap.rs:936-942`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936-L942)). An ordinary capture
 dumps core, and that core carries packet payloads.
 
-**Two of the four report success they did not achieve.** `set_no_new_privs`
-warns and returns `Ok` when the `prctl` fails
-([`src/privilege.rs:430-437`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L430-L437)), and `disable_core_dumps`
-does the same, then logs `"Core dumps disabled (decryption active)"`
-unconditionally on the way out
-([`src/privilege.rs:231-232`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L231-L232)). A failed
-`PR_SET_DUMPABLE` therefore produces a warning line *and* a confident success
-line, and the caller's `exit(1)` on error is unreachable. This is the same
-silence-as-failure-mode §6 is built to avoid, already present in the controls
-that exist — so §6's reporting surface is a fix for shipped behaviour, not only
-a requirement on new behaviour.
+**Two of the four used to report success they did not achieve.** *Fixed
+2026-08-14; the finding is kept because it is what set §6's priority.*
+`set_no_new_privs` warned and returned `Ok` when the `prctl` failed, and
+`disable_core_dumps` did the same, then logged `"Core dumps disabled
+(decryption active)"` unconditionally on the way out. A failed
+`PR_SET_DUMPABLE` therefore produced a warning line *and* a confident success
+line, and the caller's `exit(1)` on error was unreachable. This is the same
+silence-as-failure-mode §6 is built to avoid, and it was already present in the
+controls that exist — so §6's reporting surface was a fix for shipped
+behaviour, not only a requirement on new behaviour.
+
+Both now return the failure. What is done with it differs per call, and
+deliberately:
+
+- `set_no_new_privs` fails only on a kernel without `PR_SET_NO_NEW_PRIVS`
+  (pre-3.5) or under something intercepting the `prctl`. [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) **warns
+  and continues** — refusing to capture because one defence-in-depth flag is
+  unavailable would trade a working forensic tool for a marginal gain. The
+  warning is the whole difference: nothing now claims the flag is set when it
+  is not, and `set_no_new_privs` reads the flag back with
+  `PR_GET_NO_NEW_PRIVS` rather than trusting the return code.
+- `disable_core_dumps` is **fatal**, which is what its caller already assumed
+  ([`src/app/bootstrap.rs:957`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L957) exits 1 on error). It runs only
+  when TLS/SRTP/DTLS key material is resident AND the operator did not pass
+  `--allow-coredump`; continuing past a refused `PR_SET_DUMPABLE` means a later
+  crash writes those keys to disk. `--allow-coredump` is the escape hatch, and
+  it is an explicit one.
 
 ### 0.2 What a syscall filter adds that none of this does
 
@@ -189,8 +220,8 @@ publishing one lowest-common-denominator list that is as weak as the most
 permissive feature anyone might enable.
 
 **The privilege module's own doc is stale about this, and it matters.**
-[`src/privilege.rs:3-14`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L3-L14) lists the call sequence as
-*"2. Open key files, bind API/metrics ports; 3. Call `drop_privileges()`"*. The
+[`src/privilege.rs:3-16`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L3-L16) lists the call sequence as
+*"3. Open key files, bind API/metrics ports; 4. Call `drop_privileges()`"*. The
 code does the opposite: `drop_privileges` is at
 [`src/app/bootstrap.rs:830`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L830) and `start_servers` is reached
 only after `launch` returns, from
@@ -334,18 +365,20 @@ Verified ordering today:
 
 | Step | Site |
 |---|---|
+| `PR_SET_NO_NEW_PRIVS`, every run mode | [`src/privilege.rs:501`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L501) `block_privilege_escalation`, called from [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b |
 | `do_chroot` (needs root) | [`src/app/bootstrap.rs:775`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L775) |
-| `drop_privileges` → setgroups, setgid, setuid, `PR_SET_NO_NEW_PRIVS` | [`src/app/bootstrap.rs:830`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L830), [`src/privilege.rs:66-74`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L66-L74) |
+| `drop_privileges` → setgroups, setgid, setuid | [`src/app/bootstrap.rs:845`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L845), [`src/privilege.rs:68-72`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L68-L72) |
 | `init_syslog` | [`src/app/bootstrap.rs:838`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L838) |
-| `disable_core_dumps` (conditional on key material) | [`src/app/bootstrap.rs:942`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L942) |
+| `disable_core_dumps` (conditional on key material) | [`src/app/bootstrap.rs:957`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L957) |
 | `start_servers` — binds API, MCP, metrics | [`src/app/batch.rs:1951`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1951) |
 | receive loop; writer created on first packet | [`src/app/batch.rs:2146`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2146), [`:2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2242) |
 
-The first two rows run **only on a root start**, and the fourth only when
-decryption keys are loaded, per §0.1. The install point below is chosen against
-the ordering, which holds either way; what changes without root is how much is
-already in force by the time the filter goes in, which is why §6 reports the
-whole posture rather than the filter alone.
+The first row runs on **every** start — that is the point of where it sits, and
+it is why it is first. Rows two and three run **only on a root start**, and the
+fifth only when decryption keys are loaded, per §0.1. The install point below is
+chosen against the ordering, which holds either way; what changes without root
+is how much is already in force by the time the filter goes in, which is why §6
+reports the whole posture rather than the filter alone.
 
 **Install point: immediately after `start_servers` returns, before the receive
 loop.** Two reasons. Installing at the drop is too early — the listeners are not
@@ -358,19 +391,23 @@ The TUI path needs the same install after
 [`src/app/tui_mode.rs:428`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L428). Two call sites, one function.
 
 **`PR_SET_NO_NEW_PRIVS` must be verified, not assumed.** `seccomp(2)` without
-`CAP_SYS_ADMIN` requires it, and today `set_no_new_privs`
-([`src/privilege.rs:426`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L426)) is deliberately non-fatal — it
-warns and continues ([`:431-436`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L431-L436)). So the install path
-must read the flag back with `PR_GET_NO_NEW_PRIVS` and report "no filter,
-because no-new-privs is not set" rather than silently failing to install one.
-This is exactly the readback discipline `verify_dropped`
-([`src/privilege.rs:480`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L480)) already applies to the uid and gid.
+`CAP_SYS_ADMIN` requires it. `set_no_new_privs`
+([`src/privilege.rs:531`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L531)) now reads the flag back with
+`PR_GET_NO_NEW_PRIVS` and returns the failure, and its caller in [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs)
+warns and continues — so a filter installer cannot infer the flag from the
+absence of a message it never saw. The install path must still read the flag
+itself and report "no filter, because no-new-privs is not set" rather than
+silently failing to install one: it runs later, in a different function, and a
+control asserted at a distance is a control assumed. This is the readback
+discipline `verify_dropped`
+([`src/privilege.rs:593`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L593)) already applies to the uid and gid.
 
-The stronger case is the one §0.1 names: on a `--setup-caps` install the flag is
-never attempted, because `set_no_new_privs` sits past the `getuid()` check inside
-`drop_privileges`. So the readback is not a guard against a rare `prctl` failure
-— on the recommended install path it reads back 0 every time, and a filter that
-assumed otherwise would fail to install on the configuration most users run.
+*Corrected 2026-08-14.* This paragraph used to continue: *"on a `--setup-caps`
+install the flag is never attempted... on the recommended install path it reads
+back 0 every time."* That was true when written and is no longer: the flag is
+set unconditionally at [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b. The readback is back to being what
+it sounds like — a guard against a rare `prctl` failure — rather than the
+routine case on the configuration most users run.
 
 **The writer stays lazy.** Making it eager would let the filter drop the file
 syscalls, but the writer needs `link_type`, which comes from the first packet
@@ -450,9 +487,11 @@ Reporting means three things:
 
 1. A startup log line naming what is active and what is not, and *why not* —
    covering **the §0 controls as well as the two new ones**. A run under
-   `--setup-caps` today logs nothing about having skipped the privilege drop and
-   `PR_SET_NO_NEW_PRIVS` beyond one `debug!` line, so an operator reading `info`
-   cannot tell that posture from a root run apart. Reporting the two new
+   `--setup-caps` today logs nothing about having skipped the privilege drop
+   beyond one `debug!` line, and no-new-privs succeeding is also only a
+   `debug!`, so an operator reading `info` cannot tell that posture from a root
+   run apart. (What it can no longer do is claim a control it does not have —
+   see §0.1.) Reporting the two new
    controls and staying silent about the four that were already there would
    leave the same gap this page opened by being read as "nothing is
    implemented".

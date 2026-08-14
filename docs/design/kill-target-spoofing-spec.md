@@ -19,10 +19,11 @@ the scanner accepts and acts on it.
 Spoofing the UDP source requires either a raw socket (`CAP_NET_RAW`) or libpcap
 frame injection. sipnab's lifecycle (see [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs), [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)):
 
+0. `privilege::block_privilege_escalation()` → (Linux) `set_no_new_privs()`,
+   before anything else and whether or not this process is root.
 1. `capture::start_capture()` opens the pcap handle — **privileged** (root or
    `cap_net_raw,cap_net_admin+ep`).
-2. `privilege::drop_privileges()` → drops to `nobody`, then (Linux)
-   `set_no_new_privs()`.
+2. `privilege::drop_privileges()` → drops to `nobody`.
 3. `batch.rs` spawns the scanner-kill worker — **already unprivileged**; its
    sockets bind here.
 

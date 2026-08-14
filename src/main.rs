@@ -48,7 +48,8 @@ use sipnab::signals;
 /// # Side effects
 ///
 /// Installs the global mimalloc allocator, writes to stdout/stderr via
-/// `tracing`, installs SIGINT/SIGTERM/SIGUSR1 handlers and the panic hook,
+/// `tracing`, irreversibly blocks privilege escalation through `exec`,
+/// installs SIGINT/SIGTERM/SIGUSR1 handlers and the panic hook,
 /// opens capture devices, may drop privileges and chroot, and calls
 /// `std::process::exit` for the immediate commands and on fatal errors
 /// (exit code 2 on argument-validation failure).
@@ -61,6 +62,29 @@ fn main() {
     //    --strip-secrets).
     if let Some(code) = bootstrap::run_startup_commands(&cli) {
         std::process::exit(code);
+    }
+
+    // 2b. Give up the ability to gain privileges through exec, for every run
+    //     mode and whether or not this process is root.
+    //
+    //     Here, and not inside `drop_privileges`, because it has no
+    //     precondition and that function has two — `--no-priv-drop`, and "not
+    //     root, nothing to shed" — both of which return before the flag was
+    //     ever reached. `sipnab --setup-caps` runs capture as an ordinary user
+    //     holding cap_net_raw, so it took the second of those and hardened
+    //     nothing. See `privilege::block_privilege_escalation`.
+    //
+    //     After step 2 rather than before it: `--setup-caps` runs
+    //     `sudo setcap`, and sudo is itself a setuid binary that this flag
+    //     would render useless. Before step 3 so that no input has been read
+    //     and no event hook can have been spawned. `--cores N -I file`
+    //     dispatches without reaching `bootstrap::launch`, which is the other
+    //     reason this does not live down there with the drop.
+    if let Err(e) = sipnab::privilege::block_privilege_escalation() {
+        // Not fatal: a kernel too old for PR_SET_NO_NEW_PRIVS is not a reason
+        // to refuse to capture. Loud, though — this is the whole difference
+        // between a hardened process and one that only logged that it was.
+        tracing::warn!("Could not block privilege escalation through exec: {e}");
     }
 
     // 3. Signal handlers + argument-combination validation.

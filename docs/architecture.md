@@ -146,9 +146,12 @@ EOF.
   `Debug` impls, `--tls-key`/keylog material never logged.
 - **D13 — RTP is first-class.** sipnab discovers streams heuristically even
   without SIP/SDP; `rtp/` never depends on a dialog existing.
-- **D15 — Privilege drop.** sipnab drops root right after socket open, then
-  sets `PR_SET_NO_NEW_PRIVS` and disables core dumps ([`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs));
-  `--chroot` is available for daemon deployments.
+- **D15 — Privilege drop.** sipnab sets `PR_SET_NO_NEW_PRIVS` at startup on
+  every run mode — root or not, because that flag has no precondition and the
+  recommended `--setup-caps` install has no root to drop — then drops root
+  right after socket open and disables core dumps whenever decryption keys are
+  resident ([`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)); `--chroot` is available for daemon
+  deployments.
 - **D16 — Process isolation: specified, not shipped.** D16
   ([`docs/design/implementation-plan-v6.md:624`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L624)) called for scanner-kill and the
   REST API to run in forked children behind a Unix socket pair. **Neither

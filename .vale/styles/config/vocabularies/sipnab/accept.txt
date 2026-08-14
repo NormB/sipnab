@@ -535,6 +535,8 @@ serializers
 serial_test
 serve_on
 setcap
+setgid
+setuid
 Sevana
 sharded
 Sharded

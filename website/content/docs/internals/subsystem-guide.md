@@ -28,6 +28,7 @@ sequenceDiagram
 
     Main-&gt;&gt;Cli: parse_args
     Main-&gt;&gt;Boot: init_logging, run_startup_commands
+    Main-&gt;&gt;Boot: block_privilege_escalation (PR_SET_NO_NEW_PRIVS)
     Main-&gt;&gt;Cli: validate
     Main-&gt;&gt;Boot: load_config
     Main-&gt;&gt;Boot: install_panic_hook
@@ -43,13 +44,20 @@ sequenceDiagram
     end
 </pre>
 
-`main()` is deliberately thin — ten numbered steps in 117 lines of
+`main()` is deliberately thin — eleven numbered steps in 141 lines of
 [`main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs), each delegating to
 [`app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs). The order matters: logging
 before anything can log, immediate commands (`--setup-caps`,
-`--strip-secrets`) before config loading, signal handlers and CLI validation
-before it acquires any resource, the crash hook armed before the first
-fallible step, and only then the plan.
+`--strip-secrets`) before config loading, `PR_SET_NO_NEW_PRIVS` immediately
+after them (`--setup-caps` runs `sudo setcap`, and sudo is a setuid binary the
+flag would break) and before it reads any input, signal handlers and CLI
+validation before it acquires any resource, the crash hook armed before the
+first fallible step, and only then the plan.
+
+The hardening step is in `main()` rather than in `launch()` because it applies
+to every run mode, including the `CoresFile` one that never reaches `launch()`,
+and because it has no precondition — unlike the privilege drop, which needs
+root to do anything at all.
 
 [`plan()`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) decides *everything* up front and
 touches nothing: capture-source precedence (`-I file` > `-d device` > config

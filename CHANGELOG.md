@@ -68,6 +68,30 @@ entry that carries them.
 
 ### Fixed
 
+- **`PR_SET_NO_NEW_PRIVS` is now set on the install sipnab recommends.** It was
+  set from inside `drop_privileges`, below the early return taken whenever the
+  process is not root — so `sipnab --setup-caps`, which grants
+  `cap_net_raw,cap_net_admin+ep` on the binary precisely so capture needs no
+  root, ran every capture without it. On that path there is no uid to shed, so
+  the flag was the only barrier there was, and it was never raised. It has no
+  precondition and cannot be undone, so it moved out of the drop entirely:
+  `privilege::block_privilege_escalation()` is called once at startup, on every
+  run mode, root or not. **Behaviour change:** an event hook
+  (`--on-dialog-exec`, `--on-quality-exec`, `--alert-exec`) that relies on a
+  setuid helper such as `sudo` will find it unprivileged on an unprivileged
+  run. Root runs already behaved this way.
+- **Two hardening calls stopped reporting success they had not achieved.**
+  `set_no_new_privs` warned on a failed `prctl` and returned `Ok(())` anyway;
+  `disable_core_dumps` did the same and then logged "Core dumps disabled
+  (decryption active)" unconditionally, so a refused `PR_SET_DUMPABLE` produced
+  a warning *and* a confident success line while its caller's `exit(1)` sat
+  unreachable. Both now return the failure, and the decision is made per call:
+  no-new-privs failing warns and continues (a kernel too old for the `prctl` is
+  not a reason to refuse to capture) and reads the flag back with
+  `PR_GET_NO_NEW_PRIVS` rather than trusting the return code; core dumps
+  failing is **fatal**, which is what the caller already assumed — it runs only
+  when decryption keys are resident and `--allow-coredump` was not passed, and
+  `--allow-coredump` remains the way to say the trade is acceptable.
 - **`CONTRIBUTING.md` no longer claims `license/cla` blocks a merge.** The CLA
   Assistant bot is real and does run — it has commented on every pull request
   since 2026-08-06 and posts a `license/cla` status — but that status is not on
