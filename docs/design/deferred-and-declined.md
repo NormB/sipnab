@@ -915,6 +915,39 @@ is a different mechanism at a fraction of the cost — see `CT11`. Full verdict:
 
 ---
 
+## 6. Native TLS **secret** extraction (`TK6`) — **declined, on maintenance**
+
+Decided 2026-08-14, after `TK7`'s mechanism was measured. Note carefully what
+this declines and what it does not: it declines sipnab growing its own
+extractor for **TLS master secrets**. It does **not** decline eBPF, and it does
+not touch `TK7`, which reads **plaintext** and is being built.
+
+**Decisive: it buys one thing — "no second tool on the SBC" — and pays for it
+with a struct-offset table per OpenSSL release, forever.** Reading
+`ssl->session->master_key` means knowing the layout of OpenSSL's internal
+structs, which change between releases and differ across BoringSSL, LibreSSL,
+GnuTLS and NSS. ecapture carries roughly forty version-specific objects for
+exactly this. That is a permanent maintenance obligation on a project whose
+[positioning](positioning.md) is that it is *run*, not *operated*.
+
+**And the thing it buys is already bought, twice.** [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md) §7e
+documents `ecapture tls -m keylog` feeding `--keylog`, measured on a daemon with
+no `SSLKEYLOGFILE` anywhere. `TK4`'s `--keylog-fd` takes the same secrets over a
+pipe so they never reach disk. A native extractor would duplicate a mature
+Apache-2.0 tool to remove one install step.
+
+**The comparison that settled it:** `TK7` reads plaintext from `SSL_write` and
+`SSL_read`, whose signatures are **ABI**, not internals. It needs only ELF
+function symbols, resolvable from the library file, and it was measured working
+against a live OpenSIPS. Same eBPF-shaped capability, none of the offset debt.
+
+**Reopens if** sipnab needs the *encrypted bytes plus their secrets* rather than
+the plaintext — the `--pcap-export-mode encrypted+dsb` case, where a third party
+must be able to verify the capture independently. `TK7` cannot serve that, since
+it never sees ciphertext. Until someone asks for that, this stays declined.
+
+---
+
 ## Conditions, in one place
 
 | Decision | Condition |
@@ -928,6 +961,7 @@ is a different mechanism at a fraction of the cost — see `CT11`. Full verdict:
 | §5c PF_RING | Reopens only if ntop relicenses the `libpfring` blobs compatibly with MIT-OR-Apache-2.0. Not otherwise |
 | §5d AF_XDP | Reopens only if the kernel grows a tee (`clone_redirect` in `xdp_func_proto`) **and** an egress path. Both, not either |
 | §5e XDP as a capture filter | Does not reopen. It is on the wrong side of the tap; no permission change affects that |
+| §6 Native TLS secret extraction (`TK6`) | Reopens only if sipnab needs the encrypted bytes *and* their secrets together (`--pcap-export-mode encrypted+dsb`), which `TK7` cannot serve. Not otherwise |
 
 The two feature decisions still open, §1 and §3, do not move on "someone asked
 again"; they move on the facts named above. The §5 technologies do not move on

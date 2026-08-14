@@ -2058,7 +2058,12 @@ self-contained second instance from the source tree's own binary and modules on
 `127.0.0.1:5063`, documented in `/home/gator/sipnab-tls-test/README` on that
 host. The packaged instance is untouched.
 
-- [ ] **TK6 — sipnab cannot extract the secrets itself.** Every path above needs
+- [x] **TK6 — DECLINED 2026-08-14, on maintenance.** Full verdict:
+  [`deferred-and-declined.md`](https://github.com/NormB/sipnab/blob/main/docs/design/deferred-and-declined.md) §6. It buys only "no second tool on the SBC" and pays
+  a struct-offset table per OpenSSL release for it, while `TK7` gets the same
+  eBPF-shaped capability from `SSL_write`/`SSL_read`, whose signatures are ABI
+  rather than internals. The original entry follows, for the reasoning that led
+  here. ~~sipnab cannot extract the secrets itself.~~ Every path above needs
   a second tool installed on the SBC. **Do:** a non-default Linux-only `ebpf`
   feature — see the measurement above before reaching for
   [`aya`](https://aya-rs.dev), which the tracefs route may make unnecessary —
