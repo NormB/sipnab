@@ -654,8 +654,8 @@ fn root_community_file_links_resolve() {
     // Pinned for the same reason as the wiki pin above: a floor cannot tell a
     // healthy repo from an extractor that stopped matching.
     assert_eq!(
-        seen, 42,
-        "extractor found {seen} root community links, expected 42. More is \
+        seen, 46,
+        "extractor found {seen} root community links, expected 46. More is \
          fine — bump this. FEWER means the regex stopped matching and this \
          gate narrowed silently."
     );
