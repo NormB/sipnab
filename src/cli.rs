@@ -792,7 +792,8 @@ pub struct Cli {
     #[arg(help_heading = "Output", long, value_name = "FIELD")]
     pub group_by: Option<String>,
 
-    /// Distinct `--group-by` keys one run may retain (default 10000). Config:
+    /// Distinct `--group-by` keys one run may retain (default 100000, the
+    /// same figure `-l`/`--limit` ships). Config:
     /// `[limits] max_groups`.
     ///
     /// Past it the buffer refuses new keys and warns that the output is
@@ -1379,6 +1380,41 @@ pub struct Cli {
         default_value = "100"
     )]
     pub api_max_conn: u32,
+
+    /// Rows one list-style REST response may return (default 1000). Config:
+    /// `[limits] api_max_rows`.
+    ///
+    /// The REST counterpart of `--mcp-max-rows`, and settable for the same
+    /// reason that one is: the right ceiling is a property of the CONSUMER
+    /// rather than of sipnab. A batch consumer piping `/v1/dialogs` to a file
+    /// wants every row; a dashboard drawing a table wants far fewer. A caller
+    /// may always ask for less with `?limit=`; nothing it can send asks for
+    /// more than this.
+    #[arg(
+        help_heading = "Network listeners",
+        long = "api-max-rows",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub api_max_rows: Option<u64>,
+
+    /// REST requests one client IP may make per second (`0` = unlimited,
+    /// default 100). Config: `[limits] api_rate_limit_per_peer`.
+    ///
+    /// A peer is the source address, so a dashboard polling `/v1/streams` on a
+    /// short timer, or several collectors behind one NAT, share a single
+    /// allowance and get `503` with nothing they can do about it (`503` and
+    /// not `429`: the limiter runs before authentication, so the refusal says
+    /// nothing about the credential). The per-peer accounting matches
+    /// `--mcp-rate-limit-per-peer` and `--hep-rate-limit-per-peer`, `0`
+    /// included: it disables the cap here too, and never means "refuse
+    /// everything".
+    #[arg(
+        help_heading = "Network listeners",
+        long = "api-rate-limit-per-peer",
+        value_name = "N"
+    )]
+    pub api_rate_limit_per_peer: Option<u32>,
 
     // ── MCP (Model Context Protocol) ──────────────────────────────────
     /// Run sipnab as an MCP server (Model Context Protocol) instead of TUI/CLI.
@@ -2201,6 +2237,28 @@ impl Cli {
     /// [`Self::security_sweep_max_age`] for why it stays a floor rather than
     /// being replaced outright.
     pub const SHIPPED_SWEEP_MAX_AGE: u64 = 120;
+    /// Default REST response row ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// Defined here rather than in `output::api` for the reason
+    /// [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records: this module is compiled
+    /// into every native build and that one is not.
+    pub const DEFAULT_API_MAX_ROWS: u64 = 1_000;
+    /// Default REST requests one client IP may make per second. `0` disables
+    /// the cap, the reading every per-peer rate knob here gives it.
+    pub const DEFAULT_API_RATE_LIMIT_PER_PEER: u32 = 100;
+    /// Default distinct peers one rate-limit window may hold.
+    ///
+    /// The number lives here, beside the other defaults, rather than in
+    /// `crate::rate_limit` — which reads it from here — for the reason
+    /// [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records: that module is compiled
+    /// only for a `hep` or `mcp` build, and this resolver answers for every
+    /// native one.
+    ///
+    /// The matching FLOOR lives further out still, on
+    /// [`crate::config::MIN_TRACKED_PEERS`], because `config` is compiled in
+    /// builds that have no CLI at all and a key whose floor is enforced in
+    /// some builds and not others is worse than one with no floor.
+    pub const DEFAULT_MAX_TRACKED_PEERS: usize = 4096;
 
     /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
     ///
@@ -2360,6 +2418,59 @@ impl Cli {
         self.max_gunzip_bytes
             .or(config.limits.max_gunzip_bytes)
             .unwrap_or(crate::capture::pcap_reader::DEFAULT_MAX_GUNZIP_BYTES)
+    }
+
+    /// REST response ceiling: `--api-max-rows`, else `[limits] api_max_rows`,
+    /// else the default. See [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// The REST twin of [`Self::mcp_row_cap`], bounding rows in ONE list-style
+    /// response rather than dialogs held over the run. The two surfaces
+    /// document the same policy — the consumer owns the ceiling — and now read
+    /// it from the same kind of setting.
+    #[must_use]
+    pub fn api_row_cap(&self, config: &crate::config::Config) -> usize {
+        self.api_max_rows
+            .or(config.limits.api_max_rows)
+            .unwrap_or(Self::DEFAULT_API_MAX_ROWS) as usize
+    }
+
+    /// REST per-peer request rate: `--api-rate-limit-per-peer`, else
+    /// `[limits] api_rate_limit_per_peer`, else the default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// `0` passes through as `0`, which the limiter reads as "no cap" — the
+    /// same convention `--mcp-rate-limit-per-peer` and `--hep-rate-limit`
+    /// carry, so an operator who has learned it once has learned it for every
+    /// listener.
+    #[must_use]
+    pub fn api_peer_rate_limit(&self, config: &crate::config::Config) -> u32 {
+        self.api_rate_limit_per_peer
+            .or_else(|| {
+                config
+                    .limits
+                    .api_rate_limit_per_peer
+                    .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
+            })
+            .unwrap_or(Self::DEFAULT_API_RATE_LIMIT_PER_PEER)
+    }
+
+    /// Rate-limit peer-table capacity: `[limits] max_tracked_peers`, else the
+    /// shipped default.
+    ///
+    /// Config-only, and deliberately: it is a property of how many agents feed
+    /// one collector, which is a deployment fact that belongs in the file
+    /// beside the rest of the deployment rather than on every command line.
+    /// The floor is applied inside the limiter as well, so a value below
+    /// [`crate::config::MIN_TRACKED_PEERS`] that survives config validation is
+    /// clamped rather than obeyed.
+    #[must_use]
+    pub fn tracked_peer_capacity(&self, config: &crate::config::Config) -> usize {
+        config
+            .limits
+            .max_tracked_peers
+            .map_or(Self::DEFAULT_MAX_TRACKED_PEERS, |v| {
+                usize::try_from(v).unwrap_or(usize::MAX)
+            })
     }
 
     /// Colour mode: `--color`, else `[display] color`, else the default.
@@ -4260,6 +4371,28 @@ mod tests {
                 resolve: |c, cfg| c.tcp_buffer_cap(cfg) as u64,
                 requires: &[],
             },
+            Case {
+                key: "api_max_rows",
+                flag: "--api-max-rows",
+                set_key: |l| l.api_max_rows = Some(250),
+                key_value: 250,
+                flag_value: "5000",
+                flag_number: 5_000,
+                shipped: Cli::DEFAULT_API_MAX_ROWS,
+                resolve: |c, cfg| c.api_row_cap(cfg) as u64,
+                requires: &[],
+            },
+            Case {
+                key: "api_rate_limit_per_peer",
+                flag: "--api-rate-limit-per-peer",
+                set_key: |l| l.api_rate_limit_per_peer = Some(7),
+                key_value: 7,
+                flag_value: "31",
+                flag_number: 31,
+                shipped: u64::from(Cli::DEFAULT_API_RATE_LIMIT_PER_PEER),
+                resolve: |c, cfg| u64::from(c.api_peer_rate_limit(cfg)),
+                requires: &[],
+            },
         ];
 
         for c in &cases {
@@ -4312,6 +4445,36 @@ mod tests {
         }
     }
 
+    /// `[limits] max_tracked_peers` reaches the resolver, and with no key set
+    /// the resolver reports the limiter's own constant rather than a second
+    /// copy of the figure kept here.
+    ///
+    /// Config-only by design, so there is no flag to outrank it; the effect on
+    /// a running listener is proved end-to-end by the `[limits]` gate in
+    /// `tests/config_wiring_test.rs`.
+    #[test]
+    fn the_tracked_peer_capacity_comes_from_the_file_or_the_limiters_constant() {
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        assert_eq!(
+            bare.tracked_peer_capacity(&crate::config::Config::default()),
+            Cli::DEFAULT_MAX_TRACKED_PEERS,
+            "with nothing set, the resolver must report what the limiter ships"
+        );
+
+        let mut tuned = crate::config::Config::default();
+        tuned.limits.max_tracked_peers = Some(9);
+        assert_ne!(
+            9,
+            Cli::DEFAULT_MAX_TRACKED_PEERS,
+            "the case value must differ from the default, or it proves nothing"
+        );
+        assert_eq!(
+            bare.tracked_peer_capacity(&tuned),
+            9,
+            "[limits] max_tracked_peers must reach the resolver"
+        );
+    }
+
     /// `0` is refused by clap on every byte/count cap, so the permissive
     /// reading — "unlimited" — cannot be reached from the command line either.
     ///
@@ -4324,6 +4487,9 @@ mod tests {
             "--max-metadata-file-bytes",
             "--max-gunzip-bytes",
             "--mcp-max-body-bytes",
+            // `--api-rate-limit-per-peer` is deliberately absent: 0 DISABLES
+            // that cap, the reading every per-peer rate knob here carries.
+            "--api-max-rows",
         ] {
             let err = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "0"])
                 .expect_err("0 must be refused");

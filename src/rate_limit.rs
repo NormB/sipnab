@@ -39,14 +39,40 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::time::{Duration, Instant};
 
-/// Upper bound on the number of distinct peers tracked within one window.
+/// Shipped upper bound on the number of distinct peers tracked within one
+/// window.
 ///
 /// Bounds memory against a source-address flood: without it, one packet or one
 /// call from each of a million forged sources would size the tracking map. When
 /// the bound is reached, a peer that is not already tracked is refused rather
 /// than admitted — see [`FixedWindowLimiter::check`] for why that direction is
 /// the safe one.
-pub const MAX_TRACKED_PEERS: usize = 4096;
+///
+/// How many peers a deployment actually has is not something sipnab can know,
+/// so this is the shipped starting point and not a law: raise it with
+/// `[limits] max_tracked_peers` on a collector that aggregates from more
+/// agents than this.
+///
+/// The number itself lives on [`crate::cli::Cli::DEFAULT_MAX_TRACKED_PEERS`],
+/// beside the other defaults: this module is compiled only for a `hep` or
+/// `mcp` build, while the resolver and the config floor must answer in every
+/// feature combination.
+pub const DEFAULT_MAX_TRACKED_PEERS: usize = crate::cli::Cli::DEFAULT_MAX_TRACKED_PEERS;
+
+/// Smallest tracking map an operator may configure.
+///
+/// Not a memory figure — it is the point at which the mechanism inverts. With
+/// room for one peer, the first sender in a window takes the only slot and
+/// every other peer is refused for the rest of that window, whatever its rate:
+/// a per-peer cap that exists to stop one sender starving the others becomes
+/// the thing that starves them. Two is the smallest map that still admits a
+/// second peer, so it is the smallest map the setting means anything on.
+///
+/// Read from [`crate::config::MIN_TRACKED_PEERS`] for the reason
+/// [`DEFAULT_MAX_TRACKED_PEERS`] records: `crate::config` refuses a value
+/// below the floor in every build, and this module is not compiled in all of
+/// them.
+pub const MIN_TRACKED_PEERS: usize = crate::config::MIN_TRACKED_PEERS as usize;
 
 /// Length of one counting window. Both caps are expressed per second, which is
 /// the unit every operator-facing knob that feeds this type uses
@@ -97,9 +123,11 @@ pub struct FixedWindowLimiter<K> {
     per_peer_max: u64,
     /// Events counted against the global ceiling in the current window.
     count_this_window: u64,
-    /// Per-peer counts for the current window, bounded by [`MAX_TRACKED_PEERS`]
-    /// and cleared when the window resets.
+    /// Per-peer counts for the current window, bounded by the
+    /// `max_tracked_peers` field below and cleared when the window resets.
     per_peer: HashMap<K, u64>,
+    /// How many distinct peers `per_peer` may hold at once.
+    max_tracked_peers: usize,
     /// Start of the current window.
     window_start: Instant,
     /// Lifetime count of events either cap refused, for log lines and audit.
@@ -115,16 +143,22 @@ impl<K: Eq + Hash> FixedWindowLimiter<K> {
     ///   global ceiling.
     /// * `per_peer_max` — events per second from one peer; `0` disables the
     ///   per-peer cap.
+    /// * `max_tracked_peers` — distinct peers the window may hold at once,
+    ///   clamped up to [`MIN_TRACKED_PEERS`]. Passed rather than defaulted so
+    ///   a call site cannot acquire the shipped figure by omission: it is a
+    ///   deployment property, and the surface that meters HEP agents and the
+    ///   one that meters MCP callers both read it from the operator.
     ///
     /// # Returns
     ///
     /// A limiter that has refused nothing yet.
-    pub fn new(global_max: u64, per_peer_max: u64) -> Self {
+    pub fn new(global_max: u64, per_peer_max: u64, max_tracked_peers: usize) -> Self {
         Self {
             global_max,
             per_peer_max,
             count_this_window: 0,
             per_peer: HashMap::new(),
+            max_tracked_peers: max_tracked_peers.max(MIN_TRACKED_PEERS),
             window_start: Instant::now(),
             refused_total: 0,
         }
@@ -158,12 +192,12 @@ impl<K: Eq + Hash> FixedWindowLimiter<K> {
 
         if self.per_peer_max > 0 {
             // Memory bound: the tracking map may not grow past
-            // MAX_TRACKED_PEERS. When it is full, a *new* peer cannot be
+            // `max_tracked_peers`. When it is full, a *new* peer cannot be
             // accounted for — and letting it through is exactly the
             // many-source flood the per-peer cap exists to resist. Fail
             // closed: refuse the untracked newcomer rather than grant it free
             // budget. Already-tracked peers keep being counted normally.
-            if self.per_peer.len() >= MAX_TRACKED_PEERS && !self.per_peer.contains_key(&key) {
+            if self.per_peer.len() >= self.max_tracked_peers && !self.per_peer.contains_key(&key) {
                 self.refused_total += 1;
                 return Err(Refusal::TrackingFull);
             }
@@ -203,6 +237,14 @@ impl<K: Eq + Hash> FixedWindowLimiter<K> {
     pub fn global_max(&self) -> u64 {
         self.global_max
     }
+
+    /// The tracking-map bound this limiter is enforcing, after the floor was
+    /// applied. The caller's warning quotes it, so an operator who raised
+    /// `[limits] max_tracked_peers` and is still being refused reads the
+    /// number in force rather than the shipped one.
+    pub fn max_tracked_peers(&self) -> usize {
+        self.max_tracked_peers
+    }
 }
 
 #[cfg(test)]
@@ -213,7 +255,7 @@ mod tests {
     /// that stopped it.
     #[test]
     fn the_per_peer_cap_refuses_the_event_that_exceeds_it() {
-        let mut lim = FixedWindowLimiter::new(0, 2);
+        let mut lim = FixedWindowLimiter::new(0, 2, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("a", now), Ok(()));
         assert_eq!(lim.check("a", now), Ok(()));
@@ -227,7 +269,7 @@ mod tests {
     /// A flooding peer is throttled without spending a quiet peer's allowance.
     #[test]
     fn one_noisy_peer_does_not_spend_another_peers_allowance() {
-        let mut lim = FixedWindowLimiter::new(1000, 1);
+        let mut lim = FixedWindowLimiter::new(1000, 1, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("noisy", now), Ok(()));
         assert_eq!(lim.check("noisy", now), Err(Refusal::PerPeer));
@@ -241,7 +283,7 @@ mod tests {
     /// The window resets, and only after a whole window has elapsed.
     #[test]
     fn a_new_window_restores_the_allowance() {
-        let mut lim = FixedWindowLimiter::new(0, 1);
+        let mut lim = FixedWindowLimiter::new(0, 1, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("a", now), Ok(()));
         assert_eq!(
@@ -259,7 +301,7 @@ mod tests {
     /// The global ceiling bounds every peer together, whichever one arrives.
     #[test]
     fn the_global_ceiling_bounds_every_peer_together() {
-        let mut lim = FixedWindowLimiter::new(2, 100);
+        let mut lim = FixedWindowLimiter::new(2, 100, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("a", now), Ok(()));
         assert_eq!(lim.check("b", now), Ok(()));
@@ -274,7 +316,7 @@ mod tests {
     /// CLI knobs document, pinned here where the behaviour actually lives.
     #[test]
     fn zero_disables_a_cap_rather_than_refusing_everything() {
-        let mut lim = FixedWindowLimiter::new(0, 0);
+        let mut lim = FixedWindowLimiter::new(0, 0, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         for _ in 0..10_000 {
             assert_eq!(lim.check("a", now), Ok(()), "0 and 0 must limit nothing");
@@ -288,9 +330,9 @@ mod tests {
     #[test]
     fn a_full_tracking_map_refuses_a_new_peer() {
         // Effectively unlimited ceiling so only the per-peer path can refuse.
-        let mut lim = FixedWindowLimiter::new(u64::MAX, 1);
+        let mut lim = FixedWindowLimiter::new(u64::MAX, 1, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
-        for i in 0..MAX_TRACKED_PEERS {
+        for i in 0..DEFAULT_MAX_TRACKED_PEERS {
             assert_eq!(
                 lim.check(i, now),
                 Ok(()),
@@ -298,16 +340,55 @@ mod tests {
             );
         }
         assert_eq!(
-            lim.check(MAX_TRACKED_PEERS, now),
+            lim.check(DEFAULT_MAX_TRACKED_PEERS, now),
             Err(Refusal::TrackingFull),
             "a new peer past the tracking bound must be refused, not waved through"
+        );
+    }
+
+    /// The tracking bound is the one the CALLER passed, not the shipped
+    /// figure: a limiter built with room for three peers refuses the fourth
+    /// while the default would have admitted it.
+    #[test]
+    fn the_configured_capacity_is_what_bounds_the_map() {
+        let mut lim = FixedWindowLimiter::new(u64::MAX, 1, 3);
+        let now = Instant::now();
+        for i in 0..3 {
+            assert_eq!(lim.check(i, now), Ok(()), "peer {i} fits in a map of 3");
+        }
+        assert_eq!(
+            lim.check(3, now),
+            Err(Refusal::TrackingFull),
+            "the fourth peer must be refused by a map of 3, which the shipped \
+             default would have admitted"
+        );
+        assert_eq!(
+            lim.max_tracked_peers(),
+            3,
+            "the caller's figure is reported"
+        );
+    }
+
+    /// A map of one is clamped up to the floor rather than accepted, so the
+    /// per-peer cap cannot be turned into a global lock by a small number.
+    #[test]
+    fn a_map_of_one_is_clamped_up_to_the_floor() {
+        let mut lim = FixedWindowLimiter::new(u64::MAX, 1, 1);
+        let now = Instant::now();
+        assert_eq!(lim.max_tracked_peers(), MIN_TRACKED_PEERS);
+        assert_eq!(lim.check("first", now), Ok(()));
+        assert_eq!(
+            lim.check("second", now),
+            Ok(()),
+            "at the floor a second peer still gets its own allowance; at 1 the \
+             first sender would have taken the whole window"
         );
     }
 
     /// Every refusal is counted, and an admitted event is not.
     #[test]
     fn refusals_are_counted_and_admissions_are_not() {
-        let mut lim = FixedWindowLimiter::new(0, 1);
+        let mut lim = FixedWindowLimiter::new(0, 1, DEFAULT_MAX_TRACKED_PEERS);
         let now = Instant::now();
         assert_eq!(lim.check("a", now), Ok(()));
         assert_eq!(lim.refused_total(), 0, "an admitted event is not a refusal");

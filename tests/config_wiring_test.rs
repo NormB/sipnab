@@ -25,6 +25,12 @@ mod run_support;
 #[path = "support/mod.rs"]
 mod support;
 
+/// The `api_max_rows` and `api_rate_limit_per_peer` probes drive a real
+/// `--api` listener, which is what this harness spawns and reaps.
+#[cfg(feature = "api")]
+#[path = "support/server.rs"]
+mod server;
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 /// Absolute path to `tests/fixtures/sip_call.pcap` (7-message complete call).
@@ -998,6 +1004,27 @@ fn limit_probes() -> Vec<LimitProbe> {
             enabled: true,
             observe: probe_max_tcp_buffer,
         },
+        LimitProbe {
+            key: "api_max_rows",
+            enabled: cfg!(feature = "api"),
+            observe: probe_api_max_rows,
+        },
+        LimitProbe {
+            key: "api_rate_limit_per_peer",
+            enabled: cfg!(feature = "api"),
+            observe: probe_api_rate_limit_per_peer,
+        },
+        LimitProbe {
+            key: "max_tracked_peers",
+            // Linux-only, and not because the key is: the probe needs THREE
+            // distinct source addresses to fill a tracking map, and only Linux
+            // routes the whole of 127.0.0.0/8 to loopback without an interface
+            // alias. The key itself is wired on every platform — `hep.rs` and
+            // `mcp/server.rs` read it from one resolver — and the resolver half
+            // is pinned in `cli.rs` everywhere.
+            enabled: cfg!(all(target_os = "linux", feature = "hep")),
+            observe: probe_max_tracked_peers,
+        },
     ]
 }
 
@@ -1717,6 +1744,95 @@ fn exported_wav_bytes(cap: usize) -> u64 {
     std::fs::metadata(&wav).expect("WAV written").len()
 }
 
+/// `api_max_rows`: eight dialogs asked for at once, against a ceiling of two.
+///
+/// Observed on the ROWS the endpoint returns, not on the `limit` it echoes: a
+/// wiring that moved only the echo would still hand a batch consumer a
+/// thousand rows, which is the defect this key exists to fix.
+#[cfg(feature = "api")]
+fn probe_api_max_rows() -> (String, String) {
+    fn rows_with(pcap: &std::path::Path, extra: &[&str]) -> String {
+        let srv = server::ApiServer::spawn_with_pcap(pcap.to_str().unwrap(), extra);
+        let resp = srv.get("/v1/dialogs?limit=1000");
+        let rows = resp
+            .json()
+            .get("dialogs")
+            .and_then(|d| d.as_array())
+            .map_or(0, Vec::len);
+        format!("rows={rows}")
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 8);
+    let cfg = write_config(&dir, "[limits]\napi_max_rows = 2\n");
+    (
+        rows_with(&pcap, &["--no-config"]),
+        rows_with(&pcap, &["--config", cfg.to_str().unwrap()]),
+    )
+}
+
+/// Placeholder for builds without the REST API; the gate never calls it.
+#[cfg(not(feature = "api"))]
+fn probe_api_max_rows() -> (String, String) {
+    unreachable!("the api_max_rows probe only runs in an `api` build")
+}
+
+/// `api_rate_limit_per_peer`: a burst of forty requests from one address
+/// against a three-per-second ceiling.
+///
+/// The observation is whether any request was refused, so it does not depend
+/// on exactly where the window boundary falls inside the burst.
+#[cfg(feature = "api")]
+fn probe_api_rate_limit_per_peer() -> (String, String) {
+    fn burst_verdict(extra: &[&str]) -> String {
+        let srv = server::ApiServer::spawn(extra);
+        let refused = (0..40)
+            // 503, not 429: the limiter runs BEFORE auth, so a refusal here
+            // says nothing about the credential — see `guard_scoped`.
+            .filter(|_| srv.get("/v1/stats").status == 503)
+            .count();
+        if refused > 0 {
+            "burst-refused".into()
+        } else {
+            "burst-served".into()
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(&dir, "[limits]\napi_rate_limit_per_peer = 3\n");
+    (
+        burst_verdict(&["--no-config"]),
+        burst_verdict(&["--config", cfg.to_str().unwrap()]),
+    )
+}
+
+/// Placeholder for builds without the REST API; the gate never calls it.
+#[cfg(not(feature = "api"))]
+fn probe_api_rate_limit_per_peer() -> (String, String) {
+    unreachable!("the api_rate_limit_per_peer probe only runs in an `api` build")
+}
+
+/// `max_tracked_peers`: three HEP sources against a two-peer tracking map.
+///
+/// The refusal this key governs is `Refusal::TrackingFull`, which turns away a
+/// peer that is inside every rate limit, so the observation is the warning that
+/// says so — the only surface on which the condition is visible at all.
+#[cfg(all(target_os = "linux", feature = "hep"))]
+fn probe_max_tracked_peers() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(&dir, "[limits]\nmax_tracked_peers = 2\n");
+    (
+        hep_three_peer_verdict(&["--no-config"]),
+        hep_three_peer_verdict(&["--config", cfg.to_str().unwrap()]),
+    )
+}
+
+/// Placeholder for builds the probe cannot run on; the gate never calls it.
+#[cfg(not(all(target_os = "linux", feature = "hep")))]
+fn probe_max_tracked_peers() -> (String, String) {
+    unreachable!("the max_tracked_peers probe only runs on Linux `hep` builds")
+}
+
 /// `hep_rate_limit`: a burst well above a one-packet-per-second ceiling.
 #[cfg(all(unix, feature = "hep"))]
 fn probe_hep_rate_limit() -> (String, String) {
@@ -1734,123 +1850,206 @@ fn probe_hep_rate_limit() -> (String, String) {
     unreachable!("the hep_rate_limit probe only runs in a `hep` build")
 }
 
-/// Fire 40 HEP3 INVITEs at a freshly spawned listener and report whether it
-/// logged a rate-limit drop.
+/// A spawned `--hep-listen` process, its bound port, and its stderr as a
+/// stream of lines.
 ///
-/// A purpose-built spawn rather than `hep_test`'s `HepListener`: this probe
-/// needs only the bound port and stderr, never the JSON stdout stream that
+/// Extracted because two probes need the same three things — a listener on an
+/// ephemeral port, the port it chose, and the log line that says what it did
+/// with a packet — and differ only in what they send and which line they wait
+/// for. Written twice, the copies drift on the parts that are fiddly rather
+/// than interesting: reaping the child on panic, and telling "the listener has
+/// not logged yet" from "the listener died".
+///
+/// A purpose-built spawn rather than `hep_test`'s `HepListener`: these probes
+/// need only the bound port and stderr, never the JSON stdout stream that
 /// harness exists to scrape.
 #[cfg(all(unix, feature = "hep"))]
-fn hep_burst_verdict(extra_args: &[&str]) -> String {
-    use std::io::{BufRead, BufReader};
+struct HepProbeListener {
+    /// The running process. Killed on drop, however the probe leaves.
+    child: std::process::Child,
+    /// Stderr, one line per message, fed by a reader thread.
+    lines: std::sync::mpsc::Receiver<String>,
+    /// The ephemeral port the listener reported binding.
+    port: u16,
+}
+
+#[cfg(all(unix, feature = "hep"))]
+impl Drop for HepProbeListener {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(all(unix, feature = "hep"))]
+impl HepProbeListener {
+    /// Spawn `sipnab -N --hep-listen 127.0.0.1:0 --json --quiet` with
+    /// `extra_args`, and block until it reports the port it bound.
+    fn spawn(extra_args: &[&str]) -> Self {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+        support::discard_coverage_profile(&mut cmd);
+        cmd.args(["-N", "--hep-listen", "127.0.0.1:0", "--json", "--quiet"])
+            .args(extra_args)
+            .env("SIPNAB_LOG", "debug")
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().expect("spawn sipnab --hep-listen");
+        let stderr = child.stderr.take().expect("stderr pipe");
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Scrape the ephemeral port the listener bound.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut port = None;
+        let mut drained = Vec::new();
+        while Instant::now() < deadline && port.is_none() {
+            match lines.recv_timeout(Duration::from_millis(200)) {
+                Ok(line) => {
+                    if let Some(rest) = line.split("HEP listener started on ").nth(1)
+                        && let Some(p) = rest.trim().rsplit(':').next()
+                        && let Ok(p) = p.parse::<u16>()
+                    {
+                        port = Some(p);
+                    }
+                    drained.push(line);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        let _ = child.wait();
+                        panic!("sipnab --hep-listen exited early: {status}\n{drained:#?}");
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        let Some(port) = port else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the listener must report its bound port within 20s: {drained:#?}");
+        };
+        Self { child, lines, port }
+    }
+
+    /// Wait up to ten seconds for a stderr line containing `needle`.
+    ///
+    /// A window rather than a sleep-then-look: the listener logs as it decides,
+    /// so the answer usually arrives in milliseconds and a fixed sleep would
+    /// pay for the worst case on every run.
+    fn saw(&self, needle: &str) -> bool {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match self.lines.recv_timeout(Duration::from_millis(200)) {
+                Ok(line) if line.contains(needle) => return true,
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        false
+    }
+}
+
+/// Send one HEP3 INVITE to `port` from a socket bound to `src`, so the OUTER
+/// UDP source is the peer the rate limiter keys on — which is the whole point
+/// of the peer probes.
+#[cfg(all(unix, feature = "hep"))]
+fn send_hep_invite(src: &str, port: u16, tag: &str) {
     use std::net::UdpSocket;
-    use std::process::{Child, Command, Stdio};
-    use std::sync::mpsc;
-    use std::time::{Duration, Instant};
 
-    /// Kills the listener however the probe leaves, including on panic.
-    struct Reaper(Child);
-    impl Drop for Reaper {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
-    support::discard_coverage_profile(&mut cmd);
-    cmd.args([
-        "-N",
-        "--hep-listen",
-        "127.0.0.1:0",
-        "--json",
-        "--quiet",
-        "--hep-allow",
-        "127.0.0.1/32",
-    ])
-    .args(extra_args)
-    .env("SIPNAB_LOG", "debug")
-    .env("NO_COLOR", "1")
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().expect("spawn sipnab --hep-listen");
-    let stderr = child.stderr.take().expect("stderr pipe");
-    let mut reaper = Reaper(child);
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-
-    // Scrape the ephemeral port the listener bound.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut port = None;
-    let mut drained = Vec::new();
-    while Instant::now() < deadline && port.is_none() {
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(line) => {
-                if let Some(rest) = line.split("HEP listener started on ").nth(1)
-                    && let Some(p) = rest.trim().rsplit(':').next()
-                    && let Ok(p) = p.parse::<u16>()
-                {
-                    port = Some(p);
-                }
-                drained.push(line);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if let Ok(Some(status)) = reaper.0.try_wait() {
-                    panic!("sipnab --hep-listen exited early: {status}\n{drained:#?}");
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    let port = port.expect("the listener must report its bound port within 20s");
-
-    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+    let socket = UdpSocket::bind((src, 0)).expect("bind a loopback sender");
     let endpoint = sipnab::capture::hep::HepEndpoint {
-        src_addr: "127.0.0.1".parse().unwrap(),
+        src_addr: src.parse().expect("a literal source address"),
         dst_addr: "127.0.0.1".parse().unwrap(),
         src_port: 5060,
         dst_port: 5062,
     };
-    let invite = b"INVITE sip:bob@example.com SIP/2.0\r\n\
-         Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKlimits\r\n\
+    let invite = format!(
+        "INVITE sip:bob@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK{tag}\r\n\
          From: <sip:alice@example.com>;tag=1\r\n\
          To: <sip:bob@example.com>\r\n\
-         Call-ID: limits-hep-1@127.0.0.1\r\n\
+         Call-ID: limits-{tag}@127.0.0.1\r\n\
          CSeq: 1 INVITE\r\n\
-         Content-Length: 0\r\n\r\n";
-    for _ in 0..40 {
-        let datagram = sipnab::capture::hep::build_hep_v3(
-            &endpoint,
-            chrono::Utc::now(),
-            sipnab::capture::hep::HepProtocol::Sip,
-            0,
-            None,
-            invite,
-        );
-        socket
-            .send_to(&datagram, ("127.0.0.1", port))
-            .expect("send HEP");
-    }
+         Content-Length: 0\r\n\r\n"
+    );
+    let datagram = sipnab::capture::hep::build_hep_v3(
+        &endpoint,
+        chrono::Utc::now(),
+        sipnab::capture::hep::HepProtocol::Sip,
+        0,
+        None,
+        invite.as_bytes(),
+    );
+    socket
+        .send_to(&datagram, ("127.0.0.1", port))
+        .expect("send HEP");
+}
 
-    // A drop is logged as it happens; give the listener a bounded window.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(line) if line.contains("rate limit exceeded") => return "burst-dropped".into(),
-            Ok(_) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
+/// Fire 40 HEP3 INVITEs from one source at a freshly spawned listener and
+/// report whether it logged a rate-limit drop.
+#[cfg(all(unix, feature = "hep"))]
+fn hep_burst_verdict(extra_args: &[&str]) -> String {
+    let mut args = vec!["--hep-allow", "127.0.0.1/32"];
+    args.extend_from_slice(extra_args);
+    let listener = HepProbeListener::spawn(&args);
+    for _ in 0..40 {
+        send_hep_invite("127.0.0.1", listener.port, "hep1");
     }
-    "burst-accepted".into()
+    if listener.saw("rate limit exceeded") {
+        "burst-dropped".into()
+    } else {
+        "burst-accepted".into()
+    }
+}
+
+/// Send one HEP3 INVITE from each of three loopback addresses and report
+/// whether the listener said its peer-tracking map filled.
+///
+/// Three, because the floor on the map is two: a run configured at the floor
+/// has room for the first two senders and must turn away the third. Linux
+/// routes all of 127.0.0.0/8 to loopback, which is what makes three distinct
+/// sources available without touching interface configuration — and is why the
+/// probe registry marks this one Linux-only.
+#[cfg(all(target_os = "linux", feature = "hep"))]
+fn hep_three_peer_verdict(extra_args: &[&str]) -> String {
+    let mut args = vec![
+        "--hep-allow",
+        "127.0.0.0/8",
+        // The tracking map is only consulted when the per-peer half is ON, and
+        // that half ships `off`. A generous cap keeps the map the only thing
+        // that can refuse: every peer here sends one packet.
+        "--hep-rate-limit-per-peer",
+        "1000",
+    ];
+    args.extend_from_slice(extra_args);
+    let listener = HepProbeListener::spawn(&args);
+    // One packet from each of three sources, inside one window: the map is
+    // what refuses the third, not any rate.
+    for src in ["127.0.0.1", "127.0.0.2", "127.0.0.3"] {
+        send_hep_invite(src, listener.port, "peers");
+    }
+    if listener.saw("peer tracking is full") {
+        "tracking-full".into()
+    } else {
+        "tracking-has-room".into()
+    }
 }
 
 /// Every documented `[limits]` key is known to the loader, documented once,

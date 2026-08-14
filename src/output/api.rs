@@ -70,7 +70,17 @@ pub struct ApiState {
     pub verifier: Arc<crate::auth::TokenVerifier>,
     /// Per-IP rate limiter.
     pub rate_limiter: Arc<Mutex<RateLimiter>>,
+    /// Rows one list-style response may return, resolved from
+    /// `--api-max-rows` / `[limits] api_max_rows` by the caller that starts
+    /// the server (config is in scope there and not here).
+    pub max_rows: usize,
 }
+
+/// Rows a list-style response returns when the caller names no `limit`.
+///
+/// A page size, not a ceiling: it is what `?limit=` defaults to, and any
+/// caller can ask for more up to [`ApiState::max_rows`].
+const DEFAULT_PAGE_ROWS: usize = 50;
 
 // ── Rate limiter ────────────────────────────────────────────────────
 
@@ -81,7 +91,7 @@ pub struct ApiState {
 pub struct RateLimiter {
     /// Map of source IP to (window start, count).
     buckets: HashMap<IpAddr, (Instant, u32)>,
-    /// Maximum requests per second per IP.
+    /// Maximum requests per second per IP; `0` disables the cap.
     max_rps: u32,
     /// Monotonic call counter for periodic cleanup.
     call_count: u64,
@@ -89,6 +99,13 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     /// Create a new rate limiter with the given per-IP max requests/second.
+    ///
+    /// `0` DISABLES the cap rather than refusing every request. That is the
+    /// reading `--mcp-rate-limit-per-peer`, `--hep-rate-limit-per-peer` and
+    /// `--hep-rate-limit` all give a zero, and this became reachable the
+    /// moment the figure stopped being a hard-coded 100 — an operator who has
+    /// learned the convention on one listener must not be locked out of the
+    /// REST API by using it on another.
     pub fn new(max_rps: u32) -> Self {
         Self {
             buckets: HashMap::new(),
@@ -97,7 +114,8 @@ impl RateLimiter {
         }
     }
 
-    /// Check whether a request from `ip` is allowed. Returns `true` if under limit.
+    /// Check whether a request from `ip` is allowed. Returns `true` if under
+    /// limit, and always `true` when the cap is `0` (disabled).
     ///
     /// Periodically cleans up stale entries (every 100th call) to prevent
     /// unbounded memory growth from unique source IPs.
@@ -111,8 +129,15 @@ impl RateLimiter {
     /// Mutates the limiter: bumps the monotonic call counter, resets the
     /// per-IP window when >1 s has elapsed, increments the per-IP request
     /// count (even when the request ends up rejected), and every 100th call
-    /// evicts buckets older than 2 s.
+    /// evicts buckets older than 2 s. NONE of that happens when the cap is
+    /// `0`: a disabled limiter is a pure `true`, so it never grows a bucket
+    /// map for addresses it will not meter.
     pub fn check(&mut self, ip: IpAddr) -> bool {
+        // Disabled: return before touching the map, so an uncapped server does
+        // not carry a bucket per source address it will never consult.
+        if self.max_rps == 0 {
+            return true;
+        }
         let now = Instant::now();
         self.call_count += 1;
 
@@ -588,7 +613,8 @@ async fn health_check() -> &'static str {
 /// 200 with `{schema_version, total, offset, limit, dialogs}` where
 /// `total` is the FILTERED result-set size (the count the returned rows are
 /// drawn from, after `state`/`from` filters), so paging by `total`
-/// terminates correctly; 401/503 from the guard. `limit` is clamped to 1000.
+/// terminates correctly; 401/503 from the guard. `limit` is clamped to
+/// `--api-max-rows` (default 1000).
 ///
 /// # Side effects
 ///
@@ -603,7 +629,10 @@ async fn list_dialogs(
     guard(&state, &headers, addr.ip())?;
 
     let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.unwrap_or(50).min(1000);
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_PAGE_ROWS)
+        .min(state.max_rows);
 
     let state_filter = params.state.as_deref();
     // NOTE: Regex is compiled per-request. Under the 100 RPS rate limit this
@@ -775,7 +804,8 @@ async fn get_dialog_report(
 /// 200 with `{schema_version, total, offset, limit, streams}` where
 /// `total` is the FILTERED result-set size (the count the returned rows are
 /// drawn from, after `orphaned`/`mos_below` filters), so paging by `total`
-/// terminates correctly; 401/503 from the guard. `limit` is clamped to 1000.
+/// terminates correctly; 401/503 from the guard. `limit` is clamped to
+/// `--api-max-rows` (default 1000).
 ///
 /// # Side effects
 ///
@@ -790,7 +820,10 @@ async fn list_streams(
     guard(&state, &headers, addr.ip())?;
 
     let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.unwrap_or(50).min(1000);
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_PAGE_ROWS)
+        .min(state.max_rows);
     let orphaned_filter = params.orphaned;
     let mos_threshold = params.mos_below;
 
@@ -1185,6 +1218,7 @@ mod tests {
                 crate::auth::VerifierConfig::default(),
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         }
     }
 
@@ -1200,6 +1234,7 @@ mod tests {
                 },
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         }
     }
 
@@ -1467,6 +1502,7 @@ mod tests {
                 },
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         }
     }
 
@@ -1584,6 +1620,59 @@ mod tests {
     #[test]
     fn parse_bind_addr_invalid() {
         assert!(parse_bind_addr("not-an-address").is_err());
+    }
+
+    /// A cap of `0` disables the limiter rather than refusing everything.
+    ///
+    /// The convention `--mcp-rate-limit-per-peer`, `--hep-rate-limit-per-peer`
+    /// and `--hep-rate-limit` all carry, reachable here only since the figure
+    /// became `--api-rate-limit-per-peer`: an operator who spells "unlimited"
+    /// the way sipnab taught them must not lock themselves out of the API.
+    #[test]
+    fn a_zero_cap_disables_the_limiter_rather_than_refusing_everything() {
+        let mut limiter = RateLimiter::new(0);
+        let ip = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        for i in 0..10_000 {
+            assert!(
+                limiter.check(ip),
+                "request {i} must pass an uncapped limiter"
+            );
+        }
+    }
+
+    /// `GET /v1/dialogs` returns at most the configured row ceiling, whatever
+    /// the caller asks for.
+    ///
+    /// The response ceiling used to be a hard-coded 1000, so a batch consumer
+    /// piping the endpoint to a file could never exceed it and a dashboard
+    /// could never tighten it. Asserted on the rows themselves rather than on
+    /// the echoed `limit`, because a wiring that only moved the echo would
+    /// still hand back a thousand rows.
+    #[tokio::test]
+    async fn the_row_ceiling_bounds_a_list_response_however_much_is_asked_for() {
+        let mut state = make_state();
+        state.max_rows = 2;
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?limit=1000"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            json["total"], 3,
+            "the fixture must hold more dialogs than the ceiling, or the case \
+             proves nothing"
+        );
+        assert_eq!(
+            json["dialogs"].as_array().expect("dialogs array").len(),
+            2,
+            "the configured ceiling must bound the rows returned"
+        );
+        assert_eq!(json["limit"], 2, "and the response must report it");
     }
 
     /// A limiter with max 5 allows exactly 5 requests, then rejects the 6th.
@@ -1756,6 +1845,7 @@ mod tests {
                 crate::auth::VerifierConfig::default(),
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1))),
+            max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
         };
         populate_dialogs(&state);
 

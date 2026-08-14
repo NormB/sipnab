@@ -12,6 +12,27 @@ entry that carries them.
 
 ### Added
 
+- **`--api-max-rows` / `[limits] api_max_rows`** sets the row ceiling on one
+  list-style REST response, which was a hard-coded 1000. The MCP surface
+  documents the identical policy — the right ceiling is a property of the
+  consumer, not of sipnab — and made it settable; the REST surface stated it
+  and did not. A batch consumer piping `/v1/dialogs` to a file could never
+  exceed a thousand rows, and a dashboard could never ask for fewer.
+- **`--api-rate-limit-per-peer` / `[limits] api_rate_limit_per_peer`** sets the
+  REST per-peer request rate, which was a hard-coded 100/s. The limiter counts
+  by source address, so a dashboard polling `/v1/streams` on a short timer, or
+  several collectors behind one NAT, shared a single allowance and got `503`
+  with no knob to raise. `0` disables the cap, matching
+  `--mcp-rate-limit-per-peer` and `--hep-rate-limit` — and the REST limiter now
+  reads a zero that way instead of refusing everything.
+- **`[limits] max_tracked_peers`** sets how many distinct peers one rate-limit
+  window holds, on every surface `rate_limit` meters: HEP source addresses and
+  MCP callers. It was a fixed 4096, and past it a peer inside every rate limit
+  is REFUSED — so a collector aggregating from more agents than that never saw
+  the surplus. The fail-closed direction is right; the number is a deployment
+  property. Config-only, with a floor of 2 refused by name: a map of one turns
+  the per-peer cap into a global lock, where the first sender in a window takes
+  the only slot.
 - **The homepage leads with MCP.** The demo strip opened on seven terminal
   recordings, which argue "a better sngrep" — the local-tool position
   `docs/design/positioning.md` declines. Four MCP examples now come first,
@@ -32,6 +53,18 @@ entry that carries them.
   frame for `prefers-reduced-motion`, and `site_journey_test` refuses a demo
   whose poster is missing — but nothing generated them. All seven had been made
   by hand, so the gate demanded a file the build could not produce.
+
+### Changed
+
+- **The shipped `--group-by` key cap is now the store's, 100000 rather than
+  10000.** Its doc comment claimed it "matches the store default so a grouped
+  run cannot outgrow an ordinary capture", and that was the stated
+  justification for the number while being false by a factor of ten: a
+  `--group-by call-id` run over 20,000 calls reported an incomplete grouping of
+  a capture the store held whole. The default is now derived from
+  `Cli::DEFAULT_DIALOG_LIMIT` rather than restated, so the two cannot drift
+  apart again, and `max_grouped_messages` remains the cap that bounds the
+  memory.
 
 ### Fixed
 

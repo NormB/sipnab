@@ -51,11 +51,19 @@ impl ApiServer {
         Self::spawn_with_pcap("tests/fixtures/sip_call.pcap", extra_args)
     }
 
-    /// Spawn against an arbitrary pcap (path relative to the crate root) — e.g.
-    /// an RTP fixture so `/v1/streams` returns real streams.
+    /// Spawn against an arbitrary pcap — e.g. an RTP fixture so `/v1/streams`
+    /// returns real streams.
+    ///
+    /// `pcap_rel` is taken relative to the crate root, or used verbatim when
+    /// it is already absolute, so a caller that generated a capture into a
+    /// tempdir can point at it without inventing a second spawn.
     pub fn spawn_with_pcap(pcap_rel: &str, extra_args: &[&str]) -> ApiServer {
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let pcap = format!("{manifest}/{pcap_rel}");
+        let pcap = if std::path::Path::new(pcap_rel).is_absolute() {
+            pcap_rel.to_string()
+        } else {
+            format!("{manifest}/{pcap_rel}")
+        };
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
         cmd.args(["-N", "-I", &pcap, "--api", "127.0.0.1:0", "--quiet"]);

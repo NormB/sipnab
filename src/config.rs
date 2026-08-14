@@ -172,6 +172,9 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_metadata_file_bytes",
             "max_gunzip_bytes",
             "max_tcp_buffer",
+            "api_max_rows",
+            "api_rate_limit_per_peer",
+            "max_tracked_peers",
         ]
         .as_slice(),
     );
@@ -894,6 +897,24 @@ pub struct QualityConfig {
     pub rtt_bad_ms: Option<f64>,
 }
 
+/// Smallest `[limits] max_tracked_peers` an operator may configure.
+///
+/// Not a memory figure — it is the point at which the mechanism inverts. With
+/// room for one peer, the first sender in a window takes the only slot and
+/// sipnab turns every other peer away for the rest of that window, whatever
+/// its rate: a per-peer cap that exists to stop one sender starving the others
+/// becomes the thing that starves them. Two is the smallest map that still
+/// admits a second peer, so it is the smallest map the setting means anything
+/// on.
+///
+/// Defined HERE, not beside the limiter that enforces it: `crate::rate_limit`
+/// is compiled only for a `hep` or `mcp` build while this module parses
+/// `[limits]` in every one, and a floor enforced in some builds and not others
+/// is worse than no floor at all. `crate::rate_limit::MIN_TRACKED_PEERS` reads
+/// it from here, so the value the file refuses and the value the limiter
+/// clamps to cannot disagree.
+pub const MIN_TRACKED_PEERS: u64 = 2;
+
 /// Resource limits.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -953,7 +974,8 @@ pub struct LimitsConfig {
     /// figure shows the last minute of a call an operator escalated for the
     /// whole half hour.
     pub max_lost_sequences: Option<u64>,
-    /// Distinct `--group-by` keys one run may retain (default: 10000).
+    /// Distinct `--group-by` keys one run may retain (default: 100000, the
+    /// same figure `dialog_limit` ships).
     pub max_groups: Option<u64>,
     /// Messages `--group-by` may buffer across every group (default: 200000).
     pub max_grouped_messages: Option<u64>,
@@ -984,6 +1006,29 @@ pub struct LimitsConfig {
     /// malformed. The peer that sent a perfectly good message is the one
     /// reported broken.
     pub max_tcp_buffer: Option<u64>,
+    /// Rows one list-style REST response may return (default: 1000).
+    ///
+    /// The REST counterpart of `mcp_max_rows`, and settable for the same
+    /// reason: the right ceiling is a property of the CONSUMER, not of sipnab.
+    /// A batch consumer piping `/v1/dialogs` to a file wants every row; a
+    /// dashboard rendering a table wants far fewer.
+    pub api_max_rows: Option<u64>,
+    /// REST requests one client IP may make per second (default: 100).
+    ///
+    /// `0` disables the cap, the same reading `hep_rate_limit` and
+    /// `mcp_rate_limit_per_peer` give it. A dashboard polling `/v1/streams`,
+    /// or several collectors behind one NAT, share a single allowance because
+    /// the limiter counts by source address.
+    pub api_rate_limit_per_peer: Option<u64>,
+    /// Distinct peers one rate-limit window may hold (default: 4096).
+    ///
+    /// Applies to every surface `crate::rate_limit` meters: HEP source
+    /// addresses and MCP callers. Past it a peer that is not already tracked
+    /// is REFUSED rather than waved through, so on a collector aggregating
+    /// from more agents than this the surplus never enters the capture. The
+    /// fail-closed direction is deliberate; how many peers a deployment has
+    /// is not something sipnab can know.
+    pub max_tracked_peers: Option<u64>,
 }
 
 impl LimitsConfig {
@@ -993,8 +1038,9 @@ impl LimitsConfig {
     /// built-in defaults.
     ///
     /// # Errors
-    /// `crate::Error::ConfigInvalid` when any count limit is 0 or
-    /// `max_header_line` is below 256, naming the offending key.
+    /// `crate::Error::ConfigInvalid` when any count limit is 0, or a floored
+    /// key (`max_header_line`, `max_tcp_buffer`, `max_tracked_peers`) is below
+    /// its floor, naming the offending key.
     pub fn validate(&self) -> Result<(), crate::Error> {
         if let Some(0) = self.dialog_limit {
             return Err(crate::Error::ConfigInvalid(
@@ -1128,6 +1174,32 @@ impl LimitsConfig {
                  hold one SIP header line, so every SIP/TCP message would be \
                  flushed mid-message and reported malformed), got {v}",
                 crate::capture::reassembly::MIN_TCP_BUFFER
+            )));
+        }
+        // Same judgement as `mcp_max_rows`: 0 would answer every list request
+        // with an empty page, which is not what an operator reaching for 0
+        // means.
+        if let Some(0) = self.api_max_rows {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] api_max_rows must be > 0 (0 would answer every list \
+                 request with an empty page)"
+                    .into(),
+            ));
+        }
+        // `api_rate_limit_per_peer` is deliberately absent: 0 DISABLES the cap
+        // there, the reading every per-peer rate knob in this tree gives it.
+        //
+        // Floored rather than merely non-zero, and the floor is the point at
+        // which the mechanism inverts: see `MIN_TRACKED_PEERS`.
+        if let Some(v) = self.max_tracked_peers
+            && v < MIN_TRACKED_PEERS
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[limits] max_tracked_peers must be >= {} (a map of one turns \
+                 the per-peer cap into a global lock: the first peer to send \
+                 in a window takes the only slot and every other peer is \
+                 refused for the rest of it), got {v}",
+                MIN_TRACKED_PEERS
             )));
         }
         Ok(())
@@ -2389,6 +2461,9 @@ column_selector = "F10"
             max_metadata_file_bytes: Some(2 * 1024 * 1024 * 1024),
             max_gunzip_bytes: Some(1 << 30),
             max_tcp_buffer: Some(65536),
+            api_max_rows: Some(1000),
+            api_rate_limit_per_peer: Some(100),
+            max_tracked_peers: Some(4096),
         };
         assert!(limits.validate().is_ok());
     }

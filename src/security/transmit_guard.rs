@@ -138,6 +138,7 @@ mod tests {
             allowlist: Vec::new(),
             rate_limit: 0,
             per_peer_rate_limit: 0,
+            max_tracked_peers: crate::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
             auth_key: None,
             #[cfg(feature = "hep")]
             auth_mode: crate::cli::HepAuthMode::default(),

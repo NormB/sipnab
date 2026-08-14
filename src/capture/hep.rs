@@ -1210,10 +1210,15 @@ impl HepRateLimiter {
     /// caps packets/second from any single source IP. A zero value disables
     /// the corresponding limiter: `per_peer_max == 0` leaves only the global
     /// ceiling, and `global_max == 0` leaves only the per-peer cap (or no
-    /// limiting at all when both are 0).
-    fn new(global_max: u64, per_peer_max: u64) -> Self {
+    /// limiting at all when both are 0). `max_tracked_peers` bounds how many
+    /// distinct source IPs one window may hold.
+    fn new(global_max: u64, per_peer_max: u64, max_tracked_peers: usize) -> Self {
         Self {
-            inner: crate::rate_limit::FixedWindowLimiter::new(global_max, per_peer_max),
+            inner: crate::rate_limit::FixedWindowLimiter::new(
+                global_max,
+                per_peer_max,
+                max_tracked_peers,
+            ),
         }
     }
 
@@ -1250,13 +1255,14 @@ impl HepRateLimiter {
                          so packets from NEW peers are being dropped even though they \
                          are inside every rate limit. --hep-rate-limit does not help: \
                          it bounds rate, this bounds how many peers can be tracked at \
-                         once. First refused peer: {peer}.",
-                        crate::rate_limit::MAX_TRACKED_PEERS
+                         once — raise [limits] max_tracked_peers. First refused peer: \
+                         {peer}.",
+                        self.inner.max_tracked_peers()
                     );
                 }
                 tracing::debug!(
                     "HEP per-peer tracking full ({} peers); dropping new peer {peer} (total dropped: {dropped})",
-                    crate::rate_limit::MAX_TRACKED_PEERS
+                    self.inner.max_tracked_peers()
                 );
             }
             Refusal::PerPeer => tracing::debug!(
@@ -1361,6 +1367,10 @@ pub struct HepListenerOpts<'a> {
     /// Per-peer cap: maximum HEP packets/second from any one source IP
     /// (0 = disabled; the global ceiling still applies).
     pub per_peer_rate_limit: u64,
+    /// Distinct source IPs one counting window may hold at once
+    /// (`[limits] max_tracked_peers`). Past it a source sipnab has not
+    /// already seen this second is refused.
+    pub max_tracked_peers: usize,
     /// Receiver-side shared secret. When `Some`, incoming packets must carry
     /// a matching 0x000e auth-key chunk (constant-time compared) or be dropped.
     pub auth_key: Option<&'a str>,
@@ -1428,6 +1438,7 @@ pub fn capture_hep(
         allowlist,
         rate_limit,
         per_peer_rate_limit,
+        max_tracked_peers,
         auth_key,
         auth_mode,
     } = *opts;
@@ -1473,7 +1484,7 @@ pub fn capture_hep(
     let start = Instant::now();
     let mut count: u64 = 0;
     let mut buf = vec![0u8; 65535];
-    let mut rate_limiter = HepRateLimiter::new(rate_limit, per_peer_rate_limit);
+    let mut rate_limiter = HepRateLimiter::new(rate_limit, per_peer_rate_limit, max_tracked_peers);
     // Per-listener replay cache for HMAC auth mode (SN-01 residual).
     let mut hmac_nonce_cache = HmacNonceCache::new();
 
@@ -2773,7 +2784,7 @@ mod tests {
     fn per_peer_limiter_global_ceiling_drops_excess() {
         // Global ceiling of 2/s: the third packet in a window is dropped
         // regardless of peer.
-        let mut lim = HepRateLimiter::new(2, 100);
+        let mut lim = HepRateLimiter::new(2, 100, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         let a: IpAddr = "10.0.0.1".parse().unwrap();
         let b: IpAddr = "10.0.0.2".parse().unwrap();
         assert!(lim.allow(a));
@@ -2787,7 +2798,7 @@ mod tests {
     fn per_peer_limiter_isolates_noisy_peer() {
         // Per-peer cap of 1 with a generous global ceiling: a flooding peer
         // is throttled without consuming another peer's allowance.
-        let mut lim = HepRateLimiter::new(1000, 1);
+        let mut lim = HepRateLimiter::new(1000, 1, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         let noisy: IpAddr = "10.0.0.1".parse().unwrap();
         let quiet: IpAddr = "10.0.0.2".parse().unwrap();
         assert!(lim.allow(noisy));
@@ -2802,10 +2813,11 @@ mod tests {
     fn per_peer_limiter_full_map_drops_new_peer() {
         // Effectively unlimited global ceiling so only the per-peer path (and
         // the map-full guard) can drop.
-        let mut lim = HepRateLimiter::new(u64::MAX, 1);
+        let mut lim =
+            HepRateLimiter::new(u64::MAX, 1, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         // Fill the tracking map with the maximum number of distinct peers;
         // each fresh peer's first packet is allowed.
-        for i in 0..crate::rate_limit::MAX_TRACKED_PEERS as u32 {
+        for i in 0..crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS as u32 {
             let ip = IpAddr::V4(Ipv4Addr::from(i));
             assert!(lim.allow(ip), "first packet from fresh peer {i} allowed");
         }
@@ -2837,7 +2849,7 @@ mod tests {
     /// is 0.
     #[test]
     fn global_rate_limit_zero_disables_ceiling() {
-        let mut lim = HepRateLimiter::new(0, 0);
+        let mut lim = HepRateLimiter::new(0, 0, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         let p: IpAddr = "10.0.0.1".parse().unwrap();
         for _ in 0..10_000 {
             assert!(lim.allow(p), "global 0 must disable the ceiling, not drop");
@@ -3810,6 +3822,7 @@ mod tests {
                 allowlist: &allow,
                 rate_limit: 1_000_000,
                 per_peer_rate_limit: 0,
+                max_tracked_peers: crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS,
                 auth_key: None,
                 auth_mode: HepAuthMode::Plain,
             };
