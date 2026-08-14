@@ -26,15 +26,34 @@
 #   scripts/preflight.sh          # check the working tree
 #   scripts/preflight.sh --fix    # regenerate site mirrors, then check
 #
+#   PREFLIGHT_STRICT=1 scripts/preflight.sh   # a tool it cannot find FAILS
+#   PREFLIGHT_STRICT=0 scripts/preflight.sh   # ... warns, whatever the context
+#
 # Exit 0 when every check passed, 1 when any failed.
 
 set -uo pipefail
-cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# >>> BEGIN repo-root
+# `cd "$(git rev-parse --show-toplevel)" || exit 1` was NOT the guard it looks
+# like. With git absent, or outside a repository, the substitution is empty and
+# `cd ""` SUCCEEDS in bash without moving -- so the whole run measured whatever
+# directory it was started from, and said nothing about it. Same class as the
+# missing tools below: an empty answer reading as a good one.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -z "$ROOT" ]; then
+    printf 'preflight: not inside a git repository, or git is not installed.\n' >&2
+    printf 'Every check below reads the repository, so none of them can run.\n' >&2
+    exit 1
+fi
+cd "$ROOT" || exit 1
+# <<< END repo-root
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; NC=$'\033[0m'
-FAILED=0
 FIX=0
 [ "${1:-}" = "--fix" ] && FIX=1
+
+# >>> BEGIN status-and-strictness
+FAILED=0
 
 step()  { printf '  %-38s' "$1"; }
 ok()    { printf '%bOK%b\n' "$GREEN" "$NC"; }
@@ -42,7 +61,71 @@ bad()   { printf '%bFAIL%b\n' "$RED" "$NC"; FAILED=1; }
 warn()  { printf '%bWARN%b\n' "$YELLOW" "$NC"; }
 note()  { printf '    %s\n' "$1"; }
 
+# ---------------------------------------------------------------------------
+# What a check this script CANNOT PERFORM means.
+#
+# A missing tool used to be a WARN, and the run still ended "Preflight clean".
+# For a contributor without Vale on their laptop that is right: the tool is a
+# convenience they can install later, and blocking them helps nobody. For
+# anything automated it is the worst answer available, because the output says
+# a gate passed when in truth it never ran.
+#
+# That is not a hypothetical either. A background script with a hardened PATH
+# that omitted ~/.local/bin -- where both vale and codespell live here -- ran
+# this and got "Preflight clean" with two BLOCKING gates silently downgraded to
+# warnings. Nothing in the output said "command not found". Two Vale errors
+# reached CI and turned main red (c3befb9, 2026-08-10).
+#
+# So the answer depends on who is asking, and the script decides rather than
+# guessing:
+#
+#   PREFLIGHT_STRICT=1   fail. Anything else non-empty is also strict.
+#   PREFLIGHT_STRICT=0   warn, even under CI. The explicit opt-out.
+#   CI is set            fail. CI installs every tool; missing means broken.
+#   stdout is not a tty  fail. Nobody is reading the warning, so it is not a
+#                        warning -- it is a gate quietly reporting nothing.
+#   otherwise            warn. A human at a terminal, who can act on it.
+#
+# The tty test is the half that catches the incident above: that script did not
+# set CI, it just redirected output to a log.
+#
+# `strict_mode` takes the terminal answer as an ARGUMENT rather than testing
+# `-t 1` itself, so tests/preflight_strict_test.rs can drive both sides of the
+# decision without allocating a pty. It prints `<0|1> <reason>`; the reason is
+# printed in the banner, because a run that changed its own severity should say
+# why.
+# ---------------------------------------------------------------------------
+strict_mode() {
+    case "${PREFLIGHT_STRICT:-}" in
+        '') ;;  # unset or empty: fall through to the defaults below
+        0|no|NO|off|OFF|false|FALSE)
+            printf '0 PREFLIGHT_STRICT=%s' "${PREFLIGHT_STRICT}"; return ;;
+        *)  printf '1 PREFLIGHT_STRICT=%s' "${PREFLIGHT_STRICT}"; return ;;
+    esac
+    if [ -n "${CI:-}" ]; then printf '1 CI is set'; return; fi
+    if [ "${1:-}" != tty ]; then printf '1 output is not a terminal'; return; fi
+    printf '0 interactive terminal'
+}
+
+if [ -t 1 ]; then STRICT_DECISION=$(strict_mode tty)
+else STRICT_DECISION=$(strict_mode notty); fi
+STRICT=${STRICT_DECISION%% *}
+STRICT_WHY=${STRICT_DECISION#* }
+
+# A check that could not run: a tool that is not installed, a pin that cannot
+# be read, a comparison with nothing to compare. Never silently OK, and counted
+# so the closing summary cannot call the run clean when part of it never ran.
+DEGRADED=0
+degraded() {
+    DEGRADED=$((DEGRADED + 1))
+    if [ "$STRICT" = "1" ]; then bad; else warn; fi
+}
+# <<< END status-and-strictness
+
 printf '%bPreflight -- the cheap gates, before the expensive ones%b\n' "$YELLOW" "$NC"
+if [ "$STRICT" = "1" ]; then
+    printf 'Strict (%s): a check that cannot RUN fails, rather than warning.\n' "$STRICT_WHY"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Vale, and specifically the version CI pins.
@@ -53,47 +136,80 @@ printf '%bPreflight -- the cheap gates, before the expensive ones%b\n' "$YELLOW"
 # `UUIDs` and `handshook` through a green local gate and into a red CI job.
 # Compare the versions and refuse to report a pass from the wrong one.
 # ---------------------------------------------------------------------------
+# >>> BEGIN vale-gate
 step "vale (CI-pinned version)"
+VALE_OUT="/tmp/.sipnab-preflight-vale.$$"
 WANT_VALE=$(grep -oE "VALE_VERSION: '[0-9.]+'" .github/workflows/quality.yml 2>/dev/null | grep -oE "[0-9.]+" | head -1)
 if ! command -v vale >/dev/null 2>&1; then
-    warn
+    degraded
     note "vale is not installed. CI runs it and it BLOCKS."
     note "Install ${WANT_VALE:-the pinned version}: https://vale.sh"
-elif [ -n "$WANT_VALE" ] && ! vale --version 2>/dev/null | grep -qF "$WANT_VALE"; then
-    warn
+elif [ -z "$WANT_VALE" ]; then
+    # An empty WANT_VALE used to skip the version comparison and run Vale
+    # anyway, reporting OK from an unknown binary -- the same defect one level
+    # up from a missing tool: nothing to compare against read as agreement.
+    degraded
+    note "no VALE_VERSION in .github/workflows/quality.yml, so the version"
+    note "comparison had nothing to compare. Whatever this binary reports is"
+    note "not evidence about CI. Restore the pin in the workflow."
+elif ! vale --version 2>/dev/null | grep -qF "$WANT_VALE"; then
+    degraded
     note "local $(vale --version 2>/dev/null | head -1) but CI pins $WANT_VALE."
     note "Different dictionaries: a green run here is NOT evidence about CI."
     note "Fetch the pinned build for this arch and use that instead."
 else
     # CI's exact path list. Adding anything to it -- CHANGELOG.md especially --
     # invents errors CI will never report.
-    if vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >/tmp/.sipnab-preflight-vale.$$ 2>&1; then
+    if vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >"$VALE_OUT" 2>&1; then
         ok
     else
         bad
-        tail -25 /tmp/.sipnab-preflight-vale.$$
+        # E100 is "style does not exist", not a prose error: `.vale/styles/`
+        # holds gitignored packages, so a fresh clone lints against nothing
+        # until `vale sync` fetches them. Say so, because the raw message reads
+        # like the documentation is broken.
+        if grep -q 'E100' "$VALE_OUT" 2>/dev/null; then
+            note "Vale could not LOAD a style, so it linted nothing. The style"
+            note "packages under .vale/styles/ are gitignored and a fresh"
+            note "clone has none. Run: vale sync"
+        fi
+        tail -25 "$VALE_OUT"
     fi
-    rm -f /tmp/.sipnab-preflight-vale.$$
+    rm -f "$VALE_OUT"
 fi
+# <<< END vale-gate
 
 # ---------------------------------------------------------------------------
 # 2. codespell, over CI's own path list (both `bench` AND `benches`).
 # ---------------------------------------------------------------------------
+# >>> BEGIN codespell-gate
 step "codespell"
-if ! command -v codespell >/dev/null 2>&1; then
-    warn
+CS_OUT="/tmp/.sipnab-preflight-cs.$$"
+# CODESPELL_BIN is the same escape hatch .githooks/pre-push offers, and it is
+# here for the same reason: a venv install is a real install, and refusing one
+# in strict mode would fail a tree the hook is happy with.
+CS=""
+if command -v codespell >/dev/null 2>&1; then
+    CS=codespell
+elif [ -n "${CODESPELL_BIN:-}" ] && [ -x "${CODESPELL_BIN}" ]; then
+    CS="$CODESPELL_BIN"
+fi
+if [ -z "$CS" ]; then
+    degraded
     note "not installed; CI runs it and it blocks. pipx install codespell"
+    note "(or point CODESPELL_BIN at one in a venv, as the hook accepts)"
 else
-    if codespell src tests docs website bench benches harness scripts README.md \
+    if $CS src tests docs website bench benches harness scripts README.md \
         CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md \
-        >/tmp/.sipnab-preflight-cs.$$ 2>&1; then
+        >"$CS_OUT" 2>&1; then
         ok
     else
         bad
-        head -15 /tmp/.sipnab-preflight-cs.$$
+        head -15 "$CS_OUT"
     fi
-    rm -f /tmp/.sipnab-preflight-cs.$$
+    rm -f "$CS_OUT"
 fi
+# <<< END codespell-gate
 
 # ---------------------------------------------------------------------------
 # 3. Site mirrors. Two generators, and they own different pages -- running only
@@ -104,22 +220,44 @@ fi
 #    hand-maintained because they frame the same tables differently. Editing one
 #    without the other fails `benchmark_tables_match_between_docs_and_website`.
 # ---------------------------------------------------------------------------
+# >>> BEGIN site-mirror-gate
 step "site mirrors current"
-if [ "$FIX" = "1" ]; then
-    python3 scripts/build-site-pages.py >/dev/null 2>&1
-    python3 scripts/build-site-internals.py >/dev/null 2>&1
-fi
-BEFORE=$(git status --porcelain website/content | sort)
-python3 scripts/build-site-pages.py >/dev/null 2>&1
-python3 scripts/build-site-internals.py >/dev/null 2>&1
-AFTER=$(git status --porcelain website/content | sort)
-if [ "$BEFORE" = "$AFTER" ]; then
-    ok
+GEN_OUT="/tmp/.sipnab-preflight-gen.$$"
+# The generators used to run with `>/dev/null 2>&1` and their exit status
+# dropped, so a crashed generator wrote nothing, changed nothing, and read as
+# "the mirror is current" -- a missing tool by another name. python3 absent
+# does the same thing twice over.
+run_generators() {
+    python3 scripts/build-site-pages.py >"$GEN_OUT" 2>&1 || return 1
+    python3 scripts/build-site-internals.py >>"$GEN_OUT" 2>&1 || return 1
+    return 0
+}
+if ! command -v python3 >/dev/null 2>&1; then
+    degraded
+    note "python3 is not installed, so neither site generator ran. A stale"
+    note "mirror then bounces the hook as a table mismatch, which names the"
+    note "wrong thing entirely."
 else
-    bad
-    note "a generator rewrote a site page, so the mirror was stale."
-    note "The regeneration already ran; review and stage the result."
+    [ "$FIX" = "1" ] && run_generators
+    BEFORE=$(git status --porcelain website/content | sort)
+    if ! run_generators; then
+        bad
+        note "a site generator exited non-zero, so it rewrote nothing and"
+        note "'unchanged' proves nothing about the mirror."
+        tail -10 "$GEN_OUT"
+    else
+        AFTER=$(git status --porcelain website/content | sort)
+        if [ "$BEFORE" = "$AFTER" ]; then
+            ok
+        else
+            bad
+            note "a generator rewrote a site page, so the mirror was stale."
+            note "The regeneration already ran; review and stage the result."
+        fi
+    fi
+    rm -f "$GEN_OUT"
 fi
+# <<< END site-mirror-gate
 if git diff --name-only HEAD -- docs/benchmarks.md website/content/docs/benchmarks.md 2>/dev/null \
     | grep -q . ; then
     CHANGED=$(git diff --name-only HEAD -- docs/benchmarks.md website/content/docs/benchmarks.md | wc -l)
@@ -167,17 +305,23 @@ fi
 #     is how this script reported clean on a commit that then bounced on three
 #     ratchets at once: the two new pages did not exist as far as
 #     `docs_drift_test` was concerned. Stage first, or check here.
+#
+#     `*.rs` is here for the check directly above: `git diff HEAD` does not see
+#     an untracked file either, so a whole new test FILE moves the homepage
+#     count by however many tests it holds while the diff heuristic counts
+#     zero. Same class as a missing tool -- nothing to look at read as nothing
+#     wrong -- so it degrades the same way.
 # ---------------------------------------------------------------------------
 step "new files staged for the ratchets"
-UNTRACKED_MD=$(git ls-files --others --exclude-standard -- '*.md' | grep -v '^SESSION_STATE.md$' || true)
-if [ -z "$UNTRACKED_MD" ]; then
+UNTRACKED=$(git ls-files --others --exclude-standard -- '*.md' '*.rs' | grep -v '^SESSION_STATE.md$' || true)
+if [ -z "$UNTRACKED" ]; then
     ok
 else
-    warn
-    note "untracked markdown the tracked-file gates cannot see yet:"
-    printf '      %s\n' $UNTRACKED_MD
-    note "git add them, then re-run: the file, table, wiki-link and docs-page"
-    note "ratchets all count tracked files and will move."
+    degraded
+    note "untracked files the tracked-file gates cannot see yet:"
+    printf '      %s\n' $UNTRACKED
+    note "git add them, then re-run: the file, table, wiki-link, docs-page and"
+    note "homepage-count ratchets all read tracked files and will move."
 fi
 
 # ---------------------------------------------------------------------------
@@ -214,8 +358,17 @@ if cargo fmt --all -- --check >/dev/null 2>&1; then ok; else
     note "run: cargo fmt --all"
 fi
 
+# >>> BEGIN summary
 printf '\n'
-if [ "$FAILED" = "0" ]; then
+if [ "$FAILED" = "0" ] && [ "$DEGRADED" != "0" ]; then
+    # "Preflight clean" under a WARN is the sentence this script printed on
+    # 2026-08-10 while two blocking gates had not run at all. It does not get
+    # to print it again.
+    printf '%bPreflight clean MINUS %d check(s) that could not run%b -- the WARN\n' \
+        "$YELLOW" "$DEGRADED" "$NC"
+    printf 'lines above. Those gates block in CI, so this is an UNMEASURED tree\n'
+    printf 'rather than a green one. PREFLIGHT_STRICT=1 fails on them instead.\n'
+elif [ "$FAILED" = "0" ]; then
     printf '%bPreflight clean.%b The hook still runs the suite, clippy, the corpus\n' "$GREEN" "$NC"
     printf 'gate and the feature matrix -- this only means the paperwork is right.\n'
 else
@@ -223,3 +376,4 @@ else
     printf 'from the hook costs a full suite run.\n'
 fi
 exit "$FAILED"
+# <<< END summary
