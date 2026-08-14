@@ -13,6 +13,7 @@
 pub mod charging_vector;
 pub mod diagnosis;
 pub mod dialog;
+pub(crate) mod dialog_state_machine;
 pub mod dialog_store;
 pub mod dsl;
 pub mod lint;

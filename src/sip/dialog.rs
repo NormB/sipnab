@@ -12,8 +12,8 @@ use std::net::IpAddr;
 use chrono::{DateTime, Utc};
 
 use super::SipMessage;
+use super::dialog_state_machine::{Arrival, Cell, family_of_seed, transition};
 use super::method::SipMethod;
-use super::response_codes::{ResponseClass, response_class};
 use super::sdp_timeline::SdpExchange;
 use super::timing::DialogTiming;
 
@@ -328,17 +328,22 @@ impl SipDialog {
 
 /// Transition the dialog state based on a new SIP message.
 ///
-/// Applies the state machine rules for the dialog's initial method:
-/// - **INVITE**: 100→Trying, 180/183→Ringing, 2xx→InCall,
-///   declined/failed→Failed, CANCEL or 487→Cancelled, BYE→Completed
-/// - **REGISTER**: 2xx→Registered, declined/failed→Failed
-/// - **SUBSCRIBE**: 2xx→Active, NOTIFY→Active, declined/failed→Terminated
-/// - **all other methods**: 2xx→Completed, declined/failed→Failed
+/// Reads the cell the transition table declares for this dialog's family, the
+/// arriving message and the current state, and applies it when it is a move.
+/// The table lives in `sip::dialog_state_machine`, which carries the rules and
+/// their RFC citations; this function is the only thing that applies them, and
+/// it decides nothing of its own.
 ///
-/// Every handler classifies through [`response_class`]. An auth challenge is
-/// intermediate everywhere, and a 3xx moves the dialog to `Redirected`.
+/// Two coordinates come off the message. The dialog's **family** comes from
+/// the method that opened it, corrected for the four methods that cannot open
+/// one — a capture beginning on a `BYE` or a `CANCEL` is an INVITE dialog seen
+/// from its middle, not a dialog of a new kind. The arriving message's
+/// **transaction** is its own method when it is a request and its CSeq method
+/// when it is a response (RFC 3261 §8.1.1.5), which is what separates a `2xx`
+/// that answers the call from a `2xx` that acknowledges the `CANCEL` ending it.
 ///
-/// ACK messages are recorded but do not cause state transitions.
+/// A message that supplies neither — a response with no CSeq, a request with
+/// no method — reaches a declared no-change rather than a guess.
 ///
 /// # Arguments
 ///
@@ -351,14 +356,39 @@ impl SipDialog {
 /// `dialog.to_tag` the first time a To tag appears (typically in the
 /// first response from the far end). No other fields are touched.
 pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
-    match dialog.method {
-        SipMethod::Invite => update_invite_state(dialog, msg),
-        SipMethod::Register => update_register_state(dialog, msg),
-        SipMethod::Subscribe => update_subscribe_state(dialog, msg),
-        _ => {
-            // For unknown methods, apply basic response code logic
-            update_generic_state(dialog, msg);
-        }
+    let family = family_of_seed(&dialog.method);
+    let cseq_method = msg.cseq().map(|(_, m)| SipMethod::parse(m));
+    let cell = if msg.is_request {
+        msg.method.as_ref().map(|method| {
+            // RFC 6665 §8.4: `substate-value *(";" subexp-params)`. Match the
+            // value token exactly — `starts_with("terminated")` would also
+            // fire on `terminatedfoo`.
+            let subscription_state = msg
+                .header("Subscription-State")
+                .map(|v| v.split(';').next().unwrap_or("").trim());
+            transition(
+                family,
+                &Arrival::Request {
+                    method,
+                    subscription_state,
+                },
+                dialog.state(),
+            )
+        })
+    } else {
+        msg.status_code.map(|code| {
+            transition(
+                family,
+                &Arrival::Response {
+                    cseq_method: cseq_method.as_ref(),
+                    code,
+                },
+                dialog.state(),
+            )
+        })
+    };
+    if let Some(Cell::To(next)) = cell {
+        dialog.state = next;
     }
 
     // Always capture the to_tag if we haven't yet (remote tag arrives in responses)
@@ -366,222 +396,6 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
         && let Some(tag) = msg.to_tag()
     {
         dialog.to_tag = Some(tag.to_string());
-    }
-}
-
-/// State transitions for INVITE dialogs, driven by `msg`.
-///
-/// Requests: CANCEL→Cancelled, BYE→Completed, REFER while
-/// InCall→Transferring, NOTIFY with `Subscription-State: terminated`
-/// while Transferring→InCall (the transfer subscription ended); ACK and
-/// other in-dialog requests (re-INVITE, UPDATE, …) leave the state
-/// unchanged. Responses: 180/183 while Trying/Ringing→Ringing; 2xx whose
-/// CSeq method is INVITE while Trying/Ringing→InCall; 4xx–6xx whose CSeq
-/// method is INVITE while Trying/Ringing→Failed; 487 whose CSeq method is
-/// INVITE while Trying/Ringing/Cancelled→Cancelled; 100 confirms the current
-/// state without changing it.
-///
-/// # Side effects
-///
-/// May rewrite `dialog.state`; no other fields are touched.
-fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
-    if msg.is_request {
-        match msg.method.as_ref() {
-            Some(SipMethod::Cancel) => {
-                dialog.state = DialogState::Cancelled;
-            }
-            Some(SipMethod::Bye) => {
-                dialog.state = DialogState::Completed;
-            }
-            Some(SipMethod::Ack) => {
-                // ACK doesn't change state
-            }
-            Some(SipMethod::Refer) => {
-                if dialog.state == DialogState::InCall {
-                    dialog.state = DialogState::Transferring;
-                }
-            }
-            Some(SipMethod::Notify) => {
-                // Match the exact Subscription-State value token (RFC 6665
-                // §8.4: `substate-value *(";" subexp-params)`), not a prefix —
-                // `starts_with("terminated")` would also fire on
-                // `terminatedfoo`. Same fix as timing.rs.
-                if dialog.state == DialogState::Transferring
-                    && let Some(sub_state) = msg.header("Subscription-State")
-                    && sub_state.split(';').next().unwrap_or("").trim() == "terminated"
-                {
-                    dialog.state = DialogState::InCall;
-                }
-            }
-            _ => {
-                // Re-INVITE, UPDATE, etc. don't change top-level dialog state
-            }
-        }
-    } else if let Some(code) = msg.status_code {
-        // Only process responses to the dialog's CSeq method context
-        match code {
-            100 => {
-                if dialog.state == DialogState::Trying {
-                    // Stay in Trying (100 confirms server received it)
-                }
-            }
-            180 | 183 => {
-                if dialog.state == DialogState::Trying || dialog.state == DialogState::Ringing {
-                    dialog.state = DialogState::Ringing;
-                }
-            }
-            200..=299 => {
-                let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
-                // A 2xx to INVITE establishes the call. It also wins a race
-                // with a CANCEL (RFC 3261 §9/§15: once the UAS has sent a
-                // final 2xx the CANCEL has no effect), so Cancelled → InCall.
-                if cseq_method == "INVITE"
-                    && matches!(
-                        dialog.state,
-                        DialogState::Trying | DialogState::Ringing | DialogState::Cancelled
-                    )
-                {
-                    dialog.state = DialogState::InCall;
-                }
-                // 200 OK to BYE doesn't further change state (already Completed)
-            }
-            487 => {
-                // 487 Request Terminated: the INVITE transaction was ended by a
-                // CANCEL or BYE (RFC 3261 §21.4.25). The 487 is itself the
-                // proof, so having seen the CANCEL is NOT a precondition — it
-                // can take a different path from the response, and a capture can
-                // start mid-dialog or drop it under sampling.
-                //
-                // Guarded on the pre-answer states for the same reason the 2xx
-                // arm is: once a final 2xx has established the call the CANCEL
-                // has no effect (§9, §15), so a late 487 must not un-answer it.
-                let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
-                if cseq_method == "INVITE"
-                    && matches!(
-                        dialog.state,
-                        DialogState::Trying | DialogState::Ringing | DialogState::Cancelled
-                    )
-                {
-                    dialog.state = DialogState::Cancelled;
-                }
-            }
-            _ => match response_class(code) {
-                // A challenge is intermediate: the client retries with
-                // credentials. Marking Failed here made the 2xx that followed
-                // unable to recover, because its guard only admits the
-                // pre-answer states -- so a challenged call that authenticated
-                // and connected reported Failed unless a BYE happened to be
-                // captured. `domain-primer.md` has always documented the
-                // intermediate rule, and `update_register_state` implemented
-                // it; this arm did not.
-                ResponseClass::Challenge => {}
-                // A 3xx ends this dialog and sends the UAC to the Contact it
-                // names, which is a new dialog with a new Call-ID. Neither a
-                // failure nor an answer. Guarded on the pre-answer states like
-                // the other final-response arms, so a late redirect cannot
-                // un-answer a live call.
-                ResponseClass::Redirect => {
-                    let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
-                    if cseq_method == "INVITE"
-                        && (dialog.state == DialogState::Trying
-                            || dialog.state == DialogState::Ringing)
-                    {
-                        dialog.state = DialogState::Redirected;
-                    }
-                }
-                ResponseClass::Declined | ResponseClass::Failure => {
-                    let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
-                    if cseq_method == "INVITE"
-                        && (dialog.state == DialogState::Trying
-                            || dialog.state == DialogState::Ringing)
-                    {
-                        dialog.state = DialogState::Failed;
-                    }
-                }
-                // Provisional, Success and Cancelled are handled by the arms
-                // above, which match specific codes before reaching here.
-                ResponseClass::Provisional | ResponseClass::Success | ResponseClass::Cancelled => {}
-            },
-        }
-    }
-}
-
-/// State transitions for REGISTER dialogs: a 2xx response moves the dialog to
-/// `Registered` and a declined or failed response to `Failed`. Auth challenges
-/// are intermediate, and requests and provisional responses are ignored.
-/// Classification comes from [`response_class`], shared with the other three
-/// handlers.
-///
-/// # Side effects
-///
-/// May rewrite `dialog.state`.
-fn update_register_state(dialog: &mut SipDialog, msg: &SipMessage) {
-    if !msg.is_request
-        && let Some(code) = msg.status_code
-    {
-        match response_class(code) {
-            ResponseClass::Success => dialog.state = DialogState::Registered,
-            // A challenge is intermediate: the client re-registers with
-            // credentials. A later 2xx marks Registered.
-            ResponseClass::Challenge => {}
-            ResponseClass::Declined | ResponseClass::Failure => {
-                dialog.state = DialogState::Failed;
-            }
-            // A 3xx redirects the registration to another registrar.
-            ResponseClass::Redirect => dialog.state = DialogState::Redirected,
-            ResponseClass::Provisional | ResponseClass::Cancelled => {}
-        }
-    }
-}
-
-/// State transitions for SUBSCRIBE dialogs: an in-dialog NOTIFY request
-/// or a 2xx response moves the dialog to `Active`; a 4xx–6xx response to
-/// `Terminated`; other requests and provisional responses are ignored.
-///
-/// # Side effects
-///
-/// May rewrite `dialog.state`.
-fn update_subscribe_state(dialog: &mut SipDialog, msg: &SipMessage) {
-    if msg.is_request {
-        if msg.method.as_ref() == Some(&SipMethod::Notify) {
-            dialog.state = DialogState::Active;
-        }
-    } else if let Some(code) = msg.status_code {
-        match response_class(code) {
-            ResponseClass::Success => dialog.state = DialogState::Active,
-            // Same rule as REGISTER and INVITE: the client re-subscribes
-            // with credentials, so a challenge ends nothing.
-            ResponseClass::Challenge => {}
-            ResponseClass::Declined | ResponseClass::Failure => {
-                dialog.state = DialogState::Terminated;
-            }
-            ResponseClass::Redirect => dialog.state = DialogState::Redirected,
-            ResponseClass::Provisional | ResponseClass::Cancelled => {}
-        }
-    }
-}
-
-/// Generic state transitions for methods without a dedicated state
-/// machine (OPTIONS, MESSAGE, standalone NOTIFY, …): a 2xx response moves
-/// the dialog to `Completed`, a 4xx–6xx response to `Failed`; requests
-/// and provisional responses are ignored.
-///
-/// # Side effects
-///
-/// May rewrite `dialog.state`.
-fn update_generic_state(dialog: &mut SipDialog, msg: &SipMessage) {
-    if !msg.is_request
-        && let Some(code) = msg.status_code
-    {
-        match response_class(code) {
-            ResponseClass::Success => dialog.state = DialogState::Completed,
-            ResponseClass::Challenge => {}
-            ResponseClass::Declined | ResponseClass::Failure => {
-                dialog.state = DialogState::Failed;
-            }
-            ResponseClass::Redirect => dialog.state = DialogState::Redirected,
-            ResponseClass::Provisional | ResponseClass::Cancelled => {}
-        }
     }
 }
 
@@ -804,12 +618,13 @@ mod tests {
 
     /// A challenged INVITE that then authenticates reaches `InCall`.
     ///
-    /// `domain-primer.md` has always said 401/407 are *intermediate*, and
-    /// `update_register_state` implemented that. `update_invite_state` did not:
-    /// a challenge fell into its `400..=699` arm and set `Failed`, and because
-    /// the 2xx arm only transitions from Trying/Ringing/Cancelled, the call
-    /// could never recover. `outcome_code()` reported 200 while `state` said
-    /// Failed.
+    /// `domain-primer.md` has always said 401/407 are *intermediate*, and the
+    /// REGISTER handler implemented that. The INVITE one did not: a challenge
+    /// fell into its `400..=699` arm and set `Failed`, and because the 2xx arm
+    /// only transitions from Trying/Ringing/Cancelled, the call could never
+    /// recover. `outcome_code()` reported 200 while `state` said Failed. The
+    /// rule is now one cell in `sip::dialog_state_machine` rather than a
+    /// convention four handlers each had to remember.
     ///
     /// A captured BYE hid it, since BYE sets Completed unconditionally — which
     /// is why the sample captures read correctly and this survived. It bit a
@@ -890,24 +705,32 @@ mod tests {
         assert_ne!(d.state, DialogState::InCall);
     }
 
-    /// Every method crossed with every registered response code.
+    /// Every seed method, crossed with every transaction a response can
+    /// answer, crossed with every registered response code, from every state a
+    /// real capture can reach the response in.
     ///
-    /// 14 methods from the IANA registry × 75 response codes = 1050 pairs, each
-    /// driven through `update_state` from a fresh dialog and checked against a
-    /// declared expectation. The expectation is written per (family, class), not
-    /// per pair, so it states a rule rather than a transcript.
+    /// The old sweep was a differential between this list and a second
+    /// hand-written expectation table. Both were keyed the same way, so
+    /// changing the dispatch moved one of them and a *different* cell fell out
+    /// of agreement each time — five narrowings, five cells. The way to make
+    /// it green was to edit the expectation to match the implementation, at
+    /// which point it restated the code instead of stating a rule.
     ///
-    /// This exists because the transitions used to be inline ranges restated
-    /// across four handlers, and the two defects that survived longest — a 487
-    /// that could not move a dialog, and 3xx handled nowhere — were both in the
-    /// spaces between those arms. A pairwise sweep has no spaces.
+    /// It also could not build the cells that mattered. `make_response` was
+    /// always called with the dialog's OWN method, so every response in the
+    /// sweep carried a CSeq matching the seed — and the mid-dialog shape is a
+    /// `CANCEL`-seeded dialog receiving a `487` whose CSeq says `INVITE`. And
+    /// the dialog was fresh, so the starting state was only ever `Trying` or
+    /// `Pending` while three of the four INVITE response arms are guarded on
+    /// the state.
     ///
-    /// The 3xx rows were a known gap when this test was written — a redirect
-    /// left the dialog in its pre-answer state, indistinguishable from a call
-    /// nobody answered. Closing it failed here first, which is what the pinned
-    /// rows were for.
+    /// Both axes are widened here, and the assertions are properties of the
+    /// result rather than agreement with a second copy of the table. The table
+    /// itself is proved in `sip::dialog_state_machine`; what this proves is
+    /// that the pipeline around it — dialog creation, the creating message's
+    /// own transition, family selection — feeds it the right coordinate.
     #[test]
-    fn every_method_and_class_has_a_declared_transition() {
+    fn every_method_and_class_reaches_a_declared_state() {
         use crate::sip::response_codes::{ResponseClass, response_class};
 
         const METHODS: [&str; 14] = [
@@ -926,6 +749,11 @@ mod tests {
             "SUBSCRIBE",
             "UPDATE",
         ];
+        // The transactions a response can answer. Not the full method list:
+        // the axis exists to separate "answers the transaction that decides
+        // this dialog" from "answers some other transaction in it", and these
+        // six cover both sides for every family.
+        const CSEQ_METHODS: [&str; 6] = ["INVITE", "BYE", "CANCEL", "REGISTER", "SUBSCRIBE", "ACK"];
         // Every code in the IANA registry, mirrored from docs/sip-response-codes.md.
         const CODES: [u16; 75] = [
             100, 180, 181, 182, 183, 199, 200, 202, 204, 300, 301, 302, 305, 380, 400, 401, 402,
@@ -934,75 +762,133 @@ mod tests {
             484, 485, 486, 487, 488, 489, 491, 493, 494, 500, 501, 502, 503, 504, 505, 513, 555,
             580, 600, 603, 604, 606, 607, 608,
         ];
+        // How far the dialog is driven before the measured response arrives.
+        // The empty warmup is where the old sweep stopped.
+        const WARMUPS: [&[u16]; 3] = [&[], &[180], &[180, 200]];
 
-        /// What a dialog opened with `method` should look like after `code`,
-        /// starting from the state a fresh dialog carries.
-        fn expected(method: &str, code: u16, start: DialogState) -> DialogState {
-            let class = response_class(code);
-            match method {
-                "INVITE" => match class {
-                    ResponseClass::Provisional => match code {
-                        180 | 183 => DialogState::Ringing,
-                        _ => start,
-                    },
-                    ResponseClass::Success => DialogState::InCall,
-                    ResponseClass::Cancelled => DialogState::Cancelled,
-                    ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
-                    ResponseClass::Redirect => DialogState::Redirected,
-                    // A challenge is intermediate: the client retries.
-                    ResponseClass::Challenge => start,
-                },
-                "REGISTER" => match class {
-                    ResponseClass::Success => DialogState::Registered,
-                    ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
-                    ResponseClass::Redirect => DialogState::Redirected,
-                    _ => start,
-                },
-                "SUBSCRIBE" => match class {
-                    ResponseClass::Success => DialogState::Active,
-                    ResponseClass::Declined | ResponseClass::Failure => DialogState::Terminated,
-                    ResponseClass::Redirect => DialogState::Redirected,
-                    _ => start,
-                },
-                _ => match class {
-                    ResponseClass::Success => DialogState::Completed,
-                    ResponseClass::Declined | ResponseClass::Failure => DialogState::Failed,
-                    ResponseClass::Redirect => DialogState::Redirected,
-                    _ => start,
-                },
-            }
+        // Parsed once and cloned: 14 x 3 x 6 x 75 coordinates would otherwise
+        // re-parse the same few hundred messages tens of thousands of times.
+        let responses: Vec<(u16, &str, SipMessage)> = CODES
+            .iter()
+            .flat_map(|&code| {
+                CSEQ_METHODS
+                    .iter()
+                    .map(move |&m| (code, m, make_response(code, "x", m)))
+            })
+            .collect();
+        let warm_responses: Vec<(u16, SipMessage)> = [180u16, 200]
+            .iter()
+            .map(|&code| (code, make_response(code, "x", "INVITE")))
+            .collect();
+        let warm = |code: u16| -> &SipMessage {
+            &warm_responses
+                .iter()
+                .find(|(c, _)| *c == code)
+                .expect("warmup response built above")
+                .1
+        };
+
+        /// Does this state mean the dialog still has no outcome?
+        fn undecided(state: &DialogState) -> bool {
+            matches!(
+                state,
+                DialogState::Trying | DialogState::Ringing | DialogState::Pending
+            )
         }
 
-        let mut pairs = 0usize;
+        let mut cells = 0usize;
+        let mut warmed_past_setup = 0usize;
         for method in METHODS {
-            for code in CODES {
-                let req = if method == "INVITE" {
-                    make_invite()
-                } else {
-                    make_request(method)
-                };
-                let Some(mut dialog) = SipDialog::new(&req) else {
-                    continue;
-                };
-                let start = dialog.state.clone();
-                update_state(&mut dialog, &make_response(code, "x", method));
-                assert_eq!(
-                    dialog.state,
-                    expected(method, code, start.clone()),
-                    "{method} dialog in {start:?} received {code} \
-                     ({:?}) and became {:?}",
-                    response_class(code),
-                    dialog.state
-                );
-                pairs += 1;
+            let req = if method == "INVITE" {
+                make_invite()
+            } else {
+                make_request(method)
+            };
+            if SipDialog::new(&req).is_none() {
+                continue;
+            }
+            for warmup in WARMUPS {
+                // What `DialogStore::process_message` does at creation: the
+                // creating message's own transition is applied, so a
+                // BYE-seeded dialog starts Completed and a CANCEL-seeded one
+                // starts Cancelled.
+                let mut seeded = SipDialog::new(&req).expect("the seed just constructed");
+                update_state(&mut seeded, &req);
+                for &code in warmup {
+                    update_state(&mut seeded, warm(code));
+                }
+                let start = seeded.state.clone();
+                if !undecided(&start) {
+                    warmed_past_setup += 1;
+                }
+                for (code, cseq_method, response) in &responses {
+                    let mut dialog = SipDialog::new(&req).expect("the seed just constructed");
+                    update_state(&mut dialog, &req);
+                    for &code in warmup {
+                        update_state(&mut dialog, warm(code));
+                    }
+                    update_state(&mut dialog, response);
+                    let class = response_class(*code);
+                    let got = dialog.state.clone();
+                    let seen = format!(
+                        "a {method} dialog in {start:?} received {code} ({class:?}) on a \
+                         {cseq_method} transaction and became {got:?}"
+                    );
+
+                    // A decided dialog is never returned to setup: the
+                    // property that makes the live store's answer independent
+                    // of the order a parallel reader delivers packets in.
+                    if !undecided(&start) {
+                        assert!(
+                            !matches!(got, DialogState::Trying | DialogState::Ringing),
+                            "{seen} — a decided call went back to setup"
+                        );
+                    }
+
+                    // A provisional or a challenge is intermediate by
+                    // definition, so neither may reach an outcome.
+                    if matches!(class, ResponseClass::Provisional | ResponseClass::Challenge) {
+                        assert!(
+                            got == start || got == DialogState::Ringing,
+                            "{seen} — an intermediate response decided the dialog"
+                        );
+                    }
+
+                    // The rule the four `cseq_method == "INVITE"` comparisons
+                    // were each expressing separately: in an INVITE dialog
+                    // only the INVITE transaction says how the call was
+                    // answered. The one exception is named rather than
+                    // excused — a 2xx to a BYE proves the session ended (RFC
+                    // 3261 §15.1.2) — and everything else must change nothing.
+                    // This is the cell a family-only dispatch gets wrong, and
+                    // it gets it wrong by reporting a dead call as a live
+                    // channel.
+                    if matches!(method, "INVITE" | "ACK" | "BYE" | "CANCEL" | "PRACK")
+                        && *cseq_method != "INVITE"
+                    {
+                        if *cseq_method == "BYE" && class == ResponseClass::Success {
+                            assert!(
+                                matches!(got, DialogState::Completed) || got == start,
+                                "{seen} — a 2xx to a BYE may only end the call"
+                            );
+                        } else {
+                            assert_eq!(got, start, "{seen} — but it answers no INVITE");
+                        }
+                    }
+                    cells += 1;
+                }
             }
         }
         assert_eq!(
-            pairs,
-            METHODS.len() * CODES.len(),
-            "swept {pairs} pairs, expected {} — a method stopped constructing a \
-             dialog and its whole row went unchecked",
-            METHODS.len() * CODES.len()
+            cells,
+            METHODS.len() * WARMUPS.len() * CODES.len() * CSEQ_METHODS.len(),
+            "swept {cells} cells — a method stopped constructing a dialog and its \
+             whole row went unchecked"
+        );
+        assert!(
+            warmed_past_setup > 0,
+            "every coordinate started in a pre-answer state — the state axis is \
+             not being exercised, which is the gap this sweep was widened to close"
         );
     }
 

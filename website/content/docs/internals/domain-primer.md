@@ -179,13 +179,23 @@ CANCEL asks to abandon an INVITE with no final response yet. If the callee's
 200 OK crosses it on the wire, both exist in the capture and the naive reading
 ("last response wins") gives the wrong outcome.
 
-The state machine in [`dialog.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) resolves this by
-CSeq method: a CANCEL request moves the dialog to `Cancelled`, and so does the
-487 on its own. Either is sufficient, because a CANCEL can travel a different
-path from the response and a capture can begin mid-dialog — requiring both once
-left a cancelled call sitting in `Ringing` forever. The 487 is the reported
-outcome. The 200 that merely acknowledged the CANCEL transaction drops out,
-because it belongs to a different CSeq.
+The transition table in
+[`dialog_state_machine.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_state_machine.rs) resolves this
+by CSeq method: a CANCEL request moves the dialog to `Cancelled`, and so does
+the 487 on its own. Either is sufficient, because a CANCEL can travel a
+different path from the response and a capture can begin mid-dialog — requiring
+both once left a cancelled call sitting in `Ringing` forever. The 487 is the
+reported outcome. The 200 that merely acknowledged the CANCEL transaction drops
+out, because it belongs to a different CSeq.
+
+The transaction is a coordinate of the table rather than a filter the code
+applies afterwards, and this exchange shows why. A capture may open on any of
+these five messages. Open on the `CANCEL` or the `487` and the caller gave up.
+Open on the `200` and nothing yet says how the call ended — same family, same
+code that establishes a call one line above, opposite meaning. The sibling case
+runs the other way: a `2xx` answering a `BYE` *is* evidence the session ended
+([RFC 3261 §15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so
+a call whose `BYE` fell outside the capture still leaves `InCall`.
 
 <pre class="mermaid">
 sequenceDiagram
