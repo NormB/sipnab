@@ -1159,13 +1159,17 @@ impl CidrRange {
     /// (IPv4 occupies the top 32 bits). Returns the range or a plain-text
     /// reason string for `CidrRange::parse` to wrap.
     fn parse_inner(cidr: &str) -> Result<Self, String> {
-        let (addr_str, prefix_str) = cidr
-            .split_once('/')
-            .ok_or_else(|| "missing /prefix".to_string())?;
-
-        let prefix_len: u8 = prefix_str
-            .parse()
-            .map_err(|e| format!("invalid prefix length: {e}"))?;
+        // A bare address is a HOST, so `--hep-allow 10.0.0.40` means what an
+        // operator plainly intends without their having to know to write
+        // `/32`. Note which way this defaults: a host route is the NARROWEST
+        // reading, so a missing prefix can only ever admit less. Inferring a
+        // classful network from `10.0.0.0` would silently admit sixteen
+        // million addresses nobody named, which is the opposite of what an
+        // allowlist is for.
+        let (addr_str, prefix_str) = match cidr.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (cidr, None),
+        };
 
         let addr: IpAddr = addr_str.parse().map_err(|e| format!("invalid IP: {e}"))?;
 
@@ -1175,6 +1179,14 @@ impl CidrRange {
                 (bits << 96, true, 32u8)
             }
             IpAddr::V6(v6) => (u128::from(v6), false, 128u8),
+        };
+
+        let prefix_len: u8 = match prefix_str {
+            Some(p) => p
+                .parse()
+                .map_err(|e| format!("invalid prefix length: {e}"))?,
+            // Full width for the family: one host, and only that host.
+            None => max_prefix,
         };
 
         if prefix_len > max_prefix {
@@ -4036,5 +4048,55 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(100)).is_err(),
             "allowlist drops everything; no packet should reach the pipeline"
         );
+    }
+
+    /// A bare address is a HOST, so `--hep-allow 10.0.0.40` works without the
+    /// operator having to know to write `/32`.
+    #[test]
+    fn a_bare_ipv4_address_is_accepted_as_a_host_route() {
+        let r = CidrRange::parse("10.0.0.40").expect("a bare address is a host");
+        assert!(r.contains("10.0.0.40".parse().unwrap()), "matches itself");
+        assert!(
+            !r.contains("10.0.0.41".parse().unwrap()),
+            "and nothing else - a bare address must never widen the allowlist"
+        );
+    }
+
+    #[test]
+    fn a_bare_ipv6_address_is_accepted_as_a_host_route() {
+        let r = CidrRange::parse("2001:db8::1").expect("a bare v6 address is a host");
+        assert!(r.contains("2001:db8::1".parse().unwrap()));
+        assert!(!r.contains("2001:db8::2".parse().unwrap()));
+    }
+
+    /// The security-relevant case. An address that LOOKS like a classful
+    /// network must still be a single host: inferring /8 from `10.0.0.0` would
+    /// silently admit sixteen million addresses the operator never named.
+    #[test]
+    fn a_bare_address_is_never_inferred_as_a_classful_network() {
+        let r = CidrRange::parse("10.0.0.0").expect("parses");
+        assert!(r.contains("10.0.0.0".parse().unwrap()));
+        assert!(
+            !r.contains("10.0.0.1".parse().unwrap()),
+            "10.0.0.0 is one host, not 10.0.0.0/8"
+        );
+        assert!(!r.contains("10.255.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn explicit_cidr_still_parses_and_still_bounds() {
+        let r = CidrRange::parse("10.0.0.0/8").expect("cidr");
+        assert!(r.contains("10.1.2.3".parse().unwrap()));
+        assert!(!r.contains("11.0.0.1".parse().unwrap()));
+    }
+
+    /// Malformed input must still be refused with a reason, not silently
+    /// treated as a host.
+    #[test]
+    fn malformed_input_is_still_refused() {
+        assert!(CidrRange::parse("notanip").is_err(), "not an address");
+        assert!(CidrRange::parse("10.0.0.40/").is_err(), "empty prefix");
+        assert!(CidrRange::parse("10.0.0.40/33").is_err(), "prefix too long");
+        assert!(CidrRange::parse("").is_err(), "empty string");
     }
 }
