@@ -65,7 +65,7 @@ fn incomplete_fragment(ip_id: u32) -> ParsedPacket {
         more_fragments: true,
         ip_protocol: 17,
         dscp: None,
-        from_hep: false,
+        input_origin: sipnab::capture::parse::InputOrigin::Wire,
     }
 }
 
@@ -100,7 +100,7 @@ fn idle_tcp_segment(src_port: u16) -> ParsedPacket {
         more_fragments: false,
         ip_protocol: 6,
         dscp: None,
-        from_hep: false,
+        input_origin: sipnab::capture::parse::InputOrigin::Wire,
     }
 }
 

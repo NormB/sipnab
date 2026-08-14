@@ -89,7 +89,7 @@ fn make_rtp_parsed(
         more_fragments: false,
         ip_protocol: 17,
         dscp: None,
-        from_hep: false,
+        input_origin: sipnab::capture::parse::InputOrigin::Wire,
     }
 }
 

@@ -67,6 +67,36 @@ pub struct TcpFlags {
 ///
 /// Produced by [`parse_packet`] after walking through link, network, and
 /// transport headers. Contains everything needed for reassembly and
+/// Where a packet's addressing came from, which decides whether sipnab may
+/// transmit in response to it.
+///
+/// This is a security control, not bookkeeping. Scanner-kill sends a packet to
+/// the address it believes a scanner is at, so the trustworthiness of that
+/// address is the whole question, and the three cases differ:
+///
+/// - [`Wire`](Self::Wire) — read from an observed IP header, on a device or in
+///   a capture file. sipnab saw the addressing itself, so a response goes where
+///   the traffic came from.
+/// - [`Hep`](Self::Hep) — asserted by a remote HEP sender in chunks. Absent
+///   `--hep-auth` an attacker chooses those bytes and could steer a response at
+///   a victim of their choosing, so this is ineligible unless the operator opts
+///   in with `--hep-allow-kill` (SN-01).
+/// - [`Uprobe`](Self::Uprobe) — read out of a process's TLS library, where
+///   **there is no addressing at all**. sipnab never observed a socket, so there
+///   is no address a response could honestly be sent to. Ineligible always,
+///   with no opt-in, because the opt-in would be an invitation to transmit at a
+///   guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputOrigin {
+    /// Addressing observed in an IP header.
+    #[default]
+    Wire,
+    /// Addressing asserted by a remote HEP sender.
+    Hep,
+    /// No addressing observed; bytes lifted from a process.
+    Uprobe,
+}
+
 /// upper-layer parsing.
 #[derive(Debug, Clone)]
 pub struct ParsedPacket {
@@ -132,12 +162,12 @@ pub struct ParsedPacket {
     /// the marking of, which is the failure this feature exists to prevent in
     /// the other direction.
     pub dscp: Option<u8>,
-    /// Whether this packet originated from the HEP listener (its addressing
-    /// came from HEP chunks a remote sender asserted, not from an observed
-    /// IP header). Active responses such as scanner-kill treat HEP-origin
-    /// packets as ineligible by default, since their src/dst are
-    /// attacker-controllable and unauthenticated absent `--hep-auth` (SN-01).
-    pub from_hep: bool,
+    /// Where this packet's addressing came from.
+    ///
+    /// Load-bearing for active responses: see [`InputOrigin`]. This replaced a
+    /// bare `from_hep: bool`, which could describe only two of the three real
+    /// cases and would have had to call a uprobe read "HEP" to make it safe.
+    pub input_origin: InputOrigin,
 }
 
 // ── ICMP error quotes ─────────────────────────────────────────────────
@@ -2264,7 +2294,7 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
             // there is nothing to read and nothing honest to guess. `Some(0)`
             // here would tell an operator their HEP-fed trunk is unmarked.
             dscp: None,
-            from_hep: true,
+            input_origin: crate::capture::parse::InputOrigin::Hep,
         });
     }
 
@@ -2956,7 +2986,7 @@ fn extract_parsed_packet(
             more_fragments,
             ip_protocol,
             dscp,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         });
     }
 
@@ -2987,7 +3017,7 @@ fn extract_parsed_packet(
             more_fragments,
             ip_protocol,
             dscp,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         });
     }
 
@@ -3036,7 +3066,7 @@ fn extract_parsed_packet(
             more_fragments,
             ip_protocol,
             dscp,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         }),
         TransportSlice::Tcp(tcp) => Ok(ParsedPacket {
             frame: None,
@@ -3060,7 +3090,7 @@ fn extract_parsed_packet(
             more_fragments,
             ip_protocol,
             dscp,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         }),
         // ICMP is still not a `ParsedPacket` — it carries no message, and
         // making one would put a header prefix into message counts and dialog
@@ -4686,11 +4716,11 @@ mod tests {
         assert_eq!(parsed.ip_protocol, 17);
     }
 
-    /// A pre-parsed (HEP-listener-origin) packet is flagged `from_hep` so
+    /// A pre-parsed (HEP-listener-origin) packet is flagged `Hep` so
     /// downstream active responses (scanner-kill) can refuse to trust its
     /// attacker-assertable addressing by default (SN-01).
     #[test]
-    fn parse_packet_flags_pre_parsed_as_from_hep() {
+    fn parse_packet_flags_pre_parsed_as_hep_origin() {
         let pkt = Packet::with_pre_parsed(
             Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
             b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec(),
@@ -4703,16 +4733,17 @@ mod tests {
                 ip_protocol: 17,
             },
         );
-        assert!(
-            parse_packet(&pkt).unwrap().from_hep,
-            "HEP-origin must be flagged"
+        assert_eq!(
+            parse_packet(&pkt).unwrap().input_origin,
+            InputOrigin::Hep,
+            "HEP-origin must be recorded, so scanner-kill can refuse it"
         );
     }
 
     /// A normally captured (link/IP/transport) packet is NOT flagged
-    /// `from_hep`, so scanner-kill remains eligible for live/pcap traffic.
+    /// `Hep`, so scanner-kill remains eligible for live/pcap traffic.
     #[test]
-    fn parse_packet_normal_capture_is_not_from_hep() {
+    fn parse_packet_normal_capture_is_wire_origin() {
         let data = build_eth_ipv4_udp(
             [192, 168, 1, 10],
             [192, 168, 1, 20],
@@ -4722,7 +4753,7 @@ mod tests {
         );
         let pkt = make_packet(data, DLT_EN10MB);
         assert!(
-            !parse_packet(&pkt).unwrap().from_hep,
+            parse_packet(&pkt).unwrap().input_origin == InputOrigin::Wire,
             "live capture is not HEP-origin"
         );
     }

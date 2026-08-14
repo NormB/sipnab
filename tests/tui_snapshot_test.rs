@@ -192,7 +192,7 @@ mod tui_snapshots {
                 // it. A fixture left unmarked would pin the "not observed"
                 // branch and let the naming break silently.
                 dscp: Some(46),
-                from_hep: false,
+                input_origin: sipnab::capture::parse::InputOrigin::Wire,
             };
             let rtp1 = RtpHeader {
                 version: 2,
@@ -226,7 +226,7 @@ mod tui_snapshots {
                 more_fragments: false,
                 ip_protocol: 17,
                 dscp: None,
-                from_hep: false,
+                input_origin: sipnab::capture::parse::InputOrigin::Wire,
             };
             let rtp2 = RtpHeader {
                 version: 2,
@@ -278,7 +278,7 @@ mod tui_snapshots {
             // fixture left unmarked would pin the "not observed" branch and
             // let the naming break silently.
             dscp: Some(46),
-            from_hep: false,
+            input_origin: sipnab::capture::parse::InputOrigin::Wire,
         };
         let rtp = RtpHeader {
             version: 2,

@@ -830,7 +830,7 @@ mod tests {
             more_fragments,
             ip_protocol: 17, // UDP
             dscp: None,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         }
     }
 
@@ -860,7 +860,7 @@ mod tests {
             more_fragments: false,
             ip_protocol: 6, // TCP
             dscp: None,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         }
     }
 

@@ -217,7 +217,7 @@ fn rtp_packet(
         more_fragments: false,
         ip_protocol: 17,
         dscp: None,
-        from_hep: false,
+        input_origin: sipnab::capture::parse::InputOrigin::Wire,
     }
 }
 

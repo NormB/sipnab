@@ -1036,7 +1036,7 @@ output path.
   - **In progress — the resolver end exists; the threading is partial (status
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
-    ([`src/capture/resolve.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L216)); the `show_evidence` MCP tool
+    ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
     (`#[tool(` at [`src/mcp/server.rs:4818`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4818), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
@@ -2523,7 +2523,7 @@ so tests that need hex encode it by hand.
   unfragmented DATA chunk per packet. Enables SIGTRAN/Diameter (3GPP IMS).
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
-  `SctpReassembler` ([`src/capture/parse.rs:1752`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1752)), constructed on every
+  `SctpReassembler` ([`src/capture/parse.rs:1782`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1782)), constructed on every
   `PacketProcessor` ([`src/capture/mod.rs:609`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L609), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to

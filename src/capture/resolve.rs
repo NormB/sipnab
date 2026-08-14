@@ -177,33 +177,8 @@ pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
     Ok(FrameRef {
         source: std::sync::Arc::from(source),
         origin: super::packet::FrameOrigin { ordinal, digest },
-        kind: source_kind_of(source),
+        kind: super::packet::FrameSource::from_source_name(source),
     })
-}
-
-/// Recover what a pointer's source names, from the text form.
-///
-/// `uprobe:<comm>/<pid>` is minted by
-/// [`FrameRef::uprobe`](super::packet::FrameRef::uprobe) and never by a
-/// capture reader, so recognising it here is how the kind survives a pointer
-/// being written into JSON and read back. Anything that does not parse as that
-/// exact shape is a wire source, including a file that merely starts with the
-/// word — the pid must be there and must be a number.
-fn source_kind_of(source: &str) -> super::packet::FrameSource {
-    use super::packet::FrameSource;
-    let Some(rest) = source.strip_prefix("uprobe:") else {
-        return FrameSource::Wire;
-    };
-    let Some((comm, pid)) = rest.rsplit_once('/') else {
-        return FrameSource::Wire;
-    };
-    match pid.parse::<u32>() {
-        Ok(pid) if !comm.is_empty() => FrameSource::Uprobe {
-            comm: std::sync::Arc::from(comm),
-            pid,
-        },
-        _ => FrameSource::Wire,
-    }
 }
 
 /// Follow a pointer back to the frame's bytes.

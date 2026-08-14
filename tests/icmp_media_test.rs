@@ -199,7 +199,7 @@ fn store_with_stream(
         more_fragments: false,
         ip_protocol: 17,
         dscp: None,
-        from_hep: false,
+        input_origin: sipnab::capture::parse::InputOrigin::Wire,
     };
     let rtp = RtpHeader {
         version: 2,

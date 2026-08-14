@@ -8570,7 +8570,7 @@ mod tests {
             more_fragments: false,
             ip_protocol: 6,
             dscp: None,
-            from_hep: false,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
         };
         let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
         let mut decrypt = crate::pipeline::MediaDecrypt::default();
