@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.100] - 2026-08-14
 
 ### Added
 
@@ -132,6 +132,26 @@ entry that carries them.
 
 ### Changed
 
+- **BREAKING: `CryptoBackend::hkdf_expand` takes the hash to derive under.**
+  TLS binds that to the negotiated cipher suite and names it in the suite, so it
+  is a parameter of the derivation, never a property of the backend. Callers
+  pass `CipherSuite::hash()`. Inferring it from the PRK length was considered
+  and rejected: it works for TLS 1.3 traffic secrets and not for TLS 1.2, whose
+  master secret is 48 bytes whatever the hash.
+
+- **BREAKING: `HepEndpoint` carries the transport.** It is the fifth element of
+  the 5-tuple the struct already modelled, and the value the HEP IP-protocol
+  chunk reports.
+
+- **BREAKING: `Cli` is 18 `#[command(flatten)]` sub-structs, one per help
+  section.** Field access moves from `cli.field` to `cli.<group>.field`; the
+  parsing surface and every flag are unchanged. Clap's generated parser built
+  all 215 flags in one stack frame, which crossed the 2 MiB stack libtest gives
+  each test: two tests overflowed, and `.cargo/config.toml` had been raising the
+  stack to 8 MiB to hide it. The largest generated group is now 37 fields, the
+  override is gone, and the measurement that justified it is recorded where the
+  override used to be.
+
 - **BREAKING: `--autostop filesize:N` and `--split filesize:N` now count
   MEBIBYTES, not decimal megabytes.** Both multiplied by 1 000 000 while
   `-B/--buffer` had already been corrected to MiB, and while the `--split` help
@@ -155,6 +175,34 @@ entry that carries them.
   memory.
 
 ### Fixed
+
+- **TLS keylog decryption produced nothing for `TLS_AES_256_GCM_SHA384`.** The
+  record layer derived its key material with HKDF-SHA256 whatever the cipher
+  suite said, because `CryptoBackend::hkdf_expand` had no hash parameter for
+  `derive_key_iv` to pass. Every SHA-384 suite therefore derived a key and IV
+  that could not open a single record, and nothing said so: the session was
+  still logged as ready and the AEAD failure was discarded. That suite is
+  OpenSSL's FIRST TLS 1.3 preference, so a default Kamailio, OpenSIPS or
+  Asterisk negotiates it — `--keylog` silently decrypted nothing against the
+  configuration most deployments run. `tls12_prf` had the same defect for the
+  TLS 1.2 PRF, which RFC 5246 also takes from the suite.
+
+- **TLS 1.2 sessions were never built for any suite a deployment negotiates.**
+  The cipher-suite table listed eight static-RSA code points and no ECDHE at
+  all, so a ServerHello offering `ECDHE-RSA-AES256-GCM-SHA384` (0xC030,
+  OpenSSL's default) was unidentified and no session was derived from a
+  `CLIENT_RANDOM` keylog entry. The ECDHE, ECDSA and DHE GCM suites are now
+  recognised, plus two ECDHE CBC ones. ChaCha20-Poly1305 stays deliberately
+  unmapped: the backend implements no such AEAD, so claiming the suite would
+  derive key material that can never be opened.
+
+- **HEP export labelled every message UDP.** `build_hep_v3` wrote a literal 17
+  into the IP-protocol chunk, three lines after correctly deriving the address
+  family from the address. sipnab knows the transport — the pipeline goes out
+  of its way to stamp TLS-recovered SIP as `Tls` "so the pipeline parses (and
+  reports) the true transport origin" — and then discarded it at the HEP
+  boundary, so a collector filtering on transport was given a wrong answer for
+  every TCP and TLS capture. The receiving side already honoured the chunk.
 
 - **`PR_SET_NO_NEW_PRIVS` is now set on the install sipnab recommends.** It was
   set from inside `drop_privileges`, below the early return taken whenever the
