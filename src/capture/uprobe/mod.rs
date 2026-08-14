@@ -19,6 +19,7 @@
 //! is why the truncation below still happens.
 
 pub mod elf;
+pub mod record;
 
 /// Fetch sizes, in bytes, for the banded probe set.
 ///
