@@ -5066,8 +5066,15 @@ fn an_unimplemented_claim_cites_evidence_and_the_evidence_still_holds() {
         }
     }
 
+    // Lowered 5 -> 4 when `mid-dialog-state-machine.md` stopped claiming to be
+    // unbuilt, because it shipped. That is the only doc that left the set, and
+    // it left in the one direction this floor must not block: a design that
+    // gets built is supposed to fall out of a population defined by "claims
+    // nothing exists yet". The floor is anti-vacuity — it catches the phrase
+    // list drifting away from how the docs are actually written — so it moves
+    // only with a named doc and a reason, never to make a run green.
     assert!(
-        checked >= 5,
+        checked >= 4,
         "only {checked} design docs claim something is unbuilt — the phrase list \
          stopped matching and this gate is checking almost nothing"
     );

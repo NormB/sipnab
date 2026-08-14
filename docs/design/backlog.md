@@ -562,17 +562,17 @@ Tiers:
   the timestamp-ordered result — responses are safe because `SipDialog::new`
   derives the method from CSeq, so the INVITE state machine is still selected.
 
-  **Still open, and a hard constraint on this feature:** a non-INVITE *request*
-  arriving first sets `dialog.method` from that request, and `update_state`
-  dispatches on it — so a leading `CANCEL` routes every later message to
-  `update_generic_state`, which inspects only responses and has no CANCEL rule.
-  The call sticks at `Trying`. Pinned by
+  **The second half was open until the mid-dialog state machine landed.** A
+  non-INVITE *request* arriving first set `dialog.method` from that request, and
+  `update_state` dispatched on it — so a leading `CANCEL` routed every later
+  message to the generic handler, which inspects only responses and has no
+  CANCEL rule. The call stuck at `Trying`. Pinned by
   `a_capture_beginning_mid_dialog_reports_trying_a_known_defect`.
 
-  **The obvious fix was tried and REVERTED on 2026-08-06.** Dispatching on the
-  method the request *implies* — a `BYE` or `CANCEL` cannot open a dialog, so
-  it belongs to an INVITE — is almost certainly the right shape, and it is not
-  a one-liner. The INVITE machine guards its `2xx`, `487` and `3xx` arms on
+  **The obvious fix was tried and REVERTED on 2026-08-06,** and it deserved to
+  be. Dispatching on the method the request *implies* — a `BYE` or `CANCEL`
+  cannot open a dialog, so it belongs to an INVITE — is the right shape and is
+  not a one-liner. The INVITE machine guards its `2xx`, `487` and `3xx` arms on
   conditions a `BYE`/`CANCEL`-seeded dialog does not meet (chiefly
   `cseq_method == "INVITE"`), so routing to it leaves cells unmodelled rather
   than filled. Five successive narrowings — dispatch-only rather than
@@ -580,14 +580,26 @@ Tiers:
   rewritten spec matrix — each had
   `every_method_and_class_has_a_declared_transition` find a *different*
   uncovered cell (the last: a BYE dialog in `Trying` receiving `300` stayed
-  `Trying` instead of reaching `Redirected`). Whoever picks this up should
-  budget for completing the INVITE machine's guard set, not for a dispatch
-  tweak.
+  `Trying` instead of reaching `Redirected`).
 
-  Until that is fixed, N parallel readers **must** preserve per-dialog
-  ordering, or sort before the worker's state machine sees the messages.
-  Sharding by host pair does not achieve this on its own: both directions of
-  one call land on one worker, but nothing orders them across files.
+  **Closed.** [`docs/design/mid-dialog-state-machine.md`](mid-dialog-state-machine.md)
+  is the spec and its §0 records what it got wrong. The dispatch is not enough
+  on its own, and the reason the narrowings kept moving is that family is a
+  coarser unit than the transaction a response answers: `INVITE`, `ACK`, `BYE`,
+  `CANCEL` and `PRACK` share a family and four of them carry their own
+  responses, so a family-only fix hands `200 OK (CSeq 1 CANCEL)` to the arm that
+  establishes a call and reports a cancelled call as `InCall`. What shipped is a
+  total table in [`src/sip/dialog_state_machine.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_state_machine.rs)
+  keyed on `(family, arrival, state)` with no wildcard at the family or class
+  level, every no-change carrying a reason, and the differential prover replaced
+  by properties over the table.
+
+  **This lifts PR1's own constraint.** N parallel readers no longer have to
+  preserve per-dialog ordering:
+  `arrival_order_converges_for_every_permutation` is unconditional, where it
+  used to skip the one permutation that leads with a non-INVITE request.
+  Sharding by host pair still puts both directions of one call on one worker,
+  and now nothing downstream cares in what order they land.
 
 - [x] **TUI copy/paste (user-reported 2026-07-24)** — mouse capture blocks the terminal's native drag-select on every view, and the only clipboard feature (call-flow `E` Mermaid export) shells out to pbcopy/xclip, which fails over SSH. Plan: OSC 52 as primary clipboard mechanism (terminal puts text on the local clipboard; works over SSH) with pbcopy/xclip fallback; `y` copy binding on the message-detail pane; a mouse-capture toggle key so native selection works everywhere; help + docs updated (including the Shift+drag bypass tip). **Done:** new `tui::clipboard` module — OSC 52 written to /dev/tty (72 KiB raw bound, char-boundary truncation, xterm-safe base64 size) with silent pbcopy/xclip belt-and-suspenders and honest status wording; `y` yanks the displayed raw message (detached worker + status line, same pattern as `E`); F12 toggles mouse capture (audited free across views; rebind wins; persistent status reminder while off); help view, keybindings docs and website mirror updated with a Copying-text section.
 

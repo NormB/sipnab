@@ -35,6 +35,43 @@ entry that carries them.
 
 ### Fixed
 
+- **A capture that begins mid-dialog reports how the call ended.** Starting a
+  capture while calls are already up is the normal way this tool is used, and
+  it was the case the dialog state machine got wrong: the first message of a
+  call was then a `BYE` or a `CANCEL`, the dialog took its label from that
+  method, and the state machine dispatched on the label — so every later
+  message reached a handler that inspects only responses and has no rule for
+  either request. The call sat at `Trying`, reported as still in progress,
+  hours after it ended, with a complete message log to make it look right.
+  Two operator-visible numbers move as a result: `active_dialog_count` falls on
+  any capture that began mid-dialog, and `active_call_count` behaves
+  differently. That is the defect being fixed, and it will read as a change on
+  a dashboard.
+
+  The dispatch is not the whole fix, and the reason five earlier attempts each
+  failed on a different cell is that the family a message belongs to is coarser
+  than the transaction it answers. `INVITE`, `ACK`, `BYE`, `CANCEL` and `PRACK`
+  share the INVITE dialog family and four of them carry responses of their own,
+  so routing by family alone hands `200 OK (CSeq 1 CANCEL)` to the arm that
+  establishes a call — and a cancelled call then reports `InCall`, counted as a
+  channel in use, which is worse than the `Trying` it replaced. The transitions
+  now live in one total table keyed on the dialog's family, the transaction the
+  arriving message belongs to, and the current state, with no wildcard arm at
+  the family or class level and a stated reason on every cell that
+  deliberately changes nothing. `docs/design/mid-dialog-state-machine.md` is
+  the specification, and its §0 records where that page was wrong.
+
+  Measured over the reference corpus, 61 captures and 39,236 dialogs, before
+  and after: 100 dialogs move into `Cancelled` — 90 from `Completed`, 8 from
+  `Failed`, 2 from `Trying` — and nothing else changes. Every one is a
+  cancelled call that used to report some other outcome, and `InCall` does not
+  move.
+- **A call whose `BYE` was lost no longer counts as a channel in use.** A UAS
+  answers a `BYE` only after terminating the session ([RFC 3261
+  §15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so the
+  `200` is proof the call ended even when the `BYE` itself fell outside the
+  capture — a dropped packet, a one-directional tap, a rotated file. Such a
+  call used to sit in `InCall` until it aged out of the active window.
 - **`--stir-shaken` no longer marks every token in a stored capture `Expired`.**
   The RFC 8224 Section 4.4 `iat` freshness window was measured against the wall
   clock, so the answer depended on when you opened the file rather than on

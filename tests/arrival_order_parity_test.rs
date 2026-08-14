@@ -31,9 +31,9 @@
 //! **identical** to timestamp order — same state, same message count, same
 //! responses — for answered, cancelled and failed calls alike.
 //!
-//! The reason is that the advancing transitions in `update_invite_state` are
-//! guarded by a precondition on the *current* state, while only the terminal
-//! ones are unconditional:
+//! The reason is that the advancing transitions in the INVITE family of
+//! `sip::dialog_state_machine` are guarded by a precondition on the *current*
+//! state, while only the terminal ones are unconditional:
 //!
 //! * `180`/`183` advance only from `Trying` or `Ringing`.
 //! * A 2xx to INVITE advances only from `Trying`, `Ringing` or `Cancelled`.
@@ -41,7 +41,8 @@
 //!
 //! So a late provisional or a late 2xx arriving *after* the call already ended
 //! cannot pull a terminal state backwards — which is exactly the reordering a
-//! parallel reader produces. That is a property of those guards, not luck.
+//! parallel reader produces. That is a property of those guards, not luck, and
+//! `no_cell_returns_a_decided_call_to_setup` states it over the whole table.
 //!
 //! This file exists so that relaxing one of them fails here rather than
 //! silently making `--cores` report a finished call as still up. The
@@ -59,7 +60,6 @@ use sipnab::DialogStore;
 use sipnab::net::TransportProto;
 use sipnab::sip::dialog::DialogState;
 use sipnab::sip::message::SipMessage;
-use sipnab::sip::method::SipMethod;
 use sipnab::sip::parser::parse_sip_bytes;
 
 const CALLER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
@@ -323,26 +323,25 @@ fn timestamp_order_reaches_the_real_outcome() {
     }
 }
 
-/// The property PR1 is blocked on, in the range where it HOLDS.
+/// The property PR1 is blocked on, over every permutation without exception.
 ///
-/// Every permutation whose first message is an INVITE **or any response**
-/// converges on the timestamp-ordered result. Responses are safe because
-/// `SipDialog::new` derives the dialog method from the response's CSeq, so the
-/// INVITE state machine is still the one selected.
+/// Every arrival order converges on the timestamp-ordered result. This used to
+/// carry an exemption: `late_terminal` can lead with a non-INVITE REQUEST, and
+/// a dispatch keyed on the method that opened the dialog then selected a
+/// machine with no rule for a `BYE` or a `CANCEL`. That order was skipped
+/// rather than asserted, so the convergence property was being claimed for
+/// every case except the one that was broken. The exemption is gone with the
+/// defect: `sip::dialog_state_machine` keys the dispatch on the transaction a
+/// message belongs to, and every guard that advances a dialog tests the
+/// current state, so nothing a later arrival carries can pull a decided call
+/// backwards.
 #[test]
-fn arrival_order_converges_when_the_invite_machine_is_selected() {
+fn arrival_order_converges_for_every_permutation() {
     for shape in [Shape::Answered, Shape::Cancelled, Shape::Failed] {
         let n = call_messages(shape).len();
         let baseline = observe(shape, &(0..n).collect::<Vec<_>>());
 
         for (name, order) in permutations(n) {
-            // `late_terminal` is the one order that can lead with a non-INVITE
-            // REQUEST, which selects the wrong state machine. That is a known,
-            // unfixed defect pinned by its own test below, not a convergence
-            // failure this test should also report.
-            if name == "late_terminal" && first_is_non_invite_request(shape, &order) {
-                continue;
-            }
             let got = observe(shape, &order);
             assert_eq!(
                 got, baseline,
@@ -356,40 +355,24 @@ fn arrival_order_converges_when_the_invite_machine_is_selected() {
     }
 }
 
-/// Does the first message of `order` create the dialog from a non-INVITE
-/// REQUEST? That is the one shape that selects the wrong state machine.
-fn first_is_non_invite_request(shape: Shape, order: &[usize]) -> bool {
-    let msgs = parsed_call(shape);
-    let first = &msgs[order[0]];
-    first.is_request && first.method.as_ref().map(SipMethod::as_str) != Some("INVITE")
-}
-
-/// **A capture that BEGINS MID-DIALOG still reports the wrong outcome.** This
-/// pins a KNOWN, UNFIXED defect so it cannot be mistaken for working.
+/// A capture that BEGINS MID-DIALOG reports the outcome it saw.
 ///
 /// Start capturing while calls are already up — which is most captures on a
 /// busy server — and the first message of a call is a `BYE` or a `CANCEL`,
-/// never the INVITE. `SipDialog::new` then labels the dialog with that method,
-/// and `update_state` dispatches the state machine on the label, so every later
-/// message routes to `update_generic_state` — which inspects only responses and
-/// has no rule for BYE or CANCEL. The call sits at `Trying`: reported as still
-/// in progress, with a complete message log to make it look right.
+/// never the INVITE. `SipDialog::new` labels the dialog with that method, and
+/// `update_state` used to dispatch the state machine on that label: every later
+/// message went to a handler that inspects only responses and has no rule for
+/// either request, so the call sat at `Trying`, reported as still in progress,
+/// with a complete message log to make it look right.
 ///
-/// The obvious fix — dispatch on the method the request *implies*, since BYE
-/// and CANCEL cannot open a dialog (RFC 3261 §15, §9) — was tried and reverted
-/// on 2026-08-06. It is almost certainly the right shape, but the INVITE
-/// machine guards its `2xx`, `487` and `3xx` arms on conditions a BYE/CANCEL
-/// response does not meet, and `every_method_and_class_has_a_declared_transition`
-/// found a different unmodelled cell on each of five attempts. Landing a
-/// half-modelled state machine in the thing that decides whether a call is up
-/// is worse than the bug it fixes.
-///
-/// Asserted rather than left failing, because this file must be green on
-/// `main`. When the dispatch fix lands properly, this test FAILS — and that is
-/// the signal to replace it with the convergence assertion it is standing in
-/// for.
+/// This test replaces the XFAIL that pinned that defect. The fix is not the
+/// dispatch change on its own — routing a `CANCEL`-seeded dialog into the
+/// INVITE machine also hands it the arm that answers a call, and the `200 OK`
+/// acknowledging the `CANCEL` then reports the cancelled call as `InCall`. The
+/// third message below is that `200`, and it is why this asserts `Cancelled`
+/// rather than merely "not `Trying`".
 #[test]
-fn a_capture_beginning_mid_dialog_reports_trying_a_known_defect() {
+fn a_capture_beginning_mid_dialog_reports_the_outcome_it_saw() {
     // Only the ending: CANCEL, then its 487. The INVITE was before the capture.
     let msgs = parsed_call(Shape::Cancelled);
     let mut store = DialogStore::new(64, false);
@@ -401,12 +384,15 @@ fn a_capture_beginning_mid_dialog_reports_trying_a_known_defect() {
         .expect("a mid-dialog capture still yields a dialog");
     assert_eq!(
         *dialog.state(),
-        DialogState::Trying,
-        "known defect: a capture opening on the CANCEL reports the call as \
-         still Trying. If this is now Cancelled the defect is FIXED — replace \
-         this test with a convergence assertion and update PR1 in \
-         docs/design/backlog.md. Got {:?}",
+        DialogState::Cancelled,
+        "a capture opening on the CANCEL must report the call as cancelled, \
+         not as still being set up. Got {:?}",
         dialog.state()
+    );
+    assert_eq!(
+        *dialog.state(),
+        Shape::Cancelled.expected_state(),
+        "and it must reach the same outcome a capture of the whole call does"
     );
 }
 

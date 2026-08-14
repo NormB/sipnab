@@ -1,11 +1,15 @@
 # The mid-dialog state machine
 
-**Status:** DESIGN. Nothing here is implemented.
-**Verified against:** `3267b08`, working tree.
+**Status:** IMPLEMENTED. The table lives in
+[`src/sip/dialog_state_machine.rs`](../../src/sip/dialog_state_machine.rs); §0
+records what shipped, what did not, and the three places this page was wrong.
+**Written against:** `3267b08`. **Re-verified and implemented against:**
+`4651932`.
 **Backlog:** [`backlog.md`](backlog.md) **PR1**, the defect content at `:539-586`.
-**Pinned by:** `a_capture_beginning_mid_dialog_reports_trying_a_known_defect`
-([`arrival_order_parity_test.rs:389`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L389)).
-**Check:** `grep -n 'SipMethod::Bye =>' src/sip/dialog.rs` exits 1 — BYE still falls through the catch-all.
+**Pinned by:** `a_capture_beginning_mid_dialog_reports_the_outcome_it_saw`
+([`arrival_order_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs))
+and [`tests/mid_dialog_state_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/mid_dialog_state_test.rs).
+**Check:** `grep -c 'SipMethod::Bye =>' src/sip/dialog_state_machine.rs` prints 1.
 
 **Read `15b6337`'s commit message before this page.** Its closing sentence is the
 constraint everything below is written under:
@@ -15,9 +19,60 @@ constraint everything below is written under:
 
 **One correction to where this lives.** The defect is routinely referred to as
 being in [`src/sip/message.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs). It is not — that file has no state dispatch at
-all. Everything below is [`src/sip/dialog.rs`](../../src/sip/dialog.rs), with the
+all. Everything below was [`src/sip/dialog.rs`](../../src/sip/dialog.rs), with the
 creation-branch call site in
 [`src/sip/dialog_store.rs`](../../src/sip/dialog_store.rs).
+
+## 0. What shipped, and where this page was wrong
+
+Three claims below did not survive re-verification. Two are stale facts, and
+the third would have shipped a worse defect than the one it closes.
+
+**§3's central proposal is wrong, and §5 contradicts it.** §3 says dispatching
+on the arriving message's *family* makes the four `cseq_method == "INVITE"`
+tests "disappear from the response arms because dispatch has already
+established the family". It does not, because family is not the coordinate
+those tests were expressing. `INVITE`, `ACK`, `BYE`, `CANCEL` and `PRACK` all
+belong to the INVITE family and four of them carry responses of their own, so a
+family-only dispatch routes `200 OK (CSeq 1 CANCEL)` into the arm that
+establishes a call: a cancelled call then reports `InCall`, counted as a
+channel in use. That is strictly worse than the `Trying` it replaces, and it is
+what a reader implementing §3 literally would have built. §5's own `Arrival`
+type carries the CSeq **method**, not its family, so the type was right and the
+prose beside it was not. `a_200_to_the_cancel_does_not_answer_the_call` pins
+the cell.
+
+**§7's fourth open question has an answer, and it is "yes".** The dialog's own
+family is needed, not only the arrival's. `NOTIFY` is the counterexample: the
+same request ends a transfer inside an INVITE dialog ([RFC 3515 §2.4.6](https://www.rfc-editor.org/rfc/rfc3515#section-2.4.6)) and
+activates a subscription inside a SUBSCRIBE one ([RFC 6665 §4.1.2](https://www.rfc-editor.org/rfc/rfc6665#section-4.1.2)), and nothing
+on the message distinguishes the two. `transition` therefore keeps the
+`family` parameter §5 gave it.
+
+**§1's cost claim is now half true.** "Counted in `active_dialog_count`
+forever" was accurate at `3267b08` and is not at HEAD: `ACTIVE_IDLE_WINDOW`
+bounds that gauge to an hour since the dialog was last touched, so a stuck
+dialog ages out rather than growing with uptime. The other half stands — the
+call is still invisible to `active_call_count`, still mislabelled in every
+report and filter, and still outside both fraud detectors.
+
+**What shipped.** A total transition table keyed on
+`(family, arrival, state)`, wildcard-free at the family and class level, with
+every non-move carrying a reason. `family_of_seed` maps `ACK`, `BYE`, `CANCEL`
+and `PRACK` to the INVITE family — the four that presuppose an INVITE and
+cannot open a dialog — and `dialog.method` is untouched, as §3 intended. One
+cell arrived that this page never named: a `2xx` answering a `BYE` is proof the
+session ended ([RFC 3261 §15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so a call whose `BYE` fell outside the
+capture now leaves `InCall` instead of being counted as a live channel until it
+ages out. Its sibling is the trap above — a `2xx` answering a `CANCEL` proves
+only that the cancellation arrived (§9.1) — and the two together are why the
+transaction is a coordinate and the family is not enough.
+
+**What did not ship, deliberately.** `UPDATE`, `INFO`, `REFER` and `NOTIFY`
+keep their own family. Moving them would also decide what a dialog seeded by
+one *starts* as, which is §7's second open question and is not answerable from
+the code. The two fraud detectors stay off for mid-dialog-seeded calls (§6),
+and that remains a known defect this change does not close.
 
 ## 1. The defect, in four lines of code
 
@@ -59,6 +114,11 @@ operators graph: counted in `active_dialog_count` forever, invisible to
 it *"the concurrent-call figure — the one that maps to channels in use, to a
 carrier's simultaneous-call limit, and to the alert an operator actually
 wants."*
+
+*Half of that stopped being true after this page was written, and every line
+number in it moved. `ACTIVE_IDLE_WINDOW` now bounds `active_dialog_count` to an
+hour since the dialog was last touched, so a stuck dialog ages out instead of
+growing with uptime; the invisibility to `active_call_count` stands. See §0.*
 
 And two security detectors are **silently off** for every such call.
 `record_if_short_call` — wangiri detection — takes an early `return None` unless
@@ -154,7 +214,7 @@ guard at all — it is a **dispatch decision written inside the wrong function**
 It is there because the dispatch above it used the wrong key and the response
 arms had to re-derive the right one locally.
 
-So the proposal is:
+So the proposal was:
 
 ```
 family(msg) = family_of(msg.method)                if msg.is_request
@@ -163,8 +223,17 @@ family(msg) = family_of(msg.method)                if msg.is_request
 
 and `update_state` dispatches on `family(msg)`, not on `dialog.method`. The four
 `cseq_method == "INVITE"` tests then disappear from the response arms because
-dispatch has already established the family. What stays behind in those arms is
-the part that was always the real content — the **state** guards:
+dispatch has already established the family.
+
+**The paragraph above is wrong, and §0 says why.** Family is coarser than the
+transaction, so collapsing the two hands `200 OK (CSeq 1 CANCEL)` to the arm
+that answers a call. What shipped keeps the transaction as its own coordinate:
+the dialog's family selects the machine, and the arriving message's CSeq method
+selects which of that machine's transactions the response speaks for. The
+string comparisons are gone; the distinction they were making is not.
+
+What §3 got right is the rest of it — that the guards which stay behind in
+those arms are the part that was always the real content, the **state** guards:
 
 ```rust
 matches!(dialog.state, DialogState::Trying | DialogState::Ringing | DialogState::Cancelled)
@@ -227,6 +296,14 @@ already load-bearing: a message with no CSeq and no method never reaches
 guards this in miniature with its `pairs` count assertion
 ([`dialog.rs:1000-1006`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1000-L1006)): *"a method stopped
 constructing a dialog and its whole row went unchecked."*
+
+**Two kinds shipped, not three.** The `Unconstructible` row above turned out to
+buy nothing this page's own argument does not already supply. A response with
+no CSeq reaches the table as `Arrival::Response { cseq_method: None, .. }` and
+gets a stated reason like every other cell, which is a claim a reader can
+disagree with — where "no input can reach this cell" is a claim about the world,
+and §4's opening paragraph is an argument for not making those. The count
+assertion survives as `the_sweep_covers_every_declared_cell`.
 
 ### The coordinate is wrong on two axes, not one
 
@@ -322,6 +399,14 @@ entry nobody exercises is indistinguishable from a typo, and the difference
 between a complete table and a complete-and-exercised one is the whole subject of
 this page.
 
+**Done, and it did fail first.** The widened sweep is
+`every_method_and_class_reaches_a_declared_state`, which crosses the 14 seed
+methods with six CSeq methods, all 75 codes and three warm-up depths, applies
+the creating message's own transition the way `process_message` does, and
+carries both anti-vacuity guards: the cell count, and an assertion that some
+coordinate started outside a pre-answer state. The bitmap is
+`every_declared_destination_is_reachable_and_every_state_is_swept`.
+
 ### O3. Do not rebuild the differential that failed
 
 §2 established that the prover is a differential between two hand-written tables
@@ -335,7 +420,11 @@ it. Properties, each a quantified statement over every cell:
 - **Terminal states are absorbing for the wrong family.** No arrival whose family
   differs from the dialog's may move `Completed`, `Cancelled`, `Failed`,
   `Expired` or `Terminated`. This is the rule the four `cseq_method == "INVITE"`
-  guards were expressing, stated once instead of four times.
+  guards were expressing, stated once instead of four times. *Shipped in a
+  sharper form, because family was the wrong unit (§0):
+  `only_the_invite_transaction_decides_how_a_call_was_answered` allows exactly
+  one destination outside the INVITE transaction — `Completed`, from a `2xx`
+  answering a `BYE` — and names why.*
 - **No cell moves an answered call back to a pre-answer state.** Nothing may take
   `InCall` to `Trying` or `Ringing`.
 - **The 2xx/CANCEL race resolves one way.** A 2xx in the INVITE family from
@@ -351,6 +440,11 @@ it. Properties, each a quantified statement over every cell:
 A property gate can fail on a table nobody hand-wrote a second time, which is
 precisely what the differential could not do.
 
+**Done.** All five properties ship as tests beside the table, over one shared
+enumerator so no property can quietly sweep a narrower space than another. Each
+was mutation-tested: the inverse edit was applied to the table, the property
+observed to fail, and the edit reversed.
+
 ### O4. Corpus differential — the acceptance gate
 
 The fix changes state for real captures, so the acceptance evidence is a
@@ -363,17 +457,37 @@ Anything less than 100% on that corpus is a critical failure by this project's
 own standard. The corpus is outside the repository and neither it nor any
 identifier derived from it may be committed.
 
-**Not done.** No corpus run has been performed for this page.
+**Done.** 61 captures, 39,236 dialogs, replayed through `process_message`
+before and after. The dialog count is identical, no state appears that was not
+there before, and four buckets move:
+
+- 90 dialogs `Completed` → `Cancelled`. A `CANCEL`-seeded dialog used to reach
+  the generic handler, where the `200` acknowledging its own `CANCEL` is a
+  plain 2xx and set `Completed`. These are cancelled calls that were reported
+  as calls which finished normally.
+- 8 `Failed` → `Cancelled`. Same seed, but the response to the `CANCEL` was a
+  4xx, which the generic handler read as the call failing.
+- 2 `Trying` → `Cancelled`. The pinned defect exactly: `CANCEL` then `487`,
+  with nothing the generic handler had a rule for.
+- 100 arrive in `Cancelled`, which is 90 + 8 + 2.
+
+Every movement is attributable to a declared cell, and every one runs the same
+way — a cancelled call now says it was cancelled. `InCall` does not move, which
+is the number that matters most here: the family-only fix §0 rejects would have
+moved dialogs *into* it.
 
 ### O5. The arrival-order gate closes with the fix
 
-`arrival_order_parity_test.rs` currently pins the defect twice — the XFAIL at
-[`:389`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L389) and the `continue` at
-[`:336-342`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L336-L342). Both are deleted as part
-of the change, and `arrival_order_converges_when_the_invite_machine_is_selected`
-becomes unconditional. If it cannot be made unconditional, the fix is not
-finished — that test is the statement of the property this whole exercise exists
-to obtain.
+`arrival_order_parity_test.rs` used to pin the defect twice — an XFAIL asserting
+`Trying`, and a `continue` that excused the one permutation which leads with a
+non-INVITE request. Both are gone. The XFAIL is now
+`a_capture_beginning_mid_dialog_reports_the_outcome_it_saw`, asserting
+`Cancelled` and asserting it equals what a capture of the whole call reaches;
+the exemption is gone from
+`arrival_order_converges_for_every_permutation`, which is unconditional.
+
+**Done.** The XFAIL flipped red on the fix exactly as its own doc comment
+predicted, which is how the change was verified rather than assumed.
 
 PR1's own constraint lifts at the same moment: *"Until that is fixed, N parallel
 readers **must** preserve per-dialog ordering, or sort before the worker's state
@@ -415,6 +529,23 @@ machine sees the messages."*
 
 ## 7. Open questions
 
+Three of the six are answered. The status line on each says which, and the
+question is left standing rather than deleted so the reasoning survives.
+
+- **ANSWERED — no.** *Does the dialog's own family need inferring at all, or
+  only the arrival's?* `NOTIFY` settles it: the same request ends a transfer in
+  an INVITE dialog and activates a subscription in a SUBSCRIBE one, and nothing
+  on the message tells the two apart. `transition` keeps its `family`
+  parameter.
+- **ANSWERED — the four that cannot open a dialog, and no more.** *Which family
+  does each method belong to?* `ACK`, `BYE`, `CANCEL` and `PRACK` join the
+  INVITE family with a citation each. `UPDATE`, `INFO`, `REFER` and `NOTIFY`
+  stay where they were, because moving them also decides the second question
+  below, which is still open.
+- **ANSWERED — no.** *Should `expected()` survive at all?* It did not. The
+  differential is gone and no per-cell rule needed keeping, so the §2 trap does
+  not reopen anywhere.
+
 - **Does `dialog.method` have to be corrected after all, and if so how?** §6's
   third bullet turns this from a presentation choice into a correctness one: two
   fraud detectors gate on it, and leaving it alone leaves them off for the
@@ -437,19 +568,12 @@ machine sees the messages."*
   today. NOTIFY, REFER, UPDATE, PUBLISH, INFO and MESSAGE are not obviously
   assigned by anything in the current code — the existing `_` arm has never had
   to decide. Each needs an RFC citation, not a preference.
-- **Does the dialog's own family need inferring at all, or only the arrival's?**
-  §3 dispatches purely on the arriving message. That may be sufficient, in which
-  case `Family` is a property of the message and never of the dialog, and the
-  transition function's first parameter disappears. Not resolved here, and it
-  changes the table's shape.
 - **How many of the widened cells are genuinely reachable?** The count in §4 is
-  arithmetic, not a claim about traffic. The coverage bitmap in O2 will answer
-  it, and the answer decides whether the table can be hand-written or has to be
-  generated.
-- **Should `expected()` survive at all?** O3 recommends replacing the differential
-  with property assertions. If some differential is kept for cells whose rule is
-  genuinely per-cell rather than per-property, the trap in §2 reopens for those
-  cells and needs its own answer.
+  arithmetic, not a claim about traffic. The coverage bitmap in O2 answers a
+  weaker version of it — every state the table can reach is reached, and nine of
+  the thirteen are destinations — and the table stayed hand-written, so the
+  question of whether it would have to be generated never arose. What the bitmap
+  does not answer is how many cells real traffic exercises.
 - **Does the merge path need the same treatment?** `update_state` has a third
   call site on the absorb/merge path
   ([`dialog_store.rs:1269`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1269)), and
