@@ -228,8 +228,8 @@ The first command should print a diagnosis object like:
     "nat_mismatch": true,
     "no_media": false,
     "hints": [
-      "RTP from 203.0.113.7 -> 192.0.2.5 only. No reverse media flow detected.",
-      "SDP c= address (198.51.100.20) differs from actual RTP source (203.0.113.7) — likely NAT issue.",
+      "RTP flowed 203.0.113.7:41002 -> 192.0.2.5:16386 only (SSRC 0x1a2b3c4d). No reverse media flow detected.",
+      "RTP arrived from 203.0.113.7:41002 at 192.0.2.5:16386, and no SDP in this dialog advertised 203.0.113.7 (it offered 198.51.100.20:16384) — the media source was rewritten, typically by NAT, so replies sent to 198.51.100.20:16384 never reach it.",
       "One-way audio combined with NAT mismatch — media likely being sent to the wrong address."
     ]
   }
@@ -239,6 +239,7 @@ The first command should print a diagnosis object like:
 **What to look for:**
 
 - `diagnosis.one_way_audio: true` confirms the engine saw RTP in only one direction for ≥6s after call establishment.
+- The ports in the hint are where the fix goes. Each side advertises a receive port in its SDP and, under symmetric RTP (RFC 4961), should send from that same port. A hint reading `advertised 16384 but sends from 41002` means the far end is replying to a port nothing is sending from, so no NAT pinhole was ever opened there — that is the firewall rule, port-forward or RTP port range to go and check. When the ports agree, the hint stays quiet about them.
 - `diagnosis.nat_mismatch: true` is the usual root cause — the Contact header / Via address differs from the SDP `c=` line. Common when the upstream SBC isn't rewriting Contact.
 - In the TUI's RTP stream view, look for one stream with packets and one with `0 packets received` — that's the silenced direction.
 

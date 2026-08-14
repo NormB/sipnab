@@ -230,6 +230,12 @@ impl CaptureMedia {
 ///   carries no RTP by agreement, and calling that "no media" would invent a
 ///   fault. A call that negotiated `sendrecv` at any point and then carried
 ///   nothing did fail.
+/// * [`advertised_endpoints`](Self::advertised_endpoints) pairs each of those
+///   addresses with the `m=` port it was advertised on — the RECEIVE port,
+///   which is the only half of the port comparison the packets cannot supply.
+///   Descriptions that decline media (`m=` port 0) or carry no RTP at all
+///   (T.38's `udptl`) are left out: they name a port nothing was ever going to
+///   arrive on.
 /// * [`negotiated`](Self::negotiated) is true when SDP appeared in both a
 ///   request and a response, which is what completes an offer/answer under
 ///   every ordering — INVITE/200, INVITE/183, and the delayed offer carried in
@@ -244,6 +250,22 @@ pub struct MediaContext {
     /// Addresses that do not parse as an IP (an FQDN `c=` line) are absent,
     /// which suppresses the NAT check rather than guessing at it.
     advertised: Vec<IpAddr>,
+    /// Every RTP **receive endpoint** the dialog advertised — the effective
+    /// `c=` address paired with the `m=` port — in first-seen order.
+    ///
+    /// This is the half of the port comparison that only the SDP can supply.
+    /// Each side advertises the port it expects RTP to arrive on, and RFC 4961
+    /// symmetric RTP says it will also send from that port; NATs and plenty of
+    /// endpoints break that, and the far end then replies to a port nothing is
+    /// sending from, so no pinhole exists and the audio is one-way. Recording
+    /// the address alone leaves that comparison unmakeable.
+    ///
+    /// Only descriptions that actually ask to receive RTP are recorded: an
+    /// `m=` port of zero is a declined stream, and a non-RTP transport
+    /// (`m=image ... udptl` for T.38) has no RTP receive port at all. Listing
+    /// either would put a number in front of an operator that no RTP was ever
+    /// going to arrive on.
+    advertised_ports: Vec<(IpAddr, u16)>,
     /// The first advertised address, kept as written, for the report.
     primary: Option<String>,
     /// SDP appeared in both a request and a response: an offer was answered.
@@ -266,6 +288,7 @@ impl Default for MediaContext {
     fn default() -> Self {
         MediaContext {
             advertised: Vec::new(),
+            advertised_ports: Vec::new(),
             primary: None,
             negotiated: false,
             expects_media: false,
@@ -331,11 +354,16 @@ impl MediaContext {
             // T.38 (`m=image ... udptl`) and other non-RTP transports carry no
             // RTP by definition, so their absence is not a media failure.
             let carries_rtp = media.proto.to_ascii_uppercase().contains("RTP");
-            if carries_rtp
-                && media.port != 0
-                && !black_holed
-                && media.direction != SdpDirection::Inactive
+            let asks_for_rtp = carries_rtp && media.port != 0 && !black_holed;
+            if let Some(ip) = parsed
+                && asks_for_rtp
             {
+                let endpoint = (ip, media.port);
+                if !self.advertised_ports.contains(&endpoint) {
+                    self.advertised_ports.push(endpoint);
+                }
+            }
+            if asks_for_rtp && media.direction != SdpDirection::Inactive {
                 self.expects_media = true;
             }
         }
@@ -354,6 +382,63 @@ impl MediaContext {
     /// Whether any exchange described media that was expected to flow.
     pub fn expects_media(&self) -> bool {
         self.expects_media
+    }
+
+    /// Every advertised RTP receive endpoint, in first-seen order.
+    pub fn advertised_endpoints(&self) -> &[(IpAddr, u16)] {
+        &self.advertised_ports
+    }
+
+    /// The receive ports `addr` advertised, in first-seen order.
+    ///
+    /// Usually one. Two or more is ordinary too — an audio and a video `m=`
+    /// line on one address, or a re-INVITE that moved the port — and every one
+    /// of them is a port the far end may legitimately have been told to send
+    /// to, which is why they are all returned rather than reduced to a
+    /// first-wins guess.
+    pub fn receive_ports_for(&self, addr: IpAddr) -> Vec<u16> {
+        self.advertised_ports
+            .iter()
+            .filter(|(a, _)| *a == addr)
+            .map(|(_, p)| *p)
+            .collect()
+    }
+}
+
+/// The ports `addr` advertised for receiving RTP, when they disagree with a
+/// port it was actually observed using.
+///
+/// `None` is the quiet answer, and it covers the two cases that must stay
+/// quiet for different reasons. When the dialog advertised no receive port for
+/// this address — no SDP, an FQDN `c=` line, or a source a NAT rewrote so that
+/// no SDP describes it — there is nothing to compare and naming a port would
+/// be a fabricated value dressed as evidence. When `observed` is one of the
+/// advertised ports, RTP is symmetric exactly as RFC 4961 says it should be,
+/// and printing "advertised 16384, sends from 16384" on every healthy leg
+/// buries the one line that matters.
+fn advertised_ports_disagreeing(ctx: &MediaContext, addr: IpAddr, observed: u16) -> Option<String> {
+    let ports = ctx.receive_ports_for(addr);
+    if ports.is_empty() || ports.contains(&observed) {
+        return None;
+    }
+    Some(
+        ports
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(" or "),
+    )
+}
+
+/// `addr:port` when the dialog advertised exactly one receive port for the
+/// address, and the bare address otherwise.
+///
+/// An address advertised on two ports has no single port to name, and picking
+/// one would turn a guess into what reads as evidence.
+fn advertised_endpoint_label(ctx: &MediaContext, addr: IpAddr) -> String {
+    match ctx.receive_ports_for(addr).as_slice() {
+        [port] => format!("{addr}:{port}"),
+        _ => addr.to_string(),
     }
 }
 
@@ -390,8 +475,26 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
             && media.capture == CaptureMedia::Observed
         {
             diag.no_media = true;
-            diag.hints
-                .push("Media was negotiated and answered, but no RTP was observed.".to_string());
+            // No RTP means no source or destination port to report, so the
+            // advertised receive endpoints are the whole of the evidence — and
+            // they are the firewall rule and RTP port range the operator has to
+            // go and check. A dialog whose `c=` line was an FQDN advertises
+            // none this can name, and then the sentence stops where the data
+            // does.
+            let endpoints: Vec<String> = media
+                .advertised_endpoints()
+                .iter()
+                .map(|(addr, port)| format!("{addr}:{port}"))
+                .collect();
+            diag.hints.push(if endpoints.is_empty() {
+                "Media was negotiated and answered, but no RTP was observed.".to_string()
+            } else {
+                format!(
+                    "Media was negotiated and answered, but no RTP was observed at the \
+                     advertised receive endpoints ({}).",
+                    endpoints.join(", ")
+                )
+            });
         }
         return diag;
     }
@@ -439,11 +542,46 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
 
         if !cn_suppressed {
             diag.one_way_audio = true;
-            if let Some(dir) = directions.first() {
+            // The stream `directions.first()` was derived from: same flow,
+            // but with the ports and the SSRC still attached.
+            if let Some(stream) = dialog_streams.first() {
+                let (src, dst) = (stream.key.src, stream.key.dst);
+                // The SSRC earns its place here and nowhere else: `triage_call`
+                // answers with a `stream_count`, and the stream tools key on
+                // SSRC, so this is what ties the sentence to a row in that list.
                 diag.hints.push(format!(
-                    "RTP from {} -> {} only. No reverse media flow detected.",
-                    dir.0, dir.1
+                    "RTP flowed {src} -> {dst} only (SSRC 0x{:08x}). No reverse media \
+                     flow detected.",
+                    stream.key.ssrc
                 ));
+                // The sending side against its own SDP. This comparison is the
+                // usual cause: the far end replies to the port that was
+                // advertised, nothing is sending from it, so no NAT pinhole was
+                // ever opened there and the reply is dropped on the way back.
+                if let Some(advertised) = advertised_ports_disagreeing(media, src.ip(), src.port())
+                {
+                    diag.hints.push(format!(
+                        "{} advertised {advertised} to receive RTP but sends from {} — \
+                         not symmetric (RFC 4961), so {} replies to {advertised}, where \
+                         nothing is sending and no NAT pinhole was opened.",
+                        src.ip(),
+                        src.port(),
+                        dst.ip()
+                    ));
+                }
+                // The receiving side against its own SDP. Media aimed at a port
+                // the answer never asked for cannot be received however healthy
+                // the sender looks.
+                if let Some(advertised) = advertised_ports_disagreeing(media, dst.ip(), dst.port())
+                {
+                    diag.hints.push(format!(
+                        "{} advertised {advertised} to receive RTP but the media is \
+                         arriving at {} — it is aimed at a port the answer never asked \
+                         for.",
+                        dst.ip(),
+                        dst.port()
+                    ));
+                }
             }
         }
     }
@@ -458,10 +596,13 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
     // of every healthy call as a NAT fault. Set membership is the question
     // that survives contact with a bidirectional call.
     //
-    // Addresses only, never ports: NAT and RTP proxies rewrite the port on a
-    // large share of ordinary calls without breaking anything, while media
-    // arriving from an address nobody advertised is the fault operators are
-    // actually looking for.
+    // The DETECTION compares addresses only, never ports: NAT and RTP proxies
+    // rewrite the port on a large share of ordinary calls without breaking
+    // anything, while media arriving from an address nobody advertised is the
+    // fault operators are actually looking for. The HINT still reports the
+    // ports, because `nat_mismatch` is a verdict and the 5-tuple against the
+    // advertised endpoint is the evidence for it — a boolean the reader cannot
+    // check against the SDP is a boolean they have to take on trust.
     diag.sdp_media = media.primary.clone();
     if !media.advertised.is_empty() {
         for stream in dialog_streams {
@@ -481,9 +622,12 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
                 .or_else(|| media.advertised.first())
             {
                 diag.sdp_media = Some(expected.to_string());
+                let offered = advertised_endpoint_label(media, *expected);
                 diag.hints.push(format!(
-                    "RTP arrived from {actual_src}, which no SDP in this dialog advertised \
-                     (it offered {expected}) — the media source was rewritten, typically by NAT."
+                    "RTP arrived from {} at {}, and no SDP in this dialog advertised \
+                     {actual_src} (it offered {offered}) — the media source was rewritten, \
+                     typically by NAT, so replies sent to {offered} never reach it.",
+                    stream.key.src, stream.key.dst
                 ));
             }
             break;
@@ -759,17 +903,9 @@ mod tests {
         }
     }
 
-    /// Build an answered INVITE dialog whose offer and answer both carry an
-    /// audio SDP at `addr:port` with the given direction attribute.
-    ///
-    /// Two SDP bodies, one in the request and one in the response — the shape
-    /// [`MediaContext::for_dialog`] reads as a completed offer/answer.
-    fn answered_dialog_with_sdp(direction: &str, addr: &str, port: u16) -> SipDialog {
-        use crate::net::TransportProto;
-        use crate::sip::parser::parse_sip;
-        use crate::test_utils::build_sip_message;
-
-        let body = format!(
+    /// An audio SDP body advertising `addr:port` as the receive endpoint.
+    fn sdp_text(direction: &str, addr: &str, port: u16) -> String {
+        format!(
             "v=0\r\n\
              o=- 0 0 IN IP4 {addr}\r\n\
              s=-\r\n\
@@ -778,8 +914,43 @@ mod tests {
              m=audio {port} RTP/AVP 0\r\n\
              a=rtpmap:0 PCMU/8000\r\n\
              a={direction}\r\n"
-        );
-        let build = |first: &str, to: &str| {
+        )
+    }
+
+    /// Build an answered INVITE dialog whose offer and answer both carry an
+    /// audio SDP at `addr:port` with the given direction attribute.
+    ///
+    /// Two SDP bodies, one in the request and one in the response — the shape
+    /// [`MediaContext::for_dialog`] reads as a completed offer/answer.
+    fn answered_dialog_with_sdp(direction: &str, addr: &str, port: u16) -> SipDialog {
+        let body = sdp_text(direction, addr, port);
+        answered_dialog_with_bodies(&body, &body)
+    }
+
+    /// An answered INVITE whose offer advertises one receive endpoint and
+    /// whose answer advertises a different one — the two-sided negotiation a
+    /// real call makes, and the only shape that carries a receive port *per
+    /// side* for the port hints to compare against.
+    fn two_party_dialog(
+        caller: &str,
+        caller_port: u16,
+        callee: &str,
+        callee_port: u16,
+    ) -> SipDialog {
+        answered_dialog_with_bodies(
+            &sdp_text("sendrecv", caller, caller_port),
+            &sdp_text("sendrecv", callee, callee_port),
+        )
+    }
+
+    /// An answered INVITE carrying `offer` in the request and `answer` in the
+    /// response.
+    fn answered_dialog_with_bodies(offer: &str, answer: &str) -> SipDialog {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message;
+
+        let build = |first: &str, to: &str, body: &str| {
             let raw = build_sip_message(
                 first,
                 &[
@@ -808,8 +979,9 @@ mod tests {
         let invite = build(
             "INVITE sip:b@example.net SIP/2.0",
             "To: <sip:b@example.net>",
+            offer,
         );
-        let ok = build("SIP/2.0 200 OK", "To: <sip:b@example.net>;tag=bbb");
+        let ok = build("SIP/2.0 200 OK", "To: <sip:b@example.net>;tag=bbb", answer);
         let mut dialog = SipDialog::new(&invite).expect("dialog from INVITE");
         dialog.messages.push(ok);
         dialog
@@ -836,6 +1008,240 @@ mod tests {
         let diag = diagnose_media(&streams, &MediaContext::default());
         assert!(diag.one_way_audio);
         assert!(diag.hints.iter().any(|h| h.contains("only")));
+    }
+
+    /// Every hint joined, for the port assertions below.
+    fn joined(diag: &MediaDiagnosis) -> String {
+        diag.hints.join(" ")
+    }
+
+    /// The one-way hint names the source port and the destination port.
+    ///
+    /// One-way audio is fixed through port-based artifacts — a firewall rule,
+    /// a NAT pinhole, an RTP port range, the `m=audio <port>` line — so a hint
+    /// that stops at addresses stops exactly where the operator's next action
+    /// begins.
+    #[test]
+    fn one_way_hint_names_both_ports_of_the_flow() {
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386);
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let diag = diagnose_media(&streams, &MediaContext::default());
+        assert!(
+            joined(&diag).contains("10.0.2.15:41002 -> 10.0.2.20:16386"),
+            "the hint must name both ports of the flow it describes: {:?}",
+            diag.hints
+        );
+    }
+
+    /// The one-way hint carries the stream's SSRC.
+    ///
+    /// `triage_call` reports a `stream_count` and the stream tools key on
+    /// SSRC; without it the reader cannot tell which of several streams the
+    /// hint is about.
+    #[test]
+    fn one_way_hint_carries_the_ssrc_of_the_flow() {
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386);
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let diag = diagnose_media(&streams, &MediaContext::default());
+        assert!(
+            joined(&diag).contains("0x12345678"),
+            "the hint must name the SSRC that identifies this stream: {:?}",
+            diag.hints
+        );
+    }
+
+    /// The sending side's advertised receive port is compared against the port
+    /// it actually sends from, and the disagreement is stated.
+    ///
+    /// RFC 4961 symmetric RTP says the two are the same port. When they are
+    /// not, the far end replies to an advertised port nothing is sending from,
+    /// no NAT pinhole exists there, and the reply is dropped — the leading
+    /// cause of one-way audio, and invisible in a hint that prints one port
+    /// per side.
+    #[test]
+    fn one_way_hint_compares_the_advertised_receive_port_with_the_source_port() {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386);
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        // Sends from 41002 while its SDP advertised 16384: not symmetric.
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386);
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let diag = diagnose_media(&streams, &ctx);
+        let text = joined(&diag);
+        assert!(
+            text.contains("10.0.2.15 advertised 16384"),
+            "the hint must name the receive port the SDP advertised: {:?}",
+            diag.hints
+        );
+        assert!(
+            text.contains("sends from 41002"),
+            "the hint must name the port RTP is actually sourced from: {:?}",
+            diag.hints
+        );
+        assert!(
+            text.contains("not symmetric"),
+            "the hint must say what the mismatch means: {:?}",
+            diag.hints
+        );
+        assert!(
+            text.contains("10.0.2.20 replies to 16384"),
+            "the hint must name the port the far end's reply would go to, \
+             which is where the missing pinhole is: {:?}",
+            diag.hints
+        );
+    }
+
+    /// A side that sends from the port it advertised gets no port comparison.
+    ///
+    /// Symmetric RTP is the correct behaviour; printing "advertised 16384 and
+    /// sends from 16384" on every healthy leg is noise that buries the case
+    /// where the two disagree.
+    #[test]
+    fn symmetric_rtp_draws_no_advertised_versus_actual_comparison() {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386);
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 16384, 16386);
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let diag = diagnose_media(&streams, &ctx);
+        assert!(
+            !joined(&diag).contains("advertised"),
+            "both ports match what was advertised; there is nothing to compare: {:?}",
+            diag.hints
+        );
+    }
+
+    /// RTP arriving at a port the answer never advertised is stated too.
+    ///
+    /// The mirror of the source-port case: media aimed at a port the far end
+    /// never asked for cannot be received, however healthy the sender looks.
+    #[test]
+    fn one_way_hint_names_a_destination_port_the_answer_never_advertised() {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386);
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        // Sent to 9999; the answer advertised 16386.
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 16384, 9999);
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let diag = diagnose_media(&streams, &ctx);
+        let text = joined(&diag);
+        assert!(
+            text.contains("10.0.2.20 advertised 16386"),
+            "the hint must name the receive port the answer advertised: {:?}",
+            diag.hints
+        );
+        assert!(
+            text.contains("arriving at 9999"),
+            "the hint must name the port the media is actually aimed at: {:?}",
+            diag.hints
+        );
+    }
+
+    /// A port that was never advertised is never invented.
+    ///
+    /// With no SDP in hand there is no advertised port to compare against, and
+    /// a hint that named one would be a fabricated value dressed as evidence.
+    #[test]
+    fn no_advertised_port_means_no_comparison_is_claimed() {
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386);
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let diag = diagnose_media(&streams, &MediaContext::default());
+        assert!(
+            !joined(&diag).contains("advertised"),
+            "no SDP was supplied, so no advertised port is knowable: {:?}",
+            diag.hints
+        );
+    }
+
+    /// A declined `m=` line and a non-RTP transport advertise no RTP receive
+    /// port.
+    ///
+    /// `m=audio 0` is how an endpoint says "not this stream", and T.38's
+    /// `m=image ... udptl` carries no RTP at all. Both name a number, and
+    /// neither is a port RTP was ever going to arrive on — so putting either
+    /// in front of an operator sends them to check a firewall rule that was
+    /// never going to matter.
+    #[test]
+    fn declined_and_non_rtp_media_advertise_no_receive_port() {
+        let declined = make_sdp("10.0.0.1", 0);
+        let ctx = MediaContext::from_session(&declined, CaptureMedia::Observed);
+        assert!(
+            ctx.advertised_endpoints().is_empty(),
+            "a declined m= line advertises no receive port: {:?}",
+            ctx.advertised_endpoints()
+        );
+
+        let mut t38 = make_sdp("10.0.0.1", 30000);
+        t38.media[0].media_type = "image".to_string();
+        t38.media[0].proto = "udptl".to_string();
+        let ctx = MediaContext::from_session(&t38, CaptureMedia::Observed);
+        assert!(
+            ctx.advertised_endpoints().is_empty(),
+            "a non-RTP transport advertises no RTP receive port: {:?}",
+            ctx.advertised_endpoints()
+        );
+    }
+
+    /// The NAT hint carries the ports its boolean verdict rests on.
+    ///
+    /// `nat_mismatch` is a verdict; the 5-tuple and the advertised endpoint
+    /// are the evidence for it. A boolean an operator cannot check against the
+    /// SDP is one they have to take on trust.
+    #[test]
+    fn nat_hint_names_the_ports_behind_the_verdict() {
+        let dialog = two_party_dialog("192.168.1.100", 16384, "203.0.113.9", 16386);
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        // The caller's RTP leaves a public address no SDP ever advertised.
+        let s1 = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386);
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let diag = diagnose_media(&streams, &ctx);
+        assert!(diag.nat_mismatch, "hints were {:?}", diag.hints);
+        // The NAT hint SPECIFICALLY, not the joined text. A one-way call also
+        // gets the flow hint, which carries the same 5-tuple — asserting over
+        // the join let a NAT hint that had lost its ports pass on the strength
+        // of a sentence beside it.
+        let nat = diag
+            .hints
+            .iter()
+            .find(|h| h.contains("no SDP in this dialog advertised"))
+            .unwrap_or_else(|| panic!("no NAT hint among {:?}", diag.hints));
+        assert!(
+            nat.contains("198.51.100.7:41002"),
+            "the NAT hint must name the source endpoint it saw: {nat}"
+        );
+        assert!(
+            nat.contains("203.0.113.9:16386"),
+            "the NAT hint must name where that media was aimed: {nat}"
+        );
+        assert!(
+            nat.contains("192.168.1.100:16384"),
+            "the NAT hint must name the endpoint the SDP advertised instead: {nat}"
+        );
+    }
+
+    /// The no-media hint names the receive endpoints nothing arrived at.
+    ///
+    /// With no RTP there is no source or destination port to report, so the
+    /// advertised endpoints are the whole of the evidence — and they are the
+    /// firewall rule the operator has to go and check.
+    #[test]
+    fn no_media_hint_names_the_advertised_receive_endpoints() {
+        let streams: Vec<&RtpStream> = vec![];
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386);
+
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        let diag = diagnose_media(&streams, &ctx);
+        assert!(diag.no_media, "hints were {:?}", diag.hints);
+        let text = joined(&diag);
+        assert!(
+            text.contains("10.0.2.15:16384") && text.contains("10.0.2.20:16386"),
+            "the hint must name the advertised receive endpoints: {:?}",
+            diag.hints
+        );
     }
 
     /// An SDP `c=` address that differs from the observed RTP source flags
