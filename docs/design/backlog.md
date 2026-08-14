@@ -425,6 +425,34 @@ Tiers:
 
 ## P2 — robustness, observability & efficiency
 
+- [ ] **DH1 — The TUI is the one diagnosis surface that hints never reach.**
+  Media hints are produced once, in [`src/rtp/diagnosis.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs), and consumed by four
+  renderers: the text call report, `--json`, the MCP tools, and the REST API,
+  which recomputes the diagnosis through the same functions. Counted
+  2026-08-14: **9** references to `.hints` across `src/output/` and `src/mcp/`,
+  and **0** in `src/tui/`. So an improvement to a hint reaches every surface
+  except the interactive one, silently.
+
+  The TUI is not simply missing a call — it uses a different model. It carries
+  `diagnosis_note` on call-flow messages (**19** sites) and renders a stream
+  list. That is why this is a design task rather than a wiring task: a hint is
+  a sentence, and what the stream list wants is a **column**. Copying prose
+  into a table is how the two surfaces start disagreeing about the same call.
+
+  **Do:** decide how per-stream diagnosis evidence belongs in the stream list —
+  most obviously the advertised-versus-actual RTP port pair, which is the
+  evidence behind `nat_mismatch` and the thing an operator acts on. Then make
+  the TUI derive it from `rtp::diagnosis` rather than restating it, so the two
+  cannot drift. **Do not** simply push hint strings into a TUI panel: that
+  reproduces the prose in a place where a column is the right shape and leaves
+  the divergence in place under a different name.
+
+  Raised by the media-hint port work (source and destination ports, each
+  compared against the SDP-advertised receive port). That change lands in the
+  producer and so improves the other four surfaces for free; this entry exists
+  so the fifth is not discovered missing months later.
+
+
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
 - [x] **G1 — `INVALID_PCAP_TIMESTAMPS` is counted and warned but never
